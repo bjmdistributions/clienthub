@@ -2940,11 +2940,15 @@ export const api = {
   cleanupClients: () => invoke<{ duplicates_merged: number; ghosts_removed: number; remaining_clients: number }>("cleanup_clients"),
 
   // Email
-  sendEmail: (to: string, subject: string, body: string, attachmentPath?: string, from?: string) =>
-    invoke<void>("send_email", { to, subject, body, attachmentPath, from }),
+  sendEmail: (to: string, subject: string, body: string, attachmentPath?: string, from?: string, inReplyTo?: string | null) =>
+    invoke<void>("send_email", { to, subject, body, attachmentPath, from, inReplyTo }),
   /** Addresses this device can send as, for a compose-time "from" picker (R-194). */
   getSendFromOptions: () => invoke<FromOption[]>("get_send_from_options"),
   scanInbox: () => invoke<ParsedEmail[]>("scan_inbox"),
+  /** R-278: the Inbox tab's list — recent mail every scan (the background watcher too) recorded. */
+  listInboxMessages: (limit?: number) => invoke<ParsedEmail[]>("list_inbox_messages", { limit }),
+  /** Process new mail, then read the last `days` of each mailbox into the Inbox. */
+  refreshInbox: (days?: number) => invoke<ParsedEmail[]>("refresh_inbox", { days }),
   getEmailInboxes: () => invoke<EmailInbox[]>("get_email_inboxes"),
   /** `readFromNow` (default true) starts a NEW mailbox at its current head instead
    *  of importing its entire history as activity dated today. */
@@ -2976,6 +2980,9 @@ export const api = {
 
   // Email Drafts
   listDrafts: (status?: string) => invoke<EmailDraft[]>("list_drafts", { status }),
+  /** Save (or with `id`, update) a reply draft so it lands in the Drafts tab (R-278). */
+  saveDraft: (id: string | null, toAddr: string, subject: string, body: string, inReplyToMessageId: string | null) =>
+    invoke<EmailDraft>("save_draft", { id, toAddr, subject, body, inReplyToMessageId }),
   updateDraft: (id: string, body: string, subject: string) =>
     invoke<void>("update_draft", { id, body, subject }),
   sendDraft: (id: string, from?: string) => invoke<void>("send_draft", { id, from }),

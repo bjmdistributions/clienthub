@@ -5388,6 +5388,88 @@ pub async fn set_deal_flow_shipping(
     read_df(&id)
 }
 
+/// R-279: Priority1 moves a deal's schedule. Writes only the dates that are `Some`, keeps
+/// the replaced value in `*_prev` exactly as `set_deal_flow_shipping` does, and clears
+/// "ships direct" when a date lands — a Priority1 pickup means there is a pickup. Returns
+/// whether anything changed, so an update that restates today's dates writes nothing.
+pub(crate) fn apply_shipping_dates(id: &str, pickup: Option<String>, delivery: Option<String>) -> Result<bool, String> {
+    let (old_pickup, old_delivery, old_pickup_prev, old_delivery_prev, direct):
+        (Option<String>, Option<String>, Option<String>, Option<String>, i64) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT pickup_date, expected_delivery_date, pickup_date_prev, expected_delivery_date_prev, COALESCE(ships_direct,0)
+             FROM deal_flows WHERE id=?1",
+            [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).map_err(|e| e.to_string())?
+    };
+    let pickup = norm_day(pickup)?.or_else(|| old_pickup.clone());
+    let delivery = norm_day(delivery)?.or_else(|| old_delivery.clone());
+    let same = |a: &Option<String>, b: &Option<String>| a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("");
+    // Unchanged dates write nothing — including "ships direct", which a person may have set
+    // on purpose after Priority1's dates landed; only a genuinely new date clears it.
+    let _ = direct;
+    if same(&pickup, &old_pickup) && same(&delivery, &old_delivery) {
+        return Ok(false);
+    }
+    let pickup_prev = carry_prev(old_pickup.as_deref(), old_pickup_prev.as_deref(), pickup.as_deref());
+    let delivery_prev = carry_prev(old_delivery.as_deref(), old_delivery_prev.as_deref(), delivery.as_deref());
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("pickup_date".into(), to_value(pickup.clone()));
+    cols.insert("expected_delivery_date".into(), to_value(delivery.clone()));
+    cols.insert("ships_direct".into(), json!(0));
+    cols.insert("pickup_date_prev".into(), to_value(pickup_prev.clone()));
+    cols.insert("expected_delivery_date_prev".into(), to_value(delivery_prev.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE deal_flows SET pickup_date=?1, expected_delivery_date=?2, ships_direct=0,
+         pickup_date_prev=?3, expected_delivery_date_prev=?4, updated_at=?5 WHERE id=?6",
+        rusqlite::params![pickup, delivery, pickup_prev, delivery_prev, now, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Put a deal's own dates back after the Priority1 shipment that was setting them left it
+/// (R-279). Exact values, including an empty date; the Priority1 date it replaces is kept in
+/// `*_prev` the same way a reschedule's is.
+pub(crate) fn restore_shipping_dates(id: &str, pickup: Option<String>, delivery: Option<String>, ships_direct: bool) -> Result<bool, String> {
+    let pickup = norm_day(pickup)?;
+    let delivery = norm_day(delivery)?;
+    let (old_pickup, old_delivery, old_pickup_prev, old_delivery_prev, old_direct):
+        (Option<String>, Option<String>, Option<String>, Option<String>, i64) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT pickup_date, expected_delivery_date, pickup_date_prev, expected_delivery_date_prev, COALESCE(ships_direct,0)
+             FROM deal_flows WHERE id=?1",
+            [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).map_err(|e| e.to_string())?
+    };
+    let same = |a: &Option<String>, b: &Option<String>| a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("");
+    if same(&pickup, &old_pickup) && same(&delivery, &old_delivery) && (old_direct != 0) == ships_direct {
+        return Ok(false);
+    }
+    let pickup_prev = carry_prev(old_pickup.as_deref(), old_pickup_prev.as_deref(), pickup.as_deref());
+    let delivery_prev = carry_prev(old_delivery.as_deref(), old_delivery_prev.as_deref(), delivery.as_deref());
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("pickup_date".into(), to_value(pickup.clone()));
+    cols.insert("expected_delivery_date".into(), to_value(delivery.clone()));
+    cols.insert("ships_direct".into(), json!(ships_direct as i64));
+    cols.insert("pickup_date_prev".into(), to_value(pickup_prev.clone()));
+    cols.insert("expected_delivery_date_prev".into(), to_value(delivery_prev.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE deal_flows SET pickup_date=?1, expected_delivery_date=?2, ships_direct=?3,
+         pickup_date_prev=?4, expected_delivery_date_prev=?5, updated_at=?6 WHERE id=?7",
+        rusqlite::params![pickup, delivery, ships_direct as i64, pickup_prev, delivery_prev, now, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 // ──────────────────────── Refunds, customer credits, rep payouts ────────────────────────
 
 fn r2(x: f64) -> f64 { (x * 100.0).round() / 100.0 }
@@ -7275,8 +7357,10 @@ pub async fn send_email(
     body: String,
     attachment_path: Option<String>,
     from: Option<String>,
+    // R-278: the Message-ID being replied to, so the reply lands in the customer's thread.
+    in_reply_to: Option<String>,
 ) -> Result<(), String> {
-    crate::email::send_threaded(&to, &subject, &body, attachment_path.as_deref(), None, from.as_deref())
+    crate::email::send_threaded(&to, &subject, &body, attachment_path.as_deref(), in_reply_to.as_deref(), from.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     // Outbound mail is contact too. Without this a reply sent from Ecliptr never moved the
@@ -7586,6 +7670,25 @@ pub async fn transfer_org_inbox(target_staff_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn scan_inbox() -> Result<Vec<crate::email::ParsedEmail>, String> {
     crate::email::scan_and_process().await.map_err(|e| e.to_string())
+}
+
+/// What the Inbox tab shows: recent mail from every monitored mailbox, newest first (R-278).
+#[tauri::command]
+pub async fn list_inbox_messages(limit: Option<i64>) -> Result<Vec<crate::email::ParsedEmail>, String> {
+    crate::email::list_inbox_messages(limit.unwrap_or(300)).map_err(|e| e.to_string())
+}
+
+/// The Inbox tab's Refresh: process anything new (exactly what the watcher does), then read
+/// the last `days` of each mailbox into the Inbox without moving any cursor. Fails only when
+/// both halves did, so one unreachable mailbox does not blank the others.
+#[tauri::command]
+pub async fn refresh_inbox(days: Option<i64>) -> Result<Vec<crate::email::ParsedEmail>, String> {
+    let scanned = crate::email::scan_and_process().await;
+    let (found, errors) = crate::email::backfill_inbox_cache(days.unwrap_or(7)).await;
+    if let (Err(e), true) = (&scanned, found == 0 && !errors.is_empty()) {
+        return Err(format!("Couldn't read the inbox: {e}; {}", errors.join("; ")));
+    }
+    crate::email::list_inbox_messages(300).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -17948,6 +18051,58 @@ pub async fn list_drafts(status: Option<String>) -> Result<Vec<EmailDraft>, Stri
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Save a reply as a draft (R-278 — nothing wrote this table, so the Drafts tab could never
+/// hold one). `id` updates an existing draft instead. The client is matched by address so
+/// the Drafts tab can say who it is for.
+#[tauri::command]
+pub async fn save_draft(
+    id: Option<String>,
+    to_addr: String,
+    subject: String,
+    body: String,
+    in_reply_to_message_id: Option<String>,
+) -> Result<EmailDraft, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    // One pending draft per message answered: reopening a message and saving again updates
+    // the draft already there instead of queueing a second reply to the same customer.
+    let id = id.filter(|i| !i.is_empty()).or_else(|| {
+        in_reply_to_message_id.as_deref().filter(|m| !m.trim().is_empty()).and_then(|m| conn.query_row(
+            "SELECT id FROM email_drafts WHERE in_reply_to_message_id=?1 AND status='pending' ORDER BY created_at DESC LIMIT 1",
+            [m], |r| r.get::<_, String>(0),
+        ).ok())
+    });
+    let id = match id {
+        Some(existing) => {
+            conn.execute(
+                "UPDATE email_drafts SET to_addr=?1, subject=?2, body=?3 WHERE id=?4 AND status='pending'",
+                rusqlite::params![to_addr, subject, body, existing],
+            ).map_err(|e| e.to_string())?;
+            existing
+        }
+        None => {
+            let client_id: Option<String> = conn.query_row(
+                "SELECT id FROM clients WHERE LOWER(email)=LOWER(?1) LIMIT 1", [&to_addr], |r| r.get(0),
+            ).ok();
+            let new_id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO email_drafts (id, client_id, in_reply_to_message_id, to_addr, subject, body, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+                rusqlite::params![new_id, client_id, in_reply_to_message_id, to_addr, subject, body, now],
+            ).map_err(|e| e.to_string())?;
+            new_id
+        }
+    };
+    conn.query_row(
+        "SELECT id,client_id,in_reply_to_message_id,to_addr,subject,body,status,created_at,sent_at FROM email_drafts WHERE id=?1",
+        [&id],
+        |r| Ok(EmailDraft {
+            id: r.get(0)?, client_id: r.get(1)?, in_reply_to_message_id: r.get(2)?, to_addr: r.get(3)?,
+            subject: r.get(4)?, body: r.get(5)?, status: r.get(6)?, created_at: r.get(7)?, sent_at: r.get(8)?,
+        }),
+    ).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn update_draft(id: String, body: String, subject: String) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -17961,17 +18116,18 @@ pub async fn update_draft(id: String, body: String, subject: String) -> Result<(
 
 #[tauri::command]
 pub async fn send_draft(id: String, from: Option<String>) -> Result<(), String> {
-    let (to_addr, subject, body) = {
+    let (to_addr, subject, body, in_reply_to) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let result: rusqlite::Result<(String, String, String)> = conn.query_row(
-            "SELECT to_addr, subject, body FROM email_drafts WHERE id=?1",
+        let result: rusqlite::Result<(String, String, String, Option<String>)> = conn.query_row(
+            "SELECT to_addr, subject, body, in_reply_to_message_id FROM email_drafts WHERE id=?1 AND status='pending'",
             [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         );
         result.map_err(|e| e.to_string())?
     };
 
-    crate::email::send_threaded(&to_addr, &subject, &body, None, None, from.as_deref())
+    // Threaded (R-278): a draft that answers a message goes out as a reply in that thread.
+    crate::email::send_threaded(&to_addr, &subject, &body, None, in_reply_to.as_deref(), from.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     crate::email::log_outbound(&to_addr, &subject, &body);
@@ -18323,6 +18479,14 @@ pub async fn schedule_newsletter_send(
     attachment_path: Option<String>,
     batch_per_hour: Option<i64>,
 ) -> Result<ScheduledSend, String> {
+    // R-278: the server sends this, so the file has to be on the server first. Upload before
+    // anything is written — a failed upload refuses the schedule rather than letting the
+    // newsletter go out without its attachment (which it silently used to).
+    let attachment_path = match attachment_path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        Some(p) if p.starts_with("server:") => Some(p),
+        Some(p) => Some(crate::netsync::upload_newsletter_attachment(std::path::Path::new(&p)).await?),
+        None => None,
+    };
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     // R-274: > 0 releases the list in hourly batches from scheduled_at (the server pump

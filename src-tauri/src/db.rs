@@ -26,6 +26,31 @@ pub fn pool_opt() -> Option<&'static DbPool> {
     POOL.get()
 }
 
+/// A throwaway store for tests that need the real schema and sync bookkeeping (R-279's
+/// email-then-BOL test). A fresh directory per test process; initialised once.
+#[cfg(test)]
+pub fn init_test_store() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("ecliptr-test-{}-{}", std::process::id(), stamp));
+        std::fs::create_dir_all(&dir).expect("test dir");
+        let manager = SqliteConnectionManager::file(dir.join("clienthub.db"))
+            .with_init(|c| c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"));
+        let pool = Pool::builder().max_size(8).build(manager).expect("test pool");
+        {
+            let conn = pool.get().expect("test conn");
+            run_migrations(&conn).expect("migrations");
+            seed_defaults(&conn).expect("seed");
+        }
+        POOL.set(pool).ok();
+        APP_ROOT_DIR.set(dir.clone()).ok();
+        APP_DATA_DIR.set(dir.clone()).ok();
+        crate::sync::init(dir.join("sync")).expect("sync init");
+        crate::netsync::ensure_tables().expect("netsync tables");
+    });
+}
+
 pub fn app_data_dir() -> &'static PathBuf {
     APP_DATA_DIR.get().expect("app data dir not initialized")
 }
@@ -2036,6 +2061,41 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         CREATE INDEX IF NOT EXISTS idx_shipments_deal ON shipments(deal_flow_id);
         CREATE INDEX IF NOT EXISTS idx_shipments_bol ON shipments(bol);
+        "#,
+    ),
+    (
+        95,
+        // R-278: what the Inbox tab reads. The tab used to show only what its own Scan button
+        // returned, and the background IDLE watcher had nearly always consumed the UID cursor
+        // first, so it sat empty while mail arrived. Every scan (watcher included) now writes
+        // here. DEVICE-LOCAL, never synced: each device reads its own mailboxes, and it is a
+        // copy of mail that lives in the mailbox — never the only copy of anything.
+        r#"
+        CREATE TABLE IF NOT EXISTS inbox_messages (
+            id TEXT PRIMARY KEY,
+            inbox TEXT DEFAULT '',
+            uid INTEGER DEFAULT 0,
+            message_id TEXT,
+            from_addr TEXT DEFAULT '',
+            from_name TEXT,
+            to_json TEXT DEFAULT '[]',
+            subject TEXT DEFAULT '',
+            body_text TEXT DEFAULT '',
+            body_html TEXT,
+            date TEXT,
+            has_attachments INTEGER DEFAULT 0,
+            cached_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_inbox_messages_date ON inbox_messages(date);
+        "#,
+    ),
+    (
+        96,
+        // R-279: the dates a deal had before a Priority1 shipment started setting them, kept on
+        // the shipment so taking it off the deal can hand them back. JSON {deal, pickup,
+        // delivery, direct}; '' = none held. Synced — clienthub-api adds the same column.
+        r#"
+        ALTER TABLE shipments ADD COLUMN deal_dates_before TEXT DEFAULT '';
         "#,
     ),
 ];

@@ -14,14 +14,31 @@ import { toast } from "./Toast";
 
 // ── shared store ─────────────────────────────────────────────────────────────
 let cache: Shipment[] = [];
+let signature = "";
 let listening = false;
 const subs = new Set<() => void>();
+// R-279: Priority1 can move a deal's dates, so a screen showing those dates re-reads when
+// the shipments change (an email the desktop just read, or a link made on the phone).
+const changeSubs = new Set<() => void>();
 
 export async function refreshShipments() {
   try {
-    cache = await api.listShipments();
+    const next = await api.listShipments();
+    const sig = next.map((x) => `${x.id}:${x.updated_at}:${x.deal_flow_id}`).join("|");
+    const changed = signature !== "" && sig !== signature;
+    signature = sig;
+    cache = next;
     subs.forEach((f) => f());
+    if (changed) changeSubs.forEach((f) => f());
   } catch { /* the table arrives with the migration; an older DB just shows nothing */ }
+}
+
+/** Call `onChange` whenever the shipment list changes after the first load. */
+export function useShipmentChanges(onChange: () => void) {
+  useEffect(() => {
+    changeSubs.add(onChange);
+    return () => { changeSubs.delete(onChange); };
+  }, [onChange]);
 }
 
 function subscribe(f: () => void) {
@@ -92,7 +109,7 @@ export function FreightChip({ dealFlowId }: { dealFlowId: string }) {
 }
 
 // ── open deal ────────────────────────────────────────────────────────────────
-export function FreightPanel({ dealFlowId, locked }: { dealFlowId: string; locked: boolean }) {
+export function FreightPanel({ dealFlowId, locked, onReload }: { dealFlowId: string; locked: boolean; onReload: () => void }) {
   const mine = useShipments().filter((s) => s.deal_flow_id === dealFlowId);
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
@@ -104,6 +121,7 @@ export function FreightPanel({ dealFlowId, locked }: { dealFlowId: string; locke
       const s = await api.linkShipmentRef(dealFlowId, ref.trim());
       setRef("");
       await refreshShipments();
+      onReload(); // Priority1's dates may have just replaced the deal's
       toast(s.last_update_at ? "Shipment attached" : "Saved — updates for this number will land on this deal");
     } catch (e) {
       toast(String(e), "error");
@@ -121,6 +139,7 @@ export function FreightPanel({ dealFlowId, locked }: { dealFlowId: string; locke
               onChange={(e) => setRef(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") attach(); }}
               placeholder="Priority1 BOL, PRO or pickup #"
+              maxLength={40}
               className="h-8 w-56 max-w-full px-2.5 border border-line rounded-lg text-[12px] bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
             />
             <button onClick={attach} disabled={busy || !ref.trim()}
@@ -132,21 +151,30 @@ export function FreightPanel({ dealFlowId, locked }: { dealFlowId: string; locke
       </div>
       {mine.length === 0 ? (
         <p className="text-[12px] text-muted">
-          No shipment yet. Paste the number when you book with Priority1, or attach one from the list at the top when its first update arrives.
+          No shipment yet. Paste the BOL when you book with Priority1 — even after the email has come in — and this deal's pickup and delivery dates will follow Priority1. Without one, the dates you set stay.
         </p>
-      ) : mine.map((s) => <ShipmentRow key={s.id} s={s} locked={locked} />)}
+      ) : (
+        <>
+          {mine.map((s) => <ShipmentRow key={s.id} s={s} locked={locked} onReload={onReload} />)}
+          <p className="text-[11.5px] text-faint">
+            {mine.some((s) => s.bol)
+              ? "Pickup and delivery dates on this deal follow Priority1's updates."
+              : "Dates follow Priority1 once its first update with a BOL arrives."}
+          </p>
+        </>
+      )}
     </div>
   );
 }
 
-function ShipmentRow({ s, locked }: { s: Shipment; locked: boolean }) {
+function ShipmentRow({ s, locked, onReload }: { s: Shipment; locked: boolean; onReload: () => void }) {
   const [open, setOpen] = useState(false);
   const st = stageOf(s);
   let events: Event[] = [];
   try { events = JSON.parse(s.events_json || "[]"); } catch { events = []; }
 
   const detach = async () => {
-    try { await api.linkShipment(s.id, ""); await refreshShipments(); toast("Shipment detached"); }
+    try { await api.linkShipment(s.id, ""); await refreshShipments(); onReload(); toast("Shipment detached"); }
     catch (e) { toast(String(e), "error"); }
   };
 
@@ -194,7 +222,7 @@ function ShipmentRow({ s, locked }: { s: Shipment; locked: boolean }) {
 }
 
 // ── not on a deal yet ────────────────────────────────────────────────────────
-export function UnlinkedShipments() {
+export function UnlinkedShipments({ onChange }: { onChange: () => void }) {
   const all = useShipments();
   const loose = all.filter((s) => !s.deal_flow_id && !s.dismissed && s.stage !== "");
   const [open, setOpen] = useState(true);
@@ -229,14 +257,14 @@ export function UnlinkedShipments() {
       </div>
       {open && loose.length > 0 && (
         <div className="border-t border-line divide-y divide-line">
-          {loose.map((s) => <LooseRow key={s.id} s={s} />)}
+          {loose.map((s) => <LooseRow key={s.id} s={s} onChange={onChange} />)}
         </div>
       )}
     </div>
   );
 }
 
-function LooseRow({ s }: { s: Shipment }) {
+function LooseRow({ s, onChange }: { s: Shipment; onChange: () => void }) {
   const [options, setOptions] = useState<ShipmentDealSuggestion[]>([]);
   const [pick, setPick] = useState("");
   const [busy, setBusy] = useState(false);
@@ -255,7 +283,7 @@ function LooseRow({ s }: { s: Shipment }) {
   const chosen = options.find((o) => o.deal_flow_id === pick);
   const act = async (fn: () => Promise<void>, done: string) => {
     setBusy(true);
-    try { await fn(); await refreshShipments(); toast(done); }
+    try { await fn(); await refreshShipments(); onChange(); toast(done); }
     catch (e) { toast(String(e), "error"); }
     finally { setBusy(false); }
   };

@@ -1184,8 +1184,12 @@ fn fetch_latest_matching_blocking(
 
 /// Run an IMAP SEARCH (e.g. `FROM "priority1.com" SINCE 15-Aug-2026`) against one
 /// monitored inbox and return up to `max` of the newest matches, parsed. Read-only: it
-/// never touches the UID cursor, so it cannot hide mail from the watcher (R-277 backfill).
-pub async fn search_inbox(inbox_id: &str, query: String, max: usize) -> Result<Vec<ParsedEmail>> {
+/// never touches the UID cursor, so it cannot hide mail from the watcher (R-277 backfill),
+/// and it fetches with BODY.PEEK so nothing it reads is marked read in the mailbox.
+/// Messages larger than `whole_limit` bytes come back with headers only — the Inbox passes
+/// a limit so a week of PDFs is not downloaded; Priority1 parsing passes u32::MAX because it
+/// needs the body.
+pub async fn search_inbox(inbox_id: &str, query: String, max: usize, whole_limit: u32) -> Result<Vec<ParsedEmail>> {
     let (host, port, user, auth, label) = resolve_inbox_creds(inbox_id).await?;
     let res = tokio::task::spawn_blocking(move || -> Result<Vec<ParsedEmail>> {
         let mut session = imap_session(&host, port, &user, &auth)?;
@@ -1195,10 +1199,22 @@ pub async fn search_inbox(inbox_id: &str, query: String, max: usize) -> Result<V
         let keep: Vec<String> = uids.iter().rev().take(max).map(|u| u.to_string()).collect();
         let mut out = Vec::new();
         if !keep.is_empty() {
-            let messages = session.uid_fetch(keep.join(","), "(UID RFC822)").context("fetch")?;
+            // A week of mail can carry hundreds of MB of PDFs. Ask sizes first, download whole
+            // only what is within the caller's limit, and read just the headers of the rest.
+            let (mut small, mut large): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+            for m in session.uid_fetch(keep.join(","), "(UID RFC822.SIZE)").context("fetch sizes")?.iter() {
+                let Some(uid) = m.uid else { continue };
+                if m.size.unwrap_or(0) <= whole_limit { small.push(uid.to_string()) } else { large.push(uid.to_string()) }
+            }
+            let mut fetched = Vec::new();
+            if !small.is_empty() { fetched.push((session.uid_fetch(small.join(","), "(UID BODY.PEEK[])").context("fetch")?, false)); }
+            if !large.is_empty() { fetched.push((session.uid_fetch(large.join(","), "(UID BODY.PEEK[HEADER])").context("fetch headers")?, true)); }
+            for (messages, header_only) in &fetched {
             for msg in messages.iter() {
-                let Some(body_bytes) = msg.body() else { continue };
+                let bytes = if *header_only { msg.header() } else { msg.body() };
+                let Some(body_bytes) = bytes else { continue };
                 let Some(p) = MessageParser::default().parse(body_bytes) else { continue };
+                let header_note = if *header_only { "This message is too large to preview here. Open it in your mail app." } else { "" };
                 out.push(ParsedEmail {
                     uid: msg.uid.unwrap_or(0),
                     message_id: p.message_id().map(|s| s.to_string()),
@@ -1206,12 +1222,13 @@ pub async fn search_inbox(inbox_id: &str, query: String, max: usize) -> Result<V
                     from_name: p.from().and_then(|f| f.first()).and_then(|a| a.name()).map(|s| s.to_string()),
                     to: p.to().map(|t| t.iter().filter_map(|a| a.address().map(|s| s.to_string())).collect()).unwrap_or_default(),
                     subject: p.subject().unwrap_or("(no subject)").to_string(),
-                    body_text: p.body_text(0).map(|s| s.to_string()).unwrap_or_default(),
-                    body_html: p.body_html(0).map(|s| s.to_string()),
+                    body_text: if *header_only { header_note.to_string() } else { p.body_text(0).map(|s| s.to_string()).unwrap_or_default() },
+                    body_html: if *header_only { None } else { p.body_html(0).map(|s| s.to_string()) },
                     date: p.date().and_then(|d| chrono::DateTime::<Utc>::from_timestamp(d.to_timestamp(), 0).map(|dt| dt.to_rfc3339())),
                     has_attachments: p.attachment_count() > 0,
                     source: String::new(),
                 });
+            }
             }
         }
         let _ = session.logout();
@@ -1220,6 +1237,90 @@ pub async fn search_inbox(inbox_id: &str, query: String, max: usize) -> Result<V
     .await
     .context("imap search task")??;
     Ok(res.into_iter().map(|mut e| { e.source = label.clone(); e }).collect())
+}
+
+// ── Inbox cache (R-278) ──────────────────────────────────────────────────────────────
+// The Inbox tab reads `inbox_messages` (migration 95). It used to show only what its own
+// Scan button returned, and the IDLE watcher nearly always consumed the UID cursor first.
+
+/// How many recent messages the device keeps for the Inbox tab. The mail itself stays in
+/// the mailbox; this is a reading copy.
+const INBOX_CACHE_KEEP: i64 = 3000;
+
+/// Record messages for the Inbox tab. Keyed by Message-ID when there is one, so the same
+/// mail delivered to two monitored mailboxes (a group address) shows once.
+pub fn cache_inbox_messages(emails: &[ParsedEmail]) {
+    if emails.is_empty() {
+        return;
+    }
+    let Ok(conn) = pool().get() else { return };
+    let now = Utc::now().to_rfc3339();
+    for e in emails {
+        let id = match e.message_id.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            Some(m) => format!("mid:{}", m.trim_matches(|c| c == '<' || c == '>').to_ascii_lowercase()),
+            None => format!("uid:{}:{}", e.source, e.uid),
+        };
+        let text: String = e.body_text.chars().take(60_000).collect();
+        let to_json = serde_json::to_string(&e.to).unwrap_or_else(|_| "[]".into());
+        if let Err(err) = conn.execute(
+            "INSERT INTO inbox_messages (id, inbox, uid, message_id, from_addr, from_name, to_json, subject, body_text, date, has_attachments, cached_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO NOTHING",
+            rusqlite::params![id, e.source, e.uid, e.message_id, e.from, e.from_name, to_json, e.subject, text, e.date, e.has_attachments as i64, now],
+        ) {
+            tracing::warn!("inbox cache: could not record '{}': {}", e.subject, err);
+        }
+    }
+    // Keep the newest few thousand. Everything dropped here is still in the mailbox.
+    let _ = conn.execute(
+        "DELETE FROM inbox_messages WHERE id IN (
+            SELECT id FROM inbox_messages ORDER BY COALESCE(date, cached_at) DESC LIMIT -1 OFFSET ?1)",
+        [INBOX_CACHE_KEEP],
+    );
+}
+
+pub fn list_inbox_messages(limit: i64) -> Result<Vec<ParsedEmail>> {
+    let conn = pool().get()?;
+    let mut stmt = conn.prepare(
+        "SELECT uid, message_id, from_addr, from_name, to_json, subject, body_text, date, has_attachments, inbox
+         FROM inbox_messages ORDER BY COALESCE(date, cached_at) DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit.clamp(1, 1000)], |r| {
+        let to_json: String = r.get::<_, Option<String>>(4)?.unwrap_or_default();
+        Ok(ParsedEmail {
+            uid: r.get::<_, i64>(0)? as u32,
+            message_id: r.get(1)?,
+            from: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            from_name: r.get(3)?,
+            to: serde_json::from_str(&to_json).unwrap_or_default(),
+            subject: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            body_text: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            body_html: None,
+            date: r.get(7)?,
+            has_attachments: r.get::<_, i64>(8)? != 0,
+            source: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Fill the Inbox with the last `days` of mail from every monitored mailbox, read with a
+/// SEARCH that never moves a UID cursor — so it cannot hide mail from the watcher, and it
+/// does not re-run lead or contact handling on mail the watcher already processed.
+pub async fn backfill_inbox_cache(days: i64) -> (usize, Vec<String>) {
+    let since = (Utc::now() - chrono::Duration::days(days.clamp(1, 60))).format("%d-%b-%Y").to_string();
+    let mut ids: Vec<String> = load_inboxes().into_iter().filter(|i| !i.demo).map(|i| i.id).collect();
+    if ids.is_empty() && load_settings().map(|s| !s.imap_host.is_empty()).unwrap_or(false) {
+        ids.push("legacy".into());
+    }
+    let (mut count, mut errors) = (0usize, Vec::new());
+    for id in ids {
+        match search_inbox(&id, format!("SINCE {since}"), 200, 5 * 1024 * 1024).await {
+            Ok(mails) => { count += mails.len(); cache_inbox_messages(&mails); }
+            Err(e) => errors.push(e.to_string()),
+        }
+    }
+    (count, errors)
 }
 
 /// Serialises `scan()`. The read-fetch-write of a UID cursor is not atomic - it
@@ -1393,6 +1494,9 @@ async fn scan_and_notify(app: &tauri::AppHandle) {
                 Ok(leads) => notify_new_leads(app, &leads),
                 Err(e) => tracing::warn!("process_new_emails failed: {}", e),
             }
+            // An open Inbox tab re-reads the cache instead of waiting for its own button.
+            use tauri::Emitter;
+            let _ = app.emit("inbox-updated", emails.len());
         }
         Ok(_) => {}
         Err(e) => tracing::warn!("imap scan error: {}", e),
@@ -1811,6 +1915,8 @@ pub async fn scan_and_process() -> Result<Vec<ParsedEmail>> {
 /// were newly auto-created (for the caller to notify on).
 async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
     let mut new_leads: Vec<NewLead> = Vec::new();
+    // R-278: everything a scan returns is what the Inbox tab shows.
+    cache_inbox_messages(emails);
     for email in emails {
         // R-277: record a Priority1 shipment update as freight tracking. It deliberately does
         // NOT stop here — whatever the rest of this loop already did with Priority1 mail (a

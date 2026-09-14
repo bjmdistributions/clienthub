@@ -803,6 +803,8 @@ fn main() {
             send_email,
             get_send_from_options,
             scan_inbox,
+            list_inbox_messages,
+            refresh_inbox,
             get_email_inboxes,
             save_email_inbox,
             delete_email_inbox,
@@ -1082,6 +1084,7 @@ fn main() {
             // Email drafts
             list_drafts,
             update_draft,
+            save_draft,
             send_draft,
             discard_draft,
             // Newsletters

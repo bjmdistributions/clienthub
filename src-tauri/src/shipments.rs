@@ -5,8 +5,10 @@
 //! row, synced so the phone shows the same status. A shipment attaches to a deal three
 //! ways: a reference number in the email equals one of the org's invoice numbers; a BOL,
 //! PRO or pickup number pasted on the deal (`link_shipment_ref`); or one tap on a
-//! suggested deal. Nothing here writes a deal's own pickup or delivery dates — tracking
-//! sits beside them, so a carrier's status can never rewrite the schedule the deal holds.
+//! suggested deal. Once a deal carries a Priority1 shipment WITH a BOL, Priority1 sets the
+//! deal's pickup and delivery dates (R-279, reversing R-277's "never"); a deal without one
+//! keeps the dates typed on it. The dates are derived from the whole timeline every time, so
+//! it does not matter whether the email or the typed BOL came first.
 //!
 //! Parsing is deliberately label-and-pattern based rather than position based: the same
 //! email arrives as an HTML table (label cells and value cells can come out interleaved
@@ -37,6 +39,10 @@ pub struct Parsed {
     /// RFC3339 UTC, or empty when the email gives no update date.
     pub update_at: String,
     pub details_url: String,
+    /// YYYY-MM-DD when the email states a pickup date / an estimated delivery (booking and
+    /// dispatch confirmations do; the plain status update does not). Empty otherwise.
+    pub pickup_date: String,
+    pub eta: String,
 }
 
 pub fn is_priority1_sender(from: &str) -> bool {
@@ -79,6 +85,32 @@ const LABELS: &[&str] = &[
 fn is_label(line: &str) -> bool {
     let l = line.to_ascii_lowercase();
     LABELS.contains(&l.as_str()) || (l.starts_with("update from") && l.ends_with(':'))
+}
+
+/// The date stated for a label, as YYYY-MM-DD. Handles the value on the label's own line, and
+/// a flattened table row where several labels come first and their values follow in order.
+fn day_after_label(lines: &[String], labels: &[&str]) -> String {
+    let re = Regex::new(r"(\d{1,2})/(\d{1,2})/(\d{4})|(\d{4})-(\d{2})-(\d{2})").unwrap();
+    let to_day = |c: regex::Captures| -> Option<String> {
+        let (y, m, d): (i32, u32, u32) = if c.get(1).is_some() {
+            (c[3].parse().ok()?, c[1].parse().ok()?, c[2].parse().ok()?)
+        } else {
+            (c[4].parse().ok()?, c[5].parse().ok()?, c[6].parse().ok()?)
+        };
+        chrono::NaiveDate::from_ymd_opt(y, m, d).map(|dt| dt.format("%Y-%m-%d").to_string())
+    };
+    let is_lab = |l: &str| { let x = l.to_ascii_lowercase(); labels.iter().any(|lb| x.starts_with(lb)) && x.contains(':') };
+    let Some(i) = lines.iter().position(|l| is_lab(l)) else { return String::new() };
+    if let Some(c) = re.captures(&lines[i]) { return to_day(c).unwrap_or_default(); }
+    // A block of bare labels ("Pickup Date:", "Estimated Delivery:") followed by their values.
+    let bare = |l: &str| l.trim_end().ends_with(':');
+    let mut start = i;
+    while start > 0 && bare(&lines[start - 1]) { start -= 1; }
+    let mut end = i;
+    while end + 1 < lines.len() && bare(&lines[end + 1]) { end += 1; }
+    // Each label's value sits at the same offset in the row that follows. Taken only if THAT
+    // line is a date — never the next date-shaped value, which would belong to another label.
+    lines.get(end + 1 + (i - start)).and_then(|l| re.captures(l)).and_then(|c| to_day(c)).unwrap_or_default()
 }
 
 fn find_line(lines: &[String], label: &str) -> Option<usize> {
@@ -215,6 +247,9 @@ pub fn parse(subject: &str, body_text: &str, body_html: Option<&str>) -> Option<
             }
         }
     }
+
+    p.pickup_date = day_after_label(&lines, &["pickup date", "scheduled pickup", "pickup scheduled", "ship date"]);
+    p.eta = day_after_label(&lines, &["estimated delivery", "est. delivery", "est delivery", "eta", "expected delivery", "delivery date"]);
 
     // Where the update happened: "City, ST" after City:, when the email fills it in.
     let city_re = Regex::new(r"^[A-Za-z][A-Za-z .'-]*,\s*[A-Z]{2}\b").unwrap();
@@ -432,15 +467,158 @@ pub fn ingest(email: &ParsedEmail) -> bool {
     }
 }
 
-/// Merge one parsed update into the store. Split from `ingest` so tests and the mailbox
-/// backfill share it.
+/// Merge one parsed update into the store, then let it move the deal's dates (R-279). Split
+/// from `ingest` so tests and the mailbox backfill share it.
 pub fn apply(p: &Parsed, message_id: Option<&str>, email_date: Option<&str>) -> Result<String, String> {
+    let id = apply_inner(p, message_id, email_date)?;
+    sync_deal_dates(&id);
+    Ok(id)
+}
+
+/// The deal's pickup and delivery dates according to Priority1's timeline, as YYYY-MM-DD in
+/// Central time. `None` means Priority1 has not said, and the deal keeps what it has.
+///   pickup   — the day it was picked up; else a pickup date an email stated; else the first
+///              day it was moving. A delivery alone never invents a pickup date.
+///   delivery — the day it was delivered; else the latest estimated delivery an email stated.
+pub fn deal_dates(events: &[Value]) -> (Option<String>, Option<String>) {
+    let mut ev: Vec<&Value> = events.iter().collect();
+    ev.sort_by(|a, b| a.get("at").and_then(|v| v.as_str()).unwrap_or("").cmp(b.get("at").and_then(|v| v.as_str()).unwrap_or("")));
+    let s = |e: &Value, k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let stage = |e: &Value| { let st = s(e, "stage"); if st.is_empty() { stage_of(&s(e, "status")).to_string() } else { st } };
+    let day = |e: &Value| chrono::DateTime::parse_from_rfc3339(&s(e, "at")).ok()
+        .map(|d| d.with_timezone(&chrono_tz::America::Chicago).format("%Y-%m-%d").to_string());
+    let picked = ev.iter().filter(|e| stage(e) == "picked_up").find_map(|e| day(e));
+    let stated_pickup = ev.iter().rev().map(|e| s(e, "pickup_date")).find(|d| !d.is_empty());
+    let moving = ev.iter().filter(|e| matches!(stage(e).as_str(), "in_transit" | "out_for_delivery")).find_map(|e| day(e));
+    let delivered = ev.iter().rev().filter(|e| stage(e) == "delivered").find_map(|e| day(e));
+    let eta = ev.iter().rev().map(|e| s(e, "eta")).find(|d| !d.is_empty());
+    (picked.or(stated_pickup).or(moving), delivered.or(eta))
+}
+
+/// The deal's own dates, captured the first time Priority1 is about to move them, so a
+/// shipment taken off the deal can hand them back ("unless I do not have a BOL, show what I
+/// had"). `shipments.deal_dates_before` (migration 96): {"deal", "pickup", "delivery", "direct"}.
+fn stash_deal_dates(shipment_id: &str, deal: &str) {
+    let Ok(conn) = pool().get() else { return };
+    let before: String = conn.query_row("SELECT COALESCE(deal_dates_before,'') FROM shipments WHERE id=?1", [shipment_id], |r| r.get(0)).unwrap_or_default();
+    if serde_json::from_str::<Value>(&before).ok().and_then(|v| v.get("deal").and_then(|d| d.as_str()).map(|d| d == deal)).unwrap_or(false) {
+        return; // already holding this deal's own dates
+    }
+    let Ok((pickup, delivery, direct)) = conn.query_row(
+        "SELECT pickup_date, expected_delivery_date, COALESCE(ships_direct,0) FROM deal_flows WHERE id=?1", [deal],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?)),
+    ) else { return };
+    let stash = json!({"deal": deal, "pickup": pickup, "delivery": delivery, "direct": direct}).to_string();
+    let mut cols = Map::new();
+    cols.insert("deal_dates_before".into(), Value::String(stash));
+    if let Err(e) = write_cols(&conn, shipment_id, &cols, false) {
+        tracing::warn!("priority1: could not remember deal {}'s dates: {}", deal, e);
+    }
+}
+
+/// A shipment left `old_deal` (detached, or moved to another deal): if Priority1 had been
+/// setting that deal's dates and no other Priority1 shipment with a BOL is still on it, put
+/// back the dates it had before.
+fn restore_deal_dates(shipment_id: &str, old_deal: &str) {
+    if old_deal.is_empty() { return; }
+    let Ok(conn) = pool().get() else { return };
+    let before: String = conn.query_row("SELECT COALESCE(deal_dates_before,'') FROM shipments WHERE id=?1", [shipment_id], |r| r.get(0)).unwrap_or_default();
+    let Some(v) = serde_json::from_str::<Value>(&before).ok() else { return };
+    if v.get("deal").and_then(|d| d.as_str()) != Some(old_deal) { return; }
+    let still_tracked: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM shipments WHERE deal_flow_id=?1 AND id<>?2 AND COALESCE(bol,'')<>''", [old_deal, shipment_id], |r| r.get(0),
+    ).unwrap_or(0);
+    if still_tracked == 0 {
+        let day = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|x| x.to_string());
+        let direct = v.get("direct").and_then(|x| x.as_i64()).unwrap_or(0) != 0;
+        match crate::commands::restore_shipping_dates(old_deal, day("pickup"), day("delivery"), direct) {
+            Ok(_) => tracing::info!("priority1: deal {} got its own dates back", old_deal),
+            Err(e) => { tracing::warn!("priority1: could not restore deal {}'s dates: {}", old_deal, e); return; }
+        }
+    }
+    let mut cols = Map::new();
+    cols.insert("deal_dates_before".into(), Value::String(String::new()));
+    let _ = write_cols(&conn, shipment_id, &cols, false);
+}
+
+/// Push Priority1's dates onto the deal a shipment is attached to — only when the shipment
+/// has a BOL. Called after every email and every attach, so the order they happen in never
+/// matters. Best-effort: a failure is logged and the shipment itself is already saved.
+pub fn sync_deal_dates(shipment_id: &str) {
+    let row = pool().get().ok().and_then(|conn| {
+        conn.query_row(&format!("SELECT {COLS} FROM shipments WHERE id=?1"), [shipment_id], map_row).ok()
+    });
+    let Some(s) = row else { return };
+    if s.deal_flow_id.is_empty() || s.bol.trim().is_empty() {
+        return;
+    }
+    let events: Vec<Value> = serde_json::from_str(&s.events_json).unwrap_or_default();
+    let (pickup, delivery) = deal_dates(&events);
+    if pickup.is_none() && delivery.is_none() {
+        return;
+    }
+    stash_deal_dates(&s.id, &s.deal_flow_id);
+    match crate::commands::apply_shipping_dates(&s.deal_flow_id, pickup, delivery) {
+        Ok(true) => tracing::info!("priority1: shipment {} moved deal {}'s dates", s.id, s.deal_flow_id),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("priority1: could not set deal {}'s dates: {}", s.deal_flow_id, e),
+    }
+}
+
+/// Look through the monitored mailboxes for Priority1 mail mentioning `reference` and record
+/// it, so a BOL typed on a deal after the email was already read — even mail that arrived
+/// before this app ever watched the inbox — still brings its updates with it.
+async fn backfill_ref(reference: &str) {
+    if !valid_ref(reference) {
+        return;
+    }
+    let since = (Utc::now() - chrono::Duration::days(120)).format("%d-%b-%Y").to_string();
+    let query = format!("FROM \"priority1.com\" TEXT \"{reference}\" SINCE {since}");
+    // Every mailbox at once, each capped at 15 s, so one that does not answer cannot hold up
+    // the paste on the deal.
+    let searches = crate::email::load_inboxes().into_iter().filter(|i| !i.demo).map(|ib| {
+        let q = query.clone();
+        async move {
+            match tokio::time::timeout(std::time::Duration::from_secs(15), crate::email::search_inbox(&ib.id, q, 50, u32::MAX)).await {
+                Ok(Ok(mails)) => mails,
+                Ok(Err(e)) => { tracing::warn!("priority1: could not search {}: {}", ib.label, e); Vec::new() }
+                Err(_) => { tracing::warn!("priority1: searching {} timed out", ib.label); Vec::new() }
+            }
+        }
+    });
+    let mut mails: Vec<ParsedEmail> = futures::future::join_all(searches).await.into_iter().flatten().collect();
+    mails.sort_by(|a, b| a.date.cmp(&b.date));
+    record_priority1_mail(&mails);
+}
+
+/// Record every Priority1 update in `mails` (oldest first). The half of the mailbox backfill
+/// that does not need a mailbox, so it is testable.
+fn record_priority1_mail(mails: &[ParsedEmail]) -> usize {
+    let mut n = 0;
+    for m in mails.iter().filter(|m| is_priority1_sender(&m.from)) {
+        if let Some(p) = parse(&m.subject, &m.body_text, m.body_html.as_deref()) {
+            match apply(&p, m.message_id.as_deref(), m.date.as_deref()) {
+                Ok(_) => n += 1,
+                Err(e) => tracing::warn!("priority1: could not record '{}': {}", m.subject, e),
+            }
+        }
+    }
+    n
+}
+
+/// A reference as Priority1 writes one: 3–40 letters, digits and dashes, with a digit in it.
+/// Also what makes it safe to put inside an IMAP search.
+fn valid_ref(r: &str) -> bool {
+    (3..=40).contains(&r.len()) && r.chars().any(|c| c.is_ascii_digit()) && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+fn apply_inner(p: &Parsed, message_id: Option<&str>, email_date: Option<&str>) -> Result<String, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let at = if !p.update_at.is_empty() { p.update_at.clone() } else { email_date.unwrap_or(&now).to_string() };
     let event = json!({
         "at": at, "status": p.status, "stage": p.stage, "location": p.location, "note": p.note,
-        "message_id": message_id.unwrap_or(""),
+        "message_id": message_id.unwrap_or(""), "pickup_date": p.pickup_date, "eta": p.eta,
     });
     let existing = find_for_update(&conn, p);
     let refs_json = serde_json::to_string(&p.refs.iter().map(|(l, v)| json!({"label": l, "value": v})).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
@@ -527,11 +705,18 @@ pub async fn list_shipments() -> Result<Vec<Shipment>, String> {
 #[tauri::command]
 pub async fn link_shipment(id: String, deal_flow_id: String) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    let old_deal: String = conn.query_row("SELECT COALESCE(deal_flow_id,'') FROM shipments WHERE id=?1", [&id], |r| r.get(0)).unwrap_or_default();
     let mut cols = Map::new();
-    cols.insert("deal_flow_id".into(), Value::String(deal_flow_id));
+    cols.insert("deal_flow_id".into(), Value::String(deal_flow_id.clone()));
     cols.insert("dismissed".into(), json!(0));
     cols.insert("updated_at".into(), Value::String(Utc::now().to_rfc3339()));
-    write_cols(&conn, &id, &cols, false)
+    write_cols(&conn, &id, &cols, false)?;
+    drop(conn);
+    if old_deal != deal_flow_id {
+        restore_deal_dates(&id, &old_deal);
+    }
+    sync_deal_dates(&id);
+    Ok(())
 }
 
 /// Paste a BOL / PRO / pickup number on a deal. Attaches the shipment if Priority1 has
@@ -539,18 +724,27 @@ pub async fn link_shipment(id: String, deal_flow_id: String) -> Result<(), Strin
 #[tauri::command]
 pub async fn link_shipment_ref(deal_flow_id: String, reference: String) -> Result<Shipment, String> {
     let r = reference.trim().to_string();
-    if r.len() < 3 || !r.chars().any(|c| c.is_ascii_digit()) {
+    if !valid_ref(&r) {
         return Err("Paste the BOL, PRO or pickup number from Priority1.".into());
+    }
+    // Not seen yet? The email may already be sitting in the inbox (read or not, from before
+    // Ecliptr watched it): look for it before recording the number as a wait.
+    let known = pool().get().ok().map(|conn| find_by_any_ref(&conn, &r).is_some()).unwrap_or(false);
+    if !known {
+        backfill_ref(&r).await;
     }
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let id = match find_by_any_ref(&conn, &r) {
         Some(s) => {
             let mut cols = Map::new();
-            cols.insert("deal_flow_id".into(), Value::String(deal_flow_id));
+            cols.insert("deal_flow_id".into(), Value::String(deal_flow_id.clone()));
             cols.insert("dismissed".into(), json!(0));
             cols.insert("updated_at".into(), Value::String(now));
             write_cols(&conn, &s.id, &cols, false)?;
+            if !s.deal_flow_id.is_empty() && s.deal_flow_id != deal_flow_id {
+                restore_deal_dates(&s.id, &s.deal_flow_id);
+            }
             s.id
         }
         None => {
@@ -568,6 +762,7 @@ pub async fn link_shipment_ref(deal_flow_id: String, reference: String) -> Resul
             id
         }
     };
+    sync_deal_dates(&id);
     let sql = format!("SELECT {COLS} FROM shipments WHERE id=?1");
     conn.query_row(&sql, [&id], map_row).map_err(|e| e.to_string())
 }
@@ -674,7 +869,7 @@ pub async fn scan_priority1_mail(days: i64) -> Result<Priority1Scan, String> {
     let mut result = Priority1Scan { emails: 0, shipments: 0, errors: vec![] };
     let mut touched = std::collections::HashSet::new();
     for ib in crate::email::load_inboxes().into_iter().filter(|i| !i.demo) {
-        match crate::email::search_inbox(&ib.id, query.clone(), 300).await {
+        match crate::email::search_inbox(&ib.id, query.clone(), 300, u32::MAX).await {
             Ok(mut mails) => {
                 mails.sort_by(|a, b| a.date.cmp(&b.date));
                 for m in mails {
@@ -759,6 +954,107 @@ mod tests {
         assert!(parse("Your Priority1 rate confirmation", text, None).is_none());
         // The same content with a tracking subject is one.
         assert!(parse("Tracking update for shipment 70220011223", text, None).is_some());
+    }
+
+    #[test]
+    fn a_stated_pickup_and_eta_are_read_from_a_flattened_table_row() {
+        let text = "Update on Shipment #60115779865\nStatus:\nBooked\nPickup Date:\nEstimated Delivery:\n9/9/2026\n9/15/2026\nBOL: 60115779865";
+        let p = parse("Shipment 60115779865 booked", text, None).expect("parsed");
+        assert_eq!(p.pickup_date, "2026-09-09");
+        assert_eq!(p.eta, "2026-09-15");
+        let inline = "Shipment #70220011223\nStatus: In transit\nETA: 2026-09-18\nBOL: 70220011223";
+        assert_eq!(parse("Tracking update for shipment 70220011223", inline, None).unwrap().eta, "2026-09-18");
+    }
+
+    #[test]
+    fn stated_dates_pair_with_their_own_label_when_other_labels_share_the_row() {
+        let text = "Shipment #60115779865\nCarrier:\nStatus:\nPickup Date:\nEstimated Delivery:\nEDI Express (EDXI)\nBooked\n9/9/2026\n9/15/2026\nBOL: 60115779865";
+        let p = parse("Shipment 60115779865 booked", text, None).expect("parsed");
+        assert_eq!((p.pickup_date.as_str(), p.eta.as_str()), ("2026-09-09", "2026-09-15"));
+        // A label whose own cell is not a date gets nothing, never its neighbour's date.
+        let missing = "Shipment #60115779865\nStatus:\nPickup Date:\nEstimated Delivery:\nBooked\nTBD\n9/15/2026\nBOL: 60115779865";
+        let q = parse("Shipment 60115779865 booked", missing, None).expect("parsed");
+        assert_eq!((q.pickup_date.as_str(), q.eta.as_str()), ("", "2026-09-15"));
+    }
+
+    #[test]
+    fn deal_dates_follow_the_timeline_not_the_order_emails_arrived() {
+        let e = |at: &str, stage: &str, pickup: &str, eta: &str| json!({"at": at, "status": "", "stage": stage, "pickup_date": pickup, "eta": eta});
+        // Booked with a stated pickup and ETA only.
+        assert_eq!(deal_dates(&[e("2026-09-08T15:00:00Z", "booked", "2026-09-09", "2026-09-15")]),
+            (Some("2026-09-09".into()), Some("2026-09-15".into())));
+        // Delivered arrives before the in-transit email (backfill order): same answer as time order.
+        let late_first = [e("2026-09-12T19:00:00Z", "delivered", "", ""), e("2026-09-10T05:00:00Z", "in_transit", "", "")];
+        assert_eq!(deal_dates(&late_first), (Some("2026-09-10".into()), Some("2026-09-12".into())));
+        // An actual pickup beats a stated one; a delivered day beats an ETA.
+        let full = [e("2026-09-08T15:00:00Z", "booked", "2026-09-09", "2026-09-15"), e("2026-09-10T14:00:00Z", "picked_up", "", ""), e("2026-09-13T20:00:00Z", "delivered", "", "")];
+        assert_eq!(deal_dates(&full), (Some("2026-09-10".into()), Some("2026-09-13".into())));
+        // A delivery alone never invents a pickup date; nothing at all changes nothing.
+        assert_eq!(deal_dates(&[e("2026-09-13T20:00:00Z", "delivered", "", "")]), (None, Some("2026-09-13".into())));
+        assert_eq!(deal_dates(&[]), (None, None));
+    }
+
+    /// Jack's order, end to end against a real database: Priority1 emails first (read in
+    /// Gmail, nothing on the deal), the BOL typed on the deal afterwards, then a later email.
+    #[tokio::test]
+    async fn an_email_read_before_the_bol_is_typed_still_moves_the_deal() {
+        crate::db::init_test_store();
+        {
+            let conn = pool().get().unwrap();
+            conn.execute("INSERT INTO clients (id, name, created_at, updated_at) VALUES ('c-r279', 'Acme', '2026-09-01', '2026-09-01')", []).unwrap();
+            conn.execute("INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+                           VALUES ('inv-r279', 'c-r279', 'INV-R279', '2026-09-01', '2026-09-30', '[]', 1000, 1000, '2026-09-01')", []).unwrap();
+            conn.execute("INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, pickup_date, expected_delivery_date)
+                           VALUES ('df-r279', 'inv-r279', 'invoiced', '2026-09-01', '2026-09-01', '2026-09-20', '2026-09-25')", []).unwrap();
+            // The same deal's twin with no BOL ever typed keeps its dates throughout.
+            conn.execute("INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+                           VALUES ('inv-r279b', 'c-r279', 'INV-R279B', '2026-09-01', '2026-09-30', '[]', 1000, 1000, '2026-09-01')", []).unwrap();
+            conn.execute("INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, pickup_date, expected_delivery_date)
+                           VALUES ('df-r279b', 'inv-r279b', 'invoiced', '2026-09-01', '2026-09-01', '2026-09-21', '2026-09-26')", []).unwrap();
+        }
+        let dates = |id: &str| -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+            pool().get().unwrap().query_row(
+                "SELECT pickup_date, expected_delivery_date, pickup_date_prev, expected_delivery_date_prev FROM deal_flows WHERE id=?1",
+                [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap()
+        };
+        let s = |v: &str| Some(v.to_string());
+
+        // 1. Two Priority1 emails land before anything is typed on the deal.
+        let picked = "Update on Shipment #60115779865 for BJM Distributions\nCarrier: EDI Express (EDXI)\nStatus: Picked up\nBOL: 60115779865\nPRO: 687651776\nUpdate Date: 9/9/2026 2:00 PM";
+        apply(&parse("Tracking Update for Shipment 60115779865", picked, None).unwrap(), Some("<p1-a@priority1.com>"), None).unwrap();
+        apply(&parse("Tracking Update for Shipment 60115779865", "", Some(HTML)).unwrap(), Some("<p1-b@priority1.com>"), None).unwrap();
+        assert_eq!(dates("df-r279"), (s("2026-09-20"), s("2026-09-25"), None, None), "no BOL on the deal yet: its dates stay");
+
+        // 2. Jack types the BOL on the deal afterwards.
+        let sh = link_shipment_ref("df-r279".into(), "60115779865".into()).await.unwrap();
+        assert_eq!(sh.deal_flow_id, "df-r279");
+        assert_eq!(dates("df-r279"), (s("2026-09-09"), s("2026-09-25"), s("2026-09-20"), None),
+            "the pickup Priority1 already reported is applied, and the typed date is kept as the previous one");
+
+        // 3. A later delivered email moves the delivery date too.
+        let delivered = "Update on Shipment #60115779865\nStatus: Delivered\nBOL: 60115779865\nUpdate Date: 9/12/2026 3:30 PM";
+        apply(&parse("Delivered: shipment 60115779865", delivered, None).unwrap(), Some("<p1-c@priority1.com>"), None).unwrap();
+        assert_eq!(dates("df-r279"), (s("2026-09-09"), s("2026-09-12"), s("2026-09-20"), s("2026-09-25")));
+
+        // 4. The deal with no BOL was never touched.
+        assert_eq!(dates("df-r279b"), (s("2026-09-21"), s("2026-09-26"), None, None));
+
+        // 5. Taking the shipment off the deal hands back the dates Jack had typed.
+        link_shipment(sh.id.clone(), String::new()).await.unwrap();
+        let (p, d, _, _) = dates("df-r279");
+        assert_eq!((p, d), (s("2026-09-20"), s("2026-09-25")), "no BOL on the deal any more: the typed dates come back");
+
+        // 6. Mail found by searching the inbox (the path for a BOL typed long after the email)
+        //    records the shipment, and typing the number then moves the deal.
+        let old_mail = crate::email::ParsedEmail {
+            uid: 9, message_id: Some("<p1-old@priority1.com>".into()), from: "tracking@priority1.com".into(), from_name: None,
+            to: vec![], subject: "Tracking Update for Shipment 70220011223".into(),
+            body_text: "Update on Shipment #70220011223\nCarrier: Estes Express (EXLA)\nStatus: Picked up\nBOL: 70220011223\nUpdate Date: 8/28/2026 9:00 AM".into(),
+            body_html: None, date: Some("2026-08-28T14:00:00+00:00".into()), has_attachments: false, source: "ben".into(),
+        };
+        assert_eq!(record_priority1_mail(&[old_mail]), 1);
+        link_shipment_ref("df-r279b".into(), "70220011223".into()).await.unwrap();
+        assert_eq!(dates("df-r279b").0, s("2026-08-28"));
     }
 
     #[test]

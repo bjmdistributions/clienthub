@@ -35,18 +35,38 @@ export default function EmailView() {
     refreshDraftCount();
   }, []);
 
-  const scan = async () => {
+  // R-278: the Inbox reads what every scan recorded — the background watcher included — so
+  // it is never empty just because the watcher got to the mail before this button did.
+  const refresh = async () => {
     setScanning(true);
     setError(null);
     try {
-      const list = await api.scanInbox();
-      setEmails(list);
+      setEmails(await api.refreshInbox(7));
     } catch (e: any) {
       setError(e.toString());
     } finally {
       setScanning(false);
     }
   };
+
+  const inboxLoaded = useRef(false);
+  useEffect(() => {
+    if (mode !== "inbox") return;
+    let live = true;
+    api.listInboxMessages().then((list) => {
+      if (!live) return;
+      setEmails(list);
+      // First visit on this device: nothing recorded yet, so read the last week once.
+      if (list.length === 0 && !inboxLoaded.current) refresh();
+      inboxLoaded.current = true;
+    }).catch(() => {});
+    // Unsubscribe through the promise itself: leaving the tab before `listen` resolves must
+    // still remove the listener.
+    const sub = listen("inbox-updated", () => { api.listInboxMessages().then((l) => { if (live) setEmails(l); }).catch(() => {}); });
+    return () => { live = false; sub.then((u) => u()).catch(() => {}); };
+  }, [mode]);
+
+  const emailKey = (e: ParsedEmail) => e.message_id || `${e.source}:${e.uid}`;
 
   return (
     <div>
@@ -86,15 +106,15 @@ export default function EmailView() {
         <div>
           <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
             <p className="text-[13px] text-muted">
-              Pulls unread emails since the last scan, parses them, and matches against known clients.
+              Recent mail from your connected inboxes. New mail appears on its own while the app is open.
             </p>
             <button
-              onClick={scan}
+              onClick={refresh}
               disabled={scanning}
               className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50 transition-colors"
             >
               <RefreshCw size={14} className={scanning ? "animate-spin" : ""} />
-              {scanning ? "Scanning…" : "Scan inbox"}
+              {scanning ? "Checking…" : "Refresh"}
             </button>
           </div>
 
@@ -114,10 +134,10 @@ export default function EmailView() {
               <div className="max-h-[600px] overflow-auto">
                 {emails.map((e) => (
                   <button
-                    key={`${e.source}:${e.uid}`}
+                    key={emailKey(e)}
                     onClick={() => setSelected(e)}
                     className={`w-full text-left px-4 py-3.5 border-b border-line transition-colors ${
-                      selected?.uid === e.uid && selected?.source === e.source ? "bg-accent/10" : "hover:bg-surface-2"
+                      selected && emailKey(selected) === emailKey(e) ? "bg-accent/10" : "hover:bg-surface-2"
                     }`}
                   >
                     <div className="font-medium text-[13px] text-ink truncate flex items-center gap-1.5">
@@ -135,7 +155,7 @@ export default function EmailView() {
                     <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
                       <Inbox size={18} />
                     </div>
-                    <div className="text-[13px] text-muted">No emails yet — connect an inbox in Settings, then scan.</div>
+                    <div className="text-[13px] text-muted">No mail in the last week. Check that an inbox is connected in Settings, then refresh.</div>
                   </div>
                 )}
               </div>
@@ -144,7 +164,7 @@ export default function EmailView() {
             {/* Email detail */}
             <div className="bg-surface border border-line rounded-lg p-5 min-w-0">
               {selected ? (
-                <EmailDetail email={selected} />
+                <EmailDetail key={emailKey(selected)} email={selected} onDraftsChanged={refreshDraftCount} />
               ) : (
                 <div className="h-full flex items-center justify-center text-[14px] text-muted">
                   Select an email to view.
@@ -163,8 +183,22 @@ export default function EmailView() {
   );
 }
 
-function EmailDetail({ email }: { email: ParsedEmail }) {
+function EmailDetail({ email, onDraftsChanged }: { email: ParsedEmail; onDraftsChanged: () => void }) {
   const [draft, setDraft] = useState("");
+  const [replying, setReplying] = useState(false);
+  const [draftId, setDraftId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const replySubject = email.subject.startsWith("Re:") ? email.subject : `Re: ${email.subject}`;
+  // Coming back to a message picks up the reply already saved for it.
+  useEffect(() => {
+    if (!email.message_id) return;
+    let live = true;
+    api.listDrafts("pending").then((list) => {
+      const d = list.find((x) => x.in_reply_to_message_id === email.message_id);
+      if (live && d) { setDraftId(d.id); setDraft(d.body); setReplying(true); }
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [email.message_id]);
   const [extracted, setExtracted] = useState<any>(null);
   const [loading, setLoading] = useState<"draft" | "extract" | null>(null);
   const [sending, setSending] = useState(false);
@@ -173,13 +207,32 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
   const [replyFrom, setReplyFrom] = useState<string | undefined>(undefined);
   const fromOptions = useSendFromOptions();
 
+  // R-278: a reply is a real draft from the moment it exists, so leaving the message keeps it
+  // in the Drafts tab (nothing used to write that table at all).
+  const persistDraft = async (body: string): Promise<string | null> => {
+    const d = await api.saveDraft(draftId, email.from, replySubject, body, email.message_id);
+    setDraftId(d.id);
+    onDraftsChanged();
+    return d.id;
+  };
+
   const handleDraft = async () => {
     setLoading("draft");
     try {
       const reply = await api.aiDraftReply(email.body_text, undefined, tone);
       setDraft(reply);
+      setReplying(true);
+      await persistDraft(reply);
     } catch (e: any) { toast(String(e), "error"); }
     finally { setLoading(null); }
+  };
+
+  const handleSaveDraft = async () => {
+    if (!draft.trim()) return;
+    setSaving(true);
+    try { await persistDraft(draft); toast("Saved to Drafts"); }
+    catch (e: any) { toast(String(e), "error"); }
+    finally { setSaving(false); }
   };
 
   const handleExtract = async () => {
@@ -194,14 +247,16 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
     if (!draft.trim()) return;
     setSending(true);
     try {
-      await api.sendEmail(
-        email.from,
-        email.subject.startsWith("Re:") ? email.subject : `Re: ${email.subject}`,
-        draft,
-        undefined,
-        replyFrom
-      );
+      // Through the draft, so the saved copy leaves Drafts and the reply is threaded.
+      const id = await persistDraft(draft);
+      if (id) await api.sendDraft(id, replyFrom);
+      else await api.sendEmail(email.from, replySubject, draft, undefined, replyFrom, email.message_id);
+      setDraftId(null);
+      setDraft("");
+      setReplying(false);
+      onDraftsChanged();
       setSent(true);
+      toast("Reply sent");
       setTimeout(() => setSent(false), 2000);
     } catch (e: any) { toast(String(e), "error"); }
     finally { setSending(false); }
@@ -245,12 +300,19 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
           <option value="casual">Casual</option>
         </select>
         <button
+          onClick={() => setReplying(true)}
+          disabled={replying}
+          className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 disabled:opacity-50"
+        >
+          <Send size={12} /> Reply
+        </button>
+        <button
           onClick={handleDraft}
           disabled={loading !== null}
           className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 disabled:opacity-50"
         >
           {loading === "draft" ? <RefreshCw size={12} className="animate-spin" /> : <Sparkles size={12} />}
-          Draft Reply
+          Draft reply
         </button>
         <button
           onClick={handleExtract}
@@ -261,10 +323,10 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
         </button>
       </div>
 
-      {/* Draft reply */}
-      {draft && (
+      {/* Reply */}
+      {(replying || draft) && (
         <div className="mb-4">
-          <label className="block text-[12px] font-medium text-ink-2 mb-1">Draft reply</label>
+          <label className="block text-[12px] font-medium text-ink-2 mb-1">Reply to {email.from}</label>
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -274,11 +336,18 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
           <div className="flex items-center gap-3 mt-2">
             <button
               onClick={handleSend}
-              disabled={sending}
-              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5"
+              disabled={sending || !draft.trim()}
+              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 disabled:opacity-50"
             >
               <Send size={12} />
               {sending ? "Sending…" : sent ? "Sent" : "Send reply"}
+            </button>
+            <button
+              onClick={handleSaveDraft}
+              disabled={saving || !draft.trim()}
+              className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-md text-[14px] disabled:opacity-50"
+            >
+              {saving ? "Saving…" : draftId ? "Save changes" : "Save to Drafts"}
             </button>
             <FromPicker options={fromOptions} value={replyFrom} onChange={setReplyFrom} />
           </div>
@@ -605,6 +674,9 @@ function NewsletterTab() {
   }, []);
 
   const activeScheduled = scheduledSends.filter((s) => s.status === "pending" || s.status === "running");
+  // A send the server refused (R-278: an attachment it could not include) must be seen, not
+  // just drop out of the list above. Last seven days.
+  const failedScheduled = scheduledSends.filter((s) => s.status === "failed" && Date.now() - new Date(s.created_at).getTime() < 7 * 86_400_000);
   const sendingNow = templates.filter((t) => t.status === "sending");
   const hasSendingNewsletter = sendingNow.length > 0;
   // Keep the history live while a send is in progress, even if the composer is closed.
@@ -1346,6 +1418,19 @@ function NewsletterTab() {
                     <button onClick={() => handleCancelScheduled(job.id)}
                       className="text-[11px] text-danger-ink hover:text-danger-ink font-medium">Cancel</button>
                   </div>
+                  {job.error && <div className="text-[11px] text-warning-ink mt-1">{job.error}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {failedScheduled.length > 0 && (
+            <div className="mt-3 border border-danger rounded-md p-3 bg-danger-bg space-y-2">
+              <span className="text-[12px] font-medium text-danger-ink">Scheduled sends that did not go out</span>
+              {failedScheduled.map((job) => (
+                <div key={job.id} className="bg-surface rounded-md p-2 border border-line">
+                  <div className="text-[12px] font-medium text-ink truncate">{job.subject || "Untitled"}</div>
+                  <div className="text-[11px] text-danger-ink mt-0.5">{job.error || "The server could not send this."}</div>
                 </div>
               ))}
             </div>

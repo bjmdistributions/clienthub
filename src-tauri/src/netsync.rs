@@ -1865,6 +1865,38 @@ pub async fn server_has_lot_artifact(sheet_id: &str) -> bool {
     }
 }
 
+/// Upload a scheduled newsletter's attachment (R-278). The server delivers scheduled sends
+/// and cannot read a path on this computer, so the file goes up when the send is scheduled
+/// and the returned `server:<dir>/<file>` reference is what the send row stores.
+pub async fn upload_newsletter_attachment(local: &std::path::Path) -> Result<String, String> {
+    let cfg = config().ok_or("Sign in to the Ecliptr server to schedule a send with an attachment.")?;
+    let name = local.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("The attachment has no file name.")?;
+    let bytes = std::fs::read(local).map_err(|e| format!("Could not read the attachment: {e}"))?;
+    if bytes.is_empty() {
+        return Err("The attachment is empty.".into());
+    }
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err("Attachments over 20 MB cannot be emailed.".into());
+    }
+    let mut url = reqwest::Url::parse(&format!("{}/api/newsletters/attachments/", cfg.url.trim_end_matches('/')))
+        .map_err(|e| e.to_string())?;
+    url.path_segments_mut().map_err(|_| "The server address is not valid.".to_string())?.pop_if_empty().push(&name);
+    // The shared client's 30 s limit is too short for a large file on a slow line.
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(180)).build().unwrap_or_default();
+    let resp = client.post(url).bearer_auth(&cfg.token)
+        .header("content-type", "application/octet-stream")
+        .body(bytes)
+        .send().await
+        .map_err(|_| "Couldn't reach the server to upload the attachment.".to_string())?;
+    let status = resp.status();
+    let v: serde_json::Value = resp.json().await.map_err(|_| format!("The server did not accept the attachment ({status})."))?;
+    if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
+        return Err(e.to_string());
+    }
+    v.get("ref").and_then(|r| r.as_str()).map(|s| s.to_string())
+        .ok_or_else(|| format!("The server did not accept the attachment ({status})."))
+}
+
 /// Send this device's cleaned stacks for a sheet to the server.
 pub async fn upload_lot_artifact(sheet_id: &str, local: &std::path::Path) -> Result<(), String> {
     let cfg = config().ok_or("not signed in")?;

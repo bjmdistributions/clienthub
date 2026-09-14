@@ -13,7 +13,7 @@ import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import StatusPill from "./StatusPill";
-import { FreightChip, FreightPanel, UnlinkedShipments } from "./FreightTracking";
+import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges } from "./FreightTracking";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -182,6 +182,8 @@ export default function DealFlowView() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  // R-279: a Priority1 update can move a deal's pickup or delivery date.
+  useShipmentChanges(load);
 
   // Self-heal: re-point payments stranded on duplicate deal_flow rows, then archive
   // the duplicate/orphan rows themselves so no aggregate counts them. Idempotent.
@@ -420,7 +422,7 @@ export default function DealFlowView() {
       </div>
 
       {/* Priority1 shipments that arrived by email and are not on a deal yet (R-277) */}
-      <UnlinkedShipments />
+      <UnlinkedShipments onChange={load} />
 
       {/* ── Waiting on pickup or delivery (R-154) ───────────────────────── */}
       {(lane.length > 0 || noAnswer > 0) && (
@@ -976,7 +978,7 @@ function DealFlowCard({
                   so it sits above the switcher and is always on screen once the
                   card is open rather than buried inside a step. */}
               <ShippingStrip flow={flow} onReload={onReload} locked={locked} />
-              <FreightPanel dealFlowId={flow.id} locked={locked} />
+              <FreightPanel dealFlowId={flow.id} locked={locked} onReload={onReload} />
 
               {/* Section switcher — always visible, click any step */}
               <div className="border-t border-line">
