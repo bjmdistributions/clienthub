@@ -1039,6 +1039,7 @@ fn main() {
             clear_bank_txns,
             dedupe_bank_txns,
             list_takeover_suggestions,
+            list_bank_txns_by_ids,
             take_over_booking,
             delete_bank_txns,
             undo_bank_account_merge,

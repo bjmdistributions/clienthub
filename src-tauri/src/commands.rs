@@ -12906,7 +12906,23 @@ pub async fn bank_import_ai(path: String, account_id: String) -> Result<Value, S
 #[tauri::command]
 pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
+    bank_txn_list_rows(&conn, "1=1", "")
+}
+
+/// R-288: the same rows as `list_bank_txns`, for just these ids — so a click that touched one
+/// row re-reads one row, not the whole ledger (1.6 MB of JSON at 2,537 rows, measured). An id
+/// that no longer exists is simply absent from the result, which is how the screen learns it
+/// was removed.
+#[tauri::command]
+pub async fn list_bank_txns_by_ids(ids: Vec<String>) -> Result<Vec<Value>, String> {
+    if ids.is_empty() { return Ok(Vec::new()); }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let js = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
+    bank_txn_list_rows(&conn, "bt.id IN (SELECT value FROM json_each(?1))", &js)
+}
+
+fn bank_txn_list_rows(conn: &rusqlite::Connection, where_sql: &str, param: &str) -> Result<Vec<Value>, String> {
+    let sql = format!(
         "SELECT bt.id, bt.posted_at, bt.amount, bt.direction, bt.description, bt.rail, bt.category,
                 bt.counterparty_name, bt.counterparty_type, bt.counterparty_id, bt.wire_ref, bt.reviewed, bt.account_id,
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated,
@@ -12931,9 +12947,11 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
                 -- retracted by the bank but kept because it holds booked work.
                 COALESCE(CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pnd') END, 0),
                 CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.rtr') END IS NOT NULL
-         FROM bank_txn bt ORDER BY bt.posted_at DESC, bt.created_at DESC",
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |r| {
+         FROM bank_txn bt WHERE {where_sql} ORDER BY bt.posted_at DESC, bt.created_at DESC",
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params: Vec<&dyn rusqlite::ToSql> = if param.is_empty() { Vec::new() } else { vec![&param] };
+    let rows = stmt.query_map(params.as_slice(), |r| {
         let amount: f64 = r.get(2)?;
         let allocated: f64 = r.get(13)?;
         Ok(json!({

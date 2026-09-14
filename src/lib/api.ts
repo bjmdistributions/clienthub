@@ -3235,6 +3235,7 @@ export const api = {
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
   clearBankTxns: (scope: "statements" | "plaid" | "all", force = false) =>
     invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
+  listBankTxnsByIds: (ids: string[]) => invoke<BankTxn[]>("list_bank_txns_by_ids", { ids }),
   listTakeoverSuggestions: () => invoke<TakeoverSuggestion[]>("list_takeover_suggestions"),
   takeOverBooking: (fromId: string, toId: string) =>
     invoke<{ moved: boolean; over_allocated: string[] }>("take_over_booking", { fromId, toId }),

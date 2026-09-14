@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
   Building2, RefreshCw, RotateCcw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle, Download,
@@ -243,6 +243,30 @@ type DealChoice = { deal: DealFlow; reason: string; candidate?: BankSuggestCandi
 
 // Below this gap between the top two candidates the answer is a toss-up.
 const AMBIGUOUS_GAP = 20;
+// R-288: long lists render in steps. The ledger drew every one of 2,537 rows at once, each with
+// two native selects (about 165,000 option nodes, measured); now it draws what is on screen
+// plus a margin, and the next step when the bottom comes near.
+const ROW_STEP = 80;
+function MoreRows({ onVisible, colSpan, remaining }: { onVisible: () => void; colSpan?: number; remaining: number }) {
+  const ref = useRef<HTMLDivElement & HTMLTableRowElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) onVisible(); }, { rootMargin: "800px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [onVisible]);
+  // The button is the same action by hand, for a window where the observer does not run.
+  const button = (
+    <button onClick={onVisible} className="text-[12px] font-medium text-accent hover:text-accent-hover">
+      Show {Math.min(ROW_STEP, remaining)} more of {remaining}
+    </button>
+  );
+  return colSpan
+    ? <tr ref={ref}><td colSpan={colSpan} className="py-3 text-center">{button}</td></tr>
+    : <div ref={ref} className="py-3 text-center">{button}</div>;
+}
+
 const CONFIDENT_SCORE = 60;
 
 // The offline matcher, used when the server is unreachable. Same shape as the
@@ -307,7 +331,8 @@ const localChoices = (t: BankTxn, pool: DealFlow[]): DealChoice[] => {
 const dealOffer = (
   t: BankTxn,
   pool: DealFlow[],
-  cands?: BankSuggestCandidate[]
+  cands?: BankSuggestCandidate[],
+  poolById?: Map<string, DealFlow>,
 ): { choices: DealChoice[]; more: number } | null => {
   // Loan-tagged rows aren't deals, and there is nothing to offer on money that
   // is fully spoken for.
@@ -318,7 +343,7 @@ const dealOffer = (
   // unpaid supplier legs can nominate itself twice).
   const byDeal = new Map<string, { c: BankSuggestCandidate; deal: DealFlow }>();
   for (const c of cands ?? []) {
-    const deal = pool.find((d) => d.id === c.deal_id);
+    const deal = poolById ? poolById.get(c.deal_id) : pool.find((d) => d.id === c.deal_id);
     if (!deal) continue;
     const cur = byDeal.get(c.deal_id);
     if (!cur || c.score > cur.c.score) byDeal.set(c.deal_id, { c, deal });
@@ -754,6 +779,9 @@ export default function FinancialsView() {
     const t = txns.find((x) => x.id === id);
     if (!t) return;
     pendingOpenRef.current = null;
+    const at = txns.indexOf(t) + ROW_STEP;
+    rowFloorRef.current = at;
+    setRowLimit((n) => Math.max(n, at));
     if (openId !== id) toggleRow(t);
     setTimeout(() => {
       document.querySelector(`[data-txn-id="${id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1000,6 +1028,40 @@ export default function FinancialsView() {
     }
   };
   refreshRef.current = refreshAll;
+
+  // R-288: after an action that touched a few rows, re-read THOSE rows instead of the
+  // whole ledger — a full refresh re-sends every transaction (1.6 MB at 2,537 rows,
+  // measured) plus a round trip to the server's suggestion engine, on every click. An id
+  // missing from the answer was removed (a take-over retires the old copy). Deals and
+  // loans come too when the action can change what they owe; both are small reads.
+  const refreshRows = async (ids: string[], opts: { loans?: boolean; keepOpen?: boolean } = {}) => {
+    const want = Array.from(new Set(ids.filter(Boolean)));
+    const [rows, s, d, ln] = await Promise.all([
+      api.listBankTxnsByIds(want), api.bankTxnSummary(), api.listDealFlows(),
+      opts.loans ? api.listLoans() : Promise.resolve(null),
+    ]);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const wanted = new Set(want);
+    setTxns((prev) => prev.filter((x) => !wanted.has(x.id) || byId.has(x.id)).map((x) => byId.get(x.id) ?? x));
+    setSummary(s); setDeals(d);
+    if (ln) setLoans(ln);
+    // A row that is now fully tied or booked has nothing left to suggest.
+    setServerSugg((prev) => {
+      const next = new Map(prev);
+      for (const id of want) {
+        const r = byId.get(id);
+        if (!r || r.reviewed || !(r.unallocated > 0.0001)) next.delete(id);
+      }
+      return next;
+    });
+    loadTakeovers();
+    if (opts.keepOpen !== false && openId) {
+      const a = await api.listBankAllocationsForTxn(openId);
+      setAllocs(a);
+      const nt = byId.get(openId) ?? txns.find((x) => x.id === openId);
+      setAmountStr(nt ? String(nt.unallocated) : "");
+    }
+  };
 
   // Screen-level refresh. Deliberately NOT gated on a Plaid link: on a device that
   // has never linked a bank itself, every other refresh control on this screen is
@@ -1538,7 +1600,7 @@ export default function FinancialsView() {
       try {
         await api.tagBankTxnToLoan(openId, selectedLoan.id);
         toast("Tagged to loan");
-        await refreshAll(true);
+        await refreshRows([openId], { loans: true });
       } catch (e: any) { toast(errText(e), "error"); }
       finally { setAllocBusy(false); }
       return;
@@ -1553,7 +1615,7 @@ export default function FinancialsView() {
       // In split mode keep the panel primed for the next leg; otherwise reset.
       setSelectedDeal(null); setDealQuery(""); setNote("");
       if (!allowSplit) setAmountStr("");
-      await refreshAll(true);
+      await refreshRows([openId]);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setAllocBusy(false); }
   };
@@ -1611,7 +1673,7 @@ export default function FinancialsView() {
       } else if (!fullyTied) {
         toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)} — ${fmtAmount(t.unallocated - amt)} still to file`);
       }
-      await refreshAll(true);
+      await refreshRows([t.id]);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setTyingId(null); }
   };
@@ -1653,7 +1715,7 @@ export default function FinancialsView() {
       setMissingLinks((prev) => prev
         .map((d) => ({ ...d, missing: d.missing.map((m) => ({ ...m, candidates: m.candidates.filter((c) => c.txn_id !== cand.txn_id) })) }))
         .filter((d) => d.missing.some((m) => m.candidates.length > 0)));
-      await refreshAll(true);
+      await refreshRows([cand.txn_id]);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setAttachBusy(null); }
   };
@@ -1663,7 +1725,7 @@ export default function FinancialsView() {
     try {
       await api.untagBankTxnLoan(bankTxnId);
       toast("Loan tag removed");
-      await refreshAll(true);
+      await refreshRows([bankTxnId], { loans: true });
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setAllocBusy(false); }
   };
@@ -1714,7 +1776,7 @@ export default function FinancialsView() {
     try {
       await api.removeBankAllocation(id);
       toast("Allocation removed");
-      await refreshAll(true);
+      if (openId) await refreshRows([openId]); else await refreshAll(true);
     } catch (e: any) { toast(errText(e), "error"); }
   };
 
@@ -1744,7 +1806,7 @@ export default function FinancialsView() {
     setBulkProgress("");
     setBulkActionBusy(false);
     clearSelection();
-    await refreshAll(true);
+    await refreshRows(ids);
     if (failed > 0) toast(`${failed} of ${ids.length} couldn't be updated${firstErr ? ` — ${firstErr}` : ""}`, "error");
   };
 
@@ -1834,8 +1896,7 @@ export default function FinancialsView() {
       const dealId = await api.createDealFlow(invoiceId, "Backfilled from bank import", dealName);
       await api.allocateBankTxn(t.id, dealId, t.unallocated, "buyer_payment", noteVal);
       toast("Deal created and receipt allocated");
-      setDeals(await api.listDealFlows());
-      await refreshAll(true);
+      await refreshRows([t.id]);
       return true;
     } catch (e: any) { toast(errText(e), "error"); return false; }
     finally { setNewDealBusy(false); }
@@ -1941,22 +2002,38 @@ export default function FinancialsView() {
     return true;
   }, [queue, acctFilter, catFilter, statusFilter, fromDate, toDate, passesMethod, passesPerson]);
 
+  // R-288: every keystroke in a search box ran five full passes over the ledger (18
+  // memo patterns per row in the method counts). The lists read a deferred copy, so
+  // typing stays instant and the filter catches up between keystrokes.
+  const qSearch = useDeferredValue(search);
+  const qSearchIn = useDeferredValue(searchIn);
+  const qSearchOut = useDeferredValue(searchOut);
+
+  const [rowLimit, setRowLimit] = useState(ROW_STEP);
+  const rowFloorRef = useRef(0); // a jump to a row deep in the ledger renders down to it
+  const showMoreRows = useCallback(() => setRowLimit((n) => n + ROW_STEP), []);
+  useEffect(() => {
+    setRowLimit(Math.max(ROW_STEP, rowFloorRef.current));
+    rowFloorRef.current = 0;
+  }, [tab, qSearch, qSearchIn, qSearchOut, dirFilter, acctFilter, catFilter, statusFilter, methodFilter,
+      personFilter, queue, fromDate, toDate, toBookAcct, toBookSearch, splitView]);
+
   const filtered = useMemo(
     () => txns.filter((t) =>
-      passesBase(t, !!search.trim()) &&
+      passesBase(t, !!qSearch.trim()) &&
       (dirFilter === "all" || t.direction === dirFilter) &&
-      matchesQuery(t, search)),
-    [txns, passesBase, dirFilter, search],
+      matchesQuery(t, qSearch)),
+    [txns, passesBase, dirFilter, qSearch],
   );
 
   // Split-view panes: forced direction + independent search per side.
   const filteredIn = useMemo(
-    () => txns.filter((t) => t.direction === "in" && passesBase(t, !!searchIn.trim()) && matchesQuery(t, searchIn)),
-    [txns, passesBase, searchIn],
+    () => txns.filter((t) => t.direction === "in" && passesBase(t, !!qSearchIn.trim()) && matchesQuery(t, qSearchIn)),
+    [txns, passesBase, qSearchIn],
   );
   const filteredOut = useMemo(
-    () => txns.filter((t) => t.direction === "out" && passesBase(t, !!searchOut.trim()) && matchesQuery(t, searchOut)),
-    [txns, passesBase, searchOut],
+    () => txns.filter((t) => t.direction === "out" && passesBase(t, !!qSearchOut.trim()) && matchesQuery(t, qSearchOut)),
+    [txns, passesBase, qSearchOut],
   );
 
   // The rows the ledger would show with ONE facet cleared — the same predicate the
@@ -1965,13 +2042,13 @@ export default function FinancialsView() {
   const scopeWithout = useCallback((skip: "method" | "person") => (
     splitView
       ? txns.filter((t) => (t.direction === "in"
-            ? passesBase(t, !!searchIn.trim(), skip) && matchesQuery(t, searchIn)
-            : passesBase(t, !!searchOut.trim(), skip) && matchesQuery(t, searchOut)))
+            ? passesBase(t, !!qSearchIn.trim(), skip) && matchesQuery(t, qSearchIn)
+            : passesBase(t, !!qSearchOut.trim(), skip) && matchesQuery(t, qSearchOut)))
       : txns.filter((t) =>
-          passesBase(t, !!search.trim(), skip) &&
+          passesBase(t, !!qSearch.trim(), skip) &&
           (dirFilter === "all" || t.direction === dirFilter) &&
-          matchesQuery(t, search))
-  ), [txns, passesBase, splitView, search, searchIn, searchOut, dirFilter]);
+          matchesQuery(t, qSearch))
+  ), [txns, passesBase, splitView, qSearch, qSearchIn, qSearchOut, dirFilter]);
 
   // Distinct account ids present in the loaded transactions (for the filter).
   const accounts = useMemo(
@@ -2035,13 +2112,14 @@ export default function FinancialsView() {
   // ── To book — the daily queue ────────────────────────────────────────────────
   // Every unbooked transaction, org-wide, newest first. Search and account narrow
   // it; nothing else hides rows.
+  const qToBookSearch = useDeferredValue(toBookSearch);
   const toBookRows = useMemo(
     () => txns
       .filter((t) => !t.reviewed &&
         (toBookAcct === "all" || t.account_id === toBookAcct) &&
-        matchesQuery(t, toBookSearch))
+        matchesQuery(t, qToBookSearch))
       .sort((a, b) => (b.posted_at || "").localeCompare(a.posted_at || "")),
-    [txns, toBookAcct, toBookSearch],
+    [txns, toBookAcct, qToBookSearch],
   );
 
   // Headline figures: rows waiting, and money still needing a deal — the same
@@ -2075,6 +2153,18 @@ export default function FinancialsView() {
     return groups;
   }, [toBookRows]);
 
+  // Only the first rowLimit rows render; the groups are cut to match.
+  const toBookVisible = useMemo(() => {
+    let left = rowLimit;
+    const out: typeof toBookGroups = [];
+    for (const g of toBookGroups) {
+      if (left <= 0) break;
+      out.push(g.rows.length <= left ? g : { ...g, rows: g.rows.slice(0, left) });
+      left -= g.rows.length;
+    }
+    return { groups: out, truncated: left < 0 || out.length < toBookGroups.length, remaining: Math.max(0, toBookRows.length - rowLimit) };
+  }, [toBookGroups, toBookRows.length, rowLimit]);
+
   // R-289: move a booked copy's work onto the posted row it became.
   const takeOver = async (t: BankTxn, s: TakeoverSuggestion) => {
     setTakingOver(t.id);
@@ -2083,7 +2173,7 @@ export default function FinancialsView() {
       toast(r.over_allocated?.length
         ? `Booking moved. The posted amount is lower than what's linked: ${r.over_allocated.join("; ")}.`
         : "Booking moved to the posted copy.", r.over_allocated?.length ? "error" : "success");
-      await refreshAll(false);
+      await refreshRows([t.id, s.from_id], { keepOpen: false });
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setTakingOver(null); }
   };
@@ -2285,8 +2375,11 @@ export default function FinancialsView() {
   // as the offline fallback.
   const dealOffers = useMemo(() => {
     const m = new Map<string, { choices: DealChoice[]; more: number }>();
+    const byId = new Map(dealPool.map((d) => [d.id, d]));
     for (const t of txns) {
-      const o = dealOffer(t, dealPool, serverSugg.get(t.id));
+      // Nothing to offer on booked, fully-tied or loan money — skip the scoring entirely.
+      if (!(t.unallocated > 0.0001) || t.counterparty_type === "loan") continue;
+      const o = dealOffer(t, dealPool, serverSugg.get(t.id), byId);
       if (o) m.set(t.id, o);
     }
     return m;
@@ -2491,7 +2584,7 @@ export default function FinancialsView() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((t) => {
+              {rows.slice(0, rowLimit).map((t) => {
                 const payee = t.counterparty_name?.trim();
                 const mainLabel = payee || t.description || "—";
                 const memo = payee ? t.description : "";
@@ -2789,6 +2882,7 @@ export default function FinancialsView() {
                 </Fragment>
                 );
               })}
+              {rows.length > rowLimit && <MoreRows colSpan={9} onVisible={showMoreRows} remaining={rows.length - rowLimit} />}
             </tbody>
           </table>
           {rows.length === 0 && (
@@ -4267,7 +4361,7 @@ export default function FinancialsView() {
           </div>
         ) : (
           <div className="space-y-5">
-            {toBookGroups.map((g) => (
+            {toBookVisible.groups.map((g) => (
               <div key={g.date} className="bg-surface border border-line rounded-xl overflow-hidden">
                 <div className="px-4 py-2 bg-surface-2/60 border-b border-line text-[11.5px] font-semibold text-ink-2">
                   {g.pending ? (
@@ -4452,6 +4546,7 @@ export default function FinancialsView() {
                 </div>
               </div>
             ))}
+            {toBookVisible.truncated && <MoreRows onVisible={showMoreRows} remaining={toBookVisible.remaining} />}
           </div>
         )
       )}
