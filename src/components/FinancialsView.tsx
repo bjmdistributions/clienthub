@@ -836,6 +836,10 @@ export default function FinancialsView() {
   // R-289: posted rows that can take over a booked copy the bank retracted or hasn't posted.
   const [takeovers, setTakeovers] = useState<Map<string, TakeoverSuggestion[]>>(new Map());
   const [takingOver, setTakingOver] = useState<string | null>(null);
+  // R-288 phase 3: booking from history.
+  const [autoBookOn, setAutoBookOn] = useState<boolean | null>(null);
+  const [autoBookedOpen, setAutoBookedOpen] = useState(false);
+  const [undoingAuto, setUndoingAuto] = useState<string | null>(null);
   // R-156/W1-b — the same server pass, read as a PERSON rather than a deal. Empty
   // until deploy-41 lands; the picker's search works regardless.
   const [personSugg, setPersonSugg] = useState<Map<string, BankPersonCandidate[]>>(new Map());
@@ -956,6 +960,7 @@ export default function FinancialsView() {
 
   useEffect(() => {
     loadAll();
+    api.getAutoBookEnabled().then(setAutoBookOn).catch(() => setAutoBookOn(null));
     // Bank feed is secondary — load separately so a Plaid hiccup never blocks the list.
     loadPlaid();
   }, []);
@@ -1143,6 +1148,10 @@ export default function FinancialsView() {
     // The bank retracted work already reviewed or booked, and no replacement could
     // be identified. Since v0.15.137 the row is KEPT — nothing was deleted, so there
     // is nothing to "re-link"; the old copy said the opposite and was wrong.
+    if ((r.auto_booked_history ?? 0) > 0) {
+      const n = r.auto_booked_history ?? 0;
+      toast(`${n} transaction${n === 1 ? " was" : "s were"} booked the way you've always booked ${n === 1 ? "it" : "them"}. See "Booked for you" on To book to undo any.`, "success");
+    }
     if ((r.settled_inferred ?? 0) > 0) {
       const n = r.settled_inferred ?? 0;
       toast(`${n} charge${n === 1 ? "" : "s"} you booked while pending posted at your bank — the booking moved to the posted copy.`, "success");
@@ -2164,6 +2173,23 @@ export default function FinancialsView() {
     }
     return { groups: out, truncated: left < 0 || out.length < toBookGroups.length, remaining: Math.max(0, toBookRows.length - rowLimit) };
   }, [toBookGroups, toBookRows.length, rowLimit]);
+
+  // R-288 phase 3: what was booked from history in the last two weeks, newest first.
+  const autoBooked = useMemo(() => {
+    const cutoff = new Date(Date.now() - 14 * 86400000).toISOString();
+    return txns.filter((t) => t.reviewed && t.auto_booked_at && t.auto_booked_at >= cutoff)
+      .sort((a, b) => (b.auto_booked_at || "").localeCompare(a.auto_booked_at || ""));
+  }, [txns]);
+
+  const undoAuto = async (t: BankTxn) => {
+    setUndoingAuto(t.id);
+    try {
+      await api.undoAutoBooking(t.id);
+      await refreshRows([t.id], { keepOpen: false });
+      toast("Moved back to To book. It won't be booked automatically again.");
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setUndoingAuto(null); }
+  };
 
   // R-289: move a booked copy's work onto the posted row it became.
   const takeOver = async (t: BankTxn, s: TakeoverSuggestion) => {
@@ -4331,6 +4357,45 @@ export default function FinancialsView() {
       {/* To book — the queue, grouped by day. Card rows: the left rail carries
           allocation state, the subline says what the row needs, and the obvious
           match is one click. */}
+      {tab === "tobook" && !loading && !loadError && autoBooked.length > 0 && (
+        <div className="bg-surface border border-line rounded-xl overflow-hidden">
+          <button
+            onClick={() => setAutoBookedOpen((v) => !v)}
+            className="w-full px-4 py-2.5 flex items-center gap-2 text-left hover:bg-surface-2 transition-colors"
+          >
+            {autoBookedOpen ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
+            <Wand2 size={13} className="text-accent" />
+            <span className="text-[12.5px] font-semibold text-ink">Booked for you</span>
+            <span className="text-[12px] text-muted min-w-0 truncate">
+              · <span className="tabular-nums">{autoBooked.length}</span> in the last two weeks, each the way you've booked it at least five times before
+            </span>
+          </button>
+          {autoBookedOpen && (
+            <div className="divide-y divide-line-2 border-t border-line">
+              {autoBooked.slice(0, 200).map((t) => (
+                <div key={t.id} className="px-4 py-2 flex items-center gap-3 min-w-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12.5px] font-medium text-ink truncate">{t.counterparty_name?.trim() || t.description}</div>
+                    <div className="text-[11px] text-muted truncate">
+                      {t.posted_at?.slice(0, 10)} · {catLabel(t.category)}{t.account_id ? ` · ${t.account_id}` : ""}
+                    </div>
+                  </div>
+                  <span className={`text-[12.5px] tabular-nums font-semibold whitespace-nowrap ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                    {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
+                  </span>
+                  <button
+                    onClick={() => undoAuto(t)}
+                    disabled={undoingAuto === t.id}
+                    className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors whitespace-nowrap"
+                  >
+                    {undoingAuto === t.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />} Undo
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {tab === "tobook" && (
         loading ? skeletonRows
         : loadError ? errorState
@@ -4623,6 +4688,32 @@ export default function FinancialsView() {
           />
         );
       })()}
+
+      {/* R-288 phase 3 — booking from history, switched here. */}
+      {tab === "setup" && autoBookOn !== null && (
+        <div className="bg-surface border border-line rounded-xl px-4 py-3 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold text-ink flex items-center gap-1.5"><Wand2 size={14} className="text-accent" /> Book repeat expenses automatically</div>
+            <p className="text-[11.5px] text-muted leading-relaxed mt-0.5">
+              After each bank sync, a transaction is booked when you've booked the same payee the same way at least five times, 95% of the time or more.
+              Never money that belongs to a deal, never a pending charge, never a transfer, Zelle or check. Everything booked this way is listed under "Booked for you" on To book, where you can undo it. Applies on every device.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={autoBookOn}
+            aria-label="Book repeat expenses automatically"
+            onClick={async () => {
+              const next = !autoBookOn;
+              try { await api.setAutoBookEnabled(next); setAutoBookOn(next); }
+              catch (e: any) { toast(errText(e), "error"); }
+            }}
+            className={`relative flex-shrink-0 w-10 h-6 rounded-full border transition-colors ${autoBookOn ? "bg-accent border-accent" : "bg-surface-3 border-line"}`}
+          >
+            <span className={`absolute top-[2px] w-[18px] h-[18px] rounded-full bg-surface shadow transition-all ${autoBookOn ? "left-[18px]" : "left-[2px]"}`} />
+          </button>
+        </div>
+      )}
 
       {/* Auto-tag rules — managed from Setup, next to the tools that act on them */}
       {tab === "setup" && (

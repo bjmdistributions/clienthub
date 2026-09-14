@@ -1997,6 +1997,9 @@ export interface BankTxn {
   pending?: boolean;
   /** R-289: the bank retracted this row; it was kept because it holds booked work. */
   retracted?: boolean;
+  /** R-288: booked from history at this time (undoable), and the category it had before. */
+  auto_booked_at?: string | null;
+  auto_booked_from?: string | null;
   posted_at: string;
   amount: number;
   direction: "in" | "out";
@@ -2278,6 +2281,8 @@ export interface PlaidSyncSummary {
   amended: number;
   /** R-289: retracted booked copies whose booking moved onto their one posted copy. */
   settled_inferred?: number;
+  /** R-288: transactions booked from history after this sync. */
+  auto_booked_history?: number;
   over_allocated: string[];
   /** Bookings carried from a pending row onto the posted twin that replaced it. */
   settled: number;
@@ -3236,6 +3241,9 @@ export const api = {
   clearBankTxns: (scope: "statements" | "plaid" | "all", force = false) =>
     invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
   listBankTxnsByIds: (ids: string[]) => invoke<BankTxn[]>("list_bank_txns_by_ids", { ids }),
+  getAutoBookEnabled: () => invoke<boolean>("get_auto_book_enabled"),
+  setAutoBookEnabled: (enabled: boolean) => invoke<void>("set_auto_book_enabled", { enabled }),
+  undoAutoBooking: (id: string) => invoke<void>("undo_auto_booking", { id }),
   listTakeoverSuggestions: () => invoke<TakeoverSuggestion[]>("list_takeover_suggestions"),
   takeOverBooking: (fromId: string, toId: string) =>
     invoke<{ moved: boolean; over_allocated: string[] }>("take_over_booking", { fromId, toId }),
