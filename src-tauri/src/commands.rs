@@ -15127,7 +15127,10 @@ pub async fn plaid_has_keys() -> Result<bool, String> { Ok(crate::plaid::has_key
 /// Keys-set flag + current environment, for the settings UI.
 #[tauri::command]
 pub async fn plaid_config() -> Result<Value, String> {
-    Ok(json!({ "has_keys": crate::plaid::has_keys(), "env": crate::plaid::get_env() }))
+    // R-288 phase 4: when THIS device last finished pulling its banks — To book shows it.
+    let last_sync: Option<String> = pool().get().ok()
+        .and_then(|c| c.query_row("SELECT value FROM settings WHERE key='plaid_last_sync'", [], |r| r.get(0)).ok());
+    Ok(json!({ "has_keys": crate::plaid::has_keys(), "env": crate::plaid::get_env(), "last_sync": last_sync }))
 }
 
 /// Verify the client_id + secret work against the selected environment BEFORE
@@ -16066,6 +16069,12 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // R-288 phase 3: then book what history is sure about. After the rules, so a rule that
     // auto-books wins, and after the take-overs, so a carried booking is not re-decided.
     let auto_booked = if converged { book_from_history(&now) } else { Vec::new() };
+    // Device-local on purpose: it says when THIS device's connections were last pulled.
+    if results.iter().any(|r| r.get("status").and_then(|s| s.as_str()) == Some("ok")) {
+        if let Ok(c) = pool().get() {
+            let _ = c.execute("INSERT INTO settings (key,value) VALUES ('plaid_last_sync',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&now]);
+        }
+    }
     crate::netsync::push_now(); // freshly imported bank activity reaches other devices now
     // Publish the refreshed balance for devices that have no Plaid link of their own.
     // This used to happen ONLY when a human opened Financials or Analytics on this

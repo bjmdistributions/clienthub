@@ -3196,7 +3196,7 @@ export const api = {
   // Plaid live bank/card feed
   plaidSetKeys: (clientId: string, secret: string, env: string) => invoke<void>("plaid_set_keys", { clientId, secret, env }),
   plaidHasKeys: () => invoke<boolean>("plaid_has_keys"),
-  plaidConfig: () => invoke<{ has_keys: boolean; env: string }>("plaid_config"),
+  plaidConfig: () => invoke<{ has_keys: boolean; env: string; last_sync?: string | null }>("plaid_config"),
   plaidTestKeys: () => invoke<string>("plaid_test_keys"),
   plaidLinkToken: () => invoke<string>("plaid_link_token"),
   plaidConnectStart: () => invoke<{ hosted_link_url: string; link_token: string }>("plaid_connect_start"),
