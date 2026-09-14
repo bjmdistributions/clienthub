@@ -15,7 +15,7 @@ import { catLabel, methodLabel, fmtShortDate } from "./FinancialsView";
 // (`unavailable`, from api.ts's `safe()`) — an old server or a disconnected
 // device should look like this feature doesn't exist, not like it's broken.
 
-const confirmedMethodLabel = (v: string) => (v ? methodLabel(v) : "No method");
+const confirmedMethodLabel = (v: string) => (v ? methodLabel(v) : "Not confirmed");
 
 function describeChange(c: BooksChange): string {
   switch (c.field) {
@@ -27,8 +27,7 @@ function describeChange(c: BooksChange): string {
       return c.new_value === "true" ? "Marked booked" : "Marked not booked";
     case "note":
       if (!c.new_value) return "Removed the note";
-      if (!c.old_value) return "Added a note";
-      return `Note: ${c.new_value}`;
+      return `${c.old_value ? "Changed the note to" : "Added a note"}: ${c.new_value}`;
     default:
       return `${c.field}: ${c.old_value} → ${c.new_value}`;
   }
@@ -148,7 +147,7 @@ export default function AccountantChanges() {
                           {c.txn_direction === "in" ? "+" : "−"}{fmtAmount(c.txn_amount)}
                         </span>
                       </div>
-                      <div className="text-[12.5px] text-ink-2 mt-1 min-w-0 truncate">{describeChange(c)}</div>
+                      <div className="text-[12.5px] text-ink-2 mt-1 min-w-0 whitespace-pre-wrap break-words">{describeChange(c)}</div>
                     </div>
                   );
                 })
