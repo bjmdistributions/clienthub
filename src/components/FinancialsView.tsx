@@ -2168,6 +2168,8 @@ export default function FinancialsView() {
   const qSearchOut = useDeferredValue(searchOut);
 
   const [rowLimit, setRowLimit] = useState(ROW_STEP);
+  // R-291: the Ledger's facets behind one button.
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const rowFloorRef = useRef(0); // a jump to a row deep in the ledger renders down to it
   const showMoreRows = useCallback(() => setRowLimit((n) => n + ROW_STEP), []);
   useEffect(() => {
@@ -3075,6 +3077,22 @@ export default function FinancialsView() {
   );
 
   // Loading placeholder at roughly row height, so the page stops jumping.
+  // R-291: every active Ledger facet as a removable chip beside the Filters button.
+  const ledgerChips = useMemo(() => {
+    const out: { key: string; label: string; clear: () => void }[] = [];
+    if (acctFilter !== "all") out.push({ key: "acct", label: acctFilter, clear: () => setAcctFilter("all") });
+    if (catFilter !== "all") out.push({ key: "cat", label: catLabel(catFilter) || "Uncategorized", clear: () => setCatFilter("all") });
+    if (methodFilter !== "all") out.push({ key: "method", label: methodFilter === "unclassified" ? "No method read" : methodLabel(methodFilter), clear: () => setMethodFilter("all") });
+    if (personFilter !== "all") {
+      const named = peopleInLedger.rows.find(({ person }) => personKey(person) === personFilter)?.person.name;
+      out.push({ key: "person", label: personFilter === "linked" ? "Linked to someone" : personFilter === "none" ? "Not linked" : named || "Person", clear: () => setPersonFilter("all") });
+    }
+    if (statusFilter !== "all") out.push({ key: "status", label: statusFilter === "unclassified" ? "Uncategorized" : statusFilter === "unallocated_in" ? "Needs a deal (in)" : "Needs a deal (out)", clear: () => setStatusFilter("all") });
+    if (taxYearValue === "custom") out.push({ key: "dates", label: `${fromDate || "…"} to ${toDate || "…"}`, clear: () => { setFromDate(`${new Date().getFullYear()}-01-01`); setToDate(`${new Date().getFullYear()}-12-31`); } });
+    if (splitView) out.push({ key: "split", label: "Split in and out", clear: () => setSplitView(false) });
+    return out;
+  }, [acctFilter, catFilter, methodFilter, personFilter, statusFilter, taxYearValue, fromDate, toDate, splitView, peopleInLedger]);
+
   const skeletonRows = (
     <div className="space-y-2" aria-hidden="true">
       {Array.from({ length: 8 }).map((_, i) => (
@@ -4308,81 +4326,6 @@ export default function FinancialsView() {
               ))}
             </div>
           )}
-          <button
-            onClick={() => setSplitView((v) => !v)}
-            title="Show money in and money out side by side, each with its own search — for reconciling a refund."
-            className={`text-[12px] transition-colors ${splitView ? "text-ink font-semibold" : "text-muted hover:text-ink-2"}`}
-          >
-            {splitView ? "Combined" : "Split in/out"}
-          </button>
-          {accounts.length > 0 && (
-            <select
-              value={acctFilter}
-              onChange={(e) => setAcctFilter(e.target.value)}
-              className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
-            >
-              <option value="all">All accounts</option>
-              {accounts.map((a) => (
-                <option key={a} value={a}>{a}</option>
-              ))}
-            </select>
-          )}
-          <select
-            value={catFilter}
-            onChange={(e) => setCatFilter(e.target.value)}
-            className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
-          >
-            <option value="all">All categories</option>
-            <CategoryOptions />
-          </select>
-          {/* Payment method (R-157). The counts live in the option labels so the
-              size of the pile the classifier could not read is on screen before
-              anything is hidden — not only after. */}
-          <select
-            value={methodFilter}
-            onChange={(e) => setMethodFilter(e.target.value as any)}
-            aria-label="Payment method"
-            className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
-          >
-            <option value="all">All methods</option>
-            {METHODS.filter((m) => (methodCounts.total[m.value] || 0) > 0 || methodFilter === m.value).map((m) => (
-              <option key={m.value} value={m.value}>{m.label} · {methodCounts.total[m.value] || 0}</option>
-            ))}
-            <option value="unclassified">No method read · {methodCounts.unclassified}</option>
-          </select>
-          {/* The person facet (W2-f) — and where a profile's "See all in
-              Financials" lands. */}
-          <select
-            value={personFilter}
-            onChange={(e) => setPersonFilter(e.target.value)}
-            aria-label="Person"
-            className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40 max-w-[180px]"
-          >
-            <option value="all">Anyone</option>
-            <option value="linked">Linked to someone · {peopleInLedger.linked}</option>
-            <option value="none">Not linked · {peopleInLedger.unlinked}</option>
-            {peopleInLedger.rows.length > 0 && (
-              <optgroup label="Tagged to">
-                {peopleInLedger.rows.map(({ person, n }) => (
-                  <option key={personKey(person)} value={personKey(person)}>
-                    {person.name} · {n}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
-          >
-            <option value="all">All statuses</option>
-            <option value="unclassified">Uncategorized</option>
-            <option value="unallocated_in">Needs a deal (in)</option>
-            <option value="unallocated_out">Needs a deal (out)</option>
-          </select>
-          {/* Tax year first — the books are read one tax year at a time (R-145).
-              The date inputs stay for odd ranges; touching them flips this to Custom. */}
           <select
             value={taxYearValue}
             onChange={(e) => pickTaxYear(e.target.value)}
@@ -4395,22 +4338,151 @@ export default function FinancialsView() {
             <option value="all">All years</option>
             {taxYearValue === "custom" && <option value="custom">Custom range</option>}
           </select>
-          <div className="flex items-center gap-1.5 text-[12px] text-muted bg-surface-2 border border-line rounded-lg px-2.5 h-8">
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="bg-transparent text-[12px] text-muted rounded focus:outline-none focus:ring-2 focus:ring-accent/40 [color-scheme:light] dark:[color-scheme:dark]"
-            />
-            <span>to</span>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="bg-transparent text-[12px] text-muted rounded focus:outline-none focus:ring-2 focus:ring-accent/40 [color-scheme:light] dark:[color-scheme:dark]"
-            />
-          </div>
+          {/* R-291 — the rest of the facets live behind one button. Nine controls in one
+              wrapping row read as a form, not a ledger; every active filter still shows
+              as a chip beside the button, so nothing narrows the list out of sight. */}
+          <span className="relative">
+            <button
+              onClick={() => setFiltersOpen((v) => !v)}
+              aria-haspopup="dialog"
+              aria-expanded={filtersOpen}
+              className={`flex items-center gap-1.5 px-3 h-8 rounded-lg text-[12.5px] font-medium transition-colors ${
+                ledgerChips.length > 0
+                  ? "border border-accent/40 bg-accent/5 text-accent hover:bg-accent/10"
+                  : "border border-line text-ink-2 hover:bg-surface-2"
+              }`}
+            >
+              Filters
+              {ledgerChips.length > 0 && (
+                <span className="tabular-nums text-[11px] px-1.5 rounded-md bg-accent text-on-accent ring-1 ring-accent/40">{ledgerChips.length}</span>
+              )}
+              <ChevronDown size={12} />
+            </button>
+            {filtersOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setFiltersOpen(false)} />
+                <div
+                  role="dialog"
+                  aria-label="Ledger filters"
+                  onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setFiltersOpen(false); } }}
+                  className="absolute right-0 top-full mt-1.5 z-50 w-[min(340px,calc(100vw-2rem))] bg-surface border border-line rounded-xl shadow-xl p-3.5 space-y-3"
+                >
+                  {accounts.length > 0 && (
+                    <label className="block">
+                      <span className="block text-[11.5px] font-medium text-muted mb-1">Account</span>
+                      <select value={acctFilter} onChange={(e) => setAcctFilter(e.target.value)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                        <option value="all">All accounts</option>
+                        {accounts.map((a) => (
+                          <option key={a} value={a}>{a}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <label className="block">
+                    <span className="block text-[11.5px] font-medium text-muted mb-1">Category</span>
+                    <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                      <option value="all">All categories</option>
+                      <CategoryOptions />
+                    </select>
+                  </label>
+                  {/* Payment method (R-157). The counts live in the option labels so the
+                      size of the pile the classifier could not read is on screen before
+                      anything is hidden — not only after. */}
+                  <label className="block">
+                    <span className="block text-[11.5px] font-medium text-muted mb-1">Payment method</span>
+                    <select value={methodFilter} onChange={(e) => setMethodFilter(e.target.value as any)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                      <option value="all">All methods</option>
+                      {METHODS.filter((m) => (methodCounts.total[m.value] || 0) > 0 || methodFilter === m.value).map((m) => (
+                        <option key={m.value} value={m.value}>{m.label} · {methodCounts.total[m.value] || 0}</option>
+                      ))}
+                      <option value="unclassified">No method read · {methodCounts.unclassified}</option>
+                    </select>
+                  </label>
+                  {/* The person facet (W2-f) — and where a profile's "See all in
+                      Financials" lands. */}
+                  <label className="block">
+                    <span className="block text-[11.5px] font-medium text-muted mb-1">Person</span>
+                    <select value={personFilter} onChange={(e) => setPersonFilter(e.target.value)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                      <option value="all">Anyone</option>
+                      <option value="linked">Linked to someone · {peopleInLedger.linked}</option>
+                      <option value="none">Not linked · {peopleInLedger.unlinked}</option>
+                      {peopleInLedger.rows.length > 0 && (
+                        <optgroup label="Tagged to">
+                          {peopleInLedger.rows.map(({ person, n }) => (
+                            <option key={personKey(person)} value={personKey(person)}>
+                              {person.name} · {n}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11.5px] font-medium text-muted mb-1">Status</span>
+                    <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                      <option value="all">All statuses</option>
+                      <option value="unclassified">Uncategorized</option>
+                      <option value="unallocated_in">Needs a deal (in)</option>
+                      <option value="unallocated_out">Needs a deal (out)</option>
+                    </select>
+                  </label>
+                  {/* The date inputs stay for odd ranges; touching them flips the tax
+                      year on the bar to Custom. */}
+                  <div>
+                    <span className="block text-[11.5px] font-medium text-muted mb-1">Dates</span>
+                    <div className="flex items-center gap-1.5 text-[12px] text-muted bg-surface-2 border border-line rounded-lg px-2.5 h-9">
+                      <input
+                        type="date"
+                        value={fromDate}
+                        aria-label="From"
+                        onChange={(e) => setFromDate(e.target.value)}
+                        className="min-w-0 flex-1 bg-transparent text-[12px] text-ink-2 rounded focus:outline-none focus:ring-2 focus:ring-accent/40 [color-scheme:light] dark:[color-scheme:dark]"
+                      />
+                      <span>to</span>
+                      <input
+                        type="date"
+                        value={toDate}
+                        aria-label="To"
+                        onChange={(e) => setToDate(e.target.value)}
+                        className="min-w-0 flex-1 bg-transparent text-[12px] text-ink-2 rounded focus:outline-none focus:ring-2 focus:ring-accent/40 [color-scheme:light] dark:[color-scheme:dark]"
+                      />
+                    </div>
+                  </div>
+                  <label className="flex items-center justify-between gap-3 pt-1 cursor-pointer">
+                    <span>
+                      <span className="block text-[12.5px] font-medium text-ink-2">Split money in and out</span>
+                      <span className="block text-[11px] text-muted">Side by side, each with its own search — for reconciling a refund</span>
+                    </span>
+                    <input type="checkbox" checked={splitView} onChange={() => setSplitView((v) => !v)} className="accent-accent flex-shrink-0" />
+                  </label>
+                  <div className="flex items-center justify-between pt-2 border-t border-line">
+                    <button onClick={() => { clearFilters(); setFiltersOpen(false); }} className="text-[12px] font-medium text-muted hover:text-ink-2">
+                      Clear all
+                    </button>
+                    <button onClick={() => setFiltersOpen(false)} className="h-8 px-3.5 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12.5px] font-semibold">
+                      Done
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </span>
         </div>
+        {ledgerChips.length > 0 && (
+          <div className="basis-full flex items-center gap-1.5 flex-wrap">
+            {ledgerChips.map((c) => (
+              <button
+                key={c.key}
+                onClick={c.clear}
+                title="Remove this filter"
+                className="inline-flex items-center gap-1 h-6 pl-2 pr-1.5 rounded-md border border-line bg-surface-2 text-[11.5px] text-ink-2 hover:border-line-3 max-w-[260px]"
+              >
+                <span className="truncate">{c.label}</span>
+                <X size={11} className="text-muted flex-shrink-0" />
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       )}
 
