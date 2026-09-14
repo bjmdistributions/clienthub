@@ -1820,15 +1820,31 @@ export interface ProfitForecast {
   win_rate_label: string;
 }
 
-export interface PortalLink {
+// R-290 customer portal — buyer logins at portal.ecliptr.app. Server-only records,
+// read and changed over REST (src-tauri/src/customer_portal.rs).
+export interface CustomerPortalAccount {
   id: string;
-  client_id: string;
-  token: string;
-  expires_at: string;
-  is_active: boolean;
+  email: string;
+  status: "active" | "suspended";
   created_at: string;
-  client_name: string | null;
-  portal_url: string;
+  last_login_at: string;
+}
+export interface CustomerPortalAccess {
+  client_id: string;
+  client_name: string;
+  company: string;
+  client_email: string;
+  last_activity: string;
+  accounts: CustomerPortalAccount[];
+  invite: { link: string; email: string; created_at: string; expires_at: string } | null;
+}
+export interface CustomerPortalInvite {
+  ok: true;
+  link: string;
+  email: string;
+  expires_at: string;
+  sent: boolean;
+  send_error: string | null;
 }
 
 export interface SyncStatus {
@@ -3572,12 +3588,19 @@ export const api = {
   getFollowupLog: () => invoke<FollowUpLogEntry[]>("get_followup_log"),
   automationsSummary: () => invoke<AutomationsSummary>("automations_summary"),
 
-  // Portal
-  generatePortalLink: (clientId: string) => invoke<PortalLink>("generate_portal_link", { clientId }),
-  revokePortalLink: (token: string) => invoke<void>("revoke_portal_link", { token }),
-  listPortalLinks: (clientId?: string) => invoke<PortalLink[]>("list_portal_links", { clientId: clientId ?? null }),
-  getPortalBaseUrl: () => invoke<string | null>("get_portal_base_url"),
-  savePortalBaseUrl: (url: string) => invoke<void>("save_portal_base_url", { url }),
+  // R-290 customer portal. Reads go through safe(): a disconnected desktop or an old
+  // server ({ unsupported }) hides the panel rather than erroring. Writes reject with
+  // the server's own message so the panel can show it.
+  customerPortalList: () =>
+    safe(invoke<{ portal_url: string; clients: CustomerPortalAccess[] } | { unsupported: true }>("customer_portal_list")),
+  customerPortalClient: (clientId: string) =>
+    safe(invoke<CustomerPortalAccess | { unsupported: true }>("customer_portal_client", { clientId })),
+  customerPortalInvite: (clientId: string, email: string | null, send: boolean) =>
+    invoke<CustomerPortalInvite>("customer_portal_invite", { clientId, email, send }),
+  customerPortalRevokeInvite: (clientId: string) => invoke<{ ok: true }>("customer_portal_revoke_invite", { clientId }),
+  customerPortalSetStatus: (accountId: string, status: "active" | "suspended") =>
+    invoke<{ ok: true }>("customer_portal_set_status", { accountId, status }),
+  customerPortalPreview: (clientId: string) => invoke<{ url: string }>("customer_portal_preview", { clientId }),
 
   // Manifest
   // forceAi re-reads a PDF through Claude when the text-layer heuristic got it wrong.

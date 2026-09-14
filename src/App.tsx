@@ -11,6 +11,7 @@ import {
   Briefcase,
   BarChart3,
   Layers,
+  DoorOpen,
   GitBranch,
   Package,
   Sun,
@@ -60,6 +61,7 @@ import WhatsAppSharePanel from "./components/WhatsAppSharePanel";
 import CloseoutView from "./components/CloseoutView";
 import BriefView from "./components/BriefView";
 import TiersView from "./components/TiersView";
+import CustomerPortalsView from "./components/CustomerPortalsView";
 import NotesView from "./components/NotesView";
 import PlatformView from "./components/PlatformView";
 import DataSafetyView from "./components/DataSafetyView";
@@ -124,7 +126,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -694,6 +696,7 @@ export default function App() {
       { id: "checkup", label: "Checkup", icon: ClipboardCheck },
       { id: "tiers",   label: "Tiers",   icon: Layers },
       { id: "approvals", label: "Approvals", icon: Bell },
+      { id: "portals", label: "Customer portals", icon: DoorOpen },
     ] },
     { id: "suppliers", label: "Suppliers", icon: Package },
     { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
@@ -740,6 +743,7 @@ export default function App() {
 
     : id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
     : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item
+    : id === "portals" ? canViewTab(me, "clients" as any) // R-290: rides client access, like Tiers
     : id === "manifest" ? canViewTab(me, "inventory" as any) // analyzer rides inventory access
     : id === "lotengine" ? canViewTab(me, "inventory" as any) // so does the lot engine
     // Show packing (R-271/R-272): rides inventory access, plus the plan entitlement
@@ -1042,6 +1046,7 @@ export default function App() {
             {t === "completed"  && <CloseoutView />}
             {t === "analytics"  && <AnalyticsView />}
             {t === "tiers"      && <TiersView />}
+            {t === "portals"    && <CustomerPortalsView />}
             {t === "automation" && <AutomationLogView />}
             {t === "brief"      && <BriefView currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
             {t === "newsletter" && <EmailView />}

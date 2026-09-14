@@ -33,6 +33,7 @@ mod secret_store;
 mod show_packing;
 mod shipments;
 mod books;
+mod customer_portal;
 mod template;
 
 use commands::*;
@@ -1148,6 +1149,12 @@ fn main() {
             shipments::scan_priority1_mail,
             books::list_books_changes,
             books::mark_books_changes_seen,
+            customer_portal::customer_portal_list,
+            customer_portal::customer_portal_client,
+            customer_portal::customer_portal_invite,
+            customer_portal::customer_portal_revoke_invite,
+            customer_portal::customer_portal_set_status,
+            customer_portal::customer_portal_preview,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

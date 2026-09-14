@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState, Children } from "react";
 import {
-  api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField, CompanyInfo,
+  api, Client, Interaction, Invoice, BuyerTier, CustomField, CompanyInfo,
   PaymentMethod, CounterpartyPaymentRow, DealFlow, Supplier, PartyLink, LineItem,
 } from "../lib/api";
 import { fmtAmount, fmtPhone, localDay, parseLocalDay, primarySupplierLabel } from "../lib/format";
 import { parseLineItems, describeItem } from "../lib/itemSearch";
 import ReliabilityBadge from "./ReliabilityBadge";
 import StatusPill from "./StatusPill";
+import CustomerPortalPanel from "./CustomerPortalPanel";
 import CreditPanel from "./CreditPanel";
 import PersonPayments from "./PersonPayments";
 import PersonPickerModal, { PersonRef } from "./PersonPicker";
@@ -829,7 +830,6 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   const [showNoteForm, setShowNoteForm] = useState(false);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [tier, setTier] = useState<BuyerTier | null>(null);
-  const [portalLink, setPortalLink] = useState<PortalLink | null>(null);
   const [credit, setCredit] = useState<{ credit_limit: number; exposure: number; available: number; over: boolean } | null>(null);
   const [creditEdit, setCreditEdit] = useState("");
   // This client's deal flows, deduped by invoice. Previously fetched, summed into
@@ -882,10 +882,6 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         setRefundByDeal(m);
       })
       .catch(() => setRefundByDeal({}));
-    api.listPortalLinks(clientId).then((links) => {
-      const active = links.find((l) => l.is_active && new Date(l.expires_at) > new Date());
-      if (active) setPortalLink(active);
-    }).catch(() => {});
     api.counterpartyPayments("client", clientId, c.name).then(setPayments).catch(() => setPayments([]));
   };
 
@@ -1598,25 +1594,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           </div>
         )}
 
-        <div className="mt-4 pt-4 border-t border-line-2">
-          <p className="text-[12.5px] font-medium text-muted mb-2">Client portal</p>
-          {portalLink ? (
-            <>
-              <div className="flex items-center gap-2">
-                <input readOnly className="border border-line px-3 h-8 rounded-lg text-[12px] text-ink-2 bg-surface-2 flex-1 font-mono" value={portalLink.portal_url} />
-                <button onClick={async () => { await navigator.clipboard.writeText(portalLink.portal_url); }} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[11px] font-medium">Copy</button>
-                <button onClick={async () => { if (confirm("Revoke this portal link?")) { await api.revokePortalLink(portalLink.token); setPortalLink(null); load(); } }} className="text-[11px] text-danger-ink px-2 h-8 rounded-lg hover:bg-danger-bg">Revoke</button>
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                <input className="border border-line px-2 h-7 rounded text-[10px] w-48" placeholder="Portal base URL" value={portalLink.portal_url.split("/portal/")[0] || ""} onChange={(e) => api.savePortalBaseUrl(e.target.value).then(() => load())} />
-                <span className="text-[9px] text-muted">Set your domain or IP</span>
-              </div>
-            </>
-          ) : (
-            <button onClick={async () => { const l = await api.generatePortalLink(clientId); setPortalLink(l); }} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">Generate portal link</button>
-          )}
-          <p className="text-[10px] text-muted mt-1.5">Share this link so {client.name} can view their invoices. Expires in 30 days.</p>
-        </div>
+        <CustomerPortalPanel clientId={client.id} clientName={client.name} clientEmail={client.email} />
 
         {client.notes && (
           <div className="mt-4 pt-4 border-t border-line-2">
