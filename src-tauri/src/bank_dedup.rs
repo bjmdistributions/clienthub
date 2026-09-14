@@ -18,7 +18,7 @@
 //! that differs sends the group to a person instead of deleting anything.
 
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::commands::bank_txn_reference;
 
@@ -58,6 +58,10 @@ struct Meta {
     dt: String,
     merchant: String,
     pm: BTreeMap<String, String>,
+    /// Plaid's `pending` flag (R-289), stamped since v0.16.63. False when absent.
+    pending: bool,
+    /// The bank retracted this row and it was kept because it holds booked work.
+    retracted: bool,
 }
 
 fn meta(raw: &str) -> Meta {
@@ -71,7 +75,143 @@ fn meta(raw: &str) -> Meta {
             }
         }
     }
-    Meta { pa: s("pa"), dt: s("dt"), merchant: s("merchant"), pm }
+    Meta {
+        pa: s("pa"), dt: s("dt"), merchant: s("merchant"), pm,
+        pending: o.get("pnd").and_then(|v| v.as_bool()).unwrap_or(false),
+        retracted: o.get("rtr").is_some_and(|v| !v.is_null()),
+    }
+}
+
+/// (pending at the bank, retracted by the bank) as stamped in `raw_json`.
+pub fn pending_and_retracted(raw: &str) -> (bool, bool) {
+    let m = meta(raw);
+    (m.pending, m.retracted)
+}
+
+/// One posted transaction that has taken over (or could take over) the booking of a copy the
+/// bank retracted or has not posted yet (R-289).
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Takeover {
+    /// The booked copy — retracted by the bank, or still pending.
+    pub from_id: String,
+    /// The posted copy the booking moves onto.
+    pub to_id: String,
+    /// Same amount to the cent, within 7 days, and the only candidate on both sides — safe to
+    /// carry over without asking.
+    pub automatic: bool,
+}
+
+/// R-289 — "I book something and the next day it undoes itself and I book it again."
+///
+/// A card charge is pending when Jack books it. When it posts, Plaid retracts the pending id and
+/// sends the posted charge under a NEW id — and for card accounts usually without
+/// `pending_transaction_id`, so `settle_pending_twin` has nothing to pair on. The posted copy
+/// imports unbooked (correctly: a same-connection content match is churn, gotchas §11), the
+/// booked pending copy is KEPT with `raw_json.rtr` (booked work is never deleted), and the same
+/// money is on the books twice: once booked, once asking to be booked again.
+///
+/// The pairing here is the bank-less half of that settle. A candidate pair is a booked copy the
+/// bank has RETRACTED (or, for a chip only, one still pending) and a posted, non-retracted copy
+/// on the same account, same direction, dated from one day before to ten days after, with an
+/// amount within 30% (card holds settle for a different amount: tips, hotel incidentals).
+///
+/// Automatic only when the retracted copy and the posted copy match to the cent within seven
+/// days and each is the other's ONLY candidate. That is safe even when it is wrong about which
+/// charge is which: the bank has already said the retracted row does not exist, so retiring it
+/// removes no real money — the worst case is its category landing on the posted charge, which is
+/// reported and visible. Everything else is a one-click chip for a person.
+pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec<Takeover> {
+    let acct_of = |a: &str| aliases.get(a).cloned().unwrap_or_else(|| a.to_string());
+    let metas: Vec<Meta> = rows.iter().map(|r| meta(&r.raw_json)).collect();
+    // From: booked, and retracted or still pending.
+    let froms: Vec<usize> = (0..rows.len())
+        .filter(|&i| (rows[i].reviewed || rows[i].linked) && (metas[i].retracted || metas[i].pending))
+        .collect();
+    // To: posted and not retracted.
+    let tos: Vec<usize> = (0..rows.len())
+        .filter(|&i| !metas[i].retracted && !metas[i].pending && !rows[i].date.is_empty())
+        .collect();
+    let mut by_from: BTreeMap<usize, Vec<(usize, bool)>> = BTreeMap::new();
+    let mut by_to: BTreeMap<usize, Vec<(usize, bool)>> = BTreeMap::new();
+    for &f in &froms {
+        let fr = &rows[f];
+        let f_acct = acct_of(&fr.account);
+        let f_words = merchant_words(&fr.desc);
+        for &t in &tos {
+            let tr = &rows[t];
+            if t == f || tr.dir != fr.dir || fr.amount <= 0.0 { continue; }
+            let same_label = acct_of(&tr.account) == f_acct;
+            let same_mask = !label_mask(&tr.account).is_empty() && label_mask(&tr.account) == label_mask(&fr.account);
+            if !same_label && !same_mask { continue; }
+            let Some(gap) = signed_day_gap(&tr.date, &fr.date) else { continue };
+            if !(-1..=10).contains(&gap) { continue; }
+            let same_amount = (tr.amount - fr.amount).abs() < 0.005;
+            // A different settled amount (a hold, a tip) is a candidate only when the memo names
+            // the same merchant — measured on the live book, amount alone matched a $400 hotel
+            // hold to five unrelated restaurant and car-rental charges.
+            if !same_amount && ((tr.amount - fr.amount).abs() > fr.amount * 0.30 || f_words.is_disjoint(&merchant_words(&tr.desc))) {
+                continue;
+            }
+            let exact = same_label && metas[f].retracted && same_amount && gap <= 7;
+            by_from.entry(f).or_default().push((t, exact));
+            by_to.entry(t).or_default().push((f, exact));
+        }
+    }
+    // Automatic: a closed cluster of identical copies. Every retracted copy in it matches every
+    // posted copy in it exactly and nothing outside it, and every posted copy's only
+    // candidates are those retracted copies. Identical amounts on one account in one week, so
+    // which retracted copy lands on which posted copy changes nothing; pair them one for one in
+    // date order. A cluster with more retracted than posted copies leaves the extras kept.
+    let mut automatic: HashSet<(usize, usize)> = HashSet::new();
+    let mut seen: HashSet<usize> = HashSet::new();
+    for (&f, cands) in &by_from {
+        if seen.contains(&f) || !cands.iter().all(|&(_, e)| e) { continue; }
+        let tos_set: BTreeSet<usize> = cands.iter().map(|&(t, _)| t).collect();
+        let froms_set: BTreeSet<usize> = tos_set.iter()
+            .flat_map(|t| by_to[t].iter().map(|&(ff, _)| ff)).collect();
+        let closed = froms_set.iter().all(|ff| {
+            by_from[ff].iter().all(|&(_, e)| e)
+                && by_from[ff].iter().map(|&(t, _)| t).collect::<BTreeSet<_>>() == tos_set
+        }) && tos_set.iter().all(|t| by_to[t].iter().all(|&(_, e)| e));
+        seen.extend(froms_set.iter().cloned());
+        if !closed { continue; }
+        let by_date = |s: &BTreeSet<usize>| {
+            let mut v: Vec<usize> = s.iter().cloned().collect();
+            v.sort_by(|a, b| rows[*a].date.cmp(&rows[*b].date).then(rows[*a].id.cmp(&rows[*b].id)));
+            v
+        };
+        for (ff, t) in by_date(&froms_set).into_iter().zip(by_date(&tos_set)) {
+            automatic.insert((ff, t));
+        }
+    }
+    let mut out = Vec::new();
+    for (f, cands) in &by_from {
+        let paired = automatic.iter().any(|&(ff, _)| ff == *f);
+        for &(t, _) in cands {
+            let auto = automatic.contains(&(*f, t));
+            // A retracted copy already paired automatically offers no chips elsewhere.
+            if paired && !auto { continue; }
+            out.push(Takeover { from_id: rows[*f].id.clone(), to_id: rows[t].id.clone(), automatic: auto });
+        }
+    }
+    out
+}
+
+/// The words in a memo that can name a merchant: letters only, four or more, minus the words
+/// every card and bank memo shares.
+fn merchant_words(desc: &str) -> HashSet<String> {
+    const COMMON: [&str; 16] = ["aplpay", "online", "payment", "transfer", "debit", "credit", "card", "purchase",
+        "wire", "domestic", "front", "desk", "recd", "from", "with", "zelle"];
+    desc.split(|c: char| !c.is_ascii_alphabetic())
+        .map(|w| w.to_lowercase())
+        .filter(|w| w.len() >= 4 && !COMMON.contains(&w.as_str()))
+        .collect()
+}
+
+/// `newer - older` in days, keeping the sign.
+fn signed_day_gap(newer: &str, older: &str) -> Option<i64> {
+    let d = |s: &str| chrono::NaiveDate::parse_from_str(&s[..s.len().min(10)], "%Y-%m-%d").ok();
+    Some((d(newer)? - d(older)?).num_days())
 }
 
 fn norm(s: &str) -> String {
@@ -873,6 +1013,91 @@ mod tests {
         assert_eq!(m.get(NEW).map(String::as_str), Some(OLD));
     }
 
+    fn raw(r: TxnRow, pa: &str, pending: bool, retracted: bool) -> TxnRow {
+        let mut o = json!({"pa": pa, "tid": r.id, "pnd": pending});
+        if retracted { o["rtr"] = json!("2026-09-08T20:50:14Z"); }
+        TxnRow { raw_json: o.to_string(), ..r }
+    }
+
+    #[test]
+    fn a_retracted_booked_charge_hands_its_booking_to_the_one_posted_copy() {
+        let card = "BUSINESS CARD \u{00b7}\u{00b7}3456";
+        let v = vec![
+            raw(booked(row("pend", card, "2026-08-23", 363.91, "out", "TURO", "", "2026-08-24T00:00:00Z"), "travel"), "pa_1", true, true),
+            raw(row("post", card, "2026-08-25", 363.91, "out", "TURO* TRIP HX93", "", "2026-08-26T00:00:00Z"), "pa_1", false, false),
+        ];
+        let p = takeover_pairs(&v, &HashMap::new());
+        assert_eq!(p.len(), 1);
+        assert_eq!((p[0].from_id.as_str(), p[0].to_id.as_str(), p[0].automatic), ("pend", "post", true));
+    }
+
+    #[test]
+    fn two_posted_candidates_or_a_changed_amount_ask_instead() {
+        let card = "BUSINESS CARD \u{00b7}\u{00b7}3456";
+        let two = vec![
+            raw(booked(row("pend", card, "2026-09-01", 5.0, "in", "MARKETPLACE FEE", "", "2026-09-01T00:00:00Z"), "other_income"), "pa_1", true, true),
+            raw(row("a", card, "2026-09-02", 5.0, "in", "MARKETPLACE FEE", "", "2026-09-02T00:00:00Z"), "pa_1", false, false),
+            raw(row("b", card, "2026-09-02", 5.0, "in", "MARKETPLACE FEE", "", "2026-09-02T00:00:00Z"), "pa_1", false, false),
+        ];
+        let p = takeover_pairs(&two, &HashMap::new());
+        assert_eq!(p.len(), 1, "identical copies pair one for one");
+        assert!(p[0].automatic);
+
+        // Two retracted and two posted, identical: both pair.
+        let mut four = two.clone();
+        four.push(raw(booked(row("pend2", card, "2026-09-01", 5.0, "in", "MARKETPLACE FEE", "", "2026-09-01T00:00:00Z"), "other_income"), "pa_2", true, true));
+        let p = takeover_pairs(&four, &HashMap::new());
+        assert_eq!(p.iter().filter(|t| t.automatic).count(), 2);
+        assert_eq!(p.iter().map(|t| t.to_id.clone()).collect::<HashSet<_>>().len(), 2);
+
+        // A $5 retracted copy with a $5 posted copy AND a $5.50 same-merchant posted copy: ask.
+        let mut mixed = vec![two[0].clone(), two[1].clone()];
+        mixed.push(raw(row("c", card, "2026-09-03", 5.50, "in", "MARKETPLACE FEE", "", "2026-09-03T00:00:00Z"), "pa_1", false, false));
+        let p = takeover_pairs(&mixed, &HashMap::new());
+        assert_eq!(p.len(), 2);
+        assert!(p.iter().all(|t| !t.automatic));
+
+        let hold = vec![
+            raw(booked(row("hold", card, "2026-08-23", 400.0, "out", "HOTEL FRONT DESK", "", "2026-08-23T00:00:00Z"), "travel"), "pa_1", true, true),
+            raw(row("final", card, "2026-08-26", 432.18, "out", "HOTEL FRONT DESK", "", "2026-08-27T00:00:00Z"), "pa_1", false, false),
+        ];
+        let p = takeover_pairs(&hold, &HashMap::new());
+        assert_eq!(p.len(), 1);
+        assert!(!p[0].automatic, "a different settled amount is a chip, never automatic");
+    }
+
+    #[test]
+    fn a_booked_copy_that_is_still_pending_is_only_ever_a_chip() {
+        let card = "BUSINESS CARD \u{00b7}\u{00b7}3456";
+        let v = vec![
+            raw(booked(row("pend", card, "2026-09-10", 42.0, "out", "PARKING", "", "2026-09-10T00:00:00Z"), "travel"), "pa_1", true, false),
+            raw(row("post", card, "2026-09-11", 42.0, "out", "PARKING", "", "2026-09-12T00:00:00Z"), "pa_2", false, false),
+        ];
+        let p = takeover_pairs(&v, &HashMap::new());
+        assert_eq!(p.len(), 1);
+        assert!(!p[0].automatic);
+    }
+
+    #[test]
+    fn unrelated_rows_never_pair() {
+        let card = "BUSINESS CARD \u{00b7}\u{00b7}3456";
+        let other = "OTHER CARD \u{00b7}\u{00b7}7777";
+        let v = vec![
+            raw(booked(row("pend", card, "2026-08-23", 100.0, "out", "SUPPLIER", "", "2026-08-23T00:00:00Z"), "payment"), "pa_1", true, true),
+            // wrong direction, another account, too late, too different
+            raw(row("in", card, "2026-08-24", 100.0, "in", "SUPPLIER", "", "2026-08-24T00:00:00Z"), "pa_1", false, false),
+            raw(row("acct", other, "2026-08-24", 100.0, "out", "SUPPLIER", "", "2026-08-24T00:00:00Z"), "pa_9", false, false),
+            raw(row("late", card, "2026-09-10", 100.0, "out", "SUPPLIER", "", "2026-09-10T00:00:00Z"), "pa_1", false, false),
+            raw(row("far", card, "2026-08-24", 250.0, "out", "SUPPLIER", "", "2026-08-24T00:00:00Z"), "pa_1", false, false),
+            // close amount, different merchant
+            raw(row("rest", card, "2026-08-25", 109.05, "out", "AplPay RESTAURANT CHICAGO", "", "2026-08-25T00:00:00Z"), "pa_1", false, false),
+            // an unbooked retracted row hands nothing over
+            raw(row("unbooked_rtr", card, "2026-08-23", 60.0, "out", "X", "", "2026-08-23T00:00:00Z"), "pa_1", false, true),
+            raw(row("post60", card, "2026-08-24", 60.0, "out", "X", "", "2026-08-24T00:00:00Z"), "pa_1", false, false),
+        ];
+        assert!(takeover_pairs(&v, &HashMap::new()).is_empty());
+    }
+
     /// The live book, read-only: `ECLIPTR_DEDUP_DB=<path to a COPY> cargo test --bin clienthub
     /// live_book_plan -- --ignored --nocapture`. Prints the plan; writes nothing.
     #[test]
@@ -884,6 +1109,9 @@ mod tests {
         let stored: HashMap<String, String> = conn
             .query_row("SELECT value FROM settings WHERE key='bank_account_aliases'", [], |r| r.get::<_, String>(0))
             .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let takeovers = takeover_pairs(&rows, &stored);
+        std::fs::write(format!("{path}.takeovers.json"), serde_json::to_string_pretty(&takeovers).unwrap()).unwrap();
+        println!("takeovers={} automatic={}", takeovers.len(), takeovers.iter().filter(|t| t.automatic).count());
         for aggressive in [false, true] {
             let p = plan(&rows, &stored, aggressive);
             let out = json!({

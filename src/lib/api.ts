@@ -1993,6 +1993,10 @@ export interface BankImportSummary {
 }
 export interface BankTxn {
   id: string;
+  /** R-289: the bank has not posted this yet (Plaid's pending flag, stamped since v0.16.63). */
+  pending?: boolean;
+  /** R-289: the bank retracted this row; it was kept because it holds booked work. */
+  retracted?: boolean;
   posted_at: string;
   amount: number;
   direction: "in" | "out";
@@ -2256,10 +2260,24 @@ export interface PlaidSyncResult {
 }
 /** What one run of the bank feed did. Every field that can destroy or defer booked
  *  work must be surfaced by EVERY caller — see surfaceSyncWarnings in FinancialsView. */
+/** R-289: a posted transaction that can take over a booked copy the bank retracted or has not
+ *  posted yet. `automatic` pairs are carried on the next bank sync without asking. */
+export interface TakeoverSuggestion {
+  to_id: string;
+  from_id: string;
+  automatic: boolean;
+  from_date: string;
+  from_amount: number;
+  from_description: string;
+  from_category: string;
+  from_pending: boolean;
+}
 export interface PlaidSyncSummary {
   imported: number;
   removed: number;
   amended: number;
+  /** R-289: retracted booked copies whose booking moved onto their one posted copy. */
+  settled_inferred?: number;
   over_allocated: string[];
   /** Bookings carried from a pending row onto the posted twin that replaced it. */
   settled: number;
@@ -3217,6 +3235,9 @@ export const api = {
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
   clearBankTxns: (scope: "statements" | "plaid" | "all", force = false) =>
     invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
+  listTakeoverSuggestions: () => invoke<TakeoverSuggestion[]>("list_takeover_suggestions"),
+  takeOverBooking: (fromId: string, toId: string) =>
+    invoke<{ moved: boolean; over_allocated: string[] }>("take_over_booking", { fromId, toId }),
   dedupeBankTxns: (dryRun: boolean, aggressive = false) =>
     invoke<DedupeResult>("dedupe_bank_txns", { dryRun, aggressive }),
   /** Delete hand-picked bank transactions. Booked rows are skipped, not silently removed. */

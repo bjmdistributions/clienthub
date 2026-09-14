@@ -1038,6 +1038,8 @@ fn main() {
             refund_status_all,
             clear_bank_txns,
             dedupe_bank_txns,
+            list_takeover_suggestions,
+            take_over_booking,
             delete_bank_txns,
             undo_bank_account_merge,
             get_money_config,

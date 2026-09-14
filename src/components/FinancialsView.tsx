@@ -6,7 +6,9 @@ import {
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
   Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, BankPersonCandidate, ReconciliationMissingDeal,
+  TakeoverSuggestion,
 } from "../lib/api";
+import StatusPill from "./StatusPill";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -803,6 +805,9 @@ export default function FinancialsView() {
   // Server-scored smart links (R-150) — txn id → ranked candidate deals. Empty
   // when the server is unreachable; the local matcher stays as the fallback.
   const [serverSugg, setServerSugg] = useState<Map<string, BankSuggestCandidate[]>>(new Map());
+  // R-289: posted rows that can take over a booked copy the bank retracted or hasn't posted.
+  const [takeovers, setTakeovers] = useState<Map<string, TakeoverSuggestion[]>>(new Map());
+  const [takingOver, setTakingOver] = useState<string | null>(null);
   // R-156/W1-b — the same server pass, read as a PERSON rather than a deal. Empty
   // until deploy-41 lands; the picker's search works regardless.
   const [personSugg, setPersonSugg] = useState<Map<string, BankPersonCandidate[]>>(new Map());
@@ -879,6 +884,15 @@ export default function FinancialsView() {
     } catch { /* the picker falls back to whatever is already tagged */ }
   };
 
+  // R-289: local and cheap, so it follows every ledger read. Never blocks the ledger.
+  const loadTakeovers = () => {
+    api.listTakeoverSuggestions().then((list) => {
+      const m = new Map<string, TakeoverSuggestion[]>();
+      for (const s of list) m.set(s.to_id, [...(m.get(s.to_id) || []), s]);
+      setTakeovers(m);
+    }).catch(() => {});
+  };
+
   const loadAll = async () => {
     setLoadError(null);
     try {
@@ -886,6 +900,7 @@ export default function FinancialsView() {
         api.listBankTxns(), api.bankTxnSummary(), api.listDealFlows(), api.listLoans(), api.listTxnRules(),
       ]);
       setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
+      loadTakeovers();
       // Smart-link hints arrive separately and never block the ledger (R-150).
       loadServerSugg();
       probeMissingLinks();
@@ -975,6 +990,7 @@ export default function FinancialsView() {
     // in the app must reach the allocation picker without a full remount.
     const [t, s, ln, d] = await Promise.all([api.listBankTxns(), api.bankTxnSummary(), api.listLoans(), api.listDealFlows()]);
     setTxns(t); setSummary(s); setLoans(ln); setDeals(d);
+    loadTakeovers();
     loadServerSugg();
     if (keepOpen && openId) {
       const a = await api.listBankAllocationsForTxn(openId);
@@ -1065,8 +1081,12 @@ export default function FinancialsView() {
     // The bank retracted work already reviewed or booked, and no replacement could
     // be identified. Since v0.15.137 the row is KEPT — nothing was deleted, so there
     // is nothing to "re-link"; the old copy said the opposite and was wrong.
+    if ((r.settled_inferred ?? 0) > 0) {
+      const n = r.settled_inferred ?? 0;
+      toast(`${n} charge${n === 1 ? "" : "s"} you booked while pending posted at your bank — the booking moved to the posted copy.`, "success");
+    }
     if (r.retracted_kept > 0) {
-      toast(`Your bank retracted ${r.retracted_kept} transaction${r.retracted_kept === 1 ? "" : "s"} you'd already reviewed or booked. Nothing was deleted — ${r.retracted_kept === 1 ? "it is" : "they are"} still in your ledger. If the replacement has landed, use "Re-pull all" in Setup to move your work onto it.`, "error");
+      toast(`Your bank retracted ${r.retracted_kept} transaction${r.retracted_kept === 1 ? "" : "s"} you'd already booked. Nothing was deleted. When the posted copy arrives, the booking moves over on its own, or it shows a "Take over booking" button in To book.`, "error");
     }
     // A pending/posted pair was identified but the booking could not be moved
     // automatically. Both rows are intact; which one keeps the work is a human call.
@@ -2026,27 +2046,47 @@ export default function FinancialsView() {
 
   // Headline figures: rows waiting, and money still needing a deal — the same
   // definition as rangeSummary.needsDeal (kept in step with bank_txn_summary and
-  // financials_overview.stale_unallocated), with no date window.
+  // financials_overview.stale_unallocated), with no date window. R-289: pending rows
+  // are counted apart — the bank has not posted them, and they post under a new id.
   const toBookStats = useMemo(() => {
-    let count = 0, needsDealAmt = 0;
+    let count = 0, needsDealAmt = 0, pending = 0;
     for (const t of txns) {
       if (t.reviewed) continue;
+      if (t.pending) { pending++; continue; }
       count++;
       if (needsADeal(t)) needsDealAmt += t.unallocated;
     }
-    return { count, needsDealAmt };
+    return { count, needsDealAmt, pending };
   }, [txns]);
 
-  // Rows grouped by posted day, newest day first (toBookRows is already sorted).
+  // Posted rows grouped by day, newest day first (toBookRows is already sorted); then
+  // one last group for everything still pending at the bank (R-289) — booking those is
+  // allowed, but they are the rows that come back under a new id when they post.
   const toBookGroups = useMemo(() => {
-    const groups: { date: string; rows: BankTxn[] }[] = [];
+    const groups: { date: string; pending?: boolean; rows: BankTxn[] }[] = [];
+    const pending: BankTxn[] = [];
     for (const t of toBookRows) {
+      if (t.pending) { pending.push(t); continue; }
       const d = (t.posted_at || "").slice(0, 10);
       const g = groups[groups.length - 1];
       if (g && g.date === d) g.rows.push(t); else groups.push({ date: d, rows: [t] });
     }
+    if (pending.length) groups.push({ date: "pending", pending: true, rows: pending });
     return groups;
   }, [toBookRows]);
+
+  // R-289: move a booked copy's work onto the posted row it became.
+  const takeOver = async (t: BankTxn, s: TakeoverSuggestion) => {
+    setTakingOver(t.id);
+    try {
+      const r = await api.takeOverBooking(s.from_id, t.id);
+      toast(r.over_allocated?.length
+        ? `Booking moved. The posted amount is lower than what's linked: ${r.over_allocated.join("; ")}.`
+        : "Booking moved to the posted copy.", r.over_allocated?.length ? "error" : "success");
+      await refreshAll(false);
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setTakingOver(null); }
+  };
 
   // What was accomplished this month — the caught-up state should read like an
   // achievement, not a shrug.
@@ -2508,6 +2548,12 @@ export default function FinancialsView() {
                       ) : (
                         <div className="flex items-center gap-1.5 min-w-0">
                           <span className="font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
+                          {t.pending && <StatusPill title="Your bank hasn't posted this yet.">Pending</StatusPill>}
+                          {t.retracted && (
+                            <StatusPill tone="warning" title="Your bank retracted this transaction. It was kept because it holds booked work; when the posted copy arrives the booking moves to it.">
+                              Retracted by bank
+                            </StatusPill>
+                          )}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -2996,6 +3042,9 @@ export default function FinancialsView() {
             </span>
             {toBookStats.needsDealAmt > 0.005 && (
               <span className="text-muted"> · <span className="tabular-nums">{fmtAmount(toBookStats.needsDealAmt)}</span> waiting on a deal</span>
+            )}
+            {toBookStats.pending > 0 && (
+              <span className="text-muted"> · <span className="tabular-nums">{toBookStats.pending}</span> pending at the bank</span>
             )}
             {/* Say where the suggestions stop. A row past the sweep's cut-off
                 carries no chip for the same reason a genuinely unmatched row
@@ -4221,7 +4270,9 @@ export default function FinancialsView() {
             {toBookGroups.map((g) => (
               <div key={g.date} className="bg-surface border border-line rounded-xl overflow-hidden">
                 <div className="px-4 py-2 bg-surface-2/60 border-b border-line text-[11.5px] font-semibold text-ink-2">
-                  {dayHeading(g.date)}
+                  {g.pending ? (
+                    <>Pending at the bank <span className="font-normal text-muted">· these usually post in 1–3 days. Booking one now is fine: the booking carries over when it posts.</span></>
+                  ) : dayHeading(g.date)}
                 </div>
                 <div className="divide-y divide-line-2">
                   {g.rows.map((t) => {
@@ -4259,12 +4310,34 @@ export default function FinancialsView() {
                             ? <ArrowDownLeft size={15} className="text-success-ink flex-shrink-0" strokeWidth={2} />
                             : <ArrowUpRight size={15} className="text-danger-ink flex-shrink-0" strokeWidth={2} />}
                           <div className="min-w-0 flex-1 basis-full lg:basis-auto order-1 lg:order-none">
-                            <div className="text-[13px] font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</div>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-[13px] font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
+                              {t.pending && (
+                                <StatusPill title="Your bank hasn't posted this yet. It usually posts in 1–3 days; a booking made now carries over when it posts.">
+                                  {g.pending ? `Pending · ${dayHeading((t.posted_at || "").slice(0, 10))}` : "Pending"}
+                                </StatusPill>
+                              )}
+                            </div>
                             <div className="text-[11.5px] text-muted truncate">
                               {needsLine(t)}
                               {memo ? <span className="text-faint"> · {memo}</span> : null}
                               {t.note ? <span className="text-ink-2"> · {t.note}</span> : null}
                             </div>
+                            {(takeovers.get(t.id) || []).slice(0, 2).map((s) => (
+                              // R-289: this is the posted copy of something already booked.
+                              <button
+                                key={s.from_id}
+                                onClick={(e) => { e.stopPropagation(); takeOver(t, s); }}
+                                disabled={takingOver === t.id}
+                                title={`You booked ${fmtAmount(s.from_amount)} "${s.from_description}" on ${s.from_date}${s.from_category ? ` as ${catLabel(s.from_category)}` : ""}${s.from_pending ? " while it was pending" : "; your bank has since retracted that copy"}. Take over moves that booking and any deal link onto this row and removes the old copy (backed up).`}
+                                className="mt-1 mr-1 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-medium hover:bg-accent/10 disabled:opacity-50 transition-colors max-w-full"
+                              >
+                                {takingOver === t.id ? <Loader2 size={10} className="animate-spin flex-shrink-0" /> : <RotateCcw size={10} className="flex-shrink-0" />}
+                                <span className="truncate">
+                                  Already booked {s.from_date.slice(5)} · {fmtAmount(s.from_amount)} — take over booking
+                                </span>
+                              </button>
+                            ))}
                             {(() => {
                               // Booking memory: this payee's own history, one tap to apply.
                               const sg = suggestionFor(t);

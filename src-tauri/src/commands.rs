@@ -12926,7 +12926,11 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
                 -- financials screen in v0.15.116.
                 CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pm.payment_method') END,
                 -- The transaction's own note (R-256), flattened to '' like the method.
-                COALESCE(bt.note, '') AS note
+                COALESCE(bt.note, '') AS note,
+                -- R-289: pending at the bank (Plaid's flag, stamped since v0.16.63), and
+                -- retracted by the bank but kept because it holds booked work.
+                COALESCE(CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pnd') END, 0),
+                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.rtr') END IS NOT NULL
          FROM bank_txn bt ORDER BY bt.posted_at DESC, bt.created_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
@@ -12956,9 +12960,80 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
             "confirmed_method": r.get::<_, String>(17)?,
             "bank_method": r.get::<_, Option<String>>(18)?,
             "note": r.get::<_, String>(19)?,
+            "pending": r.get::<_, i64>(20)? != 0,
+            "retracted": r.get::<_, i64>(21)? != 0,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// R-289: carry every AUTOMATIC take-over (see `bank_dedup::takeover_pairs`) — a booked copy
+/// the bank retracted, handed to its one posted replacement. Runs at the end of every
+/// `plaid_sync`, so the existing retracted rows heal on the next sync without anyone clicking.
+/// Returns (moved, refused).
+fn carry_automatic_takeovers(
+    now: &str,
+    over_allocated: &mut Vec<String>,
+    touched_deals: &mut std::collections::HashSet<String>,
+) -> (i64, Vec<String>) {
+    let Ok(conn) = pool().get() else { return (0, Vec::new()) };
+    let Ok(rows) = load_dedup_rows(&conn) else { return (0, Vec::new()) };
+    let aliases = account_alias_map();
+    let mut moved = 0i64;
+    let mut refused = Vec::new();
+    for t in crate::bank_dedup::takeover_pairs(&rows, &aliases).into_iter().filter(|t| t.automatic) {
+        match settle_retracted_twin(&conn, &t.from_id, &t.to_id, now, over_allocated, touched_deals) {
+            Settled::Retired => moved += 1,
+            Settled::Refused(w) => refused.push(w),
+            Settled::None => {}
+        }
+    }
+    (moved, refused)
+}
+
+/// R-289: every posted transaction that could take over a booked copy's work — the chips on
+/// To book. Automatic pairs are included (they are carried on the next sync; until then the
+/// chip lets it happen now).
+#[tauri::command]
+pub async fn list_takeover_suggestions() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let rows = load_dedup_rows(&conn)?;
+    let aliases = account_alias_map();
+    let by_id: std::collections::HashMap<&str, &crate::bank_dedup::TxnRow> = rows.iter().map(|r| (r.id.as_str(), r)).collect();
+    Ok(crate::bank_dedup::takeover_pairs(&rows, &aliases).into_iter().filter_map(|t| {
+        let f = by_id.get(t.from_id.as_str())?;
+        let to = by_id.get(t.to_id.as_str())?;
+        // Only offer it on a row that is still asking to be booked.
+        if to.reviewed { return None; }
+        let (f_pending, f_retracted) = crate::bank_dedup::pending_and_retracted(&f.raw_json);
+        let pending = f_pending && !f_retracted;
+        Some(json!({
+            "to_id": t.to_id, "from_id": t.from_id, "automatic": t.automatic,
+            "from_date": f.date, "from_amount": f.amount, "from_description": f.desc,
+            "from_category": f.category, "from_pending": pending,
+        }))
+    }).collect())
+}
+
+/// R-289: a person confirms a take-over chip.
+#[tauri::command]
+pub async fn take_over_booking(from_id: String, to_id: String) -> Result<Value, String> {
+    let now = Utc::now().to_rfc3339();
+    let mut over = Vec::new();
+    let mut touched = std::collections::HashSet::new();
+    let outcome = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        settle_retracted_twin(&conn, &from_id, &to_id, &now, &mut over, &mut touched)
+    };
+    for d in &touched { let _ = resync_completed_deal(d); }
+    match outcome {
+        Settled::Retired => {
+            crate::netsync::push_now();
+            Ok(json!({ "moved": true, "over_allocated": over }))
+        }
+        Settled::Refused(w) => Err(format!("Nothing was changed: {w}")),
+        Settled::None => Err("Nothing was changed: that booking can no longer be moved (it may already have been carried over).".into()),
+    }
 }
 
 /// Headline counts for the Financials review area.
@@ -14186,7 +14261,60 @@ fn settle_pending_twin(
         r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
         r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?,
     ))).ok();
-    let Some((s_rev, s_cat, s_cp, s_ct, s_ci, s_dir, s_desc)) = src else { return Settled::None };
+    let Some(src) = src else { return Settled::None };
+    settle_carry(conn, pending_id, posted_id, src, direction, now, "plaid_settled", over_allocated, touched_deals)
+}
+
+/// R-289: retire a booked copy the bank retracted (or that is still pending) onto the posted
+/// copy that replaced it, when Plaid did not name the pair. The caller has decided the pair —
+/// `bank_dedup::takeover_pairs` for the automatic case, a person for a chip. Re-checks here what
+/// must still be true now: the source is booked and is retracted or pending, the target exists,
+/// is posted and not itself retracted. The move is the same `settle_carry` the bank-named settle
+/// uses, backed up under its own reason.
+fn settle_retracted_twin(
+    conn: &rusqlite::Connection,
+    from_id: &str, to_id: &str, now: &str,
+    over_allocated: &mut Vec<String>,
+    touched_deals: &mut std::collections::HashSet<String>,
+) -> Settled {
+    if from_id == to_id { return Settled::None; }
+    let flags = |id: &str| -> Option<(bool, bool, String)> {
+        conn.query_row(
+            "SELECT COALESCE(CASE WHEN json_valid(raw_json) THEN json_extract(raw_json,'$.pnd') END,0), \
+                    CASE WHEN json_valid(raw_json) THEN json_extract(raw_json,'$.rtr') END IS NOT NULL, \
+                    COALESCE(direction,'') FROM bank_txn WHERE id=?1",
+            [id], |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, i64>(1)? != 0, r.get::<_, String>(2)?)),
+        ).ok()
+    };
+    let (Some((f_pending, f_retracted, _)), Some((t_pending, t_retracted, t_dir))) = (flags(from_id), flags(to_id)) else {
+        return Settled::None;
+    };
+    if !(f_pending || f_retracted) || t_pending || t_retracted { return Settled::None; }
+    if !bank_txn_is_referenced(conn, from_id) { return Settled::None; }
+    let src = conn.query_row(
+        "SELECT COALESCE(reviewed,0), COALESCE(category,''), COALESCE(counterparty_name,''), \
+                COALESCE(counterparty_type,''), COALESCE(counterparty_id,''), \
+                COALESCE(direction,''), COALESCE(description,'') FROM bank_txn WHERE id=?1",
+        [from_id], |r| Ok((
+            r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?,
+        ))).ok();
+    let Some(src) = src else { return Settled::None };
+    settle_carry(conn, from_id, to_id, src, &t_dir, now, "plaid_settled_inferred", over_allocated, touched_deals)
+}
+
+/// The move itself: carry the booking and every allocation from `pending_id` onto `posted_id`,
+/// then retire `pending_id` through the oplog — one operation, backed up first.
+#[allow(clippy::too_many_arguments)]
+fn settle_carry(
+    conn: &rusqlite::Connection,
+    pending_id: &str, posted_id: &str,
+    src: (i64, String, String, String, String, String, String),
+    direction: &str, now: &str, reason: &str,
+    over_allocated: &mut Vec<String>,
+    touched_deals: &mut std::collections::HashSet<String>,
+) -> Settled {
+    let (s_rev, s_cat, s_cp, s_ct, s_ci, s_dir, s_desc) = src;
 
     // Invariant 9. A settle never flips direction; if it did, moving a buyer_payment onto
     // it would book money against the wrong side of reconciliation.
@@ -14244,8 +14372,8 @@ fn settle_pending_twin(
     if let Ok(rj) = conn.query_row(BANK_TXN_BACKUP_SQL, [pending_id], |r| r.get::<_, String>(0)) {
         let _ = conn.execute(
             "INSERT OR IGNORE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) \
-             VALUES (?1,?2,?3,'plaid_settled',?4)",
-            rusqlite::params![pending_id, rj, posted_id, now]);
+             VALUES (?1,?2,?3,?4,?5)",
+            rusqlite::params![pending_id, rj, posted_id, reason, now]);
     }
 
     // Only USER work travels. A non-empty `category` is not user work — plaid_category
@@ -15125,6 +15253,10 @@ pub async fn plaid_sync() -> Result<Value, String> {
         obj.insert("dt".into(), json!(dt));
         obj.insert("pa".into(), json!(pacct));
         obj.insert("tid".into(), json!(tid));
+        // R-289: Plaid's own pending flag. A pending charge posts later under a NEW id, and
+        // until this was stored the screen could not tell a pending row from a posted one —
+        // so it was booked, retracted, and booked again on its posted copy.
+        obj.insert("pnd".into(), json!(t.get("pending").and_then(|v| v.as_bool()).unwrap_or(false)));
         if !merchant.is_empty() {
             obj.insert("merchant".into(), json!(merchant));
         }
@@ -15780,6 +15912,11 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // NOTE: this re-derives completed_at from MAX(posted_at) over buyer_payment legs, so a
     // moved buyer_payment shifts the deal's closed date from the authorisation date to the
     // settled date — typically 1-2 days.
+    // R-289: a booked charge the bank retracted, handed to its one posted replacement when
+    // Plaid did not name the pair (card accounts rarely send pending_transaction_id). Before
+    // the deal resync below, so a moved allocation re-derives its deal in the same run.
+    let (settled_inferred, inferred_refused) = carry_automatic_takeovers(&now, &mut amended_over_allocated, &mut touched_deals);
+    settle_refused.extend(inferred_refused);
     for d in &touched_deals { let _ = resync_completed_deal(d); }
     // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules
     // failure must not fail the sync.
@@ -15811,6 +15948,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
     }
     if settled > 0 {
         tracing::info!("plaid_sync: carried booking work across {} pending->posted settle(s)", settled);
+    }
+    if settled_inferred > 0 {
+        tracing::info!("plaid_sync: {} retracted booked transaction(s) handed their booking to the posted copy", settled_inferred);
     }
     if !amended_over_allocated.is_empty() {
         tracing::warn!(
@@ -15862,6 +16002,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         "over_allocated": amended_over_allocated,
         // Pending -> posted settles.
         "settled": settled,                       // bookings carried onto the posted twin
+        "settled_inferred": settled_inferred,     // R-289: retracted booked copy -> its one posted copy
         "settle_refused": settle_refused,         // pair found, work NOT moved, both rows kept
         "retracted_kept": retracted_kept.len(),   // booked work the bank retracted — KEPT, not deleted
         "with_pending_ref": with_pending_ref,     // added txns carrying pending_transaction_id
