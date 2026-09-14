@@ -13,6 +13,7 @@ import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import StatusPill from "./StatusPill";
+import { FreightChip, FreightPanel, UnlinkedShipments } from "./FreightTracking";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -417,6 +418,9 @@ export default function DealFlowView() {
           </button>
         )}
       </div>
+
+      {/* Priority1 shipments that arrived by email and are not on a deal yet (R-277) */}
+      <UnlinkedShipments />
 
       {/* ── Waiting on pickup or delivery (R-154) ───────────────────────── */}
       {(lane.length > 0 || noAnswer > 0) && (
@@ -900,6 +904,7 @@ function DealFlowCard({
             </span>
           )}
           {!isComplete && <ShipChip flow={flow} />}
+          <FreightChip dealFlowId={flow.id} />
           {/* Completed deals: date + which payment link (if any) is potentially missing */}
           {isComplete && flow.completed_at && (
             <span className="text-[11.5px] text-muted tabular-nums flex-shrink-0">
@@ -971,6 +976,7 @@ function DealFlowCard({
                   so it sits above the switcher and is always on screen once the
                   card is open rather than buried inside a step. */}
               <ShippingStrip flow={flow} onReload={onReload} locked={locked} />
+              <FreightPanel dealFlowId={flow.id} locked={locked} />
 
               {/* Section switcher — always visible, click any step */}
               <div className="border-t border-line">

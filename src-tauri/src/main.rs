@@ -30,6 +30,7 @@ mod sync;
 mod sync_crypto;
 mod secret_store;
 mod show_packing;
+mod shipments;
 mod template;
 
 use commands::*;
@@ -1131,6 +1132,12 @@ fn main() {
             // Show packing (R-271/R-272)
             show_packing::show_packing_request,
             show_packing::show_packing_pdf,
+            shipments::list_shipments,
+            shipments::link_shipment,
+            shipments::link_shipment_ref,
+            shipments::dismiss_shipment,
+            shipments::suggest_shipment_deals,
+            shipments::scan_priority1_mail,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

@@ -1059,6 +1059,40 @@ export interface DealFlow {
   expected_delivery_date_prev?: string | null;
 }
 
+/** R-277: one Priority1 shipment, built from its tracking emails. `deal_flow_id` empty =
+ *  not attached to a deal yet. `stage` is '' until the first email for a pasted number. */
+export interface Shipment {
+  id: string;
+  deal_flow_id: string;
+  broker: string;
+  shipment_number: string;
+  bol: string;
+  pro: string;
+  pickup_number: string;
+  refs_json: string;
+  carrier: string;
+  status: string;
+  stage: "" | "booked" | "picked_up" | "in_transit" | "out_for_delivery" | "delivered" | "exception";
+  origin: string;
+  destination: string;
+  last_location: string;
+  last_note: string;
+  last_update_at: string;
+  details_url: string;
+  /** [{ at, status, stage, location, note, message_id }] oldest first. */
+  events_json: string;
+  dismissed: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ShipmentDealSuggestion {
+  deal_flow_id: string;
+  label: string;
+  score: number;
+  reason: string;
+}
+
 export interface BuyerTier {
   client_id: string;
   client_name: string;
@@ -2617,6 +2651,13 @@ export const api = {
     invoke<DealFlow | null>("get_deal_flow_by_invoice", { invoiceId }),
   getDealFlow: (id: string) => invoke<DealFlow>("get_deal_flow", { id }),
   listDealFlows: () => invoke<DealFlow[]>("list_deal_flows"),
+  // R-277 freight tracking (Priority1 emails)
+  listShipments: () => invoke<Shipment[]>("list_shipments"),
+  linkShipment: (id: string, dealFlowId: string) => invoke<void>("link_shipment", { id, dealFlowId }),
+  linkShipmentRef: (dealFlowId: string, reference: string) => invoke<Shipment>("link_shipment_ref", { dealFlowId, reference }),
+  dismissShipment: (id: string) => invoke<void>("dismiss_shipment", { id }),
+  suggestShipmentDeals: (id: string) => invoke<ShipmentDealSuggestion[]>("suggest_shipment_deals", { id }),
+  scanPriority1Mail: (days: number) => invoke<{ emails: number; shipments: number; errors: string[] }>("scan_priority1_mail", { days }),
   listDealFlowsByStage: (stage: string) => invoke<DealFlow[]>("list_deal_flows_by_stage", { stage }),
   markPaymentReceived: (id: string, input: PaymentReceivedInput) =>
     invoke<void>("mark_payment_received", { id, input }),

@@ -2001,4 +2001,41 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE scheduled_sends ADD COLUMN batch_per_hour INTEGER DEFAULT 0;
         "#,
     ),
+    (
+        94,
+        // R-277: freight tracking from Priority1 update emails (shipments.rs). One row per
+        // shipment, keyed by whichever of BOL / PRO / shipment number the mail carries;
+        // `deal_flow_id` empty = not attached to a deal yet. `events_json` is the timeline.
+        // Synced (sync.rs ALLOWED_TABLES, netsync SNAPSHOT_TABLES) and mirrored in
+        // clienthub-api (schema.sql + ALLOWED_TABLES / PUSHABLE / SNAPSHOT_TABLES) — the
+        // server must be DEPLOYED FIRST or every shipment push is rejected as an unknown table.
+        r#"
+        CREATE TABLE IF NOT EXISTS shipments (
+            id TEXT PRIMARY KEY,
+            deal_flow_id TEXT DEFAULT '',
+            broker TEXT DEFAULT 'Priority1',
+            shipment_number TEXT DEFAULT '',
+            bol TEXT DEFAULT '',
+            pro TEXT DEFAULT '',
+            pickup_number TEXT DEFAULT '',
+            refs_json TEXT DEFAULT '[]',
+            carrier TEXT DEFAULT '',
+            status TEXT DEFAULT '',
+            stage TEXT DEFAULT '',
+            origin TEXT DEFAULT '',
+            destination TEXT DEFAULT '',
+            last_location TEXT DEFAULT '',
+            last_note TEXT DEFAULT '',
+            last_update_at TEXT DEFAULT '',
+            details_url TEXT DEFAULT '',
+            events_json TEXT DEFAULT '[]',
+            dismissed INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_shipments_deal ON shipments(deal_flow_id);
+        CREATE INDEX IF NOT EXISTS idx_shipments_bol ON shipments(bol);
+        "#,
+    ),
 ];

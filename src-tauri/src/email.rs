@@ -1182,6 +1182,46 @@ fn fetch_latest_matching_blocking(
     Ok(None)
 }
 
+/// Run an IMAP SEARCH (e.g. `FROM "priority1.com" SINCE 15-Aug-2026`) against one
+/// monitored inbox and return up to `max` of the newest matches, parsed. Read-only: it
+/// never touches the UID cursor, so it cannot hide mail from the watcher (R-277 backfill).
+pub async fn search_inbox(inbox_id: &str, query: String, max: usize) -> Result<Vec<ParsedEmail>> {
+    let (host, port, user, auth, label) = resolve_inbox_creds(inbox_id).await?;
+    let res = tokio::task::spawn_blocking(move || -> Result<Vec<ParsedEmail>> {
+        let mut session = imap_session(&host, port, &user, &auth)?;
+        session.select(SCAN_FOLDER).context("select inbox")?;
+        let mut uids: Vec<u32> = session.uid_search(&query).context("search")?.into_iter().collect();
+        uids.sort_unstable();
+        let keep: Vec<String> = uids.iter().rev().take(max).map(|u| u.to_string()).collect();
+        let mut out = Vec::new();
+        if !keep.is_empty() {
+            let messages = session.uid_fetch(keep.join(","), "(UID RFC822)").context("fetch")?;
+            for msg in messages.iter() {
+                let Some(body_bytes) = msg.body() else { continue };
+                let Some(p) = MessageParser::default().parse(body_bytes) else { continue };
+                out.push(ParsedEmail {
+                    uid: msg.uid.unwrap_or(0),
+                    message_id: p.message_id().map(|s| s.to_string()),
+                    from: p.from().and_then(|f| f.first()).and_then(|a| a.address()).unwrap_or("").to_string(),
+                    from_name: p.from().and_then(|f| f.first()).and_then(|a| a.name()).map(|s| s.to_string()),
+                    to: p.to().map(|t| t.iter().filter_map(|a| a.address().map(|s| s.to_string())).collect()).unwrap_or_default(),
+                    subject: p.subject().unwrap_or("(no subject)").to_string(),
+                    body_text: p.body_text(0).map(|s| s.to_string()).unwrap_or_default(),
+                    body_html: p.body_html(0).map(|s| s.to_string()),
+                    date: p.date().and_then(|d| chrono::DateTime::<Utc>::from_timestamp(d.to_timestamp(), 0).map(|dt| dt.to_rfc3339())),
+                    has_attachments: p.attachment_count() > 0,
+                    source: String::new(),
+                });
+            }
+        }
+        let _ = session.logout();
+        Ok(out)
+    })
+    .await
+    .context("imap search task")??;
+    Ok(res.into_iter().map(|mut e| { e.source = label.clone(); e }).collect())
+}
+
 /// Serialises `scan()`. The read-fetch-write of a UID cursor is not atomic - it
 /// yields at the `spawn_blocking` await - so two concurrent scans interleave and
 /// import the same messages twice. Every watcher plus the periodic safety sweep can
@@ -1772,6 +1812,10 @@ pub async fn scan_and_process() -> Result<Vec<ParsedEmail>> {
 async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
     let mut new_leads: Vec<NewLead> = Vec::new();
     for email in emails {
+        // R-277: record a Priority1 shipment update as freight tracking. It deliberately does
+        // NOT stop here — whatever the rest of this loop already did with Priority1 mail (a
+        // supplier contact, say) still happens exactly as before.
+        crate::shipments::ingest(email);
         // Signup detection first
         if let Ok(Some(m)) =
             crate::signup_rules::matches_any(&email.from, &email.subject, &email.source)
