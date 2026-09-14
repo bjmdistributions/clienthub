@@ -12906,7 +12906,23 @@ pub async fn bank_import_ai(path: String, account_id: String) -> Result<Value, S
 #[tauri::command]
 pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
+    bank_txn_list_rows(&conn, "1=1", "")
+}
+
+/// R-288: the same rows as `list_bank_txns`, for just these ids — so a click that touched one
+/// row re-reads one row, not the whole ledger (1.6 MB of JSON at 2,537 rows, measured). An id
+/// that no longer exists is simply absent from the result, which is how the screen learns it
+/// was removed.
+#[tauri::command]
+pub async fn list_bank_txns_by_ids(ids: Vec<String>) -> Result<Vec<Value>, String> {
+    if ids.is_empty() { return Ok(Vec::new()); }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let js = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
+    bank_txn_list_rows(&conn, "bt.id IN (SELECT value FROM json_each(?1))", &js)
+}
+
+fn bank_txn_list_rows(conn: &rusqlite::Connection, where_sql: &str, param: &str) -> Result<Vec<Value>, String> {
+    let sql = format!(
         "SELECT bt.id, bt.posted_at, bt.amount, bt.direction, bt.description, bt.rail, bt.category,
                 bt.counterparty_name, bt.counterparty_type, bt.counterparty_id, bt.wire_ref, bt.reviewed, bt.account_id,
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated,
@@ -12930,10 +12946,16 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
                 -- R-289: pending at the bank (Plaid's flag, stamped since v0.16.63), and
                 -- retracted by the bank but kept because it holds booked work.
                 COALESCE(CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pnd') END, 0),
-                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.rtr') END IS NOT NULL
-         FROM bank_txn bt ORDER BY bt.posted_at DESC, bt.created_at DESC",
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |r| {
+                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.rtr') END IS NOT NULL,
+                -- R-288 phase 3: booked from history at this moment (undoable), and the
+                -- category it had before.
+                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.ab') END,
+                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.abc') END
+         FROM bank_txn bt WHERE {where_sql} ORDER BY bt.posted_at DESC, bt.created_at DESC",
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params: Vec<&dyn rusqlite::ToSql> = if param.is_empty() { Vec::new() } else { vec![&param] };
+    let rows = stmt.query_map(params.as_slice(), |r| {
         let amount: f64 = r.get(2)?;
         let allocated: f64 = r.get(13)?;
         Ok(json!({
@@ -12962,6 +12984,8 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
             "note": r.get::<_, String>(19)?,
             "pending": r.get::<_, i64>(20)? != 0,
             "retracted": r.get::<_, i64>(21)? != 0,
+            "auto_booked_at": r.get::<_, Option<String>>(22)?,
+            "auto_booked_from": r.get::<_, Option<String>>(23)?,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -12989,6 +13013,102 @@ fn carry_automatic_takeovers(
         }
     }
     (moved, refused)
+}
+
+/// R-288 phase 3: is booking from history switched on? A synced setting so every device that
+/// pulls a bank agrees; on unless someone switched it off.
+fn auto_book_enabled() -> bool {
+    pool().get().ok()
+        .and_then(|c| c.query_row("SELECT value FROM settings WHERE key='bank_auto_book'", [], |r| r.get::<_, String>(0)).ok())
+        .map_or(true, |v| v != "off")
+}
+
+#[tauri::command]
+pub async fn get_auto_book_enabled() -> Result<bool, String> { Ok(auto_book_enabled()) }
+
+#[tauri::command]
+pub async fn set_auto_book_enabled(enabled: bool) -> Result<(), String> {
+    let v = if enabled { "on" } else { "off" };
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO settings (key,value) VALUES ('bank_auto_book',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [v])
+            .map_err(|e| e.to_string())?;
+    }
+    let mut c = Map::new();
+    c.insert("value".into(), Value::String(v.into()));
+    sync::record_upsert("settings", "bank_auto_book", c).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
+/// Set keys on a row's `raw_json` (and remove others), written through the oplog.
+fn patch_raw_json(conn: &rusqlite::Connection, id: &str, set: &[(&str, Value)], remove: &[&str], extra: Map<String, Value>, now: &str) -> Result<(), String> {
+    let raw: String = conn.query_row("SELECT COALESCE(raw_json,'') FROM bank_txn WHERE id=?1", [id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let mut obj = serde_json::from_str::<Value>(&raw).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    for (k, v) in set { obj.insert((*k).into(), v.clone()); }
+    for k in remove { obj.remove(*k); }
+    let rj = Value::Object(obj).to_string();
+    let mut cols = extra;
+    cols.insert("raw_json".into(), Value::String(rj.clone()));
+    cols.insert("updated_at".into(), Value::String(now.into()));
+    sync::record_upsert("bank_txn", id, cols.clone()).map_err(|e| e.to_string())?;
+    let mut sets = vec!["raw_json=?1".to_string(), "updated_at=?2".to_string()];
+    let mut vals: Vec<rusqlite::types::Value> = vec![rj.into(), now.to_string().into()];
+    for (k, v) in cols.iter().filter(|(k, _)| k.as_str() != "raw_json" && k.as_str() != "updated_at") {
+        sets.push(format!("{k}=?{}", vals.len() + 1));
+        vals.push(match v {
+            Value::Number(n) => n.as_i64().map(rusqlite::types::Value::Integer).unwrap_or(rusqlite::types::Value::Real(n.as_f64().unwrap_or(0.0))),
+            Value::Bool(b) => rusqlite::types::Value::Integer(*b as i64),
+            other => rusqlite::types::Value::Text(other.as_str().unwrap_or_default().to_string()),
+        });
+    }
+    vals.push(id.to_string().into());
+    conn.execute(&format!("UPDATE bank_txn SET {} WHERE id=?{}", sets.join(", "), vals.len()), rusqlite::params_from_iter(vals))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// R-288 phase 3: book every row history is sure about (`bank_learn::auto_bookings`). The
+/// category it had and the moment are kept on the row (`raw_json.ab` / `abc`) so To book can
+/// list them and undo each one. Returns the ids booked.
+fn book_from_history(now: &str) -> Vec<String> {
+    if !auto_book_enabled() { return Vec::new(); }
+    let Ok(conn) = pool().get() else { return Vec::new() };
+    let Ok(rows) = load_dedup_rows(&conn) else { return Vec::new() };
+    let prev: std::collections::HashMap<&str, &str> = rows.iter().map(|r| (r.id.as_str(), r.category.as_str())).collect();
+    let mut booked = Vec::new();
+    for b in crate::bank_learn::auto_bookings(&rows) {
+        let mut extra = Map::new();
+        extra.insert("category".into(), Value::String(b.category.clone()));
+        extra.insert("reviewed".into(), json!(1));
+        let set = [("ab", Value::String(now.into())), ("abc", Value::String(prev.get(b.id.as_str()).copied().unwrap_or("").into()))];
+        match patch_raw_json(&conn, &b.id, &set, &[], extra, now) {
+            Ok(()) => booked.push(b.id),
+            Err(e) => tracing::warn!("book_from_history: {} not booked: {e}", b.id),
+        }
+    }
+    if !booked.is_empty() { crate::netsync::push_now(); }
+    booked
+}
+
+/// Undo one automatic booking: back to unbooked with the category it had, and never booked
+/// from history again.
+#[tauri::command]
+pub async fn undo_auto_booking(id: String) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let prev: Option<String> = conn.query_row(
+        "SELECT CASE WHEN json_valid(raw_json) THEN json_extract(raw_json,'$.abc') END FROM bank_txn WHERE id=?1 \
+           AND json_valid(raw_json) AND json_extract(raw_json,'$.ab') IS NOT NULL",
+        [&id], |r| r.get(0)).map_err(|_| "That transaction was not booked automatically.".to_string())?;
+    let mut extra = Map::new();
+    extra.insert("reviewed".into(), json!(0));
+    extra.insert("category".into(), Value::String(prev.unwrap_or_default()));
+    patch_raw_json(&conn, &id, &[("abx", json!(true))], &["ab", "abc"], extra, &now)?;
+    drop(conn);
+    crate::netsync::push_now();
+    Ok(())
 }
 
 /// R-289: every posted transaction that could take over a booked copy's work — the chips on
@@ -13176,6 +13296,20 @@ pub async fn set_bank_txn_review(
         REVIEW_UPDATE_SQL,
         rusqlite::params![category, counterparty_name, counterparty_type, counterparty_id, confirmed_method, note, flag, now, id],
     ).map_err(|e| e.to_string())?;
+    // R-288: reopening a row booked from history is its Undo — the category it had comes
+    // back (unless this save set one) and it is never booked from history again. The
+    // server's PATCH does the same for the phone and the accountant.
+    if reviewed == Some(false) {
+        let prev: Option<Option<String>> = conn.query_row(
+            "SELECT CASE WHEN json_valid(raw_json) THEN json_extract(raw_json,'$.abc') END FROM bank_txn WHERE id=?1 \
+               AND json_valid(raw_json) AND json_extract(raw_json,'$.ab') IS NOT NULL",
+            [&id], |r| r.get(0)).ok();
+        if let Some(prev) = prev {
+            let mut extra = Map::new();
+            if category.is_none() { extra.insert("category".into(), Value::String(prev.unwrap_or_default())); }
+            patch_raw_json(&conn, &id, &[("abx", json!(true))], &["ab", "abc"], extra, &now)?;
+        }
+    }
     // Booking a transaction must reach the other admins immediately: waiting for the
     // 20s poll leaves a window where two people work the same queue and both see the
     // row as unbooked, which is how one payment gets allocated twice.
@@ -15007,7 +15141,10 @@ pub async fn plaid_has_keys() -> Result<bool, String> { Ok(crate::plaid::has_key
 /// Keys-set flag + current environment, for the settings UI.
 #[tauri::command]
 pub async fn plaid_config() -> Result<Value, String> {
-    Ok(json!({ "has_keys": crate::plaid::has_keys(), "env": crate::plaid::get_env() }))
+    // R-288 phase 4: when THIS device last finished pulling its banks — To book shows it.
+    let last_sync: Option<String> = pool().get().ok()
+        .and_then(|c| c.query_row("SELECT value FROM settings WHERE key='plaid_last_sync'", [], |r| r.get(0)).ok());
+    Ok(json!({ "has_keys": crate::plaid::has_keys(), "env": crate::plaid::get_env(), "last_sync": last_sync }))
 }
 
 /// Verify the client_id + secret work against the selected environment BEFORE
@@ -15725,7 +15862,21 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         .or_else(|| t.get("authorized_datetime").and_then(|v| v.as_str()))
                         .unwrap_or("").to_string();
                     let pacct = t.get("account_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let rawj = rawj_for(t, &dt, &pacct, &tid, &merchant);
+                    let mut rawj = rawj_for(t, &dt, &pacct, &tid, &merchant);
+                    // Keep what THIS app wrote on the row: the retraction stamp, the original
+                    // account label of a merge, and the history-booking marks. An amendment
+                    // rewrote the whole blob and silently dropped them.
+                    if let (Ok(Value::Object(mut fresh)), Ok(old)) = (
+                        serde_json::from_str::<Value>(&rawj),
+                        conn.query_row("SELECT COALESCE(raw_json,'') FROM bank_txn WHERE id=?1", [&id], |r| r.get::<_, String>(0)),
+                    ) {
+                        if let Ok(Value::Object(old)) = serde_json::from_str::<Value>(&old) {
+                            for k in ["rtr", "acct0", "ab", "abc", "abx"] {
+                                if let Some(v) = old.get(k) { fresh.insert(k.into(), v.clone()); }
+                            }
+                            rawj = Value::Object(fresh).to_string();
+                        }
+                    }
 
                     // An amount change on money already tied to a deal can break the
                     // "allocations never exceed the transaction" invariant. Never
@@ -15915,12 +16066,29 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // R-289: a booked charge the bank retracted, handed to its one posted replacement when
     // Plaid did not name the pair (card accounts rarely send pending_transaction_id). Before
     // the deal resync below, so a moved allocation re-derives its deal in the same run.
-    let (settled_inferred, inferred_refused) = carry_automatic_takeovers(&now, &mut amended_over_allocated, &mut touched_deals);
+    // Both automatic passes below WRITE to rows the bank did not just send. A row another
+    // device has deleted (a duplicate cleanup) but this device has not pulled yet would be
+    // brought back to life on every device by a newer write (invariant 16). So they run only
+    // on a view that has just been brought up to date, and skip this sync otherwise.
+    let converged = !crate::netsync::is_enabled() || crate::netsync::pull_apply().await.is_ok();
+    if !converged { tracing::warn!("plaid_sync: could not pull from the server; automatic take-overs and history bookings skipped this sync"); }
+    let (settled_inferred, inferred_refused) = if converged {
+        carry_automatic_takeovers(&now, &mut amended_over_allocated, &mut touched_deals)
+    } else { (0, Vec::new()) };
     settle_refused.extend(inferred_refused);
     for d in &touched_deals { let _ = resync_completed_deal(d); }
     // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules
     // failure must not fail the sync.
     let _ = apply_txn_rules_impl(false, Some(&rules_since));
+    // R-288 phase 3: then book what history is sure about. After the rules, so a rule that
+    // auto-books wins, and after the take-overs, so a carried booking is not re-decided.
+    let auto_booked = if converged { book_from_history(&now) } else { Vec::new() };
+    // Device-local on purpose: it says when THIS device's connections were last pulled.
+    if results.iter().any(|r| r.get("status").and_then(|s| s.as_str()) == Some("ok")) {
+        if let Ok(c) = pool().get() {
+            let _ = c.execute("INSERT INTO settings (key,value) VALUES ('plaid_last_sync',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&now]);
+        }
+    }
     crate::netsync::push_now(); // freshly imported bank activity reaches other devices now
     // Publish the refreshed balance for devices that have no Plaid link of their own.
     // This used to happen ONLY when a human opened Financials or Analytics on this
@@ -16003,6 +16171,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         // Pending -> posted settles.
         "settled": settled,                       // bookings carried onto the posted twin
         "settled_inferred": settled_inferred,     // R-289: retracted booked copy -> its one posted copy
+        "auto_booked_history": auto_booked.len(), // R-288: booked from history (listed on To book, undoable)
         "settle_refused": settle_refused,         // pair found, work NOT moved, both rows kept
         "retracted_kept": retracted_kept.len(),   // booked work the bank retracted — KEPT, not deleted
         "with_pending_ref": with_pending_ref,     // added txns carrying pending_transaction_id
@@ -16725,7 +16894,7 @@ async fn fetch_bank_suggest(path: &str) -> Value {
 /// booking still flows through allocate_bank_txn locally.
 #[tauri::command]
 pub async fn suggest_bank_txn_links() -> Result<Value, String> {
-    Ok(fetch_bank_suggest("/api/bank/suggestions/bulk?limit=120").await)
+    Ok(fetch_bank_suggest("/api/bank/suggestions/bulk?limit=120&refunds=1").await)
 }
 
 /// R-150 phase 5 — completed deals whose payments were never bank-linked,

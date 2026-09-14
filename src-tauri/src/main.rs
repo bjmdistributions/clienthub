@@ -2,6 +2,7 @@
 
 mod ai;
 mod bank_dedup;
+mod bank_learn;
 mod bank_import;
 mod checkups;
 mod commands;
@@ -1040,6 +1041,10 @@ fn main() {
             clear_bank_txns,
             dedupe_bank_txns,
             list_takeover_suggestions,
+            list_bank_txns_by_ids,
+            get_auto_book_enabled,
+            set_auto_book_enabled,
+            undo_auto_booking,
             take_over_booking,
             delete_bank_txns,
             undo_bank_account_merge,

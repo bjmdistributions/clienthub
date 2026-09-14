@@ -1112,6 +1112,10 @@ mod tests {
         let takeovers = takeover_pairs(&rows, &stored);
         std::fs::write(format!("{path}.takeovers.json"), serde_json::to_string_pretty(&takeovers).unwrap()).unwrap();
         println!("takeovers={} automatic={}", takeovers.len(), takeovers.iter().filter(|t| t.automatic).count());
+        let learned = crate::bank_learn::auto_bookings(&rows);
+        let mut by_cat: BTreeMap<String, usize> = BTreeMap::new();
+        for b in &learned { *by_cat.entry(b.category.clone()).or_default() += 1; }
+        println!("auto_bookings={} {:?}", learned.len(), by_cat);
         for aggressive in [false, true] {
             let p = plan(&rows, &stored, aggressive);
             let out = json!({

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
   Building2, RefreshCw, RotateCcw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle, Download,
@@ -185,6 +185,125 @@ const needsADeal = (t: BankTxn) =>
   DEAL_CAPABLE_CATEGORIES.includes(t.category || "") &&
   t.unallocated > 0.0001;
 
+// R-288 phase 4: the category control on the booking row and sheet. A native select
+// held 53 categories in seven groups with no way to type — the most used control on the
+// screen, and the only picker here without search. Type to narrow; the payee's usual
+// category comes first; arrow keys and Enter; Escape closes only the picker.
+// Positioned FIXED: the To book day cards clip their overflow.
+function CategoryPicker({ value, onChange, usual, variant = "row" }: {
+  value: string; onChange: (v: string) => void; usual?: string | null; variant?: "row" | "field";
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [hi, setHi] = useState(0);
+  const [pos, setPos] = useState<{ top: number; left: number; up: boolean }>({ top: 0, left: 0, up: false });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const opts = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    const all = CATEGORIES.filter((c) => c.value && !c.hidden &&
+      (!s || c.label.toLowerCase().includes(s) || c.group.toLowerCase().includes(s) || c.value.includes(s)));
+    const top = !s && usual ? all.find((c) => c.value === usual) : undefined;
+    return top ? [top, ...all.filter((c) => c !== top)] : all;
+  }, [q, usual]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => {
+      const t = e.target as Node;
+      if (popRef.current?.contains(t) || btnRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    window.addEventListener("scroll", close, true);
+    const id = window.setTimeout(() => inputRef.current?.focus(), 0);
+    return () => { document.removeEventListener("mousedown", close); window.removeEventListener("scroll", close, true); window.clearTimeout(id); };
+  }, [open]);
+  const toggle = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      const up = r.bottom + 330 > window.innerHeight && r.top > 330;
+      setPos({ top: up ? r.top - 6 : r.bottom + 6, left: Math.max(8, Math.min(r.left, window.innerWidth - 288)), up });
+      setQ(""); setHi(0);
+    }
+    setOpen((v) => !v);
+  };
+  const pick = (v: string) => { setOpen(false); if (v !== value) onChange(v); btnRef.current?.focus(); };
+  const label = value ? catLabel(value) : "";
+  let lastGroup = "";
+  return (
+    <span className="relative inline-flex" onClick={(e) => e.stopPropagation()}>
+      <button
+        ref={btnRef}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={toggle}
+        className={variant === "field"
+          ? "w-full flex items-center justify-between gap-2 h-9 px-3 rounded-lg border border-line bg-surface text-[13px] text-ink-2 hover:border-line-3 focus:outline-none focus:ring-2 focus:ring-accent/40"
+          : `inline-flex items-center gap-1.5 h-8 pl-2.5 pr-2 rounded-lg border text-[12px] max-w-[190px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors ${
+              value ? "bg-surface border-line text-ink-2 hover:border-line-3" : "bg-accent/5 border-accent/40 text-accent font-semibold hover:bg-accent/10"
+            }`}
+      >
+        <span className="truncate">{label || (variant === "field" ? "Uncategorized" : "Set category")}</span>
+        <ChevronDown size={12} className={`flex-shrink-0 ${value ? "text-faint" : "text-accent"}`} />
+      </button>
+      {open && (
+        <div
+          ref={popRef}
+          role="listbox"
+          style={{ position: "fixed", top: pos.top, left: pos.left, transform: pos.up ? "translateY(-100%)" : undefined }}
+          className="z-[60] w-[280px] bg-surface border border-line rounded-xl shadow-xl overflow-hidden"
+        >
+          <div className="p-2 border-b border-line">
+            <input
+              ref={inputRef}
+              value={q}
+              onChange={(e) => { setQ(e.target.value); setHi(0); }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") { e.preventDefault(); setHi((h) => Math.min(h + 1, opts.length - 1)); }
+                else if (e.key === "ArrowUp") { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
+                else if (e.key === "Enter") { e.preventDefault(); if (opts[hi]) pick(opts[hi].value); }
+                else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); btnRef.current?.focus(); }
+              }}
+              placeholder="Type to find a category"
+              aria-label="Find a category"
+              className="w-full h-8 px-2.5 rounded-lg bg-surface-2 border border-line text-[12.5px] text-ink placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/40"
+            />
+          </div>
+          <div className="max-h-[260px] overflow-y-auto py-1">
+            {opts.length === 0 && <div className="px-3 py-2 text-[12px] text-muted">No category matches</div>}
+            {opts.map((c, i) => {
+              const isUsual = !q.trim() && usual === c.value && i === 0;
+              const heading = !q.trim() && !isUsual && c.group !== lastGroup ? c.group : "";
+              if (!isUsual) lastGroup = c.group;
+              return (
+                <Fragment key={c.value}>
+                  {isUsual && <div className="px-3 pt-1.5 pb-0.5 text-[10.5px] font-medium text-muted">Usually</div>}
+                  {heading && <div className="px-3 pt-2 pb-0.5 text-[10.5px] font-medium text-muted">{heading}</div>}
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={c.value === value}
+                    onMouseEnter={() => setHi(i)}
+                    onClick={() => pick(c.value)}
+                    className={`w-full text-left px-3 py-1.5 text-[12.5px] flex items-center justify-between gap-2 ${
+                      i === hi ? "bg-surface-2 text-ink" : "text-ink-2"
+                    }`}
+                  >
+                    <span className="truncate">{c.label}</span>
+                    {c.value === value && <Check size={12} className="text-accent flex-shrink-0" />}
+                  </button>
+                </Fragment>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 // Grouped <option>s for any category <select>. Set includeUncat={false} to omit
 // the blank "Uncategorized" entry (e.g. a "Set category…" placeholder select).
 function CategoryOptions({ includeUncat = true }: { includeUncat?: boolean }) {
@@ -243,6 +362,30 @@ type DealChoice = { deal: DealFlow; reason: string; candidate?: BankSuggestCandi
 
 // Below this gap between the top two candidates the answer is a toss-up.
 const AMBIGUOUS_GAP = 20;
+// R-288: long lists render in steps. The ledger drew every one of 2,537 rows at once, each with
+// two native selects (about 165,000 option nodes, measured); now it draws what is on screen
+// plus a margin, and the next step when the bottom comes near.
+const ROW_STEP = 80;
+function MoreRows({ onVisible, colSpan, remaining }: { onVisible: () => void; colSpan?: number; remaining: number }) {
+  const ref = useRef<HTMLDivElement & HTMLTableRowElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) onVisible(); }, { rootMargin: "800px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [onVisible]);
+  // The button is the same action by hand, for a window where the observer does not run.
+  const button = (
+    <button onClick={onVisible} className="text-[12px] font-medium text-accent hover:text-accent-hover">
+      Show {Math.min(ROW_STEP, remaining)} more of {remaining}
+    </button>
+  );
+  return colSpan
+    ? <tr ref={ref}><td colSpan={colSpan} className="py-3 text-center">{button}</td></tr>
+    : <div ref={ref} className="py-3 text-center">{button}</div>;
+}
+
 const CONFIDENT_SCORE = 60;
 
 // The offline matcher, used when the server is unreachable. Same shape as the
@@ -307,7 +450,8 @@ const localChoices = (t: BankTxn, pool: DealFlow[]): DealChoice[] => {
 const dealOffer = (
   t: BankTxn,
   pool: DealFlow[],
-  cands?: BankSuggestCandidate[]
+  cands?: BankSuggestCandidate[],
+  poolById?: Map<string, DealFlow>,
 ): { choices: DealChoice[]; more: number } | null => {
   // Loan-tagged rows aren't deals, and there is nothing to offer on money that
   // is fully spoken for.
@@ -318,7 +462,7 @@ const dealOffer = (
   // unpaid supplier legs can nominate itself twice).
   const byDeal = new Map<string, { c: BankSuggestCandidate; deal: DealFlow }>();
   for (const c of cands ?? []) {
-    const deal = pool.find((d) => d.id === c.deal_id);
+    const deal = poolById ? poolById.get(c.deal_id) : pool.find((d) => d.id === c.deal_id);
     if (!deal) continue;
     const cur = byDeal.get(c.deal_id);
     if (!cur || c.score > cur.c.score) byDeal.set(c.deal_id, { c, deal });
@@ -754,6 +898,9 @@ export default function FinancialsView() {
     const t = txns.find((x) => x.id === id);
     if (!t) return;
     pendingOpenRef.current = null;
+    const at = txns.indexOf(t) + ROW_STEP;
+    rowFloorRef.current = at;
+    setRowLimit((n) => Math.max(n, at));
     if (openId !== id) toggleRow(t);
     setTimeout(() => {
       document.querySelector(`[data-txn-id="${id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -808,6 +955,16 @@ export default function FinancialsView() {
   // R-289: posted rows that can take over a booked copy the bank retracted or hasn't posted.
   const [takeovers, setTakeovers] = useState<Map<string, TakeoverSuggestion[]>>(new Map());
   const [takingOver, setTakingOver] = useState<string | null>(null);
+  // R-288 phase 3: booking from history.
+  const [autoBookOn, setAutoBookOn] = useState<boolean | null>(null);
+  const [autoBookedOpen, setAutoBookedOpen] = useState(false);
+  const [undoingAuto, setUndoingAuto] = useState<string | null>(null);
+  // R-288 phase 4: the daily controls live on To book.
+  const [lastBankSync, setLastBankSync] = useState<string | null>(null);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [armedBook, setArmedBook] = useState<string | null>(null); // deal money booked without a deal asks once
+  const [, setClockTick] = useState(0);
+  useEffect(() => { const id = window.setInterval(() => setClockTick((n) => n + 1), 60000); return () => window.clearInterval(id); }, []);
   // R-156/W1-b — the same server pass, read as a PERSON rather than a deal. Empty
   // until deploy-41 lands; the picker's search works regardless.
   const [personSugg, setPersonSugg] = useState<Map<string, BankPersonCandidate[]>>(new Map());
@@ -921,6 +1078,7 @@ export default function FinancialsView() {
     try {
       const cfg = await api.plaidConfig();
       setPlaidReady(cfg.has_keys);
+      setLastBankSync(cfg.last_sync ?? null);
       if (cfg.env === "sandbox" || cfg.env === "production") setPlaidEnv(cfg.env);
     } catch { setPlaidReady(false); }
     try { setPlaidItems(await api.plaidListItems()); } catch { /* no banks / not set up yet */ }
@@ -928,6 +1086,7 @@ export default function FinancialsView() {
 
   useEffect(() => {
     loadAll();
+    api.getAutoBookEnabled().then(setAutoBookOn).catch(() => setAutoBookOn(null));
     // Bank feed is secondary — load separately so a Plaid hiccup never blocks the list.
     loadPlaid();
   }, []);
@@ -1001,6 +1160,40 @@ export default function FinancialsView() {
   };
   refreshRef.current = refreshAll;
 
+  // R-288: after an action that touched a few rows, re-read THOSE rows instead of the
+  // whole ledger — a full refresh re-sends every transaction (1.6 MB at 2,537 rows,
+  // measured) plus a round trip to the server's suggestion engine, on every click. An id
+  // missing from the answer was removed (a take-over retires the old copy). Deals and
+  // loans come too when the action can change what they owe; both are small reads.
+  const refreshRows = async (ids: string[], opts: { loans?: boolean; keepOpen?: boolean } = {}) => {
+    const want = Array.from(new Set(ids.filter(Boolean)));
+    const [rows, s, d, ln] = await Promise.all([
+      api.listBankTxnsByIds(want), api.bankTxnSummary(), api.listDealFlows(),
+      opts.loans ? api.listLoans() : Promise.resolve(null),
+    ]);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const wanted = new Set(want);
+    setTxns((prev) => prev.filter((x) => !wanted.has(x.id) || byId.has(x.id)).map((x) => byId.get(x.id) ?? x));
+    setSummary(s); setDeals(d);
+    if (ln) setLoans(ln);
+    // A row that is now fully tied or booked has nothing left to suggest.
+    setServerSugg((prev) => {
+      const next = new Map(prev);
+      for (const id of want) {
+        const r = byId.get(id);
+        if (!r || r.reviewed || !(r.unallocated > 0.0001)) next.delete(id);
+      }
+      return next;
+    });
+    loadTakeovers();
+    if (opts.keepOpen !== false && openId) {
+      const a = await api.listBankAllocationsForTxn(openId);
+      setAllocs(a);
+      const nt = byId.get(openId) ?? txns.find((x) => x.id === openId);
+      setAmountStr(nt ? String(nt.unallocated) : "");
+    }
+  };
+
   // Screen-level refresh. Deliberately NOT gated on a Plaid link: on a device that
   // has never linked a bank itself, every other refresh control on this screen is
   // hidden, which left no way to re-read the ledger without leaving the tab.
@@ -1019,7 +1212,7 @@ export default function FinancialsView() {
       await api.addCashTransaction(amt, cashDir, cashDate || localDay(), cashCp.trim() || undefined, cashNote.trim() || undefined);
       setCashOpen(false); setCashAmount(""); setCashCp(""); setCashNote("");
       await refreshAll(false);
-      toast(`Cash ${cashDir === "out" ? "payment" : "receipt"} recorded — allocate it to deals below`);
+      toast(`Cash ${cashDir === "out" ? "payment" : "receipt"} recorded — link it to deals below`);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setCashSaving(false); }
   };
@@ -1032,6 +1225,7 @@ export default function FinancialsView() {
       await api.plaidSetKeys(cid, sec, plaidEnv);
       const cfg = await api.plaidConfig();
       setPlaidReady(cfg.has_keys);
+      setLastBankSync(cfg.last_sync ?? null);
       if (cfg.env === "sandbox" || cfg.env === "production") setPlaidEnv(cfg.env);
       setPlaidClientId(""); setPlaidSecret("");
       toast("Plaid keys saved");
@@ -1081,6 +1275,10 @@ export default function FinancialsView() {
     // The bank retracted work already reviewed or booked, and no replacement could
     // be identified. Since v0.15.137 the row is KEPT — nothing was deleted, so there
     // is nothing to "re-link"; the old copy said the opposite and was wrong.
+    if ((r.auto_booked_history ?? 0) > 0) {
+      const n = r.auto_booked_history ?? 0;
+      toast(`${n} transaction${n === 1 ? " was" : "s were"} booked the way you've always booked ${n === 1 ? "it" : "them"}. See "Booked for you" on To book to undo any.`, "success");
+    }
     if ((r.settled_inferred ?? 0) > 0) {
       const n = r.settled_inferred ?? 0;
       toast(`${n} charge${n === 1 ? "" : "s"} you booked while pending posted at your bank — the booking moved to the posted copy.`, "success");
@@ -1245,8 +1443,30 @@ export default function FinancialsView() {
         await refreshAll(false);
       }
       surfaceSyncWarnings(r);
+      api.plaidConfig().then((c) => setLastBankSync(c.last_sync ?? null)).catch(() => {});
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setPlaidSyncing(false); }
+  };
+
+  const agoText = (iso: string | null) => {
+    if (!iso) return "";
+    const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const h = Math.round(mins / 60);
+    return h < 24 ? `${h} hr ago` : `${Math.round(h / 24)} d ago`;
+  };
+
+  // Deal money booked with no deal asks once: the first click arms the button, the second
+  // books. window.confirm is inert in this webview (gotchas), so the question is the button.
+  const bookRow = (t: BankTxn) => {
+    if (!t.reviewed && needsADeal(t) && t.allocated <= 0.0001 && armedBook !== t.id) {
+      setArmedBook(t.id);
+      window.setTimeout(() => setArmedBook((cur) => (cur === t.id ? null : cur)), 4000);
+      return;
+    }
+    setArmedBook(null);
+    saveReview(t, { reviewed: !t.reviewed });
   };
 
   // A bulk clear keeps anything reviewed or linked to a deal; those only go if
@@ -1471,7 +1691,7 @@ export default function FinancialsView() {
       const acct = accountId.trim() || "business";
       localStorage.setItem("fin_last_account", acct);
       const s = await api.bankImportAi(aiPreviewPath, acct);
-      toast(`AI imported ${s.imported} (extracted ${s.extracted}); skipped ${s.skipped} already-imported. Review + allocate below.`);
+      toast(`AI imported ${s.imported} (extracted ${s.extracted}); skipped ${s.skipped} already-imported. Review and link below.`);
       setAiPreview(null); setAiPreviewPath(null);
       await refreshAll(false);
     } catch (e: any) { toast(errText(e), "error"); }
@@ -1538,7 +1758,7 @@ export default function FinancialsView() {
       try {
         await api.tagBankTxnToLoan(openId, selectedLoan.id);
         toast("Tagged to loan");
-        await refreshAll(true);
+        await refreshRows([openId], { loans: true });
       } catch (e: any) { toast(errText(e), "error"); }
       finally { setAllocBusy(false); }
       return;
@@ -1549,11 +1769,11 @@ export default function FinancialsView() {
     setAllocBusy(true);
     try {
       await api.allocateBankTxn(openId, selectedDeal.id, amt, role, note.trim(), allowSplit);
-      toast(allowSplit ? "Split leg allocated" : "Allocated to deal");
+      toast(allowSplit ? "Split leg linked" : "Linked to the deal");
       // In split mode keep the panel primed for the next leg; otherwise reset.
       setSelectedDeal(null); setDealQuery(""); setNote("");
       if (!allowSplit) setAmountStr("");
-      await refreshAll(true);
+      await refreshRows([openId]);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setAllocBusy(false); }
   };
@@ -1611,7 +1831,7 @@ export default function FinancialsView() {
       } else if (!fullyTied) {
         toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)} — ${fmtAmount(t.unallocated - amt)} still to file`);
       }
-      await refreshAll(true);
+      await refreshRows([t.id]);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setTyingId(null); }
   };
@@ -1653,7 +1873,7 @@ export default function FinancialsView() {
       setMissingLinks((prev) => prev
         .map((d) => ({ ...d, missing: d.missing.map((m) => ({ ...m, candidates: m.candidates.filter((c) => c.txn_id !== cand.txn_id) })) }))
         .filter((d) => d.missing.some((m) => m.candidates.length > 0)));
-      await refreshAll(true);
+      await refreshRows([cand.txn_id]);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setAttachBusy(null); }
   };
@@ -1663,7 +1883,7 @@ export default function FinancialsView() {
     try {
       await api.untagBankTxnLoan(bankTxnId);
       toast("Loan tag removed");
-      await refreshAll(true);
+      await refreshRows([bankTxnId], { loans: true });
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setAllocBusy(false); }
   };
@@ -1713,8 +1933,8 @@ export default function FinancialsView() {
   const removeAlloc = async (id: string) => {
     try {
       await api.removeBankAllocation(id);
-      toast("Allocation removed");
-      await refreshAll(true);
+      toast("Link removed");
+      if (openId) await refreshRows([openId]); else await refreshAll(true);
     } catch (e: any) { toast(errText(e), "error"); }
   };
 
@@ -1744,7 +1964,7 @@ export default function FinancialsView() {
     setBulkProgress("");
     setBulkActionBusy(false);
     clearSelection();
-    await refreshAll(true);
+    await refreshRows(ids);
     if (failed > 0) toast(`${failed} of ${ids.length} couldn't be updated${firstErr ? ` — ${firstErr}` : ""}`, "error");
   };
 
@@ -1834,8 +2054,7 @@ export default function FinancialsView() {
       const dealId = await api.createDealFlow(invoiceId, "Backfilled from bank import", dealName);
       await api.allocateBankTxn(t.id, dealId, t.unallocated, "buyer_payment", noteVal);
       toast("Deal created and receipt allocated");
-      setDeals(await api.listDealFlows());
-      await refreshAll(true);
+      await refreshRows([t.id]);
       return true;
     } catch (e: any) { toast(errText(e), "error"); return false; }
     finally { setNewDealBusy(false); }
@@ -1941,22 +2160,38 @@ export default function FinancialsView() {
     return true;
   }, [queue, acctFilter, catFilter, statusFilter, fromDate, toDate, passesMethod, passesPerson]);
 
+  // R-288: every keystroke in a search box ran five full passes over the ledger (18
+  // memo patterns per row in the method counts). The lists read a deferred copy, so
+  // typing stays instant and the filter catches up between keystrokes.
+  const qSearch = useDeferredValue(search);
+  const qSearchIn = useDeferredValue(searchIn);
+  const qSearchOut = useDeferredValue(searchOut);
+
+  const [rowLimit, setRowLimit] = useState(ROW_STEP);
+  const rowFloorRef = useRef(0); // a jump to a row deep in the ledger renders down to it
+  const showMoreRows = useCallback(() => setRowLimit((n) => n + ROW_STEP), []);
+  useEffect(() => {
+    setRowLimit(Math.max(ROW_STEP, rowFloorRef.current));
+    rowFloorRef.current = 0;
+  }, [tab, qSearch, qSearchIn, qSearchOut, dirFilter, acctFilter, catFilter, statusFilter, methodFilter,
+      personFilter, queue, fromDate, toDate, toBookAcct, toBookSearch, splitView]);
+
   const filtered = useMemo(
     () => txns.filter((t) =>
-      passesBase(t, !!search.trim()) &&
+      passesBase(t, !!qSearch.trim()) &&
       (dirFilter === "all" || t.direction === dirFilter) &&
-      matchesQuery(t, search)),
-    [txns, passesBase, dirFilter, search],
+      matchesQuery(t, qSearch)),
+    [txns, passesBase, dirFilter, qSearch],
   );
 
   // Split-view panes: forced direction + independent search per side.
   const filteredIn = useMemo(
-    () => txns.filter((t) => t.direction === "in" && passesBase(t, !!searchIn.trim()) && matchesQuery(t, searchIn)),
-    [txns, passesBase, searchIn],
+    () => txns.filter((t) => t.direction === "in" && passesBase(t, !!qSearchIn.trim()) && matchesQuery(t, qSearchIn)),
+    [txns, passesBase, qSearchIn],
   );
   const filteredOut = useMemo(
-    () => txns.filter((t) => t.direction === "out" && passesBase(t, !!searchOut.trim()) && matchesQuery(t, searchOut)),
-    [txns, passesBase, searchOut],
+    () => txns.filter((t) => t.direction === "out" && passesBase(t, !!qSearchOut.trim()) && matchesQuery(t, qSearchOut)),
+    [txns, passesBase, qSearchOut],
   );
 
   // The rows the ledger would show with ONE facet cleared — the same predicate the
@@ -1965,13 +2200,13 @@ export default function FinancialsView() {
   const scopeWithout = useCallback((skip: "method" | "person") => (
     splitView
       ? txns.filter((t) => (t.direction === "in"
-            ? passesBase(t, !!searchIn.trim(), skip) && matchesQuery(t, searchIn)
-            : passesBase(t, !!searchOut.trim(), skip) && matchesQuery(t, searchOut)))
+            ? passesBase(t, !!qSearchIn.trim(), skip) && matchesQuery(t, qSearchIn)
+            : passesBase(t, !!qSearchOut.trim(), skip) && matchesQuery(t, qSearchOut)))
       : txns.filter((t) =>
-          passesBase(t, !!search.trim(), skip) &&
+          passesBase(t, !!qSearch.trim(), skip) &&
           (dirFilter === "all" || t.direction === dirFilter) &&
-          matchesQuery(t, search))
-  ), [txns, passesBase, splitView, search, searchIn, searchOut, dirFilter]);
+          matchesQuery(t, qSearch))
+  ), [txns, passesBase, splitView, qSearch, qSearchIn, qSearchOut, dirFilter]);
 
   // Distinct account ids present in the loaded transactions (for the filter).
   const accounts = useMemo(
@@ -2035,13 +2270,14 @@ export default function FinancialsView() {
   // ── To book — the daily queue ────────────────────────────────────────────────
   // Every unbooked transaction, org-wide, newest first. Search and account narrow
   // it; nothing else hides rows.
+  const qToBookSearch = useDeferredValue(toBookSearch);
   const toBookRows = useMemo(
     () => txns
       .filter((t) => !t.reviewed &&
         (toBookAcct === "all" || t.account_id === toBookAcct) &&
-        matchesQuery(t, toBookSearch))
+        matchesQuery(t, qToBookSearch))
       .sort((a, b) => (b.posted_at || "").localeCompare(a.posted_at || "")),
-    [txns, toBookAcct, toBookSearch],
+    [txns, toBookAcct, qToBookSearch],
   );
 
   // Headline figures: rows waiting, and money still needing a deal — the same
@@ -2075,6 +2311,35 @@ export default function FinancialsView() {
     return groups;
   }, [toBookRows]);
 
+  // Only the first rowLimit rows render; the groups are cut to match.
+  const toBookVisible = useMemo(() => {
+    let left = rowLimit;
+    const out: typeof toBookGroups = [];
+    for (const g of toBookGroups) {
+      if (left <= 0) break;
+      out.push(g.rows.length <= left ? g : { ...g, rows: g.rows.slice(0, left) });
+      left -= g.rows.length;
+    }
+    return { groups: out, truncated: left < 0 || out.length < toBookGroups.length, remaining: Math.max(0, toBookRows.length - rowLimit) };
+  }, [toBookGroups, toBookRows.length, rowLimit]);
+
+  // R-288 phase 3: what was booked from history in the last two weeks, newest first.
+  const autoBooked = useMemo(() => {
+    const cutoff = new Date(Date.now() - 14 * 86400000).toISOString();
+    return txns.filter((t) => t.reviewed && t.auto_booked_at && t.auto_booked_at >= cutoff)
+      .sort((a, b) => (b.auto_booked_at || "").localeCompare(a.auto_booked_at || ""));
+  }, [txns]);
+
+  const undoAuto = async (t: BankTxn) => {
+    setUndoingAuto(t.id);
+    try {
+      await api.undoAutoBooking(t.id);
+      await refreshRows([t.id], { keepOpen: false });
+      toast("Moved back to To book. It won't be booked automatically again.");
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setUndoingAuto(null); }
+  };
+
   // R-289: move a booked copy's work onto the posted row it became.
   const takeOver = async (t: BankTxn, s: TakeoverSuggestion) => {
     setTakingOver(t.id);
@@ -2083,7 +2348,7 @@ export default function FinancialsView() {
       toast(r.over_allocated?.length
         ? `Booking moved. The posted amount is lower than what's linked: ${r.over_allocated.join("; ")}.`
         : "Booking moved to the posted copy.", r.over_allocated?.length ? "error" : "success");
-      await refreshAll(false);
+      await refreshRows([t.id, s.from_id], { keepOpen: false });
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setTakingOver(null); }
   };
@@ -2285,8 +2550,11 @@ export default function FinancialsView() {
   // as the offline fallback.
   const dealOffers = useMemo(() => {
     const m = new Map<string, { choices: DealChoice[]; more: number }>();
+    const byId = new Map(dealPool.map((d) => [d.id, d]));
     for (const t of txns) {
-      const o = dealOffer(t, dealPool, serverSugg.get(t.id));
+      // Nothing to offer on booked, fully-tied or loan money — skip the scoring entirely.
+      if (!(t.unallocated > 0.0001) || t.counterparty_type === "loan") continue;
+      const o = dealOffer(t, dealPool, serverSugg.get(t.id), byId);
       if (o) m.set(t.id, o);
     }
     return m;
@@ -2491,7 +2759,7 @@ export default function FinancialsView() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((t) => {
+              {rows.slice(0, rowLimit).map((t) => {
                 const payee = t.counterparty_name?.trim();
                 const mainLabel = payee || t.description || "—";
                 const memo = payee ? t.description : "";
@@ -2789,6 +3057,7 @@ export default function FinancialsView() {
                 </Fragment>
                 );
               })}
+              {rows.length > rowLimit && <MoreRows colSpan={9} onVisible={showMoreRows} remaining={rows.length - rowLimit} />}
             </tbody>
           </table>
           {rows.length === 0 && (
@@ -2868,10 +3137,12 @@ export default function FinancialsView() {
           </p>
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
-          {plaidItems.length > 0 && (
+          {plaidItems.length > 0 && tab !== "tobook" && (
             // Honest wording: the bank feed is pulled on a 20-minute timer by this
             // device (main.rs), not continuously. "Auto-syncing" read as live.
-            <span className="text-[11.5px] text-muted whitespace-nowrap">Bank feed checked every 20 min</span>
+            <span className="text-[11.5px] text-muted whitespace-nowrap">
+              {lastBankSync ? `Bank checked ${agoText(lastBankSync)}` : "Bank feed checked every 20 min"}
+            </span>
           )}
           {tab !== "tobook" && (
             <button
@@ -2886,11 +3157,11 @@ export default function FinancialsView() {
           <button
             onClick={refreshScreen}
             disabled={refreshing}
-            title="Re-read transactions, deals and loans"
+            title="Re-read transactions, deals and loans on this device. Does not contact your bank — use Sync bank for that."
             className="text-[12px] text-muted hover:text-ink-2 disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
           >
-            <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
-            Refresh
+            <RotateCcw size={13} className={refreshing ? "animate-spin" : ""} />
+            Reload
           </button>
         </div>
       </div>
@@ -3078,28 +3349,68 @@ export default function FinancialsView() {
                 ))}
               </select>
             )}
-            <button
-              onClick={openMissingLinks}
-              title="Find completed deals whose payments were never linked to bank transactions, and suggest the matching transactions from history"
-              className={`flex-shrink-0 flex items-center gap-1.5 px-4 h-9 rounded-lg text-[13px] font-semibold transition-colors ${
-                missingLinks.length > 0
-                  ? "border border-accent/40 bg-accent/5 text-accent hover:bg-accent/10"
-                  : "border border-line text-ink-2 hover:bg-surface-2"
-              }`}
-            >
-              <Wand2 size={14} /> Find missing links
-              {missingLinks.length > 0 && (
-                <span className="tabular-nums text-[11.5px] px-1.5 rounded-md bg-accent text-on-accent ring-1 ring-accent/40">
-                  {missingLinks.length}
-                </span>
+            {/* R-288 phase 4 — the queue's maintenance, where the queue is. These used to be
+                split between here and Setup for a historical reason, not a daily one. */}
+            <span className="relative flex-shrink-0">
+              <button
+                onClick={() => setToolsOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={toolsOpen}
+                className={`flex items-center gap-1.5 px-3.5 h-9 rounded-lg text-[13px] font-medium transition-colors ${
+                  missingLinks.length > 0
+                    ? "border border-accent/40 bg-accent/5 text-accent hover:bg-accent/10"
+                    : "border border-line text-ink-2 hover:bg-surface-2"
+                }`}
+              >
+                <Wand2 size={14} /> Tools
+                {missingLinks.length > 0 && (
+                  <span className="tabular-nums text-[11.5px] px-1.5 rounded-md bg-accent text-on-accent ring-1 ring-accent/40">
+                    {missingLinks.length}
+                  </span>
+                )}
+                <ChevronDown size={12} />
+              </button>
+              {toolsOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setToolsOpen(false)} />
+                  <div role="menu" className="absolute right-0 top-full mt-1.5 z-50 w-[300px] bg-surface border border-line rounded-xl shadow-xl py-1.5">
+                    {[
+                      { label: "Find missing links", hint: missingLinks.length > 0 ? `${missingLinks.length} completed deal${missingLinks.length === 1 ? "" : "s"} with payments never linked` : "Completed deals whose payments were never linked", run: openMissingLinks },
+                      { label: "Clean up duplicates", hint: "The same transaction on the books more than once", run: () => previewDedupe(false) },
+                      { label: "Apply rules now", hint: `Re-run your ${rules.length} remembered rule${rules.length === 1 ? "" : "s"} on unbooked rows`, run: applyRules },
+                    ].map((it) => (
+                      <button
+                        key={it.label}
+                        role="menuitem"
+                        onClick={() => { setToolsOpen(false); it.run(); }}
+                        className="w-full text-left px-3.5 py-2 hover:bg-surface-2 transition-colors"
+                      >
+                        <div className="text-[12.5px] font-medium text-ink">{it.label}</div>
+                        <div className="text-[11px] text-muted">{it.hint}</div>
+                      </button>
+                    ))}
+                  </div>
+                </>
               )}
-            </button>
+            </span>
             <button
               onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
               className="flex-shrink-0 flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"
             >
               <Plus size={14} /> Record cash
             </button>
+            {plaidItems.length > 0 && (
+              <button
+                onClick={() => syncPlaid("sync")}
+                disabled={plaidSyncing}
+                title="Pull new transactions from your connected banks now"
+                className="flex-shrink-0 flex items-center gap-1.5 px-3.5 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+              >
+                <RefreshCw size={13} className={plaidSyncing ? "animate-spin" : ""} />
+                {plaidSyncing ? "Syncing…" : "Sync bank"}
+                {lastBankSync && !plaidSyncing && <span className="text-[11px] text-muted font-normal">· {agoText(lastBankSync)}</span>}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -3421,7 +3732,7 @@ export default function FinancialsView() {
                   <input value={cashNote} onChange={(e) => setCashNote(e.target.value)} placeholder="e.g. cash pickup"
                     className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
                 </label>
-                <p className="text-[11px] text-muted">Saved as a cash transaction — then allocate it across deals below. It tracks how much is left of the original.</p>
+                <p className="text-[11px] text-muted">Saved as a cash transaction — then link it to deals below. It tracks how much is left of the original.</p>
               </div>
               <div className="px-5 py-4 border-t border-line flex justify-end gap-2">
                 <button onClick={() => setCashOpen(false)} className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
@@ -4237,6 +4548,45 @@ export default function FinancialsView() {
       {/* To book — the queue, grouped by day. Card rows: the left rail carries
           allocation state, the subline says what the row needs, and the obvious
           match is one click. */}
+      {tab === "tobook" && !loading && !loadError && autoBooked.length > 0 && (
+        <div className="bg-surface border border-line rounded-xl overflow-hidden">
+          <button
+            onClick={() => setAutoBookedOpen((v) => !v)}
+            className="w-full px-4 py-2.5 flex items-center gap-2 text-left hover:bg-surface-2 transition-colors"
+          >
+            {autoBookedOpen ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
+            <Wand2 size={13} className="text-accent" />
+            <span className="text-[12.5px] font-semibold text-ink">Booked for you</span>
+            <span className="text-[12px] text-muted min-w-0 truncate">
+              · <span className="tabular-nums">{autoBooked.length}</span> in the last two weeks, each the way you've booked it at least five times before
+            </span>
+          </button>
+          {autoBookedOpen && (
+            <div className="divide-y divide-line-2 border-t border-line">
+              {autoBooked.slice(0, 200).map((t) => (
+                <div key={t.id} className="px-4 py-2 flex items-center gap-3 min-w-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12.5px] font-medium text-ink truncate">{t.counterparty_name?.trim() || t.description}</div>
+                    <div className="text-[11px] text-muted truncate">
+                      {t.posted_at?.slice(0, 10)} · {catLabel(t.category)}{t.account_id ? ` · ${t.account_id}` : ""}
+                    </div>
+                  </div>
+                  <span className={`text-[12.5px] tabular-nums font-semibold whitespace-nowrap ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                    {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
+                  </span>
+                  <button
+                    onClick={() => undoAuto(t)}
+                    disabled={undoingAuto === t.id}
+                    className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors whitespace-nowrap"
+                  >
+                    {undoingAuto === t.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />} Undo
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {tab === "tobook" && (
         loading ? skeletonRows
         : loadError ? errorState
@@ -4267,7 +4617,7 @@ export default function FinancialsView() {
           </div>
         ) : (
           <div className="space-y-5">
-            {toBookGroups.map((g) => (
+            {toBookVisible.groups.map((g) => (
               <div key={g.date} className="bg-surface border border-line rounded-xl overflow-hidden">
                 <div className="px-4 py-2 bg-surface-2/60 border-b border-line text-[11.5px] font-semibold text-ink-2">
                   {g.pending ? (
@@ -4367,25 +4717,11 @@ export default function FinancialsView() {
                                 {loanTagLabel(t.direction)}
                               </span>
                             ) : (
-                              <span className="relative inline-flex items-center">
-                                <select
-                                  value={t.category || ""}
-                                  aria-label="Category"
-                                  onChange={(e) => saveReview(t, { category: e.target.value })}
-                                  className={`appearance-none h-8 pl-2.5 pr-7 rounded-lg border text-[12px] cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors ${
-                                    t.category
-                                      ? "bg-surface border-line text-ink-2 hover:border-line-3"
-                                      : "bg-accent/5 border-accent/40 text-accent font-semibold hover:bg-accent/10"
-                                  }`}
-                                >
-                                  <option value="">Set category</option>
-                                  <CategoryOptions includeUncat={false} />
-                                </select>
-                                <ChevronDown
-                                  size={12}
-                                  className={`pointer-events-none absolute right-2 ${t.category ? "text-faint" : "text-accent"}`}
-                                />
-                              </span>
+                              <CategoryPicker
+                                value={t.category || ""}
+                                usual={suggestionFor(t)?.cat ?? null}
+                                onChange={(v) => saveReview(t, { category: v })}
+                              />
                             )}
                           </span>
                           {/* Deal — tie the obvious match in one click, choose between
@@ -4438,11 +4774,15 @@ export default function FinancialsView() {
                           {/* Book — labeled, always visible, never hover-only. */}
                           <span className="flex-shrink-0 order-2 lg:order-none" onClick={(e) => e.stopPropagation()}>
                             <button
-                              onClick={() => saveReview(t, { reviewed: true })}
-                              title="Mark this transaction booked"
-                              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-semibold transition-colors whitespace-nowrap"
+                              onClick={() => bookRow(t)}
+                              title={armedBook === t.id ? "This is deal money with no deal linked. Click again to book it anyway." : "Mark this transaction booked"}
+                              className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold transition-colors whitespace-nowrap ${
+                                armedBook === t.id
+                                  ? "bg-warning-bg border border-warning/40 text-warning-ink hover:bg-warning-bg/80"
+                                  : "bg-accent hover:bg-accent-hover text-on-accent"
+                              }`}
                             >
-                              <Check size={12} strokeWidth={2.4} /> Book
+                              <Check size={12} strokeWidth={2.4} /> {armedBook === t.id ? "No deal — book anyway?" : "Book"}
                             </button>
                           </span>
                         </div>
@@ -4452,6 +4792,7 @@ export default function FinancialsView() {
                 </div>
               </div>
             ))}
+            {toBookVisible.truncated && <MoreRows onVisible={showMoreRows} remaining={toBookVisible.remaining} />}
           </div>
         )
       )}
@@ -4528,6 +4869,32 @@ export default function FinancialsView() {
           />
         );
       })()}
+
+      {/* R-288 phase 3 — booking from history, switched here. */}
+      {tab === "setup" && autoBookOn !== null && (
+        <div className="bg-surface border border-line rounded-xl px-4 py-3 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold text-ink flex items-center gap-1.5"><Wand2 size={14} className="text-accent" /> Book repeat expenses automatically</div>
+            <p className="text-[11.5px] text-muted leading-relaxed mt-0.5">
+              After each bank sync, a transaction is booked when you've booked the same payee the same way at least five times, 95% of the time or more.
+              Never money that belongs to a deal, never a pending charge, never a transfer, Zelle or check. Everything booked this way is listed under "Booked for you" on To book, where you can undo it. Applies on every device.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={autoBookOn}
+            aria-label="Book repeat expenses automatically"
+            onClick={async () => {
+              const next = !autoBookOn;
+              try { await api.setAutoBookEnabled(next); setAutoBookOn(next); }
+              catch (e: any) { toast(errText(e), "error"); }
+            }}
+            className={`relative flex-shrink-0 w-10 h-6 rounded-full border transition-colors ${autoBookOn ? "bg-accent border-accent" : "bg-surface-3 border-line"}`}
+          >
+            <span className={`absolute top-[2px] w-[18px] h-[18px] rounded-full bg-surface shadow transition-all ${autoBookOn ? "left-[18px]" : "left-[2px]"}`} />
+          </button>
+        </div>
+      )}
 
       {/* Auto-tag rules — managed from Setup, next to the tools that act on them */}
       {tab === "setup" && (
@@ -4614,14 +4981,16 @@ export default function FinancialsView() {
                 {openTxn.direction === "in" ? "+" : "−"}{fmtAmount(openTxn.amount)}
               </div>
               <button
-                onClick={() => saveReview(openTxn, { reviewed: !openTxn.reviewed })}
+                onClick={() => bookRow(openTxn)}
                 className={`flex items-center gap-1.5 h-9 px-4 rounded-lg text-[13px] font-medium transition-colors ${
                   openTxn.reviewed
                     ? "border border-line text-ink-2 hover:bg-surface-2"
-                    : "bg-accent hover:bg-accent-hover text-on-accent"
+                    : armedBook === openTxn.id
+                      ? "bg-warning-bg border border-warning/40 text-warning-ink"
+                      : "bg-accent hover:bg-accent-hover text-on-accent"
                 }`}
               >
-                <Check size={14} /> {openTxn.reviewed ? "Booked — reopen" : "Book it"}
+                <Check size={14} /> {openTxn.reviewed ? "Booked — reopen" : armedBook === openTxn.id ? "No deal linked — book anyway?" : "Book it"}
               </button>
             </div>
 
@@ -4748,13 +5117,12 @@ export default function FinancialsView() {
             {openTxn.counterparty_type !== "loan" && (
               <label className="block">
                 <span className="block text-[12px] font-medium text-ink-2 mb-1">Category</span>
-                <select
+                <CategoryPicker
+                  variant="field"
                   value={openTxn.category || ""}
-                  onChange={(e) => saveReview(openTxn, { category: e.target.value })}
-                  className={`${inp} text-ink-2`}
-                >
-                  <CategoryOptions />
-                </select>
+                  usual={suggestionFor(openTxn)?.cat ?? null}
+                  onChange={(v) => saveReview(openTxn, { category: v })}
+                />
                 {CAT_HINTS[openTxn.category || ""] && (
                   <span className="mt-1 block text-[11px] text-muted leading-snug">
                     {CAT_HINTS[openTxn.category || ""]}
@@ -5120,7 +5488,7 @@ function AllocationPanel(props: {
           {txn.account_id ? <span className="text-muted"> · {txn.account_id}</span> : null}
         </div>
         <div className="text-[12px] text-muted">
-          Unallocated{" "}
+          Not linked yet{" "}
           <span className={`font-semibold tabular-nums ${txn.unallocated > 0.0001 ? "text-warning-ink" : "text-success-ink"}`}>
             {fmtAmount(txn.unallocated)}
           </span>
@@ -5167,7 +5535,7 @@ function AllocationPanel(props: {
                   <div className="text-[12px] font-semibold text-ink tabular-nums flex-shrink-0">{fmtAmount(a.amount)}</div>
                   <button
                     onClick={() => onRemove(a.id)}
-                    title="Remove allocation"
+                    title="Remove this link"
                     className="flex-shrink-0 w-6 h-6 rounded-md inline-flex items-center justify-center text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"
                   >
                     <Trash2 size={13} />
@@ -5219,7 +5587,7 @@ function AllocationPanel(props: {
               value={amountStr}
               onChange={(e) => setAmountStr(e.target.value)}
               placeholder="Amount"
-              aria-label="Amount to allocate"
+              aria-label="Amount to link"
               className={`${inp} sm:col-span-3 tabular-nums`}
             />
             <select
@@ -5238,7 +5606,7 @@ function AllocationPanel(props: {
               disabled={busy || !selectedDeal}
               className="sm:col-span-12 flex items-center justify-center gap-1.5 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
             >
-              {busy ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Allocate
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Link
             </button>
           </div>
           {/* Say what the chosen role MEANS for the deal's money, in the row where the
@@ -5258,9 +5626,9 @@ function AllocationPanel(props: {
           </label>
           {allowSplit && (
             <div className="flex items-center gap-2 text-[11.5px] text-muted mt-1 flex-wrap">
-              <span>Enter a partial amount, pick a deal + role, Allocate — repeat for each deal.</span>
+              <span>Enter a partial amount, pick a deal and a role, then Link. Repeat for each deal.</span>
               <span className="ml-auto tabular-nums whitespace-nowrap">
-                Unallocated <span className={`font-semibold ${splitRemaining > 0.005 ? "text-ink" : "text-success-ink"}`}>{fmtAmount(splitRemaining)}</span> of {fmtAmount(txn.amount)}
+                Not linked yet <span className={`font-semibold ${splitRemaining > 0.005 ? "text-ink" : "text-success-ink"}`}>{fmtAmount(splitRemaining)}</span> of {fmtAmount(txn.amount)}
               </span>
             </div>
           )}
