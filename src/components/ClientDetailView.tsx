@@ -50,8 +50,8 @@ import {
  *
  * Money leads, chrome follows — the same principle that drove the supplier
  * redesign (R-116). What this party is worth, and what is waiting on them, are
- * the first two things on the screen; contact details, portal links and credit
- * limits sit behind a disclosure at the bottom where they belong.
+ * the first two things on the screen. The customer portal and the details and
+ * settings follow straight under that card, always open (R-293).
  *
  * The four tabs (overview / emails / invoices / timeline) are gone. They were
  * four permutations of two arrays, and they rendered invoices three separate
@@ -1418,6 +1418,88 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         </div>
       </div>
 
+      {/* ── Customer portal, then details and settings (R-293) ── */}
+      {/* Jack, 2026-09-14: "it shouldnt be collapsed. it should be open underneath the main
+          card for every client. this is important information." Both used to sit in a
+          closed drawer at the very bottom of the profile. */}
+      <CustomerPortalPanel card clientId={client.id} clientName={client.name} clientEmail={client.email} />
+
+      <div className="bg-surface border border-line rounded-2xl mb-4 px-6 pt-4 pb-6">
+        <div className="flex items-center gap-2 mb-4 text-[13px] font-semibold text-ink">
+          <Target size={14} className="text-muted" />Details and settings
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+          <MetadataCard title="Contact info" icon={<User size={14} />}>
+            {client.metadata?.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
+            {address && <MetaRow label="Address" value={address} />}
+            {client.metadata?.country && <MetaRow label="Country" value={client.metadata.country} />}
+          </MetadataCard>
+
+          <MetadataCard title="Business info" icon={<Building2 size={14} />}>
+            {client.category && <MetaRow label="Category" value={client.category} />}
+            {client.metadata?.website && <MetaRow label="Website" value={client.metadata.website} />}
+            {client.metadata?.tax_id && <MetaRow label="Tax ID" value={client.metadata.tax_id} />}
+            {client.metadata?.primary_buy_category && <MetaRow label="Buy category" value={client.metadata.primary_buy_category} />}
+            {client.metadata?.other_buy_categories && <MetaRow label="Other categories" value={client.metadata.other_buy_categories} />}
+            {client.metadata?.estimated_annual_spend && <MetaRow label="Spend per frequency" value={client.metadata.estimated_annual_spend} />}
+            {client.metadata?.purchase_frequency && <MetaRow label="Frequency" value={client.metadata.purchase_frequency} />}
+          </MetadataCard>
+
+          <MetadataCard title="Lead info" icon={<Target size={14} />}>
+            {client.metadata?.lead_source && <MetaRow label="Source" value={client.metadata.lead_source} />}
+            {client.metadata?.interest_level && <MetaRow label="Interest" value={client.metadata.interest_level} />}
+            {client.metadata?.buyer_type && <MetaRow label="Buyer type" value={client.metadata.buyer_type} />}
+            {client.metadata?.lead_id && <MetaRow label="Lead ID" value={client.metadata.lead_id} />}
+            {client.metadata?.lead_representative && <MetaRow label="Rep" value={client.metadata.lead_representative} />}
+            {client.metadata?.date_added && <MetaRow label="Added" value={client.metadata.date_added} />}
+            {client.metadata?.last_contact_date && <MetaRow label="Last contact" value={client.metadata.last_contact_date} />}
+          </MetadataCard>
+
+          <CreditPanel clientId={client.id} />
+
+          {customFields.length > 0 && (
+            <MetadataCard title="Custom fields" icon={<Tag size={14} />}>
+              {customFields.map(f => (
+                <MetaRow key={f.id} label={f.label} value={(client.metadata as any)?.[f.field_key] ?? ""} />
+              ))}
+            </MetadataCard>
+          )}
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-line-2 grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} />
+          <StatTile label="Paid" value={fmtAmount(paid)} tone="success" />
+          <StatTile label="Invoices sent" value={String(sentCount)} tone="ink" />
+        </div>
+
+        {credit && (
+          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 bg-surface-2 border border-line rounded-xl px-4 py-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-muted font-medium">Credit limit</span>
+              <input value={creditEdit} onChange={(e) => setCreditEdit(e.target.value)}
+                onBlur={async () => { const v = parseFloat(creditEdit) || 0; await api.setClientCreditLimit(client.id, v); const c = await api.getClientCreditStatus(client.id); setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : ""); }}
+                placeholder="none" className="w-24 text-[13px] bg-surface border border-line rounded-lg px-2 py-1 text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+            </div>
+            <div className="text-[12px]"><span className="text-muted">Exposure: </span><span className="font-semibold text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></div>
+            {credit.credit_limit > 0 && <div className="text-[12px]"><span className="text-muted">Available: </span><span className={`font-semibold tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span></div>}
+            {credit.over && <span className="text-[10px] font-semibold text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>}
+          </div>
+        )}
+
+        {client.notes && (
+          <div className="mt-4 pt-4 border-t border-line-2">
+            <p className="text-[12.5px] font-medium text-muted mb-1.5">Notes</p>
+            <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed">{client.notes}</div>
+          </div>
+        )}
+
+        <div className="mt-4 pt-4 border-t border-line-2">
+          <button onClick={openInvoices} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors">
+            <FileText size={13} /> See every invoice in Invoices <ArrowRight size={12} />
+          </button>
+        </div>
+      </div>
+
       {/* ── The three deal sections (R-235) ──────────────── */}
       {/* His order, his words: completed, fell through, current. Current opens
           by default because it is the only one that needs an action today. */}
@@ -1534,81 +1616,6 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         />
       </Disclosure>
 
-      {/* ── Everything else, out of the way ──────────────── */}
-      <Disclosure title="Details and settings for this client" icon={<Target size={14} className="text-muted" />}>
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
-          <MetadataCard title="Contact info" icon={<User size={14} />}>
-            {client.metadata?.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
-            {address && <MetaRow label="Address" value={address} />}
-            {client.metadata?.country && <MetaRow label="Country" value={client.metadata.country} />}
-          </MetadataCard>
-
-          <MetadataCard title="Business info" icon={<Building2 size={14} />}>
-            {client.category && <MetaRow label="Category" value={client.category} />}
-            {client.metadata?.website && <MetaRow label="Website" value={client.metadata.website} />}
-            {client.metadata?.tax_id && <MetaRow label="Tax ID" value={client.metadata.tax_id} />}
-            {client.metadata?.primary_buy_category && <MetaRow label="Buy category" value={client.metadata.primary_buy_category} />}
-            {client.metadata?.other_buy_categories && <MetaRow label="Other categories" value={client.metadata.other_buy_categories} />}
-            {client.metadata?.estimated_annual_spend && <MetaRow label="Spend per frequency" value={client.metadata.estimated_annual_spend} />}
-            {client.metadata?.purchase_frequency && <MetaRow label="Frequency" value={client.metadata.purchase_frequency} />}
-          </MetadataCard>
-
-          <MetadataCard title="Lead info" icon={<Target size={14} />}>
-            {client.metadata?.lead_source && <MetaRow label="Source" value={client.metadata.lead_source} />}
-            {client.metadata?.interest_level && <MetaRow label="Interest" value={client.metadata.interest_level} />}
-            {client.metadata?.buyer_type && <MetaRow label="Buyer type" value={client.metadata.buyer_type} />}
-            {client.metadata?.lead_id && <MetaRow label="Lead ID" value={client.metadata.lead_id} />}
-            {client.metadata?.lead_representative && <MetaRow label="Rep" value={client.metadata.lead_representative} />}
-            {client.metadata?.date_added && <MetaRow label="Added" value={client.metadata.date_added} />}
-            {client.metadata?.last_contact_date && <MetaRow label="Last contact" value={client.metadata.last_contact_date} />}
-          </MetadataCard>
-
-          <CreditPanel clientId={client.id} />
-
-          {customFields.length > 0 && (
-            <MetadataCard title="Custom fields" icon={<Tag size={14} />}>
-              {customFields.map(f => (
-                <MetaRow key={f.id} label={f.label} value={(client.metadata as any)?.[f.field_key] ?? ""} />
-              ))}
-            </MetadataCard>
-          )}
-        </div>
-
-        <div className="mt-4 pt-4 border-t border-line-2 grid grid-cols-1 lg:grid-cols-3 gap-3">
-          <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} />
-          <StatTile label="Paid" value={fmtAmount(paid)} tone="success" />
-          <StatTile label="Invoices sent" value={String(sentCount)} tone="ink" />
-        </div>
-
-        {credit && (
-          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 bg-surface-2 border border-line rounded-xl px-4 py-3">
-            <div className="flex items-center gap-2">
-              <span className="text-[12px] text-muted font-medium">Credit limit</span>
-              <input value={creditEdit} onChange={(e) => setCreditEdit(e.target.value)}
-                onBlur={async () => { const v = parseFloat(creditEdit) || 0; await api.setClientCreditLimit(client.id, v); const c = await api.getClientCreditStatus(client.id); setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : ""); }}
-                placeholder="none" className="w-24 text-[13px] bg-surface border border-line rounded-lg px-2 py-1 text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
-            </div>
-            <div className="text-[12px]"><span className="text-muted">Exposure: </span><span className="font-semibold text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></div>
-            {credit.credit_limit > 0 && <div className="text-[12px]"><span className="text-muted">Available: </span><span className={`font-semibold tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span></div>}
-            {credit.over && <span className="text-[10px] font-semibold text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>}
-          </div>
-        )}
-
-        <CustomerPortalPanel clientId={client.id} clientName={client.name} clientEmail={client.email} />
-
-        {client.notes && (
-          <div className="mt-4 pt-4 border-t border-line-2">
-            <p className="text-[12.5px] font-medium text-muted mb-1.5">Notes</p>
-            <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed">{client.notes}</div>
-          </div>
-        )}
-
-        <div className="mt-4 pt-4 border-t border-line-2">
-          <button onClick={openInvoices} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors">
-            <FileText size={13} /> See every invoice in Invoices <ArrowRight size={12} />
-          </button>
-        </div>
-      </Disclosure>
     </div>
   );
 }

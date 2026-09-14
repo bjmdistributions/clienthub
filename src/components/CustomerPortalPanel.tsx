@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Copy, ExternalLink, Mail } from "lucide-react";
+import { Copy, DoorOpen, ExternalLink, Mail } from "lucide-react";
 import { api, CustomerPortalAccess, isUnavailable } from "../lib/api";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
@@ -32,7 +32,7 @@ const quiet = `${btn} border border-line bg-surface text-ink hover:bg-surface-2`
 const primary = `${btn} bg-accent hover:bg-accent-hover text-on-accent`;
 
 export default function CustomerPortalPanel({
-  clientId, clientName, clientEmail, onChange, bare,
+  clientId, clientName, clientEmail, onChange, bare, card,
 }: {
   clientId: string;
   clientName: string;
@@ -41,6 +41,8 @@ export default function CustomerPortalPanel({
   onChange?: () => void;
   /** Leave out the heading and top rule (the Customer portals screen supplies its own). */
   bare?: boolean;
+  /** Render as its own always-open card, as on the client profile (R-293). */
+  card?: boolean;
 }) {
   const [data, setData] = useState<CustomerPortalAccess | null>(null);
   const [hidden, setHidden] = useState(true);
@@ -91,10 +93,12 @@ export default function CustomerPortalPanel({
   const showForm = (!hasAccess && !data.invite) || inviting;
 
   return (
-    <div className={bare ? "" : "mt-4 pt-4 border-t border-line-2"}>
+    <div className={card ? "bg-surface border border-line rounded-2xl mb-4 px-6 py-4" : bare ? "" : "mt-4 pt-4 border-t border-line-2"}>
       {!bare && (
         <div className="flex items-center justify-between gap-3 mb-2">
-          <p className="text-[12.5px] font-medium text-muted">Customer portal</p>
+          {card
+            ? <div className="flex items-center gap-2 text-[13px] font-semibold text-ink"><DoorOpen size={14} className="text-muted" />Customer portal</div>
+            : <p className="text-[12.5px] font-medium text-muted">Customer portal</p>}
           <button onClick={() => openCustomerPortal(clientId)} className="inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:underline">
             View their portal <ExternalLink size={12} />
           </button>
