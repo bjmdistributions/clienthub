@@ -12950,7 +12950,10 @@ fn bank_txn_list_rows(conn: &rusqlite::Connection, where_sql: &str, param: &str)
                 -- R-288 phase 3: booked from history at this moment (undoable), and the
                 -- category it had before.
                 CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.ab') END,
-                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.abc') END
+                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.abc') END,
+                -- R-295: which deals the money is linked to, so the row can name them.
+                (SELECT json_group_array(json_object('deal_id', a.deal_flow_id, 'role', COALESCE(a.role, ''), 'amount', a.amount))
+                   FROM bank_allocation a WHERE a.bank_txn_id=bt.id)
          FROM bank_txn bt WHERE {where_sql} ORDER BY bt.posted_at DESC, bt.created_at DESC",
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -12986,6 +12989,9 @@ fn bank_txn_list_rows(conn: &rusqlite::Connection, where_sql: &str, param: &str)
             "retracted": r.get::<_, i64>(21)? != 0,
             "auto_booked_at": r.get::<_, Option<String>>(22)?,
             "auto_booked_from": r.get::<_, Option<String>>(23)?,
+            "links": r.get::<_, Option<String>>(24)?
+                .and_then(|j| serde_json::from_str::<Value>(&j).ok())
+                .unwrap_or_else(|| json!([])),
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())

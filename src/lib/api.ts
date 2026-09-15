@@ -2033,6 +2033,8 @@ export interface BankTxn {
   /** R-288: booked from history at this time (undoable), and the category it had before. */
   auto_booked_at?: string | null;
   auto_booked_from?: string | null;
+  /** R-295: the deals this money is linked to (one entry per allocation). */
+  links?: { deal_id: string; role: string; amount: number }[];
   posted_at: string;
   amount: number;
   direction: "in" | "out";

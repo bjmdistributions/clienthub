@@ -497,6 +497,92 @@ const matchLabel = (d: DealFlow) => {
 };
 
 const loanLabel = (l: Loan) => (l.name?.trim() || l.lender?.trim() || "Loan");
+
+// R-295: the short name of what the money is on a deal, for the linked chip.
+const LINK_ROLE: Record<string, string> = {
+  buyer_payment: "Buyer payment", supplier_payment: "Supplier payment",
+  refund_out: "Refund to buyer", refund_in: "Supplier refund", adjustment: "Adjustment",
+};
+
+// R-295 — once money is linked to a deal the row says WHICH deal, as a finished state:
+// a check, the invoice and buyer, and what the money is on it. Part-linked money shows
+// the same chip with how much is linked, so the two states read apart at a glance.
+function DealLinkChip({ t, dealById, compact, onOpen }: {
+  t: BankTxn;
+  dealById: Map<string, DealFlow>;
+  compact?: boolean;
+  onOpen: () => void;
+}) {
+  const links = t.links || [];
+  const ids = Array.from(new Set(links.map((l) => l.deal_id)));
+  const first = ids.length ? dealById.get(ids[0]) : undefined;
+  const name = first ? matchLabel(first) : "A deal";
+  const roles = Array.from(new Set(links.filter((l) => l.deal_id === ids[0]).map((l) => LINK_ROLE[l.role] || l.role)));
+  const full = t.unallocated <= 0.0001;
+  const pct = Math.max(4, Math.min(100, Math.round((t.allocated / (t.amount || 1)) * 100)));
+  const sub = full
+    ? `${roles.join(" + ") || "Linked"}${ids.length > 1 ? ` · +${ids.length - 1} more deal${ids.length > 2 ? "s" : ""}` : ""}`
+    : `${fmtAmount(t.allocated)} of ${fmtAmount(t.amount)} linked`;
+  const title = ids.length
+    ? ids.map((id) => {
+        const d = dealById.get(id);
+        const mine = links.filter((l) => l.deal_id === id);
+        return `${d ? matchLabel(d) : "Deal"}: ${mine.map((l) => `${LINK_ROLE[l.role] || l.role} ${fmtAmount(l.amount)}`).join(", ")}`;
+      }).join("\n")
+    : "Linked to a deal";
+  const icon = full ? <Check size={compact ? 11 : 14} strokeWidth={2.5} /> : <Link2 size={compact ? 10 : 13} />;
+  const tone = full
+    ? "bg-success-bg/60 border-success/35 hover:bg-success-bg hover:border-success/60"
+    : "bg-surface-2 border-line hover:border-line-3";
+  const iconTone = full ? "bg-success/15 text-success-ink" : "bg-accent/10 text-accent";
+  const bar = (
+    <span className="h-1 w-10 flex-shrink-0 rounded-full bg-line overflow-hidden">
+      <span className="block h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
+    </span>
+  );
+  // The Ledger's Deal column is narrow: one line, the detail in the tooltip.
+  if (compact) {
+    return (
+      <button
+        onClick={(e) => { e.stopPropagation(); onOpen(); }}
+        title={`${title}
+${sub}
+Click to see or change the link`}
+        className={`relative inline-flex items-center gap-1.5 h-7 pl-1 pr-2 rounded-lg border text-left overflow-hidden max-w-[124px] transition-colors ${tone}`}
+      >
+        <span className={`flex-shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md ${iconTone}`}>{icon}</span>
+        <span className="truncate text-[11.5px] font-semibold text-ink">{first ? dealLabel(first) : name}</span>
+        {ids.length > 1 && <span className="flex-shrink-0 text-[10.5px] text-success-ink">+{ids.length - 1}</span>}
+        {!full && (
+          <span className="absolute left-0 right-0 bottom-0 h-[2px] bg-line">
+            <span className="block h-full bg-accent" style={{ width: `${pct}%` }} />
+          </span>
+        )}
+      </button>
+    );
+  }
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onOpen(); }}
+      title={`${title}
+Click to see or change the link`}
+      className={`inline-flex items-center gap-2 h-9 max-w-[260px] pl-1 pr-2.5 rounded-lg border text-left transition-colors ${tone}`}
+    >
+      <span className={`flex-shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md ${iconTone}`}>{icon}</span>
+      <span className="min-w-0 flex flex-col leading-tight">
+        <span className="truncate font-semibold text-ink text-[12px]">{name}</span>
+        {full ? (
+          <span className="truncate text-[10.5px] text-success-ink">{sub}</span>
+        ) : (
+          <span className="flex items-center gap-1.5 min-w-0">
+            {bar}
+            <span className="truncate text-[10.5px] text-muted tabular-nums">{sub}</span>
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
 // Loan tags live on the txn (counterparty_type "loan"); the backend derives the
 // category by direction — money-in is a loan drawdown, money-out a repayment.
 const loanTagLabel = (direction: string) => (direction === "in" ? "Loan received" : "Loan repayment");
@@ -2381,6 +2467,8 @@ export default function FinancialsView() {
 
   // The left rail carries state: solid accent = needs a deal, faded = partly
   // tied, none = nothing owed. That is what colour is for on this screen.
+  const dealById = useMemo(() => new Map(deals.map((d) => [d.id, d])), [deals]);
+
   const railClass = (t: BankTxn) => {
     if (t.allocated > 0.0001 && t.unallocated > 0.0001) return "border-l-2 border-accent/40";
     if (needsADeal(t)) return "border-l-2 border-accent";
@@ -2394,8 +2482,11 @@ export default function FinancialsView() {
     const acct = t.account_id ? ` · ${t.account_id}` : "";
     if (t.counterparty_type === "loan") return `${loanTagLabel(t.direction)}${acct}`;
     if (t.allocated > 0.0001 && t.unallocated > 0.0001)
-      return `${fmtAmount(t.allocated)} of ${fmtAmount(t.amount)} tied${acct}`;
-    if (t.allocated > 0.0001) return `Tied to a deal — book it${acct}`;
+      return `${fmtAmount(t.allocated)} of ${fmtAmount(t.amount)} linked${acct}`;
+    if (t.allocated > 0.0001) {
+      const d = t.links?.length ? dealById.get(t.links[0].deal_id) : undefined;
+      return `Linked to ${d ? matchLabel(d) : "a deal"} — book it${acct}`;
+    }
     const noCat = !(t.category || "").trim();
     if (noCat) return `Needs a category${acct}`;
     if (needsADeal(t)) return `${catLabel(t.category)} — needs a deal${acct}`;
@@ -2705,9 +2796,7 @@ export default function FinancialsView() {
   // no action attached, and read as a typo rather than an affordance.
   const dealCell = (t: BankTxn) => {
     if (t.counterparty_type === "loan") return <span className="text-muted">—</span>;
-    if (t.allocated > 0.0001 && t.unallocated <= 0.0001) return <span className="text-muted">Linked</span>;
-    if (t.allocated > 0.0001)
-      return <span className="text-muted tabular-nums">{fmtAmount(t.allocated)} of {fmtAmount(t.amount)}</span>;
+    if (t.allocated > 0.0001) return <DealLinkChip t={t} dealById={dealById} compact onOpen={() => toggleRow(t)} />;
     return (
       <button
         onClick={(e) => { e.stopPropagation(); toggleRow(t); }}
@@ -4800,9 +4889,7 @@ export default function FinancialsView() {
                               two when it is a toss-up, or open the picker. */}
                           <span className="flex-shrink-0 order-2 lg:order-none" onClick={(e) => e.stopPropagation()}>
                             {isLoan ? null : t.allocated > 0.0001 && t.unallocated <= 0.0001 ? (
-                              <span className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-success-bg/60 border border-success/40 text-[12px] text-success-ink whitespace-nowrap">
-                                <Link2 size={11} /> Linked
-                              </span>
+                              <DealLinkChip t={t} dealById={dealById} onOpen={() => toggleRow(t)} />
                             ) : offer ? (
                               <span className="inline-flex flex-col gap-1 items-stretch max-w-[240px]">
                                 {offer.choices.map((c) => (
@@ -4833,13 +4920,15 @@ export default function FinancialsView() {
                                   </button>
                                 )}
                               </span>
+                            ) : t.allocated > 0.0001 ? (
+                              <DealLinkChip t={t} dealById={dealById} onOpen={() => toggleRow(t)} />
                             ) : (
                               <button
                                 onClick={() => toggleRow(t)}
                                 title="Pick a deal to tie this payment to"
                                 className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-line text-[12px] text-ink-2 font-medium hover:bg-surface-2 hover:border-line-3 transition-colors whitespace-nowrap"
                               >
-                                <Link2 size={11} /> {t.allocated > 0.0001 ? `${fmtAmount(t.allocated)} tied` : "Link deal"}
+                                <Link2 size={11} /> Link deal
                               </button>
                             )}
                           </span>
