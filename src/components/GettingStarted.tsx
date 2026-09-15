@@ -2,7 +2,7 @@ import { useState } from "react";
 import { X, ArrowRight, ArrowLeft, Users, GitBranch, Truck, Mail } from "lucide-react";
 
 const STEPS = [
-  { icon: null, title: "Welcome to Ecliptr", body: "Run your whole brokerage in one place — clients, deals, suppliers, invoicing and newsletters. Here's a quick tour of how the pieces fit together." },
+  { icon: null, title: "Welcome to Ecliptr", body: "Run your whole wholesale business in one place — clients, deals, suppliers, invoicing and newsletters. Here's a quick tour of how the pieces fit together." },
   { icon: Users, title: "Clients & leads", body: "Every client lives here. New leads from your website forms, Shopify, or imports arrive as pending — you review and approve them before they're added." },
   { icon: GitBranch, title: "Deal flow", body: "Deals move from invoiced → payment received → supplier paid → closed. Ecliptr works out the profit and each rep's pay split automatically as you advance them." },
   { icon: Truck, title: "Suppliers & inventory", body: "Track who you source from and what's in stock. Supplier costs flow into each deal's profit, so your numbers stay accurate." },

@@ -250,7 +250,7 @@ Email:
 /// Returns {"results":[{"id","category","counterparty"}]}. Suggestions only.
 pub async fn categorize_transactions(items: &Value) -> Result<Value> {
     let prompt = format!(
-        r#"You categorize business bank transactions for a wholesale-brokerage. For each transaction pick ONE category value from EXACTLY this list:
+        r#"You categorize business bank transactions for a wholesale business. For each transaction pick ONE category value from EXACTLY this list:
 - receipt (money IN from a buyer/customer for goods sold)
 - service_income (money IN that is commission or a service fee you earned)
 - shipping_income (money IN where freight was billed to the customer)
