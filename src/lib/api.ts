@@ -2177,6 +2177,7 @@ export interface DealAllocation {
   rail: string;
   txn_amount: number;
   source_format: string; // "manual_cash" for a hand-entered line
+  txn_note: string; // the linked bank transaction's own note, distinct from `note` above
 }
 export interface RefundRow {
   id: string;

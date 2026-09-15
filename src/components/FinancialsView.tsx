@@ -1811,13 +1811,15 @@ export default function FinancialsView() {
   // an untouched field re-stamps it with a fresh clock and lets this device's
   // (possibly stale) copy beat a newer edit from another device. That is how
   // changing a category used to un-book a transaction booked elsewhere.
-  const saveReview = async (t: BankTxn, patch: BankTxnReviewPatch) => {
+  const saveReview = async (t: BankTxn, patch: BankTxnReviewPatch, successMsg?: string): Promise<boolean> => {
     try {
       await api.setBankTxnReview(t.id, patch);
       setTxns((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
       const s = await api.bankTxnSummary();
       setSummary(s);
-    } catch (e: any) { toast(errText(e), "error"); }
+      if (successMsg) toast(successMsg);
+      return true;
+    } catch (e: any) { toast(errText(e), "error"); return false; }
   };
 
   // Enter and blur both land here; Escape sets payeeCancelRef first so the blur it
@@ -2928,6 +2930,7 @@ export default function FinancialsView() {
                         </div>
                       )}
                       {memo && <div className="text-[11px] text-faint truncate" title={memo}>{memo}</div>}
+                      {t.note && <div className="text-[11px] text-ink-2 truncate" title={t.note}>{t.note}</div>}
                       {/* W1-a — the person on this payment, as its own action. Tagging
                           is identity: it says who the money is from or to and moves no
                           money figure anywhere. A loan-tagged row is skipped; its two
@@ -5309,24 +5312,9 @@ export default function FinancialsView() {
 
             {/* R-256 — a note on the transaction itself. Until this existed the only note
                 box in this sheet was the deal allocation's, which is saved only by Allocate
-                and does not exist for a loan or an expense. Uncontrolled and keyed by id so
-                a background refresh never overwrites what is being typed; saves on blur,
-                and Escape blurs first so closing the sheet does not drop the text. */}
-            <label className="block">
-              <span className="block text-[12px] font-medium text-ink-2 mb-1">Note</span>
-              <textarea
-                key={openTxn.id}
-                defaultValue={openTxn.note || ""}
-                rows={2}
-                placeholder="Add a note to this transaction"
-                onKeyDown={(e) => { if (e.key === "Escape") e.currentTarget.blur(); }}
-                onBlur={(e) => {
-                  const next = e.target.value.trim();
-                  if (next !== (openTxn.note || "").trim()) saveReview(openTxn, { note: next });
-                }}
-                className="border border-line px-2.5 py-2 rounded-lg text-[13px] w-full bg-surface text-ink-2 resize-y focus:outline-none focus:ring-2 focus:ring-accent/40"
-              />
-            </label>
+                and does not exist for a loan or an expense. Keyed by id so switching the
+                open transaction never carries unsaved text from one row onto another. */}
+            <TxnNote key={openTxn.id} txn={openTxn} saveReview={saveReview} />
 
             <AllocationPanel
               txn={openTxn}
@@ -5379,6 +5367,118 @@ export default function FinancialsView() {
         </div>
       )}
     </div>
+  );
+}
+
+// R-256 note box, rebuilt so Jack can tell whether a note actually saved (live DB:
+// 0 of 1,507 bank transactions carried one under the old uncontrolled/blur-only
+// box, which gave no feedback either way). Controlled and keyed by txn id from the
+// caller, so switching to a different open transaction remounts this fresh instead
+// of carrying stale dirty text onto the new row.
+//
+// A background bank sync (20-min timer, or Sync bank) can retire the open pending
+// row and unmount the sheet mid-edit, before blur ever fires. The cleanup effect
+// below is the safety net: it reads the latest text and txn id from refs (state
+// from the doomed render is not trustworthy at unmount) and saves directly through
+// the API, bypassing setTxns/setSummary since there is no component left to update.
+function TxnNote({ txn, saveReview }: {
+  txn: BankTxn;
+  saveReview: (t: BankTxn, patch: BankTxnReviewPatch, successMsg?: string) => Promise<boolean>;
+}) {
+  const [value, setValue] = useState(txn.note || "");
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+
+  const valueRef = useRef(value);
+  const dirtyRef = useRef(dirty);
+  const txnRef = useRef(txn);
+  const aliveRef = useRef(true);
+  // The text a save is already carrying, so blur followed by a click on Save (or the
+  // unmount) does not send it twice.
+  const inFlightRef = useRef<string | null>(null);
+  valueRef.current = value;
+  dirtyRef.current = dirty;
+  txnRef.current = txn;
+
+  // Re-seed from the server's note when it changes under an untouched box — e.g.
+  // the accountant portal or another device edited it while this sheet sat open.
+  // Never while dirty: that would stomp text being typed right now.
+  useEffect(() => {
+    if (!dirty) setValue(txn.note || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txn.note]);
+
+  // A blur-then-close (Escape, or the window Escape/backdrop handler above it)
+  // can unmount this box before the save it started comes back. aliveRef guards
+  // the state updates below so that race is just a skipped UI update, never a
+  // setState-on-an-unmounted-component warning.
+  const doSave = async (text: string) => {
+    if (inFlightRef.current === text) return;
+    inFlightRef.current = text;
+    setSaving(true);
+    const ok = await saveReview(txnRef.current, { note: text }, "Note saved");
+    inFlightRef.current = null;
+    if (!aliveRef.current) return;
+    setSaving(false);
+    // Only what was sent is saved: text typed while the save was out is still unsaved.
+    if (ok && valueRef.current.trim() === text) {
+      setDirty(false);
+      setJustSaved(true);
+      setTimeout(() => { if (aliveRef.current) setJustSaved(false); }, 2000);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      aliveRef.current = false;
+      const text = valueRef.current.trim();
+      if (dirtyRef.current && inFlightRef.current !== text) {
+        // The sheet is gone, so the toast is the only place a failure can show — e.g.
+        // the bank replaced this pending charge with its posted copy mid-edit.
+        api.setBankTxnReview(txnRef.current.id, { note: text })
+          .then(() => toast("Note saved"))
+          .catch((e) => toast(errText(e), "error"));
+      }
+    };
+  }, []);
+
+  return (
+    <label className="block">
+      <span className="block text-[12px] font-medium text-ink-2 mb-1">Note</span>
+      <textarea
+        value={value}
+        rows={2}
+        placeholder="Why this payment happened — the accountant sees this"
+        onChange={(e) => {
+          setValue(e.target.value);
+          setDirty(e.target.value.trim() !== (txn.note || "").trim());
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { e.currentTarget.blur(); return; }
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            if (dirtyRef.current) doSave(valueRef.current.trim());
+          }
+        }}
+        onBlur={() => { if (dirtyRef.current) doSave(valueRef.current.trim()); }}
+        className="border border-line px-2.5 py-2 rounded-lg text-[13px] w-full bg-surface text-ink-2 resize-y focus:outline-none focus:ring-2 focus:ring-accent/40"
+      />
+      <div className="h-5 mt-1">
+        {dirty ? (
+          <button
+            type="button"
+            onClick={() => doSave(value.trim())}
+            disabled={saving}
+            className="text-[11.5px] font-semibold text-accent hover:text-accent-hover disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save note"}
+          </button>
+        ) : justSaved ? (
+          <span className="text-[11.5px] text-muted">Saved</span>
+        ) : null}
+      </div>
+    </label>
   );
 }
 

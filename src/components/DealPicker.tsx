@@ -328,6 +328,11 @@ export default function DealPicker({
               {cand.role === "supplier_payment" && cand.supplier_name ? ` · ${cand.supplier_name}` : ""}
             </div>
           )}
+          {d.notes?.trim() && (
+            <div className="text-[11px] text-muted truncate mt-0.5" title={d.notes.trim()}>
+              {d.notes.trim()}
+            </div>
+          )}
         </div>
         <div className="text-right flex-shrink-0">
           <div className={`text-[12.5px] tabular-nums ${exact ? "text-accent font-semibold" : "text-ink-2"}`}>

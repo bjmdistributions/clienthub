@@ -163,16 +163,16 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
         ) : (
           <span className="flex items-center gap-1.5 text-[11px] text-muted">
             <AlertTriangle size={12} className="text-warning-ink" />
-            {!buyerComplete && !supplierComplete ? "Not yet reconciled" : !buyerComplete ? "Payment received incomplete" : "Supplier payment incomplete"}
+            {!buyerComplete && !supplierComplete ? "Not yet reconciled" : !buyerComplete ? "Buyer payment incomplete" : "Supplier payment incomplete"}
           </span>
         )}
       </div>
 
       <div className="divide-y divide-line-2">
-        {/* Payment received (buyer, money-in) */}
+        {/* Buyer payment (money-in) */}
         <LegBlock
-          title="Payment received"
-          leg={{ role: "buyer_payment", direction: "in", label: "Payment received", target: flow.invoice_total }}
+          title="Buyer payment"
+          leg={{ role: "buyer_payment", direction: "in", label: "Buyer payment", target: flow.invoice_total }}
           rows={buyer}
           picker={picker}
           busy={busy}
@@ -187,10 +187,10 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           onAddManual={addManual}
         />
 
-        {/* Supplier paid (money-out) */}
+        {/* Supplier payment (money-out) */}
         <LegBlock
-          title="Supplier paid"
-          leg={{ role: "supplier_payment", direction: "out", label: "Supplier paid", target: flow.total_supplier_cost }}
+          title="Supplier payment"
+          leg={{ role: "supplier_payment", direction: "out", label: "Supplier payment", target: flow.total_supplier_cost }}
           rows={supplier}
           picker={picker}
           busy={busy}
@@ -307,11 +307,11 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
             <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
               <div className="text-[12px] font-medium text-muted mb-1">Profit from linked payments</div>
               <div className="flex items-center justify-between">
-                <span className="text-ink-2">Payments received</span>
+                <span className="text-ink-2">Paid by buyer</span>
                 <span className="tabular-nums text-success-ink">+{fmtAmount(recon.pieces.buyer_paired)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-ink-2">Supplier paid</span>
+                <span className="text-ink-2">Paid to supplier</span>
                 <span className="tabular-nums text-danger-ink">−{fmtAmount(recon.pieces.supplier_paired)}</span>
               </div>
               {recon.pieces.fee_paired > 0.005 && (
@@ -458,6 +458,8 @@ function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: st
   const payer = a.counterparty_name?.trim() || a.description?.trim() || (manual ? "Cash" : "Bank transaction");
   const sign = a.direction === "out" ? "−" : "";
   const clr = a.direction === "out" ? "text-danger-ink" : "text-success-ink";
+  const linkNote = a.note?.trim() || "";
+  const txnNote = a.txn_note?.trim() || "";
   return (
     <div className="flex items-center gap-2 bg-surface-2 border border-line-2 rounded-lg px-3 py-2">
       <div className="min-w-0 flex-1">
@@ -473,8 +475,22 @@ function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: st
         </div>
         <div className="text-[11px] text-muted truncate">
           {fmtShortDate(a.posted_at)}
-          {manual && a.note?.trim() ? ` · ${a.note.trim()}` : ""}
         </div>
+        {/* Why the money moved the way it did — the allocation's own note and the bank
+            transaction's own note are different things (R-256), so both surface when
+            both exist, labelled so an accountant can tell which is which. */}
+        {(linkNote || txnNote) && (
+          <div className="text-[11px] text-muted mt-1 leading-snug whitespace-normal break-words">
+            {linkNote && txnNote ? (
+              <>
+                <div>Link note: {linkNote}</div>
+                <div>Transaction note: {txnNote}</div>
+              </>
+            ) : (
+              linkNote || txnNote
+            )}
+          </div>
+        )}
       </div>
       <span className={`text-[13px] font-semibold tabular-nums ${clr}`}>{sign}{fmtAmount(a.amount)}</span>
       <button

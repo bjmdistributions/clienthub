@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, type KeyboardEvent } from "react";
 import {
   Check, ChevronDown, ChevronRight, Search, Plus, X,
   AlertTriangle, RotateCcw, RefreshCw, Trash2,
-  DollarSign, CheckCircle2, Truck, Package, FileDown, XCircle,
+  CheckCircle2, Truck, Package, FileDown, XCircle,
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit,
@@ -31,13 +31,6 @@ const barToggle = (toggle: () => void) => ({
 const STAGES = ["invoiced", "payment_received", "supplier_paid", "complete"] as const;
 type Stage = typeof STAGES[number];
 function si(s: string): number { return STAGES.indexOf(s as Stage); }
-
-const NODE_LABELS: Record<Stage, string> = {
-  invoiced:         "Invoiced",
-  payment_received: "Cost & payment",
-  supplier_paid:    "Supplier paid",
-  complete:         "Review & complete",
-};
 
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface " +
@@ -112,6 +105,36 @@ function nextDate(f: DealFlow): string {
   return ds.find((d) => daysUntil(d) >= 0) ?? ds[ds.length - 1];
 }
 
+// ─── What is paid and what is still due (R-303) ───────────────────────────
+// The card used to print the stage name, and `supplier_paid` — where most open deals
+// sit — read as "only the supplier has been paid". The two payments are separate facts
+// and either can land first, so each is read from every place it can be recorded: the
+// stage, the supplier legs' own paid/kept flags, and the bank links
+// (`reconciliation_status_all`).
+type PaymentFlags = { payment_received_paired?: boolean; supplier_paid_paired?: boolean };
+
+function paymentState(f: DealFlow, recon?: PaymentFlags) {
+  const legs    = f.supplier_payments || [];
+  const hasCost = legs.length > 0;
+  const buyerIn = si(f.stage) >= si("payment_received") || !!recon?.payment_received_paired;
+  // A kept leg was never paid and is not a cost, so a deal whose legs are all kept (or
+  // all $0) has nothing left to send.
+  const owed    = legs.filter((p) => !p.kept).reduce((s, p) => s + p.amount, 0);
+  const supplierOut = hasCost && (
+    legs.every((p) => p.paid || p.kept) || owed <= 0.005
+    || si(f.stage) >= si("supplier_paid") || !!recon?.supplier_paid_paired
+  );
+  const both  = buyerIn && supplierOut;
+  const label = !hasCost ? "Supplier cost needed"
+    : both      ? "Both paid"
+    : buyerIn   ? "Supplier payment due"
+    : supplierOut ? "Buyer payment due"
+    : "Both payments due";
+  const title = `Buyer: ${buyerIn ? "paid" : "not paid yet"} · Supplier: ${
+    !hasCost ? "no cost entered yet" : supplierOut ? "paid" : "not paid yet"}`;
+  return { hasCost, buyerIn, supplierOut, both, label, title };
+}
+
 // ─── Main view ────────────────────────────────────────────────────────────
 export default function DealFlowView() {
   const [flows,        setFlows]        = useState<DealFlow[]>([]);
@@ -123,13 +146,9 @@ export default function DealFlowView() {
   const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean }>>({});
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number; done: boolean }>>({});
-  // Open by default — refunds are money owed back, not an archive to go looking for.
   // Open by default — this is the answer to "what is live right now", not an
   // archive somebody has to go looking for.
   const [laneOpen, setLaneOpen] = useState(true);
-  const [refundsOpen, setRefundsOpen] = useState(true);
-  const [showDoneRefunds, setShowDoneRefunds] = useState(false);
-  const [expandedRefund, setExpandedRefund] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -278,18 +297,27 @@ export default function DealFlowView() {
   // and hasn't been marked "no record" — so we flag exactly which side is missing.
   const needsWorkCount    = completed.filter((f) => recon[f.id]?.needs_review).length;
 
-  // Refunds section: everything with refund activity, most-owed first — active refunds
-  // AND fully-refunded ones (so a fully-refunded deal stays here, not in the pipeline),
-  // until it's marked "fully done". "Show done" reveals the closed-out ones.
+  // Pending profit (R-304): what the open deals will make once they close, over the
+  // deals whose supplier cost is in. The same projection each card prints — invoice
+  // total minus supplier cost minus anything refunded — so the box is the sum of the
+  // cards and never a second opinion. Counted before the search box filters anything.
+  const openDeals    = flows.filter((f) =>
+    f.stage !== "complete" && !isFullyRefunded(f) && !isPartlyRefunded(f) && isInvoiceActive(f));
+  const pricedDeals  = openDeals.filter((f) => (f.supplier_payments || []).length > 0);
+  const pendingRev   = pricedDeals.reduce((s, f) => s + f.invoice_total - (refundMap[f.id]?.refunded ?? 0), 0);
+  const pendingCost  = pricedDeals.reduce((s, f) => s + f.total_supplier_cost, 0);
+  const pendingProfit = pendingRev - pendingCost;
+  const unpricedCount = openDeals.length - pricedDeals.length;
+
+  // Refunds section: every deal that went back whole, open ones first (most still owed
+  // at the top), closed-out ones after them. Nothing is hidden behind a "Show done"
+  // toggle any more (R-305) — a closed refund is still a deal somebody asks about.
   //
   // "Done" means done AND nothing left owed. The flag was written once and never
   // re-checked against the numbers, so a refund closed out while it looked settled —
   // then given a higher refund_owed, or whose refund payment later vanished — stopped
   // being anyone's problem while money was still owed. It comes back to the open list.
   const isRefundDone = (id: string) => !!refundMap[id]?.done && refundMap[id].remaining <= 0.01;
-  // The whole drawer is keyed off every refunded deal, never the filtered list: "Show
-  // done" lives INSIDE it, so gating on the filtered list meant closing out the last
-  // open refund deleted the only way back to any of them.
   // ── The waiting lane (R-154) ────────────────────────────────────────────
   // Pinned above everything else: the active deals that have a pickup or an
   // expected delivery date and are not complete, soonest first. They are pulled
@@ -315,10 +343,11 @@ export default function DealFlowView() {
 
   // Whole-lot refunds only — see `isPartlyRefunded`.
   const refundAll   = flows.filter((f) => refundMap[f.id] && isFullyRefunded(f));
-  const refundFlows = refundAll
-    .filter((f) => showDoneRefunds || !isRefundDone(f.id))
-    .sort((a, b) => refundMap[b.id].remaining - refundMap[a.id].remaining);
+  const refundFlows = [...refundAll].sort((a, b) =>
+    (isRefundDone(a.id) ? 1 : 0) - (isRefundDone(b.id) ? 1 : 0)
+    || refundMap[b.id].remaining - refundMap[a.id].remaining);
   const doneRefundCount = refundAll.filter((f) => isRefundDone(f.id)).length;
+  const openRefundCount = refundAll.length - doneRefundCount;
 
   // Skeleton mirrors the real layout (header, search, deal cards) — and only on
   // first load, so refreshes after an action don't blank the whole view.
@@ -399,6 +428,26 @@ export default function DealFlowView() {
           </button>
         </div>
       </div>
+
+      {/* ── Pending profit (R-304) ─────────────────────────────────────── */}
+      {pricedDeals.length > 0 && (
+        <div className="bg-surface border border-line rounded-xl px-5 py-4 flex items-end justify-between gap-x-6 gap-y-3 flex-wrap">
+          <div className="min-w-0">
+            <div className="text-[12.5px] font-medium text-muted">Pending profit</div>
+            <div className={`text-[24px] font-semibold tabular-nums tracking-tight leading-tight mt-0.5 ${pendingProfit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+              {pendingProfit < 0 ? "−" : ""}{fmtAmount(Math.abs(pendingProfit))}
+            </div>
+            <div className="text-[11.5px] text-muted mt-1">
+              From {pricedDeals.length} open deal{pricedDeals.length === 1 ? "" : "s"} with supplier cost entered
+              {unpricedCount > 0 && ` · ${unpricedCount} still need${unpricedCount === 1 ? "s" : ""} supplier cost`}
+            </div>
+          </div>
+          <div className="flex items-center gap-6">
+            <Stat label="Revenue" value={fmtAmount(pendingRev)} />
+            <Stat label="Supplier cost" value={fmtAmount(pendingCost)} />
+          </div>
+        </div>
+      )}
 
       {/* Search */}
       <div className="relative max-w-xs">
@@ -512,103 +561,26 @@ export default function DealFlowView() {
         </div>
       )}
 
-      {/* ── Refunds drawer ──────────────────────────────────────────────── */}
+      {/* ── Refunds (R-305) ─────────────────────────────────────────────── */}
+      {/* Always open, every refunded deal listed, each one showing the deal itself —
+          who bought it, who supplied it, what was on it and what it came to — above
+          its refund record. The collapsing drawer, the "Show done" filter and the
+          click-to-expand row each hid something Jack needed to read. */}
       {refundAll.length > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          {/* Drawer header */}
-          <div {...barToggle(() => setRefundsOpen(!refundsOpen))}
-            className="w-full flex items-center justify-between px-5 py-3.5 cursor-pointer hover:bg-surface-2/40 transition-colors">
-            <div className="flex items-center gap-2.5 text-left min-w-0">
-              <RotateCcw size={14} className="text-danger-ink flex-shrink-0" />
-              <span className="text-[13px] font-semibold text-ink">Refunds</span>
-              {/* Nothing open reads inline on the bar. It used to be the drawer's
-                  entire body — a sentence behind a click, with the way back
-                  ("Show done") already sitting up here anyway. */}
-              {refundFlows.length > 0 ? (
-                <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{refundFlows.length}</span>
-              ) : (
-                <span className="text-[11.5px] text-muted truncate">Every refund is closed out</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {doneRefundCount > 0 && (
-                <button onClick={(e) => { e.stopPropagation(); setShowDoneRefunds((v) => !v); }}
-                  className={`text-[11.5px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${showDoneRefunds ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
-                  {showDoneRefunds ? "Hide done" : `Show done (${doneRefundCount})`}
-                </button>
-              )}
-              <span className="p-1 rounded-lg">
-                <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${refundsOpen ? "rotate-180" : ""}`} />
-              </span>
-            </div>
+          <div className="flex items-center gap-2.5 px-5 py-3.5">
+            <RotateCcw size={14} className="text-danger-ink flex-shrink-0" />
+            <span className="text-[13px] font-semibold text-ink">Refunds</span>
+            <span className="text-[11.5px] text-muted truncate">
+              {openRefundCount > 0 ? `${openRefundCount} open` : "Every refund is closed out"}
+              {doneRefundCount > 0 ? ` · ${doneRefundCount} closed` : ""}
+            </span>
           </div>
-
-          {/* Drawer body */}
-          {refundsOpen && refundFlows.length > 0 && (
-            <div className="border-t border-line divide-y divide-line-2">
-              {refundFlows.map((flow) => {
-                const r = refundMap[flow.id];
-                const isExp = expandedRefund === flow.id;
-                // Nothing left OWED. Not the same as the whole deal being refunded —
-                // conflating the two is what filed settled partial refunds as full ones.
-                const fullyRefunded = r.remaining <= 0.01;
-                const done = isRefundDone(flow.id);
-                // Marked done, but the numbers moved since — say so instead of hiding it.
-                const staleDone = r.done && !fullyRefunded;
-                return (
-                  <div key={flow.id} className={done ? "opacity-60" : ""}>
-                    <button
-                      onClick={() => setExpandedRefund(isExp ? null : flow.id)}
-                      className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-surface-2/40 cursor-pointer transition-colors"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-ink truncate">{flow.client_name || "—"}</div>
-                        <div className="text-[11px] text-muted mt-0.5 truncate">{flow.invoice_number || "—"}</div>
-                        {staleDone && (
-                          <div className="text-[11px] text-warning-ink mt-1 inline-flex items-center gap-1">
-                            <AlertTriangle size={11} /> Was marked fully done, but {fmtAmount(r.remaining)} is still owed
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-5 flex-shrink-0">
-                        <Stat label="Owed" value={fmtAmount(r.refund_owed)} />
-                        <Stat label="Refunded" value={fmtAmount(r.refunded)} />
-                        <div className="text-right">
-                          <div className="text-[12px] font-medium text-muted">Remaining</div>
-                          {fullyRefunded ? (
-                            <div className="text-[13px] font-bold tabular-nums text-danger-ink">Nothing owed</div>
-                          ) : (
-                            <div className="text-[13px] font-semibold tabular-nums text-danger-ink">{fmtAmount(r.remaining)}</div>
-                          )}
-                        </div>
-                        {/* Mark fully done / reopen — only once there's nothing left owed */}
-                        {fullyRefunded && (done ? (
-                          <span className="inline-flex items-center gap-1.5 flex-shrink-0">
-                            <span className="text-[10.5px] font-semibold text-success-ink inline-flex items-center gap-1"><CheckCircle2 size={11} /> Done</span>
-                            <span role="button" tabIndex={0}
-                              onClick={(e) => { e.stopPropagation(); api.setRefundDone(flow.id, false).then(() => { toast("Refund reopened"); load(); }).catch((err) => toast(String(err), "error")); }}
-                              className="text-[11px] text-muted hover:text-ink-2 px-2 h-7 flex items-center rounded-lg border border-line transition-colors">Reopen</span>
-                          </span>
-                        ) : (
-                          <span role="button" tabIndex={0}
-                            onClick={(e) => { e.stopPropagation(); api.setRefundDone(flow.id, true).then(() => { toast("Marked fully done"); load(); }).catch((err) => toast(String(err), "error")); }}
-                            className="text-[11px] font-medium text-success-ink hover:bg-success-bg px-2.5 h-7 flex items-center gap-1 rounded-lg border border-success/40 flex-shrink-0 transition-colors">
-                            <Check size={12} /> Mark fully done
-                          </span>
-                        ))}
-                        <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${isExp ? "rotate-180" : ""}`} />
-                      </div>
-                    </button>
-                    {isExp && (
-                      <div className="px-5 pb-4 pt-1 bg-surface-2/30">
-                        <RefundWorkspace dealFlowId={flow.id} primary onChange={load} />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <div className="border-t border-line divide-y divide-line">
+            {refundFlows.map((flow) => (
+              <RefundedDeal key={flow.id} flow={flow} refund={refundMap[flow.id]} done={isRefundDone(flow.id)} onReload={load} />
+            ))}
+          </div>
         </div>
       )}
 
@@ -660,6 +632,111 @@ function Stat({ label, value, clr = "text-ink" }: { label: string; value: string
   );
 }
 
+// ─── A refunded deal, read in full (R-305) ────────────────────────────────
+// The row used to be a name, an invoice number and three refund figures; the deal
+// itself sat behind a click, and behind a second toggle once closed out. Everything
+// here comes from the flow the list already holds plus the invoice's line items.
+function RefundedDeal({ flow, refund: r, done, onReload }: {
+  flow: DealFlow; refund: { refund_owed: number; refunded: number; remaining: number; done: boolean };
+  done: boolean; onReload: () => void;
+}) {
+  const [items, setItems] = useState<{ description: string; qty: number; amount: number }[]>([]);
+  useEffect(() => {
+    api.getInvoice(flow.invoice_id).then((inv) => {
+      try {
+        const li: any[] = JSON.parse(inv.line_items_json || "[]");
+        setItems(li.map((it) => ({ description: it.description, qty: it.qty, amount: it.amount ?? 0 })));
+      } catch { setItems([]); }
+    }).catch(() => {});
+  }, [flow.invoice_id]);
+
+  const supplier  = primarySupplierLabel(flow.supplier_payments);
+  const isComplete = flow.stage === "complete";
+  // Same figures the deal's own card prints: recorded profit once complete, the
+  // projection before — and a refund always comes off it in full.
+  const profitBefore = isComplete ? flow.net_profit : flow.invoice_total - flow.total_supplier_cost;
+  const profitAfter  = profitBefore - r.refunded;
+  // Nothing left OWED. Not the same as the whole deal being refunded — conflating the
+  // two is what filed settled partial refunds as full ones.
+  const nothingOwed = r.remaining <= 0.01;
+  // Marked done, but the numbers moved since — say so instead of hiding it.
+  const staleDone = r.done && !nothingOwed;
+
+  const setDone = (v: boolean) =>
+    api.setRefundDone(flow.id, v)
+      .then(() => { toast(v ? "Refund closed out" : "Refund reopened"); onReload(); })
+      .catch((err) => toast(String(err), "error"));
+
+  return (
+    <div className={`px-5 py-4 space-y-3 ${done ? "bg-surface-2/40" : ""}`}>
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="text-[12px] font-mono text-muted flex-shrink-0">{flow.invoice_number || "—"}</span>
+            <span className="text-[14px] text-ink truncate min-w-0">
+              <span className="font-semibold">{flow.client_name || "Unknown"}</span>
+              {supplier && <span className="text-[12px] text-muted"> → {supplier}</span>}
+            </span>
+          </div>
+          {items.length > 0 && (
+            <div className="text-[11.5px] text-ink-2 mt-1 leading-snug">
+              {items.map((it) => it.qty > 1 ? `${it.qty}× ${it.description}` : it.description).join(" · ")}
+            </div>
+          )}
+          <div className="text-[11px] text-muted mt-1">
+            {isComplete && flow.completed_at
+              ? `Completed ${parseLocalDay(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+              : "Not completed"}
+            {flow.created_at ? ` · started ${parseLocalDay(flow.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {done ? <StatusPill tone="success">Closed out</StatusPill>
+            : nothingOwed ? <StatusPill tone="warning">Nothing owed</StatusPill>
+            : <StatusPill tone="danger">{fmtAmount(r.remaining)} still owed</StatusPill>}
+          {nothingOwed && (done ? (
+            <button onClick={() => setDone(false)}
+              className="text-[11.5px] text-muted hover:text-ink-2 px-2.5 h-8 rounded-lg border border-line transition-colors">
+              Reopen refund
+            </button>
+          ) : (
+            <button onClick={() => setDone(true)}
+              className="text-[11.5px] font-medium text-success-ink hover:bg-success-bg px-2.5 h-8 inline-flex items-center gap-1 rounded-lg border border-success/40 transition-colors">
+              <Check size={12} /> Close out refund
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {staleDone && (
+        <div className="text-[11.5px] text-warning-ink inline-flex items-center gap-1">
+          <AlertTriangle size={11} /> Was closed out, but {fmtAmount(r.remaining)} is still owed
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2">
+        <RecCell label="Invoice total" value={fmtAmount(flow.invoice_total)} />
+        <RecCell label="Supplier cost" value={fmtAmount(isComplete ? flow.total_cost : flow.total_supplier_cost)} />
+        <RecCell label="Refund owed" value={fmtAmount(r.refund_owed)} />
+        <RecCell label="Refunded" value={fmtAmount(r.refunded)} clr="text-danger-ink" />
+        <RecCell label="Still owed" value={nothingOwed ? "Nothing" : fmtAmount(r.remaining)} clr={nothingOwed ? "text-ink" : "text-danger-ink"} />
+        <RecCell label="Profit after refund" value={`${profitAfter < 0 ? "−" : ""}${fmtAmount(Math.abs(profitAfter))}`}
+          sub={`${fmtAmount(profitBefore)} before the refund`}
+          clr={profitAfter >= 0 ? "text-success-ink" : "text-danger-ink"} />
+      </div>
+
+      {(flow.notes || "").trim() && (
+        <div className="rounded-lg border border-line bg-surface px-3 py-2.5">
+          <div className="text-[12px] font-medium text-muted mb-1">Notes</div>
+          <div className="text-[12.5px] text-ink-2 whitespace-pre-wrap">{flow.notes}</div>
+        </div>
+      )}
+
+      <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
+    </div>
+  );
+}
+
 // ─── Deal flow card ───────────────────────────────────────────────────────
 function invoiceStatusPill(status: string | undefined): { label: string; cls: string } {
   const s = (status ?? "").toLowerCase();
@@ -679,10 +756,10 @@ function invoiceStatusPill(status: string | undefined): { label: string; cls: st
 // now, so a step that re-stated it was a second place to look. Its two halves
 // moved to where each already belonged: the supplier legs' paid/kept state onto
 // the cost lines in Supplier & cost, and the buyer payment onto Link financials
-// beside the bank transaction it is paired to. Nothing was dropped —
-// `markPaymentReceived` (the only path that flips the invoice to paid with its
-// `paid_at`) and `unmarkPaymentReceived` (the only cascade that unwinds a
-// completed deal) are called exactly as before, from their new home.
+// beside the bank transaction it is paired to. Since R-302 there is no button for the
+// buyer payment at all: `complete_deal_flow` records it (amount, date, invoice paid)
+// when a deal completes straight from `invoiced`, and a reopened deal still unwinds
+// through `uncomplete_deal_flow` as before.
 const SECTIONS = [
   { key: "supplier", label: "Supplier & cost" },
   { key: "link",     label: "Link financials" },
@@ -694,9 +771,12 @@ const sIdx = (k: SectionKey) => SECTIONS.findIndex((s) => s.key === k);
 
 function DealFlowCard({
   flow, onReload, zebra, refund, reconStatus,
-}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number }; reconStatus?: { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean } }) {
+}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean } }) {
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
-  const [refundOverride, setRefundOverride] = useState<boolean | null>(null);
+  // "Refund" on a deal with nothing refunded yet opens the refund record so one can be
+  // started. Once a refund exists the record is always shown — beside the deal, never
+  // instead of it (R-305).
+  const [refundStarted, setRefundStarted] = useState(false);
   // Two independent questions, and collapsing them is what made a properly booked
   // partial refund read as a full one (same ladder as mobile's `refundBadgeHTML`):
   //   SCOPE  — how much of the deal is being given back: all of it, or part of it?
@@ -716,24 +796,21 @@ function DealFlowCard({
     !refund ? null
     : wholeDeal ? (settled ? "full" : "full-owed")
     : (settled ? "part" : "part-owed");
-  // Only a deal that is entirely refunded and settled opens straight into the refund
-  // workspace — there is nothing else left of it. A part-refunded deal is still a deal,
-  // so it opens on its own sections like any other; the refund pill switches over.
-  const refundView = refundOverride ?? refundState === "full";
+  const showRefund = refundState !== null || refundStarted;
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
   const [invItems,  setInvItems]  = useState<{ description: string; qty: number; rate: number; amount: number }[]>([]);
   const [invMeta,   setInvMeta]   = useState<{ subtotal: number; tax: number; total: number; number: string } | null>(null);
-  const [showInvoice, setShowInvoice] = useState(false);
+  // A refunded deal opens with what was sold on it showing — that is the question.
+  const [showInvoice, setShowInvoice] = useState(!!refund);
   const [editMode, setEditMode] = useState(false);
   const [reconLinked, setReconLinked] = useState(false);
 
   // Derived section-completion from the deal's real state.
   const payments      = flow.supplier_payments || [];
   const hasSuppliers  = payments.length > 0;
-  const received      = si(flow.stage) >= si("payment_received");
-  const suppliersPaid = hasSuppliers ? payments.every((p) => p.paid || p.kept) : true; // nothing to send → satisfied
   const isComplete    = flow.stage === "complete";
-  const supplierDone  = hasSuppliers || si(flow.stage) > si("invoiced") || received;
+  const supplierDone  = hasSuppliers || si(flow.stage) > si("invoiced");
+  const pay           = paymentState(flow, reconStatus);
 
   // `reconStatus` comes from the list-level fetch and covers EVERY live deal, so the
   // dots are right on a collapsed card. `reconLinked` is this card's own fetch, which
@@ -742,22 +819,22 @@ function DealFlowCard({
   const hasLinks = !!reconStatus?.has_financials || reconLinked;
 
   const done: Record<SectionKey, boolean> = {
-    // Supplier & cost now owns the legs' settled state too, so the dot waits for
-    // every leg to be paid or kept — not just for a cost to have been entered.
-    supplier: supplierDone && suppliersPaid,
+    // Filled the moment a supplier cost is entered (R-302). Whether each leg has gone
+    // out is a payment question, answered by the payment pill on the card — holding
+    // this dot for it left it empty on every deal whose supplier was not yet paid.
+    supplier: supplierDone,
     // The link dot fills only when there's nothing left to link — every money leg
     // that's owed is either paired to the bank or explicitly marked "no record"
     // (reconStatus.needs_review === false). Being complete is NOT enough on its own:
     // you can complete now and reconcile later, and the dot must stay empty until you do.
-    // The buyer payment lives here now, so it has to be marked received as well.
-    link:     received && (isComplete ? (!!reconStatus && !reconStatus.needs_review) : hasLinks),
+    link:     isComplete ? (!!reconStatus && !reconStatus.needs_review) : hasLinks,
     profit:   hasLinks || isComplete,
     complete: isComplete,
   };
 
   const firstOpen = (): SectionKey => {
     if (isComplete) return "complete";
-    if (!supplierDone || !suppliersPaid) return "supplier";
+    if (!supplierDone) return "supplier";
     return "link";
   };
   const [section, setSection] = useState<SectionKey>(firstOpen);
@@ -801,12 +878,6 @@ function DealFlowCard({
       .catch(() => {});
   }, [flow.id, isOpen, flow.stage]);
 
-  const stagePill: Record<Stage, string> = {
-    invoiced:         "bg-info-bg text-info-ink",
-    payment_received: "bg-warning-bg text-warning-ink",
-    supplier_paid:    "bg-accent/10 text-accent",
-    complete:         "bg-success-bg text-success-ink",
-  };
   const invPill = invoiceStatusPill(invStatus);
   const locked  = isComplete && !editMode; // completed deals are read-only until "Edit" is pressed
 
@@ -900,9 +971,15 @@ function DealFlowCard({
             })()}
           </div>
           <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${invPill.cls}`}>{invPill.label}</span>
-          {flow.stage !== "invoiced" && !isComplete && (
-            <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${stagePill[flow.stage as Stage]}`}>
-              {NODE_LABELS[flow.stage as Stage]}
+          {/* What is paid and what is still due (R-303) — lit green only when both are in. */}
+          {!isComplete && (
+            <span title={pay.title}
+              className={`inline-flex items-center gap-1 text-[12.5px] font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${
+                pay.both ? "bg-success-bg text-success-ink"
+                : pay.hasCost && !pay.buyerIn && !pay.supplierOut ? "bg-surface-3 text-muted"
+                : "bg-warning-bg text-warning-ink"}`}>
+              {pay.both && <CheckCircle2 size={11} />}
+              {pay.label}
             </span>
           )}
           {!isComplete && <ShipChip flow={flow} />}
@@ -927,7 +1004,15 @@ function DealFlowCard({
             </span>
           )}
           <button
-            onClick={(e) => { e.stopPropagation(); setIsOpen(true); setRefundOverride(!refundView); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              // A recorded refund is always on screen once the card is open, so the pill
+              // only opens the card; with nothing recorded it starts one, or closes an
+              // empty one again.
+              if (refundState === null && isOpen && refundStarted) { setRefundStarted(false); return; }
+              setIsOpen(true);
+              if (refundState === null) setRefundStarted(true);
+            }}
             title={refund ? `${fmtAmount(refundPaid)} of ${fmtAmount(refundOwed)} refunded` : undefined}
             className={
               refundState === "full"
@@ -939,7 +1024,7 @@ function DealFlowCard({
               : "text-[11.5px] font-medium px-2 py-0.5 rounded-full border border-line text-muted hover:text-danger-ink hover:border-danger inline-flex items-center gap-1 flex-shrink-0 transition-colors"}
           >
             <RotateCcw size={11} />
-            {refundView ? "Back to deal"
+            {refundState === null && isOpen && refundStarted ? "Close refund"
               : refundState === "full" ? "Refunded"
               : refundState === "part" ? `Partially refunded ${fmtAmount(refundPaid)}`
               : refundState === "part-owed" ? `Partial refund owed ${fmtAmount(refundLeft)}`
@@ -968,109 +1053,109 @@ function DealFlowCard({
             </div>
           )}
 
-          {refundView ? (
-            <div className="border-t border-line bg-surface-2 px-5 py-4">
+          {/* The refund record sits above the deal, never in place of it (R-305): a
+              refunded deal used to open on this alone, and the deal was one click
+              away behind "Back to deal". */}
+          {showRefund && (
+            <div className="border-t border-line bg-surface-2 px-5 py-4 mt-4">
               <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
             </div>
-          ) : (
-            <>
-              {/* Schedule — a property of the deal, not one of the money steps,
-                  so it sits above the switcher and is always on screen once the
-                  card is open rather than buried inside a step. */}
-              <ShippingStrip flow={flow} onReload={onReload} locked={locked} />
-              <FreightPanel dealFlowId={flow.id} locked={locked} onReload={onReload} />
-
-              {/* Section switcher — always visible, click any step */}
-              <div className="border-t border-line">
-                <SectionNav current={section} done={done} flash={flash} onGo={go} />
-              </div>
-
-              {/* Completed banner + edit toggle */}
-              {isComplete && (
-                <div className="mx-5 mt-1 mb-1 flex items-center justify-between gap-2 rounded-lg bg-success-bg/60 border border-success/30 px-3 py-2">
-                  <div className="flex items-center gap-2 text-[12px] text-success-ink font-medium">
-                    <CheckCircle2 size={13} />
-                    Completed{flow.completed_at ? ` ${parseLocalDay(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""} — every section stays editable
-                  </div>
-                  <button
-                    onClick={() => setEditMode((v) => !v)}
-                    className={`text-[11.5px] font-medium px-2.5 py-1 rounded-lg border transition-colors ${editMode ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}
-                  >
-                    {editMode ? "Done editing" : "Edit"}
-                  </button>
-                </div>
-              )}
-
-              {/* Invoice breakdown — reference, collapsed by default */}
-              {invItems.length > 0 && (
-                <div className="px-5 pt-2">
-                  <button onClick={() => setShowInvoice((v) => !v)}
-                    className="flex items-center gap-1.5 text-[11.5px] text-muted hover:text-ink-2 transition-colors">
-                    <ChevronRight size={12} className={`transition-transform ${showInvoice ? "rotate-90" : ""}`} />
-                    Invoice breakdown{invMeta?.number ? ` · ${invMeta.number}` : ""}
-                  </button>
-                  {showInvoice && (
-                    <table className="w-full text-[12px] mt-2">
-                      <thead>
-                        <tr className="text-muted">
-                          <th className="text-left font-semibold py-1">Description</th>
-                          <th className="text-right font-semibold py-1 w-12">Qty</th>
-                          <th className="text-right font-semibold py-1 w-20">Rate</th>
-                          <th className="text-right font-semibold py-1 w-24">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {invItems.map((it, i) => (
-                          <tr key={i} className="border-t border-line-2">
-                            <td className="py-1.5 text-ink-2">{it.description}</td>
-                            <td className="py-1.5 text-right tabular-nums text-muted">{it.qty}</td>
-                            <td className="py-1.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>
-                            <td className="py-1.5 text-right tabular-nums font-medium text-ink">{fmtAmount(it.amount)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              )}
-
-              {/* Active section body */}
-              <div className="border-t border-line bg-surface-2 px-5 py-4">
-                <div key={animKey} className="df-anim">
-                  {section === "supplier" && <SectionSupplier flow={flow} onReload={onReload} onAdvance={() => advance("supplier")} locked={locked} />}
-                  {section === "link"     && <SectionLink     flow={flow} onReload={onReload} onAdvance={() => advance("link")} locked={locked} />}
-                  {section === "profit"   && <SectionProfit   flow={flow} onAdvance={() => advance("profit")} />}
-                  {section === "complete" && <PanelComplete   flow={flow} onReload={onReload} />}
-                </div>
-
-                {/* Row actions */}
-                <div className="flex justify-end gap-1.5 mt-4 pt-3 border-t border-line-2">
-                  <button
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      if (!confirm("Mark this deal as fallen through? It drops from the pipeline and its invoice is voided. You can restore it from the Archive.")) return;
-                      try { await api.setDealFlowFellThrough(flow.id, true); toast("Deal marked as fell through"); onReload(); }
-                      catch (err: any) { toast(String(err), "error"); }
-                    }}
-                    className="flex items-center gap-1 text-[11px] text-faint hover:text-warning-ink hover:bg-warning-bg px-2 py-1 rounded-lg transition-colors"
-                  >
-                    <XCircle size={11} /> Mark deal fell through
-                  </button>
-                  <button
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      if (!confirm("Move to Archive? You can restore it anytime.")) return;
-                      try { await api.deleteDealFlow(flow.id); toast("Moved to Archive"); onReload(); }
-                      catch (err: any) { toast(String(err), "error"); }
-                    }}
-                    className="flex items-center gap-1 text-[11px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 py-1 rounded-lg transition-colors"
-                  >
-                    <Trash2 size={11} /> Archive
-                  </button>
-                </div>
-              </div>
-            </>
           )}
+          {/* Schedule — a property of the deal, not one of the money steps,
+              so it sits above the switcher and is always on screen once the
+              card is open rather than buried inside a step. */}
+          <ShippingStrip flow={flow} onReload={onReload} locked={locked} />
+          <FreightPanel dealFlowId={flow.id} locked={locked} onReload={onReload} />
+
+          {/* Section switcher — always visible, click any step */}
+          <div className="border-t border-line">
+            <SectionNav current={section} done={done} flash={flash} onGo={go} />
+          </div>
+
+          {/* Completed banner + edit toggle */}
+          {isComplete && (
+            <div className="mx-5 mt-1 mb-1 flex items-center justify-between gap-2 rounded-lg bg-success-bg/60 border border-success/30 px-3 py-2">
+              <div className="flex items-center gap-2 text-[12px] text-success-ink font-medium">
+                <CheckCircle2 size={13} />
+                Completed{flow.completed_at ? ` ${parseLocalDay(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""} — every section stays editable
+              </div>
+              <button
+                onClick={() => setEditMode((v) => !v)}
+                className={`text-[11.5px] font-medium px-2.5 py-1 rounded-lg border transition-colors ${editMode ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}
+              >
+                {editMode ? "Done editing" : "Edit"}
+              </button>
+            </div>
+          )}
+
+          {/* Invoice breakdown — reference, collapsed by default */}
+          {invItems.length > 0 && (
+            <div className="px-5 pt-2">
+              <button onClick={() => setShowInvoice((v) => !v)}
+                className="flex items-center gap-1.5 text-[11.5px] text-muted hover:text-ink-2 transition-colors">
+                <ChevronRight size={12} className={`transition-transform ${showInvoice ? "rotate-90" : ""}`} />
+                Invoice breakdown{invMeta?.number ? ` · ${invMeta.number}` : ""}
+              </button>
+              {showInvoice && (
+                <table className="w-full text-[12px] mt-2">
+                  <thead>
+                    <tr className="text-muted">
+                      <th className="text-left font-semibold py-1">Description</th>
+                      <th className="text-right font-semibold py-1 w-12">Qty</th>
+                      <th className="text-right font-semibold py-1 w-20">Rate</th>
+                      <th className="text-right font-semibold py-1 w-24">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invItems.map((it, i) => (
+                      <tr key={i} className="border-t border-line-2">
+                        <td className="py-1.5 text-ink-2">{it.description}</td>
+                        <td className="py-1.5 text-right tabular-nums text-muted">{it.qty}</td>
+                        <td className="py-1.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>
+                        <td className="py-1.5 text-right tabular-nums font-medium text-ink">{fmtAmount(it.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Active section body */}
+          <div className="border-t border-line bg-surface-2 px-5 py-4">
+            <div key={animKey} className="df-anim">
+              {section === "supplier" && <SectionSupplier flow={flow} onReload={onReload} onAdvance={() => advance("supplier")} locked={locked} />}
+              {section === "link"     && <SectionLink     flow={flow} onReload={onReload} onAdvance={() => advance("link")} />}
+              {section === "profit"   && <SectionProfit   flow={flow} onAdvance={() => advance("profit")} />}
+              {section === "complete" && <PanelComplete   flow={flow} onReload={onReload} />}
+            </div>
+
+            {/* Row actions */}
+            <div className="flex justify-end gap-1.5 mt-4 pt-3 border-t border-line-2">
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!confirm("Mark this deal as fallen through? It drops from the pipeline and its invoice is voided. You can restore it from the Archive.")) return;
+                  try { await api.setDealFlowFellThrough(flow.id, true); toast("Deal marked as fell through"); onReload(); }
+                  catch (err: any) { toast(String(err), "error"); }
+                }}
+                className="flex items-center gap-1 text-[11px] text-faint hover:text-warning-ink hover:bg-warning-bg px-2 py-1 rounded-lg transition-colors"
+              >
+                <XCircle size={11} /> Mark deal fell through
+              </button>
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!confirm("Move to Archive? You can restore it anytime.")) return;
+                  try { await api.deleteDealFlow(flow.id); toast("Moved to Archive"); onReload(); }
+                  catch (err: any) { toast(String(err), "error"); }
+                }}
+                className="flex items-center gap-1 text-[11px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 py-1 rounded-lg transition-colors"
+              >
+                <Trash2 size={11} /> Archive
+              </button>
+            </div>
+          </div>
         </>
       )}
     </div>
@@ -1290,7 +1375,6 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   const outstanding      = existingPayments.filter((p) => !p.paid && !p.kept);
   const suppliersPaid    = existingPayments.length > 0 ? outstanding.length === 0 : true;
   const outstandingTotal = outstanding.reduce((s, p) => s + p.amount, 0);
-  const received         = si(flow.stage) >= si("payment_received");
 
   const pickSupplier = (s: Supplier) => { setSelSupplier(s); setSuppName(s.name); setSuppResults([]); };
 
@@ -1436,15 +1520,13 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
                   <RotateCcw size={11} /> Undo suppliers paid
                 </button>
               )
-            ) : received ? (
+            ) : (
+              // A supplier is often paid before the buyer's money lands, so the legs can
+              // be settled at any open stage (R-302).
               <button onClick={markAllPaid} disabled={saving}
                 className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors w-full justify-center">
                 <Check size={14} strokeWidth={2.5} /> Mark supplier paid — {fmtAmount(outstandingTotal)}
               </button>
-            ) : (
-              // The stage ladder won't take a supplier payment before the buyer's money
-              // is in, so say so rather than let the click fail.
-              <div className="text-[11.5px] text-muted">Mark the buyer payment received in Link financials before settling these legs.</div>
             )
           )}
         </div>
@@ -1572,178 +1654,12 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   );
 }
 
-// ── The buyer's money in (folded from Money movement, R-132) ──
-// `markPaymentReceived` is the ONLY path that both advances the deal and flips the
-// invoice to paid with its `paid_at`, and `unmarkPaymentReceived` the only cascade
-// that unwinds a completed one. Both are called here exactly as they were before
-// the fold — the section moved, the calls did not change.
-function BuyerPayment({ flow, onReload, locked }: { flow: DealFlow; onReload: () => void; locked: boolean }) {
-  const hasSuppliers = (flow.supplier_payments || []).length > 0;
-  const received     = si(flow.stage) >= si("payment_received");
-  const [saving, setSaving] = useState(false);
-  const [savingDeposit, setSavingDeposit] = useState(false);
-  const [receivedAmount, setReceivedAmount] = useState<string>(flow.invoice_total ? flow.invoice_total.toFixed(2) : "");
-  useEffect(() => { setReceivedAmount(flow.invoice_total ? flow.invoice_total.toFixed(2) : ""); }, [flow.invoice_total]);
-  const [depositAmount, setDepositAmount] = useState<string>(flow.deposit_amount ? flow.deposit_amount.toFixed(2) : "");
-  useEffect(() => { setDepositAmount(flow.deposit_amount ? flow.deposit_amount.toFixed(2) : ""); }, [flow.deposit_amount]);
-
-  const handleMarkReceived = async () => {
-    const amt = parseAmount(receivedAmount, NaN);
-    if (isNaN(amt) || amt < 0) { toast("Enter a valid amount received", "error"); return; }
-    if (!hasSuppliers && !confirm("No supplier cost on this deal — it will be recorded as 100% profit. Mark payment received?")) return;
-    setSaving(true);
-    try { await api.markPaymentReceived(flow.id, { amount: amt, method: null, notes: null }); onReload(); }
-    catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-  const undoReceived = async () => {
-    setSaving(true);
-    try { await api.unmarkPaymentReceived(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-  const handleSaveDeposit = async () => {
-    const amt = parseAmount(depositAmount);
-    if (amt < 0) { toast("Enter a valid deposit amount", "error"); return; }
-    setSavingDeposit(true);
-    try { await api.setDeposit(flow.id, amt); toast(amt > 0 ? "Deposit saved" : "Deposit cleared", "success"); onReload(); }
-    catch (e: any) { toast(String(e), "error"); }
-    setSavingDeposit(false);
-  };
-
-  return (
-    <div className={`rounded-xl border p-4 ${received ? "border-success/40 bg-success-bg/30" : "border-line bg-surface"}`}>
-      <div className="flex items-center gap-2 mb-2">
-        {received ? <CheckCircle2 size={15} className="text-success-ink" /> : <AlertTriangle size={15} className="text-warning-ink" />}
-        <span className="text-[13px] font-semibold text-ink">Money received from the buyer</span>
-        {received && <span className="ml-auto text-[12px] text-success-ink font-medium tabular-nums">{fmtAmount(flow.payment_received_amount)} received</span>}
-      </div>
-      {received ? (
-        !locked && (
-          <button onClick={undoReceived} disabled={saving}
-            className="flex items-center gap-1.5 text-[12px] text-warning-ink px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors">
-            <RotateCcw size={11} /> Undo payment
-          </button>
-        )
-      ) : locked ? null : (
-        <div className="space-y-2.5">
-          <div className="rounded-lg border border-line bg-surface p-3">
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Deposit received (optional)</label>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-                <input type="text" inputMode="decimal" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="0.00"
-                  className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
-              </div>
-              {(() => {
-                const dep = parseAmount(depositAmount); const total = flow.invoice_total || 0;
-                if (dep <= 0) return <span className="text-[11px] text-muted">A partial payment now — the rest stays owed until paid in full</span>;
-                if (dep > total + 0.005) return <span className="text-[11px] font-medium text-danger-ink">exceeds invoice {fmtAmount(total)}</span>;
-                return <span className="text-[11px] font-medium text-ink-2 tabular-nums">balance owed {fmtAmount(Math.max(0, total - dep))} of {fmtAmount(total)}</span>;
-              })()}
-              <button onClick={handleSaveDeposit} disabled={savingDeposit}
-                className="flex items-center gap-1.5 border border-line hover:bg-surface-3 text-ink-2 px-3 h-9 rounded-lg text-[12.5px] font-medium disabled:opacity-40 transition-colors">
-                {flow.deposit_amount ? "Update deposit" : "Save deposit"}
-              </button>
-            </div>
-          </div>
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Amount received</label>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-                <input type="text" inputMode="decimal" value={receivedAmount} onChange={(e) => setReceivedAmount(e.target.value)}
-                  className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
-              </div>
-              {(() => {
-                const amt = parseAmount(receivedAmount, NaN); const diff = (isNaN(amt) ? 0 : amt) - (flow.invoice_total || 0);
-                if (!isFinite(diff) || Math.abs(diff) < 0.005) return <span className="text-[11px] text-muted">matches invoice {fmtAmount(flow.invoice_total)}</span>;
-                return <span className={`text-[11px] font-medium ${diff < 0 ? "text-danger-ink" : "text-success-ink"}`}>{diff < 0 ? "−" : "+"}{fmtAmount(Math.abs(diff))} vs invoice {fmtAmount(flow.invoice_total)}</span>;
-              })()}
-            </div>
-          </div>
-          <button onClick={handleMarkReceived} disabled={saving}
-            className="flex items-center gap-2 bg-success hover:opacity-90 text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all">
-            <DollarSign size={14} /> Mark payment received
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── What the bank already agrees with ──
-// `deal_reconciliation` works out whether the paired transactions cover each leg
-// (`payment_received_paired` / `supplier_paid_paired`). It is offered as a
-// one-click confirm and never applied on its own: the pairing is evidence, the
-// stage change is Jack's call.
-function BankConfirm({ flow, onReload, locked }: { flow: DealFlow; onReload: () => void; locked: boolean }) {
-  const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
-  const [saving, setSaving] = useState(false);
-  const payments    = flow.supplier_payments || [];
-  const outstanding = payments.filter((p) => !p.paid && !p.kept);
-  const received    = si(flow.stage) >= si("payment_received");
-
-  useEffect(() => {
-    let live = true;
-    api.dealReconciliation(flow.id).then((r) => { if (live) setRecon(r); }).catch(() => {});
-    return () => { live = false; };
-  }, [flow.id, flow.stage, flow.payment_received_amount, payments.length]);
-
-  const buyerPaired    = recon?.pieces.buyer_paired ?? 0;
-  const supplierPaired = recon?.pieces.supplier_paired ?? 0;
-  const buyerReady    = !locked && !received && !!recon?.payment_received_paired;
-  const supplierReady = !locked && received && outstanding.length > 0 && !!recon?.supplier_paid_paired;
-  if (!buyerReady && !supplierReady) return null;
-
-  const confirmBuyer = async () => {
-    const amt = buyerPaired > 0 ? buyerPaired : flow.invoice_total;
-    if (payments.length === 0 && !confirm("No supplier cost on this deal — it will be recorded as 100% profit. Mark payment received?")) return;
-    setSaving(true);
-    try { await api.markPaymentReceived(flow.id, { amount: amt, method: null, notes: null }); onReload(); }
-    catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-  const confirmSupplier = async () => {
-    setSaving(true);
-    try { await Promise.all(outstanding.map((p) => api.markSupplierPaymentPaid(flow.id, p.id))); onReload(); }
-    catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-
-  return (
-    <div className="rounded-xl border border-accent/30 bg-accent/5 p-3 space-y-2">
-      <div className="text-[12.5px] font-medium text-ink-2">The bank already covers this deal</div>
-      {buyerReady && (
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[12px] text-muted flex-1 min-w-0">
-            {fmtAmount(buyerPaired)} is paired to the buyer leg, and the deal still says the payment hasn't landed.
-          </span>
-          <button onClick={confirmBuyer} disabled={saving}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40 transition-colors">
-            <Check size={13} strokeWidth={2.5} /> Mark payment received
-          </button>
-        </div>
-      )}
-      {supplierReady && (
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[12px] text-muted flex-1 min-w-0">
-            {fmtAmount(supplierPaired)} is paired to the supplier leg, and {outstanding.length} cost line{outstanding.length === 1 ? "" : "s"} still read as unpaid.
-          </span>
-          <button onClick={confirmSupplier} disabled={saving}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40 transition-colors">
-            <Check size={13} strokeWidth={2.5} /> Mark supplier paid
-          </button>
-        </div>
-      )}
-      <div className="text-[10.5px] text-muted">Suggested from the linked transactions — nothing changes until you confirm.</div>
-    </div>
-  );
-}
-
 // ─── Section 2: Link financials ───────────────────────────────────────────
-// Also the buyer's money in, folded here from Money movement (R-132): the payment
-// belongs beside the bank transaction it is paired to, not in a step of its own.
-function SectionLink({ flow, onReload, onAdvance, locked }: { flow: DealFlow; onReload: () => void; onAdvance: () => void; locked: boolean }) {
+// The buyer's money is linked here like every other leg. The "Mark payment received"
+// card and the bank-confirm card that sat above the links were removed (R-302): the
+// linked transaction already says the money landed, and Review & complete records the
+// payment on the deal and the invoice when the deal closes, from any open stage.
+function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: () => void; onAdvance: () => void }) {
   const meta = (() => { try { return JSON.parse((flow as any).metadata || "{}"); } catch { return {}; } })();
   const [noBuyer,    setNoBuyer]    = useState<boolean>(!!meta.no_buyer_link);
   const [noSupplier, setNoSupplier] = useState<boolean>(!!meta.no_supplier_link);
@@ -1760,9 +1676,6 @@ function SectionLink({ flow, onReload, onAdvance, locked }: { flow: DealFlow; on
           Anything you link here (or from Bank statements) is what the recorded profit is built from.
         </div>
       </div>
-
-      <BuyerPayment flow={flow} onReload={onReload} locked={locked} />
-      <BankConfirm  flow={flow} onReload={onReload} locked={locked} />
 
       <ReconciliationPanel flow={flow} onChange={onReload} />
 
@@ -1865,7 +1778,7 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
         <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
           <div className="text-[12px] font-medium text-muted mb-1">From linked transactions</div>
           <Row label="Payments received" value={`+${fmtAmount(p.buyer_paired)}`} clr="text-success-ink" />
-          <Row label="Supplier paid" value={`−${fmtAmount(p.supplier_paired)}`} clr="text-danger-ink" />
+          <Row label="Paid to supplier" value={`−${fmtAmount(p.supplier_paired)}`} clr="text-danger-ink" />
           {p.fee_paired > 0.005 && <Row label="Wire fees" value={`−${fmtAmount(p.fee_paired)}`} clr="text-danger-ink" />}
           {p.refund_total > 0.005 && <Row label="Refunds paid" value={`−${fmtAmount(p.refund_total)}`} clr="text-danger-ink" />}
           {p.refund_in > 0.005 && <Row label="Supplier refund received" value={`+${fmtAmount(p.refund_in)}`} clr="text-success-ink" />}
@@ -1933,7 +1846,9 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
     }).catch(() => {});
   }, [flow.id, flow.stage]);
 
-  const canComplete = flow.stage === "payment_received" || flow.stage === "supplier_paid";
+  // Any open stage (R-302). With the "Mark payment received" button gone, a deal can sit
+  // at `invoiced` until it closes; `complete_deal_flow` records the buyer payment itself.
+  const canComplete = flow.stage === "invoiced" || flow.stage === "payment_received" || flow.stage === "supplier_paid";
   const isComplete  = flow.stage === "complete";
 
   // What gets recorded — the BANK numbers. A completed deal shows its permanent
@@ -1945,7 +1860,11 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const costBank  = (pc?.supplier_paired ?? 0) + (pc?.fee_paired ?? 0);
   const revFromBank  = buyerBank > 0.005;
   const costFromBank = costBank > 0.005;
-  const recRev  = isComplete ? flow.gross_revenue : (revFromBank ? buyerBank : flow.payment_received_amount);
+  // Nothing recorded as received yet (a deal still at `invoiced`) previews the invoice
+  // total — the same figure completion falls back to when no buyer payment is linked.
+  const recRev  = isComplete ? flow.gross_revenue
+    : revFromBank ? buyerBank
+    : flow.payment_received_amount > 0.005 ? flow.payment_received_amount : flow.invoice_total;
   const recCost = isComplete ? flow.total_cost    : (costFromBank ? costBank : flow.total_supplier_cost);
   const recNet  = isComplete ? flow.net_profit    : recRev - recCost;
   const bankBacked = isComplete ? true : (revFromBank || costFromBank);
@@ -1976,6 +1895,9 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   };
 
   const handleCompleteClick = () => {
+    // The confirm that used to sit on "Mark payment received".
+    if ((flow.supplier_payments || []).length === 0
+      && !confirm("No supplier cost on this deal — it will be recorded as 100% profit. Complete it anyway?")) return;
     if (recNet < 0) {
       const ok = confirm(`Warning: This deal is at a loss.\n\nRevenue: ${fmtAmount(recRev)}\nCosts: ${fmtAmount(recCost)}\nLoss: ${fmtAmount(recNet)}\n\nMark complete anyway?`);
       if (!ok) return;
@@ -2018,7 +1940,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
             ? "Recorded from the linked bank transactions — saved with the deal so it never disappears."
             : bankBacked
               ? "These are the real bank numbers that get recorded and shown everywhere."
-              : "No bank transactions linked yet — these use your entered figures. Link them in step 3 for bank-accurate profit."}
+              : "No bank transactions linked yet — these use your entered figures. Link them in step 2 for bank-accurate profit."}
         </div>
       </div>
 
@@ -2037,6 +1959,15 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         </div>
         {refundTotal > 0.005 && (
           <div className="mt-2.5 text-[11px] text-muted">Refunds of {fmtAmount(refundTotal)} are tracked separately and reduce profit in reports.</div>
+        )}
+        {/* A deal marked received before R-302 carries the amount typed then. There is no
+            button to change it any more, but a linked buyer payment always wins. */}
+        {!isComplete && !revFromBank && flow.stage !== "invoiced" && flow.payment_received_amount > 0.005
+          && Math.abs(flow.payment_received_amount - flow.invoice_total) > 0.005 && (
+          <div className="mt-2.5 text-[11px] text-muted">
+            Revenue is the {fmtAmount(flow.payment_received_amount)} recorded as received, not the invoice total of {fmtAmount(flow.invoice_total)}.
+            If that is wrong, link the buyer's payment in Link financials, or add it by hand there — a linked payment is what gets recorded.
+          </div>
         )}
       </div>
 
@@ -2234,7 +2165,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
 }
 
 const roleLabel = (r: string) =>
-  r === "buyer_payment" ? "Payment in" : r === "supplier_payment" ? "Supplier paid" :
+  r === "buyer_payment" ? "Payment in" : r === "supplier_payment" ? "Paid to supplier" :
   r === "fee" ? "Wire fee" : r === "refund_out" ? "Refund out" : r === "refund_in" ? "Supplier refund" : r;
 
 function RecCell({ label, value, sub, clr = "text-ink", big }: { label: string; value: string; sub?: string; clr?: string; big?: boolean }) {
