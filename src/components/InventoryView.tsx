@@ -437,20 +437,17 @@ export default function InventoryView() {
       const tmpl = await api.getNewsletterProductTemplate();
       const body = buildNewsletterBody(tmpl, chosen.map(lotToBlockInput));
       const subject = `New inventory — ${chosen.length} lot${chosen.length !== 1 ? "s" : ""}`;
-      // Recipients: eligible buyers whose category matches the selected lots' categories.
-      // Use each lot's FULL category list (details_json.categories plus the legacy
-      // singular field), same as the allCats pattern used elsewhere in this file.
-      const catSet = new Set(
+      // Audience: the selected lots' categories, handed over as the Newsletter's category
+      // filter so it counts buyers the same way its own chips do (R-297 — matching the whole
+      // category string here missed every buyer with more than one). Each lot's FULL list:
+      // details_json.categories plus the legacy singular field.
+      const cats = [...new Set(
         chosen.flatMap((l) => {
           const det: LotDetails = (() => { try { return (JSON.parse(l.details_json || "{}") as LotDetails) ?? {}; } catch { return {} as LotDetails; } })();
           return [...(det.categories ?? []), ...(l.category ? [l.category] : [])];
-        }).map((c) => c.trim().toLowerCase()).filter(Boolean)
-      );
-      const recipientIds = clients
-        .filter((c) => !c.is_blacklisted && !(c as any).exclusive && !(c.metadata as any)?.exclusive && (c.email || "").trim())
-        .filter((c) => catSet.size === 0 || catSet.has((c.category || "").trim().toLowerCase()))
-        .map((c) => c.id);
-      sessionStorage.setItem("email_preselect_ids", JSON.stringify(recipientIds));
+        }).map((c) => c.trim()).filter(Boolean)
+      )];
+      sessionStorage.setItem("newsletter_preselect_categories", JSON.stringify(cats));
       sessionStorage.setItem("newsletter_prefill_content", JSON.stringify({ subject, body }));
       exitSelect();
       window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "newsletter" }));

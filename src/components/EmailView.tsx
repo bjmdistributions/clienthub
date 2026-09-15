@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef, type ReactNode } from "react";
 import { toast } from "./Toast";
 import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterSendResult, ScheduledSend, BuyerTier } from "../lib/api";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -9,9 +9,13 @@ import StatusPill from "./StatusPill";
 import { FromPicker, useSendFromOptions } from "./FromPicker";
 import { NewsletterSchedule } from "../lib/api";
 import {
+  AudienceFilters, AudienceRow, Purchase, buyerFacts, categoryOptions, clientCategories, countReach,
+  defaultFilters, filterReason, lockReason, resolveAudience, stateOptions,
+} from "../lib/audience";
+import {
   Sparkles, RefreshCw, Mail, Send, Inbox, AlertCircle, FileEdit, Trash2,
   Users, X, Search, ChevronDown, Megaphone, CheckCircle2, Paperclip, Clock,
-  Repeat, Plus, Power,
+  Repeat, Plus, Power, Check, Lock,
 } from "lucide-react";
 
 type Mode = "inbox" | "compose" | "drafts" | "newsletter" | "recurring";
@@ -577,9 +581,33 @@ function ComposeView() {
   );
 }
 
+// One audience choice. The number is who that choice alone would reach (countReach).
+function AudienceChip({ on, count, exclude, onClick, title, children }: {
+  on: boolean; count?: number; exclude?: boolean; onClick: () => void; title?: string; children: ReactNode;
+}) {
+  const onCls = exclude ? "bg-danger-bg text-danger-ink border-danger-ink/30" : "bg-accent text-on-accent border-accent";
+  return (
+    <button type="button" onClick={onClick} title={title} aria-pressed={on}
+      className={`h-6 max-w-full px-2.5 rounded-full border text-[11px] inline-flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+        on ? onCls : `border-line text-ink-2 hover:bg-surface-2 ${count === 0 ? "opacity-50" : ""}`
+      }`}>
+      <span className="truncate min-w-0">{children}</span>
+      {count !== undefined && <span className={`tabular-nums ${on ? "opacity-80" : "text-muted"}`}>{count}</span>}
+    </button>
+  );
+}
+
 function NewsletterTab() {
   const [clients, setClients] = useState<Client[]>([]);
-  const [selected, setSelected] = useState<Client[]>([]);
+  // R-297: the audience is the filters' result plus hand edits, so the number at the top is
+  // exactly who gets the email — no separate "selected" list that can disagree with it.
+  const [filters, setFilters] = useState<AudienceFilters>(defaultFilters());
+  const [removed, setRemoved] = useState<Set<string>>(new Set());
+  const [added, setAdded] = useState<Set<string>>(new Set());
+  const [picked, setPicked] = useState<Set<string> | null>(null);
+  const [showAllCats, setShowAllCats] = useState(false);
+  const [showAllStates, setShowAllStates] = useState(false);
+  const [peopleTab, setPeopleTab] = useState<"in" | "out">("in");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [aiPrompt, setAiPrompt] = useState("");
@@ -600,13 +628,7 @@ function NewsletterTab() {
   const [attachmentSearch, setAttachmentSearch] = useState("");
   const [manualEmail, setManualEmail] = useState("");
   const [clientSearch, setClientSearch] = useState("");
-  const [excludeAsNeeded, setExcludeAsNeeded] = useState(false);
-  const [excludeUnder10k, setExcludeUnder10k] = useState(false);
-  // Dormant clients are excluded from newsletters by default — kept on record,
-  // just not contacted. Untick to include them in a send.
-  const [excludeDormant, setExcludeDormant] = useState(true);
   const [tiers, setTiers] = useState<BuyerTier[]>([]);
-  const [tierFilter, setTierFilter] = useState<"all" | "ranked" | "first_contact" | string[]>("all");
   const [includeRanked, setIncludeRanked] = useState(true);
   const [unsubEnabled, setUnsubEnabled] = useState(true);
   // What {sender_name} resolves to. The send path resolves it from the same company
@@ -642,18 +664,23 @@ function NewsletterTab() {
       setClients(cs);
       // Recipients pre-selected from the Clients view "Email" bulk action.
       // Stashed in sessionStorage to avoid a mount-race with the navigate event.
+      // Blacklisted, No bulk and unsubscribed clients in the hand-off stay locked out by the
+      // same rules as everyone else (lockReason), so they are not filtered here.
       const raw = sessionStorage.getItem("email_preselect_ids");
       if (raw) {
         sessionStorage.removeItem("email_preselect_ids");
-        try {
-          const ids = new Set<string>(JSON.parse(raw));
-          // Preselect from the Clients-view "Email" bulk action must honor the same
-          // rules as the recipient picker — never carry blacklisted or "No bulk email"
-          // clients into a newsletter selection.
-          setSelected(cs.filter((c) => ids.has(c.id) && !c.is_blacklisted && !c.exclusive && !c.metadata?.exclusive && !c.metadata?.unsubscribed));
-        } catch { /* ignore malformed stash */ }
+        try { setPicked(new Set<string>(JSON.parse(raw))); } catch { /* ignore malformed stash */ }
       }
     });
+    // Inventory > "Send to newsletter" hands over the lots' categories as the category filter.
+    const rawCats = sessionStorage.getItem("newsletter_preselect_categories");
+    if (rawCats) {
+      sessionStorage.removeItem("newsletter_preselect_categories");
+      try {
+        const cats = (JSON.parse(rawCats) as unknown[]).map(String).filter(Boolean);
+        if (cats.length) setFilters((f) => ({ ...f, cats }));
+      } catch { /* ignore malformed stash */ }
+    }
     api.listCategories().then(setAllCategories);
     api.listNewsletters().then(setTemplates);
     api.listScheduledSends().then(setScheduledSends);
@@ -686,61 +713,104 @@ function NewsletterTab() {
     return () => clearInterval(iv);
   }, [sending, hasSendingNewsletter]);
 
-  const categoryLabels = allCategories.map((c) => c.label);
-  const validRecipients = selected.filter((c) => c.email);
+  // ── Audience (R-297) ──
+  // Memoised so typing a subject or body does not re-run it: every chip counts the whole book.
+  const known = useMemo(() => allCategories.map((c) => c.label), [allCategories]);
+  const facts = useMemo(() => buyerFacts(tiers), [tiers]);
+  const f: AudienceFilters = useMemo(() => ({ ...filters, includeRanked }), [filters, includeRanked]);
+  const rows = useMemo(() => resolveAudience(clients, known, f, facts, { removed, added, picked }),
+    [clients, known, f, facts, removed, added, picked]);
+  const validRecipients = useMemo(() => rows.filter((r) => r.receiving).map((r) => r.client), [rows]);
+  const locked = rows.filter((r) => r.lock);
+  const filteredOut = rows.filter((r) => !r.lock && !r.receiving);
+  const handEdits = removed.size + added.size;
+  const with1 = (s: Set<string>, id: string) => new Set(s).add(id);
+  const without1 = (s: Set<string>, id: string) => { const n = new Set(s); n.delete(id); return n; };
 
-  // Category chips: "eligible" mirrors the same excludes as the audience list — never
-  // blacklisted or No-bulk (column or metadata), and must have an email to send to.
-  const catMembers = (label: string) => clients.filter((c) =>
-    !c.is_blacklisted && !c.exclusive && !c.metadata?.exclusive && c.email &&
-    (c.category || "").trim().toLowerCase() === label.trim().toLowerCase()
-  );
-  const toggleCategory = (label: string) => {
-    const members = catMembers(label);
-    const memberIds = new Set(members.map((c) => c.id));
-    const selectedIds = new Set(selected.map((c) => c.id));
-    const allSelected = members.length > 0 && members.every((c) => selectedIds.has(c.id));
-    setSelected(allSelected
-      ? selected.filter((c) => !memberIds.has(c.id))
-      : [...selected, ...members.filter((c) => !selectedIds.has(c.id))]);
-  };
-
-  const searchedClients = clientSearch.trim()
-    ? clients.filter((c) =>
-        c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
-        (c.email && c.email.toLowerCase().includes(clientSearch.toLowerCase()))
-      )
-    : clients;
-
-  const tierMap: Record<string, string> = {};
-  for (const t of tiers) tierMap[t.client_id] = t.tier;
-  const RANKED_TIERS = ["P", "S", "A", "B", "C", "D"];
-  const metadataFilteredClients = searchedClients.filter((c) => {
-    if (c.is_blacklisted) return false;                         // never mass-send to blacklisted (bug fix)
-    if (c.exclusive || c.metadata?.exclusive) return false;     // "No bulk email" stays off mass sends (flag lives in the column OR metadata)
-    if (c.metadata?.unsubscribed) return false;                 // opted out through the link; the send path suppresses these whatever the column says
-    if (excludeDormant && c.lead_status === "inactive") return false;
-    if (excludeAsNeeded && c.metadata?.purchase_frequency === "As Needed / One Time") return false;
-    if (excludeUnder10k && c.metadata?.estimated_annual_spend === "Under $10,000") return false;
-    const tier = tierMap[c.id] || "";
-    if (tierFilter === "first_contact") return !!c.first_contact;   // never emailed by us
-    if (tierFilter === "ranked") return RANKED_TIERS.includes(tier);
-    if (Array.isArray(tierFilter)) return tierFilter.includes(tier);
-    // "all": include everyone unless ranked clients are off by default.
-    if (!includeRanked && RANKED_TIERS.includes(tier)) return false;
-    return true;
+  // Every chip's number is "pick only this, everything else as it is" (countReach).
+  const catOptions = useMemo(() => {
+    const opts = categoryOptions(rows, known);
+    for (const c of f.cats) {
+      if (!opts.some((o) => o.label.toLowerCase() === c.toLowerCase())) opts.push({ label: c, base: 0 });
+    }
+    return opts;
+  }, [rows, known, f]);
+  const stOptions = useMemo(() => stateOptions(rows), [rows]);
+  const reach = useMemo(() => {
+    const n = (patch: Partial<AudienceFilters>) => countReach(rows, { ...f, ...patch });
+    return {
+      cat: new Map(catOptions.map((o) => [o.label, n({ cats: [o.label] })])),
+      state: new Map(showFilters ? stOptions.map((o) => [o.code, n({ states: [o.code] })]) : []),
+      tier: new Map(["P", "S", "A", "B", "C"].map((code) => [code, n({ tier: [code] })])),
+      all: n({ tier: "all" }), ranked: n({ tier: "ranked" }), first: n({ tier: "first_contact" }),
+      any: n({ purchase: "any" }), bought: n({ purchase: "bought" }), never: n({ purchase: "never" }),
+    };
+  }, [rows, f, catOptions, stOptions, showFilters]);
+  const catOn = (label: string) => filters.cats.some((c) => c.toLowerCase() === label.toLowerCase());
+  const toggleCat = (label: string) => setFilters((p) => ({
+    ...p, cats: catOn(label) ? p.cats.filter((c) => c.toLowerCase() !== label.toLowerCase()) : [...p.cats, label],
+  }));
+  const toggleState = (code: string) => setFilters((p) => ({
+    ...p, states: p.states.includes(code) ? p.states.filter((s) => s !== code) : [...p.states, code],
+  }));
+  const toggleTier = (code: string) => setFilters((p) => {
+    const cur = Array.isArray(p.tier) ? p.tier : [];
+    const next = cur.includes(code) ? cur.filter((t) => t !== code) : [...cur, code];
+    return { ...p, tier: next.length ? next : "all" };
   });
-  const excludedByFilter = searchedClients.length - metadataFilteredClients.length;
+  const moreFiltersOn = filters.states.length + (filters.exOneTime ? 1 : 0) + (filters.exUnder10k ? 1 : 0) + (filters.exDormant ? 0 : 1);
 
-  const noEmailCount = selected.length - validRecipients.length;
-
-  const addRecipient = (c: Client) => {
-    if (!selected.find((s) => s.id === c.id)) setSelected([...selected, c]);
+  // A hand edit is kept only where it differs from what the filters say, so ticking someone
+  // back just drops the edit.
+  const setPerson = (r: AudienceRow, want: boolean) => {
+    if (r.lock) return;
+    const id = r.client.id;
+    const byFilters = picked ? picked.has(id) : filterReason(r.client, r.cats, f, r.facts) === null;
+    setRemoved(!want && byFilters ? with1(removed, id) : without1(removed, id));
+    setAdded(want && !byFilters ? with1(added, id) : without1(added, id));
   };
-  const removeRecipient = (id: string) => setSelected(selected.filter((c) => c.id !== id));
-  const addAllWithEmail = () => {
-    const toAdd = metadataFilteredClients.filter((c) => c.email && !selected.find((s) => s.id === c.id));
-    setSelected([...selected, ...toAdd]);
+  const resetAudience = () => {
+    setFilters(defaultFilters()); setRemoved(new Set()); setAdded(new Set()); setPicked(null);
+  };
+
+  const q = clientSearch.trim().toLowerCase();
+  const matchesSearch = (r: AudienceRow) => !q ||
+    r.client.name.toLowerCase().includes(q) ||
+    (r.client.email ?? "").toLowerCase().includes(q) ||
+    (r.client.company ?? "").toLowerCase().includes(q);
+  const byName = (a: AudienceRow, b: AudienceRow) => a.client.name.localeCompare(b.client.name);
+  const receivingRows = rows.filter((r) => r.receiving && matchesSearch(r)).sort(byName);
+  const lockedRows = locked.filter(matchesSearch).sort((a, b) => (a.lock ?? "").localeCompare(b.lock ?? "") || byName(a, b));
+  const filteredRows = filteredOut.filter(matchesSearch).sort(byName);
+  // A large book renders a page of people at a time; search finds anyone past it.
+  const SHOW = 300;
+
+  const moreLine = (total: number) => total > SHOW && (
+    <div className="text-[11px] text-muted text-center px-4 py-3">Showing {SHOW} of {total}. Search to find anyone else.</div>
+  );
+
+  const personRow = (r: AudienceRow) => {
+    const c = r.client;
+    const catText = r.cats.length ? r.cats.slice(0, 2).join(", ") + (r.cats.length > 2 ? ` +${r.cats.length - 2}` : "") : "No category";
+    const tone = r.lock === "No email" ? "warning" : r.lock ? "danger" : "neutral";
+    return (
+      <button key={c.id} type="button" disabled={!!r.lock} onClick={() => setPerson(r, !r.receiving)}
+        title={`${c.email || "No email"}${c.company ? `, ${c.company}` : ""}${r.cats.length > 2 ? `\n${r.cats.join(", ")}` : ""}`}
+        className="w-full text-left px-3 py-2 flex items-center gap-2.5 border-b border-line-2 enabled:hover:bg-surface-2 disabled:cursor-default transition-colors">
+        <span className={`w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border ${
+          r.lock ? "border-transparent text-faint" : r.receiving ? "bg-accent border-accent text-on-accent" : "border-line-3"
+        }`}>
+          {r.lock ? <Lock size={12} /> : r.receiving ? <Check size={11} strokeWidth={3} /> : null}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className={`block text-[12px] font-medium truncate ${r.lock ? "text-muted" : "text-ink"}`}>{c.name}</span>
+          <span className="block text-[10.5px] text-muted truncate">{catText}</span>
+        </span>
+        {r.reason ? <StatusPill tone={tone}>{r.reason}</StatusPill>
+          : r.facts?.bought ? <StatusPill>{r.facts.deals > 0 ? `Bought ${r.facts.deals}×` : "Bought"}</StatusPill>
+          : null}
+      </button>
+    );
   };
 
   const addManualEmail = async () => {
@@ -748,7 +818,10 @@ function NewsletterTab() {
     if (!addr || !addr.includes("@")) return;
     const existing = clients.find((c) => c.email?.toLowerCase() === addr.toLowerCase());
     if (existing) {
-      if (!selected.find((s) => s.id === existing.id)) setSelected([...selected, existing]);
+      const why = lockReason(existing);
+      if (why) { toast(`${existing.name} can't receive bulk email: ${why.toLowerCase()}`, "error"); return; }
+      const row = rows.find((r) => r.client.id === existing.id);
+      if (row) setPerson(row, true);
     } else {
       const newClient = await api.createClient({
         name: addr.split("@")[0],
@@ -757,7 +830,7 @@ function NewsletterTab() {
         lead_status: "prospect",
       });
       setClients(await api.listClients());
-      setSelected([...selected, newClient]);
+      setAdded(with1(added, newClient.id));
     }
     setManualEmail("");
   };
@@ -837,7 +910,7 @@ function NewsletterTab() {
     });
     try {
       const nl = await api.saveNewsletter(null, subject, body);
-      const result = await api.sendNewsletter(nl.id, selected.map((c) => c.id), subject, body, attachmentPath, newsletterFrom);
+      const result = await api.sendNewsletter(nl.id, validRecipients.map((c) => c.id), subject, body, attachmentPath, newsletterFrom);
       setSendResult(result);
       setSendProgress("");
       api.listNewsletters().then(setTemplates);
@@ -904,7 +977,7 @@ function NewsletterTab() {
   const startNew = () => {
     setSubject(defaultSubject);
     setBody(defaultBody);
-    setSelected([]);
+    resetAudience();
     setAttachmentPath(null);
     setAiPrompt("");
     setSendResult(null);
@@ -947,117 +1020,161 @@ function NewsletterTab() {
 
   return (
     <div className="nl-cols flex flex-col xl:flex-row gap-4" style={{ minHeight: 500 }}>
-      {/* Panel A: Recipients */}
-      <div className="nl-pane w-full xl:w-[300px] xl:flex-shrink-0 bg-surface border border-line rounded-lg flex flex-col">
-        <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+      {/* Panel A: Audience (R-297) — filters decide who receives, hand edits adjust, and the
+          number in the header is exactly who the send goes to. */}
+      <div className="nl-pane w-full xl:w-[340px] xl:flex-shrink-0 bg-surface border border-line rounded-lg flex flex-col min-w-0">
+        <div className="px-4 py-3 border-b border-line flex items-center justify-between gap-2">
           <span className="flex items-center gap-2">
             <span className="w-5 h-5 rounded-full bg-accent/10 text-accent text-[11px] font-bold flex items-center justify-center flex-shrink-0">1</span>
             <span className="text-[14px] font-semibold text-ink">Audience</span>
           </span>
-          <span className="bg-accent/10 text-accent-hover text-[11px] font-semibold px-2 py-0.5 rounded-full tabular-nums">{metadataFilteredClients.filter((c) => c.email).length} will receive</span>
+          <span className="bg-accent/10 text-accent-hover text-[12px] font-semibold px-2.5 py-0.5 rounded-full tabular-nums whitespace-nowrap">
+            {validRecipients.length} will receive
+          </span>
         </div>
 
-        {categoryLabels.length > 0 && (
-          <div className="px-3 py-2 border-b border-line">
-            <div className="flex flex-wrap gap-1.5">
-              {categoryLabels.map((label) => {
-                const members = catMembers(label);
-                const selectedIds = new Set(selected.map((c) => c.id));
-                const selectedCount = members.filter((c) => selectedIds.has(c.id)).length;
-                const full = members.length > 0 && selectedCount === members.length;
-                const partial = selectedCount > 0 && !full;
-                return (
-                  <button
-                    key={label}
-                    onClick={() => toggleCategory(label)}
-                    title={`${selectedCount} of ${members.length} selected`}
-                    className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors flex items-center gap-1.5 ${
-                      full ? "bg-accent text-on-accent border-accent"
-                        : partial ? "bg-accent/10 text-accent border-accent"
-                        : "border-line text-ink-2 hover:bg-surface-2"
-                    }`}
-                  >
-                    {partial && <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />}
-                    {label} · {members.length}
-                  </button>
-                );
-              })}
+        {picked ? (
+          <div className="px-4 py-3 border-b border-line text-[12px] text-ink-2 leading-snug">
+            {picked.size} {picked.size === 1 ? "person" : "people"} picked from Clients.
+            {(() => {
+              const n = locked.filter((r) => picked.has(r.client.id)).length;
+              return n > 0 ? ` ${n} of them can never get bulk email (see Not receiving).` : "";
+            })()}
+            <button onClick={resetAudience} className="block mt-1 text-accent hover:text-accent-hover font-medium">
+              Build an audience instead
+            </button>
+          </div>
+        ) : (
+          <div className="px-4 py-3 border-b border-line space-y-3.5">
+            {catOptions.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[12px] font-medium text-ink-2">Categories</span>
+                  {filters.cats.length > 0 && (
+                    <button onClick={() => setFilters((p) => ({ ...p, cats: [] }))} className="text-[11px] text-muted hover:text-ink-2">Clear</button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {catOptions.filter((o, i) => showAllCats || i < 10 || catOn(o.label)).map((o) => (
+                    <AudienceChip key={o.label} on={catOn(o.label)} onClick={() => toggleCat(o.label)}
+                      count={reach.cat.get(o.label)}>
+                      {o.label}
+                    </AudienceChip>
+                  ))}
+                  {catOptions.length > 10 && (
+                    <button onClick={() => setShowAllCats(!showAllCats)} className="text-[11px] text-muted hover:text-ink-2 h-6 px-1">
+                      {showAllCats ? "Show fewer" : `Show all ${catOptions.length}`}
+                    </button>
+                  )}
+                </div>
+                {filters.cats.length > 1 && (
+                  <div className="text-[11px] text-muted mt-1.5">Anyone who buys at least one of these.</div>
+                )}
+              </div>
+            )}
+
+            <div>
+              <div className="text-[12px] font-medium text-ink-2 mb-1.5">Buyers</div>
+              <div className="flex flex-wrap gap-1.5">
+                <AudienceChip on={filters.tier === "all"} count={reach.all}
+                  onClick={() => setFilters((p) => ({ ...p, tier: "all" }))}>
+                  Everyone
+                </AudienceChip>
+                <AudienceChip on={filters.tier === "ranked"} count={reach.ranked}
+                  onClick={() => setFilters((p) => ({ ...p, tier: p.tier === "ranked" ? "all" : "ranked" }))}>
+                  Ranked buyers
+                </AudienceChip>
+                <AudienceChip on={filters.tier === "first_contact"} count={reach.first}
+                  title="Clients never sent any email: one intro send reaches them all"
+                  onClick={() => setFilters((p) => ({ ...p, tier: p.tier === "first_contact" ? "all" : "first_contact" }))}>
+                  First contact
+                </AudienceChip>
+                {([["P", "Platinum"], ["S", "Diamond"], ["A", "Gold"], ["B", "Silver"], ["C", "Bronze"]] as [string, string][]).map(([code, label]) => (
+                  <AudienceChip key={code} on={Array.isArray(filters.tier) && filters.tier.includes(code)}
+                    count={reach.tier.get(code)} onClick={() => toggleTier(code)}>
+                    {label}
+                  </AudienceChip>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[12px] font-medium text-ink-2 mb-1.5">Purchase history</div>
+              <div className="grid grid-cols-3 gap-0.5 p-0.5 rounded-lg bg-surface-2 border border-line">
+                {([["any", "Anyone"], ["bought", "Bought before"], ["never", "Never bought"]] as [Purchase, string][]).map(([v, label]) => {
+                  const on = filters.purchase === v;
+                  return (
+                    <button key={v} onClick={() => setFilters((p) => ({ ...p, purchase: v }))} aria-pressed={on}
+                      className={`h-10 rounded-md px-1 flex flex-col items-center justify-center leading-tight transition-colors ${
+                        on ? "bg-surface text-ink shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"
+                      }`}>
+                      <span className={`text-[11px] whitespace-nowrap ${on ? "font-medium" : ""}`}>{label}</span>
+                      <span className="text-[10px] tabular-nums opacity-70">{reach[v]}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {filters.purchase !== "any" && (
+                <div className="text-[11px] text-muted mt-1.5">
+                  {filters.purchase === "bought" ? "Only clients with a completed deal or a paid invoice." : "Leaves out everyone with a completed deal or a paid invoice."}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <button onClick={() => setShowFilters(!showFilters)} className="flex items-center gap-1 text-[12px] text-muted hover:text-ink-2">
+                <ChevronDown size={12} className={`transition-transform ${showFilters ? "rotate-180" : ""}`} />
+                More filters{moreFiltersOn > 0 ? ` (${moreFiltersOn} on)` : ""}
+              </button>
+              {showFilters && (
+                <div className="mt-2.5 space-y-3">
+                  {stOptions.length > 0 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[12px] font-medium text-ink-2">State</span>
+                        {filters.states.length > 0 && (
+                          <button onClick={() => setFilters((p) => ({ ...p, states: [] }))} className="text-[11px] text-muted hover:text-ink-2">Clear</button>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {stOptions.filter((o, i) => showAllStates || i < 12 || filters.states.includes(o.code)).map((o) => (
+                          <AudienceChip key={o.code} on={filters.states.includes(o.code)} onClick={() => toggleState(o.code)}
+                            count={reach.state.get(o.code)}>
+                            {o.code}
+                          </AudienceChip>
+                        ))}
+                        {stOptions.length > 12 && (
+                          <button onClick={() => setShowAllStates(!showAllStates)} className="text-[11px] text-muted hover:text-ink-2 h-6 px-1">
+                            {showAllStates ? "Show fewer" : `Show all ${stOptions.length}`}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <div className="text-[12px] font-medium text-ink-2 mb-1.5">Leave out</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {([["exDormant", "Dormant"], ["exOneTime", "One-time buyers"], ["exUnder10k", "Under $10k"]] as ["exDormant" | "exOneTime" | "exUnder10k", string][]).map(([key, label]) => (
+                        <AudienceChip key={key} on={filters[key]} exclude onClick={() => setFilters((p) => ({ ...p, [key]: !p[key] }))}>
+                          {label}
+                        </AudienceChip>
+                      ))}
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 text-[11px] text-muted cursor-pointer">
+                    <input type="checkbox" checked={includeRanked}
+                      onChange={(e) => { setIncludeRanked(e.target.checked); api.setNewsletterIncludeRanked(e.target.checked).catch(() => {}); }}
+                      className="accent-accent" />
+                    Include ranked buyers when Everyone is selected
+                  </label>
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        <div className="px-3 py-2 border-b border-line">
-          <input
-            type="text"
-            placeholder="Search clients by name or email…"
-            value={clientSearch}
-            onChange={(e) => setClientSearch(e.target.value)}
-            className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-accent"
-          />
-        </div>
-
-        {/* Audience — the primary control, always visible (was buried in a collapse) */}
-        <div className="px-3 py-2.5 border-b border-line">
-          <div className="text-[12px] font-medium text-muted mb-1.5">Audience</div>
-          <div className="flex flex-wrap gap-1.5 mb-2.5">
-            {([["all", "Everyone"], ["ranked", "Ranked buyers"]] as [string, string][]).map(([v, l]) => (
-              <button key={v} onClick={() => setTierFilter(v as "all" | "ranked")}
-                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${tierFilter === v ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>{l}</button>
-            ))}
-            {(() => {
-              const fcAudience = clients.filter((c) => c.first_contact && !c.is_blacklisted && c.email).length;
-              const on = tierFilter === "first_contact";
-              return (
-                <button onClick={() => setTierFilter(on ? "all" : "first_contact")}
-                  title="Clients never sent any email — one intro blast reaches them all"
-                  className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${on ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>
-                  First contact{fcAudience > 0 ? ` · ${fcAudience}` : ""}
-                </button>
-              );
-            })()}
-            {([["P", "Platinum"], ["S", "Diamond"], ["A", "Gold"], ["B", "Silver"], ["C", "Bronze"]] as [string, string][]).map(([code, label]) => {
-              const active = Array.isArray(tierFilter) && tierFilter.includes(code);
-              return (
-                <button key={code} onClick={() => {
-                  const cur = Array.isArray(tierFilter) ? tierFilter : [];
-                  const next = active ? cur.filter((t) => t !== code) : [...cur, code];
-                  setTierFilter(next.length ? next : "all");
-                }}
-                  className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${active ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>{label}</button>
-              );
-            })}
-          </div>
-
-          <button onClick={() => setShowFilters(!showFilters)}
-            className="flex items-center gap-1 text-[11px] text-muted hover:text-ink-2">
-            <ChevronDown size={11} className={`transition-transform ${showFilters ? "rotate-180" : ""}`} />
-            More filters
-          </button>
-          {showFilters && (
-            <div className="mt-2">
-              <div className="text-[12px] font-medium text-muted mb-1.5">Exclude</div>
-              <div className="flex flex-wrap gap-1.5">
-                {([
-                  ["Dormant", excludeDormant, setExcludeDormant],
-                  ["One-time", excludeAsNeeded, setExcludeAsNeeded],
-                  ["Under $10k", excludeUnder10k, setExcludeUnder10k],
-                ] as [string, boolean, (v: boolean) => void][]).map(([l, on, set]) => (
-                  <button key={l} onClick={() => set(!on)}
-                    className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${on ? "bg-danger-bg text-danger-ink border-danger-ink/30" : "border-line text-ink-2 hover:bg-surface-2"}`}>{l}</button>
-                ))}
-              </div>
-              <label className="flex items-center gap-2 text-[10px] text-muted cursor-pointer mt-2">
-                <input type="checkbox" checked={includeRanked}
-                  onChange={(e) => { setIncludeRanked(e.target.checked); api.setNewsletterIncludeRanked(e.target.checked).catch(() => {}); }}
-                  className="accent-accent" />
-                Include ranked buyers when "Everyone" is selected
-              </label>
-            </div>
-          )}
-          <div className="text-[10px] text-muted mt-2 leading-snug">
-            Blacklisted &amp; do-not-bulk clients are always excluded.{excludedByFilter > 0 ? ` ${excludedByFilter} more filtered out.` : ""}
-          </div>
-          <label className={`flex items-start gap-2 text-[11px] cursor-pointer mt-2 rounded-lg px-2.5 py-2 border transition-colors ${unsubEnabled ? "border-line bg-surface-2/50 text-ink-2" : "border-warning-ink/40 bg-warning-bg text-warning-ink"}`}>
+        <div className="px-4 py-3 border-b border-line">
+          <label className={`flex items-start gap-2 text-[11px] cursor-pointer rounded-lg px-2.5 py-2 border transition-colors ${unsubEnabled ? "border-line bg-surface-2/50 text-ink-2" : "border-warning-ink/40 bg-warning-bg text-warning-ink"}`}>
             <input type="checkbox" checked={unsubEnabled}
               onChange={(e) => { setUnsubEnabled(e.target.checked); api.setNewsletterUnsubscribeEnabled(e.target.checked).catch(() => {}); }}
               className="accent-accent mt-0.5 flex-shrink-0" />
@@ -1072,83 +1189,94 @@ function NewsletterTab() {
           </label>
         </div>
 
-        <div className="flex-1 overflow-y-auto" style={{ maxHeight: 200, minHeight: 120 }}>
-          {metadataFilteredClients.map((c) => {
-            const isSelected = selected.find((s) => s.id === c.id);
-            return (
-              <button key={c.id}
-                onClick={() => isSelected ? removeRecipient(c.id) : addRecipient(c)}
-                className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-surface-2 transition-colors border-b border-line-2 ${
-                  isSelected ? "bg-accent/10" : ""
-                }`}>
-                <div className="min-w-0">
-                  <div className="text-[12px] font-medium text-ink truncate">{c.name}</div>
-                  <div className="flex items-center gap-1 mt-0.5">
-                    {c.category ? (
-                      <span className="text-[10px] text-muted bg-surface-3 px-1.5 py-0.5 rounded truncate max-w-[140px]">{c.category}</span>
-                    ) : (
-                      <span className="text-[10px] text-faint">—</span>
-                    )}
-                    {!c.email && <span className="text-[9px] text-danger-ink">no email</span>}
-                  </div>
-                </div>
-                {isSelected && <CheckCircle2 size={14} className="text-success-ink flex-shrink-0 ml-2" />}
-              </button>
-            );
-          })}
-          {metadataFilteredClients.length === 0 && (
-            <div className="text-[12px] text-muted text-center py-6">{clientSearch || excludeDormant || excludeAsNeeded || excludeUnder10k ? "No clients match your filters" : "No clients match this filter"}</div>
-          )}
-        </div>
-
-        <div className="border-t border-line">
-          <div className="px-4 py-2 flex items-center justify-between bg-surface-2 border-b border-line">
-            <span className="text-[12px] font-semibold text-ink-2">Recipients</span>
-            <span className="bg-accent/10 text-accent-hover text-[11px] font-medium px-2 py-0.5 rounded-full">{selected.length}</span>
-          </div>
-          <div className="overflow-y-auto" style={{ maxHeight: 140 }}>
-            {selected.map((c) => (
-              <div key={c.id} className="flex items-center justify-between py-1.5 px-3 hover:bg-surface-2 border-b border-line-2">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[12px] text-ink truncate">{c.name}</div>
-                  {c.email ? (
-                    <div className="text-[10px] text-muted truncate">{c.email}</div>
-                  ) : (
-                    <span className="text-[9px] text-danger-ink bg-danger-bg px-1.5 py-0.5 rounded">No email</span>
-                  )}
-                </div>
-                <button onClick={() => removeRecipient(c.id)} className="text-muted hover:text-danger-ink ml-2 flex-shrink-0 p-0.5">
-                  <X size={14} />
+        <div className="flex-1 flex flex-col min-h-[320px]">
+          <div className="px-3 pt-2.5 pb-2 border-b border-line space-y-2">
+            <div className="grid grid-cols-2 gap-0.5 p-0.5 rounded-lg bg-surface-2 border border-line">
+              {([["in", "Receiving", validRecipients.length], ["out", "Not receiving", locked.length + filteredOut.length]] as ["in" | "out", string, number][]).map(([v, label, n]) => (
+                <button key={v} onClick={() => setPeopleTab(v)} aria-pressed={peopleTab === v}
+                  className={`h-7 rounded-md text-[12px] whitespace-nowrap transition-colors ${
+                    peopleTab === v ? "bg-surface text-ink font-medium shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"
+                  }`}>
+                  {label} <span className="tabular-nums opacity-70">{n}</span>
                 </button>
-              </div>
-            ))}
-            {selected.length === 0 && (
-              <div className="text-[11px] text-muted text-center py-4">Click a client above to add</div>
-            )}
-          </div>
-        </div>
-
-        <div className="px-3 py-2 border-t border-line text-[11px] text-muted space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span>{selected.length} selected{noEmailCount > 0 && <span className="text-danger-ink"> ({noEmailCount} skipped)</span>}</span>
-            <div className="flex items-center gap-2">
-              <button onClick={addAllWithEmail} className="text-accent hover:text-accent-hover">All w/ email</button>
-              {selected.length > 0 && <button onClick={() => setSelected([])} className="text-muted hover:text-danger-ink">Clear</button>}
+              ))}
+            </div>
+            <div className="relative">
+              <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-faint pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Search by name, company or email"
+                value={clientSearch}
+                onChange={(e) => setClientSearch(e.target.value)}
+                className="w-full border border-line-3 h-8 pl-7 pr-2 rounded-md text-[12px] bg-surface focus:outline-none focus:ring-1 focus:ring-accent"
+              />
             </div>
           </div>
-          <div className="flex gap-1.5">
-            <input
-              placeholder="Or type an email address…"
-              type="email"
-              value={manualEmail}
-              onChange={(e) => setManualEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addManualEmail()}
-              className="flex-1 border border-line-3 h-7 px-2 rounded-md text-[11px] focus:outline-none focus:ring-1 focus:ring-accent"
-            />
-            <button onClick={addManualEmail} disabled={!manualEmail.includes("@")}
-              className="bg-accent hover:bg-accent-hover text-on-accent px-2.5 h-7 rounded-md text-[11px] font-medium disabled:opacity-40 transition-colors">
-              Add
-            </button>
+
+          <div className="flex-1 overflow-y-auto" style={{ maxHeight: 440 }}>
+            {peopleTab === "in" ? (
+              receivingRows.length > 0 ? <>{receivingRows.slice(0, SHOW).map(personRow)}{moreLine(receivingRows.length)}</> : (
+                <div className="text-[12px] text-muted text-center px-4 py-8">
+                  {q ? "No one receiving matches that search." : "No one matches these filters. Loosen one, or tick someone under Not receiving."}
+                </div>
+              )
+            ) : (
+              <>
+                {lockedRows.length > 0 && (
+                  <>
+                    <div className="px-3 pt-2.5 pb-1.5 flex items-baseline justify-between gap-2">
+                      <span className="text-[12px] font-medium text-ink-2">Never gets bulk email</span>
+                      <span className="text-[11px] text-muted tabular-nums">{lockedRows.length}</span>
+                    </div>
+                    <div className="px-3 pb-2 text-[11px] text-muted leading-snug">
+                      Blacklisted, unsubscribed, marked No bulk email, or no address. Nothing you pick here sends to them.
+                    </div>
+                    {lockedRows.slice(0, SHOW).map(personRow)}{moreLine(lockedRows.length)}
+                  </>
+                )}
+                {filteredRows.length > 0 && (
+                  <>
+                    <div className="px-3 pt-3 pb-1.5 flex items-baseline justify-between gap-2">
+                      <span className="text-[12px] font-medium text-ink-2">Left out by your filters</span>
+                      <span className="text-[11px] text-muted tabular-nums">{filteredRows.length}</span>
+                    </div>
+                    <div className="px-3 pb-2 text-[11px] text-muted leading-snug">Tick anyone to add them anyway.</div>
+                    {filteredRows.slice(0, SHOW).map(personRow)}{moreLine(filteredRows.length)}
+                  </>
+                )}
+                {lockedRows.length === 0 && filteredRows.length === 0 && (
+                  <div className="text-[12px] text-muted text-center px-4 py-8">
+                    {q ? "No one left out matches that search." : "Everyone is receiving."}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="px-3 py-2.5 border-t border-line space-y-2">
+            <div className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="text-muted">{handEdits > 0 ? `${handEdits} changed by hand` : ""}</span>
+              <span className="flex items-center gap-3">
+                {handEdits > 0 && (
+                  <button onClick={() => { setRemoved(new Set()); setAdded(new Set()); }} className="text-accent hover:text-accent-hover">Undo hand edits</button>
+                )}
+                <button onClick={resetAudience} className="text-muted hover:text-ink-2">Reset</button>
+              </span>
+            </div>
+            <div className="flex gap-1.5">
+              <input
+                placeholder="Or type an email address…"
+                type="email"
+                value={manualEmail}
+                onChange={(e) => setManualEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addManualEmail()}
+                className="flex-1 min-w-0 border border-line-3 h-7 px-2 rounded-md text-[11px] focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+              <button onClick={addManualEmail} disabled={!manualEmail.includes("@")}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-2.5 h-7 rounded-md text-[11px] font-medium disabled:opacity-40 transition-colors">
+                Add
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1324,12 +1452,6 @@ function NewsletterTab() {
         </div>
 
         <div className="bg-surface border border-line rounded-lg p-4">
-          {noEmailCount > 0 && (
-            <div className="text-[12px] text-warning-ink bg-warning-bg border border-warning rounded-md px-3 py-2 mb-3">
-              {noEmailCount} recipient{noEmailCount !== 1 ? "s" : ""} will be skipped (no email)
-            </div>
-          )}
-
           <FromPicker options={fromOptions} value={newsletterFrom} onChange={setNewsletterFrom} className="mb-3" />
 
           <button
@@ -1595,11 +1717,15 @@ function RecurringTab() {
     setShowForm(true);
   };
 
+  // R-297: a client is in a category when any of their categories is it (not when their whole
+  // category string equals it), and locked clients are never counted — the Newsletter's rules.
+  const known = categories.map((c) => c.label);
+  const categoryMembers = (label: string) => clients.filter((c) =>
+    !lockReason(c) && clientCategories(c, known).some((x) => x.toLowerCase() === label.toLowerCase()));
+
   const buildFilter = (): string => {
     if (recipientMode === "category" && category) {
-      const ids = clients
-        .filter((c) => c.email && c.category?.toLowerCase() === category.toLowerCase())
-        .map((c) => c.id);
+      const ids = categoryMembers(category).map((c) => c.id);
       return JSON.stringify({ mode: "ids", ids, category });
     }
     return JSON.stringify({ mode: "all" });
@@ -1798,7 +1924,7 @@ function RecurringTab() {
                   {recipientMode === "category" && (
                     <select className={inp} value={category} onChange={(e) => setCategory(e.target.value)}>
                       <option value="">Select…</option>
-                      {categories.map((c) => <option key={c.id} value={c.label}>{c.label}</option>)}
+                      {categories.map((c) => <option key={c.id} value={c.label}>{c.label} ({categoryMembers(c.label).length})</option>)}
                     </select>
                   )}
                 </div>

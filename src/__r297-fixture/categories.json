@@ -1,0 +1,110 @@
+[
+  {
+    "id": "4f62d6a2-ab40-4c24-8dc2-a36abfd6d258",
+    "label": "Appliances",
+    "sort_order": 0,
+    "parent_id": null
+  },
+  {
+    "id": "4ab5a75a-0a90-4124-8b55-22b83cc37977",
+    "label": "Beauty/Cosmetics",
+    "sort_order": 2,
+    "parent_id": null
+  },
+  {
+    "id": "4cef0c2d-5c5f-4db6-aa98-5ae83dcaa5b0",
+    "label": "Books & Stationery",
+    "sort_order": 3,
+    "parent_id": null
+  },
+  {
+    "id": "47025e03-6519-4af8-bc47-ad57f8466eaa",
+    "label": "Candy/Food/Drinks",
+    "sort_order": 4,
+    "parent_id": null
+  },
+  {
+    "id": "57eaea21-b74b-4c87-9ed0-eba4fca2ec33",
+    "label": "CAPS",
+    "sort_order": 5,
+    "parent_id": null
+  },
+  {
+    "id": "e7def7de-1a0a-4203-8bce-0f7073c52a5c",
+    "label": "Clothing",
+    "sort_order": 6,
+    "parent_id": null
+  },
+  {
+    "id": "ece08632-0250-482f-8b28-e8f72531f47a",
+    "label": "Electronics",
+    "sort_order": 7,
+    "parent_id": null
+  },
+  {
+    "id": "b234ca3b-6826-42bc-b1c3-ff2896facc2b",
+    "label": "EVERYTHING",
+    "sort_order": 8,
+    "parent_id": null
+  },
+  {
+    "id": "8d92674a-c85d-47a3-9dab-86e2110c4ed4",
+    "label": "Food, Candy & Beverages",
+    "sort_order": 9,
+    "parent_id": null
+  },
+  {
+    "id": "a622d093-88f1-4917-9138-a933cc5d5fbc",
+    "label": "Furniture",
+    "sort_order": 10,
+    "parent_id": null
+  },
+  {
+    "id": "c8d89f99-90f8-4864-a81e-203f3f490c64",
+    "label": "General Merchandise",
+    "sort_order": 11,
+    "parent_id": null
+  },
+  {
+    "id": "f4760563-04eb-4d74-9a44-8e6dab7aba15",
+    "label": "Hats",
+    "sort_order": 12,
+    "parent_id": null
+  },
+  {
+    "id": "494f554e-84d2-4028-aeab-a8c57d06851f",
+    "label": "Jewelry & Accessories",
+    "sort_order": 13,
+    "parent_id": null
+  },
+  {
+    "id": "df1cebab-db50-4e17-a260-d1ad2a702ed5",
+    "label": "Mixxed",
+    "sort_order": 14,
+    "parent_id": null
+  },
+  {
+    "id": "e2c1068b-db69-4dbe-9286-c7cb7d569bde",
+    "label": "Pet Supplies",
+    "sort_order": 15,
+    "parent_id": null
+  },
+  {
+    "id": "5f8def83-0291-4013-af8a-a83b24ba45c6",
+    "label": "Shoes",
+    "sort_order": 16,
+    "parent_id": null
+  },
+  {
+    "id": "0e0372a3-2c8f-45e6-a19d-10a49d096d25",
+    "label": "Tools & Hardware",
+    "sort_order": 17,
+    "parent_id": null
+  },
+  {
+    "id": "a8250142-e6dd-48e8-bb71-0ccda22a86eb",
+    "label": "Toys",
+    "sort_order": 18,
+    "parent_id": null
+  }
+]
