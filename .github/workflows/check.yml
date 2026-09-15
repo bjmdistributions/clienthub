@@ -87,6 +87,14 @@ jobs:
           src/components/UpdateNotification.tsx
           src/lib/accent.ts
           EOF
+          # Deliberate exception, not a pre-existing violation (2026-09-14).
+          # CrossDock's reel symbols are an illustration: eight hues that must stay
+          # distinct from each other and must not follow the accent, which the mono
+          # themes invert. The tokens carry four semantic hues, so mapping onto them
+          # would make symbols collide. The palette is scoped to the component and
+          # already declared once per ground (.cd and html.dark .cd). The allowlist
+          # is per file, so review any other hex added to it by hand.
+          echo "src/components/CrossDock.tsx" >> "$allowlist"
           # Anchor each allowlisted path to the start of a `path:line:` hit so a
           # new file cannot slip through by containing an allowlisted name.
           patterns=$(mktemp)

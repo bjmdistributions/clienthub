@@ -207,7 +207,7 @@ function Embedded({ theme }: { theme: ThemeKey }) {
       <div style={{ padding: 24 }}>
         <LeadBubbles pendingApprovals={pending} onApprovalsChanged={refreshPending} />
       </div>
-      <div style={{ borderTop: "1px solid var(--t-b1, #ddd)" }}>
+      <div style={{ borderTop: "1px solid var(--t-b1)" }}>
         <ApprovalsView />
       </div>
     </div>
@@ -225,18 +225,18 @@ function Harness() {
   const src = `${window.location.pathname}?embed=1&theme=${theme}`;
 
   return (
-    <div style={{ background: "#eee", minHeight: "100vh", padding: 20 }}>
+    <div style={{ background: "rgb(var(--c-surface-3))", minHeight: "100vh", padding: 20 }}>
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", fontFamily: "system-ui" }}>
         {(["light", "dark", "matte", "light-mono"] as ThemeKey[]).map((t) => (
           <button key={t} onClick={() => setTheme(t)}
-            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #999", background: theme === t ? "#333" : "#fff", color: theme === t ? "#fff" : "#111", cursor: "pointer", fontSize: 12 }}>
+            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid rgb(var(--c-faint))", background: theme === t ? "rgb(var(--c-ink))" : "rgb(var(--c-surface))", color: theme === t ? "rgb(var(--c-surface))" : "rgb(var(--c-ink))", cursor: "pointer", fontSize: 12 }}>
             {t}
           </button>
         ))}
-        <span style={{ width: 1, background: "#999", margin: "0 4px" }} />
+        <span style={{ width: 1, background: "rgb(var(--c-faint))", margin: "0 4px" }} />
         {(Object.keys(WIDTHS) as WidthKey[]).map((w) => (
           <button key={w} onClick={() => setWidth(w)}
-            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #999", background: width === w ? "#333" : "#fff", color: width === w ? "#fff" : "#111", cursor: "pointer", fontSize: 12 }}>
+            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid rgb(var(--c-faint))", background: width === w ? "rgb(var(--c-ink))" : "rgb(var(--c-surface))", color: width === w ? "rgb(var(--c-surface))" : "rgb(var(--c-ink))", cursor: "pointer", fontSize: 12 }}>
             {w}px window ({WIDTHS[w]}px content — real iframe viewport)
           </button>
         ))}
@@ -245,7 +245,7 @@ function Harness() {
       <iframe
         title="R-263 harness preview"
         src={src}
-        style={{ width: WIDTHS[width], maxWidth: "100%", height: 1600, border: "1px solid #999", background: "#fff", display: "block", margin: "0 auto" }}
+        style={{ width: WIDTHS[width], maxWidth: "100%", height: 1600, border: "1px solid rgb(var(--c-faint))", background: "rgb(var(--c-surface))", display: "block", margin: "0 auto" }}
       />
     </div>
   );
