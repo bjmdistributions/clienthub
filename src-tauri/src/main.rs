@@ -1160,6 +1160,11 @@ fn main() {
             customer_portal::customer_portal_revoke_invite,
             customer_portal::customer_portal_set_status,
             customer_portal::customer_portal_preview,
+            customer_portal::customer_portal_eligible,
+            customer_portal::customer_portal_invite_bulk,
+            customer_portal::customer_portal_upload_qr,
+            customer_portal::customer_portal_remove_qr,
+            customer_portal::customer_portal_qr_image,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

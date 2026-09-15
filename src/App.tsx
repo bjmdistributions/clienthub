@@ -1046,7 +1046,7 @@ export default function App() {
             {t === "completed"  && <CloseoutView />}
             {t === "analytics"  && <AnalyticsView />}
             {t === "tiers"      && <TiersView />}
-            {t === "portals"    && <CustomerPortalsView />}
+            {t === "portals"    && <CustomerPortalsView me={me} />}
             {t === "automation" && <AutomationLogView />}
             {t === "brief"      && <BriefView currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
             {t === "newsletter" && <EmailView />}

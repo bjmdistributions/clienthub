@@ -1836,7 +1836,24 @@ export interface CustomerPortalAccess {
   client_email: string;
   last_activity: string;
   accounts: CustomerPortalAccount[];
-  invite: { link: string; email: string; created_at: string; expires_at: string } | null;
+  invite: {
+    link: string; email: string; created_at: string; expires_at: string;
+    status?: "open" | "expired";
+    email_status?: "" | "queued" | "sent" | "failed";
+    email_error?: string;
+    emailed_at?: string;
+  } | null;
+}
+export interface CustomerPortalEligible {
+  client_id: string;
+  client_name: string;
+  company: string;
+  email: string;
+  completed_deals: number;
+  last_completed: string;
+  has_login: boolean;
+  open_invite: boolean;
+  blocked: string | null;
 }
 export interface CustomerPortalInvite {
   ok: true;
@@ -3610,6 +3627,15 @@ export const api = {
   customerPortalSetStatus: (accountId: string, status: "active" | "suspended") =>
     invoke<{ ok: true }>("customer_portal_set_status", { accountId, status }),
   customerPortalPreview: (clientId: string) => invoke<{ url: string }>("customer_portal_preview", { clientId }),
+  // R-294: invite everyone with a completed deal, and payment QR codes for the portal.
+  customerPortalEligible: () =>
+    safe(invoke<{ clients: CustomerPortalEligible[] } | { unsupported: true }>("customer_portal_eligible")),
+  customerPortalInviteBulk: (clientIds: string[]) =>
+    invoke<{ ok: true; queued: number; skipped: { client_id: string; client_name: string; reason: string }[] }>("customer_portal_invite_bulk", { clientIds }),
+  customerPortalUploadQr: (methodId: string, dataBase64: string, contentType: string) =>
+    invoke<{ ok: true }>("customer_portal_upload_qr", { methodId, dataBase64, contentType }),
+  customerPortalRemoveQr: (methodId: string) => invoke<{ ok: true }>("customer_portal_remove_qr", { methodId }),
+  customerPortalQrImage: (methodId: string) => invoke<string | null>("customer_portal_qr_image", { methodId }),
 
   // Manifest
   // forceAi re-reads a PDF through Claude when the text-layer heuristic got it wrong.
