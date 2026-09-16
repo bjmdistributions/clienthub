@@ -97,6 +97,7 @@ import {
   Share2,
   MessageSquarePlus,
   MinusCircle,
+  Search,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -130,6 +131,7 @@ function useAutosave(value: unknown, save: () => Promise<void>, ready: boolean) 
   const report = useContext(SaveStatusCtx);
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const lastSaved = useRef<string | null>(null);
+  const baselined = useRef(false);   // the loaded value has been taken as the baseline
   const saveRef = useRef(save);
   const pending = useRef<string | null>(null);   // json scheduled but not yet saved
   saveRef.current = save;
@@ -152,7 +154,14 @@ function useAutosave(value: unknown, save: () => Promise<void>, ready: boolean) 
   };
 
   useEffect(() => {
-    if (!ready) { lastSaved.current = json; return; }   // baseline = loaded value
+    if (!ready) { baselined.current = false; lastSaved.current = json; return; }
+    // The loaded value and `ready` usually land in the SAME render (React batches
+    // both setStates from the same load), so the first ready run sees a value that
+    // differs from the pre-load baseline and used to save it straight back —
+    // which is why opening Settings -> Invoice or Quote showed "Saving…" and then
+    // "Couldn't save" without anything being edited (R-307). The first ready run
+    // is always the loaded value, never an edit: take it as the baseline.
+    if (!baselined.current) { baselined.current = true; lastSaved.current = json; return; }
     if (json === lastSaved.current) return;             // no real change
     pending.current = json;
     report("saving");
@@ -176,57 +185,73 @@ const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:ou
 const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 type SettingsTab =
-  | "account" | "appearance" | "company" | "invoice" | "quote" | "storefront" | "categories" | "customfields"
-  | "email" | "whatsapp" | "templates" | "automation" | "forms"
-  | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify" | "facebook" | "webforms"
-  | "sync" | "splits" | "backup" | "team" | "feedback";
+  | "account" | "appearance" | "company"
+  | "documents" | "storefront" | "clientfields" | "leads"
+  | "email" | "whatsapp" | "automation"
+  | "sheets" | "shopify" | "facebook" | "billing" | "ai"
+  | "sync" | "backup" | "import" | "splits" | "team"
+  | "feedback";
+
+type DocKind = "invoice" | "quote";
+
+/** Section ids that existed before R-308 folded them together, and where their
+ *  settings live now. A saved tab, a deep link from another screen
+ *  (`AutomationLogView.goToSettings`) or an old habit can still name one, and a
+ *  blank Settings screen is how a rename gets noticed in production. Never delete
+ *  a row here. */
+const LEGACY_TABS: Record<string, SettingsTab> = {
+  invoice: "documents", quote: "documents", payments: "documents", templates: "documents",
+  categories: "clientfields", customfields: "clientfields",
+  forms: "leads", webforms: "leads",
+};
 
 const SETTINGS_GROUPS: {
   group: string;
   items: { id: SettingsTab; label: string; icon: any; desc: string }[];
 }[] = [
   {
-    group: "Workspace",
+    group: "You & your business",
     items: [
-      { id: "account",      label: "My Account",     icon: Users,             desc: "Your name, photo & contact info" },
-      { id: "appearance",   label: "Appearance",    icon: Palette,           desc: "Theme, accent color & display" },
-      { id: "company",      label: "Company",        icon: Building2,         desc: "Business details & invoice logo" },
-      { id: "invoice",      label: "Invoice",        icon: Receipt,           desc: "Invoice branding, numbering & preview" },
-      { id: "quote",        label: "Quote",          icon: FileText,          desc: "Quote branding, numbering & preview" },
-      { id: "storefront",   label: "Storefront",     icon: Globe,             desc: "Public inventory catalog link" },
-      { id: "categories",   label: "Categories",     icon: Tag,               desc: "Client & deal categories" },
-      { id: "customfields", label: "Custom Fields",  icon: SlidersHorizontal, desc: "Extra fields on client records" },
+      { id: "account",    label: "My account",  icon: Users,     desc: "Your name, photo & contact info" },
+      { id: "appearance", label: "Appearance",  icon: Palette,   desc: "Theme, accent colour & sidebar" },
+      { id: "company",    label: "Company",     icon: Building2, desc: "Business details, logo & share footer" },
     ],
   },
   {
-    group: "Communication",
+    group: "Sales & clients",
     items: [
-      { id: "email",      label: "Email",       icon: Mail,          desc: "SMTP / IMAP & Pi sending" },
-      { id: "whatsapp",   label: "WhatsApp",    icon: MessageCircle, desc: "Inventory share message template" },
-      { id: "templates",  label: "Templates",   icon: FileText,      desc: "Reusable line-item templates" },
-      { id: "automation", label: "Automation",  icon: Zap,      desc: "Signup detection & follow-ups" },
-      { id: "forms",      label: "Lead Forms",  icon: FileText, desc: "Custom forms to capture clients" },
+      { id: "documents",    label: "Invoices & quotes",   icon: Receipt,           desc: "Branding, numbering, payment methods & line items" },
+      { id: "storefront",   label: "Storefront",          icon: Globe,             desc: "Your public inventory catalogue" },
+      { id: "clientfields", label: "Categories & fields", icon: Tag,               desc: "Categories and the extra fields on a client" },
+      { id: "leads",        label: "Lead capture",        icon: SlidersHorizontal, desc: "Forms and websites that create leads" },
     ],
   },
   {
-    group: "Integrations",
+    group: "Messaging",
     items: [
-      { id: "ai",       label: "AI",            icon: Bot,        desc: "Ollama model selection" },
-      { id: "sheets",   label: "Google Sheets", icon: Sheet,      desc: "Two-way sheet sync" },
-      { id: "import",   label: "Import",        icon: Download,   desc: "CSV & Google Contacts" },
-      { id: "billing",  label: "Billing",       icon: Receipt,    desc: "Stripe configuration" },
+      { id: "email",      label: "Email",      icon: Mail,          desc: "Sending, inboxes, policy clauses & newsletter format" },
+      { id: "whatsapp",   label: "WhatsApp",   icon: MessageCircle, desc: "Inventory share message" },
+      { id: "automation", label: "Automation", icon: Zap,           desc: "Signup detection & follow-ups" },
+    ],
+  },
+  {
+    group: "Connections",
+    items: [
+      { id: "sheets",   label: "Google Sheets", icon: Sheet,       desc: "Two-way sheet sync" },
       { id: "shopify",  label: "Shopify",       icon: ShoppingBag, desc: "Sync new customers as leads" },
       { id: "facebook", label: "Facebook",      icon: Facebook,    desc: "Post inventory to a Facebook Page" },
-      { id: "webforms", label: "Web forms",     icon: Globe,       desc: "Custom sites & forms → pending leads" },
+      { id: "billing",  label: "Billing",       icon: CreditCard,  desc: "Stripe configuration" },
+      { id: "ai",       label: "AI",            icon: Bot,         desc: "Local model selection" },
     ],
   },
   {
-    group: "Data & Team",
+    group: "Data & team",
     items: [
-      { id: "sync",   label: "Sync",   icon: RefreshCw, desc: "Event log, encryption & updates" },
-      { id: "splits", label: "Splits", icon: Split,     desc: "Profit-split partners" },
+      { id: "sync",   label: "Sync",   icon: RefreshCw, desc: "Cloud sync, updates & encryption" },
       { id: "backup", label: "Backup", icon: Database,  desc: "Local backups & restore" },
-      { id: "team",   label: "Team",   icon: Users,     desc: "Users, roles & invites" },
+      { id: "import", label: "Import", icon: Download,  desc: "CSV & Google Contacts" },
+      { id: "splits", label: "Splits", icon: Split,     desc: "Rep pay & profit-split partners" },
+      { id: "team",   label: "Team",   icon: Users,     desc: "People, roles, approvals, invites & payouts" },
     ],
   },
   {
@@ -239,6 +264,166 @@ const SETTINGS_GROUPS: {
   },
 ];
 
+// ── Finding a setting ───────────────────────────────────────────────────────
+// R-308: twenty-odd sections meant a setting took several guesses to reach, so the
+// search box is now the primary way in. It matches INDIVIDUAL settings, not just
+// section names, and opening a result opens the card that setting lives in.
+//
+// `card` is the title of the SettingCard (or the SectionLabel) the setting sits
+// under — matched by slug, so it has to stay spelled the way the card spells it.
+// `kw` is everything a person might type that is not already in the label.
+type IndexRow = { tab: SettingsTab; card?: string; kind?: DocKind; label: string; kw?: string };
+
+const SETTINGS_INDEX: IndexRow[] = [
+  // My account
+  { tab: "account", label: "Your name", kw: "display name profile" },
+  { tab: "account", label: "Your photo", kw: "avatar profile picture upload" },
+  { tab: "account", label: "Your title", kw: "job title role" },
+  { tab: "account", label: "Your phone", kw: "contact number" },
+  { tab: "account", label: "Replay the getting-started tour", kw: "onboarding walkthrough welcome tour" },
+  { tab: "account", card: "My Plan", label: "My plan", kw: "subscription tier usage limits seats clients team members upgrade" },
+  // Appearance
+  { tab: "appearance", card: "Theme", label: "Theme", kw: "dark mode light mode colour scheme mono monochrome grayscale" },
+  { tab: "appearance", card: "Accent Color", label: "Accent colour", kw: "accent color orange indigo blue emerald teal violet amber rose swatch brand colour" },
+  { tab: "appearance", card: "Sidebar", label: "Collapse the sidebar on narrow windows", kw: "sidebar rail narrow window responsive" },
+  // Company
+  { tab: "company", card: "Business details", label: "Company name", kw: "business name letterhead" },
+  { tab: "company", card: "Business details", label: "Organisation name", kw: "organization app header workspace name" },
+  { tab: "company", card: "Business details", label: "Company logo", kw: "letterhead png jpg upload remove logo" },
+  { tab: "company", card: "Business details", label: "Business address", kw: "street city state" },
+  { tab: "company", card: "Business details", label: "Business email", kw: "contact email" },
+  { tab: "company", card: "Business details", label: "Business phone", kw: "contact number" },
+  { tab: "company", card: "Business details", label: "Tax ID / EIN", kw: "vat ein tax number" },
+  { tab: "company", card: "Share footer", label: "WhatsApp share footer", kw: "sign-off line inventory share text" },
+  { tab: "company", card: "Share footer", label: "WhatsApp description", kw: "reply to claim share text" },
+  // Invoices & quotes
+  { tab: "documents", kind: "invoice", card: "Numbering", label: "Invoice numbering", kw: "invoice number prefix padding next number sequence INV" },
+  { tab: "documents", kind: "quote", card: "Numbering", label: "Quote numbering", kw: "quote number prefix padding next number sequence QUO" },
+  { tab: "documents", kind: "invoice", card: "Logo", label: "Invoice logo", kw: "logo placement size left center right small medium large branding" },
+  { tab: "documents", kind: "quote", card: "Logo", label: "Quote logo", kw: "logo placement size branding" },
+  { tab: "documents", kind: "invoice", card: "Brand accent", label: "Invoice brand accent", kw: "accent colour hex pdf colour table header total" },
+  { tab: "documents", kind: "quote", card: "Brand accent", label: "Quote brand accent", kw: "accent colour hex pdf colour" },
+  { tab: "documents", kind: "invoice", card: "Details & text", label: "Invoice title label", kw: "heading wording" },
+  { tab: "documents", kind: "invoice", card: "Details & text", label: "Invoice footer note", kw: "payment terms thank you note bottom of invoice" },
+  { tab: "documents", kind: "invoice", card: "Details & text", label: "What shows on an invoice", kw: "show address email phone tax id" },
+  { tab: "documents", kind: "quote", card: "Details & text", label: "Quote title label", kw: "heading wording" },
+  { tab: "documents", kind: "quote", card: "Details & text", label: "Quote footer note", kw: "terms thank you note bottom of quote" },
+  { tab: "documents", kind: "quote", card: "Details & text", label: "What shows on a quote", kw: "show address email phone tax id" },
+  { tab: "documents", kind: "invoice", card: "Payment methods", label: "Payment methods", kw: "ach wire stripe link paypal venmo zelle check routing account number how customers pay" },
+  { tab: "documents", card: "Line-item templates", label: "Line-item templates", kw: "saved line items description rate qty quick add" },
+  { tab: "documents", kind: "invoice", card: "Details & text", label: "Preview the invoice PDF", kw: "sample pdf live preview" },
+  // Storefront
+  { tab: "storefront", label: "Turn the storefront on or off", kw: "enable public inventory share catalogue" },
+  { tab: "storefront", card: "Your public link", label: "Your public storefront link", kw: "url shareable link catalogue copy open" },
+  { tab: "storefront", card: "Page content", label: "Storefront headline and subtitle", kw: "title page copy" },
+  { tab: "storefront", card: "Inquire button", label: "Storefront inquire button", kw: "whatsapp number contact email buyer enquiry" },
+  { tab: "storefront", card: "Display", label: "Show prices on the storefront", kw: "asking price hide prices" },
+  { tab: "storefront", card: "Display", label: "Storefront colours", kw: "accent background paper snow linen charcoal obsidian midnight slate plum logo" },
+  // Categories & fields
+  { tab: "clientfields", card: "Categories", label: "Categories", kw: "category tree subcategory parent rename delete merge duplicates client category lot category" },
+  { tab: "clientfields", card: "Categories", label: "Import categories", kw: "spreadsheet csv google sheet column picker" },
+  { tab: "clientfields", card: "Custom fields", label: "Custom fields", kw: "extra field on a client record text number date dropdown" },
+  // Lead capture
+  { tab: "leads", label: "Lead forms", kw: "custom form build a form capture clients hosted form" },
+  { tab: "leads", card: "Web forms & custom sites", label: "Web forms & custom sites", kw: "intake link webhook pending clients contact form your own website" },
+  { tab: "leads", card: "Web forms & custom sites", label: "Field mapping", kw: "map form fields custom field destination sample submission" },
+  // Email
+  { tab: "email", card: "Sending email", label: "Sending email", kw: "smtp app password gmail outlook oauth connect google port 587 credentials login" },
+  { tab: "email", card: "Sending email", label: "Send from", kw: "from address sender identity" },
+  { tab: "email", card: "Sending email", label: "Send invoices from", kw: "separate sender address" },
+  { tab: "email", card: "Sending email", label: "Shared team inbox or my own", kw: "personal inbox shared mailbox transfer inbox admin" },
+  { tab: "email", card: "Inbox", label: "Inboxes we read", kw: "imap monitored inbox add inbox remove inbox read mail from now on" },
+  { tab: "email", card: "Capture form submissions", label: "Capture form submissions", kw: "from contains subject contains auto create customer shopify contact form signup rule" },
+  { tab: "email", card: "Policy clauses", label: "24-hour notice", kw: "standing terms boilerplate legal wording disclaimer" },
+  { tab: "email", card: "Policy clauses", label: "Return policy", kw: "returns wording prefill invoices terms" },
+  { tab: "email", card: "Inventory newsletter", label: "Newsletter format", kw: "intro outro per-product block template preview lot format" },
+  // WhatsApp
+  { tab: "whatsapp", label: "WhatsApp message template", kw: "share inventory variables preview" },
+  { tab: "whatsapp", label: "Lot format", kw: "per item line format" },
+  { tab: "whatsapp", label: "WhatsApp business phone", kw: "number" },
+  // Automation
+  { tab: "automation", card: "Turn signup emails into clients", label: "Signup rules", kw: "regex sender pattern subject pattern typeform google forms jotform auto import clients lead link" },
+  { tab: "automation", card: "Follow-up rules", label: "Follow-up rules", kw: "drip reminder trigger no order no contact overdue invoice stale deal cadence nudge" },
+  // Connections
+  { tab: "sheets", label: "Google account", kw: "oauth client id client secret gcp connect google spreadsheets" },
+  { tab: "sheets", card: "Sheet Setup", label: "Sheet URL and column mapping", kw: "google sheet columns first name last name header rows lead intake" },
+  { tab: "sheets", card: "Sync approvals back to the sheet", label: "Write-back to the sheet", kw: "writeback push clients approved lead" },
+  { tab: "sheets", card: "Sync", label: "Sync the sheet now", kw: "pull manual sync auto sync" },
+  { tab: "sheets", label: "Sheet sync history", kw: "log errors duplicates skipped new clients" },
+  { tab: "shopify", card: "Shopify customer sync", label: "Shopify customer sync", kw: "webhook url signing secret hmac new customers pending clients" },
+  { tab: "facebook", card: "Facebook Page posting", label: "Facebook Page posting", kw: "meta app id app secret oauth redirect page connect post inventory" },
+  { tab: "billing", label: "Stripe", kw: "billing card payments coming soon" },
+  { tab: "ai", card: "Local AI", label: "Local AI model", kw: "ollama llm offline model picker llama qwen" },
+  // Data & team
+  { tab: "sync", card: "Cloud sync", label: "Cloud sync", kw: "sign in server workspace last synced sync now disconnect account" },
+  { tab: "sync", card: "Cloud sync", label: "Repair sync", kw: "deep repair restore from server pull position diagnostics stuck missing data" },
+  { tab: "sync", card: "App updates", label: "App updates", kw: "check for updates version updater" },
+  { tab: "sync", card: "Encryption", label: "Sync encryption", kw: "passphrase encrypt at rest chacha20" },
+  { tab: "sync", card: "Sync activity", label: "Sync activity", kw: "event log replay all events applied" },
+  { tab: "backup", label: "Backups & restore", kw: "back up database restore snapshot local copy" },
+  { tab: "import", card: "Import from CSV", label: "Import clients from CSV", kw: "spreadsheet upload column mapping preview" },
+  // No card: Google Contacts lives behind Import's own CSV/Contacts switch, so the
+  // card is not on the page when the result is clicked.
+  { tab: "import", label: "Import from Google Contacts", kw: "gmail contacts address book" },
+  { tab: "splits", card: "Sales reps", label: "Rep pay", kw: "commission profit percent gross percent fixed dollar pay type" },
+  { tab: "splits", card: "Profit split", label: "Profit split", kw: "owners business partners share percentage" },
+  { tab: "team", card: "people", label: "People", kw: "users staff roster deactivate member" },
+  { tab: "team", card: "roles", label: "Roles & permissions", kw: "permissions admin sales viewer per-role access add role" },
+  { tab: "team", card: "approvals", label: "Client approvals", kw: "require approval add delete pending queue" },
+  { tab: "team", card: "invites", label: "Invites", kw: "invite link join workspace resend" },
+  { tab: "team", card: "payouts", label: "Rep payouts", kw: "payout schedule period anchor custom days enable" },
+  { tab: "team", card: "roles", label: "Share my connections", kw: "org shared credentials" },
+  // Help
+  { tab: "feedback", label: "Send feedback", kw: "bug report feature request contact support" },
+];
+
+/** Multi-token AND across the setting, its card, its synonyms and its section —
+ *  the same rule the bank search uses, so "invoice footer" finds the footer note
+ *  rather than every card with the word invoice in it. */
+function searchSettings(q: string, allowed: SettingsTab[]) {
+  const query = q.trim().toLowerCase();
+  const toks = query.split(/\s+/).filter(Boolean);
+  if (!toks.length) return [];
+  const items = SETTINGS_GROUPS.flatMap((g) => g.items);
+  const out: { row: IndexRow; section: { label: string; icon: any }; score: number }[] = [];
+  for (const row of SETTINGS_INDEX) {
+    if (!allowed.includes(row.tab)) continue;
+    const sec = items.find((i) => i.id === row.tab);
+    if (!sec) continue;
+    // The section LABEL is part of the haystack ("email" should find every email
+    // setting); its one-line description is not — "…& share footer" under Company
+    // made every business-details field a hit for "footer".
+    const hay = `${row.label} ${row.card ?? ""} ${row.kw ?? ""} ${sec.label}`.toLowerCase();
+    if (!toks.every((t) => hay.includes(t))) continue;
+    const l = row.label.toLowerCase();
+    const score = l === query ? 0 : l.startsWith(toks[0]) ? 1 : l.includes(query) ? 2 : 3;
+    out.push({ row, section: sec, score });
+  }
+  return out.sort((a, b) => a.score - b.score || a.row.label.localeCompare(b.row.label)).slice(0, 40);
+}
+
+/** The card a search result named, handed down so it can open itself, scroll into
+ *  view and ring — `SettingCard` and `SectionLabel` both listen. */
+const JumpCtx = createContext<{ card: string | null; done: () => void }>({ card: null, done: () => {} });
+
+const cardSlug = (title: string) => title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+// Which cards this device has folded shut. Absent means open: R-238 folded every
+// card by default and R-308 is Jack saying that went too far, so folding is now
+// something you choose and we remember.
+const FOLDED_KEY = "clienthub_settings_folded";
+const foldedCards = (): Record<string, boolean> => {
+  try { return JSON.parse(localStorage.getItem(FOLDED_KEY) || "{}"); } catch { return {}; }
+};
+const cardOpen = (slug: string) => foldedCards()[slug] !== false;
+const setCardOpen = (slug: string, open: boolean) => {
+  try {
+    const m = foldedCards();
+    if (open) delete m[slug]; else m[slug] = false;
+    localStorage.setItem(FOLDED_KEY, JSON.stringify(m));
+  } catch { /* private mode: folding just will not stick */ }
+};
+
 export default function SettingsView({ me }: { me: Me | null | undefined }) {
   // Everyone can open Settings, but only admins see org-sensitive sections;
   // viewers/sales get Appearance (per-device) + their own Account.
@@ -249,17 +434,59 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
     : SETTINGS_GROUPS
         .map((g) => ({ ...g, items: g.items.filter((i) => NON_ADMIN_SECTIONS.includes(i.id)) }))
         .filter((g) => g.items.length > 0);
+  const allowed = groups.flatMap((g) => g.items).map((i) => i.id);
 
   const [tab, setTab] = useState<SettingsTab>(() => {
-    // Payments merged into the Invoice tab — redirect any saved "payments" tab.
-    const s = localStorage.getItem("clienthub_settings_tab") as SettingsTab;
-    return s === "payments" ? "invoice" : (s || "appearance");
+    // Invoice/Quote/Payments/Templates became one "documents" section, Categories
+    // and Custom fields became "clientfields", the two form screens became
+    // "leads" — a saved or deep-linked old id still has to land somewhere (R-308).
+    const s = localStorage.getItem("clienthub_settings_tab") || "";
+    return (LEGACY_TABS[s] ?? (s as SettingsTab)) || "appearance";
   });
+  const [docKind, setDocKind] = useState<DocKind>(
+    () => (localStorage.getItem("clienthub_settings_tab") === "quote" ? "quote" : "invoice"),
+  );
   const select = (t: SettingsTab) => {
     setTab(t);
     localStorage.setItem("clienthub_settings_tab", t);
   };
   const [saveState, setSaveState] = useState<SaveState>("idle");
+
+  // Search. A result carries the section, the card it lives in, and (for a
+  // document setting) whether it belongs to the invoice or the quote.
+  const [q, setQ] = useState("");
+  const [jumpCard, setJumpCard] = useState<string | null>(null);
+  const box = useRef<HTMLInputElement>(null);
+  const results = searchSettings(q, allowed);
+  const openResult = (r: { row: IndexRow }) => {
+    select(r.row.tab);
+    if (r.row.kind) setDocKind(r.row.kind);
+    const card = r.row.card ? cardSlug(r.row.card) : null;
+    setJumpCard(card);
+    // Safety net: a card that is behind its section's own sub-switch never claims
+    // the jump, and a jump left set would suppress the next scroll-to-top.
+    if (card) setTimeout(() => setJumpCard((c) => (c === card ? null : c)), 2500);
+    setQ("");
+  };
+
+  // The usual find shortcut puts the cursor in the search box — the whole point of
+  // R-308 is that you type what you want instead of hunting for it. NOT "/": that is
+  // the app-wide shortcut cheat-sheet (`App.tsx`), and two window listeners would
+  // both fire, focusing the box and opening the modal over it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || el?.isContentEditable) return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        box.current?.focus();
+        box.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // A non-admin whose stored tab is now gated falls back to Appearance.
   useEffect(() => {
@@ -276,9 +503,11 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
   // scroll container. If the nav is scrolled down to reach a low item and the
   // opened section is short, its content renders above the fold. Reset the
   // nearest scrollable ancestor to the top on every tab change so the freshly
-  // opened section is always in view.
+  // opened section is always in view — except when a search result is taking us
+  // to a specific card, which scrolls itself.
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    if (jumpCard) return;
     let el: HTMLElement | null = rootRef.current?.parentElement ?? null;
     while (el) {
       const oy = getComputedStyle(el).overflowY;
@@ -288,18 +517,36 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
       }
       el = el.parentElement;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   const active = groups.flatMap((g) => g.items).find((i) => i.id === tab);
+  const searching = q.trim().length > 0;
 
   return (
    <SaveStatusCtx.Provider value={setSaveState}>
+   <JumpCtx.Provider value={{ card: jumpCard, done: () => setJumpCard(null) }}>
     <div ref={rootRef} className="flex gap-5 lg:gap-8 max-w-[1100px]">
       {/* Left rail */}
       <aside className="w-[200px] lg:w-[232px] shrink-0">
-        <div className="mb-5 px-1">
+        <div className="mb-3 px-1">
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Settings</h2>
-          <p className="text-[12px] text-muted mt-0.5">Manage your workspace</p>
+        </div>
+        <div className="relative mb-4">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+          <input ref={box} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search settings"
+            aria-label="Search settings"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { setQ(""); e.currentTarget.blur(); }
+              if (e.key === "Enter" && results[0]) { openResult(results[0]); e.currentTarget.blur(); }
+            }}
+            className="w-full border border-line bg-surface pl-8 pr-7 h-9 rounded-lg text-[13px] text-ink placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" />
+          {searching && (
+            <button onClick={() => { setQ(""); box.current?.focus(); }} title="Clear"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-ink transition-colors">
+              <X size={13} />
+            </button>
+          )}
         </div>
         <nav className="space-y-5">
           {groups.map((g) => (
@@ -310,11 +557,11 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
               <div className="space-y-0.5">
                 {g.items.map((it) => {
                   const Icon = it.icon;
-                  const isActive = tab === it.id;
+                  const isActive = tab === it.id && !searching;
                   return (
                     <button
                       key={it.id}
-                      onClick={() => select(it.id)}
+                      onClick={() => { setQ(""); setJumpCard(null); select(it.id); }}
                       className={`w-full flex items-center gap-2.5 px-3 h-9 rounded-lg text-[13px] transition-colors ${
                         isActive
                           ? "accent-active font-medium"
@@ -322,7 +569,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
                       }`}
                     >
                       <Icon size={15} className={isActive ? "accent-active-ic" : "text-muted"} />
-                      {it.label}
+                      <span className="truncate">{it.label}</span>
                     </button>
                   );
                 })}
@@ -334,52 +581,139 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        {active && (
-          <div className="mb-5 flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-[16px] font-semibold text-ink tracking-tight">{active.label}</h3>
-              <p className="text-[12px] text-muted mt-0.5">{active.desc}</p>
+        {searching ? (
+          <div className="max-w-[680px]">
+            <div className="mb-4 flex items-baseline justify-between gap-4">
+              <h3 className="text-[16px] font-semibold text-ink tracking-tight">
+                {results.length} {results.length === 1 ? "setting matches" : "settings match"} “{q.trim()}”
+              </h3>
+              <button onClick={() => setQ("")} className="text-[12px] text-muted hover:text-ink transition-colors">Clear</button>
             </div>
-            <div className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 h-7 rounded-full flex-shrink-0 ${
-              saveState === "saving" ? "bg-accent/10 text-accent-hover"
-              : saveState === "error" ? "bg-red-50 text-red-600"
-              : "bg-emerald-50 text-emerald-600"}`}>
-              {saveState === "saving" ? "Saving…"
-               : saveState === "error" ? "Couldn’t save"
-               : <><Check size={12} /> All changes saved</>}
-            </div>
+            {results.length === 0 ? (
+              <p className="text-[13px] text-muted">
+                Nothing matches that. Try the name of the setting itself — “footer”, “tax”, “passphrase”, “payout”.
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {results.map((r, i) => {
+                  const Icon = r.section.icon;
+                  return (
+                    <button key={`${r.row.tab}-${r.row.label}-${i}`} onClick={() => openResult(r)}
+                      className="w-full text-left bg-surface border border-line hover:border-accent rounded-xl px-4 py-3 flex items-center gap-3 transition-colors">
+                      <span className="w-8 h-8 rounded-lg bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0"><Icon size={15} /></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[13.5px] font-medium text-ink truncate">{r.row.label}</span>
+                        <span className="block text-[11.5px] text-muted truncate">
+                          {r.section.label}
+                          {r.row.kind ? ` · ${r.row.kind === "quote" ? "Quote" : "Invoice"}` : ""}
+                          {r.row.card ? ` · ${r.row.card}` : ""}
+                        </span>
+                      </span>
+                      <ChevronRight size={15} className="text-muted flex-shrink-0" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
+        ) : (
+          <>
+            {active && (
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-[16px] font-semibold text-ink tracking-tight">{active.label}</h3>
+                  <p className="text-[12px] text-muted mt-0.5">{active.desc}</p>
+                </div>
+                {/* Idle says nothing: a pill claiming "All changes saved" the moment
+                    you arrive is noise at best, and it is what made R-307's false
+                    error look like a real one. */}
+                {saveState !== "idle" && (
+                  <div className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 h-7 rounded-full flex-shrink-0 border ${
+                    saveState === "saving" ? "bg-accent/10 text-accent-hover border-accent/20"
+                    : saveState === "error" ? "bg-danger-bg text-danger-ink border-danger-ink/20"
+                    : "bg-success-bg text-success-ink border-success-ink/20"}`}>
+                    {saveState === "saving" ? "Saving…"
+                     : saveState === "error" ? <><AlertCircle size={12} /> Couldn’t save</>
+                     : <><Check size={12} /> Saved</>}
+                  </div>
+                )}
+              </div>
+            )}
+            <div key={tab} className="page-enter">
+              {tab === "account"      && <AccountTab />}
+              {tab === "appearance"   && <AppearanceTab />}
+              {tab === "email"        && <EmailTab />}
+              {tab === "whatsapp"     && <WhatsAppTab />}
+              {tab === "company"      && <CompanyTab />}
+              {tab === "documents"    && <DocumentsTab kind={docKind} onKind={setDocKind} />}
+              {tab === "storefront"   && <StorefrontTab />}
+              {tab === "clientfields" && <ClientFieldsTab />}
+              {tab === "leads"        && <LeadCaptureTab />}
+              {tab === "ai"           && <AiTab />}
+              {tab === "sync"         && <SyncTab />}
+              {tab === "import"       && <ImportTab />}
+              {tab === "automation"   && <AutomationTab />}
+              {tab === "sheets"       && <SheetsTab />}
+              {tab === "splits"       && <SplitsTab />}
+              {tab === "backup"       && <BackupTab />}
+              {tab === "team"         && <TeamTab />}
+              {tab === "billing"      && <BillingTab />}
+              {tab === "shopify"      && <ShopifyTab />}
+              {tab === "facebook"     && <FacebookTab />}
+              {tab === "feedback"     && <FeedbackPanel me={me} />}
+            </div>
+          </>
         )}
-        <div key={tab} className="page-enter">
-          {tab === "account"     && <AccountTab />}
-          {tab === "appearance"  && <AppearanceTab />}
-          {tab === "email"       && <EmailTab />}
-          {tab === "whatsapp"    && <WhatsAppTab />}
-          {tab === "company"     && <CompanyTab />}
-          {tab === "invoice"     && <div className="space-y-8"><DocBrandingTab kind="invoice" /><PaymentsTab /></div>}
-          {tab === "quote"       && <DocBrandingTab kind="quote" />}
-          {tab === "storefront"  && <StorefrontTab />}
-          {tab === "categories"  && <CategoriesTab />}
-          {tab === "ai"          && <AiTab />}
-          {tab === "sync"        && <SyncTab />}
-          {tab === "import"      && <ImportTab />}
-          {tab === "automation"  && <AutomationTab />}
-          {tab === "forms"       && <FormsPanel />}
-          {tab === "templates"   && <TemplatesTab />}
-          {tab === "sheets"      && <SheetsTab />}
-          {tab === "splits"      && <SplitsTab />}
-          {tab === "backup"      && <BackupTab />}
-          {tab === "team"        && <TeamTab />}
-          {tab === "billing"     && <BillingTab />}
-          {tab === "shopify"     && <ShopifyTab />}
-          {tab === "facebook"    && <FacebookTab />}
-          {tab === "webforms"    && <IntakeTab />}
-          {tab === "customfields"&& <CustomFieldsTab />}
-          {tab === "feedback"    && <FeedbackPanel me={me} />}
-        </div>
       </div>
     </div>
+   </JumpCtx.Provider>
    </SaveStatusCtx.Provider>
+  );
+}
+
+/** Invoices and quotes are the same document with a different word on it — one
+ *  section, one switch, instead of two rail rows whose cards were byte-identical
+ *  (R-308). Payment methods print on invoices only; line-item templates feed both. */
+function DocumentsTab({ kind, onKind }: { kind: DocKind; onKind: (k: DocKind) => void }) {
+  return (
+    <div className="space-y-6">
+      <div className="inline-flex rounded-lg border border-line bg-surface p-0.5">
+        {(["invoice", "quote"] as DocKind[]).map((k) => (
+          <button key={k} onClick={() => onKind(k)}
+            className={`px-4 h-8 rounded-[7px] text-[13px] font-medium transition-colors ${
+              kind === k ? "accent-active" : "text-ink-2 hover:text-ink"}`}>
+            {k === "invoice" ? "Invoices" : "Quotes"}
+          </button>
+        ))}
+      </div>
+      <DocBrandingTab key={kind} kind={kind} />
+      {kind === "invoice" && <PaymentsTab />}
+      <TemplatesTab />
+    </div>
+  );
+}
+
+/** Categories and custom fields are both "what a client record is made of", and
+ *  each was one rail row for one panel (R-308). */
+function ClientFieldsTab() {
+  return (
+    <div className="space-y-8">
+      <SectionLabel>Categories</SectionLabel>
+      <CategoriesTab />
+      <SectionLabel>Custom fields</SectionLabel>
+      <CustomFieldsTab />
+    </div>
+  );
+}
+
+/** Lead forms (forms we host) and web forms (sites that post to us) are the same
+ *  job from the user's side: something on the web that creates a lead (R-308). */
+function LeadCaptureTab() {
+  return (
+    <div className="space-y-8">
+      <FormsPanel />
+      <IntakeTab />
+    </div>
   );
 }
 
@@ -858,36 +1192,60 @@ function TestResultLine({ state }: { state: TestState }) {
 // One clear card per thing: icon + title + one-line plain purpose, then body.
 function SettingCard({ icon: Icon, title, purpose, aside, collapsible = true, children }: {
   icon: typeof Mail; title: string; purpose: string; aside?: React.ReactNode;
-  /** Every settings card collapses by default — the screen was too tall to scan, and the
-   *  status pill stays in the header so you can still see what is set up without opening
-   *  anything. Pass `collapsible={false}` for a card that must always be open. */
+  /** R-238 folded every card shut by default; R-308 is Jack saying that made Settings
+   *  "overly collapsed" — two clicks to reach one field. Cards now open, and whatever
+   *  you fold stays folded (per card, per device). Pass `collapsible={false}` for a
+   *  card that must always be open. */
   collapsible?: boolean;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const slug = cardSlug(title);
+  const jump = useContext(JumpCtx);
+  const hit = jump.card === slug;
+  const [open, setOpen] = useState(() => cardOpen(slug));
+  const box = useRef<HTMLDivElement>(null);
+  const toggle = () => setOpen((v) => { setCardOpen(slug, !v); return !v; });
+
+  // Arriving from a search result: open this card, bring it into view and ring it,
+  // then hand the jump back so the ring doesn't stick.
+  useEffect(() => {
+    if (!hit) return;
+    setOpen(true);
+    box.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    const t = setTimeout(jump.done, 1800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hit]);
+
   const shown = !collapsible || open;
   // The status pill stays in the header while collapsed — the whole point is to see
   // at a glance whether this is set up without expanding it.
+  const titled = (
+    <>
+      <span className="w-9 h-9 rounded-xl bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0 mt-0.5"><Icon size={17} /></span>
+      <span className="min-w-0">
+        <span className="text-[15px] font-semibold text-ink flex items-center gap-1.5">
+          {title}
+          {collapsible && <ChevronDown size={14} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />}
+        </span>
+        <span className="block text-[12.5px] text-muted mt-0.5">{purpose}</span>
+      </span>
+    </>
+  );
+  // `aside` sits OUTSIDE the toggle: several cards pass a button there (Payment
+  // methods passes Add), and a button inside a button is invalid DOM.
   const head = (
     <div className={`flex items-start justify-between gap-3 ${shown ? "mb-5" : ""}`}>
-      <div className="flex items-start gap-3">
-        <span className="w-9 h-9 rounded-xl bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0 mt-0.5"><Icon size={17} /></span>
-        <div>
-          <div className="text-[15px] font-semibold text-ink flex items-center gap-1.5">
-            {title}
-            {collapsible && <ChevronDown size={14} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />}
-          </div>
-          <div className="text-[12.5px] text-muted mt-0.5">{purpose}</div>
-        </div>
-      </div>
+      {collapsible
+        ? <button type="button" onClick={toggle} aria-expanded={open} className="flex items-start gap-3 text-left flex-1 min-w-0">{titled}</button>
+        : <div className="flex items-start gap-3 flex-1 min-w-0">{titled}</div>}
       {aside && <div className="flex-shrink-0">{aside}</div>}
     </div>
   );
   return (
-    <div className="bg-surface border border-line rounded-2xl p-6">
-      {collapsible
-        ? <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="w-full text-left">{head}</button>
-        : head}
+    <div ref={box} data-setting-card={slug}
+      className={`bg-surface border rounded-2xl p-6 transition-colors ${hit ? "border-accent ring-2 ring-accent/30" : "border-line"}`}>
+      {head}
       {shown && children}
     </div>
   );
@@ -3774,9 +4132,7 @@ function TemplatesTab() {
   const remove = async (id: string) => { await api.deleteLineItemTemplate(id); load(); };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
-      <h3 className="text-[14px] font-semibold text-ink mb-1">Line Item Templates</h3>
-      <p className="text-[12px] text-muted mb-5">Saved line items for quick invoice creation.</p>
+    <SettingCard icon={FileText} title="Line-item templates" purpose="Saved line items, for building an invoice or quote quickly.">
 
       {/* Add row */}
       <div className="grid grid-cols-12 gap-2 mb-5">
@@ -3839,7 +4195,7 @@ function TemplatesTab() {
           <div className="text-center text-[13px] text-muted py-10">No templates yet.</div>
         )}
       </div>
-    </div>
+    </SettingCard>
   );
 }
 
@@ -4952,7 +5308,14 @@ const VIS_TOGGLES: [string, string, string][] = [
 ];
 
 function TeamTab() {
-  const [sub, setSub] = useState<"people" | "roles" | "approvals" | "invites" | "payouts">("people");
+  type Sub = "people" | "roles" | "approvals" | "invites" | "payouts";
+  const SUBS: Sub[] = ["people", "roles", "approvals", "invites", "payouts"];
+  const jump = useContext(JumpCtx);
+  const [sub, setSub] = useState<Sub>(() => (SUBS as string[]).includes(jump.card ?? "") ? (jump.card as Sub) : "people");
+  useEffect(() => {
+    if (jump.card && (SUBS as string[]).includes(jump.card)) { setSub(jump.card as Sub); jump.done(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jump.card]);
   return (
     <div className="max-w-3xl">
       <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit mb-4">
@@ -5657,8 +6020,24 @@ function BillingTab() {
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
+  // Half of Settings is plain blocks rather than SettingCards, and a search result
+  // still has to land on the right one, so the label is the anchor (R-308).
+  const slug = typeof children === "string" ? cardSlug(children) : "";
+  const jump = useContext(JumpCtx);
+  const hit = !!slug && jump.card === slug;
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!hit) return;
+    ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    const t = setTimeout(jump.done, 1800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hit]);
   return (
-    <div className="text-[13px] font-semibold text-ink-2">{children}</div>
+    <div ref={ref} data-setting-label={slug}
+      className={`text-[13px] font-semibold text-ink-2 ${hit ? "ring-2 ring-accent/30 rounded-md px-1.5 -mx-1.5 py-0.5" : ""}`}>
+      {children}
+    </div>
   );
 }
 

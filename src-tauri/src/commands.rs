@@ -8750,25 +8750,107 @@ pub async fn get_email_settings() -> Result<Option<crate::email::EmailSettings>,
     Ok(crate::email::load_settings().ok())
 }
 
+/// What `save_company_info` does with the `logo_path` it was handed.
+#[derive(Debug, PartialEq)]
+enum LogoAction {
+    /// It already IS the stored copy. Point at it and copy nothing: after a
+    /// save+reload `logo_path` comes back as the target, so copying would be
+    /// `fs::copy(target, target)`, which errors/truncates on macOS.
+    UseStored,
+    /// A file the user just picked. Copy it over the stored copy.
+    CopyIn,
+    /// A path this device has never had. `company_info` is org-shared (netsync
+    /// `SHARED_SETTINGS_KEYS`), so `logo_path` arrives holding the server's path
+    /// (`/home/ecliptr/sync/media/logos/...`) or another device's. Copying that
+    /// fails, and failing the save turned every open of Settings -> Invoice or
+    /// Quote red (R-307). Keep the value as it arrived — it is another device's
+    /// truth, and every renderer already skips a logo whose file is missing
+    /// (`invoice.rs`, `logo_rendered`).
+    KeepAsIs,
+}
+
+fn logo_action(src: &std::path::Path, target: &std::path::Path) -> LogoAction {
+    // `canonicalize` fails on a path that does not exist, and comparing the two
+    // `None`s read as "same file" — which is why a foreign path was treated as
+    // already stored until R-307.
+    let canon_src = std::fs::canonicalize(src).ok();
+    if src == target || (canon_src.is_some() && canon_src == std::fs::canonicalize(target).ok()) {
+        LogoAction::UseStored
+    } else if src.exists() {
+        LogoAction::CopyIn
+    } else {
+        LogoAction::KeepAsIs
+    }
+}
+
+#[cfg(test)]
+mod logo_action_tests {
+    use super::{logo_action, LogoAction};
+    use std::path::PathBuf;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ecliptr-r307-{name}"));
+        let _ = std::fs::create_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn the_stored_copy_is_never_copied_onto_itself() {
+        let dir = tmp("stored");
+        let target = dir.join("company_logo.png");
+        std::fs::write(&target, b"png").unwrap();
+        assert_eq!(logo_action(&target, &target), LogoAction::UseStored);
+    }
+
+    #[test]
+    fn a_newly_picked_file_is_copied_in() {
+        let dir = tmp("picked");
+        let target = dir.join("company_logo.png");
+        let src = dir.join("new-logo.png");
+        std::fs::write(&src, b"png").unwrap();
+        assert_eq!(logo_action(&src, &target), LogoAction::CopyIn);
+    }
+
+    /// The R-307 case, with Jack's real value: `company_info` synced down from the
+    /// droplet carrying a Linux path, while this device has its own stored copy.
+    #[test]
+    fn a_path_from_another_device_is_kept_not_copied() {
+        let dir = tmp("foreign");
+        let target = dir.join("company_logo.png");
+        std::fs::write(&target, b"png").unwrap();
+        let foreign = PathBuf::from("/home/ecliptr/sync/media/logos/org_default.png");
+        assert_eq!(logo_action(&foreign, &target), LogoAction::KeepAsIs);
+    }
+
+    /// Both missing used to compare equal (None == None) and overwrite the incoming
+    /// path with a local one that does not exist either.
+    #[test]
+    fn a_missing_path_is_kept_even_when_nothing_is_stored_yet() {
+        let dir = tmp("neither");
+        let target = dir.join("company_logo.png");
+        let _ = std::fs::remove_file(&target);
+        let foreign = PathBuf::from("/home/ecliptr/sync/media/logos/org_default.png");
+        assert_eq!(logo_action(&foreign, &target), LogoAction::KeepAsIs);
+    }
+}
+
 #[tauri::command]
 pub async fn save_company_info(mut info: crate::invoice::CompanyInfo) -> Result<(), String> {
     let logo_dir = crate::db::app_data_dir().clone();
     let target = logo_dir.join("company_logo.png");
 
     if let Some(ref src) = info.logo_path {
-        let src_path = std::path::Path::new(src);
-        // Guard against copying the stored logo onto itself: after a save+reload,
-        // `logo_path` comes back as the target (`company_logo.png`), so a later save
-        // (e.g. toggling `show_company_name`) would call fs::copy(target, target),
-        // which errors/truncates on macOS and fails the whole autosave. Skip the copy
-        // when the source is already the stored target; only copy a genuinely new file.
-        let already_stored = src_path == target.as_path()
-            || std::fs::canonicalize(src_path).ok() == std::fs::canonicalize(&target).ok();
-        if !already_stored {
-            std::fs::create_dir_all(&logo_dir).map_err(|e| e.to_string())?;
-            std::fs::copy(src_path, &target).map_err(|e| e.to_string())?;
+        match logo_action(std::path::Path::new(src), &target) {
+            LogoAction::UseStored => info.logo_path = Some(target.to_string_lossy().to_string()),
+            LogoAction::CopyIn => {
+                std::fs::create_dir_all(&logo_dir).map_err(|e| e.to_string())?;
+                std::fs::copy(src, &target).map_err(|e| e.to_string())?;
+                info.logo_path = Some(target.to_string_lossy().to_string());
+            }
+            LogoAction::KeepAsIs => {
+                tracing::warn!("company logo {src} is not on this device; keeping the stored path");
+            }
         }
-        info.logo_path = Some(target.to_string_lossy().to_string());
     } else {
         let _ = std::fs::remove_file(&target);
     }
