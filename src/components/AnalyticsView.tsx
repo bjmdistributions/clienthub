@@ -304,7 +304,7 @@ export default function AnalyticsView() {
           leads, profit/margin/outstanding read left to right.
       ─────────────────────────────────────────────────────────── */}
       <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-        <div className="grid grid-cols-2 xl:grid-cols-4 xl:divide-x xl:divide-line">
+        <div className="grid grid-cols-2 xl:grid-cols-5 xl:divide-x xl:divide-line">
           <div className="p-5">
             <div className="text-[12.5px] font-medium text-muted">
               Revenue · {preset === "Custom" ? "custom range" : preset.toLowerCase()}
@@ -327,9 +327,15 @@ export default function AnalyticsView() {
               {momLast && momPrev && <MomChip now={momLast.profit} prev={momPrev.profit} />}
             </div>
             <div className="text-[11px] text-faint mt-1.5">after all costs</div>
-            <div className="text-[11px] font-medium mt-1 tabular-nums"
+          </div>
+          <div className="p-5 border-t border-line xl:border-t-0">
+            <div className="text-[12.5px] font-medium text-muted">True net</div>
+            <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
               style={{ color: trueNet >= 0 ? CLR.emerald : CLR.rose }}>
-              {fmtAmount(trueNet)} true net after shipping and fees
+              {fmtAmount(trueNet)}
+            </div>
+            <div className="text-[11px] text-faint mt-1.5 tabular-nums">
+              after {fmtAmount(shippingTotal)} shipping and {fmtAmount(feesTotal)} fees
             </div>
           </div>
           <div className="p-5 border-t border-line xl:border-t-0">
@@ -415,12 +421,14 @@ export default function AnalyticsView() {
             <ComposedChart data={monthly} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
               <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
               <XAxis dataKey="month" tick={AX} axisLine={false} tickLine={false} />
-              <YAxis tick={AX} axisLine={false} tickLine={false}
+              <YAxis yAxisId="left" tick={AX} axisLine={false} tickLine={false}
+                tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
+              <YAxis yAxisId="right" orientation="right" tick={AX} axisLine={false} tickLine={false}
                 tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
               <Tooltip formatter={(v: any) => fmtAmount(Number(v))} {...TT} />
-              <Bar dataKey="shipping" name="Shipping" fill={P.neutral} radius={[4, 4, 0, 0]} maxBarSize={28} />
-              <Bar dataKey="fees"     name="Fees"     fill={P.bar}     radius={[4, 4, 0, 0]} maxBarSize={28} />
-              <Line type="monotone" dataKey="true_net" name="True net"
+              <Bar yAxisId="left" dataKey="shipping" name="Shipping" fill={P.neutral} radius={[4, 4, 0, 0]} maxBarSize={28} />
+              <Bar yAxisId="left" dataKey="fees"     name="Fees"     fill={P.bar}     radius={[4, 4, 0, 0]} maxBarSize={28} />
+              <Line yAxisId="right" type="monotone" dataKey="true_net" name="True net"
                 stroke={trueNet >= 0 ? CLR.emerald : CLR.rose} strokeWidth={2.5} dot={false} />
             </ComposedChart>
           </ResponsiveContainer>

@@ -209,11 +209,15 @@ export default function DashboardView({ onNavigate, me }: Props) {
   // R-313: when the org has switched the dashboard to true net (Settings > Dashboard),
   // the profit tile swaps to net profit minus shipping and bank fees. Analytics always
   // shows both, so this toggle only affects this hero tile and the chart below.
+  // R-313: true net (profit minus shipping and bank fees, by transaction date) is
+  // always its own tile — Jack asked for it displayed, not hidden behind a switch.
+  // The setting only decides which line the cumulative chart draws.
   const trueNetEnabled = !!stats?.true_net_enabled;
-  const heroProfitValue = trueNetEnabled
-    ? (heroRange === "month" ? (stats?.true_net_mtd ?? 0) : (stats?.true_net_all_time ?? 0))
-    : heroProfit;
-  const heroProfitPrev = trueNetEnabled ? (stats?.true_net_prev_month ?? 0) : (stats?.profit_prev_month ?? 0);
+  const heroProfitValue = heroProfit;
+  const heroProfitPrev  = stats?.profit_prev_month ?? 0;
+  const heroTrueNet     = heroRange === "month" ? (stats?.true_net_mtd ?? 0) : (stats?.true_net_all_time ?? 0);
+  const heroShipping    = heroRange === "month" ? (stats?.shipping_mtd ?? 0) : (stats?.shipping_all_time ?? 0);
+  const heroFees        = heroRange === "month" ? (stats?.fees_mtd ?? 0)     : (stats?.fees_all_time ?? 0);
 
   const resolvedApproval = (id: string) => {
     setPending((p) => p.filter((x) => x.id !== id));
@@ -264,7 +268,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                 ))}
               </div>
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div>
                 <div className="text-[12.5px] font-medium text-muted">Revenue</div>
                 <div className="flex items-end gap-3 mt-2">
@@ -278,7 +282,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                 </div>
               </div>
               <div>
-                <div className="text-[12.5px] font-medium text-muted">{trueNetEnabled ? "True net" : "Profit"}</div>
+                <div className="text-[12.5px] font-medium text-muted">Profit</div>
                 <div className="flex items-end gap-3 mt-2">
                   <span className={`text-[38px] font-bold tabular-nums leading-none tracking-tight ${heroProfitValue < 0 ? "text-danger-ink" : "text-ink"}`}>
                     <CountUpAmount value={heroProfitValue} />
@@ -286,7 +290,19 @@ export default function DashboardView({ onNavigate, me }: Props) {
                   {heroRange === "month" && <DeltaChip now={heroProfitValue} prev={heroProfitPrev} />}
                 </div>
                 <div className="text-[11.5px] text-faint mt-2.5">
-                  {trueNetEnabled ? "after shipping and fees" : `completed deals${heroRange === "month" ? " this month" : ", all time"}`}
+                  completed deals{heroRange === "month" ? " this month" : ", all time"}
+                </div>
+              </div>
+              <div className="min-w-0">
+                <div className="text-[12.5px] font-medium text-muted">True net</div>
+                <div className="flex items-end gap-3 mt-2">
+                  <span className={`text-[38px] font-bold tabular-nums leading-none tracking-tight ${heroTrueNet < 0 ? "text-danger-ink" : "text-ink"}`}>
+                    <CountUpAmount value={heroTrueNet} />
+                  </span>
+                  {heroRange === "month" && <DeltaChip now={heroTrueNet} prev={stats?.true_net_prev_month ?? 0} />}
+                </div>
+                <div className="text-[11.5px] text-faint mt-2.5 tabular-nums">
+                  after {fmtAmount(heroShipping)} shipping and {fmtAmount(heroFees)} bank and wire fees
                 </div>
               </div>
             </div>

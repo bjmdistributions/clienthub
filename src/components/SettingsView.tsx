@@ -5494,10 +5494,10 @@ function ApprovalPolicyPanel() {
         <div className="text-[13px] font-medium text-ink mb-2">Dashboard</div>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="text-[13px] font-medium text-ink">Show true net on the dashboard</div>
-            <div className="text-[11px] text-muted mt-0.5">Net profit minus shipping and bank fees, by transaction date. Analytics always shows both.</div>
+            <div className="text-[13px] font-medium text-ink">Chart true net on the dashboard</div>
+            <div className="text-[11px] text-muted mt-0.5">The dashboard line draws true net instead of profit. The true net, shipping and fee figures always show, here and on Analytics.</div>
           </div>
-          <ClauseSwitch on={trueNet} onClick={toggleTrueNet} label="Show true net on the dashboard" />
+          <ClauseSwitch on={trueNet} onClick={toggleTrueNet} label="Chart true net on the dashboard" />
         </div>
       </div>
     </div>
