@@ -753,6 +753,10 @@ export interface PayableSupplier {
   d90_plus: number;
   total: number;
   oldest_days: number;
+  /** R-315: true when every line in this group is Jack's own cost, not supplier
+   *  money — the "Your own costs" group is always this; a real payee group can be
+   *  too if none of its lines are billed by a supplier. */
+  own_cost?: boolean;
 }
 /** One open payable (a deal cost). Surfaces which customer/deal it's for. */
 export interface APItem {
@@ -769,6 +773,9 @@ export interface APItem {
   /** true = deal past the speculative stage; false = speculative early payable. */
   committed: boolean;
   deal_flow_stage: string | null;
+  /** R-315: not owed to the supplier — Jack's own cost (freight/wire/other he pays
+   *  himself, not billed by the supplier). */
+  own_cost?: boolean;
 }
 export interface PayablesAging {
   summary: PayablesSummary;
@@ -793,6 +800,10 @@ export interface SupplierPayment {
   category?: string | null;
   /** "Didn't pay — kept it": excluded from cost/profit. Distinct from `paid`. */
   kept?: boolean;
+  /** R-315: for a non-"supplier" line, whether the supplier actually billed this
+   *  cost. Off by default — a freight/wire/other line reads as Jack's own cost
+   *  until he flips this. See `owed_to_supplier` on the desktop. */
+  supplier_billed?: boolean;
 }
 
 export interface SupplierPaymentInput {
@@ -804,6 +815,7 @@ export interface SupplierPaymentInput {
   method?: string | null;
   notes?: string | null;
   category?: string | null;
+  supplier_billed?: boolean;
 }
 
 export interface PaymentReceivedInput {
@@ -1032,6 +1044,14 @@ export interface DealFlow {
   payment_received_at: string | null;
   supplier_payments_json: string;
   supplier_payments: SupplierPayment[];
+  /** R-315: unpaid, not-kept, owed_to_supplier — what could actually get wired to
+   *  the supplier by mistake. Computed server-side so every reader agrees. */
+  supplier_owed: number;
+  /** R-315: unpaid, not-kept, NOT owed_to_supplier — freight/wire/other Jack pays
+   *  himself (e.g. shipping charged to the customer the supplier never billed). */
+  own_costs_unpaid: number;
+  /** R-315: every non-kept own cost, paid or not. */
+  own_costs_total: number;
   total_supplier_cost: number;
   completed_at: string | null;
   gross_revenue: number;
@@ -2100,6 +2120,22 @@ export interface BankTxn {
 export type BankTxnReviewPatch = Partial<
   Pick<BankTxn, "category" | "counterparty_name" | "counterparty_type" | "counterparty_id" | "confirmed_method" | "reviewed" | "note">
 >;
+/** R-314: a real money movement (wire/Zelle/real-time/cash) not yet tied to a deal —
+ *  the "tie out" backlog. `kind` is `bank_import::rail_of(description)`, computed at
+ *  read time same as the server's `kind_of` twin, never written to `bank_txn`. */
+export interface TieOutRow {
+  id: string;
+  posted_at: string;
+  direction: "in" | "out";
+  amount: number;
+  remaining: number;
+  description: string;
+  counterparty_name: string;
+  account_id: string;
+  category: string;
+  reviewed: boolean;
+  kind: "wire" | "zelle" | "rtp" | "cash";
+}
 // R-282 accountant portal — one row per edit the accountant made on the web (ecliptr.app/staff)
 // to a bank transaction. `field` is one of category|note|confirmed_method|reviewed; `old_value`/
 // `new_value` are always strings (raw category key, "true"/"false", etc.) for the UI to translate.
@@ -3269,6 +3305,7 @@ export const api = {
   plaidResyncAll: () => invoke<PlaidSyncSummary>("plaid_resync_all"),
   plaidRefreshSync: () => invoke<PlaidSyncSummary>("plaid_refresh_sync"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
+  listTieOutBacklog: () => invoke<TieOutRow[]>("list_tie_out_backlog"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   // Takes a patch, not a full row: only the fields present are written. Sync is
   // per-column last-write-wins, so sending a field you aren't changing re-stamps

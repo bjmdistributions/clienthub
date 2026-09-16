@@ -6,7 +6,7 @@ import {
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
   Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, BankPersonCandidate, ReconciliationMissingDeal,
-  TakeoverSuggestion,
+  TakeoverSuggestion, TieOutRow,
 } from "../lib/api";
 import StatusPill from "./StatusPill";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
@@ -190,8 +190,8 @@ const needsADeal = (t: BankTxn) =>
 // screen, and the only picker here without search. Type to narrow; the payee's usual
 // category comes first; arrow keys and Enter; Escape closes only the picker.
 // Positioned FIXED: the To book day cards clip their overflow.
-function CategoryPicker({ value, onChange, usual, variant = "row" }: {
-  value: string; onChange: (v: string) => void; usual?: string | null; variant?: "row" | "field";
+function CategoryPicker({ value, onChange, usual, variant = "row", placeholder = "Set category" }: {
+  value: string; onChange: (v: string) => void; usual?: string | null; variant?: "row" | "field"; placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -245,7 +245,7 @@ function CategoryPicker({ value, onChange, usual, variant = "row" }: {
               value ? "bg-surface border-line text-ink-2 hover:border-line-3" : "bg-accent/5 border-accent/40 text-accent font-semibold hover:bg-accent/10"
             }`}
       >
-        <span className="truncate">{label || (variant === "field" ? "Uncategorized" : "Set category")}</span>
+        <span className="truncate">{label || (variant === "field" ? "Uncategorized" : placeholder)}</span>
         <ChevronDown size={12} className={`flex-shrink-0 ${value ? "text-faint" : "text-accent"}`} />
       </button>
       {open && (
@@ -822,17 +822,24 @@ export default function FinancialsView() {
   const [deals, setDeals]     = useState<DealFlow[]>([]);
   const [loans, setLoans]     = useState<Loan[]>([]);
   const [rules, setRules]     = useState<TxnRule[]>([]);
+  // R-314: the tie-out backlog — real money movements (wires, Zelle, real-time
+  // credits, cash) not yet tied to a deal. Loaded alongside the ledger, filtered
+  // by kind/direction only (no search — the whole point is it's a short list).
+  const [tieOut, setTieOut]             = useState<TieOutRow[]>([]);
+  const [tieOutLoading, setTieOutLoading] = useState(false);
+  const [tieOutKinds, setTieOutKinds]   = useState<Set<TieOutRow["kind"]>>(new Set(["wire", "zelle", "rtp", "cash"]));
+  const [tieOutDir, setTieOutDir]       = useState<"all" | "in" | "out">("all");
   const [rulesOpen, setRulesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   // Four surfaces: To book (the daily queue) opens first; Ledger is the full
   // history; Cash holds Free cash + Loans; Setup is every once-in-a-while tool.
   // The chosen surface survives leaving and re-entering the page — losing your
   // place on every visit was one of the audit's standing complaints.
-  const [tab, setTabRaw] = useState<"tobook" | "ledger" | "cash" | "setup" | "report">(() => {
+  const [tab, setTabRaw] = useState<"tobook" | "tieout" | "ledger" | "cash" | "setup" | "report">(() => {
     const t = localStorage.getItem("fin_tab");
-    return t === "ledger" || t === "cash" || t === "setup" || t === "report" ? t : "tobook";
+    return t === "tieout" || t === "ledger" || t === "cash" || t === "setup" || t === "report" ? t : "tobook";
   });
-  const setTab = (v: "tobook" | "ledger" | "cash" | "setup" | "report") => {
+  const setTab = (v: "tobook" | "tieout" | "ledger" | "cash" | "setup" | "report") => {
     setTabRaw(v);
     localStorage.setItem("fin_tab", v);
   };
@@ -1136,6 +1143,16 @@ export default function FinancialsView() {
     }).catch(() => {});
   };
 
+  // R-314: reloaded after "Tie to a deal" or "Not deal money" so a row that was
+  // just resolved drops out of the list.
+  const loadTieOut = () => {
+    setTieOutLoading(true);
+    api.listTieOutBacklog()
+      .then(setTieOut)
+      .catch((e: any) => toast(errText(e), "error"))
+      .finally(() => setTieOutLoading(false));
+  };
+
   const loadAll = async () => {
     setLoadError(null);
     try {
@@ -1144,6 +1161,7 @@ export default function FinancialsView() {
       ]);
       setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
       loadTakeovers();
+      loadTieOut();
       // Smart-link hints arrive separately and never block the ledger (R-150).
       loadServerSugg();
       probeMissingLinks();
@@ -2413,6 +2431,66 @@ export default function FinancialsView() {
     return { groups: out, truncated: left < 0 || out.length < toBookGroups.length, remaining: Math.max(0, toBookRows.length - rowLimit) };
   }, [toBookGroups, toBookRows.length, rowLimit]);
 
+  // R-314 — tie out: filtered by kind chip + direction, newest first, grouped by
+  // month. Booked or unbooked doesn't matter here (unlike To book) — a wire booked
+  // to the wrong category but never tied to a deal is exactly what this list is for.
+  const tieOutFiltered = useMemo(
+    () => tieOut
+      .filter((t) => tieOutKinds.has(t.kind) && (tieOutDir === "all" || t.direction === tieOutDir))
+      .sort((a, b) => (b.posted_at || "").localeCompare(a.posted_at || "")),
+    [tieOut, tieOutKinds, tieOutDir],
+  );
+
+  const tieOutStats = useMemo(() => {
+    let sumIn = 0, sumOut = 0;
+    for (const t of tieOutFiltered) { if (t.direction === "in") sumIn += t.remaining; else sumOut += t.remaining; }
+    return { sumIn, sumOut };
+  }, [tieOutFiltered]);
+
+  const tieOutGroups = useMemo(() => {
+    const groups: { month: string; rows: TieOutRow[] }[] = [];
+    for (const t of tieOutFiltered) {
+      const m = (t.posted_at || "").slice(0, 7); // YYYY-MM
+      const g = groups[groups.length - 1];
+      if (g && g.month === m) g.rows.push(t); else groups.push({ month: m, rows: [t] });
+    }
+    return groups;
+  }, [tieOutFiltered]);
+
+  const monthHeading = (ym: string) => {
+    const [y, m] = ym.split("-").map(Number);
+    if (!y || !m) return ym || "No date";
+    return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  };
+
+  const toggleTieOutKind = (k: TieOutRow["kind"]) => {
+    setTieOutKinds((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+  };
+
+  // "Tie to a deal" opens the identical booking sheet To book uses — the tie-out
+  // list is a view over the same bank_txn rows, already loaded in full in `txns`.
+  const tieOutFull = (t: TieOutRow): BankTxn | null => txns.find((x) => x.id === t.id) ?? null;
+
+  const tieOutBookDeal = (t: TieOutRow) => {
+    const full = tieOutFull(t);
+    if (full) toggleRow(full);
+  };
+
+  // "Not deal money" — the same category save as everywhere else. Booking it to a
+  // non-deal-capable category (or a fee/transfer/etc.) removes it from the list.
+  const tieOutSetCategory = async (t: TieOutRow, category: string) => {
+    const full = tieOutFull(t);
+    if (!full) return;
+    await saveReview(full, { category });
+    loadTieOut();
+  };
+
+  const KIND_LABEL: Record<TieOutRow["kind"], string> = { wire: "Wire", zelle: "Zelle", rtp: "Real-time", cash: "Cash" };
+
   // R-288 phase 3: what was booked from history in the last two weeks, newest first.
   const autoBooked = useMemo(() => {
     const cutoff = new Date(Date.now() - 14 * 86400000).toISOString();
@@ -3303,6 +3381,7 @@ export default function FinancialsView() {
       <div className="flex items-center gap-5 border-b border-line">
         {([
           ["tobook", "To book"],
+          ["tieout", "Tie out"],
           ["ledger", "Ledger"],
           ["cash", "Cash"],
           ["report", "Tax report"],
@@ -3318,6 +3397,9 @@ export default function FinancialsView() {
             {label}
             {v === "tobook" && toBookStats.count > 0 && (
               <span className="ml-1.5 font-normal text-muted tabular-nums">{toBookStats.count}</span>
+            )}
+            {v === "tieout" && tieOut.length > 0 && (
+              <span className="ml-1.5 font-normal text-muted tabular-nums">{tieOut.length}</span>
             )}
           </button>
         ))}
@@ -4988,6 +5070,122 @@ export default function FinancialsView() {
               </div>
             ))}
             {toBookVisible.truncated && <MoreRows onVisible={showMoreRows} remaining={toBookVisible.remaining} />}
+          </div>
+        )
+      )}
+
+      {/* Tie out — real money movements (wires, Zelle, real-time credits, cash) not
+          yet tied to a deal (R-314). Booked or unbooked doesn't matter: a wire booked
+          to the wrong category but never allocated is exactly what this catches. */}
+      {tab === "tieout" && (
+        loading ? skeletonRows
+        : loadError ? errorState
+        : (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 flex-wrap">
+              {(["wire", "zelle", "rtp", "cash"] as const).map((k) => (
+                <button
+                  key={k}
+                  onClick={() => toggleTieOutKind(k)}
+                  className={`h-8 px-3 rounded-lg text-[12.5px] font-medium border transition-colors ${
+                    tieOutKinds.has(k) ? "bg-surface-2 text-ink border-line" : "text-muted border-transparent hover:text-ink-2"
+                  }`}
+                >
+                  {KIND_LABEL[k]}
+                </button>
+              ))}
+              <span className="w-px h-5 bg-line mx-1" />
+              {([["all", "Both"], ["in", "In"], ["out", "Out"]] as const).map(([v, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setTieOutDir(v)}
+                  className={`h-8 px-3 rounded-lg text-[12.5px] font-medium border transition-colors ${
+                    tieOutDir === v ? "bg-surface-2 text-ink border-line" : "text-muted border-transparent hover:text-ink-2"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="text-[12px] text-muted">
+              {tieOutFiltered.length} movement{tieOutFiltered.length === 1 ? "" : "s"} · {fmtAmount(tieOutStats.sumIn)} in · {fmtAmount(tieOutStats.sumOut)} out still untied
+            </div>
+
+            {tieOutLoading && tieOut.length === 0 ? skeletonRows
+            : tieOutFiltered.length === 0 ? (
+              <div className="text-center py-20">
+                <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+                  <Check size={18} className="text-success-ink" />
+                </div>
+                <p className="text-[14px] font-semibold text-ink-2">
+                  {tieOut.length > 0 ? "Nothing here matches" : "Every wire, Zelle and cash movement is tied to a deal."}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {tieOutGroups.map((g) => (
+                  <div key={g.month} className="bg-surface border border-line rounded-xl overflow-hidden">
+                    <div className="px-4 py-2 bg-surface-2/60 border-b border-line text-[11.5px] font-semibold text-ink-2">
+                      {monthHeading(g.month)}
+                    </div>
+                    <div className="divide-y divide-line-2">
+                      {g.rows.map((t) => {
+                        const payee = t.counterparty_name?.trim();
+                        const mainLabel = payee || t.description || "—";
+                        const memo = payee ? t.description : "";
+                        const sug = serverSugg.get(t.id)?.[0];
+                        return (
+                          <div key={t.id} className="pl-3 pr-3 py-3">
+                            <div className="flex items-center gap-3 min-w-0 flex-wrap lg:flex-nowrap">
+                              {t.direction === "in"
+                                ? <ArrowDownLeft size={15} className="text-success-ink flex-shrink-0" strokeWidth={2} />
+                                : <ArrowUpRight size={15} className="text-danger-ink flex-shrink-0" strokeWidth={2} />}
+                              <div className="min-w-0 flex-1 basis-full lg:basis-auto order-1 lg:order-none">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="text-[13px] font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
+                                  <StatusPill>{KIND_LABEL[t.kind]}</StatusPill>
+                                </div>
+                                <div className="text-[11.5px] text-muted truncate">
+                                  {(t.posted_at || "").slice(0, 10)}{t.account_id ? ` · ${t.account_id}` : ""}
+                                  {memo ? <span className="text-faint"> · {memo}</span> : null}
+                                  {sug?.invoice_number && (
+                                    <span className="text-accent"> · Suggested: {sug.invoice_number}</span>
+                                  )}
+                                </div>
+                              </div>
+                              <div
+                                className={`text-[13.5px] tabular-nums whitespace-nowrap font-semibold flex-shrink-0 ${
+                                  t.direction === "in" ? "text-success-ink" : "text-danger-ink"
+                                }`}
+                              >
+                                {t.direction === "in" ? "+" : "−"}{fmtAmount(t.remaining)}
+                              </div>
+                              <span className="flex-shrink-0 order-2 lg:order-none">
+                                <CategoryPicker
+                                  value={t.category || ""}
+                                  onChange={(v) => tieOutSetCategory(t, v)}
+                                  placeholder="Not deal money"
+                                />
+                              </span>
+                              <span className="flex-shrink-0 order-2 lg:order-none">
+                                <button
+                                  onClick={() => tieOutBookDeal(t)}
+                                  title="Tie this movement to a deal"
+                                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-semibold transition-colors whitespace-nowrap"
+                                >
+                                  <Link2 size={11} /> Tie to a deal
+                                </button>
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )
       )}

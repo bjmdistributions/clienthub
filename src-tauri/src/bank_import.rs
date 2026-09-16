@@ -332,15 +332,11 @@ fn after(hay: &str, needle: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Fill rail / category / counterparty_name / wire_ref from the raw text. This is a
-/// SUGGESTION only — the review queue lets a human correct it, and nothing is
-/// allocated to a deal automatically.
-fn classify(row: &mut ParsedRow, txn_type: &str) {
-    let hay = format!("{} {}", row.description, txn_type).to_uppercase();
-    let inbound = row.direction == "in";
-
-    // Rail
-    row.rail = if hay.contains("WIRE") || hay.contains("FEDWIRE") || hay.contains("CHIPS") || hay.contains("BOOK TRANSFER") {
+/// The rail arm of `classify`, pulled out so the tie-out backlog (commands.rs /
+/// routes/bank.rs `kind_of`) can classify a bare description the same way import does.
+pub fn rail_of(description: &str) -> &'static str {
+    let hay = description.to_uppercase();
+    if hay.contains("WIRE") || hay.contains("FEDWIRE") || hay.contains("CHIPS") || hay.contains("BOOK TRANSFER") {
         "wire"
     } else if hay.contains("ZELLE") || hay.contains("QUICKPAY") {
         "zelle"
@@ -354,7 +350,18 @@ fn classify(row: &mut ParsedRow, txn_type: &str) {
         "ach"
     } else {
         ""
-    }.to_string();
+    }
+}
+
+/// Fill rail / category / counterparty_name / wire_ref from the raw text. This is a
+/// SUGGESTION only — the review queue lets a human correct it, and nothing is
+/// allocated to a deal automatically.
+fn classify(row: &mut ParsedRow, txn_type: &str) {
+    let hay = format!("{} {}", row.description, txn_type).to_uppercase();
+    let inbound = row.direction == "in";
+
+    // Rail
+    row.rail = rail_of(&hay).to_string();
 
     // Coarse category (feeds the review queue + expense/owner-draw routing).
     let up = hay.as_str();
@@ -533,6 +540,16 @@ mod tests {
 <STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20240604120000[-5:EST]<TRNAMT>15000.00<FITID>2024ABC<NAME>Fedwire Credit<MEMO>B/O: LAST STOCK LLC</STMTTRN>\
 <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20240605<TRNAMT>-2500.00<FITID>2024DEF<NAME>Zelle Payment To NJH SUPPLY<MEMO></STMTTRN>\
 </BANKTRANLIST></STMTTRNRS></BANKMSGSRSV1></OFX>";
+
+    #[test]
+    fn rail_of_classifies_rails() {
+        assert_eq!(rail_of("Online Domestic Wire Transfer A/C: Last Stock LLC"), "wire");
+        assert_eq!(rail_of("Zelle Payment To NJH SUPPLY"), "zelle");
+        assert_eq!(rail_of("Real Time Payment Credit"), "rtp");
+        assert_eq!(rail_of("ATM Withdrawal"), "cash");
+        assert_eq!(rail_of("Monthly Service Fee"), "");
+        assert_eq!(rail_of("Card Purchase At Store"), "card");
+    }
 
     #[test]
     fn parses_ofx_wire_and_zelle() {

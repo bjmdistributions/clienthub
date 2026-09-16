@@ -53,20 +53,38 @@ function AgingBar({ row }: { row: Record<string, number> }) {
 // Committed-only view rederives total, buckets, and the by-payee breakdown from
 // the visible items so every number on screen matches the list shown.
 function deriveFromItems(items: APItem[]): { total: number; buckets: Record<string, number>; byPayee: PayableSupplier[] } {
+  // R-315: same rule the server's own `by_payee` uses — an own-cost line (freight/
+  // wire/other Jack pays himself) never gets grouped under the deal's real supplier,
+  // even though it may carry that supplier's name. Approximated here from this same
+  // item set: the deal's real supplier is whichever payee on the SAME deal has an
+  // owed (non-own-cost) line still open.
+  const dealSupplierNames = new Map<string, Set<string>>();
+  for (const it of items) {
+    if (!it.own_cost) {
+      const set = dealSupplierNames.get(it.deal_flow_id) ?? new Set<string>();
+      set.add((it.payee || "").trim());
+      dealSupplierNames.set(it.deal_flow_id, set);
+    }
+  }
   const buckets: Record<string, number> = { d0_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0 };
   const byKey: Record<string, PayableSupplier> = {};
   let total = 0;
   for (const it of items) {
     total += it.amount;
     if (buckets[it.bucket] !== undefined) buckets[it.bucket] += it.amount;
-    const name = it.payee || "(unnamed)";
+    const ownName = it.payee || "(unnamed)";
+    const name = it.own_cost && dealSupplierNames.get(it.deal_flow_id)?.has(ownName.trim())
+      ? "Your own costs"
+      : ownName;
     const p = byKey[name] || (byKey[name] = {
-      payee: it.payee, total: 0, oldest_days: 0,
+      payee: name, total: 0, oldest_days: 0,
       d0_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0,
+      own_cost: true,
     } as PayableSupplier);
     p.total += it.amount;
     if ((p as any)[it.bucket] !== undefined) (p as any)[it.bucket] += it.amount;
     if (it.days > p.oldest_days) p.oldest_days = it.days;
+    p.own_cost = (p.own_cost ?? true) && !!it.own_cost;
   }
   const byPayee = Object.values(byKey).sort((a, b) => b.total - a.total);
   return { total, buckets, byPayee };

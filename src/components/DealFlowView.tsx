@@ -7,7 +7,7 @@ import {
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit,
 } from "../lib/api";
-import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount } from "../lib/format";
+import { fmtAmount, primarySupplierLabel, owedToSupplier, localDay, parseLocalDay, parseAmount } from "../lib/format";
 import { toast } from "./Toast";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
@@ -1334,9 +1334,12 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   // `total_supplier_cost`, and now visible here because the kept toggle lives on
   // these rows (R-132).
   const totalCost        = existingPayments.filter((p) => !p.kept).reduce((s, p) => s + p.amount, 0);
-  const outstanding      = existingPayments.filter((p) => !p.paid && !p.kept);
+  // R-315: "Mark supplier paid" is money that could get wired to the supplier by
+  // mistake, so it only ever touches lines actually owed to the supplier — a
+  // freight/wire/other line Jack pays himself never gets swept into it.
+  const outstanding      = existingPayments.filter((p) => !p.paid && !p.kept && owedToSupplier(p));
   const suppliersPaid    = existingPayments.length > 0 ? outstanding.length === 0 : true;
-  const outstandingTotal = outstanding.reduce((s, p) => s + p.amount, 0);
+  const outstandingTotal = flow.supplier_owed;
 
   const pickSupplier = (s: Supplier) => { setSelSupplier(s); setSuppName(s.name); setSuppResults([]); };
 
@@ -1411,7 +1414,8 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   };
   const unmarkAllPaid = async () => {
     setSaving(true);
-    try { await Promise.all(existingPayments.filter((p) => p.paid).map((p) => api.unmarkSupplierPaymentPaid(flow.id, p.id))); onReload(); }
+    // Mirrors `outstanding`: "Undo suppliers paid" only undoes supplier money.
+    try { await Promise.all(existingPayments.filter((p) => p.paid && owedToSupplier(p)).map((p) => api.unmarkSupplierPaymentPaid(flow.id, p.id))); onReload(); }
     catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
@@ -1428,6 +1432,22 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
       <div>
         <div className="text-[14px] font-semibold text-ink">Supplier &amp; cost</div>
         <div className="text-[12px] text-muted mt-0.5">What you're paying for the goods, and whether each leg has gone out yet.</div>
+        {/* R-315: the two figures side by side, so a glance never confuses a cost
+            Jack pays himself with money actually owed to the supplier. */}
+        {existingPayments.length > 0 && (
+          <div className="flex items-center gap-5 mt-2.5">
+            <div>
+              <div className="text-[11px] text-muted">Owed to supplier</div>
+              <div className="text-[15px] font-semibold text-ink tabular-nums">{fmtAmount(flow.supplier_owed)}</div>
+            </div>
+            {flow.own_costs_total > 0.005 && (
+              <div>
+                <div className="text-[11px] text-muted">Your own costs</div>
+                <div className="text-[13px] font-medium text-ink-2 tabular-nums">{fmtAmount(flow.own_costs_unpaid)}</div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Existing cost lines — each carries its own settled state */}

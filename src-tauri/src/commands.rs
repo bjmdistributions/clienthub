@@ -4394,6 +4394,96 @@ pub struct SupplierPayment {
     /// status for money you still owe).
     #[serde(default)]
     pub kept: bool,
+    /// R-315: for a non-"supplier" line (freight/wire/other), whether the supplier
+    /// actually billed this cost — i.e. it really is supplier money, not Jack's own
+    /// cost he's just routing through the supplier search. Off by default: existing
+    /// freight/wire/other lines read as Jack's own costs until flipped. See
+    /// `owed_to_supplier`.
+    #[serde(default)]
+    pub supplier_billed: bool,
+}
+
+impl SupplierPayment {
+    /// R-315: the one rule for "is this line supplier money". A `supplier`-category
+    /// line (or the legacy `None`) is always supplier money. Any other category
+    /// (freight/wire_in/wire_out/other) is Jack's own cost unless he explicitly
+    /// flagged it as billed by the supplier.
+    pub fn owed_to_supplier(&self) -> bool {
+        match self.category.as_deref() {
+            None | Some("supplier") => true,
+            _ => self.supplier_billed,
+        }
+    }
+}
+
+#[cfg(test)]
+mod r315_owed_to_supplier_tests {
+    use super::SupplierPayment;
+
+    fn payment(category: Option<&str>, supplier_billed: bool) -> SupplierPayment {
+        SupplierPayment {
+            id: "p1".into(), supplier_name: "Acme".into(), supplier_id: None,
+            amount: 100.0, original_amount: None, price_changed: false,
+            quantity: None, unit_price: None, method: None, notes: None,
+            paid: false, paid_at: None,
+            category: category.map(|s| s.to_string()),
+            kept: false, supplier_billed,
+        }
+    }
+
+    #[test]
+    fn supplier_category_is_owed_by_default() {
+        assert!(payment(Some("supplier"), false).owed_to_supplier());
+    }
+
+    #[test]
+    fn legacy_none_category_is_owed() {
+        assert!(payment(None, false).owed_to_supplier());
+    }
+
+    #[test]
+    fn freight_unflagged_is_jacks_own_cost() {
+        assert!(!payment(Some("freight"), false).owed_to_supplier(),
+            "an existing/unflagged freight line must read as Jack's own cost, not supplier money");
+    }
+
+    #[test]
+    fn freight_flagged_billed_by_supplier_is_owed() {
+        assert!(payment(Some("freight"), true).owed_to_supplier(),
+            "the supplier_billed switch is the only way a non-supplier line becomes supplier money");
+    }
+}
+
+#[cfg(test)]
+mod r315_payables_grouping_tests {
+    use super::payables_group_key;
+    use std::collections::HashSet;
+
+    fn names(list: &[&str]) -> HashSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn owed_line_keeps_its_own_name_even_if_it_matches_the_supplier() {
+        // owed_to_supplier lines never route through this helper in practice, but the
+        // helper itself must be a no-op for own_cost=false regardless.
+        assert_eq!(payables_group_key("Acme", false, &names(&["Acme"])), "Acme");
+    }
+
+    #[test]
+    fn own_cost_line_matching_the_deals_supplier_becomes_your_own_costs() {
+        assert_eq!(payables_group_key("Acme", true, &names(&["Acme"])), "Your own costs");
+    }
+
+    #[test]
+    fn own_cost_line_with_a_distinct_payee_keeps_its_name() {
+        assert_eq!(payables_group_key("FedEx", true, &names(&["Acme"])), "FedEx");
+    }
+
+    #[test]
+    fn own_cost_line_on_a_deal_with_no_recorded_supplier_keeps_its_name() {
+        assert_eq!(payables_group_key("FedEx", true, &HashSet::new()), "FedEx");
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -4407,6 +4497,8 @@ pub struct SupplierPaymentInput {
     pub notes: Option<String>,
     #[serde(default)]
     pub category: Option<String>,
+    #[serde(default)]
+    pub supplier_billed: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -4422,6 +4514,17 @@ pub struct DealFlow {
     pub payment_received_at: Option<String>,
     pub supplier_payments_json: String,
     pub supplier_payments: Vec<SupplierPayment>,
+    /// R-315: unpaid, not-kept, owed_to_supplier — what Jack could actually wire the
+    /// supplier by mistake. Derived here so every reader (list and detail) agrees.
+    #[serde(default)]
+    pub supplier_owed: f64,
+    /// R-315: unpaid, not-kept, NOT owed_to_supplier — freight/wire/other Jack pays
+    /// himself (e.g. shipping he charged the customer but the supplier never billed).
+    #[serde(default)]
+    pub own_costs_unpaid: f64,
+    /// R-315: same as above but not paid-filtered — every non-kept own cost, paid or not.
+    #[serde(default)]
+    pub own_costs_total: f64,
     pub total_supplier_cost: f64,
     pub completed_at: Option<String>,
     pub gross_revenue: f64,
@@ -4469,6 +4572,16 @@ pub struct PaymentReceivedInput {
 fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
     let sp_json: String = r.get("supplier_payments_json")?;
     let supplier_payments: Vec<SupplierPayment> = serde_json::from_str(&sp_json).unwrap_or_default();
+    // R-315: computed once here so list and detail reads agree.
+    let supplier_owed: f64 = supplier_payments.iter()
+        .filter(|p| !p.paid && !p.kept && p.owed_to_supplier())
+        .map(|p| p.amount).sum();
+    let own_costs_unpaid: f64 = supplier_payments.iter()
+        .filter(|p| !p.paid && !p.kept && !p.owed_to_supplier())
+        .map(|p| p.amount).sum();
+    let own_costs_total: f64 = supplier_payments.iter()
+        .filter(|p| !p.kept && !p.owed_to_supplier())
+        .map(|p| p.amount).sum();
     Ok(DealFlow {
         id: r.get("id")?,
         name: r.get("name").ok(),
@@ -4480,6 +4593,9 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         payment_received_at: r.get("payment_received_at")?,
         supplier_payments_json: sp_json,
         supplier_payments,
+        supplier_owed,
+        own_costs_unpaid,
+        own_costs_total,
         total_supplier_cost: r.get("total_supplier_cost")?,
         completed_at: r.get("completed_at")?,
         gross_revenue: r.get("gross_revenue")?,
@@ -4945,6 +5061,7 @@ pub async fn add_supplier_payment(id: String, input: SupplierPaymentInput) -> Re
         paid_at: None,
         category: input.category,
         kept: false,
+        supplier_billed: input.supplier_billed,
     });
 
     write_sp(&id, &payments, &df.invoice_id)?;
@@ -4972,6 +5089,7 @@ pub async fn update_supplier_payment(id: String, payment_id: String, input: Supp
     p.method = input.method;
     p.notes = input.notes;
     p.category = input.category;
+    p.supplier_billed = input.supplier_billed;
 
     p.amount = new_amount;
     if (old_amount - new_amount).abs() > 0.001 {
@@ -11915,6 +12033,20 @@ pub async fn get_receivables_aging() -> Result<Value, String> {
     }))
 }
 
+/// R-315: which payee bucket an own-cost payables line falls into. An own-cost line
+/// that happens to carry the deal's real supplier's name (entered via the same
+/// supplier search, but not `supplier_billed`) must never land in that supplier's
+/// payable group — it goes to the payee-agnostic "Your own costs" bucket instead.
+/// A distinct payee name (a real freight company, say) keeps its own name. Pure, so
+/// it's testable without a live DB — see `get_payables_aging`.
+fn payables_group_key(payee: &str, own_cost: bool, deal_supplier_names: &std::collections::HashSet<String>) -> String {
+    if own_cost && deal_supplier_names.contains(payee.trim()) {
+        "Your own costs".to_string()
+    } else {
+        payee.to_string()
+    }
+}
+
 /// Accounts-payable aging: unpaid cost lines (paid=false) on active deals, grouped by
 /// payee, aged by days since the deal was funded (payment_received_at, else created_at).
 /// Includes freight/wire fees — real outgoing obligations. No supplier due-date yet
@@ -11922,13 +12054,40 @@ pub async fn get_receivables_aging() -> Result<Value, String> {
 #[tauri::command]
 pub async fn get_payables_aging() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+
+    // R-315: the actual supplier name(s) per deal — same rule as `primarySupplierLabel`
+    // (category is null or "supplier"). Used below so a freight/wire/other line that
+    // isn't billed by the supplier, but happens to carry the supplier's name because
+    // it was entered through the same supplier search, never lands in the supplier's
+    // own payable group.
+    let mut deal_supplier_names: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT df.id, json_extract(sp.value,'$.supplier_name') \
+             FROM deal_flows df \
+             JOIN json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
+             WHERE (json_extract(sp.value,'$.category') IS NULL OR json_extract(sp.value,'$.category')='supplier') \
+               AND json_extract(sp.value,'$.supplier_name') IS NOT NULL",
+        ).map_err(|e| e.to_string())?;
+        let name_rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))
+            .map_err(|e| e.to_string())?;
+        for (dfid, name) in name_rows.filter_map(|x| x.ok()) {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                deal_supplier_names.entry(dfid).or_default().insert(name);
+            }
+        }
+    }
+
     let mut stmt = conn.prepare(
         "SELECT json_extract(sp.value,'$.supplier_name') AS payee, \
                 CAST(json_extract(sp.value,'$.amount') AS REAL) AS amount, \
                 COALESCE(NULLIF(df.payment_received_at,''), df.created_at) AS anchor, \
                 df.id AS deal_flow_id, df.invoice_id AS invoice_id, \
                 i.number AS invoice_number, i.client_id AS client_id, c.name AS client_name, \
-                json_extract(sp.value,'$.id') AS payment_id, df.stage AS df_stage \
+                json_extract(sp.value,'$.id') AS payment_id, df.stage AS df_stage, \
+                json_extract(sp.value,'$.category') AS category, \
+                COALESCE(json_extract(sp.value,'$.supplier_billed'),0) AS supplier_billed \
          FROM deal_flows df \
          JOIN json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
@@ -11949,24 +12108,39 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         r.get::<_, Option<String>>(7)?,
         r.get::<_, Option<String>>(8)?,
         r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+        r.get::<_, Option<String>>(10)?,
+        r.get::<_, i64>(11)?,
     ))).map_err(|e| e.to_string())?;
 
     let today = Utc::now().date_naive();
     // Committed = deal past the speculative start (mirrors COMMITTED_DEAL_STAGES).
     let committed_stages = ["supplier_paid", "payment_received", "complete"];
-    // payee -> ([≤30,31-60,61-90,90+], oldest_days)
-    let mut map: std::collections::HashMap<String, ([f64; 4], i64)> = std::collections::HashMap::new();
+    // payee -> ([≤30,31-60,61-90,90+], oldest_days, all_own_cost)
+    let mut map: std::collections::HashMap<String, ([f64; 4], i64, bool)> = std::collections::HashMap::new();
     let mut items: Vec<Value> = Vec::new();
     let mut tot = [0f64; 4];
     let mut committed_total = 0f64; // dashboard hero: only committed deals count
     let mut count = 0i64;
-    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id, df_stage) in rows.filter_map(|x| x.ok()) {
+    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id, df_stage, category, supplier_billed) in rows.filter_map(|x| x.ok()) {
         if committed_stages.contains(&df_stage.as_str()) { committed_total += amount; }
         let days = chrono::NaiveDate::parse_from_str(anchor.get(0..10).unwrap_or(""), "%Y-%m-%d")
             .map(|d| (today - d).num_days())
             .unwrap_or(0);
         let idx = if days <= 30 { 0 } else if days <= 60 { 1 } else if days <= 90 { 2 } else { 3 };
         let bucket = ["d0_30", "d31_60", "d61_90", "d90_plus"][idx];
+        // R-315: same rule as SupplierPayment::owed_to_supplier.
+        let owed_to_supplier = match category.as_deref() {
+            None | Some("supplier") => true,
+            _ => supplier_billed != 0,
+        };
+        let own_cost = !owed_to_supplier;
+        let empty_set = std::collections::HashSet::new();
+        // Grouping only — the item itself keeps its own real payee name (below),
+        // so `markPaid` on the client can still match it back to its supplier_name.
+        let payee_key = payables_group_key(
+            &payee, own_cost,
+            deal_supplier_names.get(&deal_flow_id).unwrap_or(&empty_set),
+        );
         items.push(json!({
             "deal_flow_id": deal_flow_id, "invoice_id": invoice_id, "invoice_number": invoice_number,
             "payment_id": payment_id,
@@ -11977,18 +12151,21 @@ pub async fn get_payables_aging() -> Result<Value, String> {
             // to committed-only with a toggle to reveal speculative (early) payables.
             "committed": committed_stages.contains(&df_stage.as_str()),
             "deal_flow_stage": df_stage,
+            "own_cost": own_cost,
         }));
-        let e = map.entry(payee).or_insert(([0.0; 4], 0));
+        let e = map.entry(payee_key).or_insert(([0.0; 4], 0, true));
         e.0[idx] += amount;
         if days > e.1 { e.1 = days; }
+        e.2 = e.2 && own_cost;
         tot[idx] += amount;
         count += 1;
     }
-    let mut by_payee: Vec<Value> = map.into_iter().map(|(name, (b, oldest))| {
+    let mut by_payee: Vec<Value> = map.into_iter().map(|(name, (b, oldest, own_cost))| {
         json!({
             "payee": name,
             "d0_30": b[0], "d31_60": b[1], "d61_90": b[2], "d90_plus": b[3],
             "total": b.iter().sum::<f64>(), "oldest_days": oldest,
+            "own_cost": own_cost,
         })
     }).collect();
     by_payee.sort_by(|a, b| b["total"].as_f64().unwrap_or(0.0).partial_cmp(&a["total"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
@@ -13548,6 +13725,66 @@ pub async fn list_bank_txns_by_ids(ids: Vec<String>) -> Result<Vec<Value>, Strin
     let conn = pool().get().map_err(|e| e.to_string())?;
     let js = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
     bank_txn_list_rows(&conn, "bt.id IN (SELECT value FROM json_each(?1))", &js)
+}
+
+/// R-314: the "tie out" backlog — real money movements (wires, Zelle, real-time credits,
+/// cash) not yet tied to a deal and not already explained by a category like a transfer,
+/// a card payment or a fee. The categories a deal can actually consume are a SEPARATE
+/// concept (DEAL_CAPABLE_CATEGORIES / bank_txn_summary.not_deal_money / BK_DEAL_CAPABLE) —
+/// this list is broader on purpose, because a wire booked to the wrong category is exactly
+/// what this backlog exists to catch. Same rule, same row shape, as the server's
+/// `GET /api/bank/tie-out` (routes/bank.rs `kind_of` twin of `bank_import::rail_of`).
+#[tauri::command]
+pub async fn list_tie_out_backlog() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let sql = "SELECT bt.id, bt.posted_at, bt.direction, bt.amount, bt.description,
+                      bt.counterparty_name, bt.account_id, bt.category, bt.reviewed,
+                      COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated
+               FROM bank_txn bt
+               WHERE COALESCE(bt.counterparty_type,'') != 'loan'
+                 AND COALESCE(bt.category,'') NOT IN ('internal_transfer','card_payment','fee','merchant_fees',
+                                                       'owner_draw','owner_contribution','loan_received','loan_repayment')
+                 AND UPPER(bt.description) NOT LIKE '%FEE%'
+               ORDER BY bt.posted_at DESC, bt.created_at DESC";
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,  // id
+            r.get::<_, String>(1)?,  // posted_at
+            r.get::<_, String>(2)?,  // direction
+            r.get::<_, f64>(3)?,     // amount
+            r.get::<_, String>(4)?,  // description
+            r.get::<_, String>(5)?,  // counterparty_name
+            r.get::<_, String>(6)?,  // account_id
+            r.get::<_, String>(7)?,  // category
+            r.get::<_, i64>(8)? != 0,// reviewed
+            r.get::<_, f64>(9)?,     // allocated
+        ))
+    }).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, posted_at, direction, amount, description, counterparty_name, account_id, category, reviewed, allocated) =
+            row.map_err(|e| e.to_string())?;
+        let remaining = ((amount - allocated) * 100.0).round() / 100.0;
+        if remaining <= 0.01 { continue; }
+        let kind = crate::bank_import::rail_of(&description);
+        if !matches!(kind, "wire" | "zelle" | "rtp" | "cash") { continue; }
+        out.push(json!({
+            "id": id,
+            "posted_at": posted_at,
+            "direction": direction,
+            "amount": amount,
+            "remaining": remaining,
+            "description": description,
+            "counterparty_name": counterparty_name,
+            "account_id": account_id,
+            "category": category,
+            "reviewed": reviewed,
+            "kind": kind,
+        }));
+    }
+    Ok(out)
 }
 
 fn bank_txn_list_rows(conn: &rusqlite::Connection, where_sql: &str, param: &str) -> Result<Vec<Value>, String> {

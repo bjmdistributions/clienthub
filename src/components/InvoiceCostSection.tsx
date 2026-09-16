@@ -36,11 +36,15 @@ const catLabel = (c?: string | null) =>
 const parseAmt = (v: string) => parseFloat(String(v).replace(/[^0-9.-]/g, "")) || 0;
 
 export default function InvoiceCostSection({
-  flow, invoiceTotal, onReload,
+  flow, invoiceTotal, shippingCharged, onReload,
 }: {
   flow: DealFlow;
   /** Revenue to measure margin against while the buyer has not paid yet. */
   invoiceTotal: number;
+  /** R-315: what this invoice charged the customer for shipping — used only for the
+   *  hint that a cost Jack pays himself, even when it started as "shipping", is a
+   *  Freight line, not supplier money. */
+  shippingCharged?: number | null;
   onReload: () => void;
 }) {
   const [recipients, setRecipients] = useState<PayoutShare[]>([]);
@@ -58,6 +62,8 @@ export default function InvoiceCostSection({
   const [unitPrice,  setUnitPrice]  = useState("");
   const [amount,     setAmount]     = useState("");
   const [note,       setNote]       = useState("");
+  // R-315: off by default — the only way a non-supplier line becomes supplier money.
+  const [supplierBilled, setSupplierBilled] = useState(false);
 
   useEffect(() => { api.getPayoutSplit().then(setRecipients).catch(() => {}); }, []);
 
@@ -87,7 +93,7 @@ export default function InvoiceCostSection({
 
   const resetForm = () => {
     setCostType("supplier"); setSuppName(""); setSelSupp(null); setSuppHits([]);
-    setQty(""); setUnitPrice(""); setAmount(""); setNote("");
+    setQty(""); setUnitPrice(""); setAmount(""); setNote(""); setSupplierBilled(false);
   };
 
   const add = async () => {
@@ -109,6 +115,9 @@ export default function InvoiceCostSection({
         quantity:   isSupp && parseAmt(qty)       ? parseAmt(qty)       : null,
         unit_price: isSupp && parseAmt(unitPrice) ? parseAmt(unitPrice) : null,
         category: costType,
+        // R-315: irrelevant (and ignored) for a supplier-category line — only a
+        // non-supplier line's flag decides whether it's actually supplier money.
+        supplier_billed: !isSupp && supplierBilled,
       });
       resetForm(); setAdding(false); onReload();
     } catch (e: any) { toast(String(e), "error"); }
@@ -129,6 +138,27 @@ export default function InvoiceCostSection({
         <div>
           <div className="text-[12.5px] font-medium text-muted">Cost &amp; profit</div>
           <div className="text-[11px] text-muted mt-0.5">Recorded on the deal — the same lines show under Deal Flow.</div>
+          {/* R-315: the two figures side by side, so a glance never confuses a cost
+              Jack pays himself with money actually owed to the supplier. */}
+          {payments.length > 0 && (
+            <div className="flex items-center gap-5 mt-2">
+              <div>
+                <div className="text-[11px] text-muted">Owed to supplier</div>
+                <div className="text-[15px] font-semibold text-ink tabular-nums">{fmtAmount(flow.supplier_owed)}</div>
+              </div>
+              {flow.own_costs_total > 0.005 && (
+                <div>
+                  <div className="text-[11px] text-muted">Your own costs</div>
+                  <div className="text-[13px] font-medium text-ink-2 tabular-nums">{fmtAmount(flow.own_costs_unpaid)}</div>
+                </div>
+              )}
+            </div>
+          )}
+          {(shippingCharged ?? 0) > 0 && (
+            <div className="text-[11px] text-muted mt-2 max-w-[320px]">
+              Shipping charged to the customer: {fmtAmount(shippingCharged!)}. A cost you pay yourself goes in as Freight, not to the supplier.
+            </div>
+          )}
         </div>
         {isComplete && (
           <button onClick={() => setUnlocked((v) => !v)}
@@ -234,7 +264,26 @@ export default function InvoiceCostSection({
               </div>
             </>
           ) : (
-            <input className={inp} placeholder="What is this cost? (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-[11px] font-medium text-muted">Paid to</label>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11.5px] text-muted">Billed by the supplier</span>
+                  {/* Same track/knob math as the Settings clause switch — see the note
+                      on the invoice return-policy switch above this file's siblings;
+                      `left-0` + an explicit translate is load-bearing, not decorative. */}
+                  <button type="button" onClick={() => setSupplierBilled((v) => !v)} role="switch" aria-checked={supplierBilled}
+                    aria-label="Billed by the supplier"
+                    className={`w-11 h-6 rounded-full relative transition-colors ring-1 ${supplierBilled ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
+                    <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${supplierBilled ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
+                  </button>
+                </div>
+              </div>
+              <input className={inp} placeholder="Who this went to (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+              {!supplierBilled && (
+                <div className="text-[11px] text-muted">Not billed by the supplier — this is your own cost.</div>
+              )}
+            </div>
           )}
 
           <input className={inp} placeholder="Amount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />

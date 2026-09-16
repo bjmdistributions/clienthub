@@ -45,6 +45,16 @@ export function primarySupplierLabel(
   return `${names[0]} +${names.length - 1}`;
 }
 
+/** R-315: whether a supplier_payments line is money actually owed to the supplier,
+ *  rather than a cost Jack pays himself (freight/wire/other not billed by the
+ *  supplier, even though it may carry the supplier's name). Mirrors
+ *  `SupplierPayment::owed_to_supplier` on the desktop — keep both in sync. */
+export function owedToSupplier(
+  p: { category?: string | null; supplier_billed?: boolean | null },
+): boolean {
+  return p.category == null || p.category === "supplier" || !!p.supplier_billed;
+}
+
 /** Today as YYYY-MM-DD in LOCAL time (R-159). toISOString() is UTC — from
  *  6/7pm Central it is already tomorrow, so evening defaults landed entries
  *  on the wrong day (and, at month-end, in the wrong month). */

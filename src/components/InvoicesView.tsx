@@ -1248,6 +1248,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
             <InvoiceCostSection
               flow={dealFlow}
               invoiceTotal={invoice.total}
+              shippingCharged={invoice.shipping_charged}
               onReload={() => api.getDealFlowByInvoice(invoice.id).then(setDealFlow).catch(() => {})}
             />
           )}

@@ -1024,6 +1024,7 @@ fn main() {
             plaid_remove_item,
             plaid_sync,
             list_bank_txns,
+            list_tie_out_backlog,
             bank_txn_summary,
             set_bank_txn_review,
             allocate_bank_txn,
