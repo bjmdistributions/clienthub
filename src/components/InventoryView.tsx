@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotPriceTier, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus, LotMatch } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { formatLocation, parseLocation, isCanonicalLocation } from "../lib/location";
+import { categoryMenu, isPicked, toggleCategory, lotCategories } from "../lib/categories";
+import { lotUnitPrice, priceTiers, palletPrice, lotPriceBlock } from "../lib/price";
+import { lotTags, dedupeTags, suggestTags, toggleTag, isTagged } from "../lib/tags";
 import LocationField from "./LocationField";
 import LocationCleanup from "./LocationCleanup";
 import { buildNewsletterBody, LotBlockInput } from "../lib/newsletter";
@@ -32,28 +35,6 @@ const isStale = (lot: Lot) => lot.status === "available" && daysSince(lot.update
 // multiplied-out $30,000 in asking_price (price_type "total"), exactly as qty_basis does
 // for quantity, so every existing value/profit sum stays right. These two helpers are the
 // only place the quoted figure is turned back into something to display.
-const palletPrice = (det: LotDetails) => {
-  if (det.price_basis !== "per_pallet") return null;
-  const perPallet = det.price_per_pallet ?? 0;
-  const pallets = det.pallets ?? 0;
-  if (perPallet <= 0 || pallets <= 0) return null;
-  // Fewer units on a pallet makes each unit dearer, so the LOW per-pallet count gives the
-  // HIGH unit price. With no range quoted, both ends are the same figure.
-  const lo = det.qty_per_pallet ?? 0;
-  const hi = det.qty_per_pallet_max ?? 0;
-  const unitHigh = lo > 0 ? perPallet / lo : 0;
-  const unitLow = hi > lo ? perPallet / hi : unitHigh;
-  return { perPallet, pallets, unitLow, unitHigh };
-};
-// "$1,500 per pallet · $3.00–$3.33 / unit" — empty string for every other lot.
-const palletPriceLine = (det: LotDetails) => {
-  const p = palletPrice(det);
-  if (!p) return "";
-  const unit = p.unitHigh <= 0 ? ""
-    : p.unitLow < p.unitHigh ? `${fmtAmount(p.unitLow)}–${fmtAmount(p.unitHigh)} / unit`
-    : `${fmtAmount(p.unitHigh)} / unit`;
-  return [`${fmtAmount(p.perPallet)} per pallet`, unit].filter(Boolean).join(" · ");
-};
 // "9,000–10,000 units" when a per-pallet range was quoted, "20,000+ units" when the count
 // is only a floor (R-247), else the plain total. A quoted range is the more specific
 // statement, so it wins over the "+".
@@ -89,49 +70,9 @@ const cellInp = "border border-line rounded-lg h-9 px-2.5 text-[13px] focus:outl
 //     to explain.
 //   * a blank price falls back to the LOT's unit price, so a size priced like the rest
 //     needs no entry, and a `total`-priced lot divides by quantity to get there.
-const lotUnitPrice = (lot: Lot) =>
-  lot.price_type === "custom" ? 0
-    : lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity
-    : lot.asking_price;
 const variantUnitPrice = (v: LotVariant, lot: Lot) =>
   v.price != null && v.price > 0 ? v.price : lotUnitPrice(lot);
 
-// Volume price breaks (R-247), ascending and per unit. The rows are open-ended by
-// construction — each runs until the next begins — so the last one is the fixed rate and
-// needs no upper bound stored. The first row's quantity is the lot's MOQ.
-const priceTiers = (det: LotDetails): LotPriceTier[] =>
-  (det.price_tiers ?? [])
-    .filter((t) => t && t.min_qty > 0 && t.price > 0)
-    .sort((a, b) => a.min_qty - b.min_qty);
-// The unit-price band the VARIANTS and the volume BREAKS imply. A lot priced only through
-// its sizes or its ladder has no asking_price of its own, and every headline used to print
-// `fmtAmount(0)` — "$0.00 / unit" on the card and the detail, which is the thing custom
-// price text was written to avoid. When the lot carries no price, these are the price.
-const impliedPriceBand = (det: LotDetails): { low: number; high: number } | null => {
-  const ps = [
-    ...(det.variants ?? []).map((v) => v.price),
-    ...priceTiers(det).map((t) => t.price),
-  ].filter((x): x is number => x != null && x > 0);
-  if (ps.length === 0) return null;
-  return { low: Math.min(...ps), high: Math.max(...ps) };
-};
-// The per-unit line, or null when nothing anywhere prices this lot. NEVER "$0.00 / unit".
-const unitPriceLine = (lot: Lot, det: LotDetails): string | null => {
-  const own = lotUnitPrice(lot);
-  if (own > 0) return `${fmtAmount(own)} / unit`;
-  const band = impliedPriceBand(det);
-  if (!band) return null;
-  return band.low < band.high
-    ? `${fmtAmount(band.low)}–${fmtAmount(band.high)} / unit`
-    : `${fmtAmount(band.high)} / unit`;
-};
-// The headline. A lot with no price of its own but priced variants reads "From $X", the
-// same language the storefront already uses for it; one with no price at all says so.
-const headlinePrice = (lot: Lot, det: LotDetails, total: number): string => {
-  if (total > 0) return fmtAmount(total);
-  const band = impliedPriceBand(det);
-  return band ? `From ${fmtAmount(band.low)}` : "No price set";
-};
 
 // A lot's "needs attention" list: missing info a buyer would expect, plus media that
 // hasn't fully synced (a photo missing on this device, or still uploading to the server).
@@ -231,6 +172,7 @@ export default function InventoryView() {
   const [sort, setSort] = useState<SortKey>("newest");
   const [renewOnly, setRenewOnly] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [tagFilter, setTagFilter] = useState<string>("all");
   const [sentFilter, setSentFilter] = useState<"any" | "email" | "whatsapp" | "facebook" | "none">("any");
   const [sortOpen, setSortOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false); // header overflow menu
@@ -344,8 +286,10 @@ export default function InventoryView() {
   // category already used on a lot, so picking one keeps blasts aligned to a segment.
   const categoryOptions = Array.from(new Set([
     ...categories,
-    ...lots.map((l) => (l.category || "").trim()).filter(Boolean),
+    ...lots.flatMap((l) => lotCategories(l.details_json, l.category)),
   ])).sort((a, b) => a.localeCompare(b));
+  // Every brand / style tag in use, for the filter and for detection on new lots.
+  const tagOptions = dedupeTags(lots.flatMap((l) => lotTags(l.details_json))).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 
   const setStatus = async (lot: Lot, status: string) => {
     try { await api.setLotStatus(lot.id, status); load(); }
@@ -496,7 +440,7 @@ export default function InventoryView() {
 
   const matchesSearch = (l: Lot) => {
     if (!debounced) return true;
-    return [l.name, l.supplier, l.category, l.location, l.notes]
+    return [l.name, l.supplier, l.category, l.location, l.notes, ...lotTags(l.details_json)]
       .some((f) => (f || "").toLowerCase().includes(debounced));
   };
   // Lots with a "needs attention" flag (missing info or unsynced media) — powers the banner + filter.
@@ -507,7 +451,8 @@ export default function InventoryView() {
       if (filter === "all" && (l.status === "sold" || l.status === "archived") && !includeDone) return false;
       if (renewOnly && !isStale(l)) return false;
       if (attentionOnly && lotWarnings(l, mediaIssues[l.id]).length === 0) return false;
-      if (categoryFilter !== "all" && (l.category || "").trim() !== categoryFilter) return false;
+      if (categoryFilter !== "all" && !lotCategories(l.details_json, l.category).includes(categoryFilter)) return false;
+      if (tagFilter !== "all" && !isTagged(lotTags(l.details_json), tagFilter)) return false;
       if (sentFilter === "email" && !l.sent_email) return false;
       if (sentFilter === "whatsapp" && !l.sent_whatsapp) return false;
       if (sentFilter === "facebook" && !l.sent_facebook) return false;
@@ -532,7 +477,7 @@ export default function InventoryView() {
   };
 
   const startAdd = () => { setEditing(null); setPrefill(null); setShowForm(true); };
-  const clearFilters = () => { setSearch(""); setFilter("all"); setRenewOnly(false); setCategoryFilter("all"); setSentFilter("any"); };
+  const clearFilters = () => { setSearch(""); setFilter("all"); setRenewOnly(false); setCategoryFilter("all"); setTagFilter("all"); setSentFilter("any"); };
 
   return (
     <div>
@@ -698,6 +643,15 @@ export default function InventoryView() {
             {categoryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
 
+          {/* Tag filter (R-310) — only once something is tagged; an empty filter is noise. */}
+          {tagOptions.length > 0 && (
+            <select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)}
+              className="h-9 px-2.5 rounded-lg text-[12px] text-ink-2 border border-line-3 bg-surface hover:bg-surface-2 transition-colors focus:outline-none focus:border-accent max-w-[160px]">
+              <option value="all">All tags</option>
+              {tagOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          )}
+
           {/* Sent status filter */}
           <select value={sentFilter} onChange={(e) => setSentFilter(e.target.value as any)}
             className="h-9 px-2.5 rounded-lg text-[12px] text-ink-2 border border-line-3 bg-surface hover:bg-surface-2 transition-colors focus:outline-none focus:border-accent">
@@ -772,7 +726,6 @@ export default function InventoryView() {
             onCopyStoreLink={() => copyStoreLink(lot.id)}
             unitCost={unitCost(lot)}
             unitAsk={unitAsk(lot)}
-            loadPrice={totalAsk(lot)}
             marginStr={margin(lot)}
             profit={totalProfit(lot)}
           />
@@ -901,13 +854,13 @@ export default function InventoryView() {
 function LotCard({
   lot, index, mediaBase, selectMode, selected, warnings,
   onOpen, onToggleSent, onEdit, onStatus, onDelete, onBlast, onPostFacebook, onRenew, storeUrl, onCopyStoreLink,
-  unitCost, unitAsk, loadPrice, marginStr, profit,
+  unitCost, unitAsk, marginStr, profit,
 }: {
   lot: Lot; index: number; mediaBase: string; selectMode: boolean; selected: boolean; warnings: string[];
   onOpen: () => void; onToggleSent: (c: "whatsapp" | "email" | "facebook") => void;
   onEdit: () => void; onStatus: (s: string) => void; onDelete: () => void; onBlast: () => void; onPostFacebook: () => void; onRenew: () => void;
   storeUrl: string | null; onCopyStoreLink: () => void;
-  unitCost: number; unitAsk: number; loadPrice: number; marginStr: string; profit: number;
+  unitCost: number; unitAsk: number; marginStr: string; profit: number;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [imgErr, setImgErr] = useState(false);
@@ -917,7 +870,6 @@ function LotCard({
   const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
   // Custom-priced lots show a free-text price verbatim (no per-unit / profit math).
   const isCustom = lot.price_type === "custom";
-  const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
   const stale = isStale(lot);
   const sold = lot.status === "sold";
   const archived = lot.status === "archived";
@@ -927,9 +879,11 @@ function LotCard({
   // A per-pallet lot was quoted by the pallet, so the pallet price is what gets shown
   // under the load total — with the per-unit price at that pallet size beside it.
   const cardDet: LotDetails = (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails) ?? {}; } catch { return {} as LotDetails; } })();
-  const palletLine = palletPriceLine(cardDet);
-  // Null when nothing prices this lot — the row is then omitted rather than reading $0.00.
-  const unitLine = unitPriceLine(lot, cardDet);
+  // Brand / style tags (R-310) — a separate strip from the category, which stays on the
+  // meta line above. Capped at 3 with a +N so a heavily tagged lot cannot stack the card.
+  const cardTags = lotTags(lot.details_json);
+  // R-311: one block — per-unit headline, minimum order, whole-lot total, pallet price.
+  const price = lotPriceBlock(lot, cardDet);
   const prevTotal = prevAsk != null && prevAsk > lot.asking_price ? (lot.price_type === "per_unit" ? prevAsk * lot.quantity : prevAsk) : null;
   // Stagger cap 8, +20ms each — enter feedback, not decoration.
   const delay = `${Math.min(index, 8) * 20}ms`;
@@ -1018,35 +972,41 @@ function LotCard({
         {/* Always render (reserve one line) so the price line below sits at the same height on every card. */}
         <p className="text-[11px] text-muted truncate mt-0.5 min-h-[15px]">{[lot.category, lot.supplier, lot.location].filter(Boolean).join(" · ")}</p>
 
-        {/* Money block — load price is the headline, per-unit muted under it,
-            profit a discreet internal line (hidden when cost is unset).
-            Custom-priced lots show their free text verbatim, no per-unit / profit. */}
+        {/* Money block (R-311) — the per-unit price is the headline, the minimum order
+            sits under it and the whole-lot total under that. A lot with one flat rate
+            keeps that figure up top and names what it buys; a custom-priced lot shows its
+            free text verbatim. Profit stays a discreet internal line. */}
         <div className={`mt-3 ${sold ? "opacity-90" : ""}`}>
-          {isCustom ? (
-            <div className={`text-[19px] font-semibold leading-snug line-clamp-2 ${sold ? "text-muted" : "text-ink"}`}>{priceText || "—"}</div>
-          ) : (
-            <>
-              <div className="flex items-center gap-1.5">
-                <div className={`text-[19px] font-semibold tabular-nums leading-none ${sold ? "text-muted" : loadPrice > 0 ? "text-ink" : "text-muted"}`}>{headlinePrice(lot, cardDet, loadPrice)}</div>
-                {prevTotal != null && !sold && !archived && (
-                  <span className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded-full bg-success-bg text-success-ink">Reduced</span>
-                )}
-              </div>
-              {prevTotal != null ? (
-                <div className="text-[11px] text-muted tabular-nums mt-1">
-                  <span className="line-through">{fmtAmount(prevTotal)}</span> · {palletLine || unitLine}
-                </div>
-              ) : unitLine ? (
-                <div className="text-[11px] text-muted tabular-nums mt-1">{palletLine || unitLine}</div>
-              ) : null}
-              {unitCost > 0 && (
-                <div className="text-[11px] text-muted tabular-nums mt-1.5">
-                  Profit {fmtAmount(profit)} · {marginStr}
-                </div>
-              )}
-            </>
+          <div className="flex items-baseline gap-x-1.5 gap-y-0.5 flex-wrap">
+            <div className={`text-[19px] font-semibold ${isCustom ? "leading-snug line-clamp-2" : "tabular-nums leading-none"} ${sold || !price.priced ? "text-muted" : "text-ink"}`}>{price.headline}</div>
+            {price.unit && <span className="text-[10.5px] text-muted">{price.unit}</span>}
+            {prevTotal != null && !sold && !archived && (
+              <span className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded-full bg-success-bg text-success-ink">Reduced</span>
+            )}
+          </div>
+          {price.moq && <div className="text-[11px] text-muted tabular-nums mt-1">{price.moq}</div>}
+          {(prevTotal != null || price.total || price.pallet) && (
+            <div className="text-[11px] text-muted tabular-nums mt-1 truncate">
+              {prevTotal != null && <span className="line-through">{fmtAmount(prevTotal)}</span>}
+              {prevTotal != null && (price.total || price.pallet) ? " · " : ""}
+              {[price.total, price.pallet].filter(Boolean).join(" · ")}
+            </div>
+          )}
+          {unitCost > 0 && (
+            <div className="text-[11px] text-muted tabular-nums mt-1.5">
+              Profit {fmtAmount(profit)} · {marginStr}
+            </div>
           )}
         </div>
+
+        {cardTags.length > 0 && (
+          <div className="flex items-center gap-1 mt-2.5 flex-nowrap overflow-hidden">
+            {cardTags.slice(0, 3).map((t) => (
+              <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-surface-3 text-ink-2 border border-line whitespace-nowrap flex-shrink-0">{t}</span>
+            ))}
+            {cardTags.length > 3 && <span className="text-[10px] text-muted whitespace-nowrap flex-shrink-0" title={cardTags.slice(3).join(" · ")}>+{cardTags.length - 3}</span>}
+          </div>
+)}
 
         {/* Spacer — pushes the toggles + actions to the bottom so they line up across every
             card no matter how long the name / details / price run above them. */}
@@ -1347,41 +1307,77 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
   );
 }
 
-// Pick one or more categories: shows current picks as removable chips, and a type-to-add
-// box that both filters existing categories and offers to create a new one.
-function CategoryMultiSelect({ value, onChange, options }: { value: string[]; onChange: (v: string[]) => void; options: string[] }) {
+// Pick one or more of something: current picks show as removable chips, and the menu below
+// lists EVERY option with a checkmark on the ones already picked. Used for a lot's
+// categories and, since R-310, for its brand/style tags — two separate vocabularies, one
+// control, so the two can never behave differently.
+//
+// R-309. Jack: clicking a category "clears the list", and "sometimes the auto correct
+// blocks the answer". Three causes, all fixed here — the menu used to hide anything
+// already picked and cap itself at 8 (so a click emptied the list under the cursor), and
+// the input carried no autocomplete/autocorrect attributes, so the OS suggestion bubble
+// sat on top of the menu. Clicking a row now toggles it and the menu stays put.
+function ChipMultiSelect({ value, onChange, options, placeholder, createLabel = "Create", suggestions = [], toggle: toggleFn = toggleCategory }: {
+  value: string[]; onChange: (v: string[]) => void; options: string[];
+  placeholder?: string; createLabel?: string;
+  /** Auto-detected picks offered as one-click chips under the field (R-310). */
+  suggestions?: string[];
+  /** How a click adds or removes one — tags collapse inner whitespace, categories don't. */
+  toggle?: (list: string[], v: string) => string[];
+}) {
   const [draft, setDraft] = useState("");
   const [open, setOpen] = useState(false);
-  const add = (c: string) => {
-    const v = c.trim();
-    setDraft("");
-    if (!v || value.some((x) => x.toLowerCase() === v.toLowerCase())) return;
-    onChange([...value, v]);
-  };
-  const remove = (c: string) => onChange(value.filter((x) => x !== c));
-  const matches = options.filter((o) => o && !value.some((v) => v.toLowerCase() === o.toLowerCase()) && o.toLowerCase().includes(draft.toLowerCase())).slice(0, 8);
-  const canCreate = draft.trim() && !options.some((o) => o.toLowerCase() === draft.trim().toLowerCase()) && !value.some((v) => v.toLowerCase() === draft.trim().toLowerCase());
+  const { list, canCreate } = categoryMenu(options, value, draft);
+  // Clearing the draft on a pick is what brings the whole list back, rather than leaving
+  // it filtered to whatever was typed to find the last one.
+  const toggle = (c: string) => { setDraft(""); onChange(toggleFn(value, c)); };
+  const remove = (c: string) => onChange(toggleFn(value, c));
   return (
     <div className="relative">
-      <div className="flex flex-wrap items-center gap-1.5 min-h-9 border border-line rounded-lg px-2 py-1.5 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40 transition-colors">
+      <div className="flex flex-wrap items-center gap-1.5 min-h-9 border border-line rounded-lg pl-2 pr-1 py-1.5 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40 transition-colors">
         {value.map((c) => (
           <span key={c} className="inline-flex items-center gap-1 pl-2.5 pr-1 h-[26px] rounded-full bg-accent/10 text-accent text-[12px] font-medium">
             {c}<button type="button" onClick={() => remove(c)} className="w-[18px] h-[18px] flex items-center justify-center rounded-full hover:bg-accent/20"><X size={10} /></button>
           </span>
         ))}
         <input className="flex-1 min-w-[110px] h-[26px] bg-transparent text-[13px] focus:outline-none"
-          value={draft} placeholder={value.length ? "Add another…" : "Type or pick categories"}
+          value={draft} placeholder={value.length ? "Add another…" : placeholder}
+          autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
           onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)}
           onChange={(e) => { setDraft(e.target.value); setOpen(true); }}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(draft); } if (e.key === "Backspace" && !draft && value.length) remove(value[value.length - 1]); }} />
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); toggle(draft); }
+            else if (e.key === "Escape") { e.preventDefault(); setOpen(false); }
+            else if (e.key === "Backspace" && !draft && value.length) remove(value[value.length - 1]);
+          }} />
+        <button type="button" aria-label="Show all" onMouseDown={(e) => e.preventDefault()} onClick={() => setOpen((o) => !o)}
+          className="w-6 h-6 flex items-center justify-center rounded text-muted hover:text-ink-2 shrink-0"><ChevronDown size={14} /></button>
       </div>
-      {open && (canCreate || matches.length > 0) && (
-        <div className="absolute left-0 right-0 mt-1 bg-surface border border-line rounded-lg shadow-lg z-[70] max-h-56 overflow-y-auto py-1">
+      {open && (canCreate || list.length > 0) && (
+        <div className="absolute left-0 right-0 mt-1 bg-surface border border-line rounded-lg shadow-lg z-[70] max-h-64 overflow-y-auto py-1">
           {canCreate && (
-            <button type="button" onMouseDown={(e) => { e.preventDefault(); add(draft); }} className="w-full text-left px-3 py-2 text-[13px] text-accent hover:bg-surface-2">Create “{draft.trim()}”</button>
+            <button type="button" onMouseDown={(e) => { e.preventDefault(); toggle(draft); }} className="w-full text-left px-3 py-2 text-[13px] text-accent hover:bg-surface-2">{createLabel} “{draft.trim()}”</button>
           )}
-          {matches.map((o) => (
-            <button key={o} type="button" onMouseDown={(e) => { e.preventDefault(); add(o); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2">{o}</button>
+          {list.map((o) => {
+            const on = isPicked(value, o);
+            return (
+              <button key={o} type="button" onMouseDown={(e) => { e.preventDefault(); toggle(o); }}
+                className={`w-full flex items-center gap-2 text-left px-3 py-2 text-[13px] hover:bg-surface-2 ${on ? "text-accent font-medium" : "text-ink-2"}`}>
+                <span className={`w-[15px] h-[15px] rounded-[4px] flex items-center justify-center shrink-0 ring-1 ${on ? "bg-accent text-on-accent ring-accent" : "ring-line"}`}>{on && <Check size={10} strokeWidth={3} />}</span>
+                <span className="truncate">{o}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {suggestions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+          <span className="text-[10.5px] text-muted">Detected</span>
+          {suggestions.map((s) => (
+            <button key={s} type="button" onClick={() => onChange(toggleFn(value, s))}
+              className="inline-flex items-center gap-1 h-[24px] pl-1.5 pr-2 rounded-full border border-line text-[11.5px] text-ink-2 hover:border-accent hover:text-accent transition-colors">
+              <Plus size={10} />{s}
+            </button>
           ))}
         </div>
       )}
@@ -1547,6 +1543,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     const list = details0.categories && details0.categories.length ? details0.categories : (category ? [category] : []);
     return Array.from(new Set(list.map((c) => c.trim()).filter(Boolean)));
   });
+  // Brand / style tags (R-310). A separate list from the categories above, on purpose —
+  // categories are buyer segments and reach the homepage; tags only filter. See lib/tags.ts.
+  const [tags, setTags] = useState<string[]>(() => dedupeTags(details0.tags));
   const [condition, setCondition] = useState<string>(details0.condition ?? (prefill as any)?.condition ?? "");
   const [pallets, setPallets] = useState<number>(details0.pallets ?? 0);
   // Whether the quantity box holds a per-pallet figure or the whole load. The lot's
@@ -1586,6 +1585,17 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     if (!clean.length || clean.some((vs) => vs.length === 0)) return [];
     return clean.reduce<string[][]>((acc, vals) => acc.flatMap((combo) => vals.map((v) => [...combo, v])), [[]]);
   })();
+  // Every tag already on another lot — the vocabulary Jack builds by tagging, which is the
+  // one that gets good. It is both the menu and the first thing detection matches against,
+  // so his own spelling always wins over the seed brand list.
+  const knownTags = useMemo(
+    () => dedupeTags(lots.flatMap((l) => lotTags(l.details_json))).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
+    [lots],
+  );
+  // Brands and styles found in what has been typed so far, offered as one-click chips.
+  // Variant option VALUES are included because a "Brand" option is literally a brand list.
+  const detectedTags = suggestTags([name, desc, ...options.flatMap((o) => o.values)].join(" · "), knownTags)
+    .filter((t) => !isTagged(tags, t));
   const sameVals = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
   const variantFor = (combo: string[]) => variants.find((v) => sameVals(v.values, combo));
   // When the lot is split into variants, its total quantity IS the sum of the splits.
@@ -1693,7 +1703,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     supplier, location, notes, sentWa, sentEmail,
     photos: photos.length, pallets, msrp, qtyApprox, tiers: JSON.stringify(tiers), sizeRun: JSON.stringify(sizeRun),
     variants: JSON.stringify({ options, variants }),
-    cats: JSON.stringify(cats), condition, qtyBasis, perPallet,
+    cats: JSON.stringify(cats), tags: JSON.stringify(tags), condition, qtyBasis, perPallet,
   }).current;
   const isDirty = () =>
     name !== initialSnapshot.name || desc !== initialSnapshot.desc || category !== initialSnapshot.category ||
@@ -1706,7 +1716,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     qtyApprox !== initialSnapshot.qtyApprox || JSON.stringify(tiers) !== initialSnapshot.tiers ||
     JSON.stringify(sizeRun) !== initialSnapshot.sizeRun || !!newManifestFile ||
     JSON.stringify({ options, variants }) !== initialSnapshot.variants ||
-    JSON.stringify(cats) !== initialSnapshot.cats || condition !== initialSnapshot.condition;
+    JSON.stringify(cats) !== initialSnapshot.cats || JSON.stringify(tags) !== initialSnapshot.tags ||
+    condition !== initialSnapshot.condition;
   const requestClose = () => {
     if (isDirty() && !confirm("Discard this lot? Your changes will be lost.")) return;
     onClose();
@@ -1759,6 +1770,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // lands in `quantity` is always the total unit count.
       const effQty = hasVariants && variantsCarryQty ? variantQtyTotal : totalUnits;
       const cleanCats = Array.from(new Set(cats.map((c) => c.trim()).filter(Boolean)));
+      const cleanTags = dedupeTags(tags);
       const primaryCat = cleanCats[0] || category.trim() || "";
       const conditionClean = condition.trim();
       // The ladder, cleaned: rows need a quantity, a price is optional, and the MOQ is
@@ -1790,6 +1802,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       if (openToOffers) detailsObj.open_to_offers = true;
       if (hasVariants) { detailsObj.options = cleanOptions; detailsObj.variants = cleanVariants; }
       if (cleanCats.length) detailsObj.categories = cleanCats;
+      if (cleanTags.length) detailsObj.tags = cleanTags;
       if (conditionClean) detailsObj.condition = conditionClean;
       // Price-reduction: when editing and the asking price DROPS, remember the prior (higher)
       // price so the card/detail/storefront can show "reduced from X". Keep the original
@@ -1808,7 +1821,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // Preserve a manifest summary seeded from the analyzer (or a prior save) — the save
       // rebuilds detailsObj from fields, so it would otherwise be dropped.
       if (details0.manifest) detailsObj.manifest = details0.manifest;
-      const hasDetails = !!pallets || !!msrp || !!moqOut || cleanTiers.length > 0 || qtyApprox || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || !!conditionClean || showPrev || perPalletPriced;
+      const hasDetails = !!pallets || !!msrp || !!moqOut || cleanTiers.length > 0 || qtyApprox || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || cleanTags.length > 0 || !!conditionClean || showPrev || perPalletPriced;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       // Canonicalise on the way out. LocationField already emits the right shape,
       // but a PREFILLED lot (paste-a-load) can reach save without the field ever
@@ -1877,8 +1890,14 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Categories</label>
-              <CategoryMultiSelect value={cats} onChange={setCats} options={categories} />
+              <ChipMultiSelect value={cats} onChange={setCats} options={categories} placeholder="Type or pick categories" />
               <p className="text-[10.5px] text-muted mt-1">Pick one or more — type to add a new category. The first is used for buyer segments.</p>
+            </div>
+            <div>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Tags</label>
+              <ChipMultiSelect value={tags} onChange={setTags} options={knownTags} toggle={toggleTag}
+                placeholder="Brands and styles — Nike, Air Max, streetwear" createLabel="Add" suggestions={detectedTags} />
+              <p className="text-[10.5px] text-muted mt-1">Brands and styles, so buyers can filter the storefront and the website by them. Not a buyer segment — that is what categories are for.</p>
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Description</label>
@@ -2319,13 +2338,14 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
   const marginPct = uCost > 0 ? ((uAsk - uCost) / uCost) * 100 : 0;
   const marginStr = uCost > 0 ? `${marginPct.toFixed(0)}%` : "—";
   const totalCostAll = lot.price_type === "per_unit" ? lot.total_cost * lot.quantity : lot.total_cost;
-  const totalAskAll = lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
   // Custom-priced lots show a free-text price verbatim (no per-unit / profit math).
   const isCustom = lot.price_type === "custom";
   const det: LotDetails = (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails) ?? {}; } catch { return {} as LotDetails; } })();
-  const priceText = isCustom ? (det.price_text || "") : "";
+  // R-311: the per-unit headline, the minimum order, the whole-lot total, the pallet price.
+  const price = lotPriceBlock(lot, det);
   // All categories (multi) + condition + variant breakdown for display.
   const allCats = Array.from(new Set([...(det.categories ?? []), ...(lot.category ? [lot.category] : [])].map((c) => c.trim()).filter(Boolean)));
+  const tagList = lotTags(lot.details_json);
   const condition = (det.condition || "").trim();
   const variantRows = (det.variants ?? []).filter((v) => v && (v.qty > 0 || (v.price != null && v.price > 0)));
   const tierRows = priceTiers(det);
@@ -2422,41 +2442,31 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
             </button>
           </div>
 
-          {/* Financials — load price is the headline, per-unit under it.
-              Custom-priced lots show the free text verbatim (no per-unit / profit). */}
+          {/* Financials (R-311) — one hierarchy, the same on the storefront and the BJM
+              site: the per-unit price is the headline, the minimum order sits under it,
+              then the whole-lot total. A flat-rate load headlines that figure instead and
+              says what it buys; a custom-priced lot shows its free text verbatim. */}
           <div className="bg-surface-2 rounded-xl px-4 py-3.5">
-            {isCustom ? (
-              <>
-                <p className="text-[12px] font-medium text-muted">Price</p>
-                <p className="text-[20px] font-semibold text-ink leading-snug mt-1 break-words">{priceText || "—"}</p>
-                {/* Cost may still show internally; no profit/margin without a numeric ask. */}
-                {uCost > 0 && (
-                  <div className="mt-3 pt-3 border-t border-line text-[12px] text-muted tabular-nums">
-                    Your cost {fmtAmount(totalCostAll)}
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                <p className="text-[12px] font-medium text-muted">Load price</p>
-                <div className="flex items-center gap-2.5 mt-1">
-                  <p className={`text-[26px] font-semibold tabular-nums leading-none ${totalAskAll > 0 ? "text-ink" : "text-muted"}`}>{headlinePrice(lot, det, totalAskAll)}</p>
-                  {prevTotalAll != null && (
-                    <span className="flex items-center gap-1.5 text-[11px]">
-                      <span className="text-muted line-through tabular-nums">{fmtAmount(prevTotalAll)}</span>
-                      <span className="font-semibold px-1.5 py-0.5 rounded-full bg-success-bg text-success-ink">Reduced</span>
-                    </span>
-                  )}
-                </div>
-                <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{[palletPriceLine(det) || unitPriceLine(lot, det), unitsLabel(lot, det)].filter(Boolean).join(" · ")}</p>
-                {/* Internal margin — discreet, our-eyes-only. Hidden if cost is unset. */}
-                {uCost > 0 && (
-                  <div className="mt-3 pt-3 border-t border-line flex items-center justify-between text-[12px] text-muted tabular-nums">
-                    <span>Your cost {fmtAmount(totalCostAll)} · {fmtAmount(uCost)} / unit</span>
-                    <span>Profit {fmtAmount(profit)} · {marginStr}</span>
-                  </div>
-                )}
-              </>
+            <p className="text-[12px] font-medium text-muted">Price</p>
+            <div className="flex items-baseline gap-x-2.5 gap-y-1 mt-1 flex-wrap">
+              <p className={`text-[26px] font-semibold ${isCustom ? "text-[20px] leading-snug break-words" : "tabular-nums leading-none"} ${price.priced ? "text-ink" : "text-muted"}`}>{price.headline}</p>
+              {price.unit && <span className="text-[12.5px] text-muted">{price.unit}</span>}
+              {prevTotalAll != null && (
+                <span className="flex items-center gap-1.5 text-[11px]">
+                  <span className="text-muted line-through tabular-nums">{fmtAmount(prevTotalAll)}</span>
+                  <span className="font-semibold px-1.5 py-0.5 rounded-full bg-success-bg text-success-ink">Reduced</span>
+                </span>
+              )}
+            </div>
+            {price.moq && <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{price.moq}</p>}
+            <p className="text-[12.5px] text-muted tabular-nums mt-1">{[price.total, price.pallet, unitsLabel(lot, det)].filter(Boolean).join(" · ")}</p>
+            {/* Internal margin — discreet, our-eyes-only. Hidden if cost is unset, and
+                without a numeric ask there is no profit or margin to state. */}
+            {uCost > 0 && (
+              <div className="mt-3 pt-3 border-t border-line flex items-center justify-between gap-3 text-[12px] text-muted tabular-nums">
+                <span>Your cost {fmtAmount(totalCostAll)}{isCustom ? "" : ` · ${fmtAmount(uCost)} / unit`}</span>
+                {!isCustom && <span>Profit {fmtAmount(profit)} · {marginStr}</span>}
+              </div>
             )}
           </div>
 
@@ -2468,6 +2478,18 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
             <Row label="Location" value={lot.location || "—"} />
             <Row label="Notes" value={lot.notes || "—"} />
           </div>
+          {/* Tags (R-310) — outlined, not accent-filled, so they never read as categories.
+              Categories sit in the header strip above; these only drive filtering. */}
+          {tagList.length > 0 && (
+            <div>
+              <p className="text-[12.5px] font-medium text-muted mb-1">Tags</p>
+              <div className="flex flex-wrap gap-1.5">
+                {tagList.map((t) => (
+                  <span key={t} className="text-[11.5px] px-2 py-0.5 rounded-full bg-surface-3 text-ink-2 border border-line">{t}</span>
+                ))}
+              </div>
+            </div>
+          )}
           {lot.description && (
             <div>
               <p className="text-[12.5px] font-medium text-muted mb-0.5">Description</p>

@@ -1686,6 +1686,11 @@ export interface LotDetails {
   // primary stays in the column for existing segment/newsletter matching; the full set
   // lives here and shows on the lot + storefront.
   categories?: string[] | null;
+  // Brand / style tags (R-310) — a SECOND namespace, never categories. Categories are
+  // buyer segments: they pick the newsletter audience and are published verbatim as
+  // tiles on the BJM homepage, so "Nike" as a category would blast the wrong segment and
+  // grow a brand tile. Tags only filter — on the storefront and on bjmdistributions.com.
+  tags?: string[] | null;
   // Free-form / picked condition of the goods (New, Customer returns, Shelf pulls…).
   condition?: string | null;
   // The prior asking price, stamped when the price is DROPPED — powers the "reduced from

@@ -124,6 +124,246 @@
         "--strictPort"
       ],
       "port": 5245
+    },
+    {
+      "name": "www-harness-r255",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8097",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/47659767-b68d-4024-8fb5-85c425756d75/scratchpad/www-r255"
+      ],
+      "port": 8097
+    },
+    {
+      "name": "www-harness-r263",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8096",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/1f156b27-9b50-4b2e-8645-0d6bbc404aa0/scratchpad/www-r263"
+      ],
+      "port": 8096
+    },
+    {
+      "name": "desktop-harness-r271",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/BUSINE~1/CLAUDE~1/WORKTR~1/R271-S~1",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5271",
+        "--strictPort"
+      ],
+      "port": 5271
+    },
+    {
+      "name": "desktop-harness-r282",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/BUSINESS-APP-wt-r282",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5282",
+        "--strictPort"
+      ],
+      "port": 5282
+    },
+    {
+      "name": "www-r282",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8298",
+        "--directory",
+        "C:/Users/Jack/Desktop/clienthub-api-wt-r282/www"
+      ],
+      "port": 8298
+    },
+    {
+      "name": "desktop-harness-r287",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5287",
+        "--strictPort"
+      ],
+      "port": 5287
+    },
+    {
+      "name": "r282-server",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/4a5900a9-bb7f-4e06-9a0d-efd28cabd7d2/scratchpad/run_r282.py"
+      ],
+      "port": 8282
+    },
+    {
+      "name": "desktop-harness-r288",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5288",
+        "--strictPort"
+      ],
+      "port": 5288
+    },
+    {
+      "name": "r297-phone",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8297",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/87f35b25-d718-4107-babf-48703ae699be/scratchpad/phone"
+      ],
+      "port": 8297
+    },
+    {
+      "name": "r292-phone",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8292",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/829ced49-8d85-4f07-9b93-515e4ba59d69/scratchpad/r292-harness"
+      ],
+      "port": 8292
+    },
+    {
+      "name": "r299-eclipse",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8299",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/060ce9c1-1774-47da-821a-02df3c98109c/scratchpad/eclipse-demo"
+      ],
+      "port": 8299
+    },
+    {
+      "name": "www-r299",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8399",
+        "--directory",
+        "C:/Users/Jack/Desktop/clienthub-api/www"
+      ],
+      "port": 8399
+    },
+    {
+      "name": "desktop-harness-r302",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5302",
+        "--strictPort"
+      ],
+      "port": 5302
+    },
+    {
+      "name": "r302-phone",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8302",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/41501a01-44d5-4ca8-9103-7544a82b8918/scratchpad/phone"
+      ],
+      "port": 8302
+    },
+    {
+      "name": "desktop-harness-r308",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5308",
+        "--strictPort"
+      ],
+      "port": 5308
+    },
+    {
+      "name": "desktop-harness-r309",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5309",
+        "--strictPort"
+      ],
+      "port": 5309
+    },
+    {
+      "name": "shop-r311",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8311",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/851d9cf0-d538-4cb7-950e-a3b90642f4d9/scratchpad/shop"
+      ],
+      "port": 8311
+    },
+    {
+      "name": "bjm-web-r311",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/Websites/bjmdistributions",
+        "run",
+        "dev",
+        "--",
+        "-p",
+        "3111"
+      ],
+      "port": 3111,
+      "env": {
+        "ECLIPTR_STOREFRONT_URL": "http://localhost:8311/feed.json"
+      }
+    },
+    {
+      "name": "phone-r310",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8310",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/851d9cf0-d538-4cb7-950e-a3b90642f4d9/scratchpad/phone"
+      ],
+      "port": 8310
     }
   ]
 }
