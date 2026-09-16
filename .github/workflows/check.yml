@@ -153,13 +153,13 @@ jobs:
         working-directory: src-tauri
         run: cargo test --bin clienthub
 
-  # A tag is not a release. Six tags in this repo's history built nothing and nobody
+  # A tag is not a release. Seven tags in this repo's history built nothing and nobody
   # noticed until someone went looking: v0.12.1, v0.12.3, v0.14.5, v0.15.84 (no run or a
-  # failed one), v0.15.131 (the 2026-08-06 Actions outage) and v0.16.72 (the release job
-  # lost `contents: write` and died at create-release after a clean 14-minute build).
-  # Each one left a version number that exists in git, is quoted in commit messages and
-  # in the vault, and that no install can ever receive — gotchas §12, "written is not
-  # shipped", and §52.
+  # failed one), v0.15.131 (the 2026-08-06 Actions outage), v0.16.72 (the release job
+  # lost `contents: write` and died at create-release after a clean 14-minute build) and
+  # v0.16.81 (see below). Each one left a version number that exists in git, is quoted in
+  # commit messages and in the vault, and that no install can ever receive — gotchas §12,
+  # "written is not shipped", and §52.
   #
   # Ratchet, same shape as the hex guard above: the six are allowlisted so main is green
   # today, and only a NEW dead tag fails. A tag whose build is still running is skipped,
@@ -185,7 +185,14 @@ jobs:
           set -euo pipefail
           # Known dead, left in history on purpose: this project never deletes a tag.
           # Do not add a line here to silence a new one — find out why it shipped nothing.
-          allow="v0.12.1 v0.12.3 v0.14.5 v0.15.84 v0.15.131 v0.16.72"
+          # v0.16.81 (2026-09-16, R-318): its commit registered `analytics_reconciliation`
+          # in main.rs's invoke_handler while the command itself was still uncommitted in
+          # another session's working copy, so `cargo check` failed on both build targets
+          # and the release job never ran. It is dead ON PURPOSE and must never be
+          # re-run: v0.16.82 published 19 minutes later and carries the same R-318 code,
+          # so publishing .81 now would make it the newest release and point latest.json
+          # — and every installed updater — at the OLDER build.
+          allow="v0.12.1 v0.12.3 v0.14.5 v0.15.84 v0.15.131 v0.16.72 v0.16.81"
           gh api --paginate "repos/$R/releases" --jq '.[] | select(.draft == false) | .tag_name' > published.txt
           echo "Published releases: $(wc -l < published.txt)"
           dead=""
