@@ -9,6 +9,11 @@
       trick and same rules as r312-harness.html. Renders the real DashboardView and
       AnalyticsView against invented fixtures so the true net / shipping / fee tiles
       can be seen, not guessed at. Every figure below is invented.
+
+      R-317: add `?drift` to the URL for a book that does NOT tie — a stored deal profit
+      540 above its own revenue − cost, an unexplained residual in the bank block, and
+      two orphaned allocations. Without it the book ties at every subtotal. Both states
+      have to be looked at; only one of them is the interesting one.
     -->
     <script>
       window.__TAURI_INTERNALS__ = {
@@ -19,6 +24,21 @@
         metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
         plugins: {},
       };
+    </script>
+    <!-- DEV ONLY: surface a render error on the page itself. A blank harness with a
+         silent console is the failure mode that wastes the most time here. -->
+    <script data-es-harness-trap>
+      // Writes into its own node, never #root — React owns that subtree and clobbering
+      // it turns the first error into a confusing removeChild cascade.
+      window.__esShow = (m) => {
+        let n = document.getElementById("es-err");
+        if (!n) { n = document.createElement("pre"); n.id = "es-err";
+          n.style.cssText = "padding:16px;white-space:pre-wrap;font:12px monospace;color:#b00";
+          document.body.insertBefore(n, document.body.firstChild); }
+        n.textContent += m + String.fromCharCode(10,10);
+      };
+      window.addEventListener("error", (e) => window.__esShow(String((e.error && e.error.stack) || e.message)));
+      window.addEventListener("unhandledrejection", (e) => window.__esShow("rejection: " + String((e.reason && e.reason.stack) || e.reason)));
     </script>
   </head>
   <body>

@@ -11295,6 +11295,22 @@ const DF_EFF_PROFIT_SQL: &str =
               AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
           ) x WHERE x.dfid = df.id),0))";
 
+/// R-317: the refund half of `DF_EFF_PROFIT_SQL` on its own, so the reconciliation
+/// bridge can read its Refunds row straight from the refund tables. Deriving it as
+/// `SUM(df.net_profit) − SUM(DF_EFF_PROFIT_SQL)` would force the drift on every subtotal
+/// below it to zero by construction — a bridge that can only ever agree with itself
+/// proves nothing, which is the whole point of that screen. `df` must be in scope.
+/// `analytics_bridge_tests::refund_expression_matches_the_profit_constant` asserts this
+/// stays character-identical to the COALESCE inside `DF_EFF_PROFIT_SQL`, so the two
+/// cannot drift apart when one is edited.
+const DF_REFUNDS_SQL: &str =
+    "COALESCE((SELECT SUM(x.amt) FROM ( \
+            SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
+            UNION ALL \
+            SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out' \
+              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
+          ) x WHERE x.dfid = df.id),0)";
+
 /// One deal flow per invoice (`MIN(d2.id)`), the same survivor rule `SUPPLIER_STATS_SQL`
 /// uses: duplicate 'complete' rows would double every SUM taken over `df`. `df` must be
 /// in scope.
@@ -12187,6 +12203,61 @@ pub async fn get_payables_aging() -> Result<Value, String> {
     }))
 }
 
+/// Margin bands for the Analytics margin distribution (R-316). Ordinal buckets on the
+/// deal population, so a fat-margin tail stays visible instead of being flattened into
+/// one blended average. Lower bound inclusive, upper bound exclusive; a deal with no
+/// revenue has no margin and is never bucketed.
+const MARGIN_BANDS: [(&str, f64, f64); 6] = [
+    ("Loss",    f64::NEG_INFINITY,  0.0),
+    ("0–10%",    0.0, 10.0),
+    ("10–20%",  10.0, 20.0),
+    ("20–30%",  20.0, 30.0),
+    ("30–40%",  30.0, 40.0),
+    ("40%+",    40.0, f64::INFINITY),
+];
+
+fn margin_band_index(margin_pct: f64) -> usize {
+    MARGIN_BANDS.iter().position(|(_, lo, hi)| margin_pct >= *lo && margin_pct < *hi)
+        .unwrap_or(MARGIN_BANDS.len() - 1)
+}
+
+/// Share of the total held by the first `n` entries of an already-descending list, as a
+/// percentage. A concentration read: "the top client is 41% of revenue" is a risk
+/// statement, not a leaderboard. Zero or negative totals have no meaningful share.
+fn top_share(sorted_desc: &[f64], n: usize) -> f64 {
+    let total: f64 = sorted_desc.iter().sum();
+    if total <= 0.0 { return 0.0; }
+    sorted_desc.iter().take(n).sum::<f64>() / total * 100.0
+}
+
+/// Median of a sample; even samples average the two middle values. Deal velocity uses a
+/// median rather than a mean because one deal that sat for a year drags a mean off the
+/// number everything else actually does.
+fn median_f64(v: &mut [f64]) -> Option<f64> {
+    if v.is_empty() { return None; }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = v.len();
+    Some(if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 })
+}
+
+/// Straight-line projection of an in-progress month from its own pace so far. Drawn
+/// dashed on the chart so it is never mistaken for a closed month.
+fn project_month(actual: f64, days_elapsed: u32, days_in_month: u32) -> f64 {
+    if days_elapsed == 0 { return 0.0; }
+    actual / days_elapsed as f64 * days_in_month as f64
+}
+
+/// Days in `date`'s calendar month.
+fn days_in_month(date: chrono::NaiveDate) -> u32 {
+    use chrono::Datelike;
+    let (y, m) = (date.year(), date.month());
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    chrono::NaiveDate::from_ymd_opt(ny, nm, 1)
+        .and_then(|first_next| first_next.pred_opt())
+        .map(|d| d.day())
+        .unwrap_or(30)
+}
+
 /// Return analytics data filtered to [start_date, end_date] (YYYY-MM-DD).
 /// Empty strings mean "no bound" (all-time).
 #[tauri::command]
@@ -12247,13 +12318,15 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
     let monthly: Vec<Value> = {
         let mut stmt = conn.prepare(
             &format!("SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), \
-                             COALESCE(SUM(df.total_cost),0), COALESCE(SUM({NP}),0) {df} GROUP BY m ORDER BY m")
+                             COALESCE(SUM(df.total_cost),0), COALESCE(SUM({NP}),0), \
+                             COUNT(DISTINCT df.invoice_id) {df} GROUP BY m ORDER BY m")
         ).map_err(|e| e.to_string())?;
         let profit_rows = stmt.query_map(p, |r| Ok((
             r.get::<_,String>(0)?, r.get::<_,f64>(1)?, r.get::<_,f64>(2)?, r.get::<_,f64>(3)?,
+            r.get::<_,i64>(4)?,
         ))).map_err(|e| e.to_string())?;
-        let profit_by_month: std::collections::BTreeMap<String, (f64, f64, f64)> = profit_rows
-            .filter_map(|r| r.ok()).map(|(m, rev, cost, profit)| (m, (rev, cost, profit))).collect();
+        let profit_by_month: std::collections::BTreeMap<String, (f64, f64, f64, i64)> = profit_rows
+            .filter_map(|r| r.ok()).map(|(m, rev, cost, profit, n)| (m, (rev, cost, profit, n))).collect();
 
         // Months with overhead but no completed deal must still appear (revenue/cost/
         // profit 0), same merge rule as `dashboard_stats`'s monthly_profit.
@@ -12262,11 +12335,17 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         months.sort();
         months.dedup();
         months.into_iter().map(|m| {
-            let (revenue, cost, profit) = profit_by_month.get(&m).copied().unwrap_or((0.0, 0.0, 0.0));
+            let (revenue, cost, profit, count) = profit_by_month.get(&m).copied().unwrap_or((0.0, 0.0, 0.0, 0));
             let (shipping, fees) = overhead_by_month.get(&m).copied().unwrap_or((0.0, 0.0));
+            // `count` and `margin_pct` are the brief's `monthly_breakdown` columns, added
+            // here so the month history reads on Analytics without a second query that
+            // could disagree with this one.
             json!({
                 "month": m, "revenue": revenue, "cost": cost, "profit": profit,
                 "shipping": shipping, "fees": fees, "true_net": profit - shipping - fees,
+                "count": count,
+                "margin_pct": if revenue > 0.0 { profit / revenue * 100.0 } else { 0.0 },
+                "overhead_pct": if revenue > 0.0 { (shipping + fees) / revenue * 100.0 } else { 0.0 },
             })
         }).collect()
     };
@@ -12287,6 +12366,271 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // ── R-316: the advanced reads. Every one of them projects off the same `df`
+    // population and the same two constants as the figures above, so nothing on this
+    // screen can disagree with the hero. ─────────────────────────────────────────────
+
+    // `df` with clients joined, for anything grouped or labelled by buyer.
+    let df_clients = df.replacen("JOIN invoices i ON i.id=df.invoice_id",
+                                 "JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id", 1);
+
+    // Overhead ratio: shipping + bank/wire fees as a share of revenue. The one number
+    // that says whether overhead is getting worse, independent of how big the month was.
+    let overhead_ratio: f64 = if total_revenue > 0.0 {
+        (total_shipping + total_fees) / total_revenue * 100.0
+    } else { 0.0 };
+
+    // Revenue concentration — a risk read. One buyer at 40% of revenue is a different
+    // business from five at 8% each, and the blended figures above cannot show it.
+    let (concentration, top_revenue_clients): (Value, Vec<Value>) = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT c.name, COALESCE(SUM(df.gross_revenue),0) AS rev, COALESCE(SUM({NP}),0) \
+             {df_clients} GROUP BY i.client_id, c.name HAVING rev > 0 ORDER BY rev DESC")
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<(String, f64, f64)> = stmt.query_map(p, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        let revs: Vec<f64> = rows.iter().map(|(_, rev, _)| *rev).collect();
+        let total: f64 = revs.iter().sum();
+        let listed: Vec<Value> = rows.iter().take(6).map(|(name, rev, profit)| json!({
+            "name": name, "revenue": rev, "profit": profit,
+            "pct": if total > 0.0 { rev / total * 100.0 } else { 0.0 },
+        })).collect();
+        (json!({
+            "client_count": revs.len(),
+            "total_revenue": total,
+            "top1_pct": top_share(&revs, 1),
+            "top3_pct": top_share(&revs, 3),
+            "top5_pct": top_share(&revs, 5),
+        }), listed)
+    };
+
+    // Supplier concentration — the same risk read on the cost side. Same supplier rule
+    // the dashboard's Top suppliers uses (a goods payment, not freight or a wire fee),
+    // narrowed to the range and put through the survivor guard.
+    let (supplier_concentration, top_suppliers_range): (Value, Vec<Value>) = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT json_extract(sp.value,'$.supplier_name') AS name, \
+                    COUNT(DISTINCT df.invoice_id) AS deals, \
+                    COALESCE(SUM(CAST(json_extract(sp.value,'$.amount') AS REAL)),0) AS paid \
+             FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id, \
+                  json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
+             WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
+               AND (?1='' OR date(df.completed_at) >= ?1) AND (?2='' OR date(df.completed_at) <= ?2) \
+               AND json_extract(sp.value,'$.supplier_name') IS NOT NULL \
+               AND COALESCE(json_extract(sp.value,'$.category'),'supplier')='supplier' \
+             GROUP BY name HAVING paid > 0 ORDER BY paid DESC",
+            one = DF_SURVIVOR_SQL)
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<(String, i64, f64)> = stmt.query_map(p, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        let spend: Vec<f64> = rows.iter().map(|(_, _, paid)| *paid).collect();
+        let total: f64 = spend.iter().sum();
+        let listed: Vec<Value> = rows.iter().take(6).map(|(name, deals, paid)| json!({
+            "name": name, "deal_count": deals, "total_paid": paid,
+            "pct": if total > 0.0 { paid / total * 100.0 } else { 0.0 },
+        })).collect();
+        (json!({
+            "supplier_count": spend.len(),
+            "total_spend": total,
+            "top1_pct": top_share(&spend, 1),
+            "top3_pct": top_share(&spend, 3),
+        }), listed)
+    };
+
+    // Repeat versus new, classified per DEAL rather than per client, so the read still
+    // means something over an unbounded range: a deal is "first" when it is that buyer's
+    // earliest live completed deal of all time (completed_at, then id — two deals closed
+    // the same day would otherwise both read as the first one).
+    let repeat_new: Value = {
+        let is_first = "df.id = (SELECT d3.id FROM deal_flows d3 JOIN invoices i3 ON i3.id=d3.invoice_id \
+             WHERE i3.client_id = i.client_id AND d3.stage='complete' AND COALESCE(d3.archived,0)=0 \
+               AND COALESCE(i3.voided,0)=0 AND COALESCE(i3.archived,0)=0 \
+             ORDER BY d3.completed_at ASC, d3.id ASC LIMIT 1)";
+        let mut stmt = conn.prepare(&format!(
+            "SELECT CASE WHEN {is_first} THEN 1 ELSE 0 END AS first_buy, \
+                    COUNT(DISTINCT i.client_id), COUNT(DISTINCT df.invoice_id), \
+                    COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM({NP}),0) \
+             {df_clients} GROUP BY first_buy")
+        ).map_err(|e| e.to_string())?;
+        let mut new_side = (0_i64, 0_i64, 0.0_f64, 0.0_f64);
+        let mut repeat_side = (0_i64, 0_i64, 0.0_f64, 0.0_f64);
+        let rows = stmt.query_map(p, |r| Ok((
+            r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, f64>(3)?, r.get::<_, f64>(4)?,
+        ))).map_err(|e| e.to_string())?;
+        for (first_buy, clients, deals, rev, profit) in rows.filter_map(|r| r.ok()) {
+            if first_buy == 1 { new_side = (clients, deals, rev, profit); }
+            else { repeat_side = (clients, deals, rev, profit); }
+        }
+        json!({
+            "new_clients": new_side.0, "new_deals": new_side.1, "new_revenue": new_side.2, "new_profit": new_side.3,
+            "repeat_clients": repeat_side.0, "repeat_deals": repeat_side.1,
+            "repeat_revenue": repeat_side.2, "repeat_profit": repeat_side.3,
+        })
+    };
+
+    // Margin distribution + deal velocity, both off one pass over the deals in range.
+    let (margin_bands, velocity): (Vec<Value>, Value) = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT df.gross_revenue, {NP}, strftime('%Y-%m', df.completed_at), \
+                    CASE WHEN COALESCE(i.issue_date,'')<>'' AND COALESCE(df.completed_at,'')<>'' \
+                         THEN julianday(date(df.completed_at)) - julianday(date(i.issue_date)) END \
+             {df}")
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<(f64, f64, String, Option<f64>)> = stmt.query_map(p, |r| Ok((
+            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?,
+        ))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+        let mut bands = vec![(0_i64, 0.0_f64, 0.0_f64); MARGIN_BANDS.len()];
+        let mut all_days: Vec<f64> = Vec::new();
+        let mut days_by_month: std::collections::BTreeMap<String, Vec<f64>> = std::collections::BTreeMap::new();
+        for (rev, profit, month, days) in rows {
+            if rev > 0.0 {
+                let b = &mut bands[margin_band_index(profit / rev * 100.0)];
+                b.0 += 1; b.1 += rev; b.2 += profit;
+            }
+            // A deal completed before its own invoice was issued is data noise, not a
+            // negative cycle time — it never enters the median.
+            if let Some(d) = days { if d >= 0.0 { all_days.push(d); days_by_month.entry(month).or_default().push(d); } }
+        }
+        let band_json = MARGIN_BANDS.iter().zip(bands.iter()).map(|((label, _, _), (deals, rev, profit))| json!({
+            "label": label, "deals": deals, "revenue": rev, "profit": profit,
+        })).collect();
+        let by_month: Vec<Value> = days_by_month.into_iter().map(|(m, mut v)| json!({
+            "month": m, "deals": v.len(), "median_days": median_f64(&mut v),
+        })).collect();
+        let measured = all_days.len();
+        (band_json, json!({
+            "median_days": median_f64(&mut all_days), "deals_measured": measured, "by_month": by_month,
+        }))
+    };
+
+    // Run rate: the in-progress calendar month projected from its own pace. Only when
+    // today actually sits inside the selected range — projecting a month the range has
+    // already closed over would be inventing a future for a finished period.
+    let run_rate: Value = {
+        let today = central_today();
+        let today_s = today.format("%Y-%m-%d").to_string();
+        let cur_month = today.format("%Y-%m").to_string();
+        let in_range = (start_date.is_empty() || start_date.as_str() <= today_s.as_str())
+            && (end_date.is_empty() || end_date.as_str() >= today_s.as_str());
+        let row = monthly.iter().find(|m| m.get("month").and_then(|v| v.as_str()) == Some(cur_month.as_str()));
+        match (in_range, row) {
+            (true, Some(m)) => {
+                use chrono::Datelike;
+                let elapsed = today.day();
+                let total_days = days_in_month(today);
+                let rev = m.get("revenue").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let prof = m.get("profit").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                json!({
+                    "month": cur_month, "days_elapsed": elapsed, "days_in_month": total_days,
+                    "revenue_so_far": rev, "profit_so_far": prof,
+                    "projected_revenue": project_month(rev, elapsed, total_days),
+                    "projected_profit": project_month(prof, elapsed, total_days),
+                })
+            }
+            _ => Value::Null,
+        }
+    };
+
+    // ── The Brief's analytics, range-scoped. These read the same `df` population as the
+    // hero, not the brief's week window, so a figure moved here cannot drift from the
+    // one beside it. Revenue here stays deal revenue (the Analytics definition) rather
+    // than the brief's paid-invoice revenue, so this screen adds up internally. ───────
+
+    let (loss_deals, loss_total): (i64, f64) = conn.query_row(
+        &format!("SELECT COUNT(*), COALESCE(SUM({NP}),0) {df} AND {NP} < 0"), p,
+        |r| Ok((r.get(0)?, r.get(1)?))
+    ).unwrap_or((0, 0.0));
+
+    let refunded_deals: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT x.dfid) FROM ( \
+            SELECT r.deal_flow_id AS dfid, r.created_at AS at FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
+            UNION ALL \
+            SELECT a.deal_flow_id, a.created_at FROM bank_allocation a WHERE a.role='refund_out' \
+              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
+          ) x WHERE (?1='' OR date(x.at) >= ?1) AND (?2='' OR date(x.at) <= ?2)",
+        p, |r| r.get(0)
+    ).unwrap_or(0);
+
+    let margin_deal = |order: &str| -> Option<Value> {
+        let sql = format!(
+            "SELECT df.id, c.name, COALESCE(NULLIF(i.number,''), c.name), df.gross_revenue, \
+                    CASE WHEN df.gross_revenue>0 THEN {NP}/df.gross_revenue*100 ELSE 0 END AS margin, {NP} \
+             {df_clients} AND df.gross_revenue > 0 ORDER BY margin {order} LIMIT 1");
+        let mut stmt = conn.prepare(&sql).ok()?;
+        stmt.query_row(p, |r| Ok(json!({
+            "deal_id": r.get::<_, String>(0)?, "client_name": r.get::<_, String>(1)?,
+            "title": r.get::<_, String>(2)?, "revenue": r.get::<_, f64>(3)?,
+            "margin_pct": r.get::<_, f64>(4)?, "net_profit": r.get::<_, f64>(5)?,
+        }))).ok()
+    };
+    let best_margin_deal = margin_deal("DESC").unwrap_or(Value::Null);
+    let worst_margin_deal = margin_deal("ASC").unwrap_or(Value::Null);
+
+    // Biggest paid invoice issued in the range — the brief's card, same definition.
+    let biggest_invoice: Value = conn.query_row(
+        "SELECT i.id, c.name, i.number, i.total FROM invoices i JOIN clients c ON c.id=i.client_id \
+         WHERE i.status='paid' AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+           AND (?1='' OR i.issue_date >= ?1) AND (?2='' OR i.issue_date <= ?2) \
+         ORDER BY i.total DESC LIMIT 1",
+        p, |r| Ok(json!({
+            "invoice_id": r.get::<_, String>(0)?, "client_name": r.get::<_, String>(1)?,
+            "number": r.get::<_, String>(2)?, "total": r.get::<_, f64>(3)?,
+        }))
+    ).unwrap_or(Value::Null);
+
+    // "What people bought", moved off the Brief (R-255's rows, R-316's home). Capped so
+    // an all-time range cannot ship thousands of rows to the UI; `deal_count` above is
+    // still the true total, and the card says when it is showing the most recent slice.
+    let completed_deals: Vec<Value> = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT df.id, df.invoice_id, i.number, c.name, df.completed_at, \
+                    i.line_items_json, df.supplier_payments_json, df.gross_revenue, {NP} \
+             {df_clients} ORDER BY df.completed_at DESC, c.name ASC LIMIT 300")
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(p, |r| {
+            let completed_at: String = r.get(4)?;
+            let line_items_json: String = r.get(5)?;
+            let supplier_payments_json: String = r.get(6)?;
+            Ok(json!({
+                "deal_flow_id": r.get::<_, String>(0)?,
+                "invoice_id": r.get::<_, String>(1)?,
+                "invoice_number": r.get::<_, String>(2)?,
+                "client_name": r.get::<_, String>(3)?,
+                "completed_on": completed_at.chars().take(10).collect::<String>(),
+                "products": brief_products(&line_items_json),
+                "suppliers": brief_suppliers(&supplier_payments_json),
+                "revenue": r.get::<_, f64>(7)?,
+                "net_profit": r.get::<_, f64>(8)?,
+            }))
+        }).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let new_clients: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM clients WHERE COALESCE(approval_status,'active')<>'rejected' \
+           AND (?1='' OR date(created_at) >= ?1) AND (?2='' OR date(created_at) <= ?2)",
+        p, |r| r.get(0)
+    ).unwrap_or(0);
+    let interactions: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM interactions WHERE (?1='' OR date(created_at) >= ?1) AND (?2='' OR date(created_at) <= ?2)",
+        p, |r| r.get(0)
+    ).unwrap_or(0);
+
+    // This month and all time, on the SAME deal population, so the range figures above
+    // have something honest to be compared against.
+    let bucket = |lo: &str, hi: &str| -> (f64, f64) {
+        conn.query_row(
+            &format!("SELECT COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM({NP}),0) {df}"),
+            rusqlite::params![lo, hi], |r| Ok((r.get(0)?, r.get(1)?))
+        ).unwrap_or((0.0, 0.0))
+    };
+    let (revenue_all_time, profit_all_time) = bucket("", "");
+    let this_month = central_today().format("%Y-%m").to_string();
+    let mw = central_month_window(&this_month);
+    let (revenue_this_month, profit_this_month) = bucket(&mw.day_lo, &inclusive_hi(&mw.day_hi));
+
     Ok(json!({
         "total_revenue": total_revenue, "total_cost": total_cost,
         "total_profit": net_profit,     "avg_margin": avg_margin,
@@ -12297,6 +12641,335 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         "total_shipping": total_shipping,
         "total_fees": total_fees,
         "true_net": true_net,
+        // R-316 additions — additive only; nothing above changed name or meaning.
+        "overhead_ratio": overhead_ratio,
+        "concentration": concentration,
+        "top_revenue_clients": top_revenue_clients,
+        "supplier_concentration": supplier_concentration,
+        "top_suppliers_range": top_suppliers_range,
+        "repeat_new": repeat_new,
+        "margin_bands": margin_bands,
+        "velocity": velocity,
+        "run_rate": run_rate,
+        "loss_deals": loss_deals,
+        "loss_total": loss_total,
+        "refunded_deals": refunded_deals,
+        "best_margin_deal": best_margin_deal,
+        "worst_margin_deal": worst_margin_deal,
+        "biggest_invoice": biggest_invoice,
+        "completed_deals": completed_deals,
+        "completed_deals_capped": deal_count > completed_deals.len() as i64,
+        "new_clients": new_clients,
+        "interactions": interactions,
+        "revenue_all_time": revenue_all_time,
+        "profit_all_time": profit_all_time,
+        "margin_all_time": if revenue_all_time > 0.0 { profit_all_time / revenue_all_time * 100.0 } else { 0.0 },
+        "revenue_this_month": revenue_this_month,
+        "profit_this_month": profit_this_month,
+        "margin_this_month": if revenue_this_month > 0.0 { profit_this_month / revenue_this_month * 100.0 } else { 0.0 },
+    }))
+}
+
+// ============================================================
+//  R-317 — Money in, money out
+// ============================================================
+//
+// Jack, 2026-09-16: "im wondering if my system can be slightly off or something.
+// something isnt adding up i think but i could be wrong."
+//
+// So this section is built to EXPOSE a gap, never to hide one. Two rules follow from
+// that and neither may be relaxed for a tidier screen:
+//
+//  * **Every subtotal is read independently from the ledger**, and is shown beside the
+//    running sum of the rows above it. `drift` is the difference. Accumulating the rows
+//    would make the bridge close by construction and it would be worth nothing.
+//  * **The bank block ends on a residual** — whatever is left after every named reason.
+//    If it is not zero the screen says so in words, rather than folding it into the
+//    nearest line.
+
+/// Cents. A float residue of 1e-11 must never render as "does not tie".
+fn to_cents(n: f64) -> f64 { (n * 100.0).round() / 100.0 }
+
+/// The seven range-scoped ledger figures the bridge is built from, each read through the
+/// same constants `get_analytics_range` uses.
+#[derive(Debug, Clone, Copy)]
+struct BridgeFigures {
+    revenue: f64,
+    cost: f64,
+    /// `SUM(df.net_profit)` — the profit STORED on each deal, read without reference to
+    /// `revenue − cost`. The two disagreeing is exactly what drift is for.
+    raw_profit: f64,
+    refunds: f64,
+    /// `SUM(DF_EFF_PROFIT_SQL)` — stored profit less refunds, again read independently.
+    net_profit: f64,
+    shipping: f64,
+    fees: f64,
+}
+
+/// The eight bridge rows. `kind` is `start` | `subtract` | `subtotal` | `total`; a
+/// subtotal also carries `running` (the sum of the rows above it) and `drift`
+/// (independent − running). Pure, so the arithmetic and the drift are unit-testable
+/// without a database.
+fn bridge_rows(f: BridgeFigures) -> Vec<Value> {
+    let row = |label: &str, hint: &str, amount: f64, kind: &str| json!({
+        "label": label, "hint": hint, "amount": to_cents(amount), "kind": kind,
+        "running": Value::Null, "drift": Value::Null,
+    });
+    let tie = |label: &str, hint: &str, amount: f64, running: f64, kind: &str| json!({
+        "label": label, "hint": hint, "amount": to_cents(amount), "kind": kind,
+        "running": to_cents(running), "drift": to_cents(amount - running),
+    });
+    vec![
+        row("Revenue", "what buyers were invoiced on closed deals", f.revenue, "start"),
+        row("Cost", "what those goods cost", -f.cost, "subtract"),
+        tie("Profit before refunds", "read off each deal", f.raw_profit, f.revenue - f.cost, "subtotal"),
+        row("Refunds", "each refund counted once, on these deals", -f.refunds, "subtract"),
+        tie("Net profit", "after refunds", f.net_profit, f.revenue - f.cost - f.refunds, "subtotal"),
+        row("Shipping", "bank shipping that never reached a deal", -f.shipping, "subtract"),
+        row("Bank and wire fees", "bank fees that never reached a deal", -f.fees, "subtract"),
+        tie("True net", "after shipping and fees", f.net_profit - f.shipping - f.fees,
+            f.revenue - f.cost - f.refunds - f.shipping - f.fees, "total"),
+    ]
+}
+
+/// The largest absolute drift across a set of bridge rows, in cents. Zero means every
+/// subtotal agreed with the rows above it.
+fn max_drift(rows: &[Value]) -> f64 {
+    rows.iter()
+        .filter_map(|r| r.get("drift").and_then(|d| d.as_f64()))
+        .fold(0.0_f64, |m, d| m.max(d.abs()))
+}
+
+/// Bank categories that can never be part of a deal's profit — transfers, owner draws,
+/// loans and the running costs of the business. Read off `PNL_CATEGORY_GROUPS` rather
+/// than listed again here, so a category added to that table is classified here too.
+/// Note `shipping` sits in Cost of goods and is deliberately NOT in this set: it has its
+/// own row in the bridge above.
+const NON_DEAL_PNL_GROUPS: &[&str] = &["Operating expenses", "Taxes & licences", "Transfers, owner & assets"];
+
+/// `('a','b',…)` for a SQL `IN`. The values are fixed literals from
+/// `PNL_CATEGORY_GROUPS`, never user input, so interpolating them is safe.
+fn non_deal_categories_sql() -> String {
+    let list: Vec<String> = PNL_CATEGORY_GROUPS.iter()
+        .filter(|(_, _, group)| NON_DEAL_PNL_GROUPS.contains(group))
+        .map(|(value, _, _)| format!("'{value}'"))
+        .collect();
+    format!("({})", list.join(","))
+}
+
+/// R-317: the reconciliation section on Analytics — the bridge from revenue to true net,
+/// the bank measured against the deals, and every closed deal in the range with the bank
+/// evidence behind it.
+#[tauri::command]
+pub async fn analytics_reconciliation(start_date: String, end_date: String) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+
+    // Same population, same constants, same ''-unbounded date convention as
+    // `get_analytics_range`, so nothing here can disagree with the figures already on
+    // the screen above it.
+    let df: String = format!(
+        "FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
+           AND (?1='' OR date(df.completed_at) >= ?1) AND (?2='' OR date(df.completed_at) <= ?2)",
+        one = DF_SURVIVOR_SQL);
+    const NP: &str = DF_EFF_PROFIT_SQL;
+    const RF: &str = DF_REFUNDS_SQL;
+    let p = rusqlite::params![start_date, end_date];
+
+    // ── 1. The bridge ────────────────────────────────────────────────
+    let (revenue, cost, raw_profit): (f64, f64, f64) = conn.query_row(
+        &format!("SELECT COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), \
+                         COALESCE(SUM(df.net_profit),0) {df}"),
+        p, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    ).unwrap_or((0.0, 0.0, 0.0));
+    let refunds: f64 = conn.query_row(&format!("SELECT COALESCE(SUM({RF}),0) {df}"), p, |r| r.get(0))
+        .unwrap_or(0.0);
+    let net_profit: f64 = conn.query_row(&format!("SELECT COALESCE(SUM({NP}),0) {df}"), p, |r| r.get(0))
+        .unwrap_or(0.0);
+    let shipping = bank_overhead(&conn, "shipping", &start_date, &end_date);
+    let fees = bank_overhead(&conn, "fee", &start_date, &end_date);
+    let true_net = net_profit - shipping - fees;
+
+    let bridge = bridge_rows(BridgeFigures { revenue, cost, raw_profit, refunds, net_profit, shipping, fees });
+    let bridge_drift = max_drift(&bridge);
+
+    // ── 2. Bank versus deals ─────────────────────────────────────────
+    // The bank is dated by when a row POSTED; a deal is dated by when it COMPLETED. Over
+    // all time the two windows are the same book and this block ties exactly. Over a
+    // narrow range they legitimately do not, and the residual is where that shows up —
+    // the UI says which date each side is using rather than letting it read as a defect.
+    let win = "(?1='' OR date(t.posted_at)>=?1) AND (?2='' OR date(t.posted_at)<=?2)";
+    let (money_in, money_out): (f64, f64) = conn.query_row(
+        &format!("SELECT COALESCE(SUM(CASE WHEN t.direction='in' THEN t.amount ELSE 0 END),0), \
+                         COALESCE(SUM(CASE WHEN t.direction='out' THEN t.amount ELSE 0 END),0) \
+                  FROM bank_txn t WHERE {win}"),
+        p, |r| Ok((r.get(0)?, r.get(1)?))
+    ).unwrap_or((0.0, 0.0));
+    let bank_net = money_in - money_out;
+
+    // Every bank row's amount splits into what is allocated to a deal and what is not, so
+    // `allocated_to_counted + allocated_elsewhere + unallocated == bank_net` by
+    // construction. The three terms below are that split, signed by direction.
+    let cats = non_deal_categories_sql();
+    let remainder = |not_in: bool| -> f64 {
+        let op = if not_in { "NOT IN" } else { "IN" };
+        conn.query_row(&format!(
+            "SELECT COALESCE(SUM(CASE WHEN t.direction='in' THEN t.rem ELSE -t.rem END),0) FROM ( \
+                SELECT t.direction, t.category, \
+                       t.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a \
+                                            WHERE a.bank_txn_id=t.id),0) AS rem \
+                FROM bank_txn t WHERE {win}) t WHERE t.category {op} {cats}"),
+            p, |r| r.get(0)).unwrap_or(0.0)
+    };
+    let unplaced = remainder(true);
+    let non_deal = remainder(false);
+
+    // The counted deals, as a subquery. Renumbered to ?3/?4 because the outer query is
+    // already binding ?1/?2 against `posted_at`.
+    let counted_ids = format!(
+        "SELECT df.id FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
+           AND (?3='' OR date(df.completed_at) >= ?3) AND (?4='' OR date(df.completed_at) <= ?4)",
+        one = DF_SURVIVOR_SQL);
+    let p4 = rusqlite::params![start_date, end_date, start_date, end_date];
+    let other_deals: f64 = conn.query_row(&format!(
+        "SELECT COALESCE(SUM(CASE WHEN t.direction='in' THEN a.amount ELSE -a.amount END),0) \
+         FROM bank_allocation a JOIN bank_txn t ON t.id=a.bank_txn_id \
+         WHERE {win} AND a.deal_flow_id NOT IN ({counted_ids})"),
+        p4, |r| r.get(0)).unwrap_or(0.0);
+
+    // Refunds that were counted against profit but never left through a bank row inside
+    // this window — the last named reason the bank and the deals disagree.
+    let refund_out_banked: f64 = conn.query_row(&format!(
+        "SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a JOIN bank_txn t ON t.id=a.bank_txn_id \
+         WHERE a.role='refund_out' AND {win} AND a.deal_flow_id IN ({counted_ids})"),
+        p4, |r| r.get(0)).unwrap_or(0.0);
+    let refunds_unbanked = refunds - refund_out_banked;
+
+    // Each adjustment is what must be ADDED to bank net to move toward net profit, so the
+    // block reads as a plain sum down the page instead of subtracting negatives.
+    let adjustments = [-unplaced, -other_deals, -non_deal, -refunds_unbanked];
+    let residual = net_profit - bank_net - adjustments.iter().sum::<f64>();
+
+    let adj = |label: &str, hint: &str, amount: f64| json!({
+        "label": label, "hint": hint, "amount": to_cents(amount), "kind": "adjust",
+        "running": Value::Null, "drift": Value::Null,
+    });
+    let bank_rows = json!([
+        { "label": "Money in", "hint": "every credit on the bank ledger", "amount": to_cents(money_in),
+          "kind": "start", "running": Value::Null, "drift": Value::Null },
+        { "label": "Money out", "hint": "every debit on the bank ledger", "amount": to_cents(-money_out),
+          "kind": "subtract", "running": Value::Null, "drift": Value::Null },
+        { "label": "Bank net", "hint": "what the bank actually did", "amount": to_cents(bank_net),
+          "kind": "subtotal", "running": Value::Null, "drift": Value::Null },
+        adj("Money tied to no deal", "unallocated, and not a transfer or a running cost", -unplaced),
+        adj("Money on deals not counted here", "not complete, or completed outside this range", -other_deals),
+        adj("Transfers, draws and running costs", "categorised as never part of a deal", -non_deal),
+        adj("Refunds with no bank row", "taken off profit, never seen leaving the bank", -refunds_unbanked),
+        { "label": "Still unexplained", "hint": "after every reason above", "amount": to_cents(residual),
+          "kind": "residual", "running": Value::Null, "drift": Value::Null },
+        { "label": "Net profit", "hint": "the figure in the bridge", "amount": to_cents(net_profit),
+          "kind": "total", "running": Value::Null, "drift": Value::Null },
+    ]);
+
+    // An allocation whose bank transaction is gone is money the screen cannot see at all.
+    // Zero today; surfaced because a non-zero count would otherwise only appear as an
+    // unexplained residual with no name on it.
+    let (orphan_count, orphan_amount): (i64, f64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(a.amount),0) FROM bank_allocation a \
+         WHERE NOT EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)",
+        [], |r| Ok((r.get(0)?, r.get(1)?))
+    ).unwrap_or((0, 0.0));
+
+    // ── 3. Per-deal rows ─────────────────────────────────────────────
+    // Money in and money out are BANK evidence — what is actually allocated to the deal —
+    // not the deal's own revenue and cost. That is the comparison Jack is asking for, and
+    // it is why a deal can be flagged: a closed deal with no buyer payment behind it, or
+    // no supplier payment, is the shape of a book that is slightly off.
+    let banked = |role_pred: &str| format!(
+        "COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id \
+            AND {role_pred} AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0)");
+    let money_in_sql = banked("a.role='buyer_payment'");
+    let money_out_sql = banked("a.role IN ('supplier_payment','fee')");
+    let refund_in_sql = banked("a.role='refund_in'");
+    let df_clients = df.replacen("JOIN invoices i ON i.id=df.invoice_id",
+                                 "JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id", 1);
+
+    // Shipping and fees are a whole-range figure, so a deal's share of them is taken on
+    // revenue. The shares therefore sum back to `true_net` exactly.
+    let overhead = shipping + fees;
+    let deals: Vec<Value> = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT COALESCE(NULLIF(i.number,''),'—'), c.name, df.completed_at, df.gross_revenue, \
+                    {money_in_sql}, {money_out_sql}, {RF}, {NP} \
+             {df_clients} ORDER BY {NP} DESC, df.completed_at DESC LIMIT 500")
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(p, |r| {
+            let completed_at: String = r.get(2)?;
+            let deal_revenue: f64 = r.get(3)?;
+            let money_in: f64 = r.get(4)?;
+            let money_out: f64 = r.get(5)?;
+            let profit: f64 = r.get(7)?;
+            let mut flags: Vec<&str> = Vec::new();
+            if money_in <= 0.005 { flags.push("No buyer link"); }
+            if money_out <= 0.005 { flags.push("No supplier link"); }
+            Ok(json!({
+                "invoice_number": r.get::<_, String>(0)?,
+                "client_name": r.get::<_, String>(1)?,
+                "completed_on": completed_at.chars().take(10).collect::<String>(),
+                "money_in": to_cents(money_in),
+                "money_out": to_cents(money_out),
+                "refunds": to_cents(r.get::<_, f64>(6)?),
+                "profit": to_cents(profit),
+                "true_net_share": to_cents(
+                    if revenue > 0.0 { profit - overhead * (deal_revenue / revenue) } else { profit }),
+                "flags": flags,
+            }))
+        }).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    // Footer totals are taken over the WHOLE population, not over the rows above, so a
+    // capped list can never make the footer quietly wrong.
+    let (deal_count, t_in, t_out, t_refund_in, t_refunds): (i64, f64, f64, f64, f64) = conn.query_row(
+        &format!("SELECT COUNT(*), COALESCE(SUM({money_in_sql}),0), COALESCE(SUM({money_out_sql}),0), \
+                         COALESCE(SUM({refund_in_sql}),0), COALESCE(SUM({RF}),0) {df}"),
+        p, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    ).unwrap_or((0, 0.0, 0.0, 0.0, 0.0));
+
+    Ok(json!({
+        "bridge": bridge,
+        "bridge_drift": to_cents(bridge_drift),
+        "bridge_ties": bridge_drift < 0.005,
+        "bank": {
+            "rows": bank_rows,
+            "money_in": to_cents(money_in),
+            "money_out": to_cents(money_out),
+            "bank_net": to_cents(bank_net),
+            "residual": to_cents(residual),
+            "ties": residual.abs() < 0.005,
+            "orphan_allocations": orphan_count,
+            "orphan_amount": to_cents(orphan_amount),
+        },
+        "deals": deals,
+        "deals_capped": deal_count > deals.len() as i64,
+        "totals": {
+            "deal_count": deal_count,
+            "money_in": to_cents(t_in),
+            "money_out": to_cents(t_out),
+            "refunds": to_cents(t_refunds),
+            "profit": to_cents(net_profit),
+            "true_net_share": to_cents(true_net),
+            // What the two bank columns disagree with the bridge by, and the one figure
+            // that explains the cost side: supplier money that came back.
+            "revenue": to_cents(revenue),
+            "cost": to_cents(cost),
+            "supplier_refund_in": to_cents(t_refund_in),
+            "money_in_gap": to_cents(t_in - revenue),
+            "money_out_gap": to_cents(t_out - cost),
+        },
     }))
 }
 
@@ -12356,6 +13029,141 @@ mod analytics_refund_profit_tests {
 }
 
 #[cfg(test)]
+mod analytics_advanced_tests {
+    use super::{margin_band_index, median_f64, project_month, top_share, days_in_month, MARGIN_BANDS};
+
+    #[test]
+    fn concentration_is_a_share_of_the_total_not_of_the_top_slice() {
+        // One buyer at 50k against three at 10k: the top client is half the book.
+        let revs = [50_000.0, 10_000.0, 10_000.0, 10_000.0];
+        assert_eq!(top_share(&revs, 1), 62.5);
+        assert_eq!(top_share(&revs, 3), 87.5);
+        // Asking for more entries than exist is the whole book, never over 100%.
+        assert_eq!(top_share(&revs, 9), 100.0);
+        // No revenue has no share — never a divide by zero.
+        assert_eq!(top_share(&[], 3), 0.0);
+        assert_eq!(top_share(&[0.0, 0.0], 1), 0.0);
+    }
+
+    #[test]
+    fn velocity_median_is_not_dragged_by_one_stale_deal() {
+        // Four deals close in a week; one sat for a year. A mean would read 96 days.
+        let mut days = [5.0, 6.0, 7.0, 8.0, 365.0];
+        assert_eq!(median_f64(&mut days), Some(7.0));
+        let mean = [5.0, 6.0, 7.0, 8.0, 365.0].iter().sum::<f64>() / 5.0;
+        assert!(mean > 70.0, "the mean this median replaces really is that far off");
+        // Even samples average the two middle values.
+        let mut even = [10.0, 20.0, 30.0, 40.0];
+        assert_eq!(median_f64(&mut even), Some(25.0));
+        assert_eq!(median_f64(&mut []), None);
+    }
+
+    #[test]
+    fn run_rate_projects_the_month_from_its_own_pace() {
+        // $30k booked over 10 days of a 30-day month projects to $90k.
+        assert_eq!(project_month(30_000.0, 10, 30), 90_000.0);
+        // Day one of a 31-day month is a 31x projection — deliberately, that is what
+        // "at this pace" means; the UI draws it dashed rather than softening it here.
+        assert_eq!(project_month(1_000.0, 1, 31), 31_000.0);
+        // The last day of the month projects to exactly what happened.
+        assert_eq!(project_month(42_000.0, 28, 28), 42_000.0);
+        // A month with no elapsed days cannot have a pace.
+        assert_eq!(project_month(5_000.0, 0, 30), 0.0);
+        // A loss projects as a loss.
+        assert!((project_month(-2_000.0, 15, 30) - -4_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn days_in_month_handles_february_and_leap_years() {
+        let d = |y, m, day| chrono::NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        assert_eq!(days_in_month(d(2026, 2, 3)), 28);
+        assert_eq!(days_in_month(d(2028, 2, 3)), 29);
+        assert_eq!(days_in_month(d(2026, 12, 31)), 31);
+        assert_eq!(days_in_month(d(2026, 9, 16)), 30);
+    }
+
+    #[test]
+    fn margin_bands_bucket_every_margin_exactly_once() {
+        assert_eq!(MARGIN_BANDS[margin_band_index(-12.5)].0, "Loss");
+        assert_eq!(MARGIN_BANDS[margin_band_index(0.0)].0, "0–10%");
+        assert_eq!(MARGIN_BANDS[margin_band_index(9.999)].0, "0–10%");
+        assert_eq!(MARGIN_BANDS[margin_band_index(10.0)].0, "10–20%");
+        assert_eq!(MARGIN_BANDS[margin_band_index(39.9)].0, "30–40%");
+        assert_eq!(MARGIN_BANDS[margin_band_index(40.0)].0, "40%+");
+        assert_eq!(MARGIN_BANDS[margin_band_index(400.0)].0, "40%+");
+        // No gaps and no overlaps: every band's own lower bound lands in that band.
+        for (i, (label, lo, _)) in MARGIN_BANDS.iter().enumerate() {
+            if lo.is_finite() {
+                assert_eq!(margin_band_index(*lo), i, "{label} must own its own lower bound");
+            }
+        }
+    }
+
+    // Repeat vs new is classified per DEAL, against the buyer's earliest live completed
+    // deal of all time — so an unbounded range still splits into first-time and
+    // returning revenue instead of reading 100% new.
+    fn book() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            CREATE TABLE clients (id TEXT PRIMARY KEY);
+            CREATE TABLE invoices (id TEXT PRIMARY KEY, client_id TEXT NOT NULL DEFAULT '',
+              voided INTEGER DEFAULT 0, archived INTEGER DEFAULT 0);
+            CREATE TABLE deal_flows (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL DEFAULT '',
+              stage TEXT NOT NULL DEFAULT 'complete', archived INTEGER DEFAULT 0,
+              completed_at TEXT NOT NULL DEFAULT '', gross_revenue REAL NOT NULL DEFAULT 0);
+
+            INSERT INTO clients VALUES ('cl_a'), ('cl_b');
+            -- Harbour Goods: three purchases, the 2026-01 one is their first ever.
+            INSERT INTO invoices VALUES ('in_1','cl_a',0,0), ('in_2','cl_a',0,0), ('in_3','cl_a',0,0);
+            INSERT INTO deal_flows VALUES ('df_1','in_1','complete',0,'2026-01-10',10000);
+            INSERT INTO deal_flows VALUES ('df_2','in_2','complete',0,'2026-03-10',20000);
+            INSERT INTO deal_flows VALUES ('df_3','in_3','complete',0,'2026-05-10',30000);
+            -- Cedar Lane: two deals closed the SAME day; only one may read as the first.
+            INSERT INTO invoices VALUES ('in_4','cl_b',0,0), ('in_5','cl_b',0,0);
+            INSERT INTO deal_flows VALUES ('df_4','in_4','complete',0,'2026-04-02',4000);
+            INSERT INTO deal_flows VALUES ('df_5','in_5','complete',0,'2026-04-02',6000);
+        "#).unwrap();
+        conn
+    }
+
+    // The same predicate `get_analytics_range` builds, kept in one place for the test.
+    const IS_FIRST: &str =
+        "df.id = (SELECT d3.id FROM deal_flows d3 JOIN invoices i3 ON i3.id=d3.invoice_id \
+          WHERE i3.client_id = i.client_id AND d3.stage='complete' AND COALESCE(d3.archived,0)=0 \
+            AND COALESCE(i3.voided,0)=0 AND COALESCE(i3.archived,0)=0 \
+          ORDER BY d3.completed_at ASC, d3.id ASC LIMIT 1)";
+
+    fn split(conn: &rusqlite::Connection, lo: &str, hi: &str) -> (f64, f64) {
+        let sql = format!(
+            "SELECT COALESCE(SUM(CASE WHEN {IS_FIRST} THEN df.gross_revenue ELSE 0 END),0), \
+                    COALESCE(SUM(CASE WHEN {IS_FIRST} THEN 0 ELSE df.gross_revenue END),0) \
+             FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+             WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+               AND (?1='' OR date(df.completed_at) >= ?1) AND (?2='' OR date(df.completed_at) <= ?2)");
+        conn.query_row(&sql, [lo, hi], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+    }
+
+    #[test]
+    fn repeat_versus_new_splits_an_unbounded_range() {
+        let conn = book();
+        // First-time revenue = Harbour's 10k + exactly one of Cedar's same-day pair (4k).
+        let (new, repeat) = split(&conn, "", "");
+        assert_eq!(new, 14_000.0, "only the buyer's earliest deal counts as a first purchase");
+        assert_eq!(repeat, 56_000.0);
+        assert_eq!(new + repeat, 70_000.0, "every deal lands on exactly one side");
+    }
+
+    #[test]
+    fn a_buyer_whose_first_deal_predates_the_range_is_all_repeat() {
+        let conn = book();
+        let (new, repeat) = split(&conn, "2026-03-01", "2026-03-31");
+        assert_eq!(new, 0.0, "Harbour bought in January, so March is a repeat purchase");
+        assert_eq!(repeat, 20_000.0);
+    }
+}
+
+#[cfg(test)]
 mod bank_overhead_tests {
     use super::bank_overhead;
 
@@ -12393,6 +13201,167 @@ mod bank_overhead_tests {
         // Prove the allocation actually mattered: without subtracting it the fully-
         // allocated row would have inflated the total by its own amount.
         assert_ne!(expected, out - inn + allocated);
+    }
+}
+
+#[cfg(test)]
+mod analytics_bridge_tests {
+    use super::{bridge_rows, max_drift, non_deal_categories_sql, BridgeFigures,
+                DF_EFF_PROFIT_SQL, DF_REFUNDS_SQL};
+
+    fn amounts(rows: &[serde_json::Value]) -> Vec<f64> {
+        rows.iter().map(|r| r["amount"].as_f64().unwrap()).collect()
+    }
+    fn kinds(rows: &[serde_json::Value]) -> Vec<&str> {
+        rows.iter().map(|r| r["kind"].as_str().unwrap()).collect()
+    }
+
+    // The refund expression is written out twice — once inside DF_EFF_PROFIT_SQL, once on
+    // its own so the bridge's Refunds row can be read independently. This is the guard
+    // that keeps them the same rule.
+    #[test]
+    fn refund_expression_matches_the_profit_constant() {
+        assert_eq!(DF_EFF_PROFIT_SQL, format!("(df.net_profit - {DF_REFUNDS_SQL})"),
+            "DF_REFUNDS_SQL must stay the exact refund half of DF_EFF_PROFIT_SQL, or the \
+             bridge's Refunds row and its Net profit row stop being the same definition");
+    }
+
+    #[test]
+    fn a_consistent_book_ties_at_every_subtotal() {
+        let rows = bridge_rows(BridgeFigures {
+            revenue: 100_000.0, cost: 72_000.0, raw_profit: 28_000.0,
+            refunds: 3_000.0, net_profit: 25_000.0, shipping: 1_200.0, fees: 180.0,
+        });
+        assert_eq!(kinds(&rows),
+            vec!["start", "subtract", "subtotal", "subtract", "subtotal", "subtract", "subtract", "total"]);
+        assert_eq!(amounts(&rows),
+            vec![100_000.0, -72_000.0, 28_000.0, -3_000.0, 25_000.0, -1_200.0, -180.0, 23_620.0]);
+        for r in &rows {
+            if r["kind"] == "subtotal" || r["kind"] == "total" {
+                assert_eq!(r["drift"].as_f64().unwrap(), 0.0, "{} must tie", r["label"]);
+            } else {
+                assert!(r["drift"].is_null(), "{} is not a subtotal and carries no drift", r["label"]);
+            }
+        }
+        assert_eq!(max_drift(&rows), 0.0);
+    }
+
+    // The point of the whole section. One deal's stored net_profit is $1,000 higher than
+    // its own revenue − cost; the bridge must SAY so, and must keep showing the figure it
+    // read rather than the tidier accumulated one.
+    #[test]
+    fn a_stored_profit_that_disagrees_is_reported_not_swallowed() {
+        let rows = bridge_rows(BridgeFigures {
+            revenue: 100_000.0, cost: 72_000.0, raw_profit: 29_000.0,
+            refunds: 3_000.0, net_profit: 26_000.0, shipping: 1_200.0, fees: 180.0,
+        });
+        assert_eq!(rows[2]["amount"].as_f64().unwrap(), 29_000.0,
+            "the subtotal shows what the ledger says, never the running sum");
+        assert_eq!(rows[2]["running"].as_f64().unwrap(), 28_000.0);
+        assert_eq!(rows[2]["drift"].as_f64().unwrap(), 1_000.0);
+        // It propagates: a wrong stored profit is still wrong after refunds and overhead.
+        assert_eq!(rows[4]["drift"].as_f64().unwrap(), 1_000.0);
+        assert_eq!(rows[7]["drift"].as_f64().unwrap(), 1_000.0);
+        assert_eq!(rows[7]["amount"].as_f64().unwrap(), 24_620.0);
+        assert_eq!(max_drift(&rows), 1_000.0, "the screen renders 'does not tie' off this");
+    }
+
+    #[test]
+    fn a_book_short_by_a_cent_still_reports_it() {
+        // Drift is money, so it rounds to cents — but a real cent is not noise.
+        let rows = bridge_rows(BridgeFigures {
+            revenue: 100.0, cost: 60.0, raw_profit: 39.99,
+            refunds: 0.0, net_profit: 39.99, shipping: 0.0, fees: 0.0,
+        });
+        assert_eq!(max_drift(&rows), 0.01);
+        // And a float residue is not a cent: 0.1 + 0.2 - 0.3 must round away to nothing.
+        let clean = bridge_rows(BridgeFigures {
+            revenue: 0.1 + 0.2, cost: 0.0, raw_profit: 0.3,
+            refunds: 0.0, net_profit: 0.3, shipping: 0.0, fees: 0.0,
+        });
+        assert_eq!(max_drift(&clean), 0.0);
+    }
+
+    #[test]
+    fn non_deal_categories_cover_transfers_and_running_costs_but_not_goods() {
+        let sql = non_deal_categories_sql();
+        for c in ["'internal_transfer'", "'owner_draw'", "'loan_received'", "'loan_repayment'",
+                  "'card_payment'", "'office'", "'software'", "'taxes'", "'fee'"] {
+            assert!(sql.contains(c), "{c} can never be part of a deal's profit");
+        }
+        // Cost of goods and income stay OUT: shipping has its own bridge row, and a
+        // supplier payment or a buyer receipt is exactly what a deal is made of.
+        for c in ["'shipping'", "'payment'", "'merchandise'", "'receipt'", "'supplier_refund'"] {
+            assert!(!sql.contains(c), "{c} is deal money and must not be written off as non-deal");
+        }
+    }
+
+    // Shipping and fees are a whole-range figure, so each deal takes a share of them on
+    // revenue. The shares have to add back to true net exactly or the footer lies.
+    #[test]
+    fn true_net_shares_add_back_to_true_net() {
+        let deals = [(40_000.0, 9_000.0), (35_000.0, -2_000.0), (25_000.0, 6_500.0)];
+        let revenue: f64 = deals.iter().map(|(r, _)| r).sum();
+        let net_profit: f64 = deals.iter().map(|(_, p)| p).sum();
+        let overhead = 1_380.0;
+        let shares: f64 = deals.iter().map(|(r, p)| p - overhead * (r / revenue)).sum();
+        assert!((shares - (net_profit - overhead)).abs() < 1e-9,
+            "every dollar of overhead is allocated exactly once");
+    }
+
+    // The bank block only means anything if the three ways a bank row can be spent —
+    // allocated to a counted deal, allocated elsewhere, not allocated at all — really do
+    // add back to bank net. This is that identity, on a ledger small enough to read.
+    fn ledger() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            CREATE TABLE bank_txn (id TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '',
+              direction TEXT NOT NULL DEFAULT 'out', amount REAL NOT NULL DEFAULT 0,
+              posted_at TEXT NOT NULL DEFAULT '');
+            CREATE TABLE bank_allocation (id TEXT PRIMARY KEY, bank_txn_id TEXT NOT NULL DEFAULT '',
+              deal_flow_id TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0);
+
+            -- A buyer wire, fully allocated to the deal we are counting.
+            INSERT INTO bank_txn VALUES ('in_1','receipt','in',10000,'2026-08-01');
+            INSERT INTO bank_allocation VALUES ('a1','in_1','df_counted',10000);
+            -- A supplier wire, part of it allocated to a deal that is NOT counted.
+            INSERT INTO bank_txn VALUES ('out_1','payment','out',7000,'2026-08-02');
+            INSERT INTO bank_allocation VALUES ('a2','out_1','df_other',4000);
+            -- An owner draw, untouched by any deal.
+            INSERT INTO bank_txn VALUES ('out_2','owner_draw','out',1500,'2026-08-03');
+            -- A wire in nobody has placed yet.
+            INSERT INTO bank_txn VALUES ('in_2','receipt','in',900,'2026-08-04');
+        "#).unwrap();
+        conn
+    }
+
+    #[test]
+    fn every_bank_dollar_lands_in_exactly_one_reason() {
+        let conn = ledger();
+        let bank_net: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) FROM bank_txn",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(bank_net, 10_000.0 - 7_000.0 - 1_500.0 + 900.0);
+
+        let allocated = |op: &str| -> f64 {
+            conn.query_row(&format!(
+                "SELECT COALESCE(SUM(CASE WHEN t.direction='in' THEN a.amount ELSE -a.amount END),0) \
+                 FROM bank_allocation a JOIN bank_txn t ON t.id=a.bank_txn_id \
+                 WHERE a.deal_flow_id {op} ('df_counted')"), [], |r| r.get(0)).unwrap()
+        };
+        let counted = allocated("IN");
+        let elsewhere = allocated("NOT IN");
+        let unallocated: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(CASE WHEN t.direction='in' THEN t.rem ELSE -t.rem END),0) FROM ( \
+                SELECT t.direction, t.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a \
+                       WHERE a.bank_txn_id=t.id),0) AS rem FROM bank_txn t) t",
+            [], |r| r.get(0)).unwrap();
+
+        assert_eq!(counted, 10_000.0);
+        assert_eq!(elsewhere, -4_000.0);
+        assert_eq!(unallocated, -1_500.0 + 900.0 - 3_000.0, "the unspent half of the supplier wire counts too");
+        assert_eq!(counted + elsewhere + unallocated, bank_net,
+            "if these three do not add back to bank net, the residual line is meaningless");
     }
 }
 
@@ -12782,7 +13751,7 @@ fn brief_suppliers(supplier_payments_json: &str) -> Vec<String> {
 }
 
 #[tauri::command]
-pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<String>) -> Result<WeeklyBrief, String> {
+pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<String>, days: Option<i64>) -> Result<WeeklyBrief, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now();
 
@@ -12798,12 +13767,14 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     let now_date = anchor;
 
     // Brief period length is user-configurable (default weekly).
-    let period_days: i64 = conn
+    // R-316: a caller that knows the window it is labelling passes it, so the Brief
+    // screen never has to rewrite the org-shared cadence to make its heading true.
+    let period_days: i64 = days.unwrap_or_else(|| conn
         .query_row("SELECT value FROM settings WHERE key='brief_frequency_days'", [], |r| r.get::<_, String>(0))
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|d| *d >= 1)
-        .unwrap_or(7);
+        .unwrap_or(7));
 
     // Calendar-aligned windows (per Jack): weeks are Monday–Sunday, months 1st–last.
     // period_days>=28 → the current CALENDAR MONTH; otherwise N whole calendar weeks

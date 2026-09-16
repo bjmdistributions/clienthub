@@ -114,6 +114,20 @@
      2026-09-03; separation vs success measured (ΔE 17.6 normal / 15.9 deutan in light,
      19.1 / 15.8 in dark). See decisions/colour-on-a-chart-means-profit. */
   --c-chart-revenue: 47 111 168;
+  /* Categorical data palette (R-316). Six fixed slots for NON-semantic series — client,
+     category, supplier, tier, band. Assigned in order, never cycled; a seventh series
+     folds into "Other". Deliberately excludes the brand accent (the chrome owns it and
+     mono greys it out) and the emerald/rose pair (those mean profit and loss and must
+     keep meaning only that). Validated with the dataviz six checks against this
+     surface: lightness band, chroma floor, adjacent CVD (worst pair ΔE 11.8 protan),
+     normal-vision floor (22.7), contrast all ≥ 3:1. Do not hand-edit one slot — a
+     changed value has to be re-run through scripts/validate_palette.js. */
+  --c-chart-1: 13 148 166;   /* teal    #0d94a6 */
+  --c-chart-2: 192 132 0;    /* gold    #c08400 */
+  --c-chart-3: 42 111 208;   /* cobalt  #2a6fd0 */
+  --c-chart-4: 210 86 138;   /* magenta #d2568a */
+  --c-chart-5: 91 71 184;    /* violet  #5b47b8 */
+  --c-chart-6: 168 82 58;    /* clay    #a8523a */
   --c-success:        5 150 105;
   --c-success-bg:   236 253 245;
   --c-success-ink:    6 95 70;
@@ -176,6 +190,17 @@ html.dark {
   /* Lighter step of the chart-revenue hue — the light-theme value is too dark to read
      against the near-black surface. */
   --c-chart-revenue: 107 163 220;
+  /* Dark steps of the categorical palette — chosen for the dark surface, not flipped
+     from the light values. Same six checks re-run against #12151C AND the matte-black
+     #0A0A0C: worst adjacent CVD ΔE 13.8 protan, normal-vision floor 17.2, all ≥ 3:1.
+     Absent from the matte blocks on purpose, exactly like success/danger/chart-revenue:
+     mono strips the accent, not meaning. */
+  --c-chart-1:  37 166 182;  /* teal    #25a6b6 */
+  --c-chart-2: 189 137  22;  /* gold    #bd8916 */
+  --c-chart-3:  91 149 232;  /* cobalt  #5b95e8 */
+  --c-chart-4: 212  98 143;  /* magenta #d4628f */
+  --c-chart-5: 143 124 232;  /* violet  #8f7ce8 */
+  --c-chart-6: 207 122  95;  /* clay    #cf7a5f */
   /* Money-positive green: confident, not neon. */
   --c-success:       62 199 133;
   --c-success-bg:    16 42 32;

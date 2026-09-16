@@ -1,258 +1,419 @@
-import { useEffect, useState } from "react";
-import { api, WeeklyBrief, BriefDeal } from "../lib/api";
-import { fmtAmount, localDay, localMonth, parseLocalDay } from "../lib/format";
+import { useEffect, useMemo, useState } from "react";
+import { api, WeeklyBrief, DealFlow, ReceivablesAging, ARItem, Client, Invoice } from "../lib/api";
+import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
+import StatusPill from "./StatusPill";
 import {
-  TrendingUp, TrendingDown, Minus, RefreshCw, Send, Printer,
-  AlertCircle, Users, Target, GitBranch,
-  ChevronLeft, ChevronRight,
+  RefreshCw, Printer, ArrowRight, CheckCircle2, CalendarClock, Clock,
+  Banknote, FileText, Truck, AlertTriangle, Users, Receipt, PackageCheck,
 } from "lucide-react";
-
-function addDays(dateStr: string, n: number): string {
-  const d = new Date(dateStr + "T12:00:00Z");
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-const FREQ_PRESETS: { label: string; days: number }[] = [
-  { label: "Daily", days: 1 },
-  { label: "Weekly", days: 7 },
-  { label: "Biweekly", days: 14 },
-  { label: "Monthly", days: 30 },
-];
 
 // Colors for payout-recipient boxes. Business uses the app accent; other
 // recipients cycle through a fixed palette so any number of them stay distinct.
-const BIZ_COLOR = { accent: "var(--accent-400)", accentBg: "var(--accent-tint)", accentBorder: "var(--accent-glow)", labelColor: "var(--accent-500)" };
+// The recipient's name used to be printed in its own hue, which meant a literal
+// that reads at ~3:1 on one theme and ~2:1 on the other. The identity is now the
+// 2.5px top rule and the tint; the name and the figure are theme tokens.
+const BIZ_COLOR = { accent: "var(--accent-400)", accentBg: "var(--accent-tint)", accentBorder: "var(--accent-glow)" };
 const RECIP_COLORS = [
-  { accent: "#34D399", accentBg: "rgba(16,185,129,0.08)", accentBorder: "rgba(16,185,129,0.2)", labelColor: "#10B981" },
-  { accent: "#60A5FA", accentBg: "rgba(59,130,246,0.08)", accentBorder: "rgba(59,130,246,0.2)", labelColor: "#3B82F6" },
-  { accent: "#A78BFA", accentBg: "rgba(139,92,246,0.08)", accentBorder: "rgba(139,92,246,0.2)", labelColor: "#8B5CF6" },
-  { accent: "#F472B6", accentBg: "rgba(236,72,153,0.08)", accentBorder: "rgba(236,72,153,0.2)", labelColor: "#EC4899" },
-  { accent: "#FBBF24", accentBg: "rgba(245,158,11,0.08)", accentBorder: "rgba(245,158,11,0.2)", labelColor: "#F59E0B" },
+  { accent: "#34D399", accentBg: "rgba(16,185,129,0.08)", accentBorder: "rgba(16,185,129,0.2)" },
+  { accent: "#60A5FA", accentBg: "rgba(59,130,246,0.08)", accentBorder: "rgba(59,130,246,0.2)" },
+  { accent: "#A78BFA", accentBg: "rgba(139,92,246,0.08)", accentBorder: "rgba(139,92,246,0.2)" },
+  { accent: "#F472B6", accentBg: "rgba(236,72,153,0.08)", accentBorder: "rgba(236,72,153,0.2)" },
+  { accent: "#FBBF24", accentBg: "rgba(245,158,11,0.08)", accentBorder: "rgba(245,158,11,0.2)" },
 ];
 
-export default function BriefView({ currentUser }: { currentUser?: any }) {
-  const [brief,   setBrief]   = useState<WeeklyBrief | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [anchorDate, setAnchorDate] = useState<string | null>(null);
-  const [freq,    setFreq]    = useState(7);
+/** Bare day out of either a `YYYY-MM-DD` or a full timestamp. */
+const day = (s?: string | null) => (s ? s.slice(0, 10) : "");
 
-  const load = async (date?: string | null) => {
+/** "Sep 4" — dates on this screen are read at a glance, not filed. */
+const shortDate = (s?: string | null) =>
+  (s ? parseLocalDay(s).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "");
+
+/** Emerald for profit, rose for a loss, plain ink for nothing yet — zero is
+ *  neither, and the semantic hues only ever carry one of those two meanings. */
+const moneyCls = (n: number) => (n > 0 ? "text-success-ink" : n < 0 ? "text-danger-ink" : "text-ink");
+
+/** Monday of the week `d` falls in, computed locally (R-159 date rules).
+ *  Deliberately NOT read off `brief.week_start` — that window follows the stored
+ *  brief cadence, and this screen is today and this week only. */
+function mondayOf(d: string): string {
+  const dt = parseLocalDay(d);
+  dt.setDate(dt.getDate() - ((dt.getDay() + 6) % 7));
+  return localDay(dt);
+}
+
+const goTab = (tab: string) => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: tab }));
+
+/** Drill into the deal behind an invoice — the same stash-then-switch handoff
+ *  Receivables, Payables and the client screen use. */
+const openDeal = (invoiceNumber: string) => {
+  try { localStorage.setItem("dealflow_invoice_filter", invoiceNumber); } catch { /* ignore */ }
+  goTab("dealflow");
+};
+
+type Scope = "today" | "week";
+
+/** One thing that happened in the window, whatever produced it. */
+type Happening = {
+  key: string;
+  on: string;
+  kind: "deal" | "payment" | "invoice";
+  title: string;
+  meta: string;
+  amount: number;
+  signed: boolean;   // profit figure → emerald when up, rose when down
+  invoiceNumber: string;
+};
+
+export default function BriefView({ currentUser }: { currentUser?: any }) {
+  // Org-wide detail (whose invoice, which deal, how much) stays with the people
+  // who already see the numbers; a rep gets the brief's own rep-filtered figures.
+  const showOrg = currentUser?.role !== "sales_rep";
+
+  const [brief, setBrief]         = useState<WeeklyBrief | null>(null);
+  const [flows, setFlows]         = useState<DealFlow[]>([]);
+  const [invoices, setInvoices]   = useState<Invoice[]>([]);
+  const [ar, setAr]               = useState<ReceivablesAging | null>(null);
+  const [followups, setFollowups] = useState<Client[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [scope, setScope]         = useState<Scope>("today");
+
+  const today = localDay();
+  const weekStart = mondayOf(today);
+  const from = scope === "today" ? today : weekStart;
+  const inWindow = (s?: string | null) => { const d = day(s); return !!d && d >= from && d <= today; };
+
+  const load = async () => {
     setLoading(true);
     try {
       const repName = currentUser?.role === "sales_rep" ? currentUser.name : null;
-      const b = await api.generateWeeklyBrief(date ?? null, repName);
+      // The screen asks for the window it is labelling (7 = this Monday–Sunday week),
+      // rather than leaning on the org-shared cadence, which follows the emailed brief.
+      const b = await api.generateWeeklyBrief(null, repName, 7);
       setBrief(b);
     } catch (e: any) { toast(String(e), "error"); }
+    if (showOrg) {
+      api.listDealFlows().then(setFlows).catch(() => {});
+      api.listInvoices().then(setInvoices).catch(() => {});
+      api.getReceivablesAging().then(setAr).catch(() => setAr(null));
+    }
+    api.dueFollowups().then(setFollowups).catch(() => {});
     setLoading(false);
   };
+
   useEffect(() => {
-    api.getBriefFrequency().then(setFreq).catch(() => {});
-    load(null);
+    // The window is an argument to the brief command, not the org-shared cadence:
+    // `brief_frequency_days` belongs to the periodic brief and syncs to every device,
+    // so this screen must never rewrite it just to make its own heading true.
+    load();
   }, []);
 
-  // Persist a new cadence and regenerate the brief immediately.
-  const changeFreq = async (days: number) => {
-    setFreq(days);
-    try { await api.setBriefFrequency(days); } catch (e: any) { toast(String(e), "error"); }
-    load(anchorDate);
-  };
+  // ── What happened in the window ───────────────────────────────────────────
+  const invoiceClient = useMemo(() => {
+    const m: Record<string, string> = {};
+    flows.forEach((f) => { if (f.invoice_id && f.client_name) m[f.invoice_id] = f.client_name; });
+    return m;
+  }, [flows]);
 
-  // R-159: step from the server-computed period bounds — the day before the
-  // period start / after the period end always lands in the adjacent calendar
-  // block, whatever the cadence (the old ±30-day hop repeated or skipped months).
-  const goToPrevWeek = () => {
-    const prev = brief ? addDays(brief.week_start, -1) : addDays(anchorDate ?? localDay(), -freq);
-    setAnchorDate(prev);
-    load(prev);
-  };
-  const goToNextWeek = () => {
-    if (!anchorDate || !brief) return;
-    const next = addDays(brief.week_end, 1);
-    const today = localDay();
-    const nextIsCurrent = next >= today
-      || (freq >= 28 ? next.slice(0, 7) === localMonth() : addDays(next, freq - 1) >= today);
-    if (nextIsCurrent) { setAnchorDate(null); load(null); }
-    else { setAnchorDate(next); load(next); }
-  };
-  const isCurrentWeek = !anchorDate;
-  const periodLabel = FREQ_PRESETS.find((p) => p.days === freq)?.label
-    ?? `${freq}-day`;
-
-  const changePct = (pct: number) => {
-    if (pct > 0) return <span className="text-success-ink flex items-center gap-0.5"><TrendingUp size={12} /> {pct.toFixed(1)}%</span>;
-    if (pct < 0) return <span className="text-danger-ink flex items-center gap-0.5"><TrendingDown size={12} /> {Math.abs(pct).toFixed(1)}%</span>;
-    return <span className="text-muted flex items-center gap-0.5"><Minus size={12} /> 0%</span>;
-  };
-
-  if (!brief && !loading) return (
-    <div className="text-[14px] text-muted text-center py-10">Could not generate brief</div>
+  const completed = useMemo(
+    () => flows.filter((f) => f.stage === "complete" && inWindow(f.completed_at)),
+    [flows, from, today],
+  );
+  const paidIn = useMemo(
+    () => flows.filter((f) => inWindow(f.payment_received_at) && f.payment_received_amount > 0),
+    [flows, from, today],
+  );
+  const sent = useMemo(
+    () => invoices.filter((i) => !i.voided && inWindow(i.sent_at)),
+    [invoices, from, today],
   );
 
+  const dealRevenue = completed.reduce((s, f) => s + (f.gross_revenue || 0), 0);
+  const dealProfit  = completed.reduce((s, f) => s + (f.net_profit || 0), 0);
+  const moneyIn     = paidIn.reduce((s, f) => s + (f.payment_received_amount || 0), 0);
+  const sentTotal   = sent.reduce((s, i) => s + (i.total || 0), 0);
+
+  const happenings: Happening[] = useMemo(() => {
+    const out: Happening[] = [];
+    completed.forEach((f) => out.push({
+      key: `d-${f.id}`, on: day(f.completed_at), kind: "deal",
+      title: f.client_name || f.name || "Deal",
+      meta: `Deal completed${f.invoice_number ? ` · ${f.invoice_number}` : ""}`,
+      amount: f.net_profit || 0, signed: true, invoiceNumber: f.invoice_number || "",
+    }));
+    paidIn.forEach((f) => out.push({
+      key: `p-${f.id}`, on: day(f.payment_received_at), kind: "payment",
+      title: f.client_name || f.name || "Payment",
+      meta: `Payment in${f.payment_received_method ? ` · ${f.payment_received_method}` : ""}`,
+      amount: f.payment_received_amount || 0, signed: false, invoiceNumber: f.invoice_number || "",
+    }));
+    sent.forEach((i) => {
+      const who = invoiceClient[i.id];
+      out.push({
+        key: `i-${i.id}`, on: day(i.sent_at), kind: "invoice",
+        title: who || `Invoice ${i.number}`,
+        meta: who ? `Invoice ${i.number} sent · due ${shortDate(i.due_date)}`
+                  : `Sent · due ${shortDate(i.due_date)}`,
+        amount: i.total || 0, signed: false, invoiceNumber: i.number,
+      });
+    });
+    return out.sort((a, b) => (a.on === b.on ? a.kind.localeCompare(b.kind) : b.on.localeCompare(a.on)));
+  }, [completed, paidIn, sent, invoiceClient]);
+
+  // ── What needs you now ────────────────────────────────────────────────────
+  const overdue = useMemo(
+    () => (ar?.items ?? []).filter((i) => i.days_overdue > 0 && i.committed)
+      .sort((a, b) => b.days_overdue - a.days_overdue),
+    [ar],
+  );
+  const overdueValue = overdue.reduce((s, i) => s + i.amount, 0);
+  const awaitingSupplier = useMemo(
+    () => flows.filter((f) => f.stage === "payment_received" && f.supplier_owed > 0),
+    [flows],
+  );
+  const readyToClose = useMemo(() => flows.filter((f) => f.stage === "supplier_paid"), [flows]);
+
+  // ── What is at risk ───────────────────────────────────────────────────────
+  const aged = useMemo(() => (ar?.items ?? []).filter((i) => i.days_overdue > 30), [ar]);
+  const agedValue = aged.reduce((s, i) => s + i.amount, 0);
+  const speculative = useMemo(() => (ar?.items ?? []).filter((i) => !i.committed), [ar]);
+  const speculativeValue = speculative.reduce((s, i) => s + i.amount, 0);
+  const slipping = useMemo(
+    () => flows.filter((f) => f.stage !== "complete" && f.expected_delivery_date && day(f.expected_delivery_date) < today),
+    [flows, today],
+  );
+
+  const needsNothing = overdue.length === 0 && followups.length === 0
+    && awaitingSupplier.length === 0 && readyToClose.length === 0;
+  const riskNothing = aged.length === 0 && speculative.length === 0 && slipping.length === 0;
+
+  const scopeWord = scope === "today" ? "today" : "this week";
+  const dateLine = scope === "today"
+    ? parseLocalDay(today).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
+    : `${parseLocalDay(weekStart).toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${parseLocalDay(today).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+
   return (
-    <div className="print-area max-w-3xl mx-auto">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-6 print:hidden">
-        <div className="flex items-center gap-3">
-          <h2 className="text-[18px] font-semibold text-ink">Brief</h2>
-          <select
-            value={freq}
-            onChange={(e) => changeFreq(parseInt(e.target.value))}
-            className="h-8 px-2 rounded-lg text-[12px] text-ink-2 bg-transparent focus:outline-none focus:ring-2 focus:ring-accent/40"
-            style={{ border: "1px solid var(--t-b1)" }}
-            title="How often you want briefs"
-          >
-            {FREQ_PRESETS.map((p) => (
-              <option key={p.days} value={p.days}>{p.label}</option>
-            ))}
-            {!FREQ_PRESETS.some((p) => p.days === freq) && (
-              <option value={freq}>{freq}-day</option>
-            )}
-          </select>
-          <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: "var(--t-s3)" }}>
-            <button onClick={goToPrevWeek}
-              className="w-7 h-7 flex items-center justify-center rounded-md text-muted hover:text-ink-2 transition-colors"
-              onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s1)")}
-              onMouseLeave={e => (e.currentTarget.style.background = "")}>
-              <ChevronLeft size={14} />
-            </button>
-            <span className="text-[12px] font-medium text-ink-2 px-1 whitespace-nowrap">
-              {isCurrentWeek ? `Current (${periodLabel})` : brief ? `${brief.week_start} – ${brief.week_end}` : "Previous"}
-            </span>
-            <button onClick={goToNextWeek} disabled={isCurrentWeek}
-              className="w-7 h-7 flex items-center justify-center rounded-md text-muted hover:text-ink-2 transition-colors disabled:opacity-30"
-              onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s1)")}
-              onMouseLeave={e => (e.currentTarget.style.background = "")}>
-              <ChevronRight size={14} />
-            </button>
-          </div>
+    <div className="print-area">
+      {/* ── Toolbar ─────────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div className="min-w-0">
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Brief</h2>
+          <p className="text-[12px] text-muted mt-0.5">{dateLine}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => load(anchorDate)}
-            className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-[13px] text-ink-2 transition-colors"
-            style={{ border: "1px solid var(--t-b1)" }}
-            onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
-            onMouseLeave={e => (e.currentTarget.style.background = "")}>
+        <div className="flex items-center gap-2 print:hidden">
+          <div className="flex items-center gap-0.5 bg-surface-2 border border-line rounded-lg p-0.5">
+            {([["today", "Today"], ["week", "This week"]] as [Scope, string][]).map(([id, label]) => (
+              <button key={id} onClick={() => setScope(id)}
+                className={`px-3 h-7 rounded-md text-[12px] font-medium whitespace-nowrap transition-colors duration-[130ms] ${scope === id ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <button onClick={load}
+            className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-[13px] text-ink-2 border border-line hover:bg-surface-2 transition-colors duration-[130ms]">
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
           </button>
           <button onClick={() => window.print()}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent h-9 px-4 rounded-lg text-[13px] font-medium transition-colors">
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent h-9 px-4 rounded-lg text-[13px] font-medium transition-colors duration-[130ms]">
             <Printer size={14} /> Print
-          </button>
-          <button onClick={() => {
-            if (brief) toast("Emailing briefs isn't set up yet — connect email in Settings → Email", "error");
-          }}
-            className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-[13px] text-ink-2 transition-colors"
-            style={{ border: "1px solid var(--t-b1)" }}
-            onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
-            onMouseLeave={e => (e.currentTarget.style.background = "")}>
-            <Send size={14} /> Email
           </button>
         </div>
       </div>
 
-      {loading ? (
-        <div className="space-y-4 py-2">
-          <div className="h-16 bg-surface-2 rounded-xl animate-pulse" />
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-            {[0, 1, 2, 3].map((i) => <div key={i} className="h-24 bg-surface-2 rounded-xl animate-pulse" />)}
+      {loading && !brief ? (
+        <div className="space-y-4">
+          <div className="h-36 bg-surface-2 rounded-2xl animate-pulse" />
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div className="xl:col-span-2 h-64 bg-surface-2 rounded-2xl animate-pulse" />
+            <div className="h-64 bg-surface-2 rounded-2xl animate-pulse" />
           </div>
-          <div className="h-48 bg-surface-2 rounded-xl animate-pulse" />
         </div>
-      ) : brief ? (
-        <div className="space-y-6">
+      ) : (
+      <div className="space-y-4">
 
-          {/* Header */}
-          <div className="text-center pb-6" style={{ borderBottom: "1px solid var(--t-b1)" }}>
-            <h1 className="text-[24px] font-bold text-ink">{periodLabel} brief</h1>
-            <p className="text-[14px] text-muted mt-2">{brief.week_start} &mdash; {brief.week_end}</p>
-            <p className="text-[11px] text-muted mt-1">
-              Generated {new Date(brief.generated_at).toLocaleString()}
-            </p>
+        {/* ── What happened ──────────────────────────────────────────────── */}
+        <div className="bg-surface border border-line rounded-2xl overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-line-2 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="text-[13px] font-semibold text-ink tracking-tight">What happened {scopeWord}</h3>
+              <p className="text-[11px] text-muted mt-0.5">Deals closed out, money in, invoices sent</p>
+            </div>
+            <StatusPill tone={happenings.length > 0 ? "accent" : "neutral"}>
+              {happenings.length} update{happenings.length !== 1 ? "s" : ""}
+            </StatusPill>
           </div>
 
-          {/* Section 1: At-a-glance hero — one calm divided row (mirrors the dashboard) */}
-          <div>
-            <h2 className="text-[15px] font-semibold text-ink mb-3">This {freq >= 28 ? "month" : freq === 7 ? "week" : "period"} at a glance</h2>
-            <div className="rounded-2xl overflow-hidden" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-              <div className="grid grid-cols-2 xl:grid-cols-4 xl:divide-x xl:divide-line">
-                <HeroCell label="Revenue" value={fmtAmount(brief.revenue_this_week)} extra={changePct(brief.revenue_change_pct)} />
-                <HeroCell label="Profit" value={fmtAmount(brief.profit_this_week)} extra={changePct(brief.profit_change_pct)}
-                  sub={`${(+brief.avg_margin_this_week || 0).toFixed(1)}% margin`} />
-                <HeroCell label="Deals closed" value={String(brief.deals_closed_this_week)} sub={`${brief.deals_lost_this_week} lost`} className="border-t border-line xl:border-t-0" />
-                <HeroCell label="Win rate" value={`${(+brief.win_rate_this_week || 0).toFixed(0)}%`} className="border-t border-line xl:border-t-0" />
-              </div>
-            </div>
+          <div className="grid grid-cols-2 xl:grid-cols-4 xl:divide-x xl:divide-line-2">
+            <Tile label="Deals completed" value={String(completed.length)}
+              sub={completed.length > 0 ? `${fmtAmount(dealRevenue)} revenue` : "Nothing closed out yet"} />
+            <Tile label="Profit booked" value={fmtAmount(dealProfit)}
+              valueCls={moneyCls(dealProfit)}
+              sub="From completed deals only" />
+            <Tile label="Money in" value={fmtAmount(moneyIn)}
+              sub={`${paidIn.length} buyer payment${paidIn.length !== 1 ? "s" : ""}`}
+              className="border-t border-line-2 xl:border-t-0" />
+            <Tile label="Invoices sent" value={String(sent.length)}
+              sub={sent.length > 0 ? fmtAmount(sentTotal) : "None sent yet"}
+              className="border-t border-line-2 xl:border-t-0" />
           </div>
 
-          {/* Section 1b: What people bought — per-deal breakdown (R-255), directly under the at-a-glance hero (R-257) */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-[15px] font-semibold text-ink">
-                What people bought this {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}
-              </h2>
-              <span className="text-[11px] font-medium text-muted px-2 py-0.5 rounded-full"
-                style={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)" }}>
-                {brief.completed_deals?.length ?? 0} deal{(brief.completed_deals?.length ?? 0) !== 1 ? "s" : ""}
-              </span>
+          {happenings.length === 0 ? (
+            <div className="px-5 py-8 text-[13px] text-muted text-center border-t border-line-2">
+              Nothing has been recorded {scopeWord} yet.
             </div>
-
-            <div className="rounded-2xl overflow-hidden" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-              {!brief.completed_deals || brief.completed_deals.length === 0 ? (
-                <div className="text-[13px] text-muted text-center py-6">No deals completed this {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}.</div>
-              ) : (
-                <>
-                  <div className="hidden xl:flex items-center gap-3 px-5 pt-4 pb-2 text-[11px] text-muted">
-                    <span className="w-36 min-w-0">Buyer</span>
-                    <span className="flex-1 min-w-0">Products</span>
-                    <span className="w-32 min-w-0">Supplier</span>
-                    <span className="w-20 min-w-0 text-right">Revenue</span>
-                    <span className="w-20 min-w-0 text-right">Profit</span>
-                  </div>
-                  <div className="divide-y divide-line">
-                    {brief.completed_deals.map((d) => (
-                      <BoughtRow key={d.deal_flow_id} deal={d} />
-                    ))}
-                  </div>
-                </>
+          ) : (
+            <div className="divide-y divide-line-2 border-t border-line-2">
+              {happenings.slice(0, 8).map((h) => (
+                <HappeningRow key={h.key} h={h} showDate={scope === "week"} />
+              ))}
+              {happenings.length > 8 && (
+                <div className="px-5 py-2.5 text-[12px] text-muted">
+                  {happenings.length - 8} more {scope === "today" ? "today" : "this week"}
+                </div>
               )}
             </div>
-          </div>
+          )}
+        </div>
 
-          {/* Section 2: Profit from deal flows */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-[15px] font-semibold text-ink flex items-center gap-2">
-                <GitBranch size={15} className="text-accent" />
-                Profit from deal flows
-              </h2>
-              <span className="text-[11px] font-medium text-muted px-2 py-0.5 rounded-full"
-                style={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)" }}>
-                {brief.completed_deals_this_week} deal{brief.completed_deals_this_week !== 1 ? "s" : ""} completed
-              </span>
+        {/* ── Needs you now · at risk · people ───────────────────────────── */}
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+
+          <div className="xl:col-span-2 min-w-0 bg-surface border border-line rounded-2xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-line-2">
+              <h3 className="text-[13px] font-semibold text-ink tracking-tight">What needs you now</h3>
+              <p className="text-[11px] text-muted mt-0.5">Chasing, calls and deals waiting on a step from you</p>
             </div>
 
-            <div className="rounded-xl p-5 space-y-4" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-              {/* Net profit */}
-              <div className="flex items-center justify-between">
-                <div className="text-[13px] text-muted">Net profit</div>
-                <div className="flex items-center gap-2">
-                  <span className={`text-[26px] font-bold ${brief.net_profit_this_week >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
-                    {fmtAmount(brief.net_profit_this_week)}
-                  </span>
-                  <span className="text-[12px]">{changePct(brief.net_profit_change_pct)}</span>
+            {needsNothing ? (
+              <div className="py-10 flex flex-col items-center">
+                <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-success-ink mb-3">
+                  <CheckCircle2 size={18} />
+                </div>
+                <div className="text-[13px] text-muted">All clear — nothing needs you right now</div>
+              </div>
+            ) : (
+              <div className="divide-y divide-line-2">
+                {overdue.length > 0 && (
+                  <ActionRow
+                    tone="danger" icon={<CalendarClock size={14} />}
+                    title={`${overdue.length} invoice${overdue.length !== 1 ? "s" : ""} overdue`}
+                    sub="Chase these first"
+                    amount={fmtAmount(overdueValue)}
+                    onClick={() => goTab("receivables")}
+                  />
+                )}
+                {overdue.slice(0, 4).map((i) => <OverdueRow key={i.invoice_id} item={i} />)}
+                {overdue.length > 4 && (
+                  <button onClick={() => goTab("receivables")}
+                    className="w-full flex items-center gap-2 px-5 py-2.5 text-left text-[12px] text-accent font-medium hover:bg-surface-2/40 transition-colors duration-[130ms]">
+                    {overdue.length - 4} more overdue <ArrowRight size={12} className="text-faint" />
+                  </button>
+                )}
+
+                {followups.length > 0 && (
+                  <ActionRow
+                    tone="warning" icon={<Clock size={14} />}
+                    title={`${followups.length} follow-up${followups.length !== 1 ? "s" : ""} due`}
+                    sub={followups.slice(0, 3).map((c) => c.name).join(", ") + (followups.length > 3 ? "…" : "")}
+                    onClick={() => goTab("clients")}
+                  />
+                )}
+
+                {awaitingSupplier.length > 0 && (
+                  <ActionRow
+                    tone="neutral" icon={<Banknote size={14} />}
+                    title={`${awaitingSupplier.length} deal${awaitingSupplier.length !== 1 ? "s" : ""} waiting on a supplier payment`}
+                    sub="Paid by the buyer, supplier still owed"
+                    amount={fmtAmount(awaitingSupplier.reduce((s, f) => s + f.supplier_owed, 0))}
+                    onClick={() => goTab("dealflow")}
+                  />
+                )}
+
+                {readyToClose.length > 0 && (
+                  <ActionRow
+                    tone="success" icon={<PackageCheck size={14} />}
+                    title={`${readyToClose.length} deal${readyToClose.length !== 1 ? "s" : ""} ready to close out`}
+                    sub="Supplier paid — mark them complete to book the profit"
+                    onClick={() => goTab("dealflow")}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="min-w-0 space-y-4">
+            {/* At risk */}
+            <div className="bg-surface border border-line rounded-2xl overflow-hidden">
+              <div className="px-5 py-3.5 border-b border-line-2">
+                <h3 className="text-[13px] font-semibold text-ink tracking-tight">What is at risk</h3>
+                <p className="text-[11px] text-muted mt-0.5">Money and dates that have slipped</p>
+              </div>
+              {riskNothing ? (
+                <div className="px-5 py-8 text-[13px] text-muted text-center">Nothing aged or slipping.</div>
+              ) : (
+                <div className="divide-y divide-line-2">
+                  {aged.length > 0 && (
+                    <RiskRow
+                      icon={<AlertTriangle size={14} />} tone="danger"
+                      title={`${aged.length} receivable${aged.length !== 1 ? "s" : ""} over 30 days`}
+                      value={fmtAmount(agedValue)} onClick={() => goTab("receivables")}
+                    />
+                  )}
+                  {slipping.length > 0 && (
+                    <RiskRow
+                      icon={<Truck size={14} />} tone="warning"
+                      title={`${slipping.length} delivery date${slipping.length !== 1 ? "s" : ""} passed`}
+                      value={`${slipping.length} deal${slipping.length !== 1 ? "s" : ""}`}
+                      onClick={() => goTab("dealflow")}
+                    />
+                  )}
+                  {speculative.length > 0 && (
+                    <RiskRow
+                      icon={<Receipt size={14} />} tone="neutral"
+                      title={`${speculative.length} invoice${speculative.length !== 1 ? "s" : ""} not yet committed`}
+                      value={fmtAmount(speculativeValue)} onClick={() => goTab("receivables")}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* People and activity — brief-window figures, labelled with that window */}
+            {brief && (
+              <div className="bg-surface border border-line rounded-2xl overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-line-2">
+                  <h3 className="text-[13px] font-semibold text-ink tracking-tight">New clients and interactions</h3>
+                  <p className="text-[11px] text-muted mt-0.5">{shortDate(brief.week_start)} – {shortDate(brief.week_end)}</p>
+                </div>
+                <div className="grid grid-cols-2 divide-x divide-line-2">
+                  <CountCell icon={<Users size={16} />} value={brief.new_clients_this_week} label="new clients" />
+                  <CountCell icon={<FileText size={16} />} value={brief.interactions_this_week} label="interactions" />
                 </div>
               </div>
+            )}
+          </div>
+        </div>
 
-              {/* Payout split — config-driven; shown only when recipients are set up.
-                  Never assumes a split or shows partner names. */}
+        {/* ── Where the profit went ──────────────────────────────────────── */}
+        {brief && (
+          <div className="bg-surface border border-line rounded-2xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-line-2 flex items-center justify-between gap-3 flex-wrap">
+              <div className="min-w-0">
+                <h3 className="text-[13px] font-semibold text-ink tracking-tight">Where the profit went</h3>
+                <p className="text-[11px] text-muted mt-0.5">Each recipient's cut, {shortDate(brief.week_start)} – {shortDate(brief.week_end)}</p>
+              </div>
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-[11px] text-muted">Net profit</span>
+                <span className={`text-[20px] font-bold tabular-nums ${moneyCls(brief.net_profit_this_week)}`}>
+                  {fmtAmount(brief.net_profit_this_week)}
+                </span>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-4">
               {brief.payout_totals && brief.payout_totals.length > 0 ? (
                 <>
-                  <div className="text-[11px] text-muted">
-                    Each recipient's cut this period ({brief.week_start} – {brief.week_end})
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
                     {(() => {
                       let nb = 0;
                       return brief.payout_totals.map((r, i) => {
@@ -260,25 +421,24 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                         return (
                           <SplitBox key={i}
                             accent={c.accent} accentBg={c.accentBg} accentBorder={c.accentBorder}
-                            label={r.name} value={fmtAmount(r.this_week)} labelColor={c.labelColor}
+                            label={r.name} value={fmtAmount(r.this_week)}
                           />
                         );
                       });
                     })()}
                   </div>
 
-                  {/* Month-to-date */}
                   {brief.net_profit_this_month !== 0 && (
-                    <div className="flex items-center justify-between gap-3 flex-wrap text-[12px] text-muted pt-3"
-                      style={{ borderTop: "1px solid var(--t-b1)" }}>
-                      <span>
-                        {parseLocalDay(brief.week_start).toLocaleString("en-US", { month: "long" })} so far: <span className="font-semibold text-ink-2">{fmtAmount(brief.net_profit_this_month)}</span> profit
+                    <div className="flex items-center justify-between gap-3 flex-wrap text-[12px] text-muted pt-3 border-t border-line-2">
+                      <span className="min-w-0">
+                        {parseLocalDay(brief.week_start).toLocaleString("en-US", { month: "long" })} so far:{" "}
+                        <span className="font-semibold text-ink-2 tabular-nums">{fmtAmount(brief.net_profit_this_month)}</span> profit
                       </span>
-                      <span className="text-right">
+                      <span className="min-w-0 text-right">
                         {brief.payout_totals.map((r, i) => (
                           <span key={i}>
                             {i > 0 && <span className="mx-1.5">&middot;</span>}
-                            {r.name} MTD: <span className="font-medium text-ink-2">{fmtAmount(r.this_month)}</span>
+                            {r.name} to date: <span className="font-medium text-ink-2 tabular-nums">{fmtAmount(r.this_month)}</span>
                           </span>
                         ))}
                       </span>
@@ -286,311 +446,176 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                   )}
                 </>
               ) : (
-                /* Unconfigured → net only + a setup link (no assumed split, no names) */
-                <div className="flex items-center justify-between gap-3 flex-wrap pt-1">
-                  <span className="text-[12px] text-muted">Set up a payout split to see how each recipient's cut breaks down.</span>
-                  <button
-                    onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "settings" }))}
-                    className="text-[12px] font-medium text-accent hover:underline"
-                  >
-                    Set up payout split →
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <span className="text-[12px] text-muted min-w-0">Set up a payout split to see how each recipient's cut breaks down.</span>
+                  <button onClick={() => goTab("settings")}
+                    className="text-[12px] font-medium text-accent hover:underline">
+                    Set up payout split
                   </button>
                 </div>
               )}
 
-              {/* Explicit margin breakdown + all-time month history (per Jack) */}
-              <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-[12px] text-muted pt-3"
-                style={{ borderTop: "1px solid var(--t-b1)" }}>
-                <span className="font-medium text-ink-2">Margin</span>
-                <span>This month <span className="font-semibold text-ink-2">{(+brief.avg_margin_this_month || 0).toFixed(1)}%</span></span>
-                <span>All-time <span className="font-semibold text-ink-2">{(+brief.avg_margin_all_time || 0).toFixed(1)}%</span></span>
-              </div>
-
-              {brief.monthly_breakdown?.length > 0 && (
-                <div className="pt-3" style={{ borderTop: "1px solid var(--t-b1)" }}>
-                  <div className="text-[12px] font-medium text-ink-2 mb-2">Every month you've closed deals</div>
-                  {/* These rows are deal-scoped, so the money column is the deals' own
-                      revenue — not the paid-invoice revenue in the headline above, which
-                      is a different (larger) figure. The header says so explicitly. */}
-                  <div className="flex items-center gap-3 text-[11px] text-muted mb-1">
-                    <span className="w-24">Month</span>
-                    <span className="w-16">Deals</span>
-                    <span className="flex-1">Deal revenue</span>
-                    <span className="w-20 text-right">Profit</span>
-                    <span className="w-14 text-right">Margin</span>
-                  </div>
-                  <div className="space-y-1">
-                    {[...brief.monthly_breakdown].reverse().map((m) => (
-                      <div key={m.month} className="flex items-center gap-3 text-[12px]">
-                        <span className="w-24 text-ink-2 font-medium">{parseLocalDay(m.month).toLocaleString("en-US", { month: "short", year: "numeric" })}</span>
-                        <span className="text-muted w-16 tabular-nums">{m.count}</span>
-                        <span className="text-muted tabular-nums flex-1">{fmtAmount(m.revenue)}</span>
-                        <span className={`tabular-nums font-medium w-20 text-right ${m.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(m.net_profit)}</span>
-                        <span className="text-muted tabular-nums w-14 text-right">{(+m.margin_pct || 0).toFixed(1)}%</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Loss warning */}
-              {brief.loss_deals_this_week > 0 && (
-                <div className="flex items-center gap-2 bg-warning-bg border border-warning rounded-lg px-4 py-2.5">
-                  <AlertCircle size={14} className="text-warning-ink flex-shrink-0" />
-                  <span className="text-[12px] text-warning-ink">
-                    {brief.loss_deals_this_week} deal{brief.loss_deals_this_week !== 1 ? "s" : ""} lost money this period:{" "}
-                    <span className="font-semibold">{fmtAmount(brief.loss_total_this_week)}</span>
-                  </span>
-                </div>
-              )}
-
-              {/* Refunded deals — happened but fell through */}
-              {brief.refunded_deals_this_week > 0 && (
-                <div className="flex items-center gap-2 bg-warning-bg border border-warning rounded-lg px-4 py-2.5">
-                  <AlertCircle size={14} className="text-warning-ink flex-shrink-0" />
-                  <span className="text-[12px] text-warning-ink">
-                    {brief.refunded_deals_this_week} deal{brief.refunded_deals_this_week !== 1 ? "s" : ""} refunded this period — happened but fell through:{" "}
-                    <span className="font-semibold">{fmtAmount(brief.refunded_total_this_week)}</span> returned
-                  </span>
-                </div>
-              )}
-
-              {/* Rep's own earnings (shown when viewing a single rep's brief) */}
               {brief.rep_earnings_this_week > 0 && (
-                <div className="flex items-center justify-between bg-surface border border-line rounded-lg px-4 py-2.5">
-                  <span className="text-[12px] text-muted">Your earnings this period (after any refunds)</span>
+                <div className="flex items-center justify-between gap-3 bg-surface-2 border border-line rounded-lg px-4 py-2.5">
+                  <span className="text-[12px] text-muted min-w-0">Your earnings this period, after any refunds</span>
                   <span className="text-[15px] font-bold text-success-ink tabular-nums">{fmtAmount(brief.rep_earnings_this_week)}</span>
                 </div>
               )}
-
-              <div className="text-[10px] text-muted italic">
-                Profit calculated from completed deal flows only
-              </div>
             </div>
           </div>
+        )}
 
-          {/* Section 3: Receivables & Follow-ups */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="rounded-xl p-4" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-              <h3 className="text-[13px] font-semibold text-ink mb-3">Receivables</h3>
-              {brief.overdue_invoices_count > 0 ? (
-                <div>
-                  <div className="text-[28px] font-bold text-danger-ink leading-none">{brief.overdue_invoices_count}</div>
-                  <div className="text-[12px] text-muted mt-1">overdue invoice{brief.overdue_invoices_count !== 1 ? "s" : ""}</div>
-                  <div className="text-[18px] font-bold text-danger-ink mt-2">{fmtAmount(brief.overdue_invoices_value)}</div>
-                </div>
-              ) : (
-                <div className="text-[13px] text-success-ink font-medium">No overdue invoices</div>
-              )}
-            </div>
-            <div className="rounded-xl p-4" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-              <h3 className="text-[13px] font-semibold text-ink mb-3">Follow-ups</h3>
-              {brief.follow_ups_due > 0 ? (
-                <div>
-                  <div className="text-[28px] font-bold text-warning-ink leading-none">{brief.follow_ups_due}</div>
-                  <div className="text-[12px] text-muted mt-1">follow-ups due today</div>
-                </div>
-              ) : (
-                <div className="text-[13px] text-success-ink font-medium">All caught up</div>
-              )}
-            </div>
-          </div>
-
-          {/* Section 4: Highlights */}
-          {(brief.best_margin_deal || brief.worst_margin_deal || brief.biggest_invoice) && (
-            <div>
-              <h2 className="text-[15px] font-semibold text-ink mb-3">This {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}'s highlights</h2>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                {brief.best_margin_deal && (
-                  <HighlightCard
-                    accent="emerald"
-                    title="Best margin"
-                    name={brief.best_margin_deal.title}
-                    sub={brief.best_margin_deal.client_name}
-                    stat={`${brief.best_margin_deal.margin_pct.toFixed(1)}%`}
-                  />
-                )}
-                {brief.worst_margin_deal && (
-                  <HighlightCard
-                    accent="amber"
-                    title="Lowest margin"
-                    name={brief.worst_margin_deal.title}
-                    sub={brief.worst_margin_deal.client_name}
-                    stat={`${brief.worst_margin_deal.margin_pct.toFixed(1)}%`}
-                  />
-                )}
-                {brief.biggest_invoice && (
-                  <HighlightCard
-                    accent="indigo"
-                    title="Biggest invoice"
-                    name={brief.biggest_invoice.number}
-                    sub={brief.biggest_invoice.client_name}
-                    stat={fmtAmount(brief.biggest_invoice.total)}
-                  />
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Section 5: Activity */}
-          <div>
-            <h2 className="text-[15px] font-semibold text-ink mb-3">Activity this {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="rounded-xl p-4 flex items-center gap-4"
-                style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                  style={{ background: "var(--accent-tint)" }}>
-                  <Users size={18} className="text-accent" />
-                </div>
-                <div>
-                  <div className="text-[24px] font-bold text-ink leading-none">{brief.new_clients_this_week}</div>
-                  <div className="text-[12px] text-muted mt-0.5">new clients</div>
-                </div>
-              </div>
-              <div className="rounded-xl p-4 flex items-center gap-4"
-                style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                  style={{ background: "rgba(124,58,237,0.1)" }}>
-                  <Target size={18} className="text-accent" />
-                </div>
-                <div>
-                  <div className="text-[24px] font-bold text-ink leading-none">{brief.interactions_this_week}</div>
-                  <div className="text-[12px] text-muted mt-0.5">interactions logged</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
+        {/* Where the numbers went (R-316) */}
+        <div className="flex items-center justify-between gap-3 flex-wrap px-1 pb-2">
+          <span className="text-[12px] text-muted min-w-0">
+            Revenue, margins, monthly history, win rate and what people bought now live on Analytics.
+          </span>
+          <button onClick={() => goTab("analytics")}
+            className="flex items-center gap-1.5 text-[12px] font-medium text-accent hover:underline print:hidden">
+            Open analytics <ArrowRight size={12} />
+          </button>
         </div>
-      ) : null}
-    </div>
-  );
-}
-
-// ─── Stat card (at-a-glance row) ─────────────────────────────────────────────
-// One cell of the at-a-glance hero row (the row card owns the border).
-function HeroCell({
-  label, value, extra, sub, className = "",
-}: { label: string; value: string; extra?: React.ReactNode; sub?: string; className?: string }) {
-  return (
-    <div className={`p-5 ${className}`}>
-      <div className="text-[12.5px] font-medium text-muted">{label}</div>
-      <div className="text-[24px] font-bold text-ink tabular-nums mt-1.5 leading-none">{value}</div>
-      {(extra || sub) && (
-        <div className="mt-1.5 flex items-center gap-2 text-[12px]">
-          {extra}
-          {sub && <span className="text-[11px] text-faint">{sub}</span>}
-        </div>
+      </div>
       )}
     </div>
   );
 }
 
-// ─── Profit split box ─────────────────────────────────────────────────────────
-function SplitBox({
-  accent, accentBg, accentBorder, label, value, labelColor,
-}: {
-  accent: string;
-  accentBg: string;
-  accentBorder: string;
-  label: string;
-  value: string;
-  labelColor: string;
+// ─── One cell of the "what happened" row (the card owns the border) ──────────
+function Tile({ label, value, sub, valueCls = "text-ink", className = "" }: {
+  label: string; value: string; sub?: string; valueCls?: string; className?: string;
 }) {
   return (
-    <div
-      className="rounded-xl p-4 text-center"
-      style={{
-        background: accentBg,
-        border: `1px solid ${accentBorder}`,
-        borderTop: `2.5px solid ${accent}`,
-      }}
-    >
-      <div className="text-[12.5px] font-medium mb-2" style={{ color: labelColor }}>
-        {label}
-      </div>
-      <div className="text-[20px] font-bold text-ink tabular-nums">{value}</div>
+    <div className={`p-5 min-w-0 ${className}`}>
+      <div className="text-[12px] font-medium text-muted truncate">{label}</div>
+      <div className={`text-[24px] font-bold tabular-nums mt-1.5 leading-none truncate ${valueCls}`}>{value}</div>
+      {sub && <div className="text-[11px] text-faint mt-1.5 truncate">{sub}</div>}
     </div>
   );
 }
 
-// ─── Highlight card ───────────────────────────────────────────────────────────
-function HighlightCard({
-  accent, title, name, sub, stat,
-}: { accent: "emerald" | "amber" | "indigo"; title: string; name: string; sub: string; stat: string }) {
-  const clr = {
-    emerald: { label: "text-success-ink", stat: "text-success-ink", borderClr: "rgba(16,185,129,0.25)" },
-    amber:   { label: "text-warning-ink",   stat: "text-warning-ink",   borderClr: "rgba(245,158,11,0.25)"  },
-    indigo:  { label: "text-accent",  stat: "text-ink",    borderClr: "var(--accent-glow)"  },
-  }[accent];
+// ─── One recorded event in the window ───────────────────────────────────────
+const HAPPENING_ICON = {
+  deal:    <PackageCheck size={14} />,
+  payment: <Banknote size={14} />,
+  invoice: <FileText size={14} />,
+};
+const HAPPENING_TONE = {
+  deal:    "bg-success-bg text-success-ink",
+  payment: "bg-accent/10 text-accent-hover",
+  invoice: "bg-surface-2 text-ink-2",
+};
 
-  return (
-    <div className="rounded-xl p-4 bg-surface" style={{ border: `1px solid ${clr.borderClr}` }}>
-      <div className={`text-[12.5px] font-medium mb-2 ${clr.label}`}>{title}</div>
-      <div className="text-[13px] font-semibold text-ink truncate">{name}</div>
-      <div className="text-[11px] text-muted mt-0.5 truncate">{sub}</div>
-      <div className={`text-[18px] font-bold mt-2 ${clr.stat}`}>{stat}</div>
-    </div>
-  );
-}
-
-// ─── "What people bought" row (R-255) ────────────────────────────────────────
-// One completed deal: buyer, products bought (shipping stripped upstream),
-// goods supplier(s), revenue, profit. Same content on desktop (five columns,
-// xl:+) and mobile (four stacked lines) — no design differs between them.
-function BoughtRow({ deal }: { deal: BriefDeal }) {
-  const dateLabel = parseLocalDay(deal.completed_on).toLocaleString("en-US", { month: "short", day: "numeric" });
-  const visible = deal.products.slice(0, 4);
-  const moreCount = deal.products.length - visible.length;
-  const supplierText = deal.suppliers.length > 0 ? deal.suppliers.join(", ") : "No supplier";
-  const profitCls = deal.net_profit >= 0 ? "text-success-ink" : "text-danger-ink";
-
-  const chips = (
-    <div className="flex flex-wrap gap-1.5">
-      {visible.map((p, i) => (
-        <span key={i}
-          className="rounded-md px-2 py-0.5 text-[12px] text-ink-2 tabular-nums truncate max-w-full"
-          style={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)" }}>
-          {p.name}{p.qty > 1 ? ` × ${Math.round(p.qty).toLocaleString()}` : ""}
-        </span>
-      ))}
-      {moreCount > 0 && (
-        <span className="rounded-md px-2 py-0.5 text-[12px] text-muted whitespace-nowrap flex-shrink-0"
-          style={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)" }}>
-          +{moreCount} more
-        </span>
-      )}
-    </div>
-  );
-
-  return (
-    <div>
-      {/* Desktop: five columns, xl:+ */}
-      <div className="hidden xl:flex items-center gap-3 px-5 py-3">
-        <div className="w-36 min-w-0">
-          <div className="text-[13px] font-medium text-ink truncate">{deal.client_name}</div>
-          <div className="text-[11px] text-muted truncate">{dateLabel} &middot; {deal.invoice_number}</div>
-        </div>
-        <div className="flex-1 min-w-0">{chips}</div>
-        <div className="w-32 min-w-0 text-[12px] text-ink-2 truncate">{supplierText}</div>
-        <div className="w-20 min-w-0 text-[12px] text-muted tabular-nums text-right">{fmtAmount(deal.revenue)}</div>
-        <div className={`w-20 min-w-0 text-[12px] font-medium tabular-nums text-right ${profitCls}`}>{fmtAmount(deal.net_profit)}</div>
-      </div>
-
-      {/* Mobile: four stacked lines, below xl */}
-      <div className="xl:hidden px-4 py-3 space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-[13px] font-semibold text-ink truncate min-w-0">{deal.client_name}</div>
-          <div className={`text-[13px] font-medium tabular-nums flex-shrink-0 ${profitCls}`}>{fmtAmount(deal.net_profit)}</div>
-        </div>
+function HappeningRow({ h, showDate }: { h: Happening; showDate: boolean }) {
+  const amountCls = h.signed ? moneyCls(h.amount) : "text-ink";
+  const body = (
+    <>
+      <span className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${HAPPENING_TONE[h.kind]}`}>
+        {HAPPENING_ICON[h.kind]}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium text-ink truncate">{h.title}</div>
         <div className="text-[11px] text-muted truncate">
-          {dateLabel} &middot; {deal.invoice_number} &middot; {fmtAmount(deal.revenue)}
-        </div>
-        {chips}
-        <div className="text-[12px] text-ink-2 truncate">
-          {deal.suppliers.length > 0 ? `From ${supplierText}` : "No supplier"}
+          {showDate && <>{parseLocalDay(h.on).toLocaleDateString("en-US", { weekday: "short" })} &middot; </>}
+          {h.meta}
         </div>
       </div>
+      <span className={`text-[13px] font-semibold tabular-nums flex-shrink-0 ${amountCls}`}>
+        {/* The app writes a loss as −$1,350.00, never $-1,350.00: fmtAmount only
+            ever prefixes the dollar sign, so the sign is placed here. */}
+        {h.amount < 0 ? `−${fmtAmount(Math.abs(h.amount))}` : fmtAmount(h.amount)}
+      </span>
+    </>
+  );
+  if (!h.invoiceNumber) return <div className="flex items-center gap-3 px-5 py-3">{body}</div>;
+  return (
+    <button onClick={() => openDeal(h.invoiceNumber)}
+      className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors duration-[130ms] group">
+      {body}
+      <ArrowRight size={13} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity duration-[130ms] flex-shrink-0" />
+    </button>
+  );
+}
+
+// ─── One thing waiting on you ───────────────────────────────────────────────
+const ACTION_TONE = {
+  danger:  "bg-danger-bg text-danger-ink",
+  warning: "bg-warning-bg text-warning-ink",
+  success: "bg-success-bg text-success-ink",
+  neutral: "bg-surface-2 text-ink-2",
+};
+
+function ActionRow({ tone, icon, title, sub, amount, onClick }: {
+  tone: keyof typeof ACTION_TONE; icon: React.ReactNode;
+  title: string; sub: string; amount?: string; onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick}
+      className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors duration-[130ms] group">
+      <span className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${ACTION_TONE[tone]}`}>{icon}</span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium text-ink truncate">{title}</div>
+        <div className="text-[11px] text-muted truncate">{sub}</div>
+      </div>
+      {amount && <span className="text-[13px] font-bold text-ink tabular-nums flex-shrink-0">{amount}</span>}
+      <ArrowRight size={13} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity duration-[130ms] flex-shrink-0" />
+    </button>
+  );
+}
+
+// ─── One overdue invoice, named so it can actually be chased ────────────────
+function OverdueRow({ item }: { item: ARItem }) {
+  return (
+    <button onClick={() => openDeal(item.invoice_number)}
+      className="w-full flex items-center gap-3 pl-16 pr-5 py-2.5 text-left hover:bg-surface-2/40 transition-colors duration-[130ms] group">
+      <div className="min-w-0 flex-1">
+        <div className="text-[12.5px] text-ink truncate">{item.client_name}</div>
+        <div className="text-[11px] text-muted truncate">{item.invoice_number} &middot; due {shortDate(item.due_date)}</div>
+      </div>
+      <StatusPill tone={item.days_overdue > 30 ? "danger" : "warning"}>
+        {item.days_overdue}d late
+      </StatusPill>
+      <span className="text-[12.5px] font-medium text-ink tabular-nums flex-shrink-0 w-24 text-right">{fmtAmount(item.amount)}</span>
+    </button>
+  );
+}
+
+// ─── One at-risk line ───────────────────────────────────────────────────────
+function RiskRow({ icon, tone, title, value, onClick }: {
+  icon: React.ReactNode; tone: keyof typeof ACTION_TONE; title: string; value: string; onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick}
+      className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors duration-[130ms]">
+      <span className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${ACTION_TONE[tone]}`}>{icon}</span>
+      <span className="text-[12.5px] text-ink-2 min-w-0 flex-1 truncate">{title}</span>
+      <span className="text-[12.5px] font-semibold text-ink tabular-nums flex-shrink-0">{value}</span>
+    </button>
+  );
+}
+
+// ─── One counted figure ─────────────────────────────────────────────────────
+function CountCell({ icon, value, label }: { icon: React.ReactNode; value: number; label: string }) {
+  return (
+    <div className="px-5 py-4 flex items-center gap-3 min-w-0">
+      <span className="w-9 h-9 rounded-xl bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0">{icon}</span>
+      <div className="min-w-0">
+        <div className="text-[22px] font-bold text-ink leading-none tabular-nums">{value}</div>
+        <div className="text-[11px] text-muted mt-1 leading-tight">{label}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Profit split box ───────────────────────────────────────────────────────
+function SplitBox({ accent, accentBg, accentBorder, label, value }: {
+  accent: string; accentBg: string; accentBorder: string; label: string; value: string;
+}) {
+  return (
+    <div className="rounded-xl p-4 text-center min-w-0"
+      style={{ background: accentBg, border: `1px solid ${accentBorder}`, borderTop: `2.5px solid ${accent}` }}>
+      <div className="text-[12.5px] font-medium text-ink-2 mb-2 truncate">{label}</div>
+      <div className="text-[20px] font-bold text-ink tabular-nums truncate">{value}</div>
     </div>
   );
 }

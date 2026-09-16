@@ -366,6 +366,19 @@
       "port": 8310
     },
     {
+      "name": "desktop-harness-r316",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5198",
+        "--strictPort"
+      ],
+      "port": 5198
+    },
+    {
       "name": "desktop-harness-r312",
       "runtimeExecutable": "npm",
       "runtimeArgs": [
@@ -377,6 +390,69 @@
         "--strictPort"
       ],
       "port": 5312
+    },
+    {
+      "name": "harness-r316-analytics",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5317",
+        "--strictPort"
+      ],
+      "port": 5317
+    },
+    {
+      "name": "phone-r316",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8316",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/353e1624-1859-4117-9b8f-94f4daccab4e/scratchpad/phone"
+      ],
+      "port": 8316
+    },
+    {
+      "name": "desktop-harness-r317",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5196",
+        "--strictPort"
+      ],
+      "port": 5196
+    },
+    {
+      "name": "desktop-harness-r318",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5318",
+        "--strictPort"
+      ],
+      "port": 5318
+    },
+    {
+      "name": "phone-r318",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8318",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/a602a337-e753-41c1-8704-8473a27e4379/scratchpad/phone"
+      ],
+      "port": 8318
     }
   ]
 }

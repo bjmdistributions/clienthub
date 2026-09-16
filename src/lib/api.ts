@@ -1623,6 +1623,184 @@ export interface DashboardStats {
   true_net_enabled: boolean;
 }
 
+// ── Analytics (R-316) ────────────────────────────────────────────────────────
+// `get_analytics_range`'s payload. Every field is range-scoped and built off the same
+// deal population as `total_revenue`/`total_profit`, so no two figures on the Analytics
+// screen can disagree. Additive to what R-313 already returned.
+
+export interface AnalyticsMonth {
+  month: string;              // "YYYY-MM"
+  revenue: number;
+  cost: number;
+  profit: number;
+  shipping: number;
+  fees: number;
+  true_net: number;
+  count: number;              // deals closed that month
+  margin_pct: number;
+  overhead_pct: number;       // (shipping + fees) / revenue
+}
+
+export interface AnalyticsClientShare {
+  name: string;
+  revenue: number;
+  profit: number;
+  pct: number;
+}
+
+export interface AnalyticsSupplierShare {
+  name: string;
+  deal_count: number;
+  total_paid: number;
+  pct: number;
+}
+
+export interface AnalyticsDeal {
+  deal_flow_id: string;
+  invoice_id: string;
+  invoice_number: string;
+  client_name: string;
+  completed_on: string;       // bare YYYY-MM-DD
+  products: { name: string; qty: number }[];
+  suppliers: string[];
+  revenue: number;
+  net_profit: number;
+}
+
+export interface AnalyticsRange {
+  total_revenue: number;
+  total_cost: number;
+  total_profit: number;
+  avg_margin: number;
+  deal_count: number;
+  deals_lost: number;
+  refunded_in_range: number;
+  total_shipping: number;
+  total_fees: number;
+  true_net: number;
+  monthly_profit: AnalyticsMonth[];
+  top_clients_by_profit: { name: string; total_revenue: number; total_profit: number; margin: number }[];
+  // Overhead as a share of revenue — the read that survives a change in month size.
+  overhead_ratio: number;
+  // Concentration is a risk read, not a leaderboard: one buyer at 40% of revenue is a
+  // different business from five at 8% each.
+  concentration: {
+    client_count: number; total_revenue: number;
+    top1_pct: number; top3_pct: number; top5_pct: number;
+  };
+  top_revenue_clients: AnalyticsClientShare[];
+  supplier_concentration: { supplier_count: number; total_spend: number; top1_pct: number; top3_pct: number };
+  top_suppliers_range: AnalyticsSupplierShare[];
+  // Classified per DEAL against the buyer's earliest completed deal of all time, so an
+  // unbounded range still splits instead of reading 100% new.
+  repeat_new: {
+    new_clients: number; new_deals: number; new_revenue: number; new_profit: number;
+    repeat_clients: number; repeat_deals: number; repeat_revenue: number; repeat_profit: number;
+  };
+  margin_bands: { label: string; deals: number; revenue: number; profit: number }[];
+  velocity: {
+    median_days: number | null;
+    deals_measured: number;
+    by_month: { month: string; deals: number; median_days: number | null }[];
+  };
+  // Null unless today sits inside the range and its month has a bucket. Drawn dashed.
+  run_rate: {
+    month: string; days_elapsed: number; days_in_month: number;
+    revenue_so_far: number; profit_so_far: number;
+    projected_revenue: number; projected_profit: number;
+  } | null;
+  loss_deals: number;
+  loss_total: number;
+  refunded_deals: number;
+  best_margin_deal: AnalyticsDealHighlight | null;
+  worst_margin_deal: AnalyticsDealHighlight | null;
+  biggest_invoice: { invoice_id: string; client_name: string; number: string; total: number } | null;
+  completed_deals: AnalyticsDeal[];
+  completed_deals_capped: boolean;
+  new_clients: number;
+  interactions: number;
+  revenue_all_time: number;
+  profit_all_time: number;
+  margin_all_time: number;
+  revenue_this_month: number;
+  profit_this_month: number;
+  margin_this_month: number;
+}
+
+export interface AnalyticsDealHighlight {
+  deal_id: string;
+  client_name: string;
+  title: string;
+  revenue: number;
+  margin_pct: number;
+  net_profit: number;
+}
+
+// ── Reconciliation (R-317) ──────────────────────────────────────────────────
+// `analytics_reconciliation`'s payload. Built off the same deal population and the same
+// SQL constants as `get_analytics_range`, so no figure here can disagree with the ones
+// already on the screen.
+
+/** One line of a bridge. `amount` is the SIGNED contribution — a subtract row is
+ *  already negative. `running` and `drift` are set only on a subtotal or the total. */
+export interface ReconRow {
+  label: string;
+  hint: string;
+  amount: number;
+  kind: "start" | "subtract" | "subtotal" | "total" | "adjust" | "residual";
+  /** The sum of the rows above this one. Never what is displayed. */
+  running: number | null;
+  /** Read independently − running. Non-zero is a real disagreement in the book. */
+  drift: number | null;
+}
+
+export interface ReconDeal {
+  invoice_number: string;
+  client_name: string;
+  completed_on: string;       // bare YYYY-MM-DD
+  money_in: number;           // buyer_payment allocations behind the deal
+  money_out: number;          // supplier_payment + fee allocations
+  refunds: number;
+  profit: number;             // refund-aware, the same figure as everywhere else
+  true_net_share: number;     // profit less this deal's share of shipping and fees
+  /** "No buyer link" / "No supplier link" — a closed deal missing bank evidence. */
+  flags: string[];
+}
+
+export interface AnalyticsReconciliation {
+  bridge: ReconRow[];
+  /** Largest absolute drift across the bridge's subtotals, in cents. */
+  bridge_drift: number;
+  bridge_ties: boolean;
+  bank: {
+    rows: ReconRow[];
+    money_in: number;
+    money_out: number;
+    bank_net: number;
+    /** What is left after every named reason. Shown plainly when it is not zero. */
+    residual: number;
+    ties: boolean;
+    orphan_allocations: number;
+    orphan_amount: number;
+  };
+  deals: ReconDeal[];
+  deals_capped: boolean;
+  /** Taken over the whole population, never over the listed rows. */
+  totals: {
+    deal_count: number;
+    money_in: number;
+    money_out: number;
+    refunds: number;
+    profit: number;
+    true_net_share: number;
+    revenue: number;
+    cost: number;
+    supplier_refund_in: number;
+    money_in_gap: number;   // banked buyer money − recorded revenue
+    money_out_gap: number;  // banked supplier money − recorded cost
+  };
+}
+
 export interface User {
   id: string;
   name: string;
@@ -3087,7 +3265,8 @@ export const api = {
 
   buyerTiers: () => invoke<BuyerTier[]>("buyer_tiers"),
   getBuyerTier: (clientId: string) => invoke<BuyerTier>("get_buyer_tier", { clientId }),
-  generateWeeklyBrief: (forDate?: string | null, repName?: string | null) => invoke<WeeklyBrief>("generate_weekly_brief", { forDate: forDate ?? null, repName }),
+  generateWeeklyBrief: (forDate?: string | null, repName?: string | null, days?: number | null) =>
+    invoke<WeeklyBrief>("generate_weekly_brief", { forDate: forDate ?? null, repName, days: days ?? null }),
   detectDuplicateClients: () => invoke<DuplicateGroup[]>("detect_duplicate_clients"),
   cleanupClients: () => invoke<{ duplicates_merged: number; ghosts_removed: number; remaining_clients: number }>("cleanup_clients"),
 
@@ -3270,7 +3449,9 @@ export const api = {
   getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number; revenue: number; shipping: number; fees: number }[]>("get_monthly_profit", { month }),
   getReceivablesAging: () => invoke<ReceivablesAging>("get_receivables_aging"),
   getPayablesAging: () => invoke<PayablesAging>("get_payables_aging"),
-  getAnalyticsRange: (startDate: string, endDate: string) => invoke<any>("get_analytics_range", { startDate, endDate }),
+  getAnalyticsRange: (startDate: string, endDate: string) => invoke<AnalyticsRange>("get_analytics_range", { startDate, endDate }),
+  analyticsReconciliation: (startDate: string, endDate: string) =>
+    invoke<AnalyticsReconciliation>("analytics_reconciliation", { startDate, endDate }),
   getDashboardPrefs: () => invoke<{ true_net: boolean }>("get_dashboard_prefs"),
   setDashboardPrefs: (trueNet: boolean) => invoke<void>("set_dashboard_prefs", { trueNet }),
   getDealsForSupplier: (supplierId: string) => invoke<any[]>("list_deals_for_supplier", { supplierId }),

@@ -1,22 +1,34 @@
-import { useEffect, useRef, useState } from "react";
-import { api, DashboardStats, FinancialsOverview } from "../lib/api";
-import { fmtAmount, localDay, localMonth, parseLocalDay } from "../lib/format";
-import { RefreshCw, FileDown, TrendingUp, TrendingDown } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  api, AnalyticsRange, AnalyticsMonth, AnalyticsReconciliation, ReconRow,
+  DashboardStats, FinancialsOverview,
+} from "../lib/api";
+import { fmtAmount, fmtCompactCurrency, localDay, parseLocalDay } from "../lib/format";
+import { RefreshCw, FileDown } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
-  BarChart, Bar, AreaChart, Area, PieChart, Pie, ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  BarChart, Bar, PieChart, Pie, ComposedChart, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell,
 } from "recharts";
 import TierBadge from "./TierBadge";
+import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 
 // ─── Theme-aware chart palette ────────────────────────────────────
-// Charts read the same brand tokens as the rest of the app, so they stay
-// cohesive and adapt to light/dark: one accent + semantic green/red + neutral.
+// Every colour on this screen is read through a CSS token, so light, dark and the two
+// mono themes all get a palette that was chosen for them rather than flipped.
 const cssVar = (n: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const rgbVar = (n: string) => `rgb(${cssVar(n)})`;
+// SVG `fill` wants a colour it can parse everywhere, so alpha is built explicitly
+// rather than relying on the `rgb(r g b / a)` space-separated form.
+const rgbaVar = (n: string, a: number) => {
+  const [r, g, b] = cssVar(n).split(/\s+/);
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+};
 
-// Refined, muted tier swatches — premium metallics, not neon.
+// Refined, muted tier swatches — premium metallics, not neon. An IDENTITY palette,
+// deliberately outside the categorical slots below: the tier hues are fixed in ~17
+// places across the app and only move all at once (architecture/client-tiers-platinum).
 const TIER_CLR: Record<string, string> = {
   P:        "#8B5CF6",   // Platinum — violet (top tier)
   S:        "#2563EB",   // Diamond — sapphire (fixed data-viz hue, not the accent)
@@ -40,7 +52,6 @@ function usePalette() {
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => obs.disconnect();
   }, []);
-  const accent  = rgbVar("--c-accent");
   const success = rgbVar("--c-success");
   const danger  = rgbVar("--c-danger");
   const warning = rgbVar("--c-warning");
@@ -49,13 +60,16 @@ function usePalette() {
   // Revenue's own data hue. Not the accent (that greys out under mono and is spoken for by
   // the app's chrome) and not a status colour (those are reserved).
   const chartRevenue = rgbVar("--c-chart-revenue");
-  // Data bars are a neutral ink tone (inverts in dark), not the brand accent —
-  // keeps charts matte; colour is reserved for profit (green) / loss (red).
-  const bar     = rgbVar("--c-ink-2");
+  // The categorical slots (R-316). Assigned in this order and never cycled — a seventh
+  // series folds into "Other" rather than inventing a hue. Adjacent-pair CVD separation
+  // was validated in this order, so an assignment that skips a slot is not covered.
+  const cat = [1, 2, 3, 4, 5, 6].map((i) => rgbVar(`--c-chart-${i}`));
+  // Ordinal ramp for margin bands: one hue (profit's own emerald), monotone lightness.
+  const profitRamp = [0.5, 0.62, 0.74, 0.87, 1].map((a) => rgbaVar("--c-success", a));
   return {
-    accent, success, danger, warning, info, neutral, bar, chartRevenue,
+    neutral, chartRevenue, cat, profitRamp,
     grid: rgbVar("--c-line"),
-    CLR: { indigo: accent, emerald: success, rose: danger, amber: warning, sky: info, slate: neutral },
+    CLR: { emerald: success, rose: danger, amber: warning, sky: info, slate: neutral },
     STATUS: { paid: success, sent: info, overdue: danger, draft: neutral, void: danger } as Record<string, string>,
     TT: {
       contentStyle: {
@@ -67,10 +81,12 @@ function usePalette() {
         padding: "9px 13px",
         boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
       },
-      cursor: { fill: `rgb(${cssVar("--c-accent")} / 0.06)` },
+      // The hover cursor is chrome, not a mark — it wears ink, never the accent.
+      cursor: { fill: rgbaVar("--c-ink", 0.05) },
       itemStyle: { color: rgbVar("--c-ink") },
+      labelStyle: { color: rgbVar("--c-muted"), marginBottom: 3 },
     },
-    AX: { fontSize: 10, fill: `rgb(${cssVar("--c-muted")})` },
+    AX: { fontSize: 10, fill: rgbVar("--c-muted") },
   };
 }
 
@@ -106,18 +122,23 @@ function presetRange(label: string): { start: string; end: string } {
   return { start: "", end: "" };
 }
 
+// A negative figure reads "-$4,260.00" through fmtAmount, which puts the sign in the
+// wrong place. Money that can go negative on this screen wears a real minus in front.
+const signed = (n: number) => (n < 0 ? "−" + fmtAmount(Math.abs(n)) : fmtAmount(n));
+
+const monthLabel = (m: string) =>
+  parseLocalDay(m + "-01").toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+
 // ─── Main view ───────────────────────────────────────────────────
 export default function AnalyticsView() {
   const P = usePalette();
   const CLR = P.CLR;
-  const STATUS_CLR = P.STATUS;
   const TT = P.TT;
   const AX = P.AX;
-  // Revenue's hue is a theme token, not a literal, so it steps for dark instead of
-  // being one fixed colour asked to work on both surfaces. Profit keeps green/red.
   const revenueClr = P.chartRevenue;
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
-  const [rangeData, setRangeData] = useState<any | null>(null);
+  const [range,     setRange]     = useState<AnalyticsRange | null>(null);
+  const [recon,     setRecon]     = useState<AnalyticsReconciliation | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);
   const [money,     setMoney]     = useState<FinancialsOverview | null>(null);
   const [loading,   setLoading]   = useState(true);
@@ -126,20 +147,18 @@ export default function AnalyticsView() {
   const [startDate, setStartDate] = useState("");
   const [endDate,   setEndDate]   = useState("");
 
-  // All hooks unconditionally before early returns
-  const displayStats = rangeData ?? stats;
-  const aRevenue     = useCountUp(displayStats?.total_revenue ?? displayStats?.paid_ytd ?? 0);
-  const aProfit      = useCountUp(displayStats?.total_profit  ?? 0);
-  const aMargin      = useCountUp(displayStats?.avg_margin    ?? 0);
-  const aOutstanding = useCountUp(stats?.outstanding          ?? 0, 750);
-  const aInvoices    = useCountUp(stats?.invoices             ?? 0, 700);
+  // All hooks unconditionally before early returns.
+  const aRevenue = useCountUp(range?.total_revenue ?? 0);
+  const aProfit  = useCountUp(range?.total_profit  ?? 0);
+  const aTrueNet = useCountUp(range?.true_net      ?? 0);
+  const aMargin  = useCountUp(range?.avg_margin    ?? 0);
 
   const loadRange = async (start: string, end: string) => {
     setBars(false);
-    try {
-      const r = await api.getAnalyticsRange(start, end);
-      setRangeData(r);
-    } catch {}
+    try { setRange(await api.getAnalyticsRange(start, end)); } catch {}
+    // Reconciliation is its own read and is allowed to fail on its own: it must never
+    // be the reason the rest of the screen shows nothing.
+    api.analyticsReconciliation(start, end).then(setRecon).catch(() => setRecon(null));
     setTimeout(() => setBars(true), 120);
   };
 
@@ -163,14 +182,15 @@ export default function AnalyticsView() {
       const [s, t, r] = await Promise.all([
         api.dashboardStats(),
         api.buyerTiers(),
-        api.getAnalyticsRange("", ""), // all-time by default
+        api.getAnalyticsRange(startDate, endDate),
       ]);
       setStats(s);
       setTiers(t);
-      setRangeData(r);
+      setRange(r);
       // Cash position is secondary — load separately so a Plaid/overview hiccup
-      // never blanks the analytics page.
+      // never blanks the analytics page. Same for the reconciliation read.
       api.financialsOverview().then(setMoney).catch(() => {});
+      api.analyticsReconciliation(startDate, endDate).then(setRecon).catch(() => setRecon(null));
     } catch {}
     setLoading(false);
   };
@@ -180,58 +200,65 @@ export default function AnalyticsView() {
     if (!loading && stats) setTimeout(() => setBars(true), 120);
   }, [loading, stats]);
 
-  // Skeleton mirrors the real layout: header, hero row, big chart, chart pair.
+  const rangeLabel = preset === "Custom" ? "the selected range" : preset.toLowerCase();
+
+  // The primary trend, with the in-progress month's projection carried as its own
+  // stacked remainder so it can be drawn dashed on top of what has actually closed.
+  const trend = useMemo(() => {
+    const months: AnalyticsMonth[] = range?.monthly_profit ?? [];
+    const rr = range?.run_rate ?? null;
+    return months.map((m) => ({
+      ...m,
+      label: monthLabel(m.month),
+      projected: rr && rr.month === m.month,
+      proj_revenue_gap: rr && rr.month === m.month ? Math.max(rr.projected_revenue - m.revenue, 0) : 0,
+      proj_profit_gap:  rr && rr.month === m.month ? Math.max(rr.projected_profit  - m.profit,  0) : 0,
+    }));
+  }, [range]);
+
+  // Skeleton mirrors the real layout: header, KPI band, primary trend, overhead panel,
+  // then the paired analysis cards. Blocks, not spinners — the page keeps its shape.
   if (loading) return (
     <div className="space-y-5">
-      <div className="flex items-start justify-between">
-        <div>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
           <div className="h-6 w-28 bg-surface-2 rounded-md animate-pulse" />
-          <div className="h-3.5 w-44 bg-surface-2 rounded animate-pulse mt-2" />
+          <div className="h-3.5 w-52 bg-surface-2 rounded animate-pulse mt-2" />
         </div>
-        <div className="h-8 w-64 bg-surface-2 rounded-lg animate-pulse" />
+        <div className="h-8 w-72 bg-surface-2 rounded-lg animate-pulse" />
       </div>
-      <div className="h-[108px] bg-surface-2 rounded-2xl animate-pulse" />
-      <div className="h-[300px] bg-surface-2 rounded-xl animate-pulse" />
+      <div className="h-[168px] bg-surface-2 rounded-2xl animate-pulse" />
+      <div className="h-[340px] bg-surface-2 rounded-2xl animate-pulse" />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <div className="h-56 bg-surface-2 rounded-xl animate-pulse" />
-        <div className="h-56 bg-surface-2 rounded-xl animate-pulse" />
+        <div className="h-72 bg-surface-2 rounded-2xl animate-pulse" />
+        <div className="h-72 bg-surface-2 rounded-2xl animate-pulse" />
+      </div>
+      <div className="h-[260px] bg-surface-2 rounded-2xl animate-pulse" />
+      <div className="h-[300px] bg-surface-2 rounded-2xl animate-pulse" />
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div className="h-64 bg-surface-2 rounded-2xl animate-pulse" />
+        <div className="h-64 bg-surface-2 rounded-2xl animate-pulse" />
       </div>
     </div>
   );
-  if (!stats) return (
-    <div className="text-center py-32 text-[13px] text-faint">No data yet</div>
+  if (!stats || !range) return (
+    <div className="text-center py-32 text-[13px] text-faint">No analytics yet. Close a deal and this fills in.</div>
   );
 
   // ── Derived ───────────────────────────────────────────────────
-  const monthlySource = rangeData?.monthly_profit ?? stats.monthly_profit;
-  const monthly = monthlySource.map((m: any) => ({
-    ...m,
-    // R-159: local parse — new Date("YYYY-MM-01") is UTC midnight and labeled
-    // every bucket one month early when rendered in Central.
-    month: parseLocalDay(m.month).toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
-  }));
-
-  // Month-over-month movement for the lead stats — derived from data we already
-  // have (monthly_profit). The in-progress current month is skipped: comparing a
-  // half-finished month against a complete one always reads as a fake drop.
-  const curMonth = localMonth();
-  const momSource = monthlySource.filter((m: any) => m.month !== curMonth);
-  const momLast = momSource.length > 1 ? momSource[momSource.length - 1] : null;
-  const momPrev = momSource.length > 1 ? momSource[momSource.length - 2] : null;
-
+  const won      = range.deal_count;
+  const lost     = range.deals_lost;
+  const winRate  = won + lost > 0 ? (won / (won + lost)) * 100 : 0;
   const tierMap  = tiers.reduce((acc: Record<string, number>, t: any) => {
     acc[t.tier] = (acc[t.tier] || 0) + 1; return acc;
-  }, {});
+  }, {} as Record<string, number>);
   const totalCl  = tiers.length;
-  const maxSpend = Math.max(...stats.top_spenders.map((c) => c.total_spent), 1);
   const totalSV  = stats.invoice_status_breakdown.reduce((s, x) => s + x.total, 0);
-  const cats     = stats.category_breakdown.filter((c) => c.client_count > 0);
-  const maxCat   = Math.max(...cats.map((c) => c.revenue), 1);
+  const cats     = stats.category_breakdown.filter((c) => c.client_count > 0 && c.revenue > 0);
 
-  // R-313: shipping/fee overhead + true net for the selected range.
-  const shippingTotal = displayStats?.total_shipping ?? 0;
-  const feesTotal      = displayStats?.total_fees ?? 0;
-  const trueNet         = displayStats?.true_net ?? 0;
+  const overheadTotal = range.total_shipping + range.total_fees;
+  const rn = range.repeat_new;
+  const repeatTotal = rn.new_revenue + rn.repeat_revenue;
 
   const handleExportAnalytics = async () => {
     const path = await saveDialog({ filters: [{ name: "Excel", extensions: ["xlsx"] }], defaultPath: "analytics.xlsx" });
@@ -246,12 +273,11 @@ export default function AnalyticsView() {
 
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Analytics</h2>
-          <p className="text-[12px] text-muted mt-0.5">Business performance overview</p>
+          <p className="text-[12px] text-muted mt-0.5">Closed-deal performance for {rangeLabel}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Preset pills */}
           {PRESETS.map((p) => (
             <button
               key={p}
@@ -259,37 +285,30 @@ export default function AnalyticsView() {
               className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
                 preset === p
                   ? "bg-accent text-on-accent"
-                  : "bg-surface border border-line text-muted hover:border-accent hover:text-accent"
+                  : "bg-surface ring-1 ring-line text-muted hover:ring-accent hover:text-accent"
               }`}
             >
               {p}
             </button>
           ))}
-          {/* Custom range */}
           <div className="flex items-center gap-1.5">
             <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="border border-line h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40"
+              type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+              className="ring-1 ring-line bg-surface h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
             <span className="text-[11px] text-muted">to</span>
             <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="border border-line h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40"
+              type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+              className="ring-1 ring-line bg-surface h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
-            <button
-              onClick={applyCustomRange}
-              className="px-3 h-8 bg-surface border border-line rounded-lg text-[12px] text-muted hover:border-accent hover:text-accent transition-colors"
-            >
+            <button onClick={applyCustomRange}
+              className="px-3 h-8 bg-surface ring-1 ring-line rounded-lg text-[12px] text-muted hover:ring-accent hover:text-accent transition-colors">
               Apply
             </button>
           </div>
           <button onClick={load}
             className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
-                       px-2.5 h-8 rounded-lg hover:bg-surface-3 transition-colors border border-line">
+                       px-2.5 h-8 rounded-lg hover:bg-surface-3 transition-colors ring-1 ring-line">
             <RefreshCw size={13} /> Refresh
           </button>
           <button onClick={handleExportAnalytics}
@@ -299,603 +318,978 @@ export default function AnalyticsView() {
         </div>
       </div>
 
-      {/* ── Hero: the headline read for the selected range ─────────
-          One calm divided row (mirrors the dashboard hero) — revenue
-          leads, profit/margin/outstanding read left to right.
+      {/* ── How are we doing ───────────────────────────────────────
+          Six tiles on a hairline grid. The gap-px trick draws the dividers,
+          so they stay correct at every wrap instead of relying on divide-x
+          on a column count that was guessed. Steps 2 → 3 → 6 across the
+          sidebar-narrowed pane; it is the old xl:grid-cols-5 that overflowed.
       ─────────────────────────────────────────────────────────── */}
-      <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-        <div className="grid grid-cols-2 xl:grid-cols-5 xl:divide-x xl:divide-line">
-          <div className="p-5">
-            <div className="text-[12.5px] font-medium text-muted">
-              Revenue · {preset === "Custom" ? "custom range" : preset.toLowerCase()}
-            </div>
-            <div className="flex items-end gap-2.5 mt-1.5">
-              <span className="text-[26px] font-bold text-accent tabular-nums leading-none tracking-tight">
-                {fmtAmount(aRevenue)}
-              </span>
-              {momLast && momPrev && <MomChip now={momLast.revenue} prev={momPrev.revenue} />}
-            </div>
-            <div className="text-[11px] text-faint mt-1.5">closed deal revenue</div>
-          </div>
-          <div className="p-5">
-            <div className="text-[12.5px] font-medium text-muted">Net profit</div>
-            <div className="flex items-end gap-2.5 mt-1.5">
-              <span className="text-[26px] font-bold tabular-nums leading-none"
-                style={{ color: (displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose }}>
-                {fmtAmount(aProfit)}
-              </span>
-              {momLast && momPrev && <MomChip now={momLast.profit} prev={momPrev.profit} />}
-            </div>
-            <div className="text-[11px] text-faint mt-1.5">after all costs</div>
-          </div>
-          <div className="p-5 border-t border-line xl:border-t-0">
-            <div className="text-[12.5px] font-medium text-muted">True net</div>
-            <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
-              style={{ color: trueNet >= 0 ? CLR.emerald : CLR.rose }}>
-              {fmtAmount(trueNet)}
-            </div>
-            <div className="text-[11px] text-faint mt-1.5 tabular-nums">
-              after {fmtAmount(shippingTotal)} shipping and {fmtAmount(feesTotal)} fees
-            </div>
-          </div>
-          <div className="p-5 border-t border-line xl:border-t-0">
-            <div className="text-[12.5px] font-medium text-muted">Avg margin</div>
-            <div className="text-[26px] font-bold text-ink tabular-nums mt-1.5 leading-none">{aMargin.toFixed(1)}%</div>
-            <div className="text-[11px] text-faint mt-1.5">across closed deals</div>
-          </div>
-          <div className="p-5 border-t border-line xl:border-t-0">
-            <div className="text-[12.5px] font-medium text-muted">Outstanding</div>
-            <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
-              style={{ color: stats.outstanding > 0 ? CLR.amber : "var(--t-tx1)" }}>
-              {fmtAmount(aOutstanding)}
-            </div>
-            <div className="text-[11px] text-faint mt-1.5">awaiting payment</div>
-          </div>
+      <div className="rounded-2xl overflow-hidden ring-1 ring-line bg-line">
+        <div className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-px">
+          <Kpi label="Revenue" value={fmtAmount(aRevenue)} hint="closed deal revenue" accentClass="text-accent" />
+          <Kpi label="Net profit" value={signed(aProfit)} hint="after all deal costs"
+            color={range.total_profit >= 0 ? CLR.emerald : CLR.rose} />
+          <Kpi label="True net" value={signed(aTrueNet)} hint="after shipping and bank fees"
+            color={range.true_net >= 0 ? CLR.emerald : CLR.rose} />
+          <Kpi label="Margin" value={`${aMargin.toFixed(1)}%`} hint="revenue-weighted" />
+          <Kpi label="Deals closed" value={String(won)} hint={`${lost} fell through`} />
+          <Kpi label="Win rate" value={won + lost > 0 ? `${winRate.toFixed(0)}%` : "—"} hint="won vs fell through"
+            color={won + lost === 0 ? undefined : winRate >= 60 ? CLR.emerald : winRate >= 40 ? CLR.amber : CLR.rose} />
         </div>
-
-        {/* Lead insight: the revenue/profit story lives inside the same card. */}
-        <div className="px-5 pb-5 pt-4 border-t border-line-2">
-        <div className="flex items-start justify-between mb-5">
-          <div>
-            <h3 className="text-[13px] font-semibold text-ink">Monthly revenue vs profit</h3>
-            <p className="text-[11px] text-muted mt-0.5">
-              {monthly.length > 0 ? `Last ${monthly.length} month${monthly.length !== 1 ? "s" : ""}` : "No data"}
-            </p>
-          </div>
-          <div className="flex items-center gap-5 mt-0.5">
-            <Legend color={revenueClr} label="Revenue" />
-            <Legend color={CLR.emerald} label="Profit"  />
-          </div>
-        </div>
-
-        {monthly.length > 0 ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={monthly} barCategoryGap="38%" barGap={3}
-                      margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
-              <XAxis dataKey="month" tick={AX} axisLine={false} tickLine={false} />
-              <YAxis tick={AX} axisLine={false} tickLine={false}
-                tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
-              <Tooltip formatter={(v: any) => fmtAmount(Number(v))} {...TT} />
-              <Bar dataKey="revenue" name="Revenue" fill={revenueClr}
-                radius={[4, 4, 0, 0]} maxBarSize={40} />
-              <Bar dataKey="profit"  name="Profit"
-                radius={[4, 4, 0, 0]} maxBarSize={40}>
-                {monthly.map((m: any, i: number) => (
-                  <Cell key={i} fill={m.profit >= 0 ? CLR.emerald : CLR.rose} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        ) : <Blank h={300} />}
-        </div>
-      </div>
-
-      {/* ── Shipping and fees: overhead by month, with a true-net line ──
-          Bars stay neutral (P.neutral / P.bar) — colour on this chart is
-          reserved for the true-net line, same rule as profit elsewhere.
-      ─────────────────────────────────────────────────────────── */}
-      <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-        <div className="flex items-start justify-between mb-1">
-          <div>
-            <h3 className="text-[13px] font-semibold text-ink">Shipping and fees</h3>
-            <p className="text-[11px] text-muted mt-0.5">
-              {monthly.length > 0 ? `Last ${monthly.length} month${monthly.length !== 1 ? "s" : ""}` : "No data"}
-            </p>
-          </div>
-          <div className="flex items-center gap-5 mt-0.5">
-            <Legend color={P.neutral} label="Shipping" />
-            <Legend color={P.bar}     label="Fees" />
-            <Legend color={trueNet >= 0 ? CLR.emerald : CLR.rose} label="True net" />
-          </div>
-        </div>
-        <p className="text-[11px] text-muted mb-4">
-          {fmtAmount(shippingTotal)} shipping · {fmtAmount(feesTotal)} fees ·{" "}
-          <span className="font-medium" style={{ color: trueNet >= 0 ? CLR.emerald : CLR.rose }}>
-            {fmtAmount(trueNet)} true net
+        {/* The range needs something to be compared against, on the same population. */}
+        <div className="bg-surface px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[11.5px] text-muted">
+          <span>
+            This month <b className="text-ink-2 tabular-nums font-semibold">{fmtAmount(range.revenue_this_month)}</b> revenue
+            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{signed(range.profit_this_month)}</b> profit
+            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{range.margin_this_month.toFixed(1)}%</b>
           </span>
-        </p>
-
-        {monthly.length > 0 ? (
-          <ResponsiveContainer width="100%" height={260}>
-            <ComposedChart data={monthly} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
-              <XAxis dataKey="month" tick={AX} axisLine={false} tickLine={false} />
-              <YAxis yAxisId="left" tick={AX} axisLine={false} tickLine={false}
-                tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
-              <YAxis yAxisId="right" orientation="right" tick={AX} axisLine={false} tickLine={false}
-                tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
-              <Tooltip formatter={(v: any) => fmtAmount(Number(v))} {...TT} />
-              <Bar yAxisId="left" dataKey="shipping" name="Shipping" fill={P.neutral} radius={[4, 4, 0, 0]} maxBarSize={28} />
-              <Bar yAxisId="left" dataKey="fees"     name="Fees"     fill={P.bar}     radius={[4, 4, 0, 0]} maxBarSize={28} />
-              <Line yAxisId="right" type="monotone" dataKey="true_net" name="True net"
-                stroke={trueNet >= 0 ? CLR.emerald : CLR.rose} strokeWidth={2.5} dot={false} />
-            </ComposedChart>
-          </ResponsiveContainer>
-        ) : <Blank h={260} />}
+          <span>
+            All time <b className="text-ink-2 tabular-nums font-semibold">{fmtAmount(range.revenue_all_time)}</b> revenue
+            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{signed(range.profit_all_time)}</b> profit
+            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{range.margin_all_time.toFixed(1)}%</b>
+          </span>
+          <span>
+            <b className="text-ink-2 tabular-nums font-semibold">{range.new_clients}</b> new clients
+            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{range.interactions}</b> interactions in {rangeLabel}
+          </span>
+        </div>
       </div>
 
-      {/* ── Deal outcomes: won / lost / win rate / refunded, range-aware ── */}
-      {(() => {
-        const won      = rangeData?.deal_count ?? stats.deals_won_all ?? 0;
-        const lost     = rangeData?.deals_lost ?? stats.deals_lost_all ?? 0;
-        const winRate  = won + lost > 0 ? (won / (won + lost)) * 100 : 0;
-        const refunded = rangeData?.refunded_in_range ?? stats.refunded_total ?? 0;
-        return (
-          <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-            <div className="grid grid-cols-2 xl:grid-cols-4 xl:divide-x xl:divide-line">
-              <div className="p-5">
-                <div className="text-[12.5px] font-medium text-muted">Deals won</div>
-                <div className="text-[26px] font-bold text-ink tabular-nums mt-1.5 leading-none">{won}</div>
-                <div className="text-[11px] text-faint mt-1.5">completed in range</div>
-              </div>
-              <div className="p-5">
-                <div className="text-[12.5px] font-medium text-muted">Deals lost</div>
-                <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
-                  style={{ color: lost > 0 ? CLR.rose : "var(--t-tx1)" }}>{lost}</div>
-                <div className="text-[11px] text-faint mt-1.5">fell through</div>
-              </div>
-              <div className="p-5 border-t border-line xl:border-t-0">
-                <div className="text-[12.5px] font-medium text-muted">Win rate</div>
-                <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
-                  style={{ color: winRate >= 60 ? CLR.emerald : winRate >= 40 ? CLR.amber : CLR.rose }}>
-                  {won + lost > 0 ? `${winRate.toFixed(0)}%` : "—"}
+      {/* ── Primary trend ───────────────────────────────────────── */}
+      <Card
+        title="Revenue and profit by month"
+        sub={trend.length > 0
+          ? `${trend.length} month${trend.length !== 1 ? "s" : ""} of closed deals`
+          : "No closed deals in this range"}
+        right={
+          <div className="flex items-center gap-4 flex-wrap justify-end">
+            <Legend color={revenueClr} label="Revenue" />
+            <Legend color={CLR.emerald} label="Profit" />
+            {range.run_rate && <Legend color={revenueClr} label="Projected" dashed />}
+          </div>
+        }
+      >
+        {trend.length > 0 ? (
+          <>
+            <ResponsiveContainer width="100%" height={300}>
+              <ComposedChart data={trend} barCategoryGap="34%" barGap={3}
+                margin={{ top: 4, right: 4, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
+                <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
+                <YAxis tick={AX} axisLine={false} tickLine={false}
+                  tickFormatter={(v: number) => fmtCompactCurrency(v)} width={54} />
+                <Tooltip {...TT} formatter={(v: any, n: any) => [signed(Number(v)), n]}
+                  labelFormatter={(l: any) => String(l)} />
+                <Bar dataKey="revenue" name="Revenue" stackId="rev" fill={revenueClr} maxBarSize={38} />
+                <Bar dataKey="proj_revenue_gap" name="Revenue at this pace" stackId="rev"
+                  fill={rgbaVar("--c-chart-revenue", 0.16)} stroke={revenueClr} strokeDasharray="3 3"
+                  radius={[4, 4, 0, 0]} maxBarSize={38} />
+                <Bar dataKey="profit" name="Profit" stackId="prof" maxBarSize={38}>
+                  {trend.map((m, i) => <Cell key={i} fill={m.profit >= 0 ? CLR.emerald : CLR.rose} />)}
+                </Bar>
+                <Bar dataKey="proj_profit_gap" name="Profit at this pace" stackId="prof"
+                  fill={rgbaVar("--c-success", 0.16)} stroke={CLR.emerald} strokeDasharray="3 3"
+                  radius={[4, 4, 0, 0]} maxBarSize={38} />
+              </ComposedChart>
+            </ResponsiveContainer>
+            {range.run_rate && (
+              <p className="text-[11px] text-muted mt-3 tabular-nums">
+                {monthLabel(range.run_rate.month)} is {range.run_rate.days_elapsed} of{" "}
+                {range.run_rate.days_in_month} days in. At this pace it finishes near{" "}
+                <b className="text-ink-2 font-semibold">{fmtAmount(range.run_rate.projected_revenue)}</b> revenue and{" "}
+                <b className="text-ink-2 font-semibold">{signed(range.run_rate.projected_profit)}</b> profit.
+              </p>
+            )}
+          </>
+        ) : <Blank h={300} text="Nothing closed in this range" />}
+      </Card>
+
+      {/* ── Money in, money out (R-317) ───────────────────────────
+          A statement, not a dashboard. Three blocks that have to agree with one
+          another, and that say so in words when they do not: the bridge from revenue
+          to true net, the bank measured against those same deals, and every deal with
+          the bank evidence behind it. The bridge and the bank sit side by side on xl;
+          the table is full width beneath them with a sticky header and a sticky total.
+      ─────────────────────────────────────────────────────────── */}
+      {recon && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <Card
+              title="Money in, money out"
+              sub={`Revenue down to true net for ${rangeLabel}`}
+              right={recon.bridge_ties
+                ? <StatusPill tone="success">Every line ties</StatusPill>
+                : <StatusPill tone="danger">Does not tie</StatusPill>}
+            >
+              <BridgeList rows={recon.bridge} CLR={CLR} />
+              <p className="text-[11px] text-muted mt-4">
+                Each subtotal is read straight from the book, not added up from the lines
+                above it. Where the two disagree, the difference is named on the line.
+              </p>
+            </Card>
+
+            <Card
+              title="The bank against these deals"
+              sub="Why the account moved by a different figure from the profit"
+              right={recon.bank.ties
+                ? <StatusPill tone="success">Fully explained</StatusPill>
+                : <StatusPill tone="warning">{fmtAmount(Math.abs(recon.bank.residual))} unexplained</StatusPill>}
+            >
+              <BridgeList rows={recon.bank.rows} CLR={CLR} />
+              <p className="text-[11px] text-muted mt-4">
+                A bank line is dated by the day it posted; a deal is dated by the day it
+                completed. Over all time those are the same book. Over a short range they
+                are not, and the difference lands on the unexplained line.
+              </p>
+              {recon.bank.orphan_allocations > 0 && (
+                <p className="text-[11px] text-danger-ink mt-2">
+                  {recon.bank.orphan_allocations} allocation
+                  {recon.bank.orphan_allocations !== 1 ? "s" : ""} worth{" "}
+                  {fmtAmount(recon.bank.orphan_amount)} point at a bank transaction that no
+                  longer exists. That money cannot be traced from either side.
+                </p>
+              )}
+            </Card>
+          </div>
+
+          <Card
+            title="Every closed deal, and the money behind it"
+            sub={recon.deals_capped
+              ? `The ${recon.deals.length} most profitable of ${recon.totals.deal_count} closed deals — the totals cover all of them`
+              : `${recon.totals.deal_count} closed deal${recon.totals.deal_count !== 1 ? "s" : ""} in ${rangeLabel}`}
+          >
+            {recon.deals.length > 0 ? (
+              <>
+                <div className="overflow-x-auto -mx-5 px-5 max-h-[560px] overflow-y-auto">
+                  <table className="w-full min-w-[860px] text-[12.5px]">
+                    <thead className="sticky top-0 bg-surface z-10">
+                      <tr className="text-[11px] text-muted border-b border-line">
+                        <th className="text-left font-medium py-2 pr-3">Invoice</th>
+                        <th className="text-left font-medium py-2 px-3">Buyer</th>
+                        <th className="text-left font-medium py-2 px-3">Closed</th>
+                        <th className="text-right font-medium py-2 px-3">Money in</th>
+                        <th className="text-right font-medium py-2 px-3">Money out</th>
+                        <th className="text-right font-medium py-2 px-3">Refunds</th>
+                        <th className="text-right font-medium py-2 px-3">Profit</th>
+                        <th className="text-right font-medium py-2 pl-3">True net</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recon.deals.map((d, i) => (
+                        <tr key={`${d.invoice_number}-${i}`}
+                          className="border-b border-line-2 hover:bg-surface-2 transition-colors">
+                          <td className="py-2.5 pr-3 text-ink whitespace-nowrap">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span>{d.invoice_number}</span>
+                              {d.flags.map((f) => (
+                                <StatusPill key={f} tone="warning">{f}</StatusPill>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3 text-ink-2 min-w-0">
+                            <div className="truncate max-w-[200px]">{d.client_name}</div>
+                          </td>
+                          <td className="py-2.5 px-3 text-muted tabular-nums whitespace-nowrap">{d.completed_on}</td>
+                          <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap text-success-ink">
+                            {fmtAmount(d.money_in)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap text-ink-2">
+                            {fmtAmount(d.money_out)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap"
+                            style={d.refunds > 0 ? { color: CLR.rose } : undefined}>
+                            {d.refunds > 0 ? signed(-d.refunds) : "—"}
+                          </td>
+                          <td className="py-2.5 px-3 text-right tabular-nums font-medium whitespace-nowrap"
+                            style={{ color: d.profit >= 0 ? CLR.emerald : CLR.rose }}>{signed(d.profit)}</td>
+                          <td className="py-2.5 pl-3 text-right tabular-nums font-medium whitespace-nowrap"
+                            style={{ color: d.true_net_share >= 0 ? CLR.emerald : CLR.rose }}>
+                            {signed(d.true_net_share)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="sticky bottom-0 bg-surface">
+                      <tr className="border-t border-line text-[12.5px] font-semibold">
+                        <td className="py-2.5 pr-3 text-ink whitespace-nowrap">
+                          {recon.totals.deal_count} deal{recon.totals.deal_count !== 1 ? "s" : ""}
+                        </td>
+                        <td className="py-2.5 px-3" />
+                        <td className="py-2.5 px-3" />
+                        <td className="py-2.5 px-3 text-right tabular-nums text-success-ink whitespace-nowrap">
+                          {fmtAmount(recon.totals.money_in)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right tabular-nums text-ink whitespace-nowrap">
+                          {fmtAmount(recon.totals.money_out)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap"
+                          style={recon.totals.refunds > 0 ? { color: CLR.rose } : undefined}>
+                          {recon.totals.refunds > 0 ? signed(-recon.totals.refunds) : "—"}
+                        </td>
+                        <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap"
+                          style={{ color: recon.totals.profit >= 0 ? CLR.emerald : CLR.rose }}>
+                          {signed(recon.totals.profit)}
+                        </td>
+                        <td className="py-2.5 pl-3 text-right tabular-nums whitespace-nowrap"
+                          style={{ color: recon.totals.true_net_share >= 0 ? CLR.emerald : CLR.rose }}>
+                          {signed(recon.totals.true_net_share)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
                 </div>
-                <div className="text-[11px] text-faint mt-1.5">won vs fell through</div>
-              </div>
-              <div className="p-5 border-t border-line xl:border-t-0">
-                <div className="text-[12.5px] font-medium text-muted">Refunded</div>
-                <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
-                  style={{ color: refunded > 0 ? CLR.rose : "var(--t-tx1)" }}>
-                  {refunded > 0 ? `−${fmtAmount(refunded)}` : fmtAmount(0)}
+                <div className="text-[11px] mt-3 space-y-1">
+                  <p className="text-muted">
+                    Profit and true net add back to the bridge exactly. Money in and money out
+                    are bank evidence — what is actually allocated to the deal — so they are
+                    allowed to differ from revenue and cost, and here is by how much.
+                  </p>
+                  <Gap label="Buyer money banked" gap={recon.totals.money_in_gap} against="recorded revenue" CLR={CLR} />
+                  <Gap label="Supplier money banked" gap={recon.totals.money_out_gap} against="recorded cost" CLR={CLR}
+                    because={Math.abs(recon.totals.money_out_gap - recon.totals.supplier_refund_in) < 0.005
+                      && recon.totals.supplier_refund_in > 0
+                      ? `exactly the ${fmtAmount(recon.totals.supplier_refund_in)} a supplier sent back`
+                      : undefined} />
                 </div>
-                <div className="text-[11px] text-faint mt-1.5">
-                  {stats.refund_owed_remaining > 0
-                    ? `${fmtAmount(stats.refund_owed_remaining)} still owed back`
-                    : "returned to customers"}
-                </div>
-              </div>
+              </>
+            ) : <Blank h={160} text="Nothing closed in this range to reconcile" />}
+          </Card>
+        </div>
+      )}
+
+      {/* ── Shipping and bank fees: its own panel, not a line above a chart ── */}
+      <Card
+        title="Shipping and bank fees"
+        sub="Money that leaves the bank and never reaches a deal's cost"
+      >
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,240px)_minmax(0,1fr)] gap-x-8 gap-y-6">
+          {/* The two sums Jack asked for, stated plainly, with the ratio under them. */}
+          <div className="min-w-0 space-y-4">
+            <Stat label="Shipping" value={fmtAmount(range.total_shipping)} swatch={P.cat[0]} />
+            <Stat label="Bank and wire fees" value={fmtAmount(range.total_fees)} swatch={P.cat[1]} />
+            <div className="pt-4 border-t border-line-2">
+              <Stat label="Overhead" value={fmtAmount(overheadTotal)}
+                hint={`${range.overhead_ratio.toFixed(1)}% of revenue`} />
+            </div>
+            <div className="pt-4 border-t border-line-2">
+              <Stat label="True net" value={signed(range.true_net)}
+                color={range.true_net >= 0 ? CLR.emerald : CLR.rose}
+                hint="net profit minus this overhead" />
             </div>
           </div>
-        );
-      })()}
 
-      {/* ── Row: Profit Trend (area) + Client Mix (donut) ──────────
-          Two new chart *types* — an area trend + a donut — for variety
-          beyond the bars/lists, with designed (theme-independent) colors.
-      ─────────────────────────────────────────────────────────── */}
+          {/* One dollar axis for the two overhead series; the ratio is a different
+              measure, so it gets its own chart rather than a second y-axis. */}
+          <div className="min-w-0 space-y-4">
+            <div className="min-w-0">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <span className="text-[11.5px] text-muted">Overhead by month</span>
+                <div className="flex items-center gap-4">
+                  <Legend color={P.cat[0]} label="Shipping" />
+                  <Legend color={P.cat[1]} label="Fees" />
+                </div>
+              </div>
+              {trend.length > 0 ? (
+                <ResponsiveContainer width="100%" height={170}>
+                  <BarChart data={trend} margin={{ top: 4, right: 4, left: -12, bottom: 0 }} barCategoryGap="34%">
+                    <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
+                    <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
+                    <YAxis tick={AX} axisLine={false} tickLine={false} width={54}
+                      tickFormatter={(v: number) => fmtCompactCurrency(v)} />
+                    <Tooltip {...TT} formatter={(v: any, n: any) => [signed(Number(v)), n]} />
+                    <Bar dataKey="shipping" name="Shipping" stackId="oh" fill={P.cat[0]} maxBarSize={34} />
+                    <Bar dataKey="fees" name="Fees" stackId="oh" fill={P.cat[1]} maxBarSize={34} radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : <Blank h={170} text="No overhead recorded in this range" />}
+            </div>
+            <div className="min-w-0">
+              <span className="text-[11.5px] text-muted">Overhead as a share of revenue</span>
+              {trend.length > 0 ? (
+                <ResponsiveContainer width="100%" height={130}>
+                  <LineChart data={trend} margin={{ top: 8, right: 4, left: -12, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
+                    <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
+                    <YAxis tick={AX} axisLine={false} tickLine={false} width={54}
+                      tickFormatter={(v: number) => `${v.toFixed(0)}%`} />
+                    <Tooltip {...TT} formatter={(v: any) => [`${Number(v).toFixed(1)}%`, "Overhead"]} />
+                    <Line type="monotone" dataKey="overhead_pct" name="Overhead" stroke={P.cat[0]}
+                      strokeWidth={2} dot={{ r: 2.5, strokeWidth: 0, fill: P.cat[0] }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : <Blank h={130} text="No revenue to compare against" />}
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* ── Margin distribution + revenue concentration ─────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <Card title="Margin distribution" sub="Deals by margin band, so a fat tail stays visible">
+          {range.margin_bands.some((b) => b.deals > 0) ? (
+            <>
+              <ResponsiveContainer width="100%" height={230}>
+                <BarChart data={range.margin_bands} layout="vertical" barCategoryGap="26%"
+                  margin={{ top: 0, right: 12, left: 6, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="2 4" stroke={P.grid} horizontal={false} />
+                  <XAxis type="number" tick={AX} axisLine={false} tickLine={false} allowDecimals={false} />
+                  <YAxis type="category" dataKey="label" tick={AX} axisLine={false} tickLine={false} width={56} />
+                  <Tooltip {...TT}
+                    formatter={(v: any, _n: any, e: any) => [
+                      `${v} deal${v !== 1 ? "s" : ""} · ${fmtAmount(e?.payload?.revenue ?? 0)} revenue`, "Deals"]} />
+                  <Bar dataKey="deals" name="Deals" radius={[0, 4, 4, 0]} maxBarSize={24}>
+                    {range.margin_bands.map((b, i) => (
+                      <Cell key={b.label} fill={i === 0 ? CLR.rose : P.profitRamp[Math.min(i - 1, P.profitRamp.length - 1)]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5 text-[11.5px]">
+                {range.margin_bands.filter((b) => b.deals > 0).map((b) => (
+                  <div key={b.label} className="flex items-center justify-between gap-2 min-w-0">
+                    <span className="text-muted truncate">{b.label}</span>
+                    <span className="text-ink-2 tabular-nums font-medium flex-shrink-0">{signed(b.profit)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : <Blank h={230} text="No closed deals with revenue in this range" />}
+        </Card>
 
-        {/* Profit Trend — area */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Profit trend</h3>
-          <p className="text-[11px] text-muted mb-5">Net profit by month</p>
-          {monthly.length > 0 ? (
-            <ResponsiveContainer width="100%" height={240}>
-              <AreaChart data={monthly} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="anProfitArea" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%"   stopColor={CLR.emerald} stopOpacity={0.30} />
-                    <stop offset="100%" stopColor={CLR.emerald} stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
-                <XAxis dataKey="month" tick={AX} axisLine={false} tickLine={false} />
-                <YAxis tick={AX} axisLine={false} tickLine={false}
-                  tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
-                <Tooltip formatter={(v: any) => fmtAmount(Number(v))} {...TT} />
-                <Area type="monotone" dataKey="profit" stroke={CLR.emerald} strokeWidth={2.5}
-                  fill="url(#anProfitArea)" isAnimationActive animationDuration={900} />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : <Blank h={240} />}
-        </div>
-
-        {/* Client Mix — donut */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client mix</h3>
-          <p className="text-[11px] text-muted mb-5">Share of clients by tier · all time</p>
-          {totalCl > 0 ? (
-            <ResponsiveContainer width="100%" height={240}>
-              <PieChart>
-                <Pie
-                  data={TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => ({ name: TIER_NAME[t], value: tierMap[t] }))}
-                  dataKey="value" nameKey="name" cx="50%" cy="50%"
-                  innerRadius={58} outerRadius={88} paddingAngle={2} stroke="none">
-                  {TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => (
-                    <Cell key={t} fill={TIER_CLR[t]} />
-                  ))}
-                </Pie>
-                <Tooltip {...TT} formatter={(v: any, n: any) => [`${v} client${v !== 1 ? "s" : ""}`, n]} />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : <Blank h={240} />}
-        </div>
+        <Card title="Where the revenue is concentrated"
+          sub={`${range.concentration.client_count} buyer${range.concentration.client_count !== 1 ? "s" : ""} in ${rangeLabel}`}>
+          {range.concentration.client_count > 0 ? (
+            <>
+              <div className="grid grid-cols-3 gap-3 mb-5">
+                <Concentration label="Top buyer" pct={range.concentration.top1_pct} warnAt={40} unit="of revenue" P={P} />
+                <Concentration label="Top 3" pct={range.concentration.top3_pct} warnAt={70} unit="of revenue" P={P} />
+                <Concentration label="Top 5" pct={range.concentration.top5_pct} warnAt={85} unit="of revenue" P={P} />
+              </div>
+              <ShareBar
+                parts={range.top_revenue_clients.map((c, i) => ({ name: c.name, value: c.revenue, color: P.cat[i] }))}
+                total={range.concentration.total_revenue} otherColor={P.neutral} animate={bars}
+              />
+              <div className="mt-4 space-y-2">
+                {range.top_revenue_clients.map((c, i) => (
+                  <div key={c.name} className="flex items-center gap-2.5 min-w-0">
+                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: P.cat[i] }} />
+                    <span className="text-[12.5px] text-ink truncate flex-1 min-w-0">{c.name}</span>
+                    <span className="text-[11px] text-muted tabular-nums flex-shrink-0 w-11 text-right">
+                      {c.pct.toFixed(1)}%
+                    </span>
+                    <span className="text-[12.5px] text-ink-2 font-semibold tabular-nums flex-shrink-0">
+                      {fmtAmount(c.revenue)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : <Blank h={230} text="No buyers with revenue in this range" />}
+        </Card>
       </div>
 
-      {/* ── Row: Invoice Status + Top Spenders ─────────────────── */}
+      {/* ── Repeat versus new + deal velocity ──────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <Card title="Repeat buyers versus first-time"
+          sub="A deal counts as first-time when it is that buyer's earliest closed deal">
+          {repeatTotal > 0 ? (
+            <>
+              <ShareBar
+                parts={[
+                  { name: "Repeat", value: rn.repeat_revenue, color: P.cat[0] },
+                  { name: "First-time", value: rn.new_revenue, color: P.cat[1] },
+                ]}
+                total={repeatTotal} otherColor={P.neutral} animate={bars}
+              />
+              <div className="grid grid-cols-2 gap-x-6 gap-y-4 mt-5">
+                <Stat label="Repeat revenue" value={fmtAmount(rn.repeat_revenue)} swatch={P.cat[0]}
+                  hint={`${rn.repeat_deals} deal${rn.repeat_deals !== 1 ? "s" : ""} · ${rn.repeat_clients} buyer${rn.repeat_clients !== 1 ? "s" : ""}`} />
+                <Stat label="First-time revenue" value={fmtAmount(rn.new_revenue)} swatch={P.cat[1]}
+                  hint={`${rn.new_deals} deal${rn.new_deals !== 1 ? "s" : ""} · ${rn.new_clients} buyer${rn.new_clients !== 1 ? "s" : ""}`} />
+                <Stat label="Repeat profit" value={signed(rn.repeat_profit)}
+                  color={rn.repeat_profit >= 0 ? CLR.emerald : CLR.rose} />
+                <Stat label="First-time profit" value={signed(rn.new_profit)}
+                  color={rn.new_profit >= 0 ? CLR.emerald : CLR.rose} />
+              </div>
+            </>
+          ) : <Blank h={230} text="No revenue to split in this range" />}
+        </Card>
 
-        {/* Invoice Status */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Invoice status</h3>
-          <p className="text-[11px] text-muted mb-5">{stats.invoices} total invoices · all time</p>
+        <Card title="Deal velocity"
+          sub={range.velocity.median_days !== null
+            ? `Median ${range.velocity.median_days.toFixed(0)} days from invoice issued to deal completed, over ${range.velocity.deals_measured} deal${range.velocity.deals_measured !== 1 ? "s" : ""}`
+            : "Days from invoice issued to deal completed"}>
+          {range.velocity.by_month.length > 0 ? (
+            <ResponsiveContainer width="100%" height={230}>
+              <LineChart data={range.velocity.by_month.map((v) => ({ ...v, label: monthLabel(v.month) }))}
+                margin={{ top: 8, right: 4, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
+                <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
+                <YAxis tick={AX} axisLine={false} tickLine={false} width={40}
+                  tickFormatter={(v: number) => `${v}d`} />
+                <Tooltip {...TT}
+                  formatter={(v: any, _n: any, e: any) => [
+                    `${Number(v).toFixed(0)} days · ${e?.payload?.deals ?? 0} deal${e?.payload?.deals !== 1 ? "s" : ""}`,
+                    "Median"]} />
+                <Line type="monotone" dataKey="median_days" name="Median" stroke={P.cat[0]} strokeWidth={2}
+                  dot={{ r: 2.5, strokeWidth: 0, fill: P.cat[0] }} connectNulls />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : <Blank h={230} text="No deal has both an issue date and a completion date yet" />}
+        </Card>
+      </div>
 
-          {stats.invoice_status_breakdown.length > 0 ? (
-            <div className="space-y-4">
-              {stats.invoice_status_breakdown.map((s, i) => {
-                const clr = STATUS_CLR[s.status] ?? CLR.slate;
-                const pct = totalSV > 0 ? (s.total / totalSV) * 100 : 0;
-                return (
-                  <div key={s.status}>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-sm flex-shrink-0"
-                          style={{ backgroundColor: clr }} />
-                        <span className="text-[12px] text-ink-2 capitalize">
-                          {s.status.replace("_", " ")}
+      {/* ── Supplier spend + category revenue ──────────────────── */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <Card title="Where the money goes"
+          sub={`${range.supplier_concentration.supplier_count} supplier${range.supplier_concentration.supplier_count !== 1 ? "s" : ""} paid in ${rangeLabel}`}>
+          {range.supplier_concentration.supplier_count > 0 ? (
+            <>
+              <div className="grid grid-cols-2 gap-3 mb-5">
+                <Concentration label="Top supplier" pct={range.supplier_concentration.top1_pct} warnAt={50} unit="of spend" P={P} />
+                <Concentration label="Top 3" pct={range.supplier_concentration.top3_pct} warnAt={80} unit="of spend" P={P} />
+              </div>
+              <ShareBar
+                parts={range.top_suppliers_range.map((s, i) => ({ name: s.name, value: s.total_paid, color: P.cat[i] }))}
+                total={range.supplier_concentration.total_spend} otherColor={P.neutral} animate={bars}
+              />
+              <div className="mt-4 space-y-2">
+                {range.top_suppliers_range.map((s, i) => (
+                  <div key={s.name} className="flex items-center gap-2.5 min-w-0">
+                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: P.cat[i] }} />
+                    <span className="text-[12.5px] text-ink truncate flex-1 min-w-0">{s.name}</span>
+                    <span className="text-[11px] text-muted tabular-nums flex-shrink-0">
+                      {s.deal_count} deal{s.deal_count !== 1 ? "s" : ""}
+                    </span>
+                    <span className="text-[12.5px] text-ink-2 font-semibold tabular-nums flex-shrink-0 w-24 text-right">
+                      {fmtAmount(s.total_paid)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : <Blank h={230} text="No supplier payments in this range" />}
+        </Card>
+
+        <Card title="Revenue by category" sub="Client category · all time">
+          {cats.length > 0 ? (
+            <div className="space-y-3.5 max-h-[300px] overflow-y-auto pr-1">
+              {(() => {
+                const maxCat = Math.max(...cats.map((c) => c.revenue), 1);
+                return cats.map((c, i) => (
+                  <div key={c.category} className="min-w-0">
+                    <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
+                      <span className="text-[12px] font-medium text-ink-2 truncate min-w-0">{c.category}</span>
+                      <div className="flex items-center gap-2.5 flex-shrink-0">
+                        <span className="text-[11px] text-muted tabular-nums">
+                          {c.client_count} client{c.client_count !== 1 ? "s" : ""}
                         </span>
-                        <span className="text-[10px] text-faint">({s.count})</span>
+                        <span className="text-[12px] font-semibold text-ink tabular-nums">{fmtAmount(c.revenue)}</span>
                       </div>
-                      <span className="text-[12px] font-semibold text-ink tabular-nums">
-                        {fmtAmount(s.total)}
-                      </span>
                     </div>
                     <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
                       <div className="h-full rounded-full transition-all duration-700 ease-out"
                         style={{
-                          width: bars ? `${pct}%` : "0%",
-                          backgroundColor: clr,
-                          transitionDelay: `${i * 75}ms`,
+                          width: bars ? `${(c.revenue / maxCat) * 100}%` : "0%",
+                          // Never cycle the categorical slots: past the sixth, a row
+                          // is "other" and wears the neutral ink instead of a repeat hue.
+                          backgroundColor: i < P.cat.length ? P.cat[i] : P.neutral,
+                          transitionDelay: `${i * 55}ms`,
                         }} />
                     </div>
                   </div>
-                );
-              })}
+                ));
+              })()}
             </div>
-          ) : <Blank h={160} />}
-        </div>
-
-        {/* Top Spenders */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Top spenders</h3>
-          <p className="text-[11px] text-muted mb-4">By total revenue collected · all time</p>
-
-          {stats.top_spenders.length > 0 ? (
-            <div className="space-y-1">
-              {stats.top_spenders.map((c, i) => (
-                <div key={i} className="relative rounded-xl overflow-hidden">
-                  {/* Proportional fill behind each row */}
-                  <div className="absolute inset-y-0 left-0 rounded-xl transition-all duration-700 ease-out"
-                    style={{
-                      width: bars ? `${(c.total_spent / maxSpend) * 100}%` : "0%",
-                      background: "rgb(var(--c-accent) / 0.06)",
-                      transitionDelay: `${200 + i * 70}ms`,
-                    }} />
-                  <div className="relative flex items-center gap-3 px-4 py-3.5">
-                    {/* No badge. Rank is already said twice - by the row order and by the
-                        proportional fill behind the row - so a medal on top of it was
-                        decoration restating the list. Fixed-width slot keeps names aligned. */}
-                    <span className="w-4 flex-shrink-0 text-[11px] font-semibold tabular-nums text-faint">{i + 1}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-medium text-ink truncate">{c.name}</div>
-                      <div className="text-[11px] text-muted">
-                        {c.invoice_count} invoice{c.invoice_count !== 1 ? "s" : ""}
-                      </div>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="text-[13px] font-semibold text-ink tabular-nums">
-                        {fmtAmount(c.total_spent)}
-                      </div>
-                      <div className={`text-[10px] tabular-nums ${
-                        c.total_profit >= 0 ? "text-success-ink" : "text-danger-ink"
-                      }`}>{fmtAmount(c.total_profit)} profit</div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : <Blank h={160} />}
-        </div>
+          ) : <Blank h={230} text="No category revenue yet" />}
+        </Card>
       </div>
 
-      {/* ── Row: Tier Distribution + Category ─────────────────── */}
+      {/* ── What went wrong + standouts ────────────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <Card title="What went wrong" sub={`Losses, refunds and deals that fell through in ${rangeLabel}`}>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-5">
+            <Stat label="Fell through" value={String(lost)} color={lost > 0 ? CLR.rose : undefined}
+              hint="invoices voided" />
+            <Stat label="Closed at a loss" value={String(range.loss_deals)}
+              color={range.loss_deals > 0 ? CLR.rose : undefined}
+              hint={range.loss_total < 0 ? signed(range.loss_total) : "none"} />
+            <Stat label="Refunded" value={signed(-range.refunded_in_range)}
+              color={range.refunded_in_range > 0 ? CLR.rose : undefined}
+              hint={`${range.refunded_deals} deal${range.refunded_deals !== 1 ? "s" : ""}`} />
+            <Stat label="Still owed back" value={fmtAmount(stats.refund_owed_remaining)}
+              color={stats.refund_owed_remaining > 0 ? CLR.amber : undefined}
+              hint="promised, not yet sent" />
+          </div>
+          <p className="text-[11.5px] text-muted mt-5">
+            {lost + range.loss_deals + range.refunded_deals === 0
+              ? `Nothing was lost, refunded or closed below cost in ${rangeLabel}.`
+              : `Lost deals are invoices voided in ${rangeLabel}; a loss is a deal whose profit went negative after refunds.`}
+          </p>
+        </Card>
 
-        {/* Client Tiers */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client tiers</h3>
-          <p className="text-[11px] text-muted mb-5">{totalCl} clients · all time</p>
+        <Card title="Standouts" sub={`The extremes of ${rangeLabel}`}>
+          <div className="space-y-3">
+            <Highlight
+              label="Best margin"
+              name={range.best_margin_deal?.title ?? null}
+              sub={range.best_margin_deal ? range.best_margin_deal.client_name : null}
+              value={range.best_margin_deal ? `${range.best_margin_deal.margin_pct.toFixed(1)}%` : null}
+              valueColor={CLR.emerald}
+              amount={range.best_margin_deal ? signed(range.best_margin_deal.net_profit) : null}
+            />
+            <Highlight
+              label="Worst margin"
+              name={range.worst_margin_deal?.title ?? null}
+              sub={range.worst_margin_deal ? range.worst_margin_deal.client_name : null}
+              value={range.worst_margin_deal ? `${range.worst_margin_deal.margin_pct.toFixed(1)}%` : null}
+              valueColor={(range.worst_margin_deal?.margin_pct ?? 0) < 0 ? CLR.rose : CLR.amber}
+              amount={range.worst_margin_deal ? signed(range.worst_margin_deal.net_profit) : null}
+            />
+            <Highlight
+              label="Biggest invoice"
+              name={range.biggest_invoice?.number ?? null}
+              sub={range.biggest_invoice?.client_name ?? null}
+              value={range.biggest_invoice ? fmtAmount(range.biggest_invoice.total) : null}
+              valueColor={undefined}
+              amount={null}
+            />
+          </div>
+        </Card>
+      </div>
 
+      {/* ── Client mix + invoice status ────────────────────────── */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <Card title="Client mix" sub={`${totalCl} client${totalCl !== 1 ? "s" : ""} by tier · all time`}>
           {totalCl > 0 ? (
-            <>
-              {/* Segmented pill */}
-              <div className="h-2.5 bg-surface-3 rounded-full overflow-hidden flex mb-5">
-                {TIER_ORDER.filter((t) => tierMap[t] > 0).map((t, i, arr) => (
-                  <div key={t} className="h-full transition-all duration-700 ease-out"
-                    style={{
-                      width: bars ? `${(tierMap[t] / totalCl) * 100}%` : "0%",
-                      backgroundColor: TIER_CLR[t],
-                      transitionDelay: `${i * 80}ms`,
-                    }} />
-                ))}
+            <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)] gap-5 items-center">
+              <div className="min-w-0">
+                <ResponsiveContainer width="100%" height={180}>
+                  <PieChart>
+                    <Pie
+                      data={TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => ({ name: TIER_NAME[t], value: tierMap[t] }))}
+                      dataKey="value" nameKey="name" cx="50%" cy="50%"
+                      innerRadius={48} outerRadius={78} paddingAngle={2} stroke="none">
+                      {TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => (
+                        <Cell key={t} fill={TIER_CLR[t]} />
+                      ))}
+                    </Pie>
+                    <Tooltip {...TT} formatter={(v: any, n: any) => [`${v} client${v !== 1 ? "s" : ""}`, n]} />
+                  </PieChart>
+                </ResponsiveContainer>
               </div>
-
-              <div>
-                {TIER_ORDER.map((t, i) => {
+              <div className="min-w-0">
+                {TIER_ORDER.map((t) => {
                   const n = tierMap[t] || 0;
                   if (!n) return null;
                   return (
-                    <div key={t} className="flex items-center justify-between py-2.5
-                                             border-b border-line-2 last:border-0">
+                    <div key={t} className="flex items-center justify-between gap-3 py-2 border-b border-line-2 last:border-0 min-w-0">
                       <TierBadge tier={t} />
-                      <div className="flex items-center gap-4">
-                        <div className="w-24 h-1.5 bg-surface-3 rounded-full overflow-hidden">
-                          <div className="h-full rounded-full transition-all duration-700 ease-out"
-                            style={{
-                              width: bars ? `${(n / totalCl) * 100}%` : "0%",
-                              backgroundColor: TIER_CLR[t],
-                              transitionDelay: `${200 + i * 60}ms`,
-                            }} />
-                        </div>
-                        <span className="text-[11px] text-muted w-9 text-right tabular-nums">
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        <span className="text-[11px] text-muted tabular-nums w-11 text-right">
                           {((n / totalCl) * 100).toFixed(1)}%
                         </span>
-                        <span className="text-[14px] font-bold text-ink tabular-nums w-5 text-right">
-                          {n}
-                        </span>
+                        <span className="text-[13px] font-semibold text-ink tabular-nums w-6 text-right">{n}</span>
                       </div>
                     </div>
                   );
                 })}
               </div>
-            </>
-          ) : <Blank h={160} />}
-        </div>
+            </div>
+          ) : <Blank h={200} text="No clients yet" />}
+        </Card>
 
-        {/* Category breakdown */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Category breakdown</h3>
-          <p className="text-[11px] text-muted mb-5">Revenue by client category · all time</p>
-
-          {cats.length > 0 ? (
-            <div className="space-y-4 max-h-[280px] overflow-y-auto pr-1">
-              {cats.map((c, i) => (
-                <div key={i}>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-[12px] font-medium text-ink-2 truncate max-w-[160px]">
-                      {c.category}
-                    </span>
-                    <div className="flex items-center gap-2.5 ml-2 flex-shrink-0">
-                      <span className="text-[11px] text-muted">
-                        {c.client_count} client{c.client_count !== 1 ? "s" : ""}
+        <Card title="Invoice status" sub={`${stats.invoices} invoices · all time`}>
+          {stats.invoice_status_breakdown.length > 0 ? (
+            <div className="space-y-4">
+              {stats.invoice_status_breakdown.map((s, i) => {
+                const clr = P.STATUS[s.status] ?? P.neutral;
+                const pct = totalSV > 0 ? (s.total / totalSV) * 100 : 0;
+                return (
+                  <div key={s.status} className="min-w-0">
+                    <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: clr }} />
+                        <span className="text-[12px] text-ink-2 capitalize truncate">{s.status.replace("_", " ")}</span>
+                        <StatusPill>{s.count}</StatusPill>
+                      </div>
+                      <span className="text-[12px] font-semibold text-ink tabular-nums flex-shrink-0">
+                        {fmtAmount(s.total)}
                       </span>
-                      {c.revenue > 0 && (
-                        <span className="text-[12px] font-semibold text-ink tabular-nums">
-                          {fmtAmount(c.revenue)}
-                        </span>
-                      )}
+                    </div>
+                    <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700 ease-out"
+                        style={{ width: bars ? `${pct}%` : "0%", backgroundColor: clr, transitionDelay: `${i * 75}ms` }} />
                     </div>
                   </div>
-                  <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-700 ease-out"
-                      style={{
-                        width: c.revenue > 0 && bars ? `${(c.revenue / maxCat) * 100}%` : "0%",
-                        backgroundColor: revenueClr,
-                        transitionDelay: `${i * 55}ms`,
-                      }} />
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
-          ) : <Blank h={160} text="No category data" />}
-        </div>
+          ) : <Blank h={200} text="No invoices yet" />}
+        </Card>
       </div>
 
-      {/* ── Most Profitable + Financial summary ────────────────── */}
+      {/* ── Cash position + financial summary ──────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-
-        {/* Most Profitable */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Most profitable</h3>
-          <p className="text-[11px] text-muted mb-5">By net profit margin</p>
-
-          {((rangeData?.top_clients_by_profit ?? stats.top_clients_by_profit) as any[]).length > 0 ? (
-            <div>
-              {((rangeData?.top_clients_by_profit ?? stats.top_clients_by_profit) as any[]).map((c: any, i: number) => (
-                <div key={i} className="py-3 border-b border-line-2 last:border-0">
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-medium text-ink truncate">{c.name}</div>
-                      <div className="text-[11px] text-muted mt-0.5 tabular-nums">
-                        {fmtAmount(c.total_revenue)} revenue
-                      </div>
-                    </div>
-                    <div className="text-right ml-3 flex-shrink-0">
-                      <div className={`text-[13px] font-semibold tabular-nums ${
-                        c.total_profit >= 0 ? "text-success-ink" : "text-danger-ink"
-                      }`}>{fmtAmount(c.total_profit)}</div>
-                      <div className="text-[10px] text-muted mt-0.5">
-                        {c.margin.toFixed(1)}% margin
-                      </div>
-                    </div>
-                  </div>
-                  <div className="h-1 bg-surface-3 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-700 ease-out"
-                      style={{
-                        width: bars ? `${Math.min(Math.max(c.margin, 0), 100)}%` : "0%",
-                        backgroundColor: c.total_profit >= 0 ? CLR.emerald : CLR.rose,
-                        transitionDelay: `${150 + i * 55}ms`,
-                      }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : <Blank h={160} text="No profit data yet" />}
-        </div>
-
-        {/* Financial snapshot — same range-filtered deal source as the hero, so
-            revenue − cost = profit holds inside one card (the old card mixed a
-            YTD paid-invoice number with all-time costs from a different base). */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Financial snapshot</h3>
-          <p className="text-[11px] text-muted mb-5">
-            Completed deals · {preset === "Custom" ? "custom range" : preset.toLowerCase()}
-          </p>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-            {[
-              { label: "Revenue",       value: fmtAmount(displayStats?.total_revenue ?? 0), clr: "var(--t-tx1)" },
-              { label: "Total cost",    value: fmtAmount(displayStats?.total_cost ?? 0),    clr: "var(--t-tx1)" },
-              { label: "Net profit",    value: fmtAmount(displayStats?.total_profit ?? 0),
-                clr: (displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose },
-              { label: "Margin",        value: `${(displayStats?.avg_margin ?? 0).toFixed(1)}%`, clr: "var(--t-tx1)" },
-              { label: "Shipping",      value: fmtAmount(shippingTotal), clr: "var(--t-tx1)" },
-              { label: "Bank and wire fees", value: fmtAmount(feesTotal), clr: "var(--t-tx1)" },
-              { label: "True net",      value: fmtAmount(trueNet), clr: trueNet >= 0 ? CLR.emerald : CLR.rose },
-              { label: "Outstanding (current)", value: fmtAmount(stats.outstanding), clr: CLR.amber },
-              { label: "Open closeouts",        value: String(stats.incomplete_shipping), clr: "var(--t-tx1)" },
-            ].map((item) => (
-              <div key={item.label}>
-                <div className="text-[12.5px] font-medium text-muted mb-1.5">
-                  {item.label}
-                </div>
-                <div className="text-[20px] font-bold tabular-nums leading-none"
-                  style={{ color: item.clr }}>
-                  {item.value}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* ── Row: Cash position + Top suppliers ─────────────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-
-        {/* Cash position — live from the Financials engine (always current, not range) */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Cash position</h3>
-          <p className="text-[11px] text-muted mb-5">Live from Financials · not affected by the date range</p>
+        <Card title="Cash position" sub="Live from Financials · not affected by the date range">
           {money ? (
             <div className="space-y-3">
-              <div className="flex items-end justify-between">
+              <div className="flex items-end justify-between gap-3">
                 <span className="text-[12.5px] font-medium text-muted">Free cash</span>
                 <span className="text-[24px] font-bold tabular-nums leading-none"
                   style={{ color: money.free_cash >= 0 ? CLR.emerald : CLR.rose }}>
-                  {fmtAmount(money.free_cash)}
+                  {signed(money.free_cash)}
                 </span>
               </div>
               <div className="border-t border-line-2 pt-3 space-y-2">
                 {[
-                  { label: "Bank balance",       v: money.bank_balance,       out: false },
-                  { label: "Credit card owed",   v: money.credit_card_balance, out: true },
-                  { label: "Supplier payables",  v: money.supplier_payables,  out: true },
-                  { label: "Refund liability",   v: money.refund_liability,   out: true },
-                  // Reserves are targets, not deductions — listing them here made the
-                  // breakdown fail to add up to the figure printed above it. Cash floor
-                  // IS deducted and was missing, which broke the same sum the other way.
-                  { label: "Cash floor",         v: money.cash_floor,         out: true },
-                  { label: "Loans outstanding",  v: money.loan_outstanding,   out: true },
+                  { label: "Bank balance",      v: money.bank_balance,        out: false },
+                  { label: "Credit card owed",  v: money.credit_card_balance, out: true },
+                  { label: "Supplier payables", v: money.supplier_payables,   out: true },
+                  { label: "Refund liability",  v: money.refund_liability,    out: true },
+                  { label: "Cash floor",        v: money.cash_floor,          out: true },
+                  { label: "Loans outstanding", v: money.loan_outstanding,    out: true },
                 ].filter((r) => r.v > 0.005 || r.label === "Bank balance").map((r) => (
-                  <div key={r.label} className="flex items-center justify-between text-[12.5px]">
-                    <span className="text-ink-2">{r.label}</span>
-                    <span className={`tabular-nums font-medium ${r.out ? "text-danger-ink" : "text-success-ink"}`}>
+                  <div key={r.label} className="flex items-center justify-between gap-3 text-[12.5px] min-w-0">
+                    <span className="text-ink-2 truncate min-w-0">{r.label}</span>
+                    <span className={`tabular-nums font-medium flex-shrink-0 ${r.out ? "text-danger-ink" : "text-success-ink"}`}>
                       {r.out ? "−" : ""}{fmtAmount(r.v)}
                     </span>
                   </div>
                 ))}
               </div>
             </div>
-          ) : <Blank h={160} text="Connect a bank in Financials to see cash position" />}
-        </div>
+          ) : <Blank h={200} text="Connect a bank in Financials to see cash position" />}
+        </Card>
 
-        {/* Top suppliers — where the cost of goods goes */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Top suppliers</h3>
-          <p className="text-[11px] text-muted mb-4">By total paid across completed deals · all time</p>
-          {(stats.top_suppliers ?? []).length > 0 ? (
-            <div className="space-y-1">
-              {(() => {
-                const maxPaid = Math.max(...stats.top_suppliers.map((s) => s.total_paid), 1);
-                return stats.top_suppliers.map((s, i) => (
-                  <div key={i} className="relative rounded-xl overflow-hidden">
-                    <div className="absolute inset-y-0 left-0 rounded-xl transition-all duration-700 ease-out"
-                      style={{
-                        width: bars ? `${(s.total_paid / maxPaid) * 100}%` : "0%",
-                        background: "rgb(var(--c-accent) / 0.06)",
-                        transitionDelay: `${200 + i * 70}ms`,
-                      }} />
-                    <div className="relative flex items-center gap-3 px-4 py-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-ink truncate">{s.name}</div>
-                        <div className="text-[11px] text-muted">
-                          {s.deal_count} deal{s.deal_count !== 1 ? "s" : ""}
-                        </div>
-                      </div>
-                      <span className="text-[13px] font-semibold text-ink tabular-nums flex-shrink-0">
-                        {fmtAmount(s.total_paid)}
-                      </span>
-                    </div>
-                  </div>
-                ));
-              })()}
-            </div>
-          ) : <Blank h={160} text="No supplier payments yet" />}
-        </div>
+        <Card title="Financial summary" sub={`Completed deals · ${rangeLabel}`}>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-5">
+            {[
+              { label: "Revenue",             value: fmtAmount(range.total_revenue) },
+              { label: "Total cost",          value: fmtAmount(range.total_cost) },
+              { label: "Net profit",          value: signed(range.total_profit),
+                color: range.total_profit >= 0 ? CLR.emerald : CLR.rose },
+              { label: "Margin",              value: `${range.avg_margin.toFixed(1)}%` },
+              { label: "Shipping",            value: fmtAmount(range.total_shipping) },
+              { label: "Bank and wire fees",  value: fmtAmount(range.total_fees) },
+              { label: "True net",            value: signed(range.true_net),
+                color: range.true_net >= 0 ? CLR.emerald : CLR.rose },
+              { label: "Outstanding",         value: fmtAmount(stats.outstanding), color: CLR.amber },
+              { label: "Open closeouts",      value: String(stats.incomplete_shipping) },
+            ].map((item) => (
+              <Stat key={item.label} label={item.label} value={item.value} color={item.color} size="md" />
+            ))}
+          </div>
+        </Card>
       </div>
+
+      {/* ── Month by month ─────────────────────────────────────── */}
+      <Card title="Month by month" sub="Every month with a closed deal or an overhead payment">
+        {trend.length > 0 ? (
+          <div className="overflow-x-auto -mx-5 px-5">
+            <table className="w-full min-w-[720px] text-[12.5px]">
+              <thead>
+                <tr className="text-[11px] text-muted border-b border-line">
+                  <th className="text-left font-medium py-2 pr-3">Month</th>
+                  <th className="text-right font-medium py-2 px-3">Deals</th>
+                  <th className="text-right font-medium py-2 px-3">Revenue</th>
+                  <th className="text-right font-medium py-2 px-3">Profit</th>
+                  <th className="text-right font-medium py-2 px-3">Margin</th>
+                  <th className="text-right font-medium py-2 px-3">Shipping</th>
+                  <th className="text-right font-medium py-2 px-3">Fees</th>
+                  <th className="text-right font-medium py-2 pl-3">True net</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...trend].reverse().map((m) => (
+                  <tr key={m.month} className="border-b border-line-2 last:border-0 hover:bg-surface-2 transition-colors">
+                    <td className="py-2.5 pr-3 text-ink whitespace-nowrap">
+                      {m.label}
+                      {m.projected && <span className="ml-2"><StatusPill>In progress</StatusPill></span>}
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{m.count}</td>
+                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{fmtAmount(m.revenue)}</td>
+                    <td className="py-2.5 px-3 text-right tabular-nums font-medium"
+                      style={{ color: m.profit >= 0 ? CLR.emerald : CLR.rose }}>{signed(m.profit)}</td>
+                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{m.margin_pct.toFixed(1)}%</td>
+                    <td className="py-2.5 px-3 text-right text-muted tabular-nums">{fmtAmount(m.shipping)}</td>
+                    <td className="py-2.5 px-3 text-right text-muted tabular-nums">{fmtAmount(m.fees)}</td>
+                    <td className="py-2.5 pl-3 text-right tabular-nums font-medium"
+                      style={{ color: m.true_net >= 0 ? CLR.emerald : CLR.rose }}>{signed(m.true_net)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <Blank h={160} text="No months to show for this range" />}
+      </Card>
+
+      {/* ── What people bought ─────────────────────────────────── */}
+      <Card
+        title="What people bought"
+        sub={range.completed_deals_capped
+          ? `The ${range.completed_deals.length} most recent of ${range.deal_count} closed deals`
+          : `${range.completed_deals.length} closed deal${range.completed_deals.length !== 1 ? "s" : ""} in ${rangeLabel}`}
+      >
+        {range.completed_deals.length > 0 ? (
+          <div className="overflow-x-auto -mx-5 px-5 max-h-[520px] overflow-y-auto">
+            <table className="w-full min-w-[760px] text-[12.5px]">
+              <thead className="sticky top-0 bg-surface">
+                <tr className="text-[11px] text-muted border-b border-line">
+                  <th className="text-left font-medium py-2 pr-3">Closed</th>
+                  <th className="text-left font-medium py-2 px-3">Buyer</th>
+                  <th className="text-left font-medium py-2 px-3">Products</th>
+                  <th className="text-left font-medium py-2 px-3">Supplier</th>
+                  <th className="text-right font-medium py-2 px-3">Revenue</th>
+                  <th className="text-right font-medium py-2 pl-3">Profit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {range.completed_deals.map((d) => (
+                  <tr key={d.deal_flow_id} className="border-b border-line-2 last:border-0 hover:bg-surface-2 transition-colors align-top">
+                    <td className="py-2.5 pr-3 text-muted tabular-nums whitespace-nowrap">{d.completed_on}</td>
+                    <td className="py-2.5 px-3 text-ink min-w-0">
+                      <div className="truncate max-w-[180px]">{d.client_name}</div>
+                      <div className="text-[10.5px] text-faint truncate max-w-[180px]">{d.invoice_number}</div>
+                    </td>
+                    <td className="py-2.5 px-3 text-ink-2 min-w-0">
+                      {d.products.length > 0 ? (
+                        <div className="max-w-[300px]">
+                          {d.products.slice(0, 2).map((p, i) => (
+                            <div key={i} className="truncate">
+                              {p.name}{p.qty > 1 ? ` ×${p.qty}` : ""}
+                            </div>
+                          ))}
+                          {d.products.length > 2 && (
+                            <div className="text-[10.5px] text-faint">+{d.products.length - 2} more</div>
+                          )}
+                        </div>
+                      ) : <span className="text-faint">—</span>}
+                    </td>
+                    <td className="py-2.5 px-3 text-ink-2 min-w-0">
+                      <div className="truncate max-w-[160px]">{d.suppliers.join(", ") || "—"}</div>
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums whitespace-nowrap">{fmtAmount(d.revenue)}</td>
+                    <td className="py-2.5 pl-3 text-right tabular-nums font-medium whitespace-nowrap"
+                      style={{ color: d.net_profit >= 0 ? CLR.emerald : CLR.rose }}>{signed(d.net_profit)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <Blank h={160} text="Nothing closed in this range" />}
+      </Card>
 
     </div>
   );
 }
 
-// ─── Shared helpers ───────────────────────────────────────────────
+// ─── Shared pieces ────────────────────────────────────────────────
 
-// Small month-over-month movement chip on lead stats.
-function MomChip({ now, prev }: { now: number; prev: number }) {
-  if (!prev) return null;
-  const pct = ((now - prev) / Math.abs(prev)) * 100;
-  const up = pct >= 0;
+function Card({ title, sub, right, children }: {
+  title: string; sub?: string; right?: React.ReactNode; children: React.ReactNode;
+}) {
   return (
-    <span title="vs prior month"
-      className={`inline-flex items-center gap-0.5 h-5 px-1.5 rounded-full text-[10.5px] font-semibold tabular-nums flex-shrink-0 ${up ? "bg-success-bg text-success-ink" : "bg-danger-bg text-danger-ink"}`}>
-      {up ? <TrendingUp size={11} strokeWidth={2} /> : <TrendingDown size={11} strokeWidth={2} />}
-      {Math.abs(pct).toFixed(0)}%
-    </span>
+    <section className="bg-surface ring-1 ring-line rounded-2xl p-5 min-w-0">
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 mb-5">
+        <div className="min-w-0">
+          <h3 className="text-[13px] font-semibold text-ink">{title}</h3>
+          {sub && <p className="text-[11px] text-muted mt-0.5">{sub}</p>}
+        </div>
+        {right && <div className="min-w-0">{right}</div>}
+      </div>
+      {children}
+    </section>
   );
 }
 
-function Legend({ color, label }: { color: string; label: string }) {
+function Kpi({ label, value, hint, color, accentClass }: {
+  label: string; value: string; hint?: string; color?: string; accentClass?: string;
+}) {
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: color }} />
-      <span className="text-[11px] text-muted">{label}</span>
+    <div className="bg-surface px-4 py-5 min-w-0">
+      <div className="text-[12.5px] font-medium text-muted truncate">{label}</div>
+      {/* A six-figure amount needs ~152px at 24px; a tile is narrower than that once the
+          216px sidebar takes its cut, and `truncate` turned the money into an ellipsis.
+          The figure steps up with the tile instead of being cut off. */}
+      <div className={`text-[19px] sm:text-[21px] 2xl:text-[24px] font-bold tabular-nums mt-1.5 leading-none tracking-tight truncate ${accentClass ?? "text-ink"}`}
+        style={color ? { color } : undefined}>
+        {value}
+      </div>
+      {hint && <div className="text-[11px] text-faint mt-1.5 truncate">{hint}</div>}
+    </div>
+  );
+}
+
+function Stat({ label, value, hint, color, swatch, size = "sm" }: {
+  label: string; value: string; hint?: string; color?: string; swatch?: string; size?: "sm" | "md";
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
+        {swatch && <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: swatch }} />}
+        <span className="text-[12.5px] font-medium text-muted truncate">{label}</span>
+      </div>
+      <div className={`${size === "md" ? "text-[20px]" : "text-[18px]"} font-bold tabular-nums mt-1.5 leading-none truncate`}
+        style={{ color: color ?? "rgb(var(--c-ink))" }}>
+        {value}
+      </div>
+      {hint && <div className="text-[11px] text-faint mt-1.5 truncate tabular-nums">{hint}</div>}
+    </div>
+  );
+}
+
+// A concentration reading is a risk statement: past its threshold it wears the warning
+// ink, so "the top buyer is 61% of revenue" is not something you have to notice yourself.
+function Concentration({ label, pct, warnAt, unit, P }: {
+  label: string; pct: number; warnAt: number; unit: string; P: ReturnType<typeof usePalette>;
+}) {
+  const hot = pct >= warnAt;
+  return (
+    <div className="rounded-xl bg-surface-2 px-3.5 py-3 min-w-0">
+      <div className="text-[11px] text-muted truncate">{label}</div>
+      <div className="text-[19px] font-bold tabular-nums mt-1 leading-none"
+        style={{ color: hot ? P.CLR.amber : "rgb(var(--c-ink))" }}>
+        {pct.toFixed(0)}%
+      </div>
+      <div className="text-[10.5px] text-faint mt-1">{unit}</div>
+    </div>
+  );
+}
+
+// A 100% share bar. Anything past the named parts folds into one "Other" segment rather
+// than taking a seventh hue — the categorical palette is six fixed slots, never cycled.
+function ShareBar({ parts, total, otherColor, animate }: {
+  parts: { name: string; value: number; color: string }[]; total: number; otherColor: string; animate: boolean;
+}) {
+  const named = parts.reduce((s, p) => s + p.value, 0);
+  const other = Math.max(total - named, 0);
+  const segs = other > 0.005 ? [...parts, { name: "Other", value: other, color: otherColor }] : parts;
+  if (total <= 0) return null;
+  return (
+    <div className="h-2.5 bg-surface-3 rounded-full overflow-hidden flex gap-px">
+      {segs.map((s, i) => (
+        <div key={s.name} className="h-full transition-all duration-700 ease-out first:rounded-l-full last:rounded-r-full"
+          title={`${s.name} · ${((s.value / total) * 100).toFixed(1)}%`}
+          style={{
+            width: animate ? `${(s.value / total) * 100}%` : "0%",
+            backgroundColor: s.color,
+            transitionDelay: `${i * 70}ms`,
+          }} />
+      ))}
+    </div>
+  );
+}
+
+function Highlight({ label, name, sub, value, valueColor, amount }: {
+  label: string; name: string | null; sub: string | null; value: string | null;
+  valueColor?: string; amount: string | null;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2.5 border-b border-line-2 last:border-0 min-w-0">
+      <div className="min-w-0">
+        <div className="text-[11px] text-muted">{label}</div>
+        {name ? (
+          <>
+            <div className="text-[13px] font-medium text-ink truncate">{name}</div>
+            {sub && <div className="text-[11px] text-faint truncate">{sub}</div>}
+          </>
+        ) : (
+          <div className="text-[12.5px] text-faint mt-0.5">Nothing in this range</div>
+        )}
+      </div>
+      {value && (
+        <div className="text-right flex-shrink-0">
+          <div className="text-[16px] font-bold tabular-nums leading-none"
+            style={{ color: valueColor ?? "rgb(var(--c-ink))" }}>{value}</div>
+          {amount && <div className="text-[11px] text-muted tabular-nums mt-1">{amount}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── R-317 bridge ─────────────────────────────────────────────────
+// A waterfall read as a statement rather than drawn as a chart: label left, amount
+// right, tabular figures, and a hairline above every line that has to tie.
+//
+// Amounts arrive already signed — a subtract row is negative in the payload — so the
+// list never re-decides what a line means. Colour follows the rest of the screen: money
+// arriving wears the muted emerald ink, money leaving is plain ink, and only a subtotal
+// that is itself negative goes rose.
+//
+// The drift note is the reason this section exists. A subtotal is the figure read from
+// the book; `running` is what the lines above it add up to. When they disagree the list
+// keeps showing the figure it read and says so underneath, in rose.
+function BridgeList({ rows, CLR }: { rows: ReconRow[]; CLR: { emerald: string; rose: string } }) {
+  return (
+    <div className="min-w-0">
+      {rows.map((r) => {
+        const heavy = r.kind === "subtotal" || r.kind === "total";
+        const drift = r.drift ?? 0;
+        const lightTone =
+          r.kind === "residual" ? (Math.abs(r.amount) < 0.005 ? "text-faint" : "text-danger-ink")
+          : r.amount >= 0 ? "text-success-ink" : "text-ink-2";
+        return (
+          <div key={r.label} className={`min-w-0 ${heavy ? "border-t border-line mt-2 pt-2" : ""}`}>
+            <div className="flex items-baseline justify-between gap-3 min-w-0 py-1">
+              <div className="min-w-0">
+                <div className={`truncate ${heavy ? "text-[13px] font-semibold text-ink" : "text-[12.5px] text-ink-2"}`}>
+                  {r.label}
+                </div>
+                {r.hint && <div className="text-[10.5px] text-faint truncate">{r.hint}</div>}
+              </div>
+              <span
+                className={`tabular-nums flex-shrink-0 ${heavy ? "text-[16px] font-bold" : `text-[13px] font-medium ${lightTone}`}`}
+                style={heavy ? { color: r.amount >= 0 ? CLR.emerald : CLR.rose } : undefined}
+              >
+                {signed(r.amount)}
+              </span>
+            </div>
+            {Math.abs(drift) >= 0.005 && (
+              <p className="text-[11px] text-danger-ink pb-1.5">
+                Does not tie — the lines above come to {signed(r.running ?? 0)}, a difference
+                of {signed(drift)}.
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Whether a bank column ties to its ledger figure, and by how much when it does not.
+// It always renders: "no note" and "ties to the cent" must not look the same.
+function Gap({ label, gap, against, because, CLR }: {
+  label: string; gap: number; against: string; because?: string; CLR: { rose: string };
+}) {
+  if (Math.abs(gap) < 0.005) {
+    return <p className="text-muted">{label} matches {against} to the cent.</p>;
+  }
+  return (
+    <p className={because ? "text-muted" : undefined} style={because ? undefined : { color: CLR.rose }}>
+      {label} is {fmtAmount(Math.abs(gap))} {gap > 0 ? "more than" : "less than"} {against}
+      {because ? ` — ${because}` : ""}.
+    </p>
+  );
+}
+
+function Legend({ color, label, dashed }: { color: string; label: string; dashed?: boolean }) {
+  return (
+    <div className="flex items-center gap-1.5 flex-shrink-0">
+      <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
+        style={dashed
+          ? { border: `1.5px dashed ${color}` }
+          : { backgroundColor: color }} />
+      <span className="text-[11px] text-muted whitespace-nowrap">{label}</span>
     </div>
   );
 }
 
 function Blank({ h = 160, text = "No data yet" }: { h?: number; text?: string }) {
   return (
-    <div className="flex items-center justify-center text-[12px] text-faint"
+    <div className="flex items-center justify-center text-center text-[12px] text-faint px-4"
       style={{ height: h }}>
       {text}
     </div>
