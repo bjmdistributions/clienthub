@@ -17,6 +17,15 @@ jobs:
             args: ''
 
     runs-on: ${{ matrix.platform }}
+    # tauri-action CREATES the draft release, which needs write access to
+    # contents. Without this key the job inherits the repository's default
+    # GITHUB_TOKEN permissions, and v0.16.72's Windows leg died on
+    # "Resource not accessible by integration" at the create-release call after
+    # a clean 14-minute build — while v0.16.71, 45 minutes earlier, had been
+    # fine. Whatever moved the default, the release must not depend on it:
+    # `publish` below already declares the same permission for the same reason.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
