@@ -53,9 +53,12 @@ const LOTS = [
 ];
 
 const CATEGORIES = [
+  // 24 of them on purpose: the menu has to scroll ALL of them, not show six.
   "Apparel", "Accessories", "Appliances", "Beauty/Cosmetics", "Electronics", "Footwear",
   "General Merchandise", "Hats", "Home & garden", "Jewelry & Accessories", "Outerwear",
   "Pet supplies", "Shoes", "Socks", "Sporting goods", "Streetwear", "Toys",
+  "Tools & hardware", "Books & stationery", "Food & beverages", "Furniture", "Health",
+  "Kitchen", "Luggage",
 ].map((label, i) => ({ id: "cat" + i, label, sort_order: i, parent_id: null }));
 
 const EMPTY_OK = new Set([

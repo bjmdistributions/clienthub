@@ -1354,7 +1354,7 @@ function ChipMultiSelect({ value, onChange, options, placeholder, createLabel = 
           className="w-6 h-6 flex items-center justify-center rounded text-muted hover:text-ink-2 shrink-0"><ChevronDown size={14} /></button>
       </div>
       {open && (canCreate || list.length > 0) && (
-        <div className="absolute left-0 right-0 mt-1 bg-surface border border-line rounded-lg shadow-lg z-[70] max-h-64 overflow-y-auto py-1">
+        <div className="absolute left-0 right-0 mt-1 bg-surface border border-line rounded-lg shadow-lg z-[70] max-h-[min(60vh,26rem)] overflow-y-auto overscroll-contain py-1">
           {canCreate && (
             <button type="button" onMouseDown={(e) => { e.preventDefault(); toggle(draft); }} className="w-full text-left px-3 py-2 text-[13px] text-accent hover:bg-surface-2">{createLabel} “{draft.trim()}”</button>
           )}
