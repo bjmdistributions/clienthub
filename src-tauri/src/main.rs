@@ -605,6 +605,7 @@ fn main() {
             export_deal_flows_csv,
             export_inventory_csv,
             export_tax_year_pnl_csv,
+            export_ledger_csv,
             export_analytics_xlsx,
             search_clients,
             global_search,

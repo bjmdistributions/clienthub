@@ -2639,6 +2639,10 @@ export const api = {
     invoke<number>("export_inventory_csv", { statusFilter, outputPath }),
   exportTaxYearPnlCsv: (year: number, outputPath: string) =>
     invoke<number>("export_tax_year_pnl_csv", { year, outputPath }),
+  // The ids are the rows the Ledger is showing — the screen owns what "booked" and
+  // "this year" mean (R-312), so the file can never disagree with the list.
+  exportLedgerCsv: (ids: string[], outputPath: string) =>
+    invoke<number>("export_ledger_csv", { ids, outputPath }),
   exportAnalyticsXlsx: (outputPath: string) =>
     invoke<void>("export_analytics_xlsx", { outputPath }),
 

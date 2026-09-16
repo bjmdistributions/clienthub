@@ -1660,6 +1660,159 @@ pub async fn export_tax_year_pnl_csv(year: i32, output_path: String) -> Result<u
     Ok(txn_count)
 }
 
+/// The role an allocation plays, in the words the Financials screen uses (`ROLES`,
+/// FinancialsView.tsx) — a CSV read by an accountant should not carry `refund_out`.
+fn ledger_role_label(role: &str) -> &str {
+    match role {
+        "buyer_payment" => "payment from the buyer",
+        "supplier_payment" => "payment to the supplier",
+        "refund_out" => "refund back to the buyer",
+        "refund_in" => "money back from the supplier",
+        "fee" => "fee",
+        "adjustment" => "adjustment",
+        other => other,
+    }
+}
+
+/// One CSV line of the ledger, built away from SQL so it can be tested: money in and
+/// money out are exclusive columns (a spreadsheet sums them; a signed column makes
+/// somebody choose a sign convention), an unrecognised category keeps its raw value
+/// rather than being folded into a group it may not belong to (the same rule the
+/// rollup follows), and "Booked" is `reviewed` — exactly what the Ledger's Booked
+/// scope filters on, so the file and the count above the list agree.
+#[allow(clippy::too_many_arguments)]
+fn ledger_csv_row(
+    id: &str, posted_at: &str, description: &str, payee: &str, account: &str,
+    direction: &str, amount: f64, category: &str, method: &str, note: &str,
+    reviewed: bool, allocated: f64, pending: bool, deals: &str,
+) -> Vec<String> {
+    let is_in = direction == "in";
+    let (label, group) = pnl_group_of(category)
+        .map(|(l, g)| (l.to_string(), g.to_string()))
+        .unwrap_or_else(|| (
+            if category.is_empty() { "Uncategorized".to_string() } else { category.to_string() },
+            "Uncategorized".to_string(),
+        ));
+    vec![
+        posted_at.chars().take(10).collect(),
+        description.to_string(),
+        payee.to_string(),
+        account.to_string(),
+        if is_in { "In" } else { "Out" }.to_string(),
+        if is_in { format!("{:.2}", amount) } else { String::new() },
+        if is_in { String::new() } else { format!("{:.2}", amount) },
+        label,
+        group,
+        method.to_string(),
+        deals.to_string(),
+        format!("{:.2}", allocated),
+        // `-0.0 == 0.0` in IEEE 754, so this normalises the sign rather than the
+        // value: a transaction filed to the cent printed "-0.00" and read as an error.
+        format!("{:.2}", match ((amount - allocated) * 100.0).round() / 100.0 { u if u == 0.0 => 0.0, u => u }),
+        if reviewed { "Yes" } else { "No" }.to_string(),
+        if pending { "Yes" } else { "No" }.to_string(),
+        note.to_string(),
+        id.to_string(),
+    ]
+}
+
+/// R-312: the ledger itself — one row per transaction, for exactly the rows the
+/// Financials Ledger is showing.
+///
+/// The ids come from the screen deliberately. Nine facets (scope, account, category,
+/// method, person, status, direction, search and the date window) decide what
+/// "booked" and "this year" mean, in one predicate — `passesBase` in
+/// FinancialsView.tsx — and a second copy of that predicate here would drift from it
+/// inside a release. This way the file cannot disagree with the list it came from.
+///
+/// `export_tax_year_pnl_csv` above answers "what did the year total"; this answers
+/// "show me the transactions". Every row carries its P&L group, so the two files
+/// reconcile against each other.
+#[tauri::command]
+pub async fn export_ledger_csv(ids: Vec<String>, output_path: String) -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let js = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
+
+    // The deals each transaction's money is tied to, named the way the screen names
+    // them (`dealLabel`): the buyer first, because an invoice number on its own
+    // identifies nothing to the person reading the file.
+    let mut deals: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT a.bank_txn_id, \
+                    COALESCE(NULLIF(TRIM(c.name),''), NULLIF(TRIM(df.name),''), 'Invoice #' || NULLIF(TRIM(i.number),''), 'Untitled deal'), \
+                    COALESCE(a.role,''), a.amount \
+             FROM bank_allocation a \
+             LEFT JOIN deal_flows df ON df.id = a.deal_flow_id \
+             LEFT JOIN invoices i ON i.id = df.invoice_id \
+             LEFT JOIN clients c ON c.id = i.client_id \
+             WHERE a.bank_txn_id IN (SELECT value FROM json_each(?1)) \
+             ORDER BY a.created_at"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([&js], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, f64>(3)?,
+        ))).map_err(|e| e.to_string())?;
+        for (txn_id, name, role, amount) in rows.filter_map(|r| r.ok()) {
+            deals.entry(txn_id).or_default()
+                .push(format!("{} — {} {:.2}", name, ledger_role_label(&role), amount));
+        }
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT bt.id, bt.posted_at, bt.description, bt.counterparty_name, bt.account_id, bt.direction, bt.amount, \
+                COALESCE(bt.category,''), COALESCE(bt.confirmed_method,''), COALESCE(bt.note,''), bt.reviewed, \
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0), \
+                COALESCE(CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pnd') END, 0) \
+         FROM bank_txn bt WHERE bt.id IN (SELECT value FROM json_each(?1)) \
+         ORDER BY bt.posted_at DESC, bt.created_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&js], |r| Ok((
+        r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+        r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, f64>(6)?, r.get::<_, String>(7)?,
+        r.get::<_, String>(8)?, r.get::<_, String>(9)?, r.get::<_, i64>(10)?, r.get::<_, f64>(11)?,
+        r.get::<_, i64>(12)?,
+    ))).map_err(|e| e.to_string())?;
+
+    // A BOM, deliberately: Excel on Windows reads a BOM-less CSV as ANSI, and these
+    // rows are full of non-ASCII — the live account labels carry "·" and every deal
+    // line an em dash. Without it the accountant's first impression of the file is
+    // "Blue Business Cash(TM) Ã‚Â·Ã‚Â·2002".
+    let mut file = std::fs::File::create(&output_path).map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut file, &[0xEF, 0xBB, 0xBF]).map_err(|e| e.to_string())?;
+    let mut wtr = csv::Writer::from_writer(file);
+    wtr.write_record([
+        "Date", "Description", "Payee", "Account", "Direction", "Money in", "Money out",
+        "Category", "Group", "Confirmed method", "Linked deals", "Allocated", "Unfiled",
+        "Booked", "Pending", "Note", "Transaction ID",
+    ]).map_err(|e| e.to_string())?;
+
+    let (mut count, mut sum_in, mut sum_out) = (0u32, 0.0, 0.0);
+    for (id, posted_at, description, payee, account, direction, amount, category, method, note, reviewed, allocated, pending)
+        in rows.filter_map(|r| r.ok())
+    {
+        if direction == "in" { sum_in += amount; } else { sum_out += amount; }
+        let linked = deals.get(&id).map(|v| v.join("; ")).unwrap_or_default();
+        wtr.write_record(&ledger_csv_row(
+            &id, &posted_at, &description, &payee, &account, &direction, amount, &category,
+            &method, &note, reviewed != 0, allocated, pending != 0, &linked,
+        )).map_err(|e| e.to_string())?;
+        count += 1;
+    }
+
+    // The same two figures the Ledger prints above the list, so the file can be
+    // checked against the screen without adding anything up by hand.
+    wtr.write_record(vec![""; 17]).map_err(|e| e.to_string())?;
+    let mut total = vec![format!("Total — {} transaction{}", count, if count == 1 { "" } else { "s" })];
+    total.extend(std::iter::repeat(String::new()).take(4));
+    total.push(format!("{:.2}", sum_in));
+    total.push(format!("{:.2}", sum_out));
+    total.extend(std::iter::repeat(String::new()).take(10));
+    wtr.write_record(&total).map_err(|e| e.to_string())?;
+
+    wtr.flush().map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod pnl_tests {
     use super::*;
@@ -1713,6 +1866,89 @@ mod pnl_tests {
         let r = pnl_rollup(&rows);
         assert_eq!(r.uncategorized_net, -42.0);
         assert_eq!(r.net_income, 0.0, "an unrecognised category must never be silently folded into a real P&L group");
+    }
+}
+
+#[cfg(test)]
+mod ledger_csv_tests {
+    use super::*;
+
+    fn row(direction: &str, amount: f64, category: &str, reviewed: bool, allocated: f64) -> Vec<String> {
+        ledger_csv_row(
+            "bt_1", "2026-03-04T00:00:00Z", "ZELLE FROM ACME", "Acme Wholesale", "Business checking",
+            direction, amount, category, "ach", "", reviewed, allocated, false, "",
+        )
+    }
+
+    // Money in and money out are separate columns, and only one of them is ever
+    // filled — a spreadsheet SUMs a column, and a row that filled both would be
+    // counted twice by anyone who summed the obvious way.
+    #[test]
+    fn money_in_and_money_out_are_exclusive() {
+        let incoming = row("in", 4200.0, "receipt", true, 0.0);
+        assert_eq!(incoming[4], "In");
+        assert_eq!(incoming[5], "4200.00");
+        assert_eq!(incoming[6], "");
+
+        let outgoing = row("out", 1500.0, "payment", true, 0.0);
+        assert_eq!(outgoing[4], "Out");
+        assert_eq!(outgoing[5], "");
+        assert_eq!(outgoing[6], "1500.00");
+    }
+
+    // The Ledger's Booked scope filters on `reviewed` and nothing else, so the
+    // column must read the same field. Anything cleverer here and the file would
+    // disagree with the count printed above the list it was exported from.
+    #[test]
+    fn booked_is_the_reviewed_flag() {
+        assert_eq!(row("in", 10.0, "receipt", true, 0.0)[13], "Yes");
+        assert_eq!(row("in", 10.0, "receipt", false, 0.0)[13], "No");
+    }
+
+    // Same rule as the rollup (R-188 rule 4): an unrecognised or missing category is
+    // never quietly dropped into a real group — it keeps its own value, loudly.
+    #[test]
+    fn unknown_and_blank_categories_stay_uncategorized() {
+        let unknown = row("out", 42.0, "not_a_real_category", true, 0.0);
+        assert_eq!(unknown[7], "not_a_real_category");
+        assert_eq!(unknown[8], "Uncategorized");
+
+        let blank = row("out", 42.0, "", true, 0.0);
+        assert_eq!(blank[7], "Uncategorized");
+        assert_eq!(blank[8], "Uncategorized");
+
+        let known = row("out", 42.0, "shipping", true, 0.0);
+        assert_eq!(known[7], "Shipping & freight");
+        assert_eq!(known[8], "Cost of goods");
+    }
+
+    // Unfiled is amount minus what is tied to deals, rounded at the cent like the
+    // screen's `unallocated` — an f64 subtraction printing -0.00 or 0.009999 reads
+    // as an error in a book that is in fact square.
+    #[test]
+    fn unfiled_is_the_remainder_rounded_at_the_cent() {
+        let split = row("in", 100.0, "receipt", true, 30.01);
+        assert_eq!(split[11], "30.01");
+        assert_eq!(split[12], "69.99");
+
+        let square = row("in", 0.3, "receipt", true, 0.1 + 0.2);
+        assert_eq!(square[12], "0.00", "a fully filed transaction must not print float dust");
+    }
+
+    // The date column is the bank's calendar day. `posted_at` carries a time on some
+    // rows and not others; the file shows one shape.
+    #[test]
+    fn date_is_the_calendar_day_only() {
+        assert_eq!(row("in", 10.0, "receipt", true, 0.0)[0], "2026-03-04");
+    }
+
+    // An accountant reading the file should not have to be told what `refund_out`
+    // means, and the words match the ones on the screen.
+    #[test]
+    fn roles_are_written_in_words() {
+        assert_eq!(ledger_role_label("refund_out"), "refund back to the buyer");
+        assert_eq!(ledger_role_label("buyer_payment"), "payment from the buyer");
+        assert_eq!(ledger_role_label("something_new"), "something_new", "an unknown role keeps its raw value rather than vanishing");
     }
 }
 

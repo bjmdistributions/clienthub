@@ -2634,6 +2634,28 @@ export default function FinancialsView() {
     } catch (e: any) { toast(errText(e), "error"); }
   };
 
+  // R-312: the ledger as a file — one row per transaction, for exactly what the
+  // filters are showing. The report above exports a category rollup; this is the
+  // book itself, for an accountant or a tax return. It sends the visible row ids
+  // rather than a filter description, so the file cannot mean something different
+  // by "booked" or "this year" than the list it came from.
+  const handleExportLedger = async () => {
+    const rows = splitView ? [...filteredIn, ...filteredOut] : filtered;
+    if (rows.length === 0) { toast("Nothing to export — no transactions match these filters", "error"); return; }
+    const span = taxYearValue === "all" ? "all-years"
+      : taxYearValue === "custom" ? `${fromDate || "start"}-to-${toDate || "today"}`
+      : taxYearValue;
+    const path = await saveDialog({
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+      defaultPath: `ledger-${span}${queue === "booked" ? "-booked" : queue === "todo" ? "-to-book" : ""}.csv`,
+    });
+    if (!path) return;
+    try {
+      const count = await api.exportLedgerCsv(rows.map((t) => t.id), path as string);
+      toast(`Exported ${count} transaction${count === 1 ? "" : "s"} to CSV`);
+    } catch (e: any) { toast(errText(e), "error"); }
+  };
+
   // The candidate pool, deduped to one row per invoice. Both pickers take it
   // whole and do their own sectioning — the old flat, pre-ranked, silently
   // truncated list is what R-204 replaced.
@@ -4559,6 +4581,15 @@ export default function FinancialsView() {
               </>
             )}
           </span>
+          {/* R-312 — the rows on screen, as a file. Sits beside Filters because what
+              it exports is whatever those filters left showing. */}
+          <button
+            onClick={handleExportLedger}
+            title="Download these transactions as a CSV — one row each, with category, linked deals and notes"
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-line text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 hover:border-line-3 transition-colors"
+          >
+            <Download size={13} /> Export CSV
+          </button>
         </div>
         {ledgerChips.length > 0 && (
           <div className="basis-full flex items-center gap-1.5 flex-wrap">

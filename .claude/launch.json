@@ -364,6 +364,19 @@
         "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/851d9cf0-d538-4cb7-950e-a3b90642f4d9/scratchpad/phone"
       ],
       "port": 8310
+    },
+    {
+      "name": "desktop-harness-r312",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5312",
+        "--strictPort"
+      ],
+      "port": 5312
     }
   ]
 }
