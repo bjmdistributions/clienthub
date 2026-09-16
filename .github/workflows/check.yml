@@ -95,6 +95,14 @@ jobs:
           # already declared once per ground (.cd and html.dark .cd). The allowlist
           # is per file, so review any other hex added to it by hand.
           echo "src/components/CrossDock.tsx" >> "$allowlist"
+          # Deliberate exception (2026-09-16, R-308). `src/__r308-harness.tsx` is a
+          # DEV-ONLY fixture: index.html does not reference it, so `npm run build`
+          # never sees it, and its hex values are not styling — they are the colour
+          # STRINGS the backend returns (invoice_template.accent_color,
+          # storefront.accent), which the real cards render into a colour input. A
+          # token here would test something the app never receives. Nothing in this
+          # file reaches a user.
+          echo "src/__r308-harness.tsx" >> "$allowlist"
           # Anchor each allowlisted path to the start of a `path:line:` hit so a
           # new file cannot slip through by containing an allowlisted name.
           patterns=$(mktemp)
