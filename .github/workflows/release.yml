@@ -6,7 +6,45 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ONE job creates the draft, and the build legs only upload into it.
+  #
+  # tauri-action's own flow is "look for a draft with this tag, create one if it is
+  # missing" — which two matrix legs run concurrently. On v0.16.73 they finished four
+  # seconds apart, both looked, both missed, and both created a release for the same
+  # tag: one draft held the Windows assets, the other the macOS ones. `publish` flipped
+  # whichever one it found, so a green run with two green legs shipped a Windows-only
+  # release whose latest.json had no darwin keys. Every previous release had simply been
+  # lucky: the legs usually finish minutes apart.
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.draft.outputs.result }}
+    steps:
+      - id: draft
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            // Reuse the draft if this tag is being re-run, so a re-run never forks it either.
+            const { data: existing } = await github.rest.repos.listReleases({
+              owner: context.repo.owner, repo: context.repo.repo, per_page: 100,
+            });
+            const found = existing.find(r => r.tag_name === tag && r.draft);
+            if (found) { core.info(`Reusing draft ${found.id} for ${tag}`); return String(found.id); }
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              tag_name: tag, name: `Ecliptr ${tag}`,
+              body: 'Download the installer for your platform below. See https://ecliptr.app/download to get set up.',
+              draft: true, prerelease: false,
+            });
+            core.info(`Created draft ${data.id} for ${tag}`);
+            return String(data.id);
+
   build:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -58,9 +96,9 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Ecliptr ${{ github.ref_name }}'
-          releaseBody: 'Download the installer for your platform below. See https://ecliptr.app/download to get set up.'
+          # releaseId, NOT tagName: with a tag the action looks for the draft and
+          # creates one when it does not see it, which is the race above.
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           # Built as a draft so a half-finished release can never reach the updater.
           # Both matrix legs upload into the same draft; the `publish` job below flips
           # it public only once BOTH have succeeded. See that job for why.
@@ -96,12 +134,34 @@ jobs:
   # pipeline change, like turning on Developer ID signing, without any install seeing it.
   # Inspect the draft's assets, then delete the draft. Plain tags publish as normal.
   publish:
-    needs: build
+    needs: [create-release, build]
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      # Two green build jobs are not proof of a complete release. On v0.16.73 both
+      # legs passed and the release still went out Windows-only, because each leg had
+      # uploaded into a DIFFERENT draft. Assert the thing that actually matters — what
+      # the updater will read — before making it public.
+      - name: The draft must carry every platform
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          id="${{ needs.create-release.outputs.release_id }}"
+          gh api "repos/${{ github.repository }}/releases/$id/assets" --jq '.[].name' > names.txt
+          echo "Assets in the draft:"; cat names.txt
+          for want in "universal.dmg" "universal.app.tar.gz" "x64-setup.exe" "x64_en-US.msi" "latest.json"; do
+            grep -q -- "$want" names.txt || { echo "MISSING from the draft: $want"; exit 1; }
+          done
+          asset=$(gh api "repos/${{ github.repository }}/releases/$id/assets" --jq '.[] | select(.name == "latest.json") | .id')
+          gh api -H "Accept: application/octet-stream" "repos/${{ github.repository }}/releases/assets/$asset" > latest.json
+          echo "Platforms in latest.json:"; jq -r '.platforms | keys[]' latest.json
+          jq -e '.version == "${{ github.ref_name }}"[1:]' latest.json > /dev/null             || { echo "latest.json version does not match the tag"; exit 1; }
+          jq -e '[.platforms | keys[] | select(startswith("darwin"))] | length >= 3' latest.json > /dev/null             || { echo "latest.json has no darwin platforms — Macs would stop updating"; exit 1; }
+          jq -e '[.platforms | keys[] | select(startswith("windows"))] | length >= 1' latest.json > /dev/null             || { echo "latest.json has no windows platforms"; exit 1; }
+          jq -e '[.platforms[] | select((.signature // "") == "")] | length == 0' latest.json > /dev/null             || { echo "an unsigned platform entry — the updater would reject it"; exit 1; }
+
       - name: Publish the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
