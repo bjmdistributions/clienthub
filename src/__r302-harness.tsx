@@ -72,6 +72,7 @@ const RECON = FLOWS.map((f) => ({
 }));
 
 const REFUNDS = [
+  { deal_flow_id: "d6", refund_owed: 3000, refunded: 3000, remaining: 0, done: false },
   { deal_flow_id: "d7", refund_owed: 9500, refunded: 9500, remaining: 0, done: true },
   { deal_flow_id: "d8", refund_owed: 6000, refunded: 2000, remaining: 4000, done: false },
 ];

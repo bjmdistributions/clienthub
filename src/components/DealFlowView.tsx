@@ -736,6 +736,9 @@ function DealFlowCard({
   };
 
   const firstOpen = (): SectionKey => {
+    // A refunded deal opens on its refund: it is what you came to read. Every other
+    // step stays one click away, which is the whole reason the refund is a step.
+    if (refundState !== null) return "refund";
     if (isComplete) return "complete";
     if (!supplierDone) return "supplier";
     return "link";
@@ -754,7 +757,7 @@ function DealFlowCard({
   };
 
   // When the deal's stage changes underneath us, keep the view on a sensible step.
-  useEffect(() => { setSection(firstOpen()); /* eslint-disable-next-line */ }, [flow.stage]);
+  useEffect(() => { setSection(firstOpen()); /* eslint-disable-next-line */ }, [flow.stage, refundState]);
 
   // Fetch invoice status + line items for the header / breakdown.
   useEffect(() => {
@@ -936,14 +939,31 @@ function DealFlowCard({
             <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg bg-danger-bg border border-danger px-4 py-3">
               <RotateCcw size={18} className="text-danger-ink flex-shrink-0" strokeWidth={2.2} />
               <span className="text-[15px] font-bold text-danger-ink">Fully refunded</span>
-              <span className="ml-auto text-[12px] text-danger-ink tabular-nums">{fmtAmount(refundPaid)} refunded</span>
+              <span className="ml-auto text-[12px] text-danger-ink tabular-nums">
+                {fmtAmount(refundPaid)} of {fmtAmount(refundOwed > 0.005 ? refundOwed : dealValue)} refunded
+                {refundLeft > 0.005 ? ` · ${fmtAmount(refundLeft)} still owed` : ""}
+              </span>
+            </div>
+          )}
+          {(refundState === "full-owed" || refundState === "part-owed") && (
+            <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg bg-warning-bg border border-warning px-4 py-3">
+              <RotateCcw size={18} className="text-warning-ink flex-shrink-0" strokeWidth={2.2} />
+              <span className="text-[15px] font-bold text-warning-ink">
+                {refundState === "full-owed" ? "Refund owed" : "Partial refund owed"}
+              </span>
+              <span className="ml-auto text-[12px] text-warning-ink tabular-nums">
+                {fmtAmount(refundLeft)} still owed{refundPaid > 0.005 ? ` · ${fmtAmount(refundPaid)} sent` : ""}
+              </span>
             </div>
           )}
           {refundState === "part" && (
             <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg bg-warning-bg border border-warning px-4 py-3">
               <RotateCcw size={18} className="text-warning-ink flex-shrink-0" strokeWidth={2.2} />
               <span className="text-[15px] font-bold text-warning-ink">Partially refunded</span>
-              <span className="ml-auto text-[12px] text-warning-ink tabular-nums">{fmtAmount(refundPaid)} of {fmtAmount(dealValue)} returned</span>
+              <span className="ml-auto text-[12px] text-warning-ink tabular-nums">
+                {fmtAmount(refundPaid)} of {fmtAmount(dealValue)} returned
+                {refundLeft > 0.005 ? ` · ${fmtAmount(refundLeft)} still owed` : ""}
+              </span>
             </div>
           )}
 
@@ -1226,9 +1246,10 @@ function SectionNav({ current, done, flash, onGo, refundLabel, refundTone }: {
       {/* Refunds are a step of the deal, not a view that replaces it (R-305): the money
           in, the linked transactions and the profit all stay one click away. Set apart
           from the numbered four because a deal is not meant to end here. */}
+      <div className="w-px h-6 bg-line mx-2 flex-shrink-0" />
       <button
         onClick={() => onGo("refund")}
-        className={`ml-auto flex items-center gap-1.5 h-9 px-3 rounded-lg text-[12px] font-semibold flex-shrink-0 border transition-all ${
+        className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-[12px] font-semibold flex-shrink-0 border transition-all ${
           current === "refund" ? "border-accent bg-accent/10 text-accent ring-1 ring-accent/25"
           : refundTone === "danger" ? "border-danger text-danger-ink hover:bg-danger-bg"
           : refundTone === "warning" ? "border-warning text-warning-ink hover:bg-warning-bg"
