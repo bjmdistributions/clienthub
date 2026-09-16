@@ -1304,6 +1304,13 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   const [suppResults, setSuppResults] = useState<Supplier[]>([]);
   const [selSupplier, setSelSupplier] = useState<Supplier | null>(null);
   const [items, setItems] = useState<{ description: string; qty: number; clientRate: number; myRate: string }[]>([]);
+  // R-315 (completed 2026-09-16): a cost entered HERE could only ever be supplier
+  // goods — the switch existed on the invoice's cost section and nowhere else, so the
+  // one screen Jack asked for it on could not mark a shipping line as his own money.
+  const [costType, setCostType] = useState("supplier");
+  const [supplierBilled, setSupplierBilled] = useState(false);
+  const [ownAmount, setOwnAmount] = useState("");
+  const isOwnKind = costType !== "supplier";
   // Open on the form when there is nothing recorded yet — that is the whole reason
   // this section is on screen. Once a cost line exists it collapses to one button,
   // so a settled deal is not sitting under an empty form (R-205).
@@ -1329,7 +1336,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   const anyRateEntered   = items.some((it) => parseAmount(it.myRate) > 0);
   const suppTotal        = items.reduce((s, it) => s + it.qty * parseAmount(it.myRate), 0);
   // Something typed and not yet saved — what Continue has to deal with.
-  const formDirty        = showForm && (suppName.trim() !== "" || items.some((it) => it.myRate.trim() !== ""));
+  const formDirty        = showForm && (suppName.trim() !== "" || ownAmount.trim() !== "" || items.some((it) => it.myRate.trim() !== ""));
   // A kept leg was never paid, so it is not a cost — same rule as
   // `total_supplier_cost`, and now visible here because the kept toggle lives on
   // these rows (R-132).
@@ -1347,6 +1354,27 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
    *  advancing away from work that is still sitting in the form. */
   const handleAddSupplier = async (): Promise<boolean> => {
     if (!suppName.trim()) return false;
+    // A freight/wire/other line is one amount paid to one payee — the itemized grid
+    // (our cost vs the client quote per line) describes goods and says nothing here.
+    if (isOwnKind) {
+      const amt = parseAmount(ownAmount);
+      if (amt <= 0) { toast("Add the amount for this cost", "error"); return false; }
+      setSaving(true);
+      try {
+        await api.addSupplierPayment(flow.id, {
+          supplier_name: suppName.trim(), supplier_id: selSupplier?.id || null,
+          amount: amt, quantity: 1, unit_price: amt,
+          method: selSupplier?.payment_method || null,
+          category: costType, supplier_billed: supplierBilled,
+        });
+        setSuppName(""); setSelSupplier(null); setSuppResults([]); setOwnAmount("");
+        setCostType("supplier"); setSupplierBilled(false); setShowForm(false);
+        if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch {} }
+        onReload();
+      } catch (e: any) { toast(String(e), "error"); setSaving(false); return false; }
+      setSaving(false);
+      return true;
+    }
     const filledItems = items.filter((it) => parseAmount(it.myRate) > 0);
     const zeroCost = filledItems.length === 0;
     if (zeroCost && !confirm("Submit $0 as the supplier cost for this deal? Your profit will equal the full revenue. Are you sure?")) return false;
@@ -1528,11 +1556,36 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
       {showForm && (
         <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
           <div>
-            <div className="flex items-center gap-2"><Package size={15} className="text-accent" /><div className="text-[13px] font-medium text-ink">Supplier cost</div></div>
-            <div className="text-[11.5px] text-muted mt-0.5">Itemized — your cost vs the client quote per line</div>
+            <div className="flex items-center gap-2"><Package size={15} className="text-accent" /><div className="text-[13px] font-medium text-ink">{isOwnKind ? "Cost on this deal" : "Supplier cost"}</div></div>
+            <div className="text-[11.5px] text-muted mt-0.5">
+              {isOwnKind ? "A cost you are paying for this deal, not the goods" : "Itemized — your cost vs the client quote per line"}
+            </div>
           </div>
+          {/* R-315: what kind of cost this is, before anything else — the answer
+              decides whether the money is owed to the supplier at all. */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-medium text-muted">What is this cost?</label>
+            <select value={costType} onChange={(e) => { setCostType(e.target.value); setSupplierBilled(false); }} className={inp}>
+              <option value="supplier">Supplier goods</option>
+              <option value="freight">Freight and shipping</option>
+              <option value="wire_out">Outgoing wire fee</option>
+              <option value="wire_in">Incoming wire fee</option>
+              <option value="other">Other cost</option>
+            </select>
+          </div>
+          {isOwnKind && (
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[11.5px] text-muted">Billed by the supplier</span>
+              <button type="button" onClick={() => setSupplierBilled((v) => !v)} role="switch" aria-checked={supplierBilled}
+                aria-label="Billed by the supplier"
+                className={`w-11 h-6 rounded-full relative transition-colors ring-1 ${supplierBilled ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
+                <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${supplierBilled ? "bg-on-accent translate-x-[22px]" : "bg-surface translate-x-0.5"}`} />
+              </button>
+            </div>
+          )}
+          {isOwnKind && <label className="text-[11px] font-medium text-muted block">Paid to</label>}
           <div className="relative">
-            <input type="text" placeholder="Search supplier name…" value={suppName}
+            <input type="text" placeholder={isOwnKind ? "Who this went to" : "Search supplier name…"} value={suppName}
               onChange={(e) => { setSuppName(e.target.value); setSelSupplier(null); }} className={inp} />
             {suppResults.length > 0 && (
               <div className="absolute z-20 mt-1 w-full bg-surface border border-line rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.08)] max-h-40 overflow-y-auto">
@@ -1556,7 +1609,18 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
               )}
             </div>
           )}
-          {items.length > 0 ? (
+          {isOwnKind ? (
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-medium text-muted">Amount</label>
+              <input className={inp} placeholder="0.00" inputMode="decimal" value={ownAmount}
+                onChange={(e) => setOwnAmount(e.target.value)} />
+              <div className="text-[11px] text-muted">
+                {supplierBilled
+                  ? "The supplier billed you for this, so it counts as money owed to them."
+                  : "Your own cost. It lowers this deal's profit but never appears in what you owe the supplier."}
+              </div>
+            </div>
+          ) : items.length > 0 ? (
             <div className="space-y-2">
               <div className="text-[12.5px] font-medium text-muted">Item costs</div>
               <div className="rounded-lg border border-line overflow-hidden">
@@ -1610,7 +1674,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
           <div className="flex items-center gap-2 pt-1">
             <button onClick={handleAddSupplier} disabled={saving || !suppName.trim()}
               className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors flex items-center gap-1.5">
-              <Plus size={13} /> Add supplier
+              <Plus size={13} /> {isOwnKind ? "Add cost" : "Add supplier"}
             </button>
             <button onClick={() => { setShowForm(false); setSuppName(""); setSelSupplier(null); setSuppResults([]); setItems((prev) => prev.map((it) => ({ ...it, myRate: "" }))); }}
               className="text-[13px] text-muted hover:text-ink-2 px-3 h-9 hover:bg-surface-3 rounded-lg transition-colors">Clear</button>

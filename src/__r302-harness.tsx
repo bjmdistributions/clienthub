@@ -11,7 +11,7 @@ import "./index.css";
 type Leg = { amount: number; paid?: boolean; kept?: boolean };
 const legs = (name: string, ls: Leg[]) => ls.map((l, i) => ({
   id: `${name}-${i}`, supplier_name: name, amount: l.amount, quantity: 1, unit_price: l.amount,
-  paid: !!l.paid, kept: !!l.kept, category: "supplier",
+  paid: !!l.paid, kept: !!l.kept, category: (l as any).category ?? "supplier", supplier_billed: !!(l as any).supplier_billed,
 }));
 
 const FLOW = (
@@ -21,6 +21,9 @@ const FLOW = (
   id, invoice_id: `i${n}`, name: null, stage, payment_received_amount: 0, deposit_amount: 0,
   payment_received_method: null, payment_received_at: null, supplier_payments_json: "[]",
   supplier_payments: sup, total_supplier_cost: sup.filter((p) => !p.kept).reduce((s, p) => s + p.amount, 0),
+  supplier_owed: sup.filter((p) => !p.kept && !p.paid && (!p.category || p.category === "supplier" || p.supplier_billed)).reduce((s, p) => s + p.amount, 0),
+  own_costs_unpaid: sup.filter((p) => !p.kept && !p.paid && p.category && p.category !== "supplier" && !p.supplier_billed).reduce((s, p) => s + p.amount, 0),
+  own_costs_total: sup.filter((p) => !p.kept && p.category && p.category !== "supplier" && !p.supplier_billed).reduce((s, p) => s + p.amount, 0),
   completed_at: null, gross_revenue: 0, total_cost: 0, net_profit: 0, profit_jack: 0, profit_ben: 0,
   profit_business: 0, notes: null, metadata: "{}", created_at: "2026-08-20", updated_at: "2026-09-10",
   invoice_number: `INV-${1000 + n}`, client_id: `c${n}`, client_name: client, invoice_total: total,
