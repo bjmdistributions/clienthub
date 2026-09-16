@@ -2124,7 +2124,7 @@ const SHARED_SETTINGS_KEYS: &[&str] = &[
     // money_bank_balance / money_credit_card_balance are deliberately absent — see the
     // note in the server's SHARED_SETTINGS_WHITELIST. They ride /api/bank-balance so a
     // Plaid device's unused zero can never overwrite someone's real manual figure.
-    "portal_base_url", "brief_frequency_days",
+    "portal_base_url", "brief_frequency_days", "dashboard_true_net",
     // R-162 policy clauses. Shared so a sibling admin's sends carry the same terms —
     // two admins mailing different return policies for the same business is the exact
     // divergence this allowlist exists to prevent. Non-secret config, so it qualifies.

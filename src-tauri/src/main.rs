@@ -731,6 +731,8 @@ fn main() {
             save_profit_split,
             get_brief_frequency,
             set_brief_frequency,
+            get_dashboard_prefs,
+            set_dashboard_prefs,
             get_organization_name,
             set_organization_name,
             // Unified accounts + team management (RBAC)

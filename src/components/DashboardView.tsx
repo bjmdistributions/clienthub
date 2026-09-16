@@ -98,7 +98,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
   const [recentInvoices, setRecent]     = useState<Invoice[]>([]);
   const [clients, setClients]           = useState<Client[]>([]);
   const [profitMonth, setProfitMonth]   = useState(() => localMonth());
-  const [dailyProfit, setDailyProfit]   = useState<{ day: string; profit: number; revenue: number }[]>([]);
+  const [dailyProfit, setDailyProfit]   = useState<{ day: string; profit: number; revenue: number; trueNet: number }[]>([]);
   const [chartMetric, setChartMetric]   = useState<"profit" | "revenue">("profit");
   // Hero range toggle — persisted so the dashboard opens how Jack left it.
   const [heroRange, setHeroRangeState]  = useState<"month" | "all">(
@@ -130,19 +130,27 @@ export default function DashboardView({ onNavigate, me }: Props) {
     const isCurrentMonth = today.getFullYear() === y && today.getMonth() + 1 === mo;
     const profitMap: Record<string, number> = {};
     const revenueMap: Record<string, number> = {};
-    raw.forEach((r) => { profitMap[r.day] = r.profit; revenueMap[r.day] = r.revenue; });
+    const shippingMap: Record<string, number> = {};
+    const feesMap: Record<string, number> = {};
+    raw.forEach((r) => { profitMap[r.day] = r.profit; revenueMap[r.day] = r.revenue; shippingMap[r.day] = r.shipping; feesMap[r.day] = r.fees; });
     const maxDataDay = raw.length > 0
       ? Math.max(...raw.map((r) => parseInt(r.day.split("-")[2], 10)))
       : 0;
     const lastDay = isCurrentMonth ? Math.max(today.getDate(), maxDataDay) : daysInMonth;
     let cumProfit = 0;
     let cumRevenue = 0;
+    let cumShipping = 0;
+    let cumFees = 0;
     const data = [];
     for (let d = 1; d <= lastDay; d++) {
       const dayStr = `${m}-${String(d).padStart(2, "0")}`;
       cumProfit += profitMap[dayStr] || 0;
       cumRevenue += revenueMap[dayStr] || 0;
-      data.push({ day: String(d), profit: cumProfit, revenue: cumRevenue });
+      cumShipping += shippingMap[dayStr] || 0;
+      cumFees += feesMap[dayStr] || 0;
+      // Cumulative true net = cumulative(profit − shipping − fees), same thing as
+      // cumulative(profit) − cumulative(shipping) − cumulative(fees).
+      data.push({ day: String(d), profit: cumProfit, revenue: cumRevenue, trueNet: cumProfit - cumShipping - cumFees });
     }
     setDailyProfit(data);
   };
@@ -153,6 +161,14 @@ export default function DashboardView({ onNavigate, me }: Props) {
     if (showMoney) loadProfitMonth(profitMonth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showMoney]);
+
+  // R-313: the Settings "Show true net on the dashboard" switch dispatches this so an
+  // already-open dashboard picks up the new preference without a manual refresh.
+  useEffect(() => {
+    const onPrefsChange = () => { api.dashboardStats().then(setStats).catch(() => {}); };
+    window.addEventListener("dashboard-prefs-change", onPrefsChange);
+    return () => window.removeEventListener("dashboard-prefs-change", onPrefsChange);
+  }, []);
 
   const changeMonth = (dir: 1 | -1) => {
     const [y, m] = profitMonth.split("-").map(Number);
@@ -189,6 +205,15 @@ export default function DashboardView({ onNavigate, me }: Props) {
   // Hero money — revenue = paid invoices, profit = completed deal flows.
   const heroRevenue = heroRange === "month" ? (stats?.revenue_mtd ?? 0) : (stats?.revenue_all_time ?? 0);
   const heroProfit  = heroRange === "month" ? (stats?.profit_mtd ?? 0)  : (stats?.profit_all_time ?? 0);
+
+  // R-313: when the org has switched the dashboard to true net (Settings > Dashboard),
+  // the profit tile swaps to net profit minus shipping and bank fees. Analytics always
+  // shows both, so this toggle only affects this hero tile and the chart below.
+  const trueNetEnabled = !!stats?.true_net_enabled;
+  const heroProfitValue = trueNetEnabled
+    ? (heroRange === "month" ? (stats?.true_net_mtd ?? 0) : (stats?.true_net_all_time ?? 0))
+    : heroProfit;
+  const heroProfitPrev = trueNetEnabled ? (stats?.true_net_prev_month ?? 0) : (stats?.profit_prev_month ?? 0);
 
   const resolvedApproval = (id: string) => {
     setPending((p) => p.filter((x) => x.id !== id));
@@ -253,15 +278,15 @@ export default function DashboardView({ onNavigate, me }: Props) {
                 </div>
               </div>
               <div>
-                <div className="text-[12.5px] font-medium text-muted">Profit</div>
+                <div className="text-[12.5px] font-medium text-muted">{trueNetEnabled ? "True net" : "Profit"}</div>
                 <div className="flex items-end gap-3 mt-2">
-                  <span className={`text-[38px] font-bold tabular-nums leading-none tracking-tight ${heroProfit < 0 ? "text-danger-ink" : "text-ink"}`}>
-                    <CountUpAmount value={heroProfit} />
+                  <span className={`text-[38px] font-bold tabular-nums leading-none tracking-tight ${heroProfitValue < 0 ? "text-danger-ink" : "text-ink"}`}>
+                    <CountUpAmount value={heroProfitValue} />
                   </span>
-                  {heroRange === "month" && <DeltaChip now={heroProfit} prev={stats?.profit_prev_month ?? 0} />}
+                  {heroRange === "month" && <DeltaChip now={heroProfitValue} prev={heroProfitPrev} />}
                 </div>
                 <div className="text-[11.5px] text-faint mt-2.5">
-                  completed deals{heroRange === "month" ? " this month" : ", all time"}
+                  {trueNetEnabled ? "after shipping and fees" : `completed deals${heroRange === "month" ? " this month" : ", all time"}`}
                 </div>
               </div>
             </div>
@@ -452,10 +477,11 @@ export default function DashboardView({ onNavigate, me }: Props) {
                   <YAxis tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Satoshi" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
                     contentStyle={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)", borderRadius: 10, color: "var(--t-tx1)", fontSize: 12, fontFamily: "Satoshi", boxShadow: "var(--shadow-panel)" }}
-                    formatter={(v: any) => [fmtFullAmount(Number(v) || 0), chartMetric === "revenue" ? "Revenue" : "Profit"]}
+                    formatter={(v: any) => [fmtFullAmount(Number(v) || 0), chartMetric === "revenue" ? "Revenue" : (trueNetEnabled ? "True net" : "Profit")]}
                     cursor={{ stroke: "var(--t-b3)", strokeWidth: 1 }}
                   />
-                  <Line type="monotone" dataKey={chartMetric} stroke={chartMetric === "revenue" ? "url(#revenueGrad)" : "url(#profitGrad)"} strokeWidth={2.5} dot={false}
+                  <Line type="monotone" dataKey={chartMetric === "revenue" ? "revenue" : (trueNetEnabled ? "trueNet" : "profit")}
+                    stroke={chartMetric === "revenue" ? "url(#revenueGrad)" : "url(#profitGrad)"} strokeWidth={2.5} dot={false}
                     isAnimationActive animationDuration={800} animationEasing="ease-out" />
                 </LineChart>
               </ResponsiveContainer>

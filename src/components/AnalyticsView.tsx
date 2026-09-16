@@ -4,7 +4,7 @@ import { fmtAmount, localDay, localMonth, parseLocalDay } from "../lib/format";
 import { RefreshCw, FileDown, TrendingUp, TrendingDown } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
-  BarChart, Bar, AreaChart, Area, PieChart, Pie, XAxis, YAxis, CartesianGrid, Tooltip,
+  BarChart, Bar, AreaChart, Area, PieChart, Pie, ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell,
 } from "recharts";
 import TierBadge from "./TierBadge";
@@ -228,6 +228,11 @@ export default function AnalyticsView() {
   const cats     = stats.category_breakdown.filter((c) => c.client_count > 0);
   const maxCat   = Math.max(...cats.map((c) => c.revenue), 1);
 
+  // R-313: shipping/fee overhead + true net for the selected range.
+  const shippingTotal = displayStats?.total_shipping ?? 0;
+  const feesTotal      = displayStats?.total_fees ?? 0;
+  const trueNet         = displayStats?.true_net ?? 0;
+
   const handleExportAnalytics = async () => {
     const path = await saveDialog({ filters: [{ name: "Excel", extensions: ["xlsx"] }], defaultPath: "analytics.xlsx" });
     if (!path) return;
@@ -322,6 +327,10 @@ export default function AnalyticsView() {
               {momLast && momPrev && <MomChip now={momLast.profit} prev={momPrev.profit} />}
             </div>
             <div className="text-[11px] text-faint mt-1.5">after all costs</div>
+            <div className="text-[11px] font-medium mt-1 tabular-nums"
+              style={{ color: trueNet >= 0 ? CLR.emerald : CLR.rose }}>
+              {fmtAmount(trueNet)} true net after shipping and fees
+            </div>
           </div>
           <div className="p-5 border-t border-line xl:border-t-0">
             <div className="text-[12.5px] font-medium text-muted">Avg margin</div>
@@ -374,6 +383,48 @@ export default function AnalyticsView() {
           </ResponsiveContainer>
         ) : <Blank h={300} />}
         </div>
+      </div>
+
+      {/* ── Shipping and fees: overhead by month, with a true-net line ──
+          Bars stay neutral (P.neutral / P.bar) — colour on this chart is
+          reserved for the true-net line, same rule as profit elsewhere.
+      ─────────────────────────────────────────────────────────── */}
+      <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
+        <div className="flex items-start justify-between mb-1">
+          <div>
+            <h3 className="text-[13px] font-semibold text-ink">Shipping and fees</h3>
+            <p className="text-[11px] text-muted mt-0.5">
+              {monthly.length > 0 ? `Last ${monthly.length} month${monthly.length !== 1 ? "s" : ""}` : "No data"}
+            </p>
+          </div>
+          <div className="flex items-center gap-5 mt-0.5">
+            <Legend color={P.neutral} label="Shipping" />
+            <Legend color={P.bar}     label="Fees" />
+            <Legend color={trueNet >= 0 ? CLR.emerald : CLR.rose} label="True net" />
+          </div>
+        </div>
+        <p className="text-[11px] text-muted mb-4">
+          {fmtAmount(shippingTotal)} shipping · {fmtAmount(feesTotal)} fees ·{" "}
+          <span className="font-medium" style={{ color: trueNet >= 0 ? CLR.emerald : CLR.rose }}>
+            {fmtAmount(trueNet)} true net
+          </span>
+        </p>
+
+        {monthly.length > 0 ? (
+          <ResponsiveContainer width="100%" height={260}>
+            <ComposedChart data={monthly} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
+              <XAxis dataKey="month" tick={AX} axisLine={false} tickLine={false} />
+              <YAxis tick={AX} axisLine={false} tickLine={false}
+                tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
+              <Tooltip formatter={(v: any) => fmtAmount(Number(v))} {...TT} />
+              <Bar dataKey="shipping" name="Shipping" fill={P.neutral} radius={[4, 4, 0, 0]} maxBarSize={28} />
+              <Bar dataKey="fees"     name="Fees"     fill={P.bar}     radius={[4, 4, 0, 0]} maxBarSize={28} />
+              <Line type="monotone" dataKey="true_net" name="True net"
+                stroke={trueNet >= 0 ? CLR.emerald : CLR.rose} strokeWidth={2.5} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        ) : <Blank h={260} />}
       </div>
 
       {/* ── Deal outcomes: won / lost / win rate / refunded, range-aware ── */}
@@ -710,6 +761,9 @@ export default function AnalyticsView() {
               { label: "Net profit",    value: fmtAmount(displayStats?.total_profit ?? 0),
                 clr: (displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose },
               { label: "Margin",        value: `${(displayStats?.avg_margin ?? 0).toFixed(1)}%`, clr: "var(--t-tx1)" },
+              { label: "Shipping",      value: fmtAmount(shippingTotal), clr: "var(--t-tx1)" },
+              { label: "Bank and wire fees", value: fmtAmount(feesTotal), clr: "var(--t-tx1)" },
+              { label: "True net",      value: fmtAmount(trueNet), clr: trueNet >= 0 ? CLR.emerald : CLR.rose },
               { label: "Outstanding (current)", value: fmtAmount(stats.outstanding), clr: CLR.amber },
               { label: "Open closeouts",        value: String(stats.incomplete_shipping), clr: "var(--t-tx1)" },
             ].map((item) => (

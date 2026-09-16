@@ -5432,17 +5432,28 @@ function ApprovalPolicyPanel() {
   const [del, setDel] = useState(false);
   const [vis, setVis] = useState("team");
   const [saved, setSaved] = useState(false);
+  const [trueNet, setTrueNet] = useState(false);
   useEffect(() => {
     api.getApprovalPolicy().then((p) => {
       setAdd(!!p.require_client_add_approval);
       setDel(!!p.require_client_delete_approval);
       if ((p as any).checkup_visibility) setVis((p as any).checkup_visibility);
     }).catch(() => {});
+    api.getDashboardPrefs().then((p) => setTrueNet(!!p.true_net)).catch(() => {});
   }, []);
   const saveVis = async (v: string) => { setVis(v); await api.setCheckupVisibility(v).catch(() => {}); setSaved(true); setTimeout(() => setSaved(false), 1500); };
   const save = async (nextAdd: boolean, nextDel: boolean) => {
     setAdd(nextAdd); setDel(nextDel);
     await api.setApprovalPolicy(nextAdd, nextDel).catch(() => {});
+    setSaved(true); setTimeout(() => setSaved(false), 1500);
+  };
+  // R-313: dashboard true-net preference — an open DashboardView refreshes itself off
+  // this event instead of a manual page reload.
+  const toggleTrueNet = async () => {
+    const next = !trueNet;
+    setTrueNet(next);
+    await api.setDashboardPrefs(next).catch(() => {});
+    window.dispatchEvent(new CustomEvent("dashboard-prefs-change"));
     setSaved(true); setTimeout(() => setSaved(false), 1500);
   };
   const Row = ({ label, hint, on, onToggle }: { label: string; hint: string; on: boolean; onToggle: () => void }) => (
@@ -5476,6 +5487,17 @@ function ApprovalPolicyPanel() {
             <option value="team">Whole team</option>
             <option value="private">Private to each person</option>
           </select>
+        </div>
+      </div>
+
+      <div className="mt-5 pt-4 border-t border-line">
+        <div className="text-[13px] font-medium text-ink mb-2">Dashboard</div>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-[13px] font-medium text-ink">Show true net on the dashboard</div>
+            <div className="text-[11px] text-muted mt-0.5">Net profit minus shipping and bank fees, by transaction date. Analytics always shows both.</div>
+          </div>
+          <ClauseSwitch on={trueNet} onClick={toggleTrueNet} label="Show true net on the dashboard" />
         </div>
       </div>
     </div>

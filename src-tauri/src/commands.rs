@@ -7641,6 +7641,20 @@ pub async fn set_brief_frequency(days: i64) -> Result<(), String> {
     write_setting("brief_frequency_days", &days.to_string())
 }
 
+/// R-313: whether the dashboard hero shows true net (profit minus shipping and fees)
+/// instead of plain profit. Org-shared via `write_setting`/`SHARED_SETTINGS_KEYS`, off
+/// by default.
+#[tauri::command]
+pub async fn get_dashboard_prefs() -> Result<Value, String> {
+    let true_net = read_setting("dashboard_true_net").map(|v| v == "1").unwrap_or(false);
+    Ok(json!({ "true_net": true_net }))
+}
+
+#[tauri::command]
+pub async fn set_dashboard_prefs(true_net: bool) -> Result<(), String> {
+    write_setting("dashboard_true_net", if true_net { "1" } else { "0" })
+}
+
 #[tauri::command]
 pub async fn get_organization_name() -> Result<String, String> {
     // Prefer the explicit org-name setting; fall back to the onboarding company name
@@ -11214,6 +11228,59 @@ const INV_WINDOW_SQL: &str =
                THEN datetime(i.paid_at) >= datetime(?3) AND datetime(i.paid_at) < datetime(?4) \
                ELSE i.issue_date >= ?1 AND i.issue_date < ?2 END)";
 
+/// R-313 overhead: bank-ledger `shipping`/`fee` rows netted by direction, minus whatever
+/// is already allocated to a deal (that money is inside the deal's `total_cost`/
+/// `net_profit` already and must not be counted twice). Out counts +, in counts − (an
+/// 'in' shipping row is a carrier refund). `lo`/`hi` are calendar-day bounds against
+/// `date(t.posted_at)`, `''` = unbounded — the same convention `get_analytics_range`
+/// binds its own date predicates with. Every `bank_txn` row counts, booked or not, same
+/// population `export_tax_year_pnl_csv` uses. Shared by `dashboard_stats`,
+/// `get_analytics_range` and `get_monthly_profit` so the rule lives in one place.
+const BANK_OVERHEAD_SQL: &str =
+    "SELECT COALESCE(SUM(CASE WHEN direction='out' THEN rem ELSE -rem END),0) FROM ( \
+        SELECT t.direction, t.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=t.id),0) AS rem \
+        FROM bank_txn t WHERE t.category=?1 AND (?2='' OR date(t.posted_at)>=?2) AND (?3='' OR date(t.posted_at)<=?3))";
+
+fn bank_overhead(conn: &rusqlite::Connection, category: &str, lo: &str, hi: &str) -> f64 {
+    conn.query_row(BANK_OVERHEAD_SQL, rusqlite::params![category, lo, hi], |r| r.get(0)).unwrap_or(0.0)
+}
+
+/// Same rule as `BANK_OVERHEAD_SQL`, bucketed by `strftime(fmt, t.posted_at)` (`"%Y-%m"`
+/// for a monthly series, `"%Y-%m-%d"` for a daily one) so the monthly/cumulative charts
+/// can merge overhead onto their profit buckets. Returns bucket -> (shipping, fees).
+const BANK_OVERHEAD_BUCKET_SQL: &str =
+    "SELECT strftime(?1, b.posted_at) AS bucket, b.category, \
+            COALESCE(SUM(CASE WHEN b.direction='out' THEN b.rem ELSE -b.rem END),0) \
+     FROM ( \
+        SELECT t.posted_at, t.category, t.direction, \
+               t.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=t.id),0) AS rem \
+        FROM bank_txn t WHERE t.category IN ('shipping','fee') \
+          AND (?2='' OR date(t.posted_at)>=?2) AND (?3='' OR date(t.posted_at)<=?3) \
+     ) b GROUP BY bucket, b.category";
+
+fn bank_overhead_by_bucket(conn: &rusqlite::Connection, fmt: &str, lo: &str, hi: &str) -> std::collections::BTreeMap<String, (f64, f64)> {
+    let mut map: std::collections::BTreeMap<String, (f64, f64)> = std::collections::BTreeMap::new();
+    let mut stmt = match conn.prepare(BANK_OVERHEAD_BUCKET_SQL) { Ok(s) => s, Err(_) => return map };
+    let rows = match stmt.query_map(rusqlite::params![fmt, lo, hi],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))) {
+        Ok(r) => r, Err(_) => return map,
+    };
+    for (bucket, category, net) in rows.filter_map(|r| r.ok()) {
+        let entry = map.entry(bucket).or_insert((0.0, 0.0));
+        if category == "shipping" { entry.0 = net; } else if category == "fee" { entry.1 = net; }
+    }
+    map
+}
+
+/// Converts a half-open window's exclusive `hi` (e.g. `CentralWindow.day_hi`, the 1st of
+/// the next month) into the inclusive calendar day `BANK_OVERHEAD_SQL` expects — one
+/// day earlier. Same conversion already used ad hoc at the brief's `week_end`.
+fn inclusive_hi(day_hi: &str) -> String {
+    chrono::NaiveDate::parse_from_str(day_hi, "%Y-%m-%d")
+        .map(|d| (d - chrono::Duration::days(1)).format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|_| day_hi.to_string())
+}
+
 #[tauri::command]
 pub async fn dashboard_stats() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -11314,15 +11381,32 @@ pub async fn dashboard_stats() -> Result<Value, String> {
                AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} GROUP BY m ORDER BY m",
             np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL)
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| {
-            Ok(json!({
-                "month": r.get::<_, String>(0)?,
-                "revenue": r.get::<_, f64>(1)?,
-                "cost": r.get::<_, f64>(2)?,
-                "profit": r.get::<_, f64>(3)?,
-            }))
-        }).map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).collect()
+        let profit_rows = stmt.query_map([], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?, r.get::<_, f64>(3)?,
+        ))).map_err(|e| e.to_string())?;
+        let profit_by_month: std::collections::BTreeMap<String, (f64, f64, f64)> = profit_rows
+            .filter_map(|r| r.ok()).map(|(m, rev, cost, profit)| (m, (rev, cost, profit))).collect();
+
+        // R-313: unbounded, same as this all-time monthly series — a month with overhead
+        // but no completed deal still gets a row (revenue/cost/profit 0) rather than
+        // vanishing from the chart.
+        let overhead_by_month = bank_overhead_by_bucket(&conn, "%Y-%m", "", "");
+        let mut months: Vec<String> = profit_by_month.keys().chain(overhead_by_month.keys()).cloned().collect();
+        months.sort();
+        months.dedup();
+        months.into_iter().map(|m| {
+            let (revenue, cost, profit) = profit_by_month.get(&m).copied().unwrap_or((0.0, 0.0, 0.0));
+            let (shipping, fees) = overhead_by_month.get(&m).copied().unwrap_or((0.0, 0.0));
+            json!({
+                "month": m,
+                "revenue": revenue,
+                "cost": cost,
+                "profit": profit,
+                "shipping": shipping,
+                "fees": fees,
+                "true_net": profit - shipping - fees,
+            })
+        }).collect()
     };
 
     let top_clients_by_profit: Vec<Value> = {
@@ -11487,6 +11571,19 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         rusqlite::params![&win.day_lo, &win.day_hi], |r| r.get(0)
     ).unwrap_or(0);
 
+    // R-313: shipping/fee overhead alongside the profit hero, same Central month windows,
+    // netted and de-duplicated against deal allocations by `bank_overhead`.
+    let shipping_mtd = bank_overhead(&conn, "shipping", &win.day_lo, &inclusive_hi(&win.day_hi));
+    let fees_mtd = bank_overhead(&conn, "fee", &win.day_lo, &inclusive_hi(&win.day_hi));
+    let shipping_prev_month = bank_overhead(&conn, "shipping", &prev_win.day_lo, &inclusive_hi(&prev_win.day_hi));
+    let fees_prev_month = bank_overhead(&conn, "fee", &prev_win.day_lo, &inclusive_hi(&prev_win.day_hi));
+    let shipping_all_time = bank_overhead(&conn, "shipping", "", "");
+    let fees_all_time = bank_overhead(&conn, "fee", "", "");
+    let true_net_mtd = profit_mtd - shipping_mtd - fees_mtd;
+    let true_net_prev_month = profit_prev_month - shipping_prev_month - fees_prev_month;
+    let true_net_all_time = profit_all_time - shipping_all_time - fees_all_time;
+    let true_net_enabled = read_setting("dashboard_true_net").map(|v| v == "1").unwrap_or(false);
+
     // Top suppliers by total paid — payments are stored as JSON in deal_flows
     let top_suppliers: Vec<Value> = {
         let mut stmt = conn.prepare(
@@ -11571,7 +11668,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         [], |r| r.get(0)
     ).unwrap_or(0.0);
 
-    Ok(json!({
+    let mut stats = json!({
         "clients": total_clients,
         "invoices": total_invoices,
         "outstanding": outstanding,
@@ -11607,7 +11704,23 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "refund_owed_remaining": refund_owed_remaining,
         "deals_won_all": deals_won_all,
         "deals_lost_all": deals_lost_all,
-    }))
+    });
+    // R-313 fields, added via `map.insert` rather than folded into the `json!` call
+    // above: that macro is a TT-muncher whose expansion depth grows with the entry
+    // count, and this struct was already near the crate's recursion limit.
+    if let Some(map) = stats.as_object_mut() {
+        map.insert("shipping_mtd".into(), json!(shipping_mtd));
+        map.insert("fees_mtd".into(), json!(fees_mtd));
+        map.insert("shipping_prev_month".into(), json!(shipping_prev_month));
+        map.insert("fees_prev_month".into(), json!(fees_prev_month));
+        map.insert("shipping_all_time".into(), json!(shipping_all_time));
+        map.insert("fees_all_time".into(), json!(fees_all_time));
+        map.insert("true_net_mtd".into(), json!(true_net_mtd));
+        map.insert("true_net_prev_month".into(), json!(true_net_prev_month));
+        map.insert("true_net_all_time".into(), json!(true_net_all_time));
+        map.insert("true_net_enabled".into(), json!(true_net_enabled));
+    }
+    Ok(stats)
 }
 
 /// List all deal flows that include a given supplier (matched by supplier_id in JSON).
@@ -11700,14 +11813,23 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok()).collect();
 
-    let mut days: Vec<String> = profit_by_day.keys().chain(revenue_by_day.keys()).cloned().collect();
+    // R-313: shipping/fee overhead by day, same month window, so the client can chart a
+    // cumulative true-net line as cumulative(profit − shipping − fees).
+    let overhead_by_day = bank_overhead_by_bucket(&conn, "%Y-%m-%d", &win.day_lo, &inclusive_hi(&win.day_hi));
+
+    let mut days: Vec<String> = profit_by_day.keys().chain(revenue_by_day.keys()).chain(overhead_by_day.keys()).cloned().collect();
     days.sort();
     days.dedup();
-    Ok(days.into_iter().map(|d| json!({
-        "day": d,
-        "profit": profit_by_day.get(&d).copied().unwrap_or(0.0),
-        "revenue": revenue_by_day.get(&d).copied().unwrap_or(0.0),
-    })).collect())
+    Ok(days.into_iter().map(|d| {
+        let (shipping, fees) = overhead_by_day.get(&d).copied().unwrap_or((0.0, 0.0));
+        json!({
+            "day": d,
+            "profit": profit_by_day.get(&d).copied().unwrap_or(0.0),
+            "revenue": revenue_by_day.get(&d).copied().unwrap_or(0.0),
+            "shipping": shipping,
+            "fees": fees,
+        })
+    }).collect())
 }
 
 /// Accounts-receivable aging: open invoices (sent/overdue) bucketed by days past
@@ -11937,17 +12059,39 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         p, |r| r.get(0)
     ).unwrap_or(0.0);
 
+    // R-313: shipping/fee overhead over the same range, netted and de-duplicated against
+    // deal allocations by `bank_overhead`. `start_date`/`end_date` already follow the
+    // same ''-unbounded, inclusive-end convention `df` binds its own date predicate with.
+    let total_shipping = bank_overhead(&conn, "shipping", &start_date, &end_date);
+    let total_fees = bank_overhead(&conn, "fee", &start_date, &end_date);
+    let true_net = net_profit - total_shipping - total_fees;
+
     // Monthly buckets for the bar chart (refund-aware profit)
     let monthly: Vec<Value> = {
         let mut stmt = conn.prepare(
             &format!("SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), \
                              COALESCE(SUM(df.total_cost),0), COALESCE(SUM({NP}),0) {df} GROUP BY m ORDER BY m")
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(p, |r| Ok(json!({
-            "month": r.get::<_,String>(0)?, "revenue": r.get::<_,f64>(1)?,
-            "cost":  r.get::<_,f64>(2)?,   "profit":  r.get::<_,f64>(3)?,
-        }))).map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).collect()
+        let profit_rows = stmt.query_map(p, |r| Ok((
+            r.get::<_,String>(0)?, r.get::<_,f64>(1)?, r.get::<_,f64>(2)?, r.get::<_,f64>(3)?,
+        ))).map_err(|e| e.to_string())?;
+        let profit_by_month: std::collections::BTreeMap<String, (f64, f64, f64)> = profit_rows
+            .filter_map(|r| r.ok()).map(|(m, rev, cost, profit)| (m, (rev, cost, profit))).collect();
+
+        // Months with overhead but no completed deal must still appear (revenue/cost/
+        // profit 0), same merge rule as `dashboard_stats`'s monthly_profit.
+        let overhead_by_month = bank_overhead_by_bucket(&conn, "%Y-%m", &start_date, &end_date);
+        let mut months: Vec<String> = profit_by_month.keys().chain(overhead_by_month.keys()).cloned().collect();
+        months.sort();
+        months.dedup();
+        months.into_iter().map(|m| {
+            let (revenue, cost, profit) = profit_by_month.get(&m).copied().unwrap_or((0.0, 0.0, 0.0));
+            let (shipping, fees) = overhead_by_month.get(&m).copied().unwrap_or((0.0, 0.0));
+            json!({
+                "month": m, "revenue": revenue, "cost": cost, "profit": profit,
+                "shipping": shipping, "fees": fees, "true_net": profit - shipping - fees,
+            })
+        }).collect()
     };
 
     // Top clients by refund-aware profit in range
@@ -11973,6 +12117,9 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         "top_clients_by_profit": top_clients,
         "deals_lost": deals_lost,
         "refunded_in_range": refunded_in_range,
+        "total_shipping": total_shipping,
+        "total_fees": total_fees,
+        "true_net": true_net,
     }))
 }
 
@@ -12028,6 +12175,47 @@ mod analytics_refund_profit_tests {
         ).unwrap();
         assert_eq!(eff_profit(&conn, "deal_1"), 800.0,
             "a refund that already carries a bank_txn_id must not also be summed as a non-bank-linked refunds row");
+    }
+}
+
+#[cfg(test)]
+mod bank_overhead_tests {
+    use super::bank_overhead;
+
+    // Minimal shipping ledger for R-313: an unallocated out row, an unallocated in row
+    // (a carrier refund), and an out row fully allocated to a deal — that money is
+    // already inside the deal's total_cost/net_profit and must not be counted again.
+    fn ledger() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            CREATE TABLE bank_txn (id TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '',
+              direction TEXT NOT NULL DEFAULT 'out', amount REAL NOT NULL DEFAULT 0,
+              posted_at TEXT NOT NULL DEFAULT '');
+            CREATE TABLE bank_allocation (id TEXT PRIMARY KEY, bank_txn_id TEXT NOT NULL DEFAULT '',
+              amount REAL NOT NULL DEFAULT 0);
+
+            INSERT INTO bank_txn VALUES ('out_1','shipping','out',100,'2026-08-05');
+            INSERT INTO bank_txn VALUES ('in_1','shipping','in',20,'2026-08-06');
+            INSERT INTO bank_txn VALUES ('alloc_1','shipping','out',50,'2026-08-07');
+            INSERT INTO bank_allocation VALUES ('a1','alloc_1',50);
+        "#).unwrap();
+        conn
+    }
+
+    #[test]
+    fn nets_direction_and_excludes_deal_allocated_amount() {
+        let conn = ledger();
+        let out = 100.0_f64;
+        let inn = 20.0_f64;
+        let allocated = 50.0_f64; // fully allocated to a deal — already counted there
+        // out − in − allocated's own remainder (0, since it's fully allocated) = out − in.
+        let expected = out - inn;
+        assert_eq!(bank_overhead(&conn, "shipping", "", ""), expected,
+            "unallocated out counts +, unallocated in counts −, and a fully deal-allocated \
+             out row must contribute nothing (it's already inside total_cost/net_profit)");
+        // Prove the allocation actually mattered: without subtracting it the fully-
+        // allocated row would have inflated the total by its own amount.
+        assert_ne!(expected, out - inn + allocated);
     }
 }
 

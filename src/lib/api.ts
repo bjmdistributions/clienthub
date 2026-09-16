@@ -1570,7 +1570,7 @@ export interface DashboardStats {
   total_cost: number;
   total_profit: number;
   avg_margin: number;
-  monthly_profit: { month: string; revenue: number; cost: number; profit: number }[];
+  monthly_profit: { month: string; revenue: number; cost: number; profit: number; shipping: number; fees: number; true_net: number }[];
   top_clients_by_profit: { name: string; total_revenue: number; total_profit: number; margin: number }[];
   pipeline_value: number;
   pipeline_count: number;
@@ -1589,6 +1589,18 @@ export interface DashboardStats {
   refund_owed_remaining: number;
   deals_won_all: number;
   deals_lost_all: number;
+  // R-313: shipping/fee overhead + true net (profit minus overhead), same windows as
+  // the revenue/profit hero above.
+  shipping_mtd: number;
+  fees_mtd: number;
+  shipping_prev_month: number;
+  fees_prev_month: number;
+  shipping_all_time: number;
+  fees_all_time: number;
+  true_net_mtd: number;
+  true_net_prev_month: number;
+  true_net_all_time: number;
+  true_net_enabled: boolean;
 }
 
 export interface User {
@@ -3219,10 +3231,12 @@ export const api = {
 
   // Dashboard
   dashboardStats: () => invoke<DashboardStats>("dashboard_stats"),
-  getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number; revenue: number }[]>("get_monthly_profit", { month }),
+  getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number; revenue: number; shipping: number; fees: number }[]>("get_monthly_profit", { month }),
   getReceivablesAging: () => invoke<ReceivablesAging>("get_receivables_aging"),
   getPayablesAging: () => invoke<PayablesAging>("get_payables_aging"),
   getAnalyticsRange: (startDate: string, endDate: string) => invoke<any>("get_analytics_range", { startDate, endDate }),
+  getDashboardPrefs: () => invoke<{ true_net: boolean }>("get_dashboard_prefs"),
+  setDashboardPrefs: (trueNet: boolean) => invoke<void>("set_dashboard_prefs", { trueNet }),
   getDealsForSupplier: (supplierId: string) => invoke<any[]>("list_deals_for_supplier", { supplierId }),
   dueFollowups: () => invoke<Client[]>("due_followups"),
 
