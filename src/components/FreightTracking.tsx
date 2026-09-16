@@ -48,6 +48,8 @@ function subscribe(f: () => void) {
     refreshShipments();
     // A new Priority1 email or a link made on the phone lands through sync.
     listen("netsync-applied", () => refreshShipments()).catch(() => {});
+    // R-318: the delivery that just announced itself must be on screen behind the toast.
+    listen("shipment-delivered", () => refreshShipments()).catch(() => {});
     window.setInterval(refreshShipments, 60_000);
   }
   return () => { subs.delete(f); };
@@ -55,6 +57,16 @@ function subscribe(f: () => void) {
 
 export function useShipments(): Shipment[] {
   return useSyncExternalStore(subscribe, () => cache);
+}
+
+/**
+ * R-318: the deals whose freight has landed. Deal Flow pins these at the top, green, until
+ * the deal is marked complete — a delivery is a job to finish, not a message that scrolls
+ * away, so the popup is only the first half of telling anyone.
+ */
+export function useDeliveredDeals(): Set<string> {
+  const all = useShipments();
+  return new Set(all.filter((s) => s.stage === "delivered" && s.deal_flow_id).map((s) => s.deal_flow_id));
 }
 
 // ── presentation ─────────────────────────────────────────────────────────────
@@ -103,7 +115,9 @@ export function FreightChip({ dealFlowId }: { dealFlowId: string }) {
   const st = stageOf(s);
   return (
     <StatusPill tone={st.tone} title={[s.carrier, refsLine(s), route(s), s.last_update_at && `updated ${fmtWhen(s.last_update_at)}`].filter(Boolean).join(" · ")}>
-      <Truck size={10} className="mr-1" /> {st.label}{mine.length > 1 ? ` +${mine.length - 1}` : ""}
+      <Truck size={10} className="mr-1" />{" "}
+      <span className={s.stage === "delivered" ? "font-semibold" : undefined}>{st.label}</span>
+      {mine.length > 1 ? ` +${mine.length - 1}` : ""}
     </StatusPill>
   );
 }

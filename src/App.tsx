@@ -74,7 +74,7 @@ import { ApprovalsView } from "./components/ApprovalsView";
 import CheckupView from "./components/CheckupView";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
-import { ToastHost } from "./components/Toast";
+import { ToastHost, toast } from "./components/Toast";
 import CommandPalette from "./components/CommandPalette";
 import ShortcutsModal from "./components/ShortcutsModal";
 import AutomationLogView from "./components/AutomationLogView";
@@ -625,6 +625,17 @@ export default function App() {
     const id = setInterval(read, 60000);
     return () => { clearInterval(id); unlisten?.(); };
   }, [me]);
+
+  // R-318: a Priority1 delivery announces itself wherever you are in the app, not only on
+  // Deal Flow, because it is the moment that deal becomes completable. The green row on
+  // Deal Flow is what keeps saying it after the toast has gone.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{ label: string }>("shipment-delivered", (e) => {
+      toast(`Delivered — ${e.payload.label}. Ready to mark the deal complete.`, "delivered");
+    }).then((u) => { unlisten = u; }).catch(() => {});
+    return () => unlisten?.();
+  }, []);
 
   useEffect(() => {
     const onNavigate = (e: Event) => {

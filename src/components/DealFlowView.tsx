@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, type KeyboardEvent } from "react";
 import {
   Check, ChevronDown, ChevronRight, Search, Plus, X,
   AlertTriangle, RotateCcw, RefreshCw, Trash2,
-  CheckCircle2, Truck, Package, FileDown, XCircle,
+  CheckCircle2, Truck, Package, FileDown, XCircle, PackageCheck,
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit,
@@ -13,7 +13,7 @@ import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import StatusPill from "./StatusPill";
-import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges } from "./FreightTracking";
+import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges, useDeliveredDeals } from "./FreightTracking";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -206,6 +206,8 @@ export default function DealFlowView() {
   useEffect(() => { load(); }, [load]);
   // R-279: a Priority1 update can move a deal's pickup or delivery date.
   useShipmentChanges(load);
+  // R-318: the deals Priority1 says have landed.
+  const deliveredIds = useDeliveredDeals();
 
   // Self-heal: re-point payments stranded on duplicate deal_flow rows, then archive
   // the duplicate/orphan rows themselves so no aggregate counts them. Idempotent.
@@ -326,13 +328,21 @@ export default function DealFlowView() {
   // expected delivery date and are not complete, soonest first. They are pulled
   // OUT of the ordinary active list rather than shown twice, so the two counts
   // stay mutually exclusive — the same rule the Refunds section follows.
+  //
+  // ── Delivered — ready to complete (R-318) ───────────────────────────────
+  // Above even the waiting lane, because a delivered deal is not waiting for anything:
+  // it is waiting for Jack. Pulled out of the other two lists the same way, so the
+  // counts stay mutually exclusive, and it leaves the moment the deal is completed.
+  const arrived    = active.filter((f) => deliveredIds.has(f.id));
+  const arrivedIds = new Set(arrived.map((f) => f.id));
   const lane = active
+    .filter((f) => !arrivedIds.has(f.id))
     .map((f) => ({ f, s: shipState(f) }))
     .filter((x): x is { f: DealFlow; s: Extract<ShipState, { date: string }> } =>
       x.s.kind === "scheduled" || x.s.kind === "overdue")
     .sort((a, b) => nextDate(a.f).localeCompare(nextDate(b.f)));
   const laneIds     = new Set(lane.map((x) => x.f.id));
-  const unscheduled = active.filter((f) => !laneIds.has(f.id));
+  const unscheduled = active.filter((f) => !laneIds.has(f.id) && !arrivedIds.has(f.id));
   const overdueCount = lane.filter((x) => x.s.kind === "overdue").length;
 
   // This week — counted as EVENTS, not deals, because one deal can both pick up
@@ -414,6 +424,7 @@ export default function DealFlowView() {
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Deal Flow</h2>
           <p className="text-[12px] text-muted mt-0.5">
             {active.length} active deal{active.length !== 1 ? "s" : ""}
+            {arrived.length > 0 ? `, ${arrived.length} delivered` : ""}
             {lane.length > 0 ? `, ${lane.length} waiting on a date` : ""}
             {totalCompleted > 0 ? ` · ${totalCompleted} completed` : ""}
           </p>
@@ -472,6 +483,26 @@ export default function DealFlowView() {
           </button>
         )}
       </div>
+
+      {/* ── Delivered — ready to complete (R-318) ───────────────────────── */}
+      {arrived.length > 0 && (
+        <div className="bg-success-bg border border-success/30 rounded-xl overflow-hidden">
+          <div className="flex items-center gap-2.5 px-5 py-3.5 flex-wrap">
+            <PackageCheck size={15} className="text-success flex-shrink-0" />
+            <span className="text-[13px] font-semibold text-success-ink">
+              {arrived.length === 1 ? "Delivered — ready to complete" : `${arrived.length} delivered — ready to complete`}
+            </span>
+            <span className="text-[11.5px] text-success-ink/75 min-w-0">
+              Priority1 says the freight landed. Open the deal and run Review &amp; complete.
+            </span>
+          </div>
+          <div className="border-t border-success/25 bg-surface p-4 space-y-4">
+            {arrived.map((flow, i) => (
+              <DealFlowCard key={flow.id} flow={flow} onReload={load} refund={refundMap[flow.id]} zebra={i % 2 === 1} reconStatus={recon[flow.id]} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Priority1 shipments that arrived by email and are not on a deal yet (R-277) */}
       <UnlinkedShipments onChange={load} />
@@ -539,7 +570,7 @@ export default function DealFlowView() {
           {/* Only labelled once the lane has taken some cards, so the two lists
               visibly account for every active deal instead of one silently
               shrinking. */}
-          {lane.length > 0 && (
+          {(lane.length > 0 || arrived.length > 0) && (
             <p className="text-[11.5px] text-muted">
               {unscheduled.length} other active deal{unscheduled.length === 1 ? "" : "s"}
             </p>

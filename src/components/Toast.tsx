@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
-import { Check, AlertCircle } from "lucide-react";
+import { Check, AlertCircle, PackageCheck } from "lucide-react";
 
 // Minimal app-wide toast — replaces native alert() dialogs. Fire-and-forget:
 // call toast("Exported 12 deals") from anywhere; ToastHost (mounted once in
 // App) renders the stack bottom-right in the same style the views already use.
-export type ToastKind = "success" | "error";
+// "delivered" is R-318: a freight delivery, the one toast that announces something the
+// world did rather than something the user just clicked — so it is green, bold, and stays
+// up long enough to be read from across the room.
+export type ToastKind = "success" | "error" | "delivered";
 
 let seq = 0;
 
@@ -20,7 +23,8 @@ export function ToastHost() {
     const h = (e: Event) => {
       const d = (e as CustomEvent).detail as { id: number; message: string; kind: ToastKind };
       setToasts((t) => [...t, d]);
-      setTimeout(() => setToasts((t) => t.filter((x) => x.id !== d.id)), d.kind === "error" ? 5000 : 3000);
+      setTimeout(() => setToasts((t) => t.filter((x) => x.id !== d.id)),
+        d.kind === "error" ? 5000 : d.kind === "delivered" ? 9000 : 3000);
     };
     window.addEventListener("app-toast", h);
     return () => window.removeEventListener("app-toast", h);
@@ -31,9 +35,14 @@ export function ToastHost() {
     <div className="fixed bottom-5 right-5 z-[90] flex flex-col items-end gap-2 pointer-events-none">
       {toasts.map((t) => (
         <div key={t.id}
-          className="bg-ink text-surface px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] flex items-center gap-2 animate-fade-in max-w-[380px] pointer-events-auto">
+          className={`px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] flex items-center gap-2 animate-fade-in max-w-[380px] pointer-events-auto ${
+            t.kind === "delivered"
+              ? "bg-success-bg text-success-ink border border-success/30 font-semibold"
+              : "bg-ink text-surface"}`}>
           {t.kind === "error"
             ? <AlertCircle size={13} className="text-danger-ink flex-shrink-0" />
+            : t.kind === "delivered"
+            ? <PackageCheck size={15} className="text-success flex-shrink-0" />
             : <Check size={13} className="text-success-ink flex-shrink-0" />}
           <span className="min-w-0 break-words">{t.message}</span>
         </div>

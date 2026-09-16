@@ -469,6 +469,8 @@ fn main() {
             // OS notification on each new lead) + a long safety-net sweep. Replaces
             // the old fixed 5-minute poll.
             email::spawn_realtime_watchers(app.handle().clone());
+            // R-318: so a Priority1 "Delivered" email can raise its own notification.
+            shipments::set_app(app.handle().clone());
 
             // Periodic Google Sheets sync every 10 minutes
             commands::spawn_periodic_sheet_sync(600);
@@ -1001,6 +1003,7 @@ fn main() {
             get_receivables_aging,
             get_payables_aging,
             get_analytics_range,
+            analytics_reconciliation,
             list_deals_for_supplier,
             // CSV import
             csv_preview,

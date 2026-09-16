@@ -21,6 +21,15 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
+/// R-318: the app handle, so a delivery can announce itself. Set once at startup; the
+/// tests and any path running before setup simply do not announce.
+static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// Hand the handle over at startup (`main.rs` setup).
+pub fn set_app(app: tauri::AppHandle) {
+    let _ = APP.set(app);
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Parsed {
     pub shipment_number: String,
@@ -470,9 +479,65 @@ pub fn ingest(email: &ParsedEmail) -> bool {
 /// Merge one parsed update into the store, then let it move the deal's dates (R-279). Split
 /// from `ingest` so tests and the mailbox backfill share it.
 pub fn apply(p: &Parsed, message_id: Option<&str>, email_date: Option<&str>) -> Result<String, String> {
-    let id = apply_inner(p, message_id, email_date)?;
+    let (id, delivered) = apply_inner(p, message_id, email_date)?;
     sync_deal_dates(&id);
+    if delivered {
+        announce_delivered(&id);
+    }
     Ok(id)
+}
+
+/// R-318: say out loud that a shipment has landed, because the deal it is on can now be
+/// completed and nothing else tells anyone. An OS notification (the app is usually not the
+/// window in front when the email arrives) plus an event the open window turns into a green
+/// toast; the green row on Deal Flow is what keeps saying it afterwards.
+///
+/// Only for a shipment attached to a deal that is still open: the whole point is "so we can
+/// mark the deals as complete", so a delivery on a deal already completed says nothing, and
+/// an unattached shipment is already listed under "Shipments not on a deal". Best-effort —
+/// a failure here never fails the update that caused it.
+fn announce_delivered(shipment_id: &str) {
+    let Some(app) = APP.get() else { return };
+    let Ok(conn) = pool().get() else { return };
+    let Ok(s) = conn.query_row(&format!("SELECT {COLS} FROM shipments WHERE id=?1"), [shipment_id], map_row) else { return };
+    if s.deal_flow_id.is_empty() {
+        return;
+    }
+    let Ok((stage, client, number)) = conn.query_row(
+        "SELECT df.stage, COALESCE(c.name,''), COALESCE(i.number,'')
+           FROM deal_flows df
+           JOIN invoices i ON i.id = df.invoice_id
+           LEFT JOIN clients c ON c.id = i.client_id
+          WHERE df.id = ?1",
+        [&s.deal_flow_id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+    ) else { return };
+    if stage == "complete" {
+        return;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if !client.is_empty() { parts.push(client); }
+    if !number.is_empty() { parts.push(number); }
+    if parts.is_empty() { parts.push(refs_line(&s)); }
+    let label = parts.join(" · ");
+
+    use tauri::Emitter;
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder()
+        .title("Delivered")
+        .body(format!("{label} — ready to mark the deal complete"))
+        .show();
+    let _ = app.emit("shipment-delivered", json!({ "id": s.id, "deal_flow_id": s.deal_flow_id, "label": label }));
+    tracing::info!("priority1: shipment {} delivered, deal {} can be completed", s.id, s.deal_flow_id);
+}
+
+/// "BOL 60115779865 · PRO 687651776", or the shipment number when it has neither.
+fn refs_line(s: &Shipment) -> String {
+    let refs: Vec<String> = [
+        (!s.bol.is_empty()).then(|| format!("BOL {}", s.bol)),
+        (!s.pro.is_empty()).then(|| format!("PRO {}", s.pro)),
+    ].into_iter().flatten().collect();
+    if refs.is_empty() { format!("#{}", s.shipment_number) } else { refs.join(" · ") }
 }
 
 /// The deal's pickup and delivery dates according to Priority1's timeline, as YYYY-MM-DD in
@@ -612,7 +677,10 @@ fn valid_ref(r: &str) -> bool {
     (3..=40).contains(&r.len()) && r.chars().any(|c| c.is_ascii_digit()) && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-fn apply_inner(p: &Parsed, message_id: Option<&str>, email_date: Option<&str>) -> Result<String, String> {
+/// Merge one update into the row. Returns the shipment id and whether THIS update is what
+/// moved it to delivered — a row created already delivered is the mailbox backfill reading
+/// old mail, which is history rather than news, so it does not announce.
+fn apply_inner(p: &Parsed, message_id: Option<&str>, email_date: Option<&str>) -> Result<(String, bool), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let at = if !p.update_at.is_empty() { p.update_at.clone() } else { email_date.unwrap_or(&now).to_string() };
@@ -640,7 +708,7 @@ fn apply_inner(p: &Parsed, message_id: Option<&str>, email_date: Option<&str>) -
                 dismissed: 0, created_at: now.clone(), updated_at: now,
             };
             write_cols(&conn, &id, &full_cols(&s), true)?;
-            Ok(id)
+            Ok((id, false))
         }
         Some(s) => {
             let mut events: Vec<Value> = serde_json::from_str(&s.events_json).unwrap_or_default();
@@ -679,11 +747,14 @@ fn apply_inner(p: &Parsed, message_id: Option<&str>, email_date: Option<&str>) -
             if s.deal_flow_id.is_empty() {
                 if let Some(df) = deal_for_refs(&conn, &p.refs) { cols.insert("deal_flow_id".into(), Value::String(df)); }
             }
+            // R-318: this update, and no other, is the one that landed the shipment.
+            let became_delivered = s.stage != "delivered"
+                && cols.get("stage").and_then(|v| v.as_str()) == Some("delivered");
             if !dup { cols.insert("events_json".into(), Value::String(Value::Array(events).to_string())); }
-            if cols.is_empty() { return Ok(s.id); }
+            if cols.is_empty() { return Ok((s.id, false)); }
             cols.insert("updated_at".into(), Value::String(Utc::now().to_rfc3339()));
             write_cols(&conn, &s.id, &cols, false)?;
-            Ok(s.id)
+            Ok((s.id, became_delivered))
         }
     }
 }
@@ -1055,6 +1126,27 @@ mod tests {
         assert_eq!(record_priority1_mail(&[old_mail]), 1);
         link_shipment_ref("df-r279b".into(), "70220011223".into()).await.unwrap();
         assert_eq!(dates("df-r279b").0, s("2026-08-28"));
+    }
+
+    /// R-318: exactly one update per shipment reports the delivery, and a row that arrives
+    /// already delivered (the mailbox backfill reading old mail) reports none.
+    #[test]
+    fn only_the_update_that_lands_it_reports_a_delivery() {
+        crate::db::init_test_store();
+        let ev = |status: &str, when: &str| {
+            let text = format!("Update on Shipment #80330022114
+Status: {status}
+BOL: 80330022114
+Update Date: {when}");
+            parse(&format!("Tracking Update for Shipment 80330022114 ({status})"), &text, None).unwrap()
+        };
+        assert_eq!(apply_inner(&ev("Picked up", "9/9/2026 8:00 AM"), Some("<a@priority1.com>"), None).unwrap().1, false,
+            "a row created by its first email never announces, however it arrives");
+        assert_eq!(apply_inner(&ev("In transit", "9/10/2026 8:00 AM"), Some("<b@priority1.com>"), None).unwrap().1, false);
+        assert_eq!(apply_inner(&ev("Delivered", "9/12/2026 3:30 PM"), Some("<c@priority1.com>"), None).unwrap().1, true,
+            "the update that moves it to delivered is the one that announces");
+        assert_eq!(apply_inner(&ev("Delivered", "9/12/2026 4:00 PM"), Some("<d@priority1.com>"), None).unwrap().1, false,
+            "a second delivered email does not announce it again");
     }
 
     #[test]
