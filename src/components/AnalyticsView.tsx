@@ -182,6 +182,8 @@ function monthLabels(months: string[]): string[] {
 // ─── Main view ───────────────────────────────────────────────────
 export default function AnalyticsView() {
   const P = usePalette();
+  // R-320: which month the pace chart is singling out (null = just this month).
+  const [paceHi, setPaceHi] = useState<string | null>(null);
   const CLR = P.CLR;
   const TT = P.TT;
   const AX = P.AX;
@@ -456,7 +458,7 @@ export default function AnalyticsView() {
       ─────────────────────────────────────────────────────────── */}
       {pace && (
         <Card
-          title="How this month is going"
+          title="Month comparisons"
           sub={`${longMonth(pace.current_month)} against the ${pace.prior_count} month${pace.prior_count !== 1 ? "s" : ""} before it · not affected by the date range`}
           right={
             <div className="flex items-center gap-1 bg-surface-2 rounded-lg p-0.5">
@@ -490,13 +492,21 @@ export default function AnalyticsView() {
                       asked about carries colour, so the comparison reads at a glance. */}
                   {pace.months.map((m, i) => {
                     const current = i === pace.months.length - 1;
-                    const clr = current
-                      ? (paceMetric === "revenue" ? revenueClr : P.MARK.profit)
-                      : rgbaVar("--c-ink", 0.20 + i * 0.12);
+                    const picked  = paceHi === m.month;
+                    // Nothing picked: this month carries the hue and the rest are ink.
+                    // Pick one and IT carries a hue of its own, the others step back — so
+                    // any two months can be read against each other, not just against now.
+                    const clr = picked
+                      ? P.cat[i % P.cat.length]
+                      : current
+                        ? (paceMetric === "revenue" ? revenueClr : P.MARK.profit)
+                        : rgbaVar("--c-ink", 0.20 + i * 0.12);
+                    const dimmed = paceHi !== null && !picked && !current;
                     return (
                       <Line key={m.month} type="monotone" dataKey={`m${i}`} name={longMonth(m.month)}
-                        stroke={clr} strokeWidth={current ? 2.75 : 1.5} dot={false}
-                        connectNulls={false} {...STILL} />
+                        stroke={clr} strokeWidth={picked ? 3 : current ? 2.75 : 1.5}
+                        strokeOpacity={dimmed ? 0.35 : 1}
+                        dot={false} connectNulls={false} {...STILL} />
                     );
                   })}
                 </LineChart>
@@ -504,14 +514,25 @@ export default function AnalyticsView() {
               <div className="flex items-center gap-4 flex-wrap mt-3">
                 {pace.months.map((m, i) => {
                   const current = i === pace.months.length - 1;
+                  const picked  = paceHi === m.month;
                   return (
                     <Legend key={m.month}
-                      color={current
-                        ? (paceMetric === "revenue" ? revenueClr : P.MARK.profit)
-                        : rgbaVar("--c-ink", 0.20 + i * 0.12)}
-                      label={current ? `${longMonth(m.month)} (so far)` : longMonth(m.month)} />
+                      color={picked
+                        ? P.cat[i % P.cat.length]
+                        : current
+                          ? (paceMetric === "revenue" ? revenueClr : P.MARK.profit)
+                          : rgbaVar("--c-ink", 0.20 + i * 0.12)}
+                      label={current ? `${longMonth(m.month)} (so far)` : longMonth(m.month)}
+                      active={picked}
+                      onClick={() => setPaceHi(picked ? null : m.month)} />
                   );
                 })}
+                {paceHi && (
+                  <button type="button" onClick={() => setPaceHi(null)}
+                    className="text-[11px] text-muted hover:text-ink transition-colors duration-[130ms]">
+                    Clear
+                  </button>
+                )}
               </div>
             </>
           ) : <Blank h={270} text="No closed deals in the last four months" />}
@@ -1511,15 +1532,27 @@ function PaceSummary({ pace, metric, CLR }: {
   );
 }
 
-function Legend({ color, label, dashed }: { color: string; label: string; dashed?: boolean }) {
-  return (
-    <div className="flex items-center gap-1.5 flex-shrink-0">
+function Legend({ color, label, dashed, onClick, active }: {
+  color: string; label: string; dashed?: boolean; onClick?: () => void; active?: boolean;
+}) {
+  const body = (
+    <>
       <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
         style={dashed
           ? { border: `1.5px dashed ${color}` }
           : { backgroundColor: color }} />
-      <span className="text-[11px] text-muted whitespace-nowrap">{label}</span>
-    </div>
+      <span className={`text-[11px] whitespace-nowrap ${active ? "text-ink font-medium" : "text-muted"}`}>{label}</span>
+    </>
+  );
+  // A legend that picks a month is a control, so it is a real button — focusable,
+  // and it says which month is currently singled out.
+  if (!onClick) return <div className="flex items-center gap-1.5 flex-shrink-0">{body}</div>;
+  return (
+    <button type="button" onClick={onClick} aria-pressed={!!active}
+      className={`flex items-center gap-1.5 flex-shrink-0 rounded-md px-2 h-6 -mx-1 transition-colors duration-[130ms] ${
+        active ? "bg-surface-2 ring-1 ring-line" : "hover:bg-surface-2"}`}>
+      {body}
+    </button>
   );
 }
 

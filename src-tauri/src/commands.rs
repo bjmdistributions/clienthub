@@ -11528,6 +11528,14 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         let mut months: Vec<String> = profit_by_month.keys().chain(overhead_by_month.keys()).cloned().collect();
         months.sort();
         months.dedup();
+        // Only INSIDE the trading span. R-319 shipped the bare union and drew twelve empty
+        // revenue/profit bars on all-time, because a $14 postage charge exists back to
+        // 2025-05 while the first completed deal is 2026-05 — Jack saw a chart of zeros. A
+        // gap BETWEEN two trading months is real information and is kept; months before the
+        // first deal and after the last are not this chart's subject.
+        if let (Some(first), Some(last)) = (profit_by_month.keys().min(), profit_by_month.keys().max()) {
+            months.retain(|m| m >= first && m <= last);
+        }
         months.into_iter().map(|m| {
             let (revenue, cost, profit) = profit_by_month.get(&m).copied().unwrap_or((0.0, 0.0, 0.0));
             let (shipping, fees) = overhead_by_month.get(&m).copied().unwrap_or((0.0, 0.0));
@@ -12369,6 +12377,14 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         let mut months: Vec<String> = profit_by_month.keys().chain(overhead_by_month.keys()).cloned().collect();
         months.sort();
         months.dedup();
+        // Only INSIDE the trading span. R-319 shipped the bare union and drew twelve empty
+        // revenue/profit bars on all-time, because a $14 postage charge exists back to
+        // 2025-05 while the first completed deal is 2026-05 — Jack saw a chart of zeros. A
+        // gap BETWEEN two trading months is real information and is kept; months before the
+        // first deal and after the last are not this chart's subject.
+        if let (Some(first), Some(last)) = (profit_by_month.keys().min(), profit_by_month.keys().max()) {
+            months.retain(|m| m >= first && m <= last);
+        }
         months.into_iter().map(|m| {
             let (revenue, cost, profit, count) = profit_by_month.get(&m).copied().unwrap_or((0.0, 0.0, 0.0, 0));
             let (shipping, fees) = overhead_by_month.get(&m).copied().unwrap_or((0.0, 0.0));
@@ -13332,6 +13348,30 @@ mod analytics_advanced_tests {
 
 #[cfg(test)]
 mod bank_overhead_tests {
+
+    /// R-320: the monthly series is trimmed to the TRADING span. R-319 unioned the
+    /// deal months with the overhead months and drew a year of empty revenue/profit
+    /// bars, because postage charges predate the first completed deal by twelve months.
+    #[test]
+    fn monthly_series_keeps_only_the_trading_span_but_never_an_interior_gap() {
+        use std::collections::BTreeMap;
+        let mut profit: BTreeMap<String, f64> = BTreeMap::new();
+        for m in ["2026-05", "2026-07", "2026-09"] { profit.insert(m.to_string(), 1.0); }
+        let mut overhead: BTreeMap<String, f64> = BTreeMap::new();
+        for m in ["2025-05", "2025-12", "2026-06", "2026-08", "2026-10"] { overhead.insert(m.to_string(), 1.0); }
+
+        let mut months: Vec<String> = profit.keys().chain(overhead.keys()).cloned().collect();
+        months.sort();
+        months.dedup();
+        if let (Some(first), Some(last)) = (profit.keys().min(), profit.keys().max()) {
+            months.retain(|m| m >= first && m <= last);
+        }
+
+        assert_eq!(months, vec!["2026-05", "2026-06", "2026-07", "2026-08", "2026-09"],
+            "months outside the trading span go; 06 and 08 are interior overhead-only months and stay");
+        assert!(!months.iter().any(|m| m.starts_with("2025")), "no month before the first completed deal");
+        assert!(!months.contains(&"2026-10".to_string()), "no month after the last completed deal");
+    }
     use super::bank_overhead;
 
     // Minimal shipping ledger for R-313: an unallocated out row, an unallocated in row
