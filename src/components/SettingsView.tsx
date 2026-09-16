@@ -400,7 +400,9 @@ function searchSettings(q: string, allowed: SettingsTab[]) {
     const score = l === query ? 0 : l.startsWith(toks[0]) ? 1 : l.includes(query) ? 2 : 3;
     out.push({ row, section: sec, score });
   }
-  return out.sort((a, b) => a.score - b.score || a.row.label.localeCompare(b.row.label)).slice(0, 40);
+  // No cap: the whole index is under a hundred rows, and a count that says 40 when
+  // it means "40 of 63" is a number that lies.
+  return out.sort((a, b) => a.score - b.score || a.row.label.localeCompare(b.row.label));
 }
 
 /** The card a search result named, handed down so it can open itself, scroll into
