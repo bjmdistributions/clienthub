@@ -444,9 +444,16 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
     const s = localStorage.getItem("clienthub_settings_tab") || "";
     return (LEGACY_TABS[s] ?? (s as SettingsTab)) || "appearance";
   });
-  const [docKind, setDocKind] = useState<DocKind>(
-    () => (localStorage.getItem("clienthub_settings_tab") === "quote" ? "quote" : "invoice"),
-  );
+  // Which side of Invoices & quotes you were last on. Before R-308 these were two
+  // rail rows, so coming back to the one you were editing has to keep working.
+  const [docKind, setDocKindState] = useState<DocKind>(() => {
+    if (localStorage.getItem("clienthub_settings_tab") === "quote") return "quote";
+    return localStorage.getItem("clienthub_settings_doc") === "quote" ? "quote" : "invoice";
+  });
+  const setDocKind = (k: DocKind) => {
+    setDocKindState(k);
+    try { localStorage.setItem("clienthub_settings_doc", k); } catch { /* private mode */ }
+  };
   const select = (t: SettingsTab) => {
     setTab(t);
     localStorage.setItem("clienthub_settings_tab", t);
