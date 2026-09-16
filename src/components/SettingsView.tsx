@@ -311,7 +311,8 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "documents", kind: "quote", card: "Details & text", label: "What shows on a quote", kw: "show address email phone tax id" },
   { tab: "documents", kind: "invoice", card: "Payment methods", label: "Payment methods", kw: "ach wire stripe link paypal venmo zelle check routing account number how customers pay" },
   { tab: "documents", card: "Line-item templates", label: "Line-item templates", kw: "saved line items description rate qty quick add" },
-  { tab: "documents", kind: "invoice", card: "Details & text", label: "Preview the invoice PDF", kw: "sample pdf live preview" },
+  // No card: the PDF button lives in the Live preview column, not in a card.
+  { tab: "documents", kind: "invoice", label: "Preview the invoice PDF", kw: "sample pdf live preview" },
   // Storefront
   { tab: "storefront", label: "Turn the storefront on or off", kw: "enable public inventory share catalogue" },
   { tab: "storefront", card: "Your public link", label: "Your public storefront link", kw: "url shareable link catalogue copy open" },
@@ -372,7 +373,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "team", card: "approvals", label: "Client approvals", kw: "require approval add delete pending queue" },
   { tab: "team", card: "invites", label: "Invites", kw: "invite link join workspace resend" },
   { tab: "team", card: "payouts", label: "Rep payouts", kw: "payout schedule period anchor custom days enable" },
-  { tab: "team", card: "roles", label: "Share my connections", kw: "org shared credentials" },
+  { tab: "team", card: "people", label: "Share my connections", kw: "org shared credentials" },
   // Help
   { tab: "feedback", label: "Send feedback", kw: "bug report feature request contact support" },
 ];
