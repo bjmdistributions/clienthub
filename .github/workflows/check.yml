@@ -152,3 +152,66 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --bin clienthub
+
+  # A tag is not a release. Six tags in this repo's history built nothing and nobody
+  # noticed until someone went looking: v0.12.1, v0.12.3, v0.14.5, v0.15.84 (no run or a
+  # failed one), v0.15.131 (the 2026-08-06 Actions outage) and v0.16.72 (the release job
+  # lost `contents: write` and died at create-release after a clean 14-minute build).
+  # Each one left a version number that exists in git, is quoted in commit messages and
+  # in the vault, and that no install can ever receive — gotchas §12, "written is not
+  # shipped", and §52.
+  #
+  # Ratchet, same shape as the hex guard above: the six are allowlisted so main is green
+  # today, and only a NEW dead tag fails. A tag whose build is still running is skipped,
+  # so tagging and pushing in the usual order never trips this.
+  #
+  # Hyphenated tags (v0.16.74-rc1) are excluded by design, not by omission: release.yml
+  # builds them into a draft and deliberately never publishes, which is how a risky
+  # pipeline change is tried. Delete the draft when you are done with it.
+  tags:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: A tag that produced no release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Known dead, left in history on purpose: this project never deletes a tag.
+          # Do not add a line here to silence a new one — find out why it shipped nothing.
+          allow="v0.12.1 v0.12.3 v0.14.5 v0.15.84 v0.15.131 v0.16.72"
+          gh api --paginate "repos/$R/releases" --jq '.[] | select(.draft == false) | .tag_name' > published.txt
+          echo "Published releases: $(wc -l < published.txt)"
+          dead=""
+          for tag in $(git tag -l 'v*' | grep -v -- '-'); do
+            case " $allow " in *" $tag "*) continue ;; esac
+            if grep -qxF -- "$tag" published.txt; then continue; fi
+            # Still building, or queued? Not dead yet.
+            state=$(gh api "repos/$R/actions/runs?head_branch=$tag&per_page=1" --jq '.workflow_runs[0].status // "none"')
+            if [ "$state" != "completed" ] && [ "$state" != "none" ]; then
+              echo "  ... $tag is mid-build ($state), skipping"
+              continue
+            fi
+            if [ "$state" = "none" ]; then
+              # No run at all. Give a freshly pushed tag time for Actions to pick it up.
+              age=$(( ( $(date +%s) - $(git log -1 --format=%ct "$tag") ) / 3600 ))
+              if [ "$age" -lt 6 ]; then
+                echo "  ... $tag has no run yet and is ${age}h old, skipping"
+                continue
+              fi
+            fi
+            dead="$dead $tag"
+          done
+          if [ -n "$dead" ]; then
+            echo "Tags with no published release:$dead"
+            echo "Each is a version that exists in git and can never reach an install."
+            echo "Re-run its Build & Release, or cut the next version — do not delete the tag."
+            exit 1
+          fi
+          echo "Every plain tag has a published release."
