@@ -1703,6 +1703,10 @@ export interface AnalyticsRange {
     deals_measured: number;
     by_month: { month: string; deals: number; median_days: number | null }[];
   };
+  // R-319. How the current month is going against the three before it, cumulative by day
+  // of month. NOT range-scoped — the question is about the month we are in, the same way
+  // Cash position is about now.
+  pace: AnalyticsPace | null;
   // Null unless today sits inside the range and its month has a bucket. Drawn dashed.
   run_rate: {
     month: string; days_elapsed: number; days_in_month: number;
@@ -1725,6 +1729,37 @@ export interface AnalyticsRange {
   revenue_this_month: number;
   profit_this_month: number;
   margin_this_month: number;
+}
+
+// R-319. One month's cumulative pace line. `days` is dense — one point per day of that
+// calendar month, each the running total THROUGH that day — so a flat stretch on the
+// chart is a real week with nothing closing, not a gap in the data.
+export interface AnalyticsPaceMonth {
+  month: string;              // "YYYY-MM"
+  days_in_month: number;
+  is_current: boolean;
+  days: { day: number; revenue: number; profit: number }[];
+  at_day_revenue: number;     // where this month stood on the CURRENT day index
+  at_day_profit: number;      // (a month shorter than that index reports its final value)
+  final_revenue: number;
+  final_profit: number;
+}
+
+export interface AnalyticsPace {
+  day_of_month: number;
+  days_in_month: number;
+  current_month: string;
+  months: AnalyticsPaceMonth[];   // oldest first; the last one is the current month
+  revenue_so_far: number;
+  profit_so_far: number;
+  prior_count: number;            // how many of the three previous months exist
+  prev_month: string;
+  prev_at_day_revenue: number;
+  prev_at_day_profit: number;
+  avg_at_day_revenue: number;
+  avg_at_day_profit: number;
+  projected_revenue: number;
+  projected_profit: number;
 }
 
 export interface AnalyticsDealHighlight {

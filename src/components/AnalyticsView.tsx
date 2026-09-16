@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  api, AnalyticsRange, AnalyticsMonth, AnalyticsReconciliation, ReconRow,
+  api, AnalyticsRange, AnalyticsMonth, AnalyticsReconciliation, ReconRow, AnalyticsPace,
   DashboardStats, FinancialsOverview,
 } from "../lib/api";
 import { fmtAmount, fmtCompactCurrency, localDay, parseLocalDay } from "../lib/format";
@@ -8,15 +8,16 @@ import { RefreshCw, FileDown } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   BarChart, Bar, PieChart, Pie, ComposedChart, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Cell,
+  ResponsiveContainer, ReferenceLine, Cell,
 } from "recharts";
 import TierBadge from "./TierBadge";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 
-// ─── Theme-aware chart palette ────────────────────────────────────
+// ─── Theme-aware chart palette (R-319: Apple system colours) ──────
 // Every colour on this screen is read through a CSS token, so light, dark and the two
-// mono themes all get a palette that was chosen for them rather than flipped.
+// mono themes all get a palette that was chosen for them rather than flipped. The values
+// behind these tokens are Apple's published system colours — see src/index.css.
 const cssVar = (n: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const rgbVar = (n: string) => `rgb(${cssVar(n)})`;
 // SVG `fill` wants a colour it can parse everywhere, so alpha is built explicitly
@@ -45,69 +46,100 @@ const TIER_NAME: Record<string, string> = {
 const TIER_ORDER = ["P", "S", "A", "B", "C", "Prospect"];
 
 // Resolve brand tokens to concrete chart colors; re-render on light/dark flip.
+//
+// Memoised on the theme tick. It used to run ~20 getComputedStyle reads on EVERY render
+// of this view, and a tooltip hover renders this view — that alone was a measurable part
+// of the lag, before a single chart redrew.
+//
+// Two families, and the difference matters: a MARK colour is Apple's exact system value
+// and goes on bars, lines, dots and swatches; an INK colour is Apple's published
+// accessible variant of the same hue and goes on text. systemGreen on white is 2.2:1 and
+// cannot carry a 12.5px table cell — the ink can.
 function usePalette() {
-  const [, force] = useState(0);
+  const [tick, force] = useState(0);
   useEffect(() => {
     const obs = new MutationObserver(() => force((x) => x + 1));
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => obs.disconnect();
   }, []);
-  const success = rgbVar("--c-success");
-  const danger  = rgbVar("--c-danger");
-  const warning = rgbVar("--c-warning");
-  const info    = rgbVar("--c-info");
-  const neutral = rgbVar("--c-faint");
-  // Revenue's own data hue. Not the accent (that greys out under mono and is spoken for by
-  // the app's chrome) and not a status colour (those are reserved).
-  const chartRevenue = rgbVar("--c-chart-revenue");
-  // The categorical slots (R-316). Assigned in this order and never cycled — a seventh
-  // series folds into "Other" rather than inventing a hue. Adjacent-pair CVD separation
-  // was validated in this order, so an assignment that skips a slot is not covered.
-  const cat = [1, 2, 3, 4, 5, 6].map((i) => rgbVar(`--c-chart-${i}`));
-  // Ordinal ramp for margin bands: one hue (profit's own emerald), monotone lightness.
-  const profitRamp = [0.5, 0.62, 0.74, 0.87, 1].map((a) => rgbaVar("--c-success", a));
-  return {
-    neutral, chartRevenue, cat, profitRamp,
-    grid: rgbVar("--c-line"),
-    CLR: { emerald: success, rose: danger, amber: warning, sky: info, slate: neutral },
-    STATUS: { paid: success, sent: info, overdue: danger, draft: neutral, void: danger } as Record<string, string>,
-    TT: {
-      contentStyle: {
-        background: rgbVar("--c-surface"),
-        border: `1px solid ${rgbVar("--c-line")}`,
-        borderRadius: 10,
-        color: rgbVar("--c-ink"),
-        fontSize: 12,
-        padding: "9px 13px",
-        boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
+  return useMemo(() => {
+    void tick;   // the theme flip IS the input — every value below is read off the DOM
+    const neutral = rgbVar("--c-faint");
+    // Revenue's own data hue — Apple's systemBlue. Not the accent (that greys out under
+    // mono and is spoken for by the app's chrome) and not a status colour.
+    const chartRevenue = rgbVar("--c-chart-revenue");
+    // The categorical slots. Assigned in this order and never cycled — a seventh series
+    // folds into "Other" rather than inventing a hue.
+    const cat = [1, 2, 3, 4, 5, 6].map((i) => rgbVar(`--c-chart-${i}`));
+    // Ordinal ramp for margin bands: one hue (profit's systemGreen), monotone lightness.
+    const profitRamp = [0.45, 0.6, 0.72, 0.86, 1].map((a) => rgbaVar("--c-chart-profit", a));
+    const MARK = {
+      profit:  rgbVar("--c-chart-profit"),
+      loss:    rgbVar("--c-chart-loss"),
+      caution: rgbVar("--c-chart-caution"),
+    };
+    return {
+      neutral, chartRevenue, cat, profitRamp, MARK,
+      grid: rgbVar("--c-line"),
+      // Text inks. `emerald`/`rose`/`amber` keep their names because they are referenced
+      // ~40 times on this screen; the values behind them are now Apple's accessible
+      // green, red and orange.
+      CLR: {
+        emerald: rgbVar("--c-chart-profit-ink"),
+        rose:    rgbVar("--c-chart-loss-ink"),
+        amber:   rgbVar("--c-chart-caution-ink"),
       },
-      // The hover cursor is chrome, not a mark — it wears ink, never the accent.
-      cursor: { fill: rgbaVar("--c-ink", 0.05) },
-      itemStyle: { color: rgbVar("--c-ink") },
-      labelStyle: { color: rgbVar("--c-muted"), marginBottom: 3 },
-    },
-    AX: { fontSize: 10, fill: rgbVar("--c-muted") },
-  };
+      STATUS: {
+        paid: MARK.profit, sent: chartRevenue, overdue: MARK.loss,
+        draft: neutral, void: MARK.loss,
+      } as Record<string, string>,
+      TT: {
+        contentStyle: {
+          background: rgbVar("--c-surface"),
+          border: `1px solid ${rgbVar("--c-line")}`,
+          borderRadius: 12,
+          color: rgbVar("--c-ink"),
+          fontSize: 12,
+          padding: "9px 13px",
+          boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
+        },
+        // The hover cursor is chrome, not a mark — it wears ink, never the accent.
+        cursor: { fill: rgbaVar("--c-ink", 0.05) },
+        itemStyle: { color: rgbVar("--c-ink") },
+        labelStyle: { color: rgbVar("--c-muted"), marginBottom: 3 },
+      },
+      AX: { fontSize: 10, fill: rgbVar("--c-muted") },
+    };
+  }, [tick]);
 }
 
-// ─── Count-up hook ────────────────────────────────────────────────
-function useCountUp(target: number, duration = 900) {
-  const [val, setVal] = useState(0);
-  const raf = useRef<number>(0);
+// Recharts animates every series on mount AND on every data change. Thirteen charts
+// doing that at once is most of what "slow and laggy" was. Data is drawn, not performed.
+const STILL = { isAnimationActive: false } as const;
+
+// ─── Deferred mount ───────────────────────────────────────────────
+// A panel below the fold still costs a ResponsiveContainer, its ResizeObserver and a
+// recharts layout pass before anyone has scrolled to it. This mounts its children the
+// first time they come near the viewport, and then leaves them mounted.
+function Defer({ h, children }: { h: number; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState(false);
   useEffect(() => {
-    cancelAnimationFrame(raf.current);
-    if (target === 0) { setVal(0); return; }
-    const t0 = performance.now();
-    const tick = (now: number) => {
-      const p = Math.min((now - t0) / duration, 1);
-      setVal(target * (1 - Math.pow(1 - p, 4)));
-      if (p < 1) raf.current = requestAnimationFrame(tick);
-      else setVal(target);
-    };
-    raf.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf.current);
-  }, [target, duration]);
-  return val;
+    if (shown) return;
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") { setShown(true); return; }
+    const io = new IntersectionObserver(
+      (es) => { if (es.some((e) => e.isIntersecting)) { setShown(true); io.disconnect(); } },
+      { rootMargin: "500px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [shown]);
+  return (
+    <div ref={ref} className="min-w-0">
+      {shown ? children : <div className="rounded-[18px] bg-surface-2/50" style={{ minHeight: h }} />}
+    </div>
+  );
 }
 
 // ─── Date presets ─────────────────────────────────────────────────
@@ -126,8 +158,26 @@ function presetRange(label: string): { start: string; end: string } {
 // wrong place. Money that can go negative on this screen wears a real minus in front.
 const signed = (n: number) => (n < 0 ? "−" + fmtAmount(Math.abs(n)) : fmtAmount(n));
 
-const monthLabel = (m: string) =>
-  parseLocalDay(m + "-01").toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+// Jack, 2026-09-16: "im questioning why all dates say 26th of each month. why not just
+// say the month." The old format was { month: "short", year: "2-digit" }, so 2026
+// rendered as "Apr 26" and read as a day. A month is now just its name. The year is
+// added only when the series really does span more than one calendar year, and then only
+// on the FIRST bucket of each year rather than on all of them.
+const shortMonth = (m: string) =>
+  parseLocalDay(m + "-01").toLocaleDateString("en-US", { month: "short" });
+const longMonth = (m: string) =>
+  parseLocalDay(m + "-01").toLocaleDateString("en-US", { month: "long" });
+
+function monthLabels(months: string[]): string[] {
+  const spans = new Set(months.map((m) => m.slice(0, 4))).size > 1;
+  const seen = new Set<string>();
+  return months.map((m) => {
+    const y = m.slice(0, 4);
+    const first = !seen.has(y);
+    seen.add(y);
+    return spans && first ? `${shortMonth(m)} ${y}` : shortMonth(m);
+  });
+}
 
 // ─── Main view ───────────────────────────────────────────────────
 export default function AnalyticsView() {
@@ -146,12 +196,16 @@ export default function AnalyticsView() {
   const [preset,    setPreset]    = useState<string>("All time");
   const [startDate, setStartDate] = useState("");
   const [endDate,   setEndDate]   = useState("");
+  // Revenue or profit on the pace chart. One question, one line, a toggle rather than
+  // two charts fighting over one axis.
+  const [paceMetric, setPaceMetric] = useState<"revenue" | "profit">("revenue");
+  // The reconciliation table can run to hundreds of rows. It renders the first 25 until
+  // asked for the rest, which is the difference between one layout pass and hundreds.
+  const [reconAll, setReconAll] = useState(false);
 
-  // All hooks unconditionally before early returns.
-  const aRevenue = useCountUp(range?.total_revenue ?? 0);
-  const aProfit  = useCountUp(range?.total_profit  ?? 0);
-  const aTrueNet = useCountUp(range?.true_net      ?? 0);
-  const aMargin  = useCountUp(range?.avg_margin    ?? 0);
+  // The KPI count-ups are gone (R-319). Four of them re-rendered this entire view on
+  // every animation frame — and this view owns thirteen charts, so each frame was
+  // thirteen recharts layout passes. The figures render immediately instead.
 
   const loadRange = async (start: string, end: string) => {
     setBars(false);
@@ -202,19 +256,53 @@ export default function AnalyticsView() {
 
   const rangeLabel = preset === "Custom" ? "the selected range" : preset.toLowerCase();
 
-  // The primary trend, with the in-progress month's projection carried as its own
-  // stacked remainder so it can be drawn dashed on top of what has actually closed.
+  // The primary trend. The in-progress month is marked but NOT projected here: R-316
+  // stacked the projection as a remainder on top of the real bar, which asked the eye to
+  // decode a forecast as the top of a column. The projection lives on the pace panel now,
+  // where it is a line with a "today" marker and a sentence.
   const trend = useMemo(() => {
     const months: AnalyticsMonth[] = range?.monthly_profit ?? [];
+    const labels = monthLabels(months.map((m) => m.month));
     const rr = range?.run_rate ?? null;
-    return months.map((m) => ({
+    return months.map((m, i) => ({
       ...m,
-      label: monthLabel(m.month),
-      projected: rr && rr.month === m.month,
-      proj_revenue_gap: rr && rr.month === m.month ? Math.max(rr.projected_revenue - m.revenue, 0) : 0,
-      proj_profit_gap:  rr && rr.month === m.month ? Math.max(rr.projected_profit  - m.profit,  0) : 0,
+      label: labels[i],
+      projected: !!rr && rr.month === m.month,
     }));
-  }, [range]);
+  }, [range?.monthly_profit, range?.run_rate]);
+
+  // Velocity carries its own month series, so it gets its own year-aware labels.
+  const velocityRows = useMemo(() => {
+    const by = range?.velocity.by_month ?? [];
+    const labels = monthLabels(by.map((v) => v.month));
+    return by.map((v, i) => ({ ...v, label: labels[i] }));
+  }, [range?.velocity]);
+
+  // ── Pace rows: one row per day of month, one series per month ────────────────────
+  // The current month's series is cut off at today — past that there is no data, and a
+  // line that ran flat to the month end would read as "we stopped selling".
+  const pace: AnalyticsPace | null = range?.pace ?? null;
+  const paceRows = useMemo(() => {
+    if (!pace || pace.months.length === 0) return [];
+    const span = Math.max(...pace.months.map((m) => m.days_in_month));
+    const curIdx = pace.months.length - 1;
+    const rows: Record<string, number | null>[] = [];
+    for (let d = 1; d <= span; d++) {
+      const row: Record<string, number | null> = { day: d };
+      pace.months.forEach((m, i) => {
+        const pt = m.days[d - 1];
+        const past = i === curIdx && d > pace.day_of_month;
+        row[`m${i}`] = pt && !past ? pt[paceMetric] : null;
+      });
+      rows.push(row);
+    }
+    return rows;
+  }, [pace, paceMetric]);
+
+  const reconRows = useMemo(
+    () => (reconAll ? recon?.deals ?? [] : (recon?.deals ?? []).slice(0, 25)),
+    [recon, reconAll],
+  );
 
   // Skeleton mirrors the real layout: header, KPI band, primary trend, overhead panel,
   // then the paired analysis cards. Blocks, not spinners — the page keeps its shape.
@@ -227,8 +315,9 @@ export default function AnalyticsView() {
         </div>
         <div className="h-8 w-72 bg-surface-2 rounded-lg animate-pulse" />
       </div>
-      <div className="h-[168px] bg-surface-2 rounded-2xl animate-pulse" />
-      <div className="h-[340px] bg-surface-2 rounded-2xl animate-pulse" />
+      <div className="h-[168px] bg-surface-2 rounded-[20px] animate-pulse" />
+      <div className="h-[360px] bg-surface-2 rounded-[18px] animate-pulse" />
+      <div className="h-[340px] bg-surface-2 rounded-[18px] animate-pulse" />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="h-72 bg-surface-2 rounded-2xl animate-pulse" />
         <div className="h-72 bg-surface-2 rounded-2xl animate-pulse" />
@@ -268,8 +357,10 @@ export default function AnalyticsView() {
   };
 
   // ── Layout ───────────────────────────────────────────────────
+  // `analytics-stage` is the wash the glass samples: without something behind it, a
+  // translucent panel over a flat page is just a tint.
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 analytics-stage">
 
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -324,20 +415,20 @@ export default function AnalyticsView() {
           on a column count that was guessed. Steps 2 → 3 → 6 across the
           sidebar-narrowed pane; it is the old xl:grid-cols-5 that overflowed.
       ─────────────────────────────────────────────────────────── */}
-      <div className="rounded-2xl overflow-hidden ring-1 ring-line bg-line">
+      <div className="rounded-[20px] overflow-hidden ring-1 ring-line/70 bg-line/60 glass">
         <div className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-px">
-          <Kpi label="Revenue" value={fmtAmount(aRevenue)} hint="closed deal revenue" accentClass="text-accent" />
-          <Kpi label="Net profit" value={signed(aProfit)} hint="after all deal costs"
+          <Kpi label="Revenue" value={fmtAmount(range.total_revenue)} hint="closed deal revenue" color={revenueClr} />
+          <Kpi label="Net profit" value={signed(range.total_profit)} hint="after all deal costs"
             color={range.total_profit >= 0 ? CLR.emerald : CLR.rose} />
-          <Kpi label="True net" value={signed(aTrueNet)} hint="after shipping and bank fees"
+          <Kpi label="True net" value={signed(range.true_net)} hint="after shipping and bank fees"
             color={range.true_net >= 0 ? CLR.emerald : CLR.rose} />
-          <Kpi label="Margin" value={`${aMargin.toFixed(1)}%`} hint="revenue-weighted" />
+          <Kpi label="Margin" value={`${range.avg_margin.toFixed(1)}%`} hint="revenue-weighted" />
           <Kpi label="Deals closed" value={String(won)} hint={`${lost} fell through`} />
           <Kpi label="Win rate" value={won + lost > 0 ? `${winRate.toFixed(0)}%` : "—"} hint="won vs fell through"
             color={won + lost === 0 ? undefined : winRate >= 60 ? CLR.emerald : winRate >= 40 ? CLR.amber : CLR.rose} />
         </div>
         {/* The range needs something to be compared against, on the same population. */}
-        <div className="bg-surface px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[11.5px] text-muted">
+        <div className="bg-surface/70 px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[11.5px] text-muted">
           <span>
             This month <b className="text-ink-2 tabular-nums font-semibold">{fmtAmount(range.revenue_this_month)}</b> revenue
             {" · "}<b className="text-ink-2 tabular-nums font-semibold">{signed(range.profit_this_month)}</b> profit
@@ -355,6 +446,78 @@ export default function AnalyticsView() {
         </div>
       </div>
 
+      {/* ── How this month is going (R-319) ───────────────────────
+          Jack asked to see how the current month is doing "compared to where we were at
+          this point in previous months". That is a cumulative line by DAY OF MONTH: the
+          current month bold and stopping at today, the three before it faint and running
+          their full length. Day 16 against day 16 is then a vertical distance, not an
+          inference. The answer is also stated in words above the chart, because the
+          sentence is the thing he actually asked for.
+      ─────────────────────────────────────────────────────────── */}
+      {pace && (
+        <Card
+          title="How this month is going"
+          sub={`${longMonth(pace.current_month)} against the ${pace.prior_count} month${pace.prior_count !== 1 ? "s" : ""} before it · not affected by the date range`}
+          right={
+            <div className="flex items-center gap-1 bg-surface-2 rounded-lg p-0.5">
+              {(["revenue", "profit"] as const).map((m) => (
+                <button key={m} onClick={() => setPaceMetric(m)}
+                  className={`px-2.5 h-6 rounded-md text-[11.5px] font-medium capitalize transition-colors ${
+                    paceMetric === m ? "bg-surface text-ink ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
+                  {m}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          <PaceSummary pace={pace} metric={paceMetric} CLR={CLR} />
+          {paceRows.length > 0 ? (
+            <>
+              <ResponsiveContainer width="100%" height={270}>
+                <LineChart data={paceRows} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
+                  <XAxis dataKey="day" tick={AX} axisLine={false} tickLine={false}
+                    tickFormatter={(d: number) => String(d)} interval={2} />
+                  <YAxis tick={AX} axisLine={false} tickLine={false} width={54}
+                    tickFormatter={(v: number) => fmtCompactCurrency(v)} />
+                  <Tooltip {...TT}
+                    formatter={(v: any, n: any) => [signed(Number(v)), n]}
+                    labelFormatter={(d: any) => `Day ${d}`} />
+                  <ReferenceLine x={pace.day_of_month} stroke={rgbaVar("--c-ink", 0.28)}
+                    strokeDasharray="3 3"
+                    label={{ value: "Today", position: "insideTopRight", fill: rgbVar("--c-muted"), fontSize: 10 }} />
+                  {/* Prior months wear ink at low alpha, not a hue: only the month being
+                      asked about carries colour, so the comparison reads at a glance. */}
+                  {pace.months.map((m, i) => {
+                    const current = i === pace.months.length - 1;
+                    const clr = current
+                      ? (paceMetric === "revenue" ? revenueClr : P.MARK.profit)
+                      : rgbaVar("--c-ink", 0.20 + i * 0.12);
+                    return (
+                      <Line key={m.month} type="monotone" dataKey={`m${i}`} name={longMonth(m.month)}
+                        stroke={clr} strokeWidth={current ? 2.75 : 1.5} dot={false}
+                        connectNulls={false} {...STILL} />
+                    );
+                  })}
+                </LineChart>
+              </ResponsiveContainer>
+              <div className="flex items-center gap-4 flex-wrap mt-3">
+                {pace.months.map((m, i) => {
+                  const current = i === pace.months.length - 1;
+                  return (
+                    <Legend key={m.month}
+                      color={current
+                        ? (paceMetric === "revenue" ? revenueClr : P.MARK.profit)
+                        : rgbaVar("--c-ink", 0.20 + i * 0.12)}
+                      label={current ? `${longMonth(m.month)} (so far)` : longMonth(m.month)} />
+                  );
+                })}
+              </div>
+            </>
+          ) : <Blank h={270} text="No closed deals in the last four months" />}
+        </Card>
+      )}
+
       {/* ── Primary trend ───────────────────────────────────────── */}
       <Card
         title="Revenue and profit by month"
@@ -364,8 +527,7 @@ export default function AnalyticsView() {
         right={
           <div className="flex items-center gap-4 flex-wrap justify-end">
             <Legend color={revenueClr} label="Revenue" />
-            <Legend color={CLR.emerald} label="Profit" />
-            {range.run_rate && <Legend color={revenueClr} label="Projected" dashed />}
+            <Legend color={P.MARK.profit} label="Profit" />
           </div>
         }
       >
@@ -380,24 +542,25 @@ export default function AnalyticsView() {
                   tickFormatter={(v: number) => fmtCompactCurrency(v)} width={54} />
                 <Tooltip {...TT} formatter={(v: any, n: any) => [signed(Number(v)), n]}
                   labelFormatter={(l: any) => String(l)} />
-                <Bar dataKey="revenue" name="Revenue" stackId="rev" fill={revenueClr} maxBarSize={38} />
-                <Bar dataKey="proj_revenue_gap" name="Revenue at this pace" stackId="rev"
-                  fill={rgbaVar("--c-chart-revenue", 0.16)} stroke={revenueClr} strokeDasharray="3 3"
-                  radius={[4, 4, 0, 0]} maxBarSize={38} />
-                <Bar dataKey="profit" name="Profit" stackId="prof" maxBarSize={38}>
-                  {trend.map((m, i) => <Cell key={i} fill={m.profit >= 0 ? CLR.emerald : CLR.rose} />)}
+                {/* An open month is drawn at half strength rather than carrying a stacked
+                    forecast on its head. What it will finish at is on the pace panel. */}
+                <Bar dataKey="revenue" name="Revenue" radius={[5, 5, 0, 0]} maxBarSize={38} {...STILL}>
+                  {trend.map((m, i) => (
+                    <Cell key={i} fill={revenueClr} fillOpacity={m.projected ? 0.42 : 1} />
+                  ))}
                 </Bar>
-                <Bar dataKey="proj_profit_gap" name="Profit at this pace" stackId="prof"
-                  fill={rgbaVar("--c-success", 0.16)} stroke={CLR.emerald} strokeDasharray="3 3"
-                  radius={[4, 4, 0, 0]} maxBarSize={38} />
+                <Bar dataKey="profit" name="Profit" radius={[5, 5, 0, 0]} maxBarSize={38} {...STILL}>
+                  {trend.map((m, i) => (
+                    <Cell key={i} fill={m.profit >= 0 ? P.MARK.profit : P.MARK.loss}
+                      fillOpacity={m.projected ? 0.42 : 1} />
+                  ))}
+                </Bar>
               </ComposedChart>
             </ResponsiveContainer>
             {range.run_rate && (
               <p className="text-[11px] text-muted mt-3 tabular-nums">
-                {monthLabel(range.run_rate.month)} is {range.run_rate.days_elapsed} of{" "}
-                {range.run_rate.days_in_month} days in. At this pace it finishes near{" "}
-                <b className="text-ink-2 font-semibold">{fmtAmount(range.run_rate.projected_revenue)}</b> revenue and{" "}
-                <b className="text-ink-2 font-semibold">{signed(range.run_rate.projected_profit)}</b> profit.
+                {longMonth(range.run_rate.month)} is still open — {range.run_rate.days_elapsed} of{" "}
+                {range.run_rate.days_in_month} days in, so its bars are drawn at half strength.
               </p>
             )}
           </>
@@ -415,6 +578,7 @@ export default function AnalyticsView() {
         <div className="space-y-4">
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             <Card
+              glass
               title="Money in, money out"
               sub={`Revenue down to true net for ${rangeLabel}`}
               right={recon.bridge_ties
@@ -429,6 +593,7 @@ export default function AnalyticsView() {
             </Card>
 
             <Card
+              glass
               title="The bank against these deals"
               sub="Why the account moved by a different figure from the profit"
               right={recon.bank.ties
@@ -475,7 +640,7 @@ export default function AnalyticsView() {
                       </tr>
                     </thead>
                     <tbody>
-                      {recon.deals.map((d, i) => (
+                      {reconRows.map((d, i) => (
                         <tr key={`${d.invoice_number}-${i}`}
                           className="border-b border-line-2 hover:bg-surface-2 transition-colors">
                           <td className="py-2.5 pr-3 text-ink whitespace-nowrap">
@@ -538,6 +703,13 @@ export default function AnalyticsView() {
                     </tfoot>
                   </table>
                 </div>
+                {!reconAll && recon.deals.length > reconRows.length && (
+                  <button onClick={() => setReconAll(true)}
+                    className="mt-3 px-3 h-8 rounded-lg bg-surface ring-1 ring-line text-[12px] text-muted
+                               hover:ring-accent hover:text-accent transition-colors">
+                    Show all {recon.deals.length} rows
+                  </button>
+                )}
                 <div className="text-[11px] mt-3 space-y-1">
                   <p className="text-muted">
                     Profit and true net add back to the bridge exactly. Money in and money out
@@ -557,6 +729,7 @@ export default function AnalyticsView() {
         </div>
       )}
 
+      <Defer h={420}>
       {/* ── Shipping and bank fees: its own panel, not a line above a chart ── */}
       <Card
         title="Shipping and bank fees"
@@ -597,8 +770,8 @@ export default function AnalyticsView() {
                     <YAxis tick={AX} axisLine={false} tickLine={false} width={54}
                       tickFormatter={(v: number) => fmtCompactCurrency(v)} />
                     <Tooltip {...TT} formatter={(v: any, n: any) => [signed(Number(v)), n]} />
-                    <Bar dataKey="shipping" name="Shipping" stackId="oh" fill={P.cat[0]} maxBarSize={34} />
-                    <Bar dataKey="fees" name="Fees" stackId="oh" fill={P.cat[1]} maxBarSize={34} radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="shipping" name="Shipping" stackId="oh" fill={P.cat[0]} maxBarSize={34} {...STILL} />
+                    <Bar dataKey="fees" name="Fees" stackId="oh" fill={P.cat[1]} maxBarSize={34} radius={[5, 5, 0, 0]} {...STILL} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : <Blank h={170} text="No overhead recorded in this range" />}
@@ -614,7 +787,7 @@ export default function AnalyticsView() {
                       tickFormatter={(v: number) => `${v.toFixed(0)}%`} />
                     <Tooltip {...TT} formatter={(v: any) => [`${Number(v).toFixed(1)}%`, "Overhead"]} />
                     <Line type="monotone" dataKey="overhead_pct" name="Overhead" stroke={P.cat[0]}
-                      strokeWidth={2} dot={{ r: 2.5, strokeWidth: 0, fill: P.cat[0] }} />
+                      strokeWidth={2} dot={{ r: 2.5, strokeWidth: 0, fill: P.cat[0] }} {...STILL} />
                   </LineChart>
                 </ResponsiveContainer>
               ) : <Blank h={130} text="No revenue to compare against" />}
@@ -622,7 +795,9 @@ export default function AnalyticsView() {
           </div>
         </div>
       </Card>
+      </Defer>
 
+      <Defer h={360}>
       {/* ── Margin distribution + revenue concentration ─────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <Card title="Margin distribution" sub="Deals by margin band, so a fat tail stays visible">
@@ -637,9 +812,9 @@ export default function AnalyticsView() {
                   <Tooltip {...TT}
                     formatter={(v: any, _n: any, e: any) => [
                       `${v} deal${v !== 1 ? "s" : ""} · ${fmtAmount(e?.payload?.revenue ?? 0)} revenue`, "Deals"]} />
-                  <Bar dataKey="deals" name="Deals" radius={[0, 4, 4, 0]} maxBarSize={24}>
+                  <Bar dataKey="deals" name="Deals" radius={[0, 5, 5, 0]} maxBarSize={24} {...STILL}>
                     {range.margin_bands.map((b, i) => (
-                      <Cell key={b.label} fill={i === 0 ? CLR.rose : P.profitRamp[Math.min(i - 1, P.profitRamp.length - 1)]} />
+                      <Cell key={b.label} fill={i === 0 ? P.MARK.loss : P.profitRamp[Math.min(i - 1, P.profitRamp.length - 1)]} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -687,7 +862,9 @@ export default function AnalyticsView() {
           ) : <Blank h={230} text="No buyers with revenue in this range" />}
         </Card>
       </div>
+      </Defer>
 
+      <Defer h={360}>
       {/* ── Repeat versus new + deal velocity ──────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <Card title="Repeat buyers versus first-time"
@@ -719,9 +896,9 @@ export default function AnalyticsView() {
           sub={range.velocity.median_days !== null
             ? `Median ${range.velocity.median_days.toFixed(0)} days from invoice issued to deal completed, over ${range.velocity.deals_measured} deal${range.velocity.deals_measured !== 1 ? "s" : ""}`
             : "Days from invoice issued to deal completed"}>
-          {range.velocity.by_month.length > 0 ? (
+          {velocityRows.length > 0 ? (
             <ResponsiveContainer width="100%" height={230}>
-              <LineChart data={range.velocity.by_month.map((v) => ({ ...v, label: monthLabel(v.month) }))}
+              <LineChart data={velocityRows}
                 margin={{ top: 8, right: 4, left: -12, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
                 <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
@@ -732,13 +909,15 @@ export default function AnalyticsView() {
                     `${Number(v).toFixed(0)} days · ${e?.payload?.deals ?? 0} deal${e?.payload?.deals !== 1 ? "s" : ""}`,
                     "Median"]} />
                 <Line type="monotone" dataKey="median_days" name="Median" stroke={P.cat[0]} strokeWidth={2}
-                  dot={{ r: 2.5, strokeWidth: 0, fill: P.cat[0] }} connectNulls />
+                  dot={{ r: 2.5, strokeWidth: 0, fill: P.cat[0] }} connectNulls {...STILL} />
               </LineChart>
             </ResponsiveContainer>
           ) : <Blank h={230} text="No deal has both an issue date and a completion date yet" />}
         </Card>
       </div>
+      </Defer>
 
+      <Defer h={360}>
       {/* ── Supplier spend + category revenue ──────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <Card title="Where the money goes"
@@ -804,10 +983,12 @@ export default function AnalyticsView() {
           ) : <Blank h={230} text="No category revenue yet" />}
         </Card>
       </div>
+      </Defer>
 
+      <Defer h={280}>
       {/* ── What went wrong + standouts ────────────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card title="What went wrong" sub={`Losses, refunds and deals that fell through in ${rangeLabel}`}>
+        <Card glass title="What went wrong" sub={`Losses, refunds and deals that fell through in ${rangeLabel}`}>
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
             <Stat label="Fell through" value={String(lost)} color={lost > 0 ? CLR.rose : undefined}
               hint="invoices voided" />
@@ -828,7 +1009,7 @@ export default function AnalyticsView() {
           </p>
         </Card>
 
-        <Card title="Standouts" sub={`The extremes of ${rangeLabel}`}>
+        <Card glass title="Standouts" sub={`The extremes of ${rangeLabel}`}>
           <div className="space-y-3">
             <Highlight
               label="Best margin"
@@ -857,7 +1038,9 @@ export default function AnalyticsView() {
           </div>
         </Card>
       </div>
+      </Defer>
 
+      <Defer h={300}>
       {/* ── Client mix + invoice status ────────────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <Card title="Client mix" sub={`${totalCl} client${totalCl !== 1 ? "s" : ""} by tier · all time`}>
@@ -869,7 +1052,7 @@ export default function AnalyticsView() {
                     <Pie
                       data={TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => ({ name: TIER_NAME[t], value: tierMap[t] }))}
                       dataKey="value" nameKey="name" cx="50%" cy="50%"
-                      innerRadius={48} outerRadius={78} paddingAngle={2} stroke="none">
+                      innerRadius={48} outerRadius={78} paddingAngle={2} stroke="none" {...STILL}>
                       {TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => (
                         <Cell key={t} fill={TIER_CLR[t]} />
                       ))}
@@ -928,10 +1111,12 @@ export default function AnalyticsView() {
           ) : <Blank h={200} text="No invoices yet" />}
         </Card>
       </div>
+      </Defer>
 
+      <Defer h={300}>
       {/* ── Cash position + financial summary ──────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card title="Cash position" sub="Live from Financials · not affected by the date range">
+        <Card glass title="Cash position" sub="Live from Financials · not affected by the date range">
           {money ? (
             <div className="space-y-3">
               <div className="flex items-end justify-between gap-3">
@@ -962,7 +1147,7 @@ export default function AnalyticsView() {
           ) : <Blank h={200} text="Connect a bank in Financials to see cash position" />}
         </Card>
 
-        <Card title="Financial summary" sub={`Completed deals · ${rangeLabel}`}>
+        <Card glass title="Financial summary" sub={`Completed deals · ${rangeLabel}`}>
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
             {[
               { label: "Revenue",             value: fmtAmount(range.total_revenue) },
@@ -982,7 +1167,9 @@ export default function AnalyticsView() {
           </div>
         </Card>
       </div>
+      </Defer>
 
+      <Defer h={320}>
       {/* ── Month by month ─────────────────────────────────────── */}
       <Card title="Month by month" sub="Every month with a closed deal or an overhead payment">
         {trend.length > 0 ? (
@@ -1023,7 +1210,9 @@ export default function AnalyticsView() {
           </div>
         ) : <Blank h={160} text="No months to show for this range" />}
       </Card>
+      </Defer>
 
+      <Defer h={320}>
       {/* ── What people bought ─────────────────────────────────── */}
       <Card
         title="What people bought"
@@ -1079,6 +1268,7 @@ export default function AnalyticsView() {
           </div>
         ) : <Blank h={160} text="Nothing closed in this range" />}
       </Card>
+      </Defer>
 
     </div>
   );
@@ -1086,11 +1276,18 @@ export default function AnalyticsView() {
 
 // ─── Shared pieces ────────────────────────────────────────────────
 
-function Card({ title, sub, right, children }: {
-  title: string; sub?: string; right?: React.ReactNode; children: React.ReactNode;
+// The one section shell. `glass` opts a panel into the liquid-glass recipe (.glass in
+// index.css: translucent surface, 20px backdrop blur, specular top hairline, soft wide
+// shadow, no hard border). It is OPT-IN, not the default, because glass must never sit
+// behind a chart's plotting area or a dense table — blur under data costs legibility and
+// costs paint time, and paint time is half of what "slow and laggy" was. Panels that
+// hold charts or tables stay on the solid surface token.
+function Card({ title, sub, right, children, glass }: {
+  title: string; sub?: string; right?: React.ReactNode; children: React.ReactNode; glass?: boolean;
 }) {
   return (
-    <section className="bg-surface ring-1 ring-line rounded-2xl p-5 min-w-0">
+    <section className={`ring-1 rounded-[18px] p-5 min-w-0 ${
+      glass ? "glass ring-line/60" : "bg-surface ring-line"}`}>
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 mb-5">
         <div className="min-w-0">
           <h3 className="text-[13px] font-semibold text-ink">{title}</h3>
@@ -1107,7 +1304,7 @@ function Kpi({ label, value, hint, color, accentClass }: {
   label: string; value: string; hint?: string; color?: string; accentClass?: string;
 }) {
   return (
-    <div className="bg-surface px-4 py-5 min-w-0">
+    <div className="bg-surface/70 px-4 py-5 min-w-0">
       <div className="text-[12.5px] font-medium text-muted truncate">{label}</div>
       {/* A six-figure amount needs ~152px at 24px; a tile is narrower than that once the
           216px sidebar takes its cut, and `truncate` turned the money into an ellipsis.
@@ -1146,7 +1343,7 @@ function Concentration({ label, pct, warnAt, unit, P }: {
 }) {
   const hot = pct >= warnAt;
   return (
-    <div className="rounded-xl bg-surface-2 px-3.5 py-3 min-w-0">
+    <div className="rounded-[14px] glass ring-1 ring-line/50 px-3.5 py-3 min-w-0">
       <div className="text-[11px] text-muted truncate">{label}</div>
       <div className="text-[19px] font-bold tabular-nums mt-1 leading-none"
         style={{ color: hot ? P.CLR.amber : "rgb(var(--c-ink))" }}>
@@ -1271,6 +1468,45 @@ function Gap({ label, gap, against, because, CLR }: {
     <p className={because ? "text-muted" : undefined} style={because ? undefined : { color: CLR.rose }}>
       {label} is {fmtAmount(Math.abs(gap))} {gap > 0 ? "more than" : "less than"} {against}
       {because ? ` — ${because}` : ""}.
+    </p>
+  );
+}
+
+// ─── R-319 pace summary ───────────────────────────────────────────
+// The sentence is the answer; the chart is the evidence. Jack asked to know "how well
+// we are doing so far in the current month" — that is a claim in words, with the two
+// comparisons that make it mean something, and the pace the month is on. Ahead reads
+// green, behind reads red, on Apple's accessible hues.
+function PaceSummary({ pace, metric, CLR }: {
+  pace: AnalyticsPace; metric: "revenue" | "profit"; CLR: { emerald: string; rose: string };
+}) {
+  const now  = metric === "revenue" ? pace.revenue_so_far      : pace.profit_so_far;
+  const prev = metric === "revenue" ? pace.prev_at_day_revenue : pace.prev_at_day_profit;
+  const avg  = metric === "revenue" ? pace.avg_at_day_revenue  : pace.avg_at_day_profit;
+  const proj = metric === "revenue" ? pace.projected_revenue   : pace.projected_profit;
+  const word = metric === "revenue" ? "Revenue" : "Profit";
+
+  // A delta phrase: the amount, then ahead or behind, coloured by which it is.
+  const Delta = ({ v }: { v: number }) => (
+    <b className="font-semibold tabular-nums" style={{ color: v >= 0 ? CLR.emerald : CLR.rose }}>
+      {fmtAmount(Math.abs(v))} {v >= 0 ? "ahead" : "behind"}
+    </b>
+  );
+
+  return (
+    <p className="text-[13px] text-ink-2 leading-relaxed mb-4">
+      <b className="text-ink font-semibold">Day {pace.day_of_month}</b> of{" "}
+      {pace.days_in_month}. {word} is{" "}
+      <b className="text-ink font-semibold tabular-nums">{signed(now)}</b>
+      {pace.prior_count > 0 ? (
+        <>
+          , which is <Delta v={now - prev} /> of where {longMonth(pace.prev_month)} stood on
+          day {pace.day_of_month}, and <Delta v={now - avg} /> of the{" "}
+          {pace.prior_count}-month average for this day.
+        </>
+      ) : <> — there is no earlier month to compare it against yet.</>}
+      {" "}At this pace the month finishes near{" "}
+      <b className="text-ink font-semibold tabular-nums">{signed(proj)}</b>.
     </p>
   );
 }

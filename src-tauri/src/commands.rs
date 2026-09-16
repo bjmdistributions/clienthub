@@ -12247,6 +12247,41 @@ fn project_month(actual: f64, days_elapsed: u32, days_in_month: u32) -> f64 {
     actual / days_elapsed as f64 * days_in_month as f64
 }
 
+/// R-319 pace. Cumulative revenue/profit by day index for ONE calendar month.
+/// `rows` is `(day_of_month, revenue, profit)` straight off the ledger — sparse (a day
+/// with no closed deal has no row) and in no guaranteed order. The result is dense and
+/// exactly `days` long: index 0 is day 1, and each entry is the running total *through*
+/// that day, which is what a pace line plots.
+fn cumulative_by_day(rows: &[(u32, f64, f64)], days: u32) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(days as usize);
+    let (mut rev, mut prof) = (0.0_f64, 0.0_f64);
+    for d in 1..=days {
+        for (rd, r, p) in rows.iter() {
+            if *rd == d { rev += *r; prof += *p; }
+        }
+        out.push((rev, prof));
+    }
+    out
+}
+
+/// What a month had reached by `day`. A month SHORTER than `day` contributes its FINAL
+/// value — February is not "behind" on the 30th because it ran out of days, it is simply
+/// finished. `day` is clamped into 1..=len for the same reason.
+fn value_at_day(cum: &[(f64, f64)], day: u32) -> (f64, f64) {
+    if cum.is_empty() { return (0.0, 0.0); }
+    let idx = (day.max(1) as usize).min(cum.len()) - 1;
+    cum[idx]
+}
+
+/// First day of the calendar month `back` months before `from`'s month. Walks the year
+/// boundary rather than subtracting days, so a 31-day month cannot land on the wrong one.
+fn month_start_back(from: chrono::NaiveDate, back: u32) -> chrono::NaiveDate {
+    use chrono::Datelike;
+    let (mut y, mut m) = (from.year(), from.month() as i32 - back as i32);
+    while m <= 0 { m += 12; y -= 1; }
+    chrono::NaiveDate::from_ymd_opt(y, m as u32, 1).unwrap_or(from)
+}
+
 /// Days in `date`'s calendar month.
 fn days_in_month(date: chrono::NaiveDate) -> u32 {
     use chrono::Datelike;
@@ -12533,6 +12568,86 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         }
     };
 
+    // ── R-319 pace: how this month is going, against the three before it ─────────────
+    // Jack, 2026-09-16: "i want it to be clear how well we are doing so far in the
+    // current month, we can do projections compared to where we were at this point in
+    // previous months." The stacked projection remainder R-316 drew could not answer
+    // that — it asked the eye to decode a projection as the top of a bar. A cumulative
+    // line by day of month can, because "are we ahead of where we were on day 16" is
+    // then a vertical distance rather than an inference.
+    //
+    // Deliberately NOT range-scoped: the question is about the month we are in, the same
+    // way Cash position is about now. Built off the SAME population as every figure
+    // beside it — `DF_SURVIVOR_SQL`, non-voided, non-archived, refund-aware profit
+    // (`DF_EFF_PROFIT_SQL`), dated by `completed_at` — so it cannot disagree with them.
+    let pace: Value = {
+        use chrono::Datelike;
+        let today = central_today();
+        let day_idx = today.day();
+        let day_sql = format!(
+            "SELECT CAST(strftime('%d', df.completed_at) AS INTEGER), \
+                    COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM({NP}),0) \
+             FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+             WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
+               AND date(df.completed_at) >= ?1 AND date(df.completed_at) <= ?2 \
+             GROUP BY 1 ORDER BY 1",
+            one = DF_SURVIVOR_SQL);
+
+        // Oldest first, so `months.last()` is always the month we are living in.
+        let mut months: Vec<Value> = Vec::new();
+        for back in (0..4u32).rev() {
+            let first = month_start_back(today, back);
+            let dim = days_in_month(first);
+            let last = first.with_day(dim).unwrap_or(first);
+            let mut rows: Vec<(u32, f64, f64)> = Vec::new();
+            if let Ok(mut stmt) = conn.prepare(&day_sql) {
+                if let Ok(it) = stmt.query_map(
+                    rusqlite::params![first.format("%Y-%m-%d").to_string(), last.format("%Y-%m-%d").to_string()],
+                    |r| Ok((r.get::<_, i64>(0)?.max(0) as u32, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?)),
+                ) { rows = it.filter_map(|x| x.ok()).collect(); }
+            }
+            let cum = cumulative_by_day(&rows, dim);
+            let (at_rev, at_prof) = value_at_day(&cum, day_idx);
+            let (fin_rev, fin_prof) = *cum.last().unwrap_or(&(0.0, 0.0));
+            months.push(json!({
+                "month": first.format("%Y-%m").to_string(),
+                "days_in_month": dim,
+                "is_current": back == 0,
+                "days": cum.iter().enumerate().map(|(i, (r, p))| json!({
+                    "day": i as u32 + 1, "revenue": to_cents(*r), "profit": to_cents(*p),
+                })).collect::<Vec<Value>>(),
+                "at_day_revenue": to_cents(at_rev),
+                "at_day_profit":  to_cents(at_prof),
+                "final_revenue":  to_cents(fin_rev),
+                "final_profit":   to_cents(fin_prof),
+            }));
+        }
+
+        let num = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let cur = months.last().cloned().unwrap_or(Value::Null);
+        let prior: Vec<Value> = months.iter().take(months.len().saturating_sub(1)).cloned().collect();
+        let n = prior.len() as f64;
+        let (cur_rev, cur_prof) = (num(&cur, "at_day_revenue"), num(&cur, "at_day_profit"));
+        let dim_cur = cur.get("days_in_month").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
+        json!({
+            "day_of_month": day_idx,
+            "days_in_month": dim_cur,
+            "current_month": cur.get("month").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            "months": months,
+            "revenue_so_far": cur_rev,
+            "profit_so_far": cur_prof,
+            "prior_count": prior.len(),
+            "prev_month": prior.last().and_then(|v| v.get("month")).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            "prev_at_day_revenue": prior.last().map(|v| num(v, "at_day_revenue")).unwrap_or(0.0),
+            "prev_at_day_profit":  prior.last().map(|v| num(v, "at_day_profit")).unwrap_or(0.0),
+            "avg_at_day_revenue": if n > 0.0 { to_cents(prior.iter().map(|v| num(v, "at_day_revenue")).sum::<f64>() / n) } else { 0.0 },
+            "avg_at_day_profit":  if n > 0.0 { to_cents(prior.iter().map(|v| num(v, "at_day_profit")).sum::<f64>() / n) } else { 0.0 },
+            "projected_revenue": to_cents(project_month(cur_rev, day_idx, dim_cur)),
+            "projected_profit":  to_cents(project_month(cur_prof, day_idx, dim_cur)),
+        })
+    };
+
     // ── The Brief's analytics, range-scoped. These read the same `df` population as the
     // hero, not the brief's week window, so a figure moved here cannot drift from the
     // one beside it. Revenue here stays deal revenue (the Analytics definition) rather
@@ -12651,6 +12766,8 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         "margin_bands": margin_bands,
         "velocity": velocity,
         "run_rate": run_rate,
+        // R-319 addition — additive only; nothing above changed name or meaning.
+        "pace": pace,
         "loss_deals": loss_deals,
         "loss_total": loss_total,
         "refunded_deals": refunded_deals,
@@ -13030,7 +13147,8 @@ mod analytics_refund_profit_tests {
 
 #[cfg(test)]
 mod analytics_advanced_tests {
-    use super::{margin_band_index, median_f64, project_month, top_share, days_in_month, MARGIN_BANDS};
+    use super::{margin_band_index, median_f64, project_month, top_share, days_in_month,
+                cumulative_by_day, value_at_day, month_start_back, MARGIN_BANDS};
 
     #[test]
     fn concentration_is_a_share_of_the_total_not_of_the_top_slice() {
@@ -13080,6 +13198,55 @@ mod analytics_advanced_tests {
         assert_eq!(days_in_month(d(2028, 2, 3)), 29);
         assert_eq!(days_in_month(d(2026, 12, 31)), 31);
         assert_eq!(days_in_month(d(2026, 9, 16)), 30);
+    }
+
+    // ── R-319 pace ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn pace_cumulates_sparse_days_into_a_dense_month() {
+        // Three closings in a 30-day month, out of order and with gaps between them.
+        let rows = [(16u32, 500.0, 120.0), (3, 1_000.0, 300.0), (9, 250.0, -40.0)];
+        let cum = cumulative_by_day(&rows, 30);
+        assert_eq!(cum.len(), 30, "the series is dense — one point per day of the month");
+        // Day 1 and 2 are flat at zero; the line does not start at the first sale.
+        assert_eq!(cum[0], (0.0, 0.0));
+        assert_eq!(cum[2], (1_000.0, 300.0));      // day 3
+        assert_eq!(cum[7], (1_000.0, 300.0));      // day 8 — flat, nothing closed
+        assert_eq!(cum[8], (1_250.0, 260.0));      // day 9, a loss pulls profit down
+        assert_eq!(cum[15], (1_750.0, 380.0));     // day 16
+        assert_eq!(cum[29], (1_750.0, 380.0));     // and holds to month end
+        // A month with nothing in it is still a full flat line, never an empty one.
+        assert_eq!(cumulative_by_day(&[], 31).len(), 31);
+        assert_eq!(*cumulative_by_day(&[], 31).last().unwrap(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn pace_reads_a_short_month_at_its_final_value() {
+        let feb_2026 = cumulative_by_day(&[(28u32, 900.0, 100.0)], 28);   // 28 days
+        let feb_2028 = cumulative_by_day(&[(29u32, 900.0, 100.0)], 29);   // leap, 29 days
+        // Asked for day 31 — February is not "behind" because it ran out of days. It
+        // contributes what it finished on.
+        assert_eq!(value_at_day(&feb_2026, 31), (900.0, 100.0));
+        assert_eq!(value_at_day(&feb_2028, 31), (900.0, 100.0));
+        // The leap day is its own bucket: on the 28th the leap month has not banked it.
+        assert_eq!(value_at_day(&feb_2028, 28), (0.0, 0.0));
+        assert_eq!(value_at_day(&feb_2028, 29), (900.0, 100.0));
+        // Day 0 cannot exist; it clamps to day 1 rather than panicking on index −1.
+        assert_eq!(value_at_day(&feb_2026, 0), (0.0, 0.0));
+        assert_eq!(value_at_day(&[], 16), (0.0, 0.0));
+    }
+
+    #[test]
+    fn pace_walks_back_over_the_year_boundary() {
+        let d = |y, m, day| chrono::NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        // The three months before Sep 2026, oldest last.
+        assert_eq!(month_start_back(d(2026, 9, 16), 0), d(2026, 9, 1));
+        assert_eq!(month_start_back(d(2026, 9, 16), 3), d(2026, 6, 1));
+        // January walks into the previous year rather than clamping.
+        assert_eq!(month_start_back(d(2026, 1, 31), 1), d(2025, 12, 1));
+        assert_eq!(month_start_back(d(2026, 1, 31), 3), d(2025, 10, 1));
+        // A 31-day month stepping back onto a 28-day one lands on the 1st, not the 31st.
+        assert_eq!(month_start_back(d(2028, 3, 31), 1), d(2028, 2, 1));
+        assert_eq!(days_in_month(month_start_back(d(2028, 3, 31), 1)), 29, "2028 is a leap year");
     }
 
     #[test]

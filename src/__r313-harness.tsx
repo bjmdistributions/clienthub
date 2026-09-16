@@ -85,6 +85,47 @@ const PRODUCTS = [
   ["Returns pallet, general merchandise"],
 ];
 
+// R-319 pace fixture: the current month and the three before it, cumulative by day.
+// Invented, like everything else here — June and July run 30/31 days, and September
+// stops on day 16 so the "today" marker and the cut-off line can be seen. The daily
+// shape is deliberately lumpy (deals land in clusters, not evenly) so a flat stretch on
+// the chart is visible as a real week with nothing closing.
+const PACE_DAY = 16;
+const paceMonth = (month: string, dim: number, dailyRev: number, dailyProf: number, upto: number) => {
+  let r = 0, p = 0;
+  const days = Array.from({ length: dim }, (_, i) => {
+    const d = i + 1;
+    if (d <= upto && d % 3 === 1) { r += dailyRev * 3; p += dailyProf * 3; }
+    return { day: d, revenue: Math.round(r * 100) / 100, profit: Math.round(p * 100) / 100 };
+  });
+  const at = days[Math.min(PACE_DAY, dim) - 1];
+  const fin = days[days.length - 1];
+  return {
+    month, days_in_month: dim, is_current: upto < dim, days,
+    at_day_revenue: at.revenue, at_day_profit: at.profit,
+    final_revenue: fin.revenue, final_profit: fin.profit,
+  };
+};
+const PACE_MONTHS = [
+  paceMonth("2026-06", 30, 1_780, 590, 30),
+  paceMonth("2026-07", 31, 2_050, 700, 31),
+  paceMonth("2026-08", 31, 2_310, 760, 31),
+  paceMonth("2026-09", 30, 2_640, 880, PACE_DAY),
+];
+const PACE_CUR = PACE_MONTHS[PACE_MONTHS.length - 1];
+const PACE_PRIOR = PACE_MONTHS.slice(0, -1);
+const PACE = {
+  day_of_month: PACE_DAY, days_in_month: 30, current_month: "2026-09",
+  months: PACE_MONTHS,
+  revenue_so_far: PACE_CUR.at_day_revenue, profit_so_far: PACE_CUR.at_day_profit,
+  prior_count: PACE_PRIOR.length, prev_month: "2026-08",
+  prev_at_day_revenue: PACE_PRIOR[2].at_day_revenue, prev_at_day_profit: PACE_PRIOR[2].at_day_profit,
+  avg_at_day_revenue: PACE_PRIOR.reduce((s, m) => s + m.at_day_revenue, 0) / 3,
+  avg_at_day_profit: PACE_PRIOR.reduce((s, m) => s + m.at_day_profit, 0) / 3,
+  projected_revenue: (PACE_CUR.at_day_revenue / PACE_DAY) * 30,
+  projected_profit: (PACE_CUR.at_day_profit / PACE_DAY) * 30,
+};
+
 const RANGE = {
   total_revenue: sum("revenue"), total_cost: sum("cost"), net_profit: sum("profit"), total_profit: sum("profit"),
   avg_margin: 34.2, deal_count: 52, deals_lost: 4, refunded_in_range: 2_400,
@@ -126,6 +167,7 @@ const RANGE = {
     revenue_so_far: cur.revenue, profit_so_far: cur.profit,
     projected_revenue: (cur.revenue / 16) * 30, projected_profit: (cur.profit / 16) * 30,
   },
+  pace: PACE,
   loss_deals: 3, loss_total: -4_260, refunded_deals: 2,
   best_margin_deal: { deal_id: "d1", client_name: "Harbour Goods", title: "INV-0412", revenue: 18_400, margin_pct: 46.2, net_profit: 8_500 },
   worst_margin_deal: { deal_id: "d2", client_name: "Quarry Street Wholesale", title: "INV-0389", revenue: 9_100, margin_pct: -12.4, net_profit: -1_130 },
