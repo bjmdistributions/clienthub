@@ -149,6 +149,9 @@ export default function DealFlowView() {
   // Open by default — this is the answer to "what is live right now", not an
   // archive somebody has to go looking for.
   const [laneOpen, setLaneOpen] = useState(true);
+  // Closed by default (R-305, second pass): "theyre not important. my active ones are
+  // the most important thing on the entire page."
+  const [refundsOpen, setRefundsOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -519,6 +522,41 @@ export default function DealFlowView() {
         </div>
       )}
 
+      {/* ── Active deals ──────────────────────────────────────────────── */}
+      {active.length === 0 ? (
+        <div className="bg-surface border border-line rounded-xl py-16 flex flex-col items-center">
+          <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
+            <CheckCircle2 size={18} />
+          </div>
+          <div className="text-[13px] text-muted">
+            {search
+              ? "No active deals match your search"
+              : "No active deals — deals appear automatically when invoices are sent"}
+          </div>
+        </div>
+      ) : unscheduled.length > 0 ? (
+        <div className="space-y-4">
+          {/* Only labelled once the lane has taken some cards, so the two lists
+              visibly account for every active deal instead of one silently
+              shrinking. */}
+          {lane.length > 0 && (
+            <p className="text-[11.5px] text-muted">
+              {unscheduled.length} other active deal{unscheduled.length === 1 ? "" : "s"}
+            </p>
+          )}
+          {unscheduled.map((flow, i) => (
+            <DealFlowCard
+              key={flow.id}
+              flow={flow}
+              onReload={load}
+              refund={refundMap[flow.id]}
+              zebra={i % 2 === 1}
+              reconStatus={recon[flow.id]}
+            />
+          ))}
+        </div>
+      ) : null}
+
       {/* ── Completed deals drawer ──────────────────────────────────────── */}
       {totalCompleted > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
@@ -561,63 +599,38 @@ export default function DealFlowView() {
         </div>
       )}
 
-      {/* ── Refunds (R-305) ─────────────────────────────────────────────── */}
-      {/* Always open, every refunded deal listed, each one showing the deal itself —
-          who bought it, who supplied it, what was on it and what it came to — above
-          its refund record. The collapsing drawer, the "Show done" filter and the
-          click-to-expand row each hid something Jack needed to read. */}
+      {/* ── Refunds ─────────────────────────────────────────────────────── */}
+      {/* Last on the page and closed by default: a refunded deal is history, and the
+          active list above it is the screen's whole job. Inside, a refunded deal is an
+          ordinary card whose pill carries the refund amount — the refund itself is a
+          step inside that card, beside Link financials, so the deal's payments and
+          links are still there to read. */}
       {refundAll.length > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <div className="flex items-center gap-2.5 px-5 py-3.5">
-            <RotateCcw size={14} className="text-danger-ink flex-shrink-0" />
-            <span className="text-[13px] font-semibold text-ink">Refunds</span>
-            <span className="text-[11.5px] text-muted truncate">
-              {openRefundCount > 0 ? `${openRefundCount} open` : "Every refund is closed out"}
-              {doneRefundCount > 0 ? ` · ${doneRefundCount} closed` : ""}
+          <div {...barToggle(() => setRefundsOpen(!refundsOpen))}
+            className="w-full flex items-center justify-between px-5 py-3.5 cursor-pointer hover:bg-surface-2/40 transition-colors">
+            <div className="flex items-center gap-2.5 text-left min-w-0">
+              <RotateCcw size={14} className="text-danger-ink flex-shrink-0" />
+              <span className="text-[13px] font-semibold text-ink">Refunds</span>
+              <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{refundAll.length}</span>
+              <span className="text-[11.5px] text-muted truncate">
+                {openRefundCount > 0 ? `${openRefundCount} still open` : "Every refund is closed out"}
+              </span>
+            </div>
+            <span className="p-1 rounded-lg">
+              <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${refundsOpen ? "rotate-180" : ""}`} />
             </span>
           </div>
-          <div className="border-t border-line divide-y divide-line">
-            {refundFlows.map((flow) => (
-              <RefundedDeal key={flow.id} flow={flow} refund={refundMap[flow.id]} done={isRefundDone(flow.id)} onReload={load} />
-            ))}
-          </div>
+          {refundsOpen && (
+            <div className="border-t border-line p-4 space-y-4">
+              {refundFlows.map((flow, i) => (
+                <DealFlowCard key={flow.id} flow={flow} onReload={load} refund={refundMap[flow.id]} zebra={i % 2 === 1} reconStatus={recon[flow.id]} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {/* ── Active deals ──────────────────────────────────────────────── */}
-      {active.length === 0 ? (
-        <div className="bg-surface border border-line rounded-xl py-16 flex flex-col items-center">
-          <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
-            <CheckCircle2 size={18} />
-          </div>
-          <div className="text-[13px] text-muted">
-            {search
-              ? "No active deals match your search"
-              : "No active deals — deals appear automatically when invoices are sent"}
-          </div>
-        </div>
-      ) : unscheduled.length > 0 ? (
-        <div className="space-y-4">
-          {/* Only labelled once the lane has taken some cards, so the two lists
-              visibly account for every active deal instead of one silently
-              shrinking. */}
-          {lane.length > 0 && (
-            <p className="text-[11.5px] text-muted">
-              {unscheduled.length} other active deal{unscheduled.length === 1 ? "" : "s"}
-            </p>
-          )}
-          {unscheduled.map((flow, i) => (
-            <DealFlowCard
-              key={flow.id}
-              flow={flow}
-              onReload={load}
-              refund={refundMap[flow.id]}
-              zebra={i % 2 === 1}
-              reconStatus={recon[flow.id]}
-            />
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -628,111 +641,6 @@ function Stat({ label, value, clr = "text-ink" }: { label: string; value: string
     <div className="text-right">
       <div className="text-[12px] font-medium text-muted">{label}</div>
       <div className={`text-[13px] font-semibold tabular-nums ${clr}`}>{value}</div>
-    </div>
-  );
-}
-
-// ─── A refunded deal, read in full (R-305) ────────────────────────────────
-// The row used to be a name, an invoice number and three refund figures; the deal
-// itself sat behind a click, and behind a second toggle once closed out. Everything
-// here comes from the flow the list already holds plus the invoice's line items.
-function RefundedDeal({ flow, refund: r, done, onReload }: {
-  flow: DealFlow; refund: { refund_owed: number; refunded: number; remaining: number; done: boolean };
-  done: boolean; onReload: () => void;
-}) {
-  const [items, setItems] = useState<{ description: string; qty: number; amount: number }[]>([]);
-  useEffect(() => {
-    api.getInvoice(flow.invoice_id).then((inv) => {
-      try {
-        const li: any[] = JSON.parse(inv.line_items_json || "[]");
-        setItems(li.map((it) => ({ description: it.description, qty: it.qty, amount: it.amount ?? 0 })));
-      } catch { setItems([]); }
-    }).catch(() => {});
-  }, [flow.invoice_id]);
-
-  const supplier  = primarySupplierLabel(flow.supplier_payments);
-  const isComplete = flow.stage === "complete";
-  // Same figures the deal's own card prints: recorded profit once complete, the
-  // projection before — and a refund always comes off it in full.
-  const profitBefore = isComplete ? flow.net_profit : flow.invoice_total - flow.total_supplier_cost;
-  const profitAfter  = profitBefore - r.refunded;
-  // Nothing left OWED. Not the same as the whole deal being refunded — conflating the
-  // two is what filed settled partial refunds as full ones.
-  const nothingOwed = r.remaining <= 0.01;
-  // Marked done, but the numbers moved since — say so instead of hiding it.
-  const staleDone = r.done && !nothingOwed;
-
-  const setDone = (v: boolean) =>
-    api.setRefundDone(flow.id, v)
-      .then(() => { toast(v ? "Refund closed out" : "Refund reopened"); onReload(); })
-      .catch((err) => toast(String(err), "error"));
-
-  return (
-    <div className={`px-5 py-4 space-y-3 ${done ? "bg-surface-2/40" : ""}`}>
-      <div className="flex items-start gap-3 flex-wrap">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-2 min-w-0">
-            <span className="text-[12px] font-mono text-muted flex-shrink-0">{flow.invoice_number || "—"}</span>
-            <span className="text-[14px] text-ink truncate min-w-0">
-              <span className="font-semibold">{flow.client_name || "Unknown"}</span>
-              {supplier && <span className="text-[12px] text-muted"> → {supplier}</span>}
-            </span>
-          </div>
-          {items.length > 0 && (
-            <div className="text-[11.5px] text-ink-2 mt-1 leading-snug">
-              {items.map((it) => it.qty > 1 ? `${it.qty}× ${it.description}` : it.description).join(" · ")}
-            </div>
-          )}
-          <div className="text-[11px] text-muted mt-1">
-            {isComplete && flow.completed_at
-              ? `Completed ${parseLocalDay(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
-              : "Not completed"}
-            {flow.created_at ? ` · started ${parseLocalDay(flow.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
-          </div>
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {done ? <StatusPill tone="success">Closed out</StatusPill>
-            : nothingOwed ? <StatusPill tone="warning">Nothing owed</StatusPill>
-            : <StatusPill tone="danger">{fmtAmount(r.remaining)} still owed</StatusPill>}
-          {nothingOwed && (done ? (
-            <button onClick={() => setDone(false)}
-              className="text-[11.5px] text-muted hover:text-ink-2 px-2.5 h-8 rounded-lg border border-line transition-colors">
-              Reopen refund
-            </button>
-          ) : (
-            <button onClick={() => setDone(true)}
-              className="text-[11.5px] font-medium text-success-ink hover:bg-success-bg px-2.5 h-8 inline-flex items-center gap-1 rounded-lg border border-success/40 transition-colors">
-              <Check size={12} /> Close out refund
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {staleDone && (
-        <div className="text-[11.5px] text-warning-ink inline-flex items-center gap-1">
-          <AlertTriangle size={11} /> Was closed out, but {fmtAmount(r.remaining)} is still owed
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2">
-        <RecCell label="Invoice total" value={fmtAmount(flow.invoice_total)} />
-        <RecCell label="Supplier cost" value={fmtAmount(isComplete ? flow.total_cost : flow.total_supplier_cost)} />
-        <RecCell label="Refund owed" value={fmtAmount(r.refund_owed)} />
-        <RecCell label="Refunded" value={fmtAmount(r.refunded)} clr="text-danger-ink" />
-        <RecCell label="Still owed" value={nothingOwed ? "Nothing" : fmtAmount(r.remaining)} clr={nothingOwed ? "text-ink" : "text-danger-ink"} />
-        <RecCell label="Profit after refund" value={`${profitAfter < 0 ? "−" : ""}${fmtAmount(Math.abs(profitAfter))}`}
-          sub={`${fmtAmount(profitBefore)} before the refund`}
-          clr={profitAfter >= 0 ? "text-success-ink" : "text-danger-ink"} />
-      </div>
-
-      {(flow.notes || "").trim() && (
-        <div className="rounded-lg border border-line bg-surface px-3 py-2.5">
-          <div className="text-[12px] font-medium text-muted mb-1">Notes</div>
-          <div className="text-[12.5px] text-ink-2 whitespace-pre-wrap">{flow.notes}</div>
-        </div>
-      )}
-
-      <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
     </div>
   );
 }
@@ -766,17 +674,13 @@ const SECTIONS = [
   { key: "profit",   label: "Profit" },
   { key: "complete", label: "Review & complete" },
 ] as const;
-type SectionKey = typeof SECTIONS[number]["key"];
+type SectionKey = typeof SECTIONS[number]["key"] | "refund";
 const sIdx = (k: SectionKey) => SECTIONS.findIndex((s) => s.key === k);
 
 function DealFlowCard({
   flow, onReload, zebra, refund, reconStatus,
-}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean } }) {
+}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean } }) {
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
-  // "Refund" on a deal with nothing refunded yet opens the refund record so one can be
-  // started. Once a refund exists the record is always shown — beside the deal, never
-  // instead of it (R-305).
-  const [refundStarted, setRefundStarted] = useState(false);
   // Two independent questions, and collapsing them is what made a properly booked
   // partial refund read as a full one (same ladder as mobile's `refundBadgeHTML`):
   //   SCOPE  — how much of the deal is being given back: all of it, or part of it?
@@ -796,12 +700,10 @@ function DealFlowCard({
     !refund ? null
     : wholeDeal ? (settled ? "full" : "full-owed")
     : (settled ? "part" : "part-owed");
-  const showRefund = refundState !== null || refundStarted;
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
   const [invItems,  setInvItems]  = useState<{ description: string; qty: number; rate: number; amount: number }[]>([]);
   const [invMeta,   setInvMeta]   = useState<{ subtotal: number; tax: number; total: number; number: string } | null>(null);
-  // A refunded deal opens with what was sold on it showing — that is the question.
-  const [showInvoice, setShowInvoice] = useState(!!refund);
+  const [showInvoice, setShowInvoice] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [reconLinked, setReconLinked] = useState(false);
 
@@ -811,6 +713,7 @@ function DealFlowCard({
   const isComplete    = flow.stage === "complete";
   const supplierDone  = hasSuppliers || si(flow.stage) > si("invoiced");
   const pay           = paymentState(flow, reconStatus);
+  const refundDone    = !!refund?.done && (refund?.remaining ?? 0) <= 0.01;
 
   // `reconStatus` comes from the list-level fetch and covers EVERY live deal, so the
   // dots are right on a collapsed card. `reconLinked` is this card's own fetch, which
@@ -818,7 +721,7 @@ function DealFlowCard({
   // straight away instead of waiting for a reload.
   const hasLinks = !!reconStatus?.has_financials || reconLinked;
 
-  const done: Record<SectionKey, boolean> = {
+  const done: Record<typeof SECTIONS[number]["key"], boolean> = {
     // Filled the moment a supplier cost is entered (R-302). Whether each leg has gone
     // out is a payment question, answered by the payment pill on the card — holding
     // this dot for it left it empty on every deal whose supplier was not yet paid.
@@ -1004,15 +907,7 @@ function DealFlowCard({
             </span>
           )}
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              // A recorded refund is always on screen once the card is open, so the pill
-              // only opens the card; with nothing recorded it starts one, or closes an
-              // empty one again.
-              if (refundState === null && isOpen && refundStarted) { setRefundStarted(false); return; }
-              setIsOpen(true);
-              if (refundState === null) setRefundStarted(true);
-            }}
+            onClick={(e) => { e.stopPropagation(); setIsOpen(true); go("refund"); }}
             title={refund ? `${fmtAmount(refundPaid)} of ${fmtAmount(refundOwed)} refunded` : undefined}
             className={
               refundState === "full"
@@ -1024,8 +919,7 @@ function DealFlowCard({
               : "text-[11.5px] font-medium px-2 py-0.5 rounded-full border border-line text-muted hover:text-danger-ink hover:border-danger inline-flex items-center gap-1 flex-shrink-0 transition-colors"}
           >
             <RotateCcw size={11} />
-            {refundState === null && isOpen && refundStarted ? "Close refund"
-              : refundState === "full" ? "Refunded"
+            {refundState === "full" ? "Refunded"
               : refundState === "part" ? `Partially refunded ${fmtAmount(refundPaid)}`
               : refundState === "part-owed" ? `Partial refund owed ${fmtAmount(refundLeft)}`
               : refundState === "full-owed" ? `Refund owed ${fmtAmount(refundLeft)}`
@@ -1053,14 +947,6 @@ function DealFlowCard({
             </div>
           )}
 
-          {/* The refund record sits above the deal, never in place of it (R-305): a
-              refunded deal used to open on this alone, and the deal was one click
-              away behind "Back to deal". */}
-          {showRefund && (
-            <div className="border-t border-line bg-surface-2 px-5 py-4 mt-4">
-              <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
-            </div>
-          )}
           {/* Schedule — a property of the deal, not one of the money steps,
               so it sits above the switcher and is always on screen once the
               card is open rather than buried inside a step. */}
@@ -1069,7 +955,9 @@ function DealFlowCard({
 
           {/* Section switcher — always visible, click any step */}
           <div className="border-t border-line">
-            <SectionNav current={section} done={done} flash={flash} onGo={go} />
+            <SectionNav current={section} done={done} flash={flash} onGo={go}
+              refundLabel={refundState === null ? "Refund" : `Refund · ${fmtAmount(refundPaid > 0.005 ? refundPaid : refundLeft)}`}
+              refundTone={refundState === "full" ? "danger" : refundState === null ? "quiet" : "warning"} />
           </div>
 
           {/* Completed banner + edit toggle */}
@@ -1128,6 +1016,7 @@ function DealFlowCard({
               {section === "link"     && <SectionLink     flow={flow} onReload={onReload} onAdvance={() => advance("link")} />}
               {section === "profit"   && <SectionProfit   flow={flow} onAdvance={() => advance("profit")} />}
               {section === "complete" && <PanelComplete   flow={flow} onReload={onReload} />}
+              {section === "refund"   && <SectionRefund   flow={flow} refund={refund} done={refundDone} onReload={onReload} />}
             </div>
 
             {/* Row actions */}
@@ -1303,8 +1192,10 @@ function ShippingStrip({ flow, onReload, locked }: { flow: DealFlow; onReload: (
 }
 
 // ── Section switcher ──
-function SectionNav({ current, done, flash, onGo }: {
-  current: SectionKey; done: Record<SectionKey, boolean>; flash: SectionKey | null; onGo: (k: SectionKey) => void;
+function SectionNav({ current, done, flash, onGo, refundLabel, refundTone }: {
+  current: SectionKey; done: Record<typeof SECTIONS[number]["key"], boolean>;
+  flash: SectionKey | null; onGo: (k: SectionKey) => void;
+  refundLabel: string; refundTone: "quiet" | "warning" | "danger";
 }) {
   return (
     <div className="flex items-center px-4 py-3 overflow-x-auto">
@@ -1332,6 +1223,56 @@ function SectionNav({ current, done, flash, onGo }: {
           </div>
         );
       })}
+      {/* Refunds are a step of the deal, not a view that replaces it (R-305): the money
+          in, the linked transactions and the profit all stay one click away. Set apart
+          from the numbered four because a deal is not meant to end here. */}
+      <button
+        onClick={() => onGo("refund")}
+        className={`ml-auto flex items-center gap-1.5 h-9 px-3 rounded-lg text-[12px] font-semibold flex-shrink-0 border transition-all ${
+          current === "refund" ? "border-accent bg-accent/10 text-accent ring-1 ring-accent/25"
+          : refundTone === "danger" ? "border-danger text-danger-ink hover:bg-danger-bg"
+          : refundTone === "warning" ? "border-warning text-warning-ink hover:bg-warning-bg"
+          : "border-line text-muted hover:text-ink-2 hover:bg-surface-3"}`}
+      >
+        <RotateCcw size={13} /> <span className="whitespace-nowrap">{refundLabel}</span>
+      </button>
+    </div>
+  );
+}
+
+// ─── The refund step ──────────────────────────────────────────────────────
+function SectionRefund({ flow, refund, done, onReload }: {
+  flow: DealFlow; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean };
+  done: boolean; onReload: () => void;
+}) {
+  const nothingOwed = !!refund && refund.remaining <= 0.01;
+  const setDone = (v: boolean) =>
+    api.setRefundDone(flow.id, v)
+      .then(() => { toast(v ? "Refund closed out" : "Refund reopened"); onReload(); })
+      .catch((err) => toast(String(err), "error"));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-[14px] font-semibold text-ink">Refund</div>
+          <div className="text-[12px] text-muted mt-0.5">
+            What is owed back to the buyer, what has gone out, and anything the supplier owes us.
+          </div>
+        </div>
+        {refund && nothingOwed && (done ? (
+          <button onClick={() => setDone(false)}
+            className="text-[11.5px] text-muted hover:text-ink-2 px-2.5 h-8 rounded-lg border border-line transition-colors">
+            Reopen refund
+          </button>
+        ) : (
+          <button onClick={() => setDone(true)}
+            className="text-[11.5px] font-medium text-success-ink hover:bg-success-bg px-2.5 h-8 inline-flex items-center gap-1 rounded-lg border border-success/40 transition-colors">
+            <Check size={12} /> Close out refund
+          </button>
+        ))}
+      </div>
+      <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
     </div>
   );
 }
