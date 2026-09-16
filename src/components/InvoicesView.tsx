@@ -855,7 +855,9 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
             {creditIssuedOn ? ` Issued ${creditIssuedOn}.` : ""}
             {creditApplied > 0
               ? ` ${fmtAmount(creditApplied)} is on this invoice as a line below${creditLeft > 0 ? `, leaving ${fmtAmount(creditLeft)} for next time` : ""}.`
-              : " Apply it and it comes off this invoice as a line."}
+              : subtotal > 0
+                ? " Apply it and it comes off this invoice as a line."
+                : " Add a line item and you can apply it."}
           </div>
           {creditLeft > 0 && subtotal > 0 && (
             <button type="button" onClick={applyCredit}
