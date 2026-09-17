@@ -42,7 +42,8 @@ const inp =
 // Existing cost lines keep their category badge, so nothing recorded is hidden.
 const catLabel = (c?: string | null) =>
   c === "freight" ? "Freight" : c === "wire_in" ? "Wire in" :
-  c === "wire_out" ? "Wire out" : c === "other" ? "Other" : "Supplier";
+  c === "wire_out" ? "Wire out" : c === "other" ? "Other" :
+  c === "partner" ? "Partner split" : "Supplier";
 
 // ─── Shipping lifecycle (R-154) ───────────────────────────────────────────
 // The four stages are all about money, so none of them says "agreed, paid for,
@@ -1341,6 +1342,14 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   const [costType, setCostType] = useState("supplier");
   const [supplierBilled, setSupplierBilled] = useState(false);
   const [ownAmount, setOwnAmount] = useState("");
+  // R-324: a partner who brought the buyer is paid a share of the spread over the cost
+  // he was SHOWN, which need not be the cost actually paid. The four inputs are typed
+  // here and travel with the line, so the amount and the basis behind it stay together.
+  const [splitUnits, setSplitUnits] = useState("");
+  const [splitSale,  setSplitSale]  = useState("");
+  const [splitBasis, setSplitBasis] = useState("");
+  const [splitPct,   setSplitPct]   = useState("50");
+  const isPartner = costType === "partner";
   const isOwnKind = costType !== "supplier";
   // Open on the form when there is nothing recorded yet — that is the whole reason
   // this section is on screen. Once a cost line exists it collapses to one button,
@@ -1364,10 +1373,22 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   }, [suppName, selSupplier?.name]);
 
   const existingPayments = flow.supplier_payments || [];
+  // R-324: the same arithmetic the backend re-runs on save (`PartnerSplit::cut`), so the
+  // figure read here is the figure stored. Floored at 0 — a sale below the cost he was
+  // shown does not make the partner owe money back.
+  const splitU    = parseAmount(splitUnits);
+  const splitS    = parseAmount(splitSale);
+  const splitB    = parseAmount(splitBasis);
+  const splitP    = parseAmount(splitPct);
+  const splitCut  = Math.max(0, splitU * (splitS - splitB) * splitP / 100);
+  const splitReady = splitU > 0 && splitS > 0 && splitP > 0;
+  const splitPctLabel = splitPct + "% of " + fmtAmount(Math.max(0, splitS - splitB))
+    + " a unit on " + splitU.toLocaleString() + " units";
   const anyRateEntered   = items.some((it) => parseAmount(it.myRate) > 0);
   const suppTotal        = items.reduce((s, it) => s + it.qty * parseAmount(it.myRate), 0);
   // Something typed and not yet saved — what Continue has to deal with.
-  const formDirty        = showForm && (suppName.trim() !== "" || ownAmount.trim() !== "" || items.some((it) => it.myRate.trim() !== ""));
+  const formDirty        = showForm && (suppName.trim() !== "" || ownAmount.trim() !== ""
+                                        || (isPartner && splitReady) || items.some((it) => it.myRate.trim() !== ""));
   // A kept leg was never paid, so it is not a cost — same rule as
   // `total_supplier_cost`, and now visible here because the kept toggle lives on
   // these rows (R-132).
@@ -1387,6 +1408,26 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
     if (!suppName.trim()) return false;
     // A freight/wire/other line is one amount paid to one payee — the itemized grid
     // (our cost vs the client quote per line) describes goods and says nothing here.
+    // R-324: a partner line's amount is never typed — it is derived from the split, here
+    // and again on the backend, so the cut and the basis printed beside it agree.
+    if (isPartner) {
+      if (!splitReady) { toast("Add the units, the sale price and their share", "error"); return false; }
+      setSaving(true);
+      try {
+        await api.addSupplierPayment(flow.id, {
+          supplier_name: suppName.trim(), supplier_id: selSupplier?.id || null,
+          amount: splitCut, category: "partner", supplier_billed: false,
+          split: { units: splitU, sale_unit_price: splitS, basis_unit_cost: splitB, share_pct: splitP },
+        });
+        setSuppName(""); setSelSupplier(null); setSuppResults([]);
+        setSplitUnits(""); setSplitSale(""); setSplitBasis(""); setSplitPct("50");
+        setCostType("supplier"); setSupplierBilled(false); setShowForm(false);
+        if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch {} }
+        onReload();
+      } catch (e: any) { toast(String(e), "error"); setSaving(false); return false; }
+      setSaving(false);
+      return true;
+    }
     if (isOwnKind) {
       const amt = parseAmount(ownAmount);
       if (amt <= 0) { toast("Add the amount for this cost", "error"); return false; }
@@ -1521,9 +1562,14 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
                     <StatusPill tone="accent">{catLabel(p.category)}</StatusPill>
                   )}
                 </div>
-                {p.quantity != null && p.unit_price != null && (
+                {p.split ? (
+                  <div className="text-[11px] text-muted tabular-nums">
+                    {p.split.share_pct}% of {fmtAmount(Math.max(0, p.split.sale_unit_price - p.split.basis_unit_cost))} a unit
+                    on {p.split.units.toLocaleString()} units — split taken on {fmtAmount(p.split.basis_unit_cost)}
+                  </div>
+                ) : p.quantity != null && p.unit_price != null ? (
                   <div className="text-[11px] text-muted tabular-nums">{p.quantity} × {fmtAmount(p.unit_price)}</div>
-                )}
+                ) : null}
                 {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
                 {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept — didn't pay, not counted as a cost</div>}
                 {!locked && (
@@ -1596,15 +1642,29 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
               decides whether the money is owed to the supplier at all. */}
           <div className="space-y-1.5">
             <label className="text-[11px] font-medium text-muted">What is this cost?</label>
-            <select value={costType} onChange={(e) => { setCostType(e.target.value); setSupplierBilled(false); }} className={inp}>
+            <select value={costType} onChange={(e) => {
+              const next = e.target.value;
+              setCostType(next); setSupplierBilled(false);
+              // Pre-fill the split from the invoice so the common case is two fields, not
+              // four. Both stay editable — the units on a partner deal are not always the
+              // whole invoice, and the price he was shown is never on it.
+              if (next === "partner" && !splitUnits && !splitSale) {
+                const units = items.reduce((t, it) => t + it.qty, 0);
+                if (units > 0) {
+                  setSplitUnits(String(units));
+                  if (flow.invoice_total > 0) setSplitSale((flow.invoice_total / units).toFixed(2));
+                }
+              }
+            }} className={inp}>
               <option value="supplier">Supplier goods</option>
+              <option value="partner">Partner split</option>
               <option value="freight">Freight and shipping</option>
               <option value="wire_out">Outgoing wire fee</option>
               <option value="wire_in">Incoming wire fee</option>
               <option value="other">Other cost</option>
             </select>
           </div>
-          {isOwnKind && (
+          {isOwnKind && !isPartner && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-[11.5px] text-muted">Billed by the supplier</span>
               <button type="button" onClick={() => setSupplierBilled((v) => !v)} role="switch" aria-checked={supplierBilled}
@@ -1614,9 +1674,9 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
               </button>
             </div>
           )}
-          {isOwnKind && <label className="text-[11px] font-medium text-muted block">Paid to</label>}
+          {isOwnKind && <label className="text-[11px] font-medium text-muted block">{isPartner ? "Partner" : "Paid to"}</label>}
           <div className="relative">
-            <input type="text" placeholder={isOwnKind ? "Who this went to" : "Search supplier name…"} value={suppName}
+            <input type="text" placeholder={isPartner ? "Who you are splitting with" : isOwnKind ? "Who this went to" : "Search supplier name…"} value={suppName}
               onChange={(e) => { setSuppName(e.target.value); setSelSupplier(null); }} className={inp} />
             {suppResults.length > 0 && (
               <div className="absolute z-20 mt-1 w-full bg-surface border border-line rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.08)] max-h-40 overflow-y-auto">
@@ -1640,7 +1700,55 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
               )}
             </div>
           )}
-          {isOwnKind ? (
+          {isPartner ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-medium text-muted">Units</label>
+                  <input className={inp} placeholder="0" inputMode="decimal" value={splitUnits}
+                    onChange={(e) => setSplitUnits(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-medium text-muted">Sale price per unit</label>
+                  <input className={inp} placeholder="0.00" inputMode="decimal" value={splitSale}
+                    onChange={(e) => setSplitSale(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-medium text-muted">Cost they were shown</label>
+                  <input className={inp} placeholder="0.00" inputMode="decimal" value={splitBasis}
+                    onChange={(e) => setSplitBasis(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-medium text-muted">Their share</label>
+                  <div className="relative">
+                    <input className={inp + " pr-7"} placeholder="50" inputMode="decimal" value={splitPct}
+                      onChange={(e) => setSplitPct(e.target.value)} />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted text-[12px] pointer-events-none">%</span>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-lg bg-surface-2 ring-1 ring-line-2 px-3 py-2.5 space-y-1">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-[11.5px] text-muted">Their cut</span>
+                  <span className="text-[14px] font-semibold text-ink tabular-nums">{fmtAmount(splitCut)}</span>
+                </div>
+                <div className="text-[11px] text-muted tabular-nums">
+                  {splitReady
+                    ? splitPctLabel
+                    : "Fill in the units, the sale price and their share"}
+                </div>
+                {splitReady && splitB > 0 && (
+                  <div className="text-[11px] text-muted">
+                    The split is taken on {fmtAmount(splitB)} a unit, not on what you actually pay.
+                    Anything you buy it under stays with you on top of your half.
+                  </div>
+                )}
+              </div>
+              <div className="text-[11px] text-muted">
+                Your own cost. It lowers this deal&rsquo;s profit but never appears in what you owe the supplier.
+              </div>
+            </div>
+          ) : isOwnKind ? (
             <div className="space-y-1.5">
               <label className="text-[11px] font-medium text-muted">Amount</label>
               <input className={inp} placeholder="0.00" inputMode="decimal" value={ownAmount}

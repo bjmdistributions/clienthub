@@ -4401,6 +4401,37 @@ pub struct SupplierPayment {
     /// `owed_to_supplier`.
     #[serde(default)]
     pub supplier_billed: bool,
+    /// R-324: present only on a `partner` line. How the cut was worked out, kept so the
+    /// figure is reproducible on screen and so the amount can never drift from the basis
+    /// it was agreed on. `None` on every other kind of cost line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split: Option<PartnerSplit>,
+}
+
+/// R-324: a partner who brought the buyer is paid a share of the spread over the cost he
+/// was **shown**, which is not always the cost actually paid. Jack's deal: sell at $7.00,
+/// real cost $6.00, partner told $6.25, 50/50 — the partner takes half of $0.75 and the
+/// remaining $0.25 a unit stays with the business. Storing the four inputs (rather than
+/// just the answer) is what lets the screen say which cost the split was taken on; a line
+/// showing only a dollar figure is indistinguishable from a freight charge a year later.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PartnerSplit {
+    pub units: f64,
+    /// What the deal sells for, per unit.
+    pub sale_unit_price: f64,
+    /// The per-unit cost the partner was shown. The split is taken on this, never on the
+    /// real cost — that is the whole point of the field.
+    pub basis_unit_cost: f64,
+    /// The partner's share of (sale − basis), as a percentage.
+    pub share_pct: f64,
+}
+
+impl PartnerSplit {
+    /// The partner's cut. Floored at 0: a deal that sold below the cost he was shown does
+    /// not make him owe money back, and a negative cost line would read as income.
+    pub fn cut(&self) -> f64 {
+        r2((self.units * (self.sale_unit_price - self.basis_unit_cost) * self.share_pct / 100.0).max(0.0))
+    }
 }
 
 impl SupplierPayment {
@@ -4417,6 +4448,44 @@ impl SupplierPayment {
 }
 
 #[cfg(test)]
+mod r324_partner_split_tests {
+    use super::PartnerSplit;
+
+    fn split(units: f64, sale: f64, basis: f64, pct: f64) -> PartnerSplit {
+        PartnerSplit { units, sale_unit_price: sale, basis_unit_cost: basis, share_pct: pct }
+    }
+
+    /// Jack's deal, stated in his own numbers: 3,000 units at $7.00, real cost $6.00,
+    /// the partner shown $6.25, 50/50. The partner takes half of $0.75 and the $0.25 a
+    /// unit the split was never taken on stays with the business.
+    #[test]
+    fn the_split_is_taken_on_the_shown_cost_not_the_real_one() {
+        let cut = split(3000.0, 7.0, 6.25, 50.0).cut();
+        assert_eq!(cut, 1125.00);
+        let revenue = 3000.0 * 7.0;
+        let real_cost = 3000.0 * 6.0;
+        assert_eq!(revenue - real_cost - cut, 1875.00);
+    }
+
+    /// Half of the declared spread, and the kept margin, are both per-unit figures — a
+    /// split on the real cost would have paid the partner $1,500 and kept $1,500.
+    #[test]
+    fn the_same_split_on_the_real_cost_pays_more() {
+        assert_eq!(split(3000.0, 7.0, 6.0, 50.0).cut(), 1500.00);
+    }
+
+    #[test]
+    fn a_sale_below_the_shown_cost_does_not_make_the_partner_owe_money() {
+        assert_eq!(split(100.0, 5.0, 6.25, 50.0).cut(), 0.0);
+    }
+
+    #[test]
+    fn the_cut_is_rounded_to_the_cent() {
+        assert_eq!(split(7.0, 1.11, 0.0, 33.0).cut(), 2.56);
+    }
+}
+
+#[cfg(test)]
 mod r315_owed_to_supplier_tests {
     use super::SupplierPayment;
 
@@ -4427,7 +4496,7 @@ mod r315_owed_to_supplier_tests {
             quantity: None, unit_price: None, method: None, notes: None,
             paid: false, paid_at: None,
             category: category.map(|s| s.to_string()),
-            kept: false, supplier_billed,
+            kept: false, supplier_billed, split: None,
         }
     }
 
@@ -4499,6 +4568,10 @@ pub struct SupplierPaymentInput {
     pub category: Option<String>,
     #[serde(default)]
     pub supplier_billed: bool,
+    /// R-324. When present the backend computes `amount` from it, so a stored partner
+    /// cut can never disagree with the basis stored beside it.
+    #[serde(default)]
+    pub split: Option<PartnerSplit>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -5046,15 +5119,25 @@ pub async fn add_supplier_payment(id: String, input: SupplierPaymentInput) -> Re
 
     let payment_id = Uuid::new_v4().to_string();
     let mut payments = df.supplier_payments.clone();
+    // R-324: a partner line's amount is DERIVED from its split, never taken from the
+    // client, so the figure and the basis on screen beside it cannot disagree. Quantity
+    // and unit price follow so every existing per-unit display keeps working.
+    let (amount, quantity, unit_price) = match input.split.as_ref() {
+        Some(sp) => {
+            let cut = sp.cut();
+            (cut, Some(sp.units), Some(if sp.units > 0.0 { r2(cut / sp.units) } else { cut }))
+        }
+        None => (input.amount, input.quantity, input.unit_price),
+    };
     payments.push(SupplierPayment {
         id: payment_id.clone(),
         supplier_name: input.supplier_name,
         supplier_id: input.supplier_id,
-        amount: input.amount,
-        original_amount: Some(input.amount),
+        amount,
+        original_amount: Some(amount),
         price_changed: false,
-        quantity: input.quantity,
-        unit_price: input.unit_price,
+        quantity,
+        unit_price,
         method: input.method,
         notes: input.notes,
         paid: false,
@@ -5062,6 +5145,7 @@ pub async fn add_supplier_payment(id: String, input: SupplierPaymentInput) -> Re
         category: input.category,
         kept: false,
         supplier_billed: input.supplier_billed,
+        split: input.split,
     });
 
     write_sp(&id, &payments, &df.invoice_id)?;
@@ -5077,19 +5161,28 @@ pub async fn update_supplier_payment(id: String, payment_id: String, input: Supp
     let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
     let old_amount = p.amount;
 
+    // R-324: an edited partner line re-derives its cut from the edited basis, the same
+    // rule `add_supplier_payment` applies, so the two paths cannot drift.
     let mut new_amount = input.amount;
-    if let (Some(qty), Some(unit)) = (input.quantity, input.unit_price) {
-        new_amount = (qty * unit * 100.0).round() / 100.0;
+    if let Some(sp) = input.split.as_ref() {
+        new_amount = sp.cut();
+        p.quantity = Some(sp.units);
+        p.unit_price = Some(if sp.units > 0.0 { r2(new_amount / sp.units) } else { new_amount });
+    } else {
+        if let (Some(qty), Some(unit)) = (input.quantity, input.unit_price) {
+            new_amount = (qty * unit * 100.0).round() / 100.0;
+        }
+        p.quantity = input.quantity;
+        p.unit_price = input.unit_price;
     }
 
     p.supplier_name = input.supplier_name;
     p.supplier_id = input.supplier_id.clone();
-    p.quantity = input.quantity;
-    p.unit_price = input.unit_price;
     p.method = input.method;
     p.notes = input.notes;
     p.category = input.category;
     p.supplier_billed = input.supplier_billed;
+    p.split = input.split;
 
     p.amount = new_amount;
     if (old_amount - new_amount).abs() > 0.001 {
@@ -12958,6 +13051,16 @@ pub async fn analytics_reconciliation(start_date: String, end_date: String) -> R
     let unplaced = remainder(true);
     let non_deal = remainder(false);
 
+    // R-323: supplier money that came back and is tied to no deal. Jack asks about this
+    // by name — a buyer refund usually has a supplier reversal behind it, and until that
+    // reversal is allocated `refund_in` it has NOT lowered any deal's cost, so the deal
+    // keeps the full cost and reads as a loss. Split out of `unplaced` (never added
+    // beside it) so the named reasons stay disjoint and the residual is unmoved.
+    let (supplier_back_count, supplier_back): (i64, f64) = conn.query_row(&format!(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN t.direction='in' THEN t.rem ELSE -t.rem END),0) FROM (             SELECT t.direction, t.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a                                                      WHERE a.bank_txn_id=t.id),0) AS rem             FROM bank_txn t WHERE {win} AND t.category='supplier_refund') t WHERE t.rem > 0.005"),
+        p, |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0, 0.0));
+    let unplaced_rest = unplaced - supplier_back;
+
     // The counted deals, as a subquery. Renumbered to ?3/?4 because the outer query is
     // already binding ?1/?2 against `posted_at`.
     let counted_ids = format!(
@@ -12983,7 +13086,7 @@ pub async fn analytics_reconciliation(start_date: String, end_date: String) -> R
 
     // Each adjustment is what must be ADDED to bank net to move toward net profit, so the
     // block reads as a plain sum down the page instead of subtracting negatives.
-    let adjustments = [-unplaced, -other_deals, -non_deal, -refunds_unbanked];
+    let adjustments = [-unplaced_rest, -supplier_back, -other_deals, -non_deal, -refunds_unbanked];
     let residual = net_profit - bank_net - adjustments.iter().sum::<f64>();
 
     let adj = |label: &str, hint: &str, amount: f64| json!({
@@ -12997,7 +13100,8 @@ pub async fn analytics_reconciliation(start_date: String, end_date: String) -> R
           "kind": "subtract", "running": Value::Null, "drift": Value::Null },
         { "label": "Bank net", "hint": "what the bank actually did", "amount": to_cents(bank_net),
           "kind": "subtotal", "running": Value::Null, "drift": Value::Null },
-        adj("Money tied to no deal", "unallocated, and not a transfer or a running cost", -unplaced),
+        adj("Money tied to no deal", "unallocated, and not a transfer or a running cost", -unplaced_rest),
+        adj("Supplier money back, tied to no deal", "a supplier reversal that has not lowered any deal's cost", -supplier_back),
         adj("Money on deals not counted here", "not complete, or completed outside this range", -other_deals),
         adj("Transfers, draws and running costs", "categorised as never part of a deal", -non_deal),
         adj("Refunds with no bank row", "taken off profit, never seen leaving the bank", -refunds_unbanked),
@@ -13085,6 +13189,9 @@ pub async fn analytics_reconciliation(start_date: String, end_date: String) -> R
             "ties": residual.abs() < 0.005,
             "orphan_allocations": orphan_count,
             "orphan_amount": to_cents(orphan_amount),
+            // R-323: the same figure as its bridge row, plus how many rows to go and find.
+            "supplier_back_unlinked": to_cents(supplier_back),
+            "supplier_back_count": supplier_back_count,
         },
         "deals": deals,
         "deals_capped": deal_count > deals.len() as i64,

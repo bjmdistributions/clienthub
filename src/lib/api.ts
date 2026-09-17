@@ -804,6 +804,20 @@ export interface SupplierPayment {
    *  cost. Off by default — a freight/wire/other line reads as Jack's own cost
    *  until he flips this. See `owed_to_supplier` on the desktop. */
   supplier_billed?: boolean;
+  /** R-324: present only on a `partner` line — how the cut was worked out. */
+  split?: PartnerSplit | null;
+}
+
+/** R-324: a partner's cut is a share of the spread over the cost he was SHOWN, which
+ *  is not always the cost actually paid. The four inputs travel with the line so the
+ *  screen can say which cost the split was taken on, and so the backend can re-derive
+ *  the amount rather than trusting one sent from here. */
+export interface PartnerSplit {
+  units: number;
+  sale_unit_price: number;
+  /** The per-unit cost the partner was shown. The split is taken on this. */
+  basis_unit_cost: number;
+  share_pct: number;
 }
 
 export interface SupplierPaymentInput {
@@ -816,6 +830,8 @@ export interface SupplierPaymentInput {
   notes?: string | null;
   category?: string | null;
   supplier_billed?: boolean;
+  /** R-324. When set, the backend computes `amount` from it and ignores the one sent. */
+  split?: PartnerSplit | null;
 }
 
 export interface PaymentReceivedInput {
@@ -1817,6 +1833,9 @@ export interface AnalyticsReconciliation {
     ties: boolean;
     orphan_allocations: number;
     orphan_amount: number;
+    /** R-323: supplier reversals sitting in the ledger with no deal behind them. */
+    supplier_back_unlinked: number;
+    supplier_back_count: number;
   };
   deals: ReconDeal[];
   deals_capped: boolean;

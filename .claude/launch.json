@@ -453,6 +453,31 @@
         "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/a602a337-e753-41c1-8704-8473a27e4379/scratchpad/phone"
       ],
       "port": 8318
+    },
+    {
+      "name": "harness-r324",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5324",
+        "--strictPort"
+      ],
+      "port": 5324
+    },
+    {
+      "name": "phone-r324",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8324",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/577bd22c-1bd7-4284-9b04-157f4679d20d/scratchpad/phone"
+      ],
+      "port": 8324
     }
   ]
 }

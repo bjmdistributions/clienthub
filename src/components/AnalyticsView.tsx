@@ -627,6 +627,16 @@ export default function AnalyticsView() {
                 completed. Over all time those are the same book. Over a short range they
                 are not, and the difference lands on the unexplained line.
               </p>
+              {recon.bank.supplier_back_count > 0 && (
+                <p className="text-[11px] text-warning-ink mt-2">
+                  {fmtAmount(recon.bank.supplier_back_unlinked)} of supplier refunds across{" "}
+                  {recon.bank.supplier_back_count} transaction
+                  {recon.bank.supplier_back_count !== 1 ? "s" : ""} is not tied to a deal. A
+                  deal's cost is built from what is linked to it, so that money has not come
+                  off any cost yet — tie each one to its deal in Financials as money back
+                  from the supplier.
+                </p>
+              )}
               {recon.bank.orphan_allocations > 0 && (
                 <p className="text-[11px] text-danger-ink mt-2">
                   {recon.bank.orphan_allocations} allocation
