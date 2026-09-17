@@ -1252,6 +1252,18 @@ pub fn render_sample_pdf() -> Result<String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+/// The client address a send can actually use. A client row can carry `''` as easily as
+/// NULL, and an empty string is not a missing column to `Option::context` — it sails
+/// through and reaches `to.parse::<Mailbox>()`, whose parser fails on it and whose error
+/// prints bare as **"Invalid input"** (lettre `AddressError::InvalidInput`). That is the
+/// whole message the toast showed, on the one client whose email was blank.
+fn sendable_email(email: Option<String>, client: &str) -> Result<String> {
+    email
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty())
+        .with_context(|| format!("{client} has no email address. Add one on the client, then send again."))
+}
+
 pub async fn send_invoice(invoice_id: &str, from_override: Option<&str>) -> Result<()> {
     let (number, total, pdf_path, cname, cemail) = {
         let conn = pool().get()?;
@@ -1273,7 +1285,7 @@ pub async fn send_invoice(invoice_id: &str, from_override: Option<&str>) -> Resu
         _ => generate_pdf(invoice_id).await?,
     };
 
-    let to = cemail.context("client has no email")?;
+    let to = sendable_email(cemail, &cname)?;
     let subject = format!("Invoice {}", number);
     let body = format!(
         "Hi {},\n\nPlease find attached invoice {} for {}.\n\n\
@@ -1382,7 +1394,7 @@ pub async fn send_quote(quote_id: &str, thread: bool, from_override: Option<&str
         _ => generate_quote_pdf(quote_id).await?,
     };
 
-    let to = cemail.context("client has no email")?;
+    let to = sendable_email(cemail, &cname)?;
 
     // When threading into the customer's conversation, use a matching "Re: …" subject
     // (from their last email) so Gmail/Outlook group it; fall back to the plain quote
@@ -1656,5 +1668,34 @@ mod clause_tests {
     fn empty_text_yields_no_lines() {
         assert!(wrap_clause("", 40).is_empty());
         assert!(wrap_clause("   ", 40).iter().all(|l| l.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod send_guard_tests {
+    use super::sendable_email;
+
+    // The live defect: one client's email column held `''`, not NULL, so `Option::context`
+    // saw Some and the blank travelled all the way to lettre.
+    #[test]
+    fn a_blank_email_is_a_missing_email() {
+        let e = sendable_email(Some(String::new()), "Sole Moves").unwrap_err().to_string();
+        assert!(e.contains("Sole Moves"), "the message names the client: {e}");
+        assert!(e.contains("no email address"), "and says what is wrong: {e}");
+        assert!(sendable_email(Some("   ".into()), "Sole Moves").is_err(), "whitespace is blank too");
+        assert!(sendable_email(None, "Sole Moves").is_err(), "NULL still fails");
+    }
+
+    #[test]
+    fn a_real_address_survives_with_its_padding_trimmed() {
+        assert_eq!(sendable_email(Some("  buyer@example.com ".into()), "Sole Moves").unwrap(), "buyer@example.com");
+    }
+
+    // Why the old error read "Invalid input" and named nothing: that is lettre's
+    // AddressError::InvalidInput, which is what the blank produced one line later.
+    #[test]
+    fn lettre_is_where_invalid_input_came_from() {
+        let err = "".parse::<lettre::message::Mailbox>().unwrap_err().to_string();
+        assert_eq!(err, "Invalid input", "the exact text the toast showed");
     }
 }
