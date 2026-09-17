@@ -397,6 +397,14 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
                   ) : (
                     <div>Supplier owes us back <span className="text-ink tabular-nums font-medium">{fmtAmount(shortage.supplier_refund_expected)}</span></div>
                   )}
+                  {shortage.charges_excluded > 0 && (
+                    <div className="text-[10.5px]">
+                      {shortage.charges_excluded} per-load charge{shortage.charges_excluded !== 1 ? "s" : ""}
+                      {" "}(freight, wire fees) {shortage.charges_excluded !== 1 ? "are" : "is"} left out of both rates —
+                      shipping does not come back with the units. {shortage.charges_excluded !== 1 ? "They" : "It"} still
+                      {" "}{shortage.charges_excluded !== 1 ? "count" : "counts"} in full toward the deal's cost.
+                    </div>
+                  )}
                   {!locked && <div className="text-[10.5px]">Enter 0 if the supplier is crediting the next load instead — the deal is still short, but nothing is owed.</div>}
                 </div>
               )}

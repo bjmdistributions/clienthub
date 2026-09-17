@@ -4448,6 +4448,62 @@ impl SupplierPayment {
 }
 
 #[cfg(test)]
+mod r325_per_load_charge_tests {
+    use super::is_unit_line;
+
+    /// The blend `deal_unit_rates` runs, written out so the defect and the fix are
+    /// both visible in one assertion instead of hiding behind a DB fixture.
+    fn rate(lines: &[(f64, f64)]) -> f64 {
+        let any_multi = lines.iter().any(|(q, _)| *q > 1.0);
+        let kept: Vec<&(f64, f64)> = lines.iter().filter(|(q, _)| is_unit_line(*q, any_multi)).collect();
+        let units: f64 = kept.iter().map(|(q, _)| q).sum();
+        let value: f64 = kept.iter().map(|(_, a)| a).sum();
+        if units > 0.0 { (value / units * 10000.0).round() / 10000.0 } else { 0.0 }
+    }
+
+    /// INV-0166 as it is actually stored: 3,600 units at $5.33 plus a $550 freight
+    /// line of quantity 1 that nobody categorised. Blending it read $5.4813.
+    #[test]
+    fn a_freight_line_no_longer_lifts_the_supplier_rate() {
+        assert_eq!(rate(&[(3600.0, 19188.0), (1.0, 550.0)]), 5.33);
+    }
+
+    /// INV-0210, the worst case measured on the live book: $4.25 read as $5.3894.
+    #[test]
+    fn the_worst_case_comes_back_to_the_price_that_was_paid() {
+        assert_eq!(rate(&[(478.0, 2031.50), (1.0, 550.0)]), 4.25);
+    }
+
+    /// The buyer side, INV-0194: a line literally described "Shipping".
+    #[test]
+    fn a_shipping_line_no_longer_lifts_the_buyer_rate() {
+        assert_eq!(rate(&[(1000.0, 4750.0), (1.0, 545.0)]), 4.75);
+    }
+
+    /// A genuinely mixed load still blends — the rule bars quantity-1 lines, not
+    /// several real ones at different prices.
+    #[test]
+    fn a_mixed_load_still_blends() {
+        assert_eq!(rate(&[(100.0, 500.0), (100.0, 700.0)]), 6.0);
+    }
+
+    /// Nothing to compare against: when every line is quantity 1 the deal is a
+    /// genuine single-unit sale and all of them stay in, or the rate would be 0.
+    #[test]
+    fn a_single_unit_sale_keeps_its_line() {
+        assert_eq!(rate(&[(1.0, 825.0)]), 825.0);
+        assert_eq!(rate(&[(1.0, 100.0), (1.0, 300.0)]), 200.0);
+    }
+
+    #[test]
+    fn the_rule_itself() {
+        assert!(is_unit_line(3600.0, true));
+        assert!(!is_unit_line(1.0, true));
+        assert!(is_unit_line(1.0, false));
+    }
+}
+
+#[cfg(test)]
 mod r324_partner_split_tests {
     use super::PartnerSplit;
 
@@ -6176,6 +6232,39 @@ struct DealUnitRates {
     /// recorded cost spread over the INVOICE's units — a guess about what one
     /// unit cost, not a figure anybody entered.
     supplier_estimated: bool,
+    /// R-325: how many per-load charges were left out of the rates, across both
+    /// sides. Surfaced so an excluded line is visible rather than silent — the
+    /// rule reads a SHAPE, and a rule that reads a shape has to show its work.
+    charges_excluded: i64,
+}
+
+/// R-325 — the per-load-charge rule, and the whole of it.
+///
+/// Freight, a wire fee, a lot fee: all are entered as ONE line of quantity 1 whose
+/// "unit price" is the entire charge (that is literally what the cost form writes —
+/// `quantity: 1, unit_price: amt`). Blended into a per-unit rate such a line does
+/// damage twice: it adds a phantom unit to the denominator, and it adds the whole
+/// charge to the numerator. The refund owed on ten short units then quietly carries
+/// a slice of the freight, which is what Jack reported: *"its taking a shipping and
+/// adding it to quantity and then changing the number i actually owe them."*
+///
+/// Measured on a read-only copy of the live book, 2026-09-17: **22 of 28 multi-line
+/// deals** and **36 of 42 multi-line invoices** carry one. Worst case INV-0210 — a
+/// $4.25 supplier rate read as $5.39, 27% high. On the buyer side the line is
+/// usually described, in as many words, "Shipping".
+///
+/// `deal_unit_rates` has always excluded `freight`/`wire_in`/`wire_out`/`other`, and
+/// that filter is right — but the category selector only reached the deal's cost form
+/// in R-315 (2026-09-16), so every line entered before it carries `category: null`
+/// and reads as goods. Recategorising 22 deals by hand is not a fix.
+///
+/// So the SHAPE is the signal: a quantity-1 line standing beside a line with a real
+/// unit count is a charge, not a unit. When every line is quantity 1 there is nothing
+/// to compare against — that is a genuine single-unit sale and all of them stay in.
+/// The charge still counts in full toward cost and profit; it is only barred from
+/// pretending to be a unit price.
+fn is_unit_line(qty: f64, any_multi_unit: bool) -> bool {
+    qty > 1.0 || !any_multi_unit
 }
 
 fn deal_unit_rates(conn: &rusqlite::Connection, deal_flow_id: &str) -> DealUnitRates {
@@ -6187,14 +6276,22 @@ fn deal_unit_rates(conn: &rusqlite::Connection, deal_flow_id: &str) -> DealUnitR
 
     let items: Vec<crate::invoice::LineItem> = serde_json::from_str(&items_json).unwrap_or_default();
     let priced: Vec<&crate::invoice::LineItem> = items.iter().filter(|l| l.qty > 0.0).collect();
-    let invoice_units: f64 = priced.iter().map(|l| l.qty).sum();
     // `amount` is the line's real total (a discounted line can carry an amount that
     // isn't qty × rate), so blend on amounts and fall back to qty × rate only for a
     // line that never had its amount filled in.
-    let invoice_value: f64 = priced.iter().map(|l| if l.amount != 0.0 { l.amount } else { l.qty * l.rate }).sum();
-    let buyer_blended = priced.len() > 1;
-    let buyer_rate = if priced.len() == 1 && priced[0].rate > 0.0 { priced[0].rate }
-                     else if invoice_units > 0.0 { invoice_value / invoice_units }
+    let line_value = |l: &crate::invoice::LineItem| if l.amount != 0.0 { l.amount } else { l.qty * l.rate };
+    // The FULL invoice total, charges and all — this stands in for `gross_revenue`
+    // before completion, and a shipping charge the buyer was billed is revenue.
+    let invoice_value: f64 = priced.iter().map(|l| line_value(l)).sum();
+    // R-325: the rate is built from the unit-priced lines only.
+    let any_multi = priced.iter().any(|l| l.qty > 1.0);
+    let unit_items: Vec<&&crate::invoice::LineItem> =
+        priced.iter().filter(|l| is_unit_line(l.qty, any_multi)).collect();
+    let invoice_units: f64 = unit_items.iter().map(|l| l.qty).sum();
+    let unit_value: f64 = unit_items.iter().map(|l| line_value(l)).sum();
+    let buyer_blended = unit_items.len() > 1;
+    let buyer_rate = if unit_items.len() == 1 && unit_items[0].rate > 0.0 { unit_items[0].rate }
+                     else if invoice_units > 0.0 { unit_value / invoice_units }
                      else { 0.0 };
 
     let payments: Vec<SupplierPayment> = serde_json::from_str(&sp_json).unwrap_or_default();
@@ -6205,8 +6302,15 @@ fn deal_unit_rates(conn: &rusqlite::Connection, deal_flow_id: &str) -> DealUnitR
     let goods: Vec<&SupplierPayment> = payments.iter()
         .filter(|p| !p.kept && matches!(p.category.as_deref(), None | Some("") | Some("supplier")))
         .collect();
-    let sup_units: f64 = goods.iter().filter_map(|p| p.quantity).filter(|q| *q > 0.0).sum();
-    let sup_value: f64 = goods.iter().filter(|p| p.quantity.map(|q| q > 0.0).unwrap_or(false)).map(|p| p.amount).sum();
+    let priceable: Vec<&&SupplierPayment> = goods.iter()
+        .filter(|p| p.quantity.map(|q| q > 0.0).unwrap_or(false)).collect();
+    // R-325 again, on the cost side: an uncategorised freight line is still a charge.
+    let any_multi_sup = priceable.iter().any(|p| p.quantity.unwrap_or(0.0) > 1.0);
+    let sup_lines: Vec<&&&SupplierPayment> = priceable.iter()
+        .filter(|p| is_unit_line(p.quantity.unwrap_or(0.0), any_multi_sup)).collect();
+    let sup_units: f64 = sup_lines.iter().filter_map(|p| p.quantity).sum();
+    let sup_value: f64 = sup_lines.iter().map(|p| p.amount).sum();
+    let charges_excluded = (priced.len() - unit_items.len() + priceable.len() - sup_lines.len()) as i64;
     let (supplier_rate, supplier_estimated) = if sup_units > 0.0 {
         (sup_value / sup_units, false)
     } else if invoice_units > 0.0 {
@@ -6219,6 +6323,7 @@ fn deal_unit_rates(conn: &rusqlite::Connection, deal_flow_id: &str) -> DealUnitR
         invoice_units, invoice_value: r2(invoice_value),
         buyer_rate: r2(buyer_rate), buyer_blended,
         supplier_rate: r2(supplier_rate), supplier_cost: r2(supplier_cost), supplier_estimated,
+        charges_excluded,
     }
 }
 
@@ -6291,6 +6396,8 @@ fn deal_shortage_value(
         "buyer_rate_blended": rates.buyer_blended,
         "supplier_rate": rates.supplier_rate,
         "supplier_rate_estimated": rates.supplier_estimated,
+        // R-325: how many per-load charges were left out of the two rates above.
+        "charges_excluded": rates.charges_excluded,
         "suggested_buyer_refund": suggested_buyer,
         "suggested_supplier_refund": suggested_supplier,
         "supplier_refund_owed": stored_supplier_owed,

@@ -2508,6 +2508,9 @@ export interface DealShortage {
   suggested_buyer_refund: number;
   suggested_supplier_refund: number;
   supplier_refund_owed: number | null; // an explicit figure (0 = agreed, nothing owed)
+  /** R-325: per-load charges (freight, wire fees) left out of the two rates above,
+   *  counted across both the invoice lines and the cost lines. */
+  charges_excluded: number;
   supplier_refund_expected: number;
   supplier_refund_actual: number;      // landed as a refund_in allocation with a live bank txn
   supplier_gap: number;                // never netted against what we owe the buyer
