@@ -1,31 +1,39 @@
-// Warehouse stock and the truckload packer (R-326).
+// Warehouse stock and the truckload packer (R-326, R-327, R-328).
 //
-// A product (New Era hats) has sections (one per team). Each section is counted in
-// whole boxes with a fixed number of units per box, so units are always boxes x per_box.
+// A product (New Era hats) declares its box sizes once ("Big Box" of 72, "Small Box" of 12).
+// Each section (a team) holds whole boxes of each size plus the loose units left in an
+// opened box, so a team's units are always sum(count x per_box) + loose.
 //
-// The packer answers "I'm shipping N pallets — how many boxes of each team do I grab?"
-// so that what is LEFT is as even as it can be: every box goes to whichever section has
-// the most units left at that moment. A team holding 40% of the stock is drained first
-// until it is level with the rest, then all of them come down together, so the last
-// pallet on the shelf is never one team.
+// The packer answers "I'm shipping N pallets" or "I need 500 hats — which boxes do I grab?"
+// so that what is LEFT is as even as it can be: each box goes to whichever team has the most
+// units left at that moment, and from that team the biggest box that still fits. A team
+// holding 40% of the stock is drained first until it is level with the rest, then they all
+// come down together. What a whole box cannot make comes loose: out of a box already open,
+// else by opening the smallest box that covers it — or, if asked, by one more whole box.
 //
-// The phone runs the same rule — `whPlanPick` in clienthub-api www/app.js. Change both
-// together; the tests below pin the behaviour.
+// The server and the desktop apply picks with warehouse_core.rs (byte-identical in both
+// repos). The phone plans with a copy of this file's rule — `whPlan` in clienthub-api
+// www/app.js. Change both together; the tests pin the behaviour.
 
 import type { LineItem } from "./api";
+
+export interface BoxType { id: string; name: string; per_box: number }
 
 export interface WhSection {
   id: string;
   name: string;
-  boxes: number;
-  per_box: number;
+  /** Whole boxes, by box type id. */
+  counts: Record<string, number>;
+  /** Units out of a full box. */
+  loose: number;
 }
 
 export interface WhMoveLine {
   section_id: string;
   name: string;
-  /** Signed: negative went out, positive came in. */
-  boxes: number;
+  boxes: Record<string, number>;
+  loose: number;
+  opened: Record<string, number>;
   units: number;
 }
 
@@ -43,8 +51,9 @@ export interface WarehouseItem {
   id: string;
   name: string;
   section_label: string;
+  box_types: BoxType[];
   sections: WhSection[];
-  boxes_per_pallet: number;
+  units_per_pallet: number;
   unit_price: number;
   notes: string;
   log: WhMove[];
@@ -57,84 +66,271 @@ export interface WarehouseInput {
   id?: string | null;
   name: string;
   section_label: string;
+  box_types: BoxType[];
   sections: WhSection[];
-  boxes_per_pallet: number;
+  units_per_pallet: number;
   unit_price: number;
   notes: string;
 }
 
-export interface WhChange { section_id: string; boxes: number }
+/** One section's part of a move — the shape warehouse_core.rs `Change` reads. */
+export interface WhChange {
+  section_id: string;
+  boxes?: Record<string, number>;
+  loose?: number;
+  /** Negative: take this many units and let the server choose the boxes. */
+  units?: number;
+}
+
+/** A section that could not supply what was asked, in units. */
 export interface WhShort { name: string; wanted: number; taken: number }
 
-export const sectionUnits = (s: WhSection) => s.boxes * s.per_box;
+// ---------- Spreadsheet import (R-328) ----------
 
-export function itemTotals(item: Pick<WarehouseItem, "sections" | "boxes_per_pallet">) {
-  const boxes = item.sections.reduce((a, s) => a + s.boxes, 0);
-  const units = item.sections.reduce((a, s) => a + sectionUnits(s), 0);
-  const pallets = item.boxes_per_pallet > 0 ? boxes / item.boxes_per_pallet : null;
+export interface SizeCol { col: number; name: string; per_box: number }
+export interface Mapping {
+  header_row: number;
+  layout: "rows" | "grouped" | "across";
+  team_col: number | null;
+  size_col: number | null;
+  boxes_col: number | null;
+  per_box_col: number | null;
+  units_col: number | null;
+  size_cols: SizeCol[];
+}
+export interface ImportResult {
+  box_types: BoxType[];
+  sections: WhSection[];
+  warnings: string[];
+  rows_used: number;
+  rows_skipped: number;
+}
+export interface SheetRead { rows: string[][]; sheet_name: string | null; note: string | null; guess: Mapping }
+
+/** "A", "B", ... "AA" — how a person names a column. */
+export function colName(c: number): string {
+  let n = c + 1, s = "";
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+/** Text pasted out of a spreadsheet (tab-separated) or a CSV, as rows of cells. */
+export function rowsFromText(text: string): string[][] {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  if (lines.some((l) => l.includes("\t"))) return lines.map((l) => l.split("\t").map((c) => c.trim()));
+  return lines.map((line) => {
+    const out: string[] = [];
+    let cur = "", q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) {
+        if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+        else if (ch === '"') q = false;
+        else cur += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === ",") { out.push(cur.trim()); cur = ""; }
+      else cur += ch;
+    }
+    out.push(cur.trim());
+    return out;
+  });
+}
+
+// ---------- Counting ----------
+
+const perOf = (types: BoxType[], id: string) => Math.max(0, types.find((t) => t.id === id)?.per_box ?? 0);
+
+export const sectionUnits = (types: BoxType[], s: WhSection) =>
+  Object.entries(s.counts || {}).reduce((a, [t, n]) => a + n * perOf(types, t), 0) + (s.loose || 0);
+
+export const sectionBoxes = (s: WhSection) => Object.values(s.counts || {}).reduce((a, n) => a + n, 0);
+
+export function itemTotals(item: Pick<WarehouseItem, "box_types" | "sections" | "units_per_pallet">) {
+  const boxes = item.sections.reduce((a, s) => a + sectionBoxes(s), 0);
+  const units = item.sections.reduce((a, s) => a + sectionUnits(item.box_types, s), 0);
+  const pallets = item.units_per_pallet > 0 ? units / item.units_per_pallet : null;
   return { boxes, units, pallets };
 }
 
 /** Share of the product's units each section holds, 0..1. */
-export function shares(sections: WhSection[]): Record<string, number> {
-  const total = sections.reduce((a, s) => a + sectionUnits(s), 0);
+export function shares(types: BoxType[], sections: WhSection[]): Record<string, number> {
+  const total = sections.reduce((a, s) => a + sectionUnits(types, s), 0);
   const out: Record<string, number> = {};
-  for (const s of sections) out[s.id] = total > 0 ? sectionUnits(s) / total : 0;
+  for (const s of sections) out[s.id] = total > 0 ? sectionUnits(types, s) / total : 0;
   return out;
 }
 
+// ---------- The packer ----------
+
 export interface PickPlan {
-  /** Boxes to grab, by section id. Sections not listed get 0. */
-  take: Record<string, number>;
-  /** Boxes asked for that the included sections could not supply. */
+  /** Whole boxes to grab: section id -> box type id -> count. */
+  take: Record<string, Record<string, number>>;
+  /** Loose units to grab, by section id. */
+  loose: Record<string, number>;
+  /** Boxes that have to be opened for those loose units: section id -> box type id -> count. */
+  opened: Record<string, Record<string, number>>;
+  /** Units grabbed, by section id. */
+  units: Record<string, number>;
+  /** Units asked for that could not be found (negative when a whole box went over). */
   short: number;
+  /** What each section holds afterwards. */
+  left: WhSection[];
+}
+
+export interface PlanOpts {
+  /** Sections the buyer does not want. */
+  skip?: ReadonlySet<string>;
+  /** Sections pinned to an exact number of units; the rest is balanced around them. */
+  fixed?: Record<string, number>;
+  /** "exact": make the remainder loose. "whole": one more whole box instead. "under": whole boxes, never over (pallets). */
+  finish?: "exact" | "whole" | "under";
+}
+
+type Cursor = { s: WhSection; i: number };
+
+const cloneSections = (sections: WhSection[]) =>
+  sections.map((s) => ({ ...s, counts: { ...(s.counts || {}) }, loose: Math.max(0, s.loose || 0) }));
+
+const add = (m: Record<string, Record<string, number>>, sid: string, tid: string, n: number) => {
+  (m[sid] ||= {})[tid] = (m[sid][tid] || 0) + n;
+};
+
+/** Sizes in a section that still have boxes, biggest first. */
+function sizesIn(types: BoxType[], s: WhSection) {
+  return types.filter((t) => t.per_box > 0 && (s.counts[t.id] || 0) > 0).sort((a, b) => b.per_box - a.per_box);
 }
 
 /**
- * The balancing pick. Each of `boxes` goes, one at a time, to the included section with
- * the most units left; ties go to the one with more boxes left, then to the one listed
- * first. Balancing on units rather than boxes keeps it right when two teams pack a
- * different number of hats to a box.
+ * Take `want` loose units out of one section: the open box first, then the smallest box
+ * that covers what is left (the biggest there is, again, if none does). Same as
+ * warehouse_core.rs `take_loose`.
  */
-export function planPick(sections: WhSection[], boxes: number, skip: ReadonlySet<string> = new Set()): PickPlan {
-  const want = Math.max(0, Math.floor(boxes || 0));
-  const pool = sections
-    .map((s, i) => ({ id: s.id, per: Math.max(0, s.per_box), left: Math.max(0, s.boxes), i }))
-    .filter((p) => !skip.has(p.id) && p.left > 0);
-  const take: Record<string, number> = {};
-  let got = 0;
-  while (got < want) {
-    let best: (typeof pool)[number] | null = null;
-    for (const p of pool) {
-      if (p.left <= 0) continue;
-      if (!best) { best = p; continue; }
-      const u = p.left * p.per, bu = best.left * best.per;
-      if (u > bu || (u === bu && (p.left > best.left || (p.left === best.left && p.i < best.i)))) best = p;
+function takeLoose(types: BoxType[], s: WhSection, want: number, opened: Record<string, number>): number {
+  const fromLoose = Math.min(want, s.loose);
+  s.loose -= fromLoose;
+  let need = want - fromLoose;
+  while (need > 0) {
+    const have = sizesIn(types, s);
+    if (!have.length) break;
+    const t = [...have].reverse().find((x) => x.per_box >= need) || have[0];
+    s.counts[t.id] -= 1;
+    opened[t.id] = (opened[t.id] || 0) + 1;
+    const got = Math.min(need, t.per_box);
+    s.loose += t.per_box - got;
+    need -= got;
+  }
+  return want - need;
+}
+
+/** One section, n units: whole boxes biggest first while one fits, then loose. Same as warehouse_core.rs `take_units`. */
+export function takeUnits(types: BoxType[], s: WhSection, n: number) {
+  const boxes: Record<string, number> = {};
+  const opened: Record<string, number> = {};
+  let rem = Math.max(0, Math.floor(n));
+  for (const t of sizesIn(types, s)) {
+    const k = Math.min(s.counts[t.id], Math.floor(rem / t.per_box));
+    if (k > 0) { s.counts[t.id] -= k; boxes[t.id] = k; rem -= k * t.per_box; }
+  }
+  const loose = takeLoose(types, s, rem, opened);
+  return { boxes, loose, opened, short: rem - loose };
+}
+
+/**
+ * The balancing pick for `target` units. See the header of this file for the rule; the
+ * tests pin it on the shapes it has to get right.
+ */
+export function planUnits(types: BoxType[], sections: WhSection[], target: number, opts: PlanOpts = {}): PickPlan {
+  const skip = opts.skip ?? new Set<string>();
+  const fixed = opts.fixed ?? {};
+  const finish = opts.finish ?? "exact";
+  const left = cloneSections(sections);
+  const take: PickPlan["take"] = {};
+  const loose: PickPlan["loose"] = {};
+  const opened: PickPlan["opened"] = {};
+  let rem = Math.max(0, Math.floor(target || 0));
+
+  // Pinned sections first, by the one-section rule.
+  for (const s of left) {
+    const want = fixed[s.id];
+    if (want == null || skip.has(s.id)) continue;
+    const ask = Math.min(Math.max(0, want), rem);
+    const r = takeUnits(types, s, ask);
+    for (const [t, n] of Object.entries(r.boxes)) add(take, s.id, t, n);
+    for (const [t, n] of Object.entries(r.opened)) add(opened, s.id, t, n);
+    if (r.loose) loose[s.id] = (loose[s.id] || 0) + r.loose;
+    rem -= ask - r.short;
+  }
+
+  const pool: Cursor[] = left.map((s, i) => ({ s, i })).filter(({ s }) => !skip.has(s.id) && fixed[s.id] == null);
+  const bigger = (a: Cursor, b: Cursor) => {
+    const ua = sectionUnits(types, a.s), ub = sectionUnits(types, b.s);
+    if (ua !== ub) return ua > ub;
+    const ba = sectionBoxes(a.s), bb = sectionBoxes(b.s);
+    return ba !== bb ? ba > bb : a.i < b.i;
+  };
+
+  // Whole boxes: the section with the most units left, its biggest box that still fits.
+  for (;;) {
+    let best: Cursor | null = null;
+    for (const c of pool) {
+      if (!sizesIn(types, c.s).some((t) => t.per_box <= rem)) continue;
+      if (!best || bigger(c, best)) best = c;
     }
     if (!best) break;
-    best.left -= 1;
-    take[best.id] = (take[best.id] || 0) + 1;
-    got += 1;
+    const t = sizesIn(types, best.s).find((x) => x.per_box <= rem)!;
+    best.s.counts[t.id] -= 1;
+    add(take, best.s.id, t.id, 1);
+    rem -= t.per_box;
   }
-  return { take, short: want - got };
-}
 
-/** "3" when a section spreads evenly over the pallets, "2–3" when it does not. */
-export function perPallet(boxes: number, pallets: number): string {
-  if (!pallets || pallets < 1 || boxes <= 0) return "";
-  const lo = Math.floor(boxes / pallets), hi = Math.ceil(boxes / pallets);
-  return lo === hi ? String(lo) : `${lo}–${hi}`;
-}
+  if (rem > 0 && finish === "whole") {
+    // One more whole box: the smallest that covers the rest, from the biggest section with one.
+    let best: Cursor | null = null;
+    for (const c of pool) if (sizesIn(types, c.s).some((t) => t.per_box >= rem) && (!best || bigger(c, best))) best = c;
+    if (best) {
+      const t = [...sizesIn(types, best.s)].reverse().find((x) => x.per_box >= rem)!;
+      best.s.counts[t.id] -= 1;
+      add(take, best.s.id, t.id, 1);
+      rem -= t.per_box;
+    }
+  } else if (rem > 0 && finish === "exact") {
+    // Boxes already open before opening another.
+    while (rem > 0) {
+      let best: Cursor | null = null;
+      for (const c of pool) if (c.s.loose > 0 && (!best || bigger(c, best))) best = c;
+      if (!best) break;
+      const x = Math.min(rem, best.s.loose);
+      best.s.loose -= x;
+      loose[best.s.id] = (loose[best.s.id] || 0) + x;
+      rem -= x;
+    }
+    while (rem > 0) {
+      let best: Cursor | null = null;
+      for (const c of pool) if (sectionBoxes(c.s) > 0 && (!best || bigger(c, best))) best = c;
+      if (!best) break;
+      const op: Record<string, number> = {};
+      const got = takeLoose(types, best.s, rem, op);
+      for (const [t, n] of Object.entries(op)) add(opened, best.s.id, t, n);
+      loose[best.s.id] = (loose[best.s.id] || 0) + got;
+      rem -= got;
+      if (!got) break;
+    }
+  }
 
-/** What each section would hold after the pick. */
-export function afterPick(sections: WhSection[], take: Record<string, number>): WhSection[] {
-  return sections.map((s) => ({ ...s, boxes: Math.max(0, s.boxes - (take[s.id] || 0)) }));
+  for (const s of left) s.counts = Object.fromEntries(Object.entries(s.counts).filter(([, n]) => n > 0));
+  const units: Record<string, number> = {};
+  for (const s of sections) {
+    const u = Object.entries(take[s.id] || {}).reduce((a, [t, n]) => a + n * perOf(types, t), 0) + (loose[s.id] || 0);
+    if (u > 0) units[s.id] = u;
+  }
+  return { take, loose, opened, units, short: rem, left };
 }
 
 // ---------- Send to invoice ----------
 
-/** Which warehouse section an invoice line came from. */
-export interface WhTag { section_id: string; name: string; per_box: number }
+/** Which warehouse section an invoice line came from, and exactly what the packer planned for it. */
+export interface WhTag { section_id: string; name: string; boxes: Record<string, number>; loose: number; units: number }
 
 export interface InvoicePrefill {
   lines: (LineItem & { wh?: WhTag })[];
@@ -144,73 +340,67 @@ export interface InvoicePrefill {
 /** localStorage key the packer stashes a prefilled invoice under (read once by Invoices). */
 export const INVOICE_PREFILL_KEY = "invoices_prefill";
 
-const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+/** "3 × Big Box, 1 × Small Square, 20 loose" */
+export function describePick(types: BoxType[], boxes: Record<string, number>, loose: number): string {
+  const parts = types
+    .filter((t) => (boxes[t.id] || 0) > 0)
+    .map((t) => `${boxes[t.id].toLocaleString()} × ${t.name}`);
+  if (loose > 0) parts.push(`${loose.toLocaleString()} loose`);
+  return parts.join(", ");
+}
 
 /**
  * One invoice line per section picked, biggest first: quantity in units at the product's
- * price per unit, with the box count in the description so the buyer and the warehouse
- * read the same thing.
+ * price per unit, with the boxes in the description so the buyer and the warehouse read the
+ * same thing.
  */
-export function invoiceLines(item: Pick<WarehouseItem, "name" | "sections" | "unit_price">, take: Record<string, number>): (LineItem & { wh: WhTag })[] {
+export function invoiceLines(item: Pick<WarehouseItem, "name" | "box_types" | "sections" | "unit_price">, plan: Pick<PickPlan, "take" | "loose" | "units">): (LineItem & { wh: WhTag })[] {
   return item.sections
-    .filter((s) => (take[s.id] || 0) > 0)
-    .sort((a, b) => (take[b.id] - take[a.id]) || a.name.localeCompare(b.name))
+    .filter((s) => (plan.units[s.id] || 0) > 0)
+    .sort((a, b) => (plan.units[b.id] - plan.units[a.id]) || a.name.localeCompare(b.name))
     .map((s) => {
-      const boxes = take[s.id];
-      const qty = boxes * s.per_box;
+      const qty = plan.units[s.id];
+      const boxes = plan.take[s.id] || {};
+      const lo = plan.loose[s.id] || 0;
       const rate = item.unit_price || 0;
       return {
-        description: `${item.name} — ${s.name}, ${plural(boxes, "box", "boxes")} of ${s.per_box}`,
+        description: `${item.name} — ${s.name}: ${describePick(item.box_types, boxes, lo)}`,
         qty,
         rate,
         amount: Math.round(qty * rate * 100) / 100,
-        wh: { section_id: s.id, name: s.name, per_box: s.per_box },
+        wh: { section_id: s.id, name: s.name, boxes: { ...boxes }, loose: lo, units: qty },
       };
     });
 }
 
 /**
- * The boxes an invoice actually carries, read from its final lines. A line whose quantity
- * was edited takes the nearest whole number of boxes; a deleted line takes nothing.
+ * What an invoice actually carries off the shelf, read from its final lines. A line left as
+ * planned takes exactly the planned boxes; a line whose quantity was changed takes that many
+ * units, the boxes chosen by the one-section rule on the server; a deleted line takes nothing.
  */
-export function boxesOnInvoice(lines: { qty: number; wh?: WhTag }[]): WhChange[] {
-  const by: Record<string, number> = {};
+export function changesForInvoice(lines: { qty: number; wh?: WhTag }[]): WhChange[] {
+  const out: WhChange[] = [];
   for (const l of lines) {
-    if (!l.wh || !(l.wh.per_box > 0)) continue;
-    const b = Math.max(0, Math.round((l.qty || 0) / l.wh.per_box));
-    if (b > 0) by[l.wh.section_id] = (by[l.wh.section_id] || 0) + b;
+    if (!l.wh) continue;
+    const q = Math.max(0, Math.round(l.qty || 0));
+    if (q <= 0) continue;
+    if (q === l.wh.units) {
+      out.push({
+        section_id: l.wh.section_id,
+        boxes: Object.fromEntries(Object.entries(l.wh.boxes).map(([t, n]) => [t, -n])),
+        loose: l.wh.loose ? -l.wh.loose : 0,
+      });
+    } else {
+      out.push({ section_id: l.wh.section_id, units: -q });
+    }
   }
-  return Object.entries(by).map(([section_id, b]) => ({ section_id, boxes: -b }));
+  return out;
 }
+
+/** Units the warehouse lines on an invoice add up to. */
+export const unitsOnInvoice = (lines: { qty: number; wh?: WhTag }[]) =>
+  lines.reduce((a, l) => a + (l.wh ? Math.max(0, Math.round(l.qty || 0)) : 0), 0);
 
 /** Invoice lines as the invoice stores them — the warehouse tag stays in the form. */
 export const plainLines = (lines: LineItem[]): LineItem[] =>
   lines.map(({ description, qty, rate, amount }) => ({ description, qty, rate, amount }));
-
-/**
- * Turn a pasted list into sections — one per line, from a spreadsheet or a message:
- * "Yankees<TAB>40<TAB>24", "Yankees, 40, 24", "Yankees - 40 boxes of 24", "Yankees 40x24".
- * The name is everything before the first plain number (so "San Francisco 49ers 12 24"
- * keeps its 49ers), then boxes, then units per box, which falls back to `perBox`.
- * A header line with no numbers is dropped when the lines under it have them.
- */
-export function parseSectionList(text: string, perBox = 0): WhSection[] {
-  const rows = text.split(/\r?\n/).map((line) => {
-    const tokens = line
-      .replace(/(\d),(\d{3})(?!\d)/g, "$1$2") // "1,200" is a number, "20, 24" is two
-      .replace(/(\d)\s*[x×]\s*(\d)/gi, "$1 $2")
-      .split(/[\t,;|]+|\s+/)
-      .map((t) => t.trim())
-      .filter(Boolean);
-    const isNum = (t: string) => /^\d[\d,]*$/.test(t);
-    const first = tokens.findIndex(isNum);
-    const nameTokens = first < 0 ? tokens : tokens.slice(0, first);
-    const name = nameTokens.join(" ").replace(/[\s:=-]+$/, "").trim();
-    const nums = first < 0 ? [] : tokens.slice(first).filter(isNum).map((t) => parseInt(t.replace(/,/g, ""), 10));
-    return { name, nums };
-  }).filter((r) => r.name);
-  const anyNums = rows.some((r) => r.nums.length > 0);
-  return rows
-    .filter((r, i) => !(i === 0 && anyNums && r.nums.length === 0))
-    .map((r) => ({ id: "", name: r.name, boxes: r.nums[0] ?? 0, per_box: r.nums[1] ?? perBox }));
-}

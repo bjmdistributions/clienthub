@@ -34,6 +34,7 @@ mod secret_store;
 mod show_packing;
 mod shipments;
 mod warehouse;
+mod warehouse_core;
 mod books;
 mod customer_portal;
 mod template;
@@ -1165,6 +1166,10 @@ fn main() {
             warehouse::save_warehouse_item,
             warehouse::archive_warehouse_item,
             warehouse::warehouse_adjust,
+            warehouse::warehouse_read_sheet,
+            warehouse::warehouse_guess,
+            warehouse::warehouse_import_preview,
+            warehouse::warehouse_import,
             books::list_books_changes,
             books::mark_books_changes_seen,
             customer_portal::customer_portal_list,

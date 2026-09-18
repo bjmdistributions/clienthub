@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { WarehouseInput, WarehouseItem, WhChange, WhShort } from "./warehouse";
+import type { ImportResult, Mapping, SheetRead, WarehouseInput, WarehouseItem, WhChange, WhShort } from "./warehouse";
 
 // R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
 // are server-proxied and don't exist until Pass 2. Every wrapper below routes
@@ -3050,9 +3050,15 @@ export const api = {
   listWarehouseItems: () => invoke<WarehouseItem[]>("list_warehouse_items"),
   saveWarehouseItem: (input: WarehouseInput) => invoke<WarehouseItem>("save_warehouse_item", { input }),
   archiveWarehouseItem: (id: string, archived: boolean) => invoke<void>("archive_warehouse_item", { id, archived }),
-  /** Signed box changes (negative = out). Returns the item and any section that was short. */
+  /** Stock moves (negative = out). With undoOf the server works the changes out from that logged move. */
   warehouseAdjust: (id: string, changes: WhChange[], opts: { reference?: string; note?: string; undoOf?: string } = {}) =>
     invoke<{ item: WarehouseItem; short: WhShort[] }>("warehouse_adjust", { id, changes, reference: opts.reference ?? null, note: opts.note ?? null, undoOf: opts.undoOf ?? null }),
+  // R-328 spreadsheet import: read -> map -> preview -> import
+  warehouseReadSheet: (path: string) => invoke<SheetRead>("warehouse_read_sheet", { path }),
+  warehouseGuess: (rows: string[][]) => invoke<Mapping>("warehouse_guess", { rows }),
+  warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
+  warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
+    invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),
   listDealFlowsByStage: (stage: string) => invoke<DealFlow[]>("list_deal_flows_by_stage", { stage }),
   markPaymentReceived: (id: string, input: PaymentReceivedInput) =>
     invoke<void>("mark_payment_received", { id, input }),

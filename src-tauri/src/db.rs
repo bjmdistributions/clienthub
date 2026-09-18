@@ -2125,4 +2125,17 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        98,
+        // R-327 / R-328: box sizes are declared once per product (`box_types_json`,
+        // [{id, name, per_box}]) and each section counts boxes BY size plus loose units, because
+        // a real sheet packs one team in five sizes. Pallets are measured in units, since a
+        // box count means nothing when boxes differ. `boxes_per_pallet` stays, read only to
+        // carry an R-326 product over (warehouse.rs map_row). clienthub-api adds the same two
+        // columns (sync.rs ALTER list) and must be deployed first.
+        r#"
+        ALTER TABLE warehouse_items ADD COLUMN box_types_json TEXT DEFAULT '[]';
+        ALTER TABLE warehouse_items ADD COLUMN units_per_pallet INTEGER DEFAULT 0;
+        "#,
+    ),
 ];

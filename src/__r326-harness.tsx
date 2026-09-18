@@ -1,54 +1,79 @@
 // DEV ONLY — the fixture behind r326-harness.html. Nothing in the app imports this and
 // index.html does not reference the page, so it never reaches a build.
 //
-// Renders the REAL WarehouseView and InvoicesView inside the app's shell geometry (216px
-// sidebar, p-7), switching between them on the same `navigate-tab` event App.tsx uses, so
-// the packer's "Send to invoice" can be driven end to end. Every name and number is invented.
+// Renders the REAL WarehouseView (and its import screen) and InvoicesView inside the app's
+// shell geometry (216px sidebar, p-7), switching between them on the same `navigate-tab`
+// event App.tsx uses, so the packer's "Send to invoice" can be driven end to end. The sheet
+// in __r326-fixture/sheet.json is INVENTED — made-up teams and counts in the shape of a real
+// grouped manifest — and its preview was produced by the real warehouse_core.rs reader.
 import { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import WarehouseView from "./components/WarehouseView";
 import InvoicesView from "./components/InvoicesView";
 import { ToastHost } from "./components/Toast";
+import { takeUnits, type BoxType, type WhSection } from "./lib/warehouse";
+import sheet from "./__r326-fixture/sheet.json";
 import "./index.css";
 
 const NOW = new Date().toISOString();
-const teams: [string, number][] = [
-  ["New York Yankees", 64], ["Los Angeles Dodgers", 22], ["Boston Red Sox", 18], ["Chicago Cubs", 16],
-  ["Atlanta Braves", 14], ["San Francisco Giants", 12], ["Houston Astros", 10], ["New York Mets", 4],
-];
+const clone = (x: any) => JSON.parse(JSON.stringify(x));
+const preview = clone(sheet.preview) as { box_types: BoxType[]; sections: WhSection[] };
+
 const ITEMS: any[] = [
   {
-    id: "w1", name: "New Era 59FIFTY fitted hats", section_label: "Team",
-    sections: teams.map(([name, boxes], i) => ({ id: `t${i}`, name, boxes, per_box: 24 })),
-    boxes_per_pallet: 20, unit_price: 6.5, notes: "", archived: false, created_at: NOW, updated_at: NOW,
-    log: [{ id: "m1", at: NOW, kind: "in", lines: teams.map(([name, boxes], i) => ({ section_id: `t${i}`, name, boxes, units: boxes * 24 })), reference: "", note: "", undone: false }],
+    id: "w1", name: "New Era 59FIFTY fitted hats", section_label: "Team", box_types: preview.box_types,
+    sections: preview.sections.map((s, i) => ({ ...s, id: `t${i}` })),
+    units_per_pallet: 1440, unit_price: 6.5, notes: "", archived: false, created_at: NOW, updated_at: NOW, log: [],
   },
   {
-    id: "w2", name: "Crew socks, 6 packs", section_label: "Size",
-    sections: [{ id: "s1", name: "Small", boxes: 30, per_box: 48 }, { id: "s2", name: "Medium", boxes: 32, per_box: 48 }, { id: "s3", name: "Large", boxes: 28, per_box: 48 }],
-    boxes_per_pallet: 36, unit_price: 2.1, notes: "", archived: false, created_at: NOW, updated_at: NOW, log: [],
+    id: "w2", name: "Crew socks, 6 packs", section_label: "Size", box_types: [{ id: "b48", name: "Case", per_box: 48 }],
+    sections: [
+      { id: "s1", name: "Small", counts: { b48: 30 }, loose: 0 },
+      { id: "s2", name: "Medium", counts: { b48: 32 }, loose: 12 },
+      { id: "s3", name: "Large", counts: { b48: 28 }, loose: 0 },
+    ],
+    units_per_pallet: 1728, unit_price: 2.1, notes: "", archived: false, created_at: NOW, updated_at: NOW, log: [],
   },
 ];
 
-const clone = (x: any) => JSON.parse(JSON.stringify(x));
+const per = (it: any, t: string) => (it.box_types.find((x: BoxType) => x.id === t)?.per_box ?? 0);
+const units = (it: any, s: WhSection) => Object.entries(s.counts).reduce((a, [t, n]) => a + (n as number) * per(it, t), 0) + (s.loose || 0);
+
 const handlers: Record<string, (a: any) => any> = {
   list_warehouse_items: () => clone(ITEMS),
   save_warehouse_item: ({ input }) => {
     const it = ITEMS.find((i) => i.id === input.id);
-    const row = { ...(it || { id: `w${ITEMS.length + 1}`, log: [], archived: false, created_at: NOW }), ...input,
-      sections: input.sections.map((s: any, i: number) => ({ ...s, id: s.id || `n${i}` })), updated_at: NOW };
+    const row = { ...(it || { id: `w${ITEMS.length + 1}`, log: [], archived: false, created_at: NOW }), ...input, updated_at: NOW };
     if (it) Object.assign(it, row); else ITEMS.push(row);
     return clone(row);
   },
   warehouse_adjust: ({ id, changes, reference, note }) => {
     const it = ITEMS.find((i) => i.id === id);
-    const lines = changes.map((c: any) => {
-      const s = it.sections.find((x: any) => x.id === c.section_id);
-      s.boxes += c.boxes;
-      return { section_id: s.id, name: s.name, boxes: c.boxes, units: c.boxes * s.per_box };
+    const lines = (changes || []).map((c: any) => {
+      const s = it.sections.find((x: WhSection) => x.id === c.section_id);
+      const before = units(it, s);
+      for (const [t, n] of Object.entries(c.boxes || {})) s.counts[t] = (s.counts[t] || 0) + (n as number);
+      if (c.loose < 0) {
+        s.loose += c.loose;
+        while (s.loose < 0) {
+          const t = [...it.box_types].sort((a: BoxType, b: BoxType) => a.per_box - b.per_box).find((x: BoxType) => (s.counts[x.id] || 0) > 0);
+          if (!t) break;
+          s.counts[t.id] -= 1; s.loose += t.per_box;
+        }
+      }
+      if (c.units < 0) takeUnits(it.box_types, s, -c.units);
+      return { section_id: s.id, name: s.name, boxes: c.boxes || {}, loose: c.loose || 0, opened: {}, units: units(it, s) - before };
     });
-    it.log.unshift({ id: `m${Math.random()}`, at: new Date().toISOString(), kind: "out", lines, reference: reference || "", note: note || "", undone: false });
+    it.log.unshift({ id: `m${it.log.length + 1}`, at: new Date().toISOString(), kind: "out", lines, reference: reference || "", note: note || "", undone: false });
     return { item: clone(it), short: [] };
+  },
+  warehouse_read_sheet: () => ({ rows: sheet.rows, sheet_name: "Sheet1", note: null, guess: sheet.guess }),
+  warehouse_guess: () => sheet.guess,
+  warehouse_import_preview: () => clone(sheet.preview),
+  warehouse_import: ({ name, sectionLabel }) => {
+    const row = { ...clone(ITEMS[0]), id: `w${ITEMS.length + 1}`, name: name || "Imported", section_label: sectionLabel || "Team", log: [] };
+    ITEMS.push(row);
+    return clone(row);
   },
   list_clients: () => [{ id: "c1", name: "Harbour Goods" }, { id: "c2", name: "Cedar Lane Resale" }],
   create_invoice: () => "inv-new",
@@ -59,6 +84,7 @@ const handlers: Record<string, (a: any) => any> = {
   invoke: (cmd: string, args: any) => {
     (window as any).__calls = [...((window as any).__calls || []), { cmd, args }];
     if (handlers[cmd]) return Promise.resolve(handlers[cmd](args || {}));
+    if (cmd === "plugin:dialog|open") return Promise.resolve("C:/stock/Invented manifest.csv");
     return Promise.resolve(cmd.startsWith("list_") || cmd.endsWith("_all") ? [] : null);
   },
   transformCallback: (cb: any) => { (window as any).__cb = cb; return 1; },

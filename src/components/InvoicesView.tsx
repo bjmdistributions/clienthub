@@ -13,7 +13,7 @@ import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { FromPicker, useSendFromOptions } from "./FromPicker";
-import { boxesOnInvoice, INVOICE_PREFILL_KEY, plainLines, type InvoicePrefill, type WhTag } from "../lib/warehouse";
+import { changesForInvoice, INVOICE_PREFILL_KEY, plainLines, unitsOnInvoice, type InvoicePrefill, type WhTag } from "../lib/warehouse";
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
 
@@ -642,8 +642,8 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
     if (prefill?.lines.length) return prefill.lines.map((l) => ({ ...l }));
     return [{ description: "", qty: 1, rate: 0, amount: 0 }];
   });
-  const whOut = !initial && prefill ? boxesOnInvoice(items) : [];
-  const whBoxes = whOut.reduce((a, c) => a - c.boxes, 0);
+  const whOut = !initial && prefill ? changesForInvoice(items) : [];
+  const whUnits = !initial && prefill ? unitsOnInvoice(items) : 0;
   const [submitting, setSubmitting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [templates, setTemplates]   = useState<LineItemTemplate[]>([]);
@@ -784,8 +784,8 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
           const number = await api.getInvoice(invId).then((v) => v?.number).catch(() => "");
           await api.warehouseAdjust(prefill.warehouse.item_id, whOut, { reference: number || undefined, note: "Invoiced" })
             .then((r) => {
-              if (r.short.length) toast(`Invoice created. Short on the shelf: ${r.short.map((x) => `${x.name} had ${x.taken} of ${x.wanted} boxes`).join(", ")}`, "error");
-              else toast(`${whBoxes.toLocaleString()} boxes of ${prefill.warehouse.item_name} taken out of the warehouse`);
+              if (r.short.length) toast(`Invoice created. Short on the shelf: ${r.short.map((x) => `${x.name} had ${x.taken} of ${x.wanted} units`).join(", ")}`, "error");
+              else toast(`${whUnits.toLocaleString()} units of ${prefill.warehouse.item_name} taken out of the warehouse`);
             })
             .catch((e: any) => toast(`Invoice created, but the warehouse was not updated: ${e}`, "error"));
         }
@@ -911,11 +911,11 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
       {/* R-326: say what saving does to the warehouse, live, before it does it. */}
       {!initial && prefill && (
         <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl text-[13px] text-ink">
-          {whBoxes > 0 ? (
+          {whUnits > 0 ? (
             <>
               <strong className="font-semibold">From the warehouse.</strong> Creating this invoice takes{" "}
-              {whBoxes.toLocaleString()} {whBoxes === 1 ? "box" : "boxes"} of {prefill.warehouse.item_name} off the shelf.
-              <span className="text-muted"> Change a quantity and the boxes follow it; delete a line and nothing is taken for it.</span>
+              {whUnits.toLocaleString()} {whUnits === 1 ? "unit" : "units"} of {prefill.warehouse.item_name} off the shelf, in the boxes each line names.
+              <span className="text-muted"> Change a quantity and that many units are taken instead; delete a line and nothing is taken for it.</span>
             </>
           ) : (
             <>No warehouse lines are left on this invoice, so nothing will be taken off the shelf.</>
