@@ -755,6 +755,77 @@ pub fn merge_import(types: &mut Vec<BoxType>, sections: &mut Vec<Section>, imp: 
     sort_types(types);
 }
 
+// ---------------------------------------------------------------------------------------
+// The warehouse map (R-330)
+// ---------------------------------------------------------------------------------------
+
+/// The biggest map either side draws — a floor of 60 by 60 pallet spots, or 60 bays of 60
+/// shelves. Well past a real building; it keeps a typo from drawing 90,000 cells.
+pub const MAP_MAX: i64 = 60;
+
+/// One spot on a map: a pallet position on a floor, or a shelf in a bay. Only spots that say
+/// something are stored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct LayoutCell {
+    pub r: i64,
+    pub c: i64,
+    /// What sits here, when it is one of the warehouse's products and sections.
+    #[serde(default)]
+    pub item_id: String,
+    #[serde(default)]
+    pub section_id: String,
+    /// Free text, for anything that is not (or not yet) a counted product.
+    #[serde(default)]
+    pub label: String,
+    /// How full, in quarters: 0 empty .. 4 full.
+    #[serde(default)]
+    pub fill: i64,
+    #[serde(default)]
+    pub note: String,
+    /// Not a spot at all — an aisle, a door, a post.
+    #[serde(default)]
+    pub aisle: bool,
+}
+
+/// Clean a map as drawn: "pallets" or "shelving", a size inside MAP_MAX, and only the spots
+/// that say something — one per position, inside the grid (a map that shrinks drops what
+/// fell off its edge).
+pub fn clean_layout(kind: &str, rows: i64, cols: i64, cells: Vec<LayoutCell>) -> Result<(String, i64, i64, Vec<LayoutCell>), String> {
+    let kind = if kind == "shelving" { "shelving" } else { "pallets" };
+    if rows < 1 || cols < 1 {
+        return Err("A map needs at least one row and one column.".into());
+    }
+    if rows > MAP_MAX || cols > MAP_MAX {
+        return Err(format!("A map can be at most {MAP_MAX} by {MAP_MAX}."));
+    }
+    let mut out: Vec<LayoutCell> = Vec::new();
+    for mut c in cells {
+        if c.r < 0 || c.c < 0 || c.r >= rows || c.c >= cols {
+            continue;
+        }
+        c.fill = c.fill.clamp(0, 4);
+        c.label = c.label.trim().to_string();
+        c.note = c.note.trim().to_string();
+        if c.aisle {
+            c.item_id.clear();
+            c.section_id.clear();
+            c.label.clear();
+            c.fill = 0;
+        }
+        if c.section_id.is_empty() {
+            c.item_id.clear();
+        }
+        let says_nothing = !c.aisle && c.section_id.is_empty() && c.label.is_empty() && c.fill == 0 && c.note.is_empty();
+        if says_nothing {
+            continue;
+        }
+        out.retain(|x| !(x.r == c.r && x.c == c.c));
+        out.push(c);
+    }
+    out.sort_by_key(|c| (c.r, c.c));
+    Ok((kind.into(), rows, cols, out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -928,5 +999,26 @@ mod tests {
     #[test]
     fn column_names_read_like_a_spreadsheet() {
         assert_eq!((col_name(0), col_name(25), col_name(26)), ("A".to_string(), "Z".to_string(), "AA".to_string()));
+    }
+
+    #[test]
+    fn a_map_keeps_only_spots_that_say_something_inside_its_edges() {
+        let cell = |r, c, fill, label: &str| LayoutCell { r, c, fill, label: label.into(), ..Default::default() };
+        let (kind, rows, cols, cells) = clean_layout("shelving", 3, 4, vec![
+            cell(0, 0, 4, "Owls"),
+            cell(0, 1, 0, ""),            // says nothing
+            cell(5, 1, 2, "Off the edge"), // outside a 3-row map
+            cell(1, 2, 9, "Hawks"),        // fill clamps to full
+            cell(0, 0, 2, "Owls again"),   // the last word on a spot wins
+            LayoutCell { r: 2, c: 3, aisle: true, label: "ignored".into(), fill: 3, ..Default::default() },
+        ]).unwrap();
+        assert_eq!((kind.as_str(), rows, cols), ("shelving", 3, 4));
+        assert_eq!(cells.len(), 3);
+        assert_eq!((cells[0].label.as_str(), cells[0].fill), ("Owls again", 2));
+        assert_eq!(cells[1].fill, 4);
+        assert!(cells[2].aisle && cells[2].label.is_empty() && cells[2].fill == 0);
+        assert!(clean_layout("pallets", 0, 4, vec![]).is_err());
+        assert!(clean_layout("pallets", 61, 4, vec![]).is_err());
+        assert_eq!(clean_layout("anything", 1, 1, vec![]).unwrap().0, "pallets");
     }
 }

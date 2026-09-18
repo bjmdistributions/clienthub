@@ -19,3 +19,19 @@ export function plural(label: string): string {
   if (/(s|x|ch|sh)$/.test(l)) return l + "es";
   return l + "s";
 }
+
+/** Team colours on the warehouse map — Apple system colours, as "r g b" for rgb(... / alpha).
+ *  Never the brand accent, never ochre or gold. Labels always sit beside the colour, so a
+ *  colour repeating after ten teams is fine. */
+const TEAM_COLORS = [
+  "var(--c-chart-1)", "var(--c-chart-2)", "var(--c-chart-3)", "var(--c-chart-4)", "var(--c-chart-5)",
+  "var(--c-chart-6)", "var(--c-chart-profit)", "var(--c-chart-loss)", "0 199 190", "50 173 230",
+];
+
+/** A stable colour for whatever a map spot holds (see lib/warehouse cellKey). */
+export function teamColor(key: string): string {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return TEAM_COLORS[h % TEAM_COLORS.length];
+}
+export const rgba = (triplet: string, a: number) => `rgb(${triplet} / ${a})`;

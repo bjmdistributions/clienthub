@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ImportResult, Mapping, SheetRead, WarehouseInput, WarehouseItem, WhChange, WhShort } from "./warehouse";
+import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
 
 // R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
 // are server-proxied and don't exist until Pass 2. Every wrapper below routes
@@ -3056,6 +3056,10 @@ export const api = {
   // R-328 spreadsheet import: read -> map -> preview -> import
   warehouseReadSheet: (path: string) => invoke<SheetRead>("warehouse_read_sheet", { path }),
   warehouseGuess: (rows: string[][]) => invoke<Mapping>("warehouse_guess", { rows }),
+  // R-330 warehouse map
+  listWarehouseLayouts: () => invoke<WarehouseLayout[]>("list_warehouse_layouts"),
+  saveWarehouseLayout: (input: LayoutInput) => invoke<WarehouseLayout>("save_warehouse_layout", { input }),
+  archiveWarehouseLayout: (id: string, archived: boolean) => invoke<void>("archive_warehouse_layout", { id, archived }),
   warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
   warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
     invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),

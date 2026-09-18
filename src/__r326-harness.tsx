@@ -36,6 +36,26 @@ const ITEMS: any[] = [
   },
 ];
 
+// An invented floor and rack, marked with the invented teams above.
+const T = (i: number) => ({ item_id: "w1", section_id: `t${i}` });
+const cellAt = (r: number, c: number, o: Record<string, any>) => ({ r, c, item_id: "", section_id: "", label: "", fill: 0, note: "", aisle: false, ...o });
+const LAYOUTS: any[] = [
+  {
+    id: "L1", name: "Floor", kind: "pallets", rows: 5, cols: 9, notes: "", archived: false, created_at: NOW, updated_at: NOW,
+    cells: [
+      cellAt(0, 0, { ...T(0), fill: 4 }), cellAt(0, 1, { ...T(0), fill: 4 }), cellAt(0, 2, { ...T(0), fill: 3 }), cellAt(0, 3, { ...T(1), fill: 4 }),
+      cellAt(0, 4, { ...T(1), fill: 2 }), cellAt(0, 5, { ...T(2), fill: 4 }), cellAt(0, 6, { ...T(3), fill: 1, note: "Top boxes crushed" }),
+      ...Array.from({ length: 9 }, (_, c) => cellAt(2, c, { aisle: true })),
+      cellAt(1, 0, { ...T(4), fill: 4 }), cellAt(1, 1, { ...T(5), fill: 2 }), cellAt(1, 2, { label: "Returns to sort", fill: 2 }),
+      cellAt(3, 0, { ...T(6), fill: 4 }), cellAt(3, 1, { ...T(7), fill: 4 }), cellAt(3, 2, { ...T(8), fill: 3 }), cellAt(4, 0, { label: "Empty pallets", fill: 1 }),
+    ],
+  },
+  {
+    id: "L2", name: "Rack A", kind: "shelving", rows: 4, cols: 6, notes: "", archived: false, created_at: NOW, updated_at: NOW,
+    cells: [cellAt(3, 0, { ...T(9), fill: 4 }), cellAt(3, 1, { ...T(10), fill: 2 }), cellAt(2, 0, { ...T(11), fill: 3 }), cellAt(0, 5, { label: "Samples", fill: 1 })],
+  },
+];
+
 const per = (it: any, t: string) => (it.box_types.find((x: BoxType) => x.id === t)?.per_box ?? 0);
 const units = (it: any, s: WhSection) => Object.entries(s.counts).reduce((a, [t, n]) => a + (n as number) * per(it, t), 0) + (s.loose || 0);
 
@@ -67,6 +87,14 @@ const handlers: Record<string, (a: any) => any> = {
     it.log.unshift({ id: `m${it.log.length + 1}`, at: new Date().toISOString(), kind: "out", lines, reference: reference || "", note: note || "", undone: false });
     return { item: clone(it), short: [] };
   },
+  list_warehouse_layouts: () => clone(LAYOUTS),
+  save_warehouse_layout: ({ input }) => {
+    const l = LAYOUTS.find((x) => x.id === input.id);
+    const row = { ...(l || { id: `L${LAYOUTS.length + 1}`, archived: false, created_at: NOW }), ...input, updated_at: NOW };
+    if (l) Object.assign(l, row); else LAYOUTS.push(row);
+    return clone(row);
+  },
+  archive_warehouse_layout: ({ id, archived }) => { const l = LAYOUTS.find((x) => x.id === id); if (l) l.archived = archived; return null; },
   warehouse_read_sheet: () => ({ rows: sheet.rows, sheet_name: "Sheet1", note: null, guess: sheet.guess }),
   warehouse_guess: () => sheet.guess,
   warehouse_import_preview: () => clone(sheet.preview),

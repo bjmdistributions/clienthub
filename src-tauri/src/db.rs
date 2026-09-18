@@ -2138,4 +2138,27 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_items ADD COLUMN units_per_pallet INTEGER DEFAULT 0;
         "#,
     ),
+    (
+        99,
+        // R-330: the warehouse map. One row per map — a floor of pallet spots or a run of
+        // shelving (bays by levels) — with only the spots that say something in
+        // `cells_json` ([{r, c, item_id, section_id, label, fill 0..4, note, aisle}], cleaned by
+        // warehouse_core::clean_layout). Synced (sync.rs ALLOWED_TABLES, netsync
+        // SNAPSHOT_TABLES) and mirrored in clienthub-api — the server must be deployed first.
+        r#"
+        CREATE TABLE IF NOT EXISTS warehouse_layouts (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            kind TEXT DEFAULT 'pallets',
+            rows INTEGER DEFAULT 1,
+            cols INTEGER DEFAULT 1,
+            cells_json TEXT DEFAULT '[]',
+            notes TEXT DEFAULT '',
+            archived INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        "#,
+    ),
 ];

@@ -59,6 +59,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "lot_sheet", "lot_slot_state", "lot_build",
     // Warehouse stock (R-326): a fresh install shows the same boxes on the shelf.
     "warehouse_items",
+    // The warehouse map (R-330).
+    "warehouse_layouts",
 ];
 
 pub fn ensure_tables() -> Result<()> {

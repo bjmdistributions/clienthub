@@ -354,7 +354,12 @@ export function describePick(types: BoxType[], boxes: Record<string, number>, lo
  * price per unit, with the boxes in the description so the buyer and the warehouse read the
  * same thing.
  */
-export function invoiceLines(item: Pick<WarehouseItem, "name" | "box_types" | "sections" | "unit_price">, plan: Pick<PickPlan, "take" | "loose" | "units">): (LineItem & { wh: WhTag })[] {
+export function invoiceLines(
+  item: Pick<WarehouseItem, "name" | "box_types" | "sections" | "unit_price">,
+  plan: Pick<PickPlan, "take" | "loose" | "units">,
+  /** A sale price per unit for one section, over the product's own (R-329). */
+  rates: Record<string, number> = {},
+): (LineItem & { wh: WhTag })[] {
   return item.sections
     .filter((s) => (plan.units[s.id] || 0) > 0)
     .sort((a, b) => (plan.units[b.id] - plan.units[a.id]) || a.name.localeCompare(b.name))
@@ -362,7 +367,7 @@ export function invoiceLines(item: Pick<WarehouseItem, "name" | "box_types" | "s
       const qty = plan.units[s.id];
       const boxes = plan.take[s.id] || {};
       const lo = plan.loose[s.id] || 0;
-      const rate = item.unit_price || 0;
+      const rate = rates[s.id] ?? (item.unit_price || 0);
       return {
         description: `${item.name} — ${s.name}: ${describePick(item.box_types, boxes, lo)}`,
         qty,
@@ -404,3 +409,107 @@ export const unitsOnInvoice = (lines: { qty: number; wh?: WhTag }[]) =>
 /** Invoice lines as the invoice stores them — the warehouse tag stays in the form. */
 export const plainLines = (lines: LineItem[]): LineItem[] =>
   lines.map(({ description, qty, rate, amount }) => ({ description, qty, rate, amount }));
+
+// ---------- Picking an order by hand (R-329) ----------
+
+/** What was taken off the shelf for an order: whole boxes by section and size, and loose units. */
+export interface HandPick { take: Record<string, Record<string, number>>; loose: Record<string, number> }
+
+export const emptyPick = (): HandPick => ({ take: {}, loose: {} });
+
+/** Units a hand pick comes to, by section — the shape invoiceLines reads. */
+export function pickUnits(types: BoxType[], pick: HandPick): Record<string, number> {
+  const out: Record<string, number> = {};
+  const ids = new Set([...Object.keys(pick.take), ...Object.keys(pick.loose)]);
+  for (const sid of ids) {
+    const u = Object.entries(pick.take[sid] || {}).reduce((a, [t, n]) => a + n * perOf(types, t), 0) + (pick.loose[sid] || 0);
+    if (u > 0) out[sid] = u;
+  }
+  return out;
+}
+
+/** The most loose units a hand pick can take from a section: whatever is not already picked as
+ *  whole boxes. Past what is loose now, the server opens a box (warehouse_core take_loose). */
+export function looseRoom(types: BoxType[], pick: HandPick, s: WhSection): number {
+  const inBoxes = Object.entries(pick.take[s.id] || {}).reduce((a, [t, n]) => a + n * perOf(types, t), 0);
+  return Math.max(0, sectionUnits(types, s) - inBoxes);
+}
+
+/** Set one count on a hand pick, never past what the shelf holds and never below zero. Loose
+ *  units are capped by `looseMax` (default: what is loose now). */
+export function setPicked(pick: HandPick, s: WhSection, typeId: string | null, n: number, looseMax?: number): HandPick {
+  const next: HandPick = { take: { ...pick.take }, loose: { ...pick.loose } };
+  if (typeId === null) {
+    const v = Math.max(0, Math.min(Math.floor(n || 0), looseMax ?? (s.loose || 0)));
+    if (v) next.loose[s.id] = v; else delete next.loose[s.id];
+  } else {
+    const row = { ...(next.take[s.id] || {}) };
+    const v = Math.max(0, Math.min(Math.floor(n || 0), s.counts[typeId] || 0));
+    if (v) row[typeId] = v; else delete row[typeId];
+    if (Object.keys(row).length) next.take[s.id] = row; else delete next.take[s.id];
+  }
+  return next;
+}
+
+/** A packer plan as a hand pick, to adjust box by box before it is sent. */
+export const pickFromPlan = (plan: Pick<PickPlan, "take" | "loose">): HandPick =>
+  ({ take: JSON.parse(JSON.stringify(plan.take)), loose: { ...plan.loose } });
+
+// ---------- The warehouse map (R-330) ----------
+
+export interface LayoutCell {
+  r: number;
+  c: number;
+  item_id: string;
+  section_id: string;
+  label: string;
+  /** How full, in quarters: 0 empty .. 4 full. */
+  fill: number;
+  note: string;
+  aisle: boolean;
+}
+
+export interface WarehouseLayout {
+  id: string;
+  name: string;
+  kind: "pallets" | "shelving";
+  rows: number;
+  cols: number;
+  cells: LayoutCell[];
+  notes: string;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LayoutInput {
+  id?: string | null;
+  name: string;
+  kind: "pallets" | "shelving";
+  rows: number;
+  cols: number;
+  cells: LayoutCell[];
+  notes: string;
+}
+
+export const FILL_LABELS = ["Empty", "¼ full", "½ full", "¾ full", "Full"];
+
+/** What a spot holds, as the key its colour and the legend group by. */
+export const cellKey = (c: Pick<LayoutCell, "item_id" | "section_id" | "label">) =>
+  c.section_id ? `s:${c.item_id}:${c.section_id}` : c.label ? `l:${c.label.trim().toLowerCase()}` : "";
+
+/** Pallet spots are named like a spreadsheet (A1 is the top-left); shelves by bay and level, level 1 at the bottom. */
+export function spotName(kind: WarehouseLayout["kind"], rows: number, r: number, c: number): string {
+  if (kind === "shelving") return `Bay ${c + 1}, level ${rows - r}`;
+  return `${colName(r)}${c + 1}`;
+}
+
+/** Totals for a map: spots that are spots (not aisles), and how full they are. */
+export function layoutSummary(l: Pick<WarehouseLayout, "rows" | "cols" | "cells">) {
+  const aisles = l.cells.filter((c) => c.aisle).length;
+  const spots = l.rows * l.cols - aisles;
+  const used = l.cells.filter((c) => !c.aisle && (c.section_id || c.label));
+  const full = used.filter((c) => c.fill >= 4).length;
+  const partial = used.filter((c) => c.fill > 0 && c.fill < 4).length;
+  return { spots, used: used.length, full, partial, empty: spots - full - partial };
+}

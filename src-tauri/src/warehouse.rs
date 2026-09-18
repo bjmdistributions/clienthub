@@ -15,7 +15,7 @@
 //! Synced per column, last writer wins — see the vault's revisit/warehouse-counts-are-one-column.
 
 use crate::db::pool;
-use crate::warehouse_core::{self as core, BoxType, Change, ImportResult, Mapping, Move, Section, Short};
+use crate::warehouse_core::{self as core, BoxType, Change, ImportResult, LayoutCell, Mapping, Move, Section, Short};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -69,6 +69,9 @@ pub struct SheetRead {
     pub guess: Mapping,
 }
 
+const ITEMS: &str = "warehouse_items";
+const LAYOUTS: &str = "warehouse_layouts";
+
 const COLS: &str = "id, name, COALESCE(section_label,'Section'), COALESCE(sections_json,'[]'), \
     COALESCE(boxes_per_pallet,0), COALESCE(unit_price,0), COALESCE(notes,''), COALESCE(log_json,'[]'), \
     COALESCE(archived,0), created_at, updated_at, COALESCE(box_types_json,'[]'), COALESCE(units_per_pallet,0)";
@@ -107,12 +110,12 @@ fn load(conn: &rusqlite::Connection, id: &str) -> Result<WarehouseItem, String> 
         .map_err(|_| "That product is no longer in the warehouse.".to_string())
 }
 
-fn write(conn: &rusqlite::Connection, id: &str, cols: Map<String, Value>, create: bool) -> Result<(), String> {
+fn write(conn: &rusqlite::Connection, table: &str, id: &str, cols: Map<String, Value>, create: bool) -> Result<(), String> {
     let keys: Vec<&String> = cols.keys().collect();
     let params: Vec<rusqlite::types::Value> = cols.values().map(to_sql).collect();
     if create {
         let sql = format!(
-            "INSERT INTO warehouse_items (id, {}) VALUES (?1, {})",
+            "INSERT INTO {table} (id, {}) VALUES (?1, {})",
             keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", "),
             (2..=keys.len() + 1).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ")
         );
@@ -121,12 +124,12 @@ fn write(conn: &rusqlite::Connection, id: &str, cols: Map<String, Value>, create
         conn.execute(&sql, rusqlite::params_from_iter(all.iter())).map_err(|e| e.to_string())?;
     } else {
         let sets: Vec<String> = keys.iter().enumerate().map(|(i, k)| format!("{k}=?{}", i + 1)).collect();
-        let sql = format!("UPDATE warehouse_items SET {} WHERE id=?{}", sets.join(", "), keys.len() + 1);
+        let sql = format!("UPDATE {table} SET {} WHERE id=?{}", sets.join(", "), keys.len() + 1);
         let mut all = params;
         all.push(rusqlite::types::Value::Text(id.to_string()));
         conn.execute(&sql, rusqlite::params_from_iter(all.iter())).map_err(|e| e.to_string())?;
     }
-    crate::sync::record_upsert("warehouse_items", id, cols).map_err(|e| e.to_string())
+    crate::sync::record_upsert(table, id, cols).map_err(|e| e.to_string())
 }
 
 fn to_sql(v: &Value) -> rusqlite::types::Value {
@@ -191,7 +194,7 @@ fn save(conn: &rusqlite::Connection, input: WarehouseInput, note: &str) -> Resul
         cols.insert("archived".into(), json!(0));
         cols.insert("created_at".into(), json!(now));
     }
-    write(conn, &id, cols, existing.is_none())?;
+    write(conn, ITEMS, &id, cols, existing.is_none())?;
     load(conn, &id)
 }
 
@@ -223,7 +226,7 @@ pub async fn archive_warehouse_item(id: String, archived: bool) -> Result<(), St
     let mut cols = Map::new();
     cols.insert("archived".into(), json!(archived as i64));
     cols.insert("updated_at".into(), json!(chrono::Utc::now().to_rfc3339()));
-    write(&conn, &id, cols, false)
+    write(&conn, ITEMS, &id, cols, false)
 }
 
 /// Move stock in or out and log it. With `undo_of`, the changes are worked out from the
@@ -269,7 +272,7 @@ pub async fn warehouse_adjust(
     cols.insert("sections_json".into(), json_str(&item.sections));
     cols.insert("log_json".into(), json_str(&item.log));
     cols.insert("updated_at".into(), json!(now));
-    write(&conn, &id, cols, false)?;
+    write(&conn, ITEMS, &id, cols, false)?;
     Ok(AdjustResult { item: load(&conn, &id)?, short })
 }
 
@@ -336,6 +339,116 @@ pub async fn warehouse_import(
     save(&conn, input, "Imported from a sheet")
 }
 
+// ---------------------------------------------------------------------------------------
+// The warehouse map (R-330): a floor of pallet spots or a run of shelving, each spot saying
+// what sits there and how full it is. Cleaned by warehouse_core::clean_layout.
+// ---------------------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct WarehouseLayout {
+    pub id: String,
+    pub name: String,
+    /// "pallets" | "shelving"
+    pub kind: String,
+    pub rows: i64,
+    pub cols: i64,
+    pub cells: Vec<LayoutCell>,
+    pub notes: String,
+    pub archived: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LayoutInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    pub rows: i64,
+    pub cols: i64,
+    #[serde(default)]
+    pub cells: Vec<LayoutCell>,
+    #[serde(default)]
+    pub notes: String,
+}
+
+const LAYOUT_COLS: &str = "id, name, COALESCE(kind,'pallets'), COALESCE(rows,1), COALESCE(cols,1), COALESCE(cells_json,'[]'),     COALESCE(notes,''), COALESCE(archived,0), created_at, updated_at";
+
+fn map_layout(r: &rusqlite::Row) -> rusqlite::Result<WarehouseLayout> {
+    let cells: String = r.get(5)?;
+    Ok(WarehouseLayout {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        kind: r.get(2)?,
+        rows: r.get(3)?,
+        cols: r.get(4)?,
+        cells: serde_json::from_str(&cells).unwrap_or_default(),
+        notes: r.get(6)?,
+        archived: r.get::<_, i64>(7)? != 0,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
+    })
+}
+
+fn load_layout(conn: &rusqlite::Connection, id: &str) -> Result<WarehouseLayout, String> {
+    conn.query_row(&format!("SELECT {LAYOUT_COLS} FROM warehouse_layouts WHERE id = ?1"), [id], map_layout)
+        .map_err(|_| "That map is no longer there.".to_string())
+}
+
+#[tauri::command]
+pub async fn list_warehouse_layouts() -> Result<Vec<WarehouseLayout>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(&format!("SELECT {LAYOUT_COLS} FROM warehouse_layouts ORDER BY created_at"))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], map_layout).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Create or update a map from the whole picture of it.
+#[tauri::command]
+pub async fn save_warehouse_layout(input: LayoutInput) -> Result<WarehouseLayout, String> {
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err("Give the map a name, like \"Floor\" or \"Rack A\".".into());
+    }
+    let (kind, rows, cols, cells) = core::clean_layout(&input.kind, input.rows, input.cols, input.cells)?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let existing = match input.id.as_deref().filter(|s| !s.is_empty()) {
+        Some(id) => Some(load_layout(&conn, id)?),
+        None => None,
+    };
+    let id = existing.as_ref().map(|e| e.id.clone()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut cols_map = Map::new();
+    cols_map.insert("name".into(), json!(name));
+    cols_map.insert("kind".into(), json!(kind));
+    cols_map.insert("rows".into(), json!(rows));
+    cols_map.insert("cols".into(), json!(cols));
+    cols_map.insert("cells_json".into(), json_str(&cells));
+    cols_map.insert("notes".into(), json!(input.notes.trim()));
+    cols_map.insert("updated_at".into(), json!(now));
+    if existing.is_none() {
+        cols_map.insert("archived".into(), json!(0));
+        cols_map.insert("created_at".into(), json!(now));
+    }
+    write(&conn, LAYOUTS, &id, cols_map, existing.is_none())?;
+    load_layout(&conn, &id)
+}
+
+/// Archive (or bring back) a map. Nothing is deleted.
+#[tauri::command]
+pub async fn archive_warehouse_layout(id: String, archived: bool) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    load_layout(&conn, &id)?;
+    let mut cols = Map::new();
+    cols.insert("archived".into(), json!(archived as i64));
+    cols.insert("updated_at".into(), json!(chrono::Utc::now().to_rfc3339()));
+    write(&conn, LAYOUTS, &id, cols, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +503,22 @@ mod tests {
         assert_eq!((dodgers.counts.get(&small).copied(), dodgers.loose), (Some(2), 6));
         assert!(imported.sections.iter().any(|s| s.name == "Mets"));
         assert_eq!(imported.log[0].note, "Imported from a sheet");
+    }
+
+    #[tokio::test]
+    async fn a_map_saves_and_shrinks() {
+        crate::db::init_test_store();
+        let cell = |r, c, fill| LayoutCell { r, c, fill, label: "Owls".into(), ..Default::default() };
+        let m = save_warehouse_layout(LayoutInput {
+            id: None, name: "Floor".into(), kind: "pallets".into(), rows: 4, cols: 6,
+            cells: vec![cell(0, 0, 4), cell(3, 5, 2)], notes: String::new(),
+        }).await.unwrap();
+        assert_eq!((m.kind.as_str(), m.cells.len()), ("pallets", 2));
+        let smaller = save_warehouse_layout(LayoutInput {
+            id: Some(m.id.clone()), name: "Floor".into(), kind: "pallets".into(), rows: 2, cols: 6, cells: m.cells, notes: String::new(),
+        }).await.unwrap();
+        assert_eq!(smaller.cells.len(), 1);
+        archive_warehouse_layout(m.id.clone(), true).await.unwrap();
+        assert!(list_warehouse_layouts().await.unwrap().iter().any(|l| l.id == m.id && l.archived));
     }
 }

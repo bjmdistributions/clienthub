@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  changesForInvoice, colName, describePick, invoiceLines, planUnits, rowsFromText, sectionBoxes, sectionUnits, shares, takeUnits,
+  changesForInvoice, colName, describePick, emptyPick, invoiceLines, layoutSummary, pickFromPlan, pickUnits, planUnits, rowsFromText,
+  sectionBoxes, sectionUnits, setPicked, shares, spotName, takeUnits,
   type BoxType, type WhSection,
 } from "./warehouse";
 
@@ -139,5 +140,54 @@ describe("reading pasted rows", () => {
   });
   it("names columns like a spreadsheet", () => {
     expect([colName(0), colName(25), colName(26)]).toEqual(["A", "Z", "AA"]);
+  });
+});
+
+describe("picking an order by hand (R-329)", () => {
+  const owls = sec("owls", { big: 3, tiny: 5 }, 8);
+
+  it("never takes more of a size than the shelf holds, and clears a zero", () => {
+    let p = setPicked(emptyPick(), owls, "big", 9);
+    expect(p.take.owls).toEqual({ big: 3 });
+    p = setPicked(p, owls, "tiny", 2);
+    p = setPicked(p, owls, null, 20);
+    expect(p.loose.owls).toBe(8);
+    expect(pickUnits(T, p)).toEqual({ owls: 3 * 72 + 2 * 12 + 8 });
+    p = setPicked(p, owls, "big", 0);
+    p = setPicked(p, owls, "tiny", 0);
+    p = setPicked(p, owls, null, 0);
+    expect(p).toEqual(emptyPick());
+  });
+
+  it("a hand pick invoices at a price set for one team", () => {
+    const item = { name: "Hats", unit_price: 9, box_types: T, sections: [owls] };
+    const p = setPicked(emptyPick(), owls, "big", 2);
+    const lines = invoiceLines(item, { ...p, units: pickUnits(T, p) }, { owls: 7.5 });
+    expect([lines[0].qty, lines[0].rate, lines[0].amount]).toEqual([144, 7.5, 1080]);
+    expect(changesForInvoice(lines)).toEqual([{ section_id: "owls", boxes: { big: -2 }, loose: 0 }]);
+  });
+
+  it("a packer plan can be adjusted by hand without changing the plan", () => {
+    const plan = planUnits(T, [owls], 100);
+    const p = pickFromPlan(plan);
+    p.take.owls.big = 0;
+    expect(plan.take.owls.big).toBe(1);
+  });
+});
+
+describe("the warehouse map (R-330)", () => {
+  const cell = (r: number, c: number, o: Partial<{ label: string; fill: number; aisle: boolean }>) =>
+    ({ r, c, item_id: "", section_id: "", label: "", fill: 0, note: "", aisle: false, ...o });
+
+  it("counts spots, leaving aisles out", () => {
+    const m = { rows: 2, cols: 3, cells: [cell(0, 0, { label: "Owls", fill: 4 }), cell(0, 1, { label: "Hawks", fill: 2 }), cell(1, 2, { aisle: true })] };
+    expect(layoutSummary(m)).toEqual({ spots: 5, used: 2, full: 1, partial: 1, empty: 3 });
+  });
+
+  it("names a pallet spot like a spreadsheet and a shelf by bay and level", () => {
+    expect(spotName("pallets", 4, 0, 0)).toBe("A1");
+    expect(spotName("pallets", 4, 2, 9)).toBe("C10");
+    expect(spotName("shelving", 4, 3, 0)).toBe("Bay 1, level 1");
+    expect(spotName("shelving", 4, 0, 2)).toBe("Bay 3, level 4");
   });
 });
