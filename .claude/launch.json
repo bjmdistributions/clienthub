@@ -478,6 +478,15 @@
         "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/577bd22c-1bd7-4284-9b04-157f4679d20d/scratchpad/phone"
       ],
       "port": 8324
+    },
+    {
+      "name": "phone-r326",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/551f167b-1538-474d-8296-ee39645cb2ad/scratchpad/phone_mock.py",
+        "8326"
+      ],
+      "port": 8326
     }
   ]
 }

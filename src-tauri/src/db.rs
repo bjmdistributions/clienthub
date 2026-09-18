@@ -2098,4 +2098,31 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE shipments ADD COLUMN deal_dates_before TEXT DEFAULT '';
         "#,
     ),
+    (
+        97,
+        // R-326: stock Jack physically holds (warehouse.rs). One row per product; its
+        // sections (a team, a size, a colour) live in `sections_json` as
+        // [{id, name, boxes, per_box}], so units = boxes x per_box and nothing stores a
+        // total that could disagree with them. `log_json` is the movement history, newest
+        // first, capped. NOT an inventory lot: nothing here reaches the storefront.
+        // Synced (sync.rs ALLOWED_TABLES, netsync SNAPSHOT_TABLES) and mirrored in
+        // clienthub-api (schema.sql + ALLOWED_TABLES / PUSHABLE / SNAPSHOT_TABLES) — the
+        // server must be DEPLOYED FIRST or every push is rejected as an unknown table.
+        r#"
+        CREATE TABLE IF NOT EXISTS warehouse_items (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            section_label TEXT DEFAULT 'Section',
+            sections_json TEXT DEFAULT '[]',
+            boxes_per_pallet INTEGER DEFAULT 0,
+            unit_price REAL DEFAULT 0,
+            notes TEXT DEFAULT '',
+            log_json TEXT DEFAULT '[]',
+            archived INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        "#,
+    ),
 ];

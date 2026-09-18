@@ -13,6 +13,7 @@ import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { FromPicker, useSendFromOptions } from "./FromPicker";
+import { boxesOnInvoice, INVOICE_PREFILL_KEY, plainLines, type InvoicePrefill, type WhTag } from "../lib/warehouse";
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
 
@@ -125,6 +126,27 @@ export default function InvoicesView() {
       if (wanted) localStorage.removeItem("invoices_open_id");
     } catch { /* ignore */ }
     if (wanted) openDetail(wanted);
+  }, []);
+
+  // R-326: the warehouse packer hands over a ready-made invoice the same way — one line
+  // per section it picked. Read once and cleared; nothing leaves the shelf until the
+  // invoice is actually created (InvoiceForm.submit).
+  const [prefill, setPrefill] = useState<InvoicePrefill | null>(null);
+  useEffect(() => {
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(INVOICE_PREFILL_KEY);
+      if (raw) localStorage.removeItem(INVOICE_PREFILL_KEY);
+    } catch { /* ignore */ }
+    if (!raw) return;
+    try {
+      const p = JSON.parse(raw) as InvoicePrefill;
+      if (Array.isArray(p?.lines) && p.lines.length && p.warehouse?.item_id) {
+        setPrefill(p);
+        setEditing(null);
+        setShowForm(true);
+      }
+    } catch { /* a malformed stash opens nothing */ }
   }, []);
 
   const handlePdf = async (id: string) => {
@@ -347,7 +369,8 @@ export default function InvoicesView() {
 
       {/* Invoice form */}
       {showForm && (
-        <InvoiceForm clients={clients} initial={editing} onClose={() => { setShowForm(false); setEditing(null); load(); }} />
+        <InvoiceForm clients={clients} initial={editing} prefill={editing ? null : prefill}
+          onClose={() => { setShowForm(false); setEditing(null); setPrefill(null); load(); }} />
       )}
 
       {/* Mark paid modal */}
@@ -591,7 +614,7 @@ export default function InvoicesView() {
   );
 }
 
-function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial?: Invoice | null; onClose: () => void }) {
+function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]; initial?: Invoice | null; prefill?: InvoicePrefill | null; onClose: () => void }) {
   const [clientId, setClientId]     = useState(initial?.client_id ?? clients[0]?.id ?? "");
   const [clientSearch, setClientSearch] = useState("");
   const [showClientPicker, setShowClientPicker] = useState(true);
@@ -608,13 +631,19 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   const [policyOn, setPolicyOn]     = useState(!!(initial?.return_policy || "").trim());
   const [policyText, setPolicyText] = useState(initial?.return_policy ?? "");
   const [noticeClause, setNoticeClause] = useState<[string, string] | null>(null);
-  const [items, setItems]           = useState<LineItem[]>(() => {
+  // A line from the warehouse packer carries `wh` (which section it came from) while the
+  // form is open, so saving can take exactly what the invoice ends up carrying off the
+  // shelf. It never reaches the stored invoice — see plainLines.
+  const [items, setItems]           = useState<(LineItem & { wh?: WhTag })[]>(() => {
     if (initial) {
       const parsed: LineItem[] = JSON.parse(initial.line_items_json || "[]");
       return parsed.length ? parsed : [{ description: "", qty: 1, rate: 0, amount: 0 }];
     }
+    if (prefill?.lines.length) return prefill.lines.map((l) => ({ ...l }));
     return [{ description: "", qty: 1, rate: 0, amount: 0 }];
   });
+  const whOut = !initial && prefill ? boxesOnInvoice(items) : [];
+  const whBoxes = whOut.reduce((a, c) => a - c.boxes, 0);
   const [submitting, setSubmitting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [templates, setTemplates]   = useState<LineItemTemplate[]>([]);
@@ -719,7 +748,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
     if (items.length === 0) return;
     setPreviewing(true);
     try {
-      await api.previewInvoicePdf({ client_id: clientId, due_date: dueDate, issue_date: issueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined });
+      await api.previewInvoicePdf({ client_id: clientId, due_date: dueDate, issue_date: issueDate, line_items: plainLines(items), tax_rate: taxRate / 100, notes: notes || undefined });
     } catch (e: any) { toast(`Preview failed: ${e}`, "error"); }
     finally { setPreviewing(false); }
   };
@@ -736,7 +765,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
       }
       // "" (not undefined) when the toggle is off, so switching it off on an existing
       // invoice actually clears the stored clause instead of merging the old one back.
-      const data = { due_date: dueDate, issue_date: issueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined, recurring: recurring || undefined, return_policy: policyOn ? policyText : "" };
+      const data = { due_date: dueDate, issue_date: issueDate, line_items: plainLines(items), tax_rate: taxRate / 100, notes: notes || undefined, recurring: recurring || undefined, return_policy: policyOn ? policyText : "" };
       if (initial) await api.updateInvoice(initial.id, data);
       else {
         const invId = await api.createInvoice({ ...data, client_id: cid });
@@ -748,6 +777,17 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           const number = await api.getInvoice(invId).then((v) => v?.number).catch(() => "");
           await api.addClientCredit(cid, -draw, { kind: "applied", note: number ? `Applied to invoice ${number}` : "Applied to an invoice" })
             .catch((e: any) => toast(`Invoice created, but the credit was not drawn down: ${e}`, "error"));
+        }
+        // R-326: the invoice exists, so its boxes leave the warehouse now — read from the
+        // lines as saved, so an edited quantity or a deleted line is what counts.
+        if (prefill && whOut.length) {
+          const number = await api.getInvoice(invId).then((v) => v?.number).catch(() => "");
+          await api.warehouseAdjust(prefill.warehouse.item_id, whOut, { reference: number || undefined, note: "Invoiced" })
+            .then((r) => {
+              if (r.short.length) toast(`Invoice created. Short on the shelf: ${r.short.map((x) => `${x.name} had ${x.taken} of ${x.wanted} boxes`).join(", ")}`, "error");
+              else toast(`${whBoxes.toLocaleString()} boxes of ${prefill.warehouse.item_name} taken out of the warehouse`);
+            })
+            .catch((e: any) => toast(`Invoice created, but the warehouse was not updated: ${e}`, "error"));
         }
       }
       onClose();
@@ -864,6 +904,21 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
               className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors flex-shrink-0">
               Apply {fmtAmount(Math.min(creditLeft, subtotal))}
             </button>
+          )}
+        </div>
+      )}
+
+      {/* R-326: say what saving does to the warehouse, live, before it does it. */}
+      {!initial && prefill && (
+        <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl text-[13px] text-ink">
+          {whBoxes > 0 ? (
+            <>
+              <strong className="font-semibold">From the warehouse.</strong> Creating this invoice takes{" "}
+              {whBoxes.toLocaleString()} {whBoxes === 1 ? "box" : "boxes"} of {prefill.warehouse.item_name} off the shelf.
+              <span className="text-muted"> Change a quantity and the boxes follow it; delete a line and nothing is taken for it.</span>
+            </>
+          ) : (
+            <>No warehouse lines are left on this invoice, so nothing will be taken off the shelf.</>
           )}
         </div>
       )}

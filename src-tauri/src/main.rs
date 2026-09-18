@@ -33,6 +33,7 @@ mod sync_crypto;
 mod secret_store;
 mod show_packing;
 mod shipments;
+mod warehouse;
 mod books;
 mod customer_portal;
 mod template;
@@ -1159,6 +1160,11 @@ fn main() {
             shipments::dismiss_shipment,
             shipments::suggest_shipment_deals,
             shipments::scan_priority1_mail,
+            // Warehouse stock + truckload packer (R-326)
+            warehouse::list_warehouse_items,
+            warehouse::save_warehouse_item,
+            warehouse::archive_warehouse_item,
+            warehouse::warehouse_adjust,
             books::list_books_changes,
             books::mark_books_changes_seen,
             customer_portal::customer_portal_list,

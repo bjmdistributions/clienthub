@@ -57,6 +57,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     // and one per slot actually touched — never one per cleaned stack. The stacks are an
     // artifact fetched over an authenticated route, not oplog rows.
     "lot_sheet", "lot_slot_state", "lot_build",
+    // Warehouse stock (R-326): a fresh install shows the same boxes on the shelf.
+    "warehouse_items",
 ];
 
 pub fn ensure_tables() -> Result<()> {

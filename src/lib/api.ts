@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { WarehouseInput, WarehouseItem, WhChange, WhShort } from "./warehouse";
 
 // R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
 // are server-proxied and don't exist until Pass 2. Every wrapper below routes
@@ -3045,6 +3046,13 @@ export const api = {
   dismissShipment: (id: string) => invoke<void>("dismiss_shipment", { id }),
   suggestShipmentDeals: (id: string) => invoke<ShipmentDealSuggestion[]>("suggest_shipment_deals", { id }),
   scanPriority1Mail: (days: number) => invoke<{ emails: number; shipments: number; errors: string[] }>("scan_priority1_mail", { days }),
+  // R-326 warehouse stock + truckload packer
+  listWarehouseItems: () => invoke<WarehouseItem[]>("list_warehouse_items"),
+  saveWarehouseItem: (input: WarehouseInput) => invoke<WarehouseItem>("save_warehouse_item", { input }),
+  archiveWarehouseItem: (id: string, archived: boolean) => invoke<void>("archive_warehouse_item", { id, archived }),
+  /** Signed box changes (negative = out). Returns the item and any section that was short. */
+  warehouseAdjust: (id: string, changes: WhChange[], opts: { reference?: string; note?: string; undoOf?: string } = {}) =>
+    invoke<{ item: WarehouseItem; short: WhShort[] }>("warehouse_adjust", { id, changes, reference: opts.reference ?? null, note: opts.note ?? null, undoOf: opts.undoOf ?? null }),
   listDealFlowsByStage: (stage: string) => invoke<DealFlow[]>("list_deal_flows_by_stage", { stage }),
   markPaymentReceived: (id: string, input: PaymentReceivedInput) =>
     invoke<void>("mark_payment_received", { id, input }),
