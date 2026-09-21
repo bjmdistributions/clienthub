@@ -157,6 +157,7 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
   const [view, setViewState] = useState<View>(() => readView(layout.id));
   const [colorBy, setColorByState] = useState<"fill" | "team">(() => { try { return localStorage.getItem(COLOR_KEY) === "team" ? "team" : "fill"; } catch { return "fill"; } });
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [confirmUnshelf, setConfirmUnshelf] = useState<string | null>(null);
   const anchor = useRef<{ r: number; c: number } | null>(null);
   const dragging = useRef(false);
   const choices = useChoices(items);
@@ -201,7 +202,7 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
   };
   useEffect(() => () => { void send(); }, [send]);
 
-  const clearAll = () => { setSel(new Set()); setWall(null); setDoorId(null); setOther(null); };
+  const clearAll = () => { setSel(new Set()); setWall(null); setDoorId(null); setOther(null); setConfirmUnshelf(null); };
   useEffect(() => {
     const up = () => { dragging.current = false; };
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { clearAll(); setFocus(null); } };
@@ -601,10 +602,20 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
             onBlur={(e) => { if (e.target.value !== sh.note) { const val = e.target.value; setShelves((s) => { s[k].note = val; }); } }}
             style={WH_INPUT_BG} className={WH_INPUT} />
         </div>
-        <div className="flex flex-wrap gap-2 pt-1">
-          <button onClick={() => unShelf(k)} className={WH_BTN_SECONDARY}>Make it a pallet spot</button>
-          <button onClick={() => setShelves((s) => { s[k] = { levels: s[k].levels.map(() => blankLevel()), note: "" }; })} className={WH_BTN_SECONDARY}>Clear</button>
-        </div>
+        {confirmUnshelf === k ? (
+          <div className="space-y-2 pt-1">
+            <p className="text-[12.5px] text-ink-2">Levels above the bottom hold something. A pallet spot keeps only level 1; the rest is cleared.</p>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => { setConfirmUnshelf(null); unShelf(k); }} className={WH_BTN_PRIMARY}>Make it a pallet spot</button>
+              <button onClick={() => setConfirmUnshelf(null)} className={WH_BTN_SECONDARY}>Keep the shelf</button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button onClick={() => (sh.levels.slice(1).some((lv) => cellKey(lv)) ? setConfirmUnshelf(k) : unShelf(k))} className={WH_BTN_SECONDARY}>Make it a pallet spot</button>
+            <button onClick={() => setShelves((s) => { s[k] = { levels: s[k].levels.map(() => blankLevel()), note: "" }; })} className={WH_BTN_SECONDARY}>Clear</button>
+          </div>
+        )}
       </div>
     );
   };
@@ -843,6 +854,10 @@ function LayoutForm({ initial, onCancel, onSaved }: { initial: WarehouseLayout |
     Object.keys(work.shape.shelves).filter((k) => { const [r, c] = k.split(":").map(Number); return r < work.rows && c < (lengths[r] ?? 0); }).length;
   const lost = Math.max(0, before - after - gone);
   const widest = Math.max(0, ...lengths);
+  // Doors that no longer fit their wall: saving moves them inside it, or drops one onto another.
+  const shelvesOff = shelvingKind ? Object.keys(work.shape.shelves).length : 0;
+  const doorsOff = shelvingKind ? work.shape.doors.length
+    : work.shape.doors.filter((d) => d.at + d.width > (d.side === "top" || d.side === "bottom" ? Math.max(1, widest) : work.rows)).length;
 
   const save = async () => {
     setBusy(true);
@@ -907,6 +922,13 @@ function LayoutForm({ initial, onCancel, onSaved }: { initial: WarehouseLayout |
           <p className="text-[11.5px] text-muted mt-2">Taking a {shelvingKind ? "level" : "row"} out moves the ones below it up, with what is marked on them.</p>
         </div>
         {lost > 0 && <p className="text-[12.5px] text-warning-ink">{lost} marked {lost === 1 ? "spot falls" : "spots fall"} outside the new rows and will be dropped.</p>}
+        {shelvingKind && (doorsOff > 0 || shelvesOff > 0) ? (
+          <p className="text-[12.5px] text-warning-ink">
+            Shelving has no walls and no floor, so saving it as shelving drops {[doorsOff ? `${doorsOff} ${doorsOff === 1 ? "door" : "doors"}` : "", shelvesOff ? `${shelvesOff} ${shelvesOff === 1 ? "shelf" : "shelves"} and what is on ${shelvesOff === 1 ? "it" : "them"}` : ""].filter(Boolean).join(" and ")}. Keep it as pallets on the floor to keep them.
+          </p>
+        ) : doorsOff > 0 && (
+          <p className="text-[12.5px] text-warning-ink">{doorsOff} {doorsOff === 1 ? "door runs" : "doors run"} past the end of the shorter wall; saving moves {doorsOff === 1 ? "it" : "them"} inside the wall, or drops one where another door already is.</p>
+        )}
         {widest < 1 && <p className="text-[12.5px] text-warning-ink">Give at least one {shelvingKind ? "level a bay" : "row a pallet"}.</p>}
       </div>
       <div className="flex justify-end gap-2 mt-4">
