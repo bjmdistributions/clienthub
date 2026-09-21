@@ -88,17 +88,41 @@ const LAYOUTS: any[] = [
   },
 ];
 
+// R-346: invented measurements for the invented product, and the real fitter (pallet_fit.rs) behind
+// the phone mock on :8326 (scratchpad/fitlab), so the harness shows exactly what the app will.
+const DIMS = [[24, 20, 12], [20, 16, 12], [18, 16, 10], [16, 12, 10], [12, 10, 8]];
+ITEMS[0].pallet = {
+  pallet: { length: 48, width: 40, deck: 6, max_height: 72 },
+  boxes: Object.fromEntries(preview.box_types.map((t, i) => [t.id, { length: DIMS[i][0], width: DIMS[i][1], height: DIMS[i][2], side_ok: false }])),
+};
+const FITTER = "http://localhost:8326/api/warehouse";
+const fitter = async (path: string, body: unknown) => {
+  const r = await (await fetch(`${FITTER}/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+  if (r && r.error) throw r.error;
+  return r;
+};
+
 const per = (it: any, t: string) => (it.box_types.find((x: BoxType) => x.id === t)?.per_box ?? 0);
 const units = (it: any, s: WhSection) => Object.entries(s.counts).reduce((a, [t, n]) => a + (n as number) * per(it, t), 0) + (s.loose || 0);
 
 const handlers: Record<string, (a: any) => any> = {
   list_warehouse_items: () => clone(ITEMS),
-  save_warehouse_item: ({ input }) => {
+  save_warehouse_item: async ({ input }) => {
     const it = ITEMS.find((i) => i.id === input.id);
-    const row = { ...(it || { id: `w${ITEMS.length + 1}`, log: [], archived: false, created_at: NOW }), ...input, updated_at: NOW };
+    const { pallet, ...rest } = input;
+    const row = { ...(it || { id: `w${ITEMS.length + 1}`, log: [], archived: false, created_at: NOW }), ...rest, ...(pallet ? { pallet } : {}), updated_at: NOW };
+    // As the storage layer does: a measured biggest box sets the pallet size.
+    const big = [...row.box_types].sort((a: BoxType, b: BoxType) => b.per_box - a.per_box)[0];
+    const size = big && row.pallet?.boxes?.[big.id];
+    if (size) {
+      const caps = await fitter("capacity", { pallet: row.pallet.pallet, types: [{ type_id: big.id, name: big.name, per_box: big.per_box, size }] }).catch(() => null);
+      if (caps?.[0]) row.units_per_pallet = caps[0].boxes * big.per_box;
+    }
     if (it) Object.assign(it, row); else ITEMS.push(row);
     return clone(row);
   },
+  warehouse_pallet_capacity: ({ pallet, types }) => fitter("capacity", { pallet, types }),
+  warehouse_fit_pallets: ({ request }) => fitter("fit", request),
   warehouse_adjust: ({ id, changes, reference, note }) => {
     const it = ITEMS.find((i) => i.id === id);
     const lines = (changes || []).map((c: any) => {
@@ -151,7 +175,7 @@ const handlers: Record<string, (a: any) => any> = {
 (window as any).__TAURI_INTERNALS__ = {
   invoke: (cmd: string, args: any) => {
     (window as any).__calls = [...((window as any).__calls || []), { cmd, args }];
-    if (handlers[cmd]) return Promise.resolve(handlers[cmd](args || {}));
+    if (handlers[cmd]) { try { return Promise.resolve(handlers[cmd](args || {})); } catch (e) { return Promise.reject(e); } }
     if (cmd === "plugin:dialog|open") return Promise.resolve("C:/stock/Invented manifest.csv");
     return Promise.resolve(cmd.startsWith("list_") || cmd.endsWith("_all") ? [] : null);
   },

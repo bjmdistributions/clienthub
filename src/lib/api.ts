@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
+import type { Capacity, FitRequest, FitResult, FitType, PalletSpec } from "./palletFit";
 
 // R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
 // are server-proxied and don't exist until Pass 2. Every wrapper below routes
@@ -3063,6 +3064,9 @@ export const api = {
   /** R-340: the boxes on one pallet spot ("r:c") or shelf level ("r:c:L"). */
   setWarehousePlaceStock: (layoutId: string, place: string, itemId: string, sectionId: string, change: { set?: Record<string, number>; add?: Record<string, number> }) =>
     invoke<WarehouseLayout>("set_warehouse_place_stock", { layoutId, place, itemId, sectionId, boxes: change.set ?? null, add: change.add ?? null }),
+  // R-346: fitting boxes onto pallets (pallet_fit.rs, the same fitter the phone's server runs)
+  warehousePalletCapacity: (pallet: PalletSpec, types: FitType[]) => invoke<Capacity[]>("warehouse_pallet_capacity", { pallet, types }),
+  warehouseFitPallets: (request: FitRequest) => invoke<FitResult>("warehouse_fit_pallets", { request }),
   warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
   warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
     invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),

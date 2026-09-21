@@ -15,6 +15,7 @@
 //! Synced per column, last writer wins — see the vault's revisit/warehouse-counts-are-one-column.
 
 use crate::db::pool;
+use crate::pallet_fit::{self, Capacity, FitRequest, FitResult, FitType, PalletSetup, PalletSpec};
 use crate::warehouse_core::{self as core, BoxType, Change, ImportResult, LayoutCell, LayoutShape, MapStock, Mapping, Move, PlaceMove, Section, Short};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -29,6 +30,8 @@ pub struct WarehouseItem {
     pub units_per_pallet: i64,
     pub unit_price: f64,
     pub notes: String,
+    /// The pallet and each box size's measurements (R-346).
+    pub pallet: PalletSetup,
     pub log: Vec<Move>,
     pub archived: bool,
     pub created_at: String,
@@ -52,6 +55,9 @@ pub struct WarehouseInput {
     pub unit_price: f64,
     #[serde(default)]
     pub notes: String,
+    /// Sent only by the Pallets screen; absent, the stored setup stays as it is (R-346).
+    #[serde(default)]
+    pub pallet: Option<PalletSetup>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,7 +80,7 @@ const LAYOUTS: &str = "warehouse_layouts";
 
 const COLS: &str = "id, name, COALESCE(section_label,'Section'), COALESCE(sections_json,'[]'), \
     COALESCE(boxes_per_pallet,0), COALESCE(unit_price,0), COALESCE(notes,''), COALESCE(log_json,'[]'), \
-    COALESCE(archived,0), created_at, updated_at, COALESCE(box_types_json,'[]'), COALESCE(units_per_pallet,0)";
+    COALESCE(archived,0), created_at, updated_at, COALESCE(box_types_json,'[]'), COALESCE(units_per_pallet,0), COALESCE(pallet_json,'{}')";
 
 fn map_row(r: &rusqlite::Row) -> rusqlite::Result<WarehouseItem> {
     let sections: String = r.get(3)?;
@@ -91,6 +97,7 @@ fn map_row(r: &rusqlite::Row) -> rusqlite::Result<WarehouseItem> {
     }
     // R-345: no pallet size set reads as 21 of the biggest box, on every screen.
     let units_per_pallet = core::pallet_units(units_per_pallet, &box_types);
+    let pallet: String = r.get(13)?;
     Ok(WarehouseItem {
         id: r.get(0)?,
         name: r.get(1)?,
@@ -100,6 +107,7 @@ fn map_row(r: &rusqlite::Row) -> rusqlite::Result<WarehouseItem> {
         units_per_pallet,
         unit_price: r.get(5)?,
         notes: r.get(6)?,
+        pallet: serde_json::from_str(&pallet).unwrap_or_default(),
         log: serde_json::from_str(&log).unwrap_or_default(),
         archived: r.get::<_, i64>(8)? != 0,
         created_at: r.get(9)?,
@@ -183,7 +191,21 @@ fn save(conn: &rusqlite::Connection, input: WarehouseInput, note: &str) -> Resul
     cols.insert("section_label".into(), json!(label));
     cols.insert("box_types_json".into(), json_str(&box_types));
     cols.insert("sections_json".into(), json_str(&sections));
-    cols.insert("units_per_pallet".into(), json!(input.units_per_pallet.max(0)));
+    // R-346: measurements, when this save carries them; and once the pallet and the biggest box are
+    // measured, the pallet size is what the fitter says a pallet of them holds, not a typed number.
+    let ids: Vec<&str> = box_types.iter().map(|t| t.id.as_str()).collect();
+    let setup = input.pallet.map(|p| pallet_fit::clean_setup(p, &ids));
+    if let Some(s) = &setup {
+        cols.insert("pallet_json".into(), json_str(s));
+    }
+    let mut units_per_pallet = input.units_per_pallet.max(0);
+    let stored = existing.as_ref().map(|e| e.pallet.clone()).unwrap_or_default();
+    if let Some(big) = box_types.iter().filter(|t| t.per_box > 0).max_by_key(|t| t.per_box) {
+        if let Some(u) = pallet_fit::pallet_units_from(setup.as_ref().unwrap_or(&stored), &big.id, &big.name, big.per_box) {
+            units_per_pallet = u;
+        }
+    }
+    cols.insert("units_per_pallet".into(), json!(units_per_pallet));
     cols.insert("unit_price".into(), json!(input.unit_price.max(0.0)));
     cols.insert("notes".into(), json!(input.notes.trim()));
     cols.insert("updated_at".into(), json!(now));
@@ -371,7 +393,7 @@ pub async fn warehouse_import(
             core::merge_import(&mut types, &mut sections, &imp, add);
             WarehouseInput {
                 id: Some(cur.id), name: cur.name, section_label: cur.section_label, box_types: types, sections,
-                units_per_pallet: cur.units_per_pallet, unit_price: cur.unit_price, notes: cur.notes,
+                units_per_pallet: cur.units_per_pallet, unit_price: cur.unit_price, notes: cur.notes, pallet: None,
             }
         }
         None => WarehouseInput {
@@ -383,9 +405,27 @@ pub async fn warehouse_import(
             units_per_pallet: 0,
             unit_price: 0.0,
             notes: String::new(),
+            pallet: None,
         },
     };
     save(&conn, input, "Imported from a sheet")
+}
+
+// ---------------------------------------------------------------------------------------
+// Fitting boxes onto pallets (R-346): pure work on what it is sent — pallet_fit.rs, the same
+// file the server runs, so the desktop and the phone always show the same pallets.
+// ---------------------------------------------------------------------------------------
+
+/// The most of each measured box size one pallet holds, with the full pallet placed box by box.
+#[tauri::command]
+pub async fn warehouse_pallet_capacity(pallet: PalletSpec, types: Vec<FitType>) -> Result<Vec<Capacity>, String> {
+    pallet_fit::capacities(&pallet, &types)
+}
+
+/// A load, fitted onto pallets box by box. Every pallet passes pallet_fit::check first.
+#[tauri::command]
+pub async fn warehouse_fit_pallets(request: FitRequest) -> Result<FitResult, String> {
+    pallet_fit::fit(&request)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -544,7 +584,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn input(id: Option<String>, sections: Vec<Section>, types: Vec<BoxType>) -> WarehouseInput {
-        WarehouseInput { id, name: "New Era 59FIFTY".into(), section_label: "Team".into(), box_types: types, sections, units_per_pallet: 1440, unit_price: 9.0, notes: String::new() }
+        WarehouseInput { id, name: "New Era 59FIFTY".into(), section_label: "Team".into(), box_types: types, sections, units_per_pallet: 1440, unit_price: 9.0, notes: String::new(), pallet: None }
     }
 
     /// End to end on the real schema: create, pick, put back, recount, import.
@@ -624,6 +664,35 @@ mod tests {
 
     /// R-340: boxes recorded on a pallet come off it when stock leaves, part pallets first,
     /// and a put-back returns them.
+    /// R-346: measurements save in their own column and set the pallet size; a save without them keeps them.
+    #[tokio::test]
+    async fn measured_boxes_set_the_pallet_size_and_a_save_without_them_keeps_them() {
+        crate::db::init_test_store();
+        let types = vec![BoxType { id: String::new(), name: "Big Box".into(), per_box: 72 }];
+        let it = save_warehouse_item(input(None, vec![], types)).await.unwrap();
+        let big = it.box_types[0].id.clone();
+        let mut setup = PalletSetup::default();
+        setup.pallet = PalletSpec { length: 48.0, width: 40.0, deck: 6.0, max_height: 60.0 };
+        setup.boxes.insert(big.clone(), pallet_fit::BoxSize { length: 24.0, width: 20.0, height: 12.0, side_ok: false });
+        setup.boxes.insert("gone".into(), pallet_fit::BoxSize { length: 1.0, width: 1.0, height: 1.0, side_ok: false });
+        let measured = save_warehouse_item(WarehouseInput { pallet: Some(setup), ..input(Some(it.id.clone()), vec![], it.box_types.clone()) }).await.unwrap();
+        // 4 a layer, 4 layers under 54 in: 16 Big Box, whatever was typed.
+        assert_eq!(measured.units_per_pallet, 16 * 72);
+        assert!(!measured.pallet.boxes.contains_key("gone"), "only the product's own sizes are kept");
+        // An older screen saving the product without measurements keeps them, and the size they give.
+        let again = save_warehouse_item(input(Some(it.id.clone()), vec![], it.box_types.clone())).await.unwrap();
+        assert_eq!(again.pallet.boxes.get(&big).map(|b| b.height), Some(12.0));
+        assert_eq!(again.units_per_pallet, 16 * 72);
+        let r = warehouse_fit_pallets(FitRequest {
+            pallet: again.pallet.pallet.clone(),
+            types: vec![FitType { type_id: big.clone(), name: "Big Box".into(), per_box: 72, size: again.pallet.boxes[&big].clone() }],
+            groups: vec![pallet_fit::FitGroup { section_id: "owls".into(), name: "Owls".into(), type_id: big.clone(), boxes: 20 }],
+            big_alone: true,
+        }).await.unwrap();
+        assert_eq!(r.pallets.len(), 2);
+        assert_eq!(r.pallets.iter().map(|p| p.boxes.len()).sum::<usize>(), 20);
+    }
+
     /// R-345: a product saved with no pallet size reads as 21 of its biggest box; one he set is kept.
     #[tokio::test]
     async fn no_pallet_size_reads_as_21_of_the_biggest_box() {

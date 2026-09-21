@@ -35,6 +35,7 @@ mod show_packing;
 mod shipments;
 mod warehouse;
 mod warehouse_core;
+mod pallet_fit;
 mod books;
 mod customer_portal;
 mod template;
@@ -1174,6 +1175,8 @@ fn main() {
             warehouse::save_warehouse_layout,
             warehouse::set_warehouse_place_stock,
             warehouse::archive_warehouse_layout,
+            warehouse::warehouse_pallet_capacity,
+            warehouse::warehouse_fit_pallets,
             books::list_books_changes,
             books::mark_books_changes_seen,
             customer_portal::customer_portal_list,

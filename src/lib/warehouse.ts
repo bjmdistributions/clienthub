@@ -19,6 +19,7 @@
 // www/app.js. Change both together; the tests pin the behaviour.
 
 import type { LineItem } from "./api";
+import type { FitPallet, PalletSetup, PalletSpec } from "./palletFit";
 
 export interface BoxType { id: string; name: string; per_box: number }
 
@@ -59,6 +60,8 @@ export interface WarehouseItem {
   units_per_pallet: number;
   unit_price: number;
   notes: string;
+  /** The pallet and each box size's measurements (R-346); absent from an older app. */
+  pallet?: PalletSetup;
   log: WhMove[];
   archived: boolean;
   created_at: string;
@@ -74,6 +77,8 @@ export interface WarehouseInput {
   units_per_pallet: number;
   unit_price: number;
   notes: string;
+  /** Only the Pallets screen sends it; left out, the stored measurements stay (R-346). */
+  pallet?: PalletSetup;
 }
 
 /** One section's part of a move — the shape warehouse_core.rs `Change` reads. */
@@ -912,6 +917,8 @@ export interface LotBuild {
   pallets: BuiltPallet[];
   loose: LooseGrab[];
   units: number;
+  /** The pallets are the fitter's, one for one (R-346); absent when split by count. */
+  fitted?: boolean;
 }
 
 /** The product's biggest box size — what a pallet's capacity is counted in. */
@@ -921,8 +928,14 @@ export const bigBox = (types: BoxType[]) => [...types].filter((t) => t.per_box >
  * Split a plan into the pallets to build. `perPallet` is how many big boxes fit on one; the
  * smaller boxes share their own pallets up to the same number of units. 0 or less keeps it one
  * list (pallet 1). Sources come from takeFromPlaces, so they match what the grab takes off.
+ *
+ * With `fitted` (R-346: the pallets pallet_fit.rs built, box by box), each pallet holds exactly
+ * what the fitter put on it — its boxes of each team and size taken off the places in the same
+ * order — and `perPallet` is not used. If the fitted pallets and the plan ever disagree on a
+ * single box, the fitted split is dropped rather than shown wrong.
  */
-export function buildLot(item: Pick<WarehouseItem, "id" | "box_types" | "sections">, layouts: WarehouseLayout[], plan: Pick<PickPlan, "take" | "loose">, perPallet: number): LotBuild {
+export function buildLot(item: Pick<WarehouseItem, "id" | "box_types" | "sections">, layouts: WarehouseLayout[], plan: Pick<PickPlan, "take" | "loose">, perPallet: number,
+  fitted?: { counts: { section_id: string; type_id: string; boxes: number }[] }[]): LotBuild {
   const big = bigBox(item.box_types);
   const per = (tid: string) => item.box_types.find((t) => t.id === tid);
   type Chunk = Omit<GrabLine, "id" | "pallet">;
@@ -944,6 +957,41 @@ export function buildLot(item: Pick<WarehouseItem, "id" | "box_types" | "section
       }
       if (left > 0) chunks.push({ section_id: s.id, name: s.name, type_id: tid, type_name: t.name, per_box: t.per_box, boxes: left, place: null });
     }
+  }
+  const totals = item.box_types
+    .map((t) => ({ type_id: t.id, name: t.name, per_box: t.per_box, boxes: chunks.filter((c) => c.type_id === t.id).reduce((a, c) => a + c.boxes, 0) }))
+    .filter((t) => t.boxes > 0)
+    .sort((a, b) => b.per_box - a.per_box);
+  const loose: LooseGrab[] = item.sections.filter((s) => (plan.loose[s.id] || 0) > 0).map((s) => ({ id: `L-${s.id}`, section_id: s.id, name: s.name, units: plan.loose[s.id] }));
+  const units = chunks.reduce((a, c) => a + c.boxes * c.per_box, 0) + loose.reduce((a, l) => a + l.units, 0);
+  if (fitted && fitted.length) {
+    const queue = new Map<string, Chunk[]>();
+    for (const c of chunks) {
+      const k = `${c.section_id}|${c.type_id}`;
+      queue.set(k, [...(queue.get(k) || []), { ...c }]);
+    }
+    let agrees = true;
+    const out: BuiltPallet[] = fitted.map((fp, i) => {
+      const cur: BuiltPallet = { n: i + 1, big: false, boxes: 0, units: 0, lines: [] };
+      for (const cnt of fp.counts) {
+        let want = cnt.boxes;
+        const q = queue.get(`${cnt.section_id}|${cnt.type_id}`) || [];
+        while (want > 0 && q.length) {
+          const c = q[0];
+          const k = Math.min(want, c.boxes);
+          cur.lines.push({ ...c, boxes: k, id: `${cur.n}-${cur.lines.length}`, pallet: cur.n });
+          cur.boxes += k;
+          cur.units += k * c.per_box;
+          c.boxes -= k;
+          want -= k;
+          if (c.boxes === 0) q.shift();
+        }
+        if (want > 0) agrees = false;
+      }
+      cur.big = !!big && cur.lines.length > 0 && cur.lines.every((l) => l.type_id === big.id);
+      return cur;
+    });
+    if (agrees && ![...queue.values()].some((q) => q.some((c) => c.boxes > 0))) return { totals, pallets: out, loose, units, fitted: true };
   }
   const teamBig = (sid: string) => chunks.filter((c) => c.section_id === sid && big && c.type_id === big.id).reduce((a, c) => a + c.boxes, 0);
   const order = (a: Chunk, b: Chunk) => b.per_box - a.per_box || teamBig(b.section_id) - teamBig(a.section_id) || a.name.localeCompare(b.name);
@@ -976,12 +1024,6 @@ export function buildLot(item: Pick<WarehouseItem, "id" | "box_types" | "section
   } else {
     fill([...bigs, ...smalls], true, 0, () => 1);
   }
-  const totals = item.box_types
-    .map((t) => ({ type_id: t.id, name: t.name, per_box: t.per_box, boxes: chunks.filter((c) => c.type_id === t.id).reduce((a, c) => a + c.boxes, 0) }))
-    .filter((t) => t.boxes > 0)
-    .sort((a, b) => b.per_box - a.per_box);
-  const loose: LooseGrab[] = item.sections.filter((s) => (plan.loose[s.id] || 0) > 0).map((s) => ({ id: `L-${s.id}`, section_id: s.id, name: s.name, units: plan.loose[s.id] }));
-  const units = chunks.reduce((a, c) => a + c.boxes * c.per_box, 0) + loose.reduce((a, l) => a + l.units, 0);
   return { totals, pallets, loose, units };
 }
 
@@ -992,6 +1034,9 @@ export interface BuildState {
   started_at: string;
   per_pallet: number;
   build: LotBuild;
+  /** R-346: the fitted pallets and the pallet they were fitted to, frozen with the build so the
+   *  picture never changes under a half-built pallet. Absent for a build started unmeasured. */
+  fit?: { pallet: PalletSpec; pallets: FitPallet[] };
   /** grab or loose id -> the warehouse move that took it (for a put-back). */
   done: Record<string, string>;
 }

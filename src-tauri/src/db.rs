@@ -2183,4 +2183,14 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_layouts ADD COLUMN stock_json TEXT DEFAULT '{}';
         "#,
     ),
+    (
+        102,
+        // R-346: a product's pallet (footprint, deck, the most it may stand) and each box size's
+        // measurements (pallet_fit::PalletSetup), which the pallet fitter works from. Its own
+        // column, so a device that does not know it can never wipe it with a whole-product save.
+        // clienthub-api adds the same column (sync.rs ALTER list) and must be deployed first.
+        r#"
+        ALTER TABLE warehouse_items ADD COLUMN pallet_json TEXT DEFAULT '{}';
+        "#,
+    ),
 ];

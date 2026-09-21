@@ -469,3 +469,33 @@ describe("every counted place shows its percentage and its units (R-345)", () =>
     expect(pctLabel(0.996)).toBe("99%");
   });
 });
+
+describe("building a lot on the fitted pallets (R-346)", () => {
+  const types: BoxType[] = [{ id: "big", name: "Big Box", per_box: 72 }, { id: "tiny", name: "Small Box", per_box: 12 }];
+  const item = {
+    id: "w", box_types: types,
+    sections: [{ id: "owls", name: "OWLS", counts: { big: 30, tiny: 10 }, loose: 0 }, { id: "hawks", name: "HAWKS", counts: { big: 10 }, loose: 0 }] as WhSection[],
+  };
+  const plan = { take: { owls: { big: 20, tiny: 6 }, hawks: { big: 4 } } as Record<string, Record<string, number>>, loose: {} };
+
+  it("puts on each pallet exactly what the fitter put there", () => {
+    const fitted = [
+      { counts: [{ section_id: "owls", type_id: "big", boxes: 16 }] },
+      { counts: [{ section_id: "owls", type_id: "big", boxes: 4 }, { section_id: "hawks", type_id: "big", boxes: 4 }] },
+      { counts: [{ section_id: "owls", type_id: "tiny", boxes: 6 }] },
+    ];
+    const b = buildLot(item, [], plan, 21, fitted);
+    expect(b.pallets.map((p) => p.boxes)).toEqual([16, 8, 6]);
+    expect(b.pallets.map((p) => p.big)).toEqual([true, true, false]);
+    expect(b.pallets[1].lines.map((l) => `${l.name}:${l.boxes}`)).toEqual(["OWLS:4", "HAWKS:4"]);
+    expect(b.fitted).toBe(true);
+  });
+
+  it("drops a fitted split that disagrees with the plan by a single box", () => {
+    const off = [{ counts: [{ section_id: "owls", type_id: "big", boxes: 19 }, { section_id: "hawks", type_id: "big", boxes: 4 }, { section_id: "owls", type_id: "tiny", boxes: 6 }] }];
+    const b = buildLot(item, [], plan, 21, off);
+    // Falls back to 21 big boxes a pallet: 24 big boxes → 21 + 3, the small boxes on their own.
+    expect(b.pallets.map((p) => p.boxes)).toEqual([21, 3, 6]);
+    expect(b.fitted).toBeFalsy();
+  });
+});

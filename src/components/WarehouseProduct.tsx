@@ -4,8 +4,9 @@
 //                   price, then an invoice or a take-out. The main way stock leaves.
 //   Plan a load   — the packer (planUnits): how much, and how it spreads across the teams
 //                   (R-334's lean), sent as it is or opened in Pick an order to adjust.
+//   Pallets       — the pallet and each box size measured; what fits, in 3D (R-346).
 //   History       — every move, with Put back.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, Archive, ArchiveRestore, Check, FileText, MoreHorizontal, Pencil, Search, SlidersHorizontal, Undo2 } from "lucide-react";
 import { api } from "../lib/api";
@@ -18,14 +19,18 @@ import {
   setPicked, shares, type BoxType, type HandPick, type InvoicePrefill, type WarehouseItem, type WhMove, type WhSection,
 } from "../lib/warehouse";
 import { toast } from "./Toast";
+import PalletsTab from "./WarehousePallets";
+import { feet, fitTypes, inches, readyFor, type FitPallet } from "../lib/palletFit";
+
+const PalletView3D = lazy(() => import("./PalletView3D"));
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
-import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0, plural } from "./warehouseUi";
+import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0, plural, teamColor } from "./warehouseUi";
 
 const BAR = { background: "rgb(var(--c-chart-1))" };
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const cap = (s: string) => s.replace(/^./, (c) => c.toUpperCase());
-type Tab = "shelf" | "pick" | "plan" | "history";
+type Tab = "shelf" | "pick" | "plan" | "pallets" | "history";
 
 /**
  * Where a team's boxes are on the maps (R-339, R-340). With boxes recorded on its pallets, the
@@ -131,6 +136,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
     { key: "shelf", label: "On the shelf" },
     { key: "pick", label: pickedUnits ? `Pick an order · ${n0(pickedUnits)}` : "Pick an order" },
     { key: "plan", label: "Plan a load" },
+    { key: "pallets", label: "Pallets" },
     { key: "history", label: "History" },
   ];
 
@@ -189,6 +195,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
       {tab === "shelf" && <ShelfTab item={item} layouts={layouts} onChanged={onChanged} />}
       {tab === "pick" && <PickTab item={item} layouts={layouts} pick={pick} setPick={setPick} onChanged={onChanged} />}
       {tab === "plan" && <PlanTab item={item} layouts={layouts} onChanged={onChanged} onAdjust={(p) => { setPick(p); setTab("pick"); }} />}
+      {tab === "pallets" && <PalletsTab item={item} onChanged={onChanged} />}
       {tab === "history" && <History item={item} onChanged={onChanged} />}
     </div>
   );
@@ -649,7 +656,14 @@ function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; 
             </div>
           </div>
           {mode === "pallets" ? (
-            big ? (
+            big && readyFor(item, [big.id]) && item.units_per_pallet > 0 ? (
+              // R-346: measured, the pallet size is the fitter's, not a typed number.
+              <div>
+                <div className="text-[12px] text-muted mb-1.5">{big.name} per pallet</div>
+                <div className="h-9 flex items-center text-[13px] text-ink tabular-nums"><span className="font-semibold">{n0(Math.round(item.units_per_pallet / big.per_box))}</span></div>
+                <div className="text-[11px] text-muted mt-1">Worked out from the measurements (Pallets tab)</div>
+              </div>
+            ) : big ? (
               <div>
                 <label className="block text-[12px] text-muted mb-1.5">{big.name} per pallet</label>
                 <NumberInput integer value={upp > 0 ? Math.round(upp / big.per_box) : ""} onValue={(n) => setUpp(Math.max(0, n) * big.per_box)} onBlur={saveUpp} placeholder="e.g. 21" style={WH_INPUT_BG}
@@ -841,8 +855,39 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
     try { if (s) localStorage.setItem(buildKey(item.id), JSON.stringify(s)); else localStorage.removeItem(buildKey(item.id)); } catch { /* ignore */ }
     onBuild();
   };
-  const preview = useMemo(() => buildLot(item, layouts, plan, perPallet), [item, layouts, plan, perPallet]);
+  // R-346: with the pallet and the load's box sizes measured, the pallets come from the fitter —
+  // every box placed and checked — and each can be seen in 3D, layer by layer.
+  const groups = useMemo(() => item.sections.flatMap((s) => Object.entries(plan.take[s.id] || {})
+    .filter(([, n]) => n > 0).map(([type_id, boxes]) => ({ section_id: s.id, name: s.name, type_id, boxes }))), [item.sections, plan]);
+  const measured = groups.length > 0 && readyFor(item, [...new Set(groups.map((g) => g.type_id))]);
+  const fitKey = JSON.stringify([item.pallet, item.box_types, groups]);
+  const [fit, setFit] = useState<{ key: string; pallets: FitPallet[] } | null>(null);
+  const [fitError, setFitError] = useState("");
+  const [open3d, setOpen3d] = useState<number | null>(null);
+  useEffect(() => {
+    if (state || !measured || !item.pallet) return;
+    let stale = false;
+    setFitError("");
+    api.warehouseFitPallets({ pallet: item.pallet.pallet, types: fitTypes(item), groups, big_alone: true })
+      .then((r) => { if (!stale) setFit({ key: fitKey, pallets: r.pallets }); })
+      .catch((e) => { if (!stale) { setFit(null); setFitError(String(e)); } });
+    return () => { stale = true; };
+    // fitKey stands for item.pallet, item.box_types and groups.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitKey, measured, !!state]);
+  const liveFit = measured && fit?.key === fitKey ? fit.pallets : undefined;
+  const fitting = !state && measured && !liveFit && !fitError;
+  const preview = useMemo(() => buildLot(item, layouts, plan, perPallet, liveFit), [item, layouts, plan, perPallet, liveFit]);
   const build = state?.build ?? preview;
+  const shown3d = state ? state.fit : liveFit && item.pallet ? { pallet: item.pallet.pallet, pallets: liveFit } : undefined;
+  // Only when buildLot really used the fitter's pallets (it drops them if they disagree by a box).
+  const fitted = !!shown3d && !!build.fitted && shown3d.pallets.length === build.pallets.length;
+  const keyOf = (sid: string) => `s:${item.id}:${sid}`;
+  const shortOf = (sid: string) => {
+    for (const l of layouts) { const n = l.shape?.short_names?.[keyOf(sid)]; if (n) return n; }
+    return item.sections.find((x) => x.id === sid)?.name ?? "";
+  };
+  const typeName = (tid: string) => item.box_types.find((t) => t.id === tid)?.name ?? "Box";
   const size = state ? state.per_pallet : perPallet;
   const grabs = build.pallets.flatMap((p) => p.lines);
   const doneCount = state ? grabs.filter((g) => state.done[g.id]).length + build.loose.filter((l) => state.done[l.id]).length : 0;
@@ -929,16 +974,24 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
           <div className="text-[14px] font-semibold text-ink">{state ? "Building this lot" : "Build this lot"}</div>
           <p className="text-[12px] text-muted mt-0.5">
             {state ? `${doneCount} of ${total} grabs done. Each tick takes those boxes off that pallet and the shelf now; untick to put them back.`
-              : perPallet > 0 ? `${bigBox(item.box_types)?.name ?? "Big boxes"} ${perPallet} to a pallet, the smaller boxes together on their own pallets. Start building to tick off each grab as you pull it.`
+              : fitted ? "Fitted to your pallet box by box: the big boxes on their own, the smaller ones together, nothing past the edge and every box standing on the one below. Start building to tick off each grab as you pull it."
+              : fitting ? "Fitting the boxes onto your pallet…"
+              : perPallet > 0 ? `${bigBox(item.box_types)?.name ?? "Big boxes"} ${perPallet} to a pallet, the smaller boxes together on their own pallets. Measure the pallet and the boxes (Pallets tab) to have each pallet fitted and drawn. Start building to tick off each grab as you pull it.`
               : "Say how many big boxes fit on a pallet (Pallets, above) to split this into pallets. Start building to tick off each grab as you pull it."}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {!state && <button onClick={() => setState({ item_id: item.id, started_at: new Date().toISOString(), per_pallet: perPallet, build: preview, done: {} })} className={WH_BTN_PRIMARY}>Start building</button>}
+          {!state && <button onClick={() => setState({ item_id: item.id, started_at: new Date().toISOString(), per_pallet: perPallet, build: preview, done: {}, ...(shown3d && fitted ? { fit: shown3d } : {}) })}
+            disabled={fitting} className={WH_BTN_PRIMARY}>Start building</button>}
           {state && <button onClick={makeInvoice} disabled={doneCount === 0 || !!busy} className={WH_BTN_PRIMARY}><FileText size={14} /> Make the invoice</button>}
           {state && !stopping && <button onClick={() => (doneCount ? setStopping(true) : setState(null))} disabled={!!busy} className={WH_BTN_SECONDARY}>Stop building</button>}
         </div>
       </div>
+      {fitError && !state && (
+        <div className="mt-3 p-3 rounded-lg border border-danger/40 bg-danger/5 text-[12.5px] text-danger-ink">
+          These boxes could not be fitted to the pallet: {fitError} The pallets below are split by count only — fix the measurements on the Pallets tab to see them fitted.
+        </div>
+      )}
       {stopping && state && (
         <div className="mt-3 p-3 rounded-lg bg-surface-2 border border-line text-[12.5px] text-ink-2 flex flex-wrap items-center gap-2">
           {doneCount} {doneCount === 1 ? "grab is" : "grabs are"} already off the shelf.
@@ -954,18 +1007,31 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
           </span>
         ))}
         {build.loose.length > 0 && <span className="inline-flex items-center rounded-md border border-line bg-surface-2 px-2 py-1 text-[12.5px] text-ink-2">{n0(build.loose.reduce((a, l) => a + l.units, 0))} loose</span>}
-        <span className="inline-flex items-center rounded-md px-1 py-1 text-[12.5px] text-muted tabular-nums">{n0(build.units)} units · {build.pallets.length} {build.pallets.length === 1 ? "pallet" : "pallets"}</span>
+        <span className="inline-flex items-center rounded-md px-1 py-1 text-[12.5px] text-muted tabular-nums">{n0(build.units)} units · {build.pallets.length} {build.pallets.length === 1 ? "pallet" : "pallets"}{fitted && shown3d ? ` · tallest ${feet(Math.max(...shown3d.pallets.map((p) => p.total_height)))}` : ""}</span>
       </div>
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mt-4">
         {build.pallets.map((p) => {
           const left = p.lines.filter((g) => !state?.done[g.id]).length;
+          const fp = fitted && shown3d ? shown3d.pallets[p.n - 1] : undefined;
           return (
-            <div key={p.n} className="rounded-lg border border-line p-3">
-              <div className="flex items-baseline justify-between gap-2">
-                <div className="text-[13px] font-semibold text-ink">Pallet {p.n}{size > 0 ? ` · ${p.big ? `${p.boxes} of ${size} ${bigBox(item.box_types)?.name ?? "big boxes"}` : `smaller boxes, ${n0(p.units)} units`}` : ""}</div>
-                {state && <span className={`text-[12px] ${left ? "text-muted" : "text-ink font-medium"}`}>{left ? `${left} to grab` : "Built"}</span>}
+            <div key={p.n} className={`rounded-lg border border-line p-3 ${open3d === p.n ? "xl:col-span-2" : ""}`}>
+              <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                <div className="text-[13px] font-semibold text-ink">Pallet {p.n}{fp
+                  ? <span className="font-normal text-ink-2"> · {n0(p.boxes)} boxes, {fp.layers.length} {fp.layers.length === 1 ? "layer" : "layers"}, {inches(fp.total_height)} in from the floor</span>
+                  : size > 0 ? ` · ${p.big ? `${p.boxes} of ${size} ${bigBox(item.box_types)?.name ?? "big boxes"}` : `smaller boxes, ${n0(p.units)} units`}` : ""}</div>
+                <div className="flex items-center gap-3">
+                  {fp && <button onClick={() => setOpen3d(open3d === p.n ? null : p.n)} className="text-[12px] text-accent hover:underline">{open3d === p.n ? "Hide the picture" : "See it in 3D"}</button>}
+                  {state && <span className={`text-[12px] ${left ? "text-muted" : "text-ink font-medium"}`}>{left ? `${left} to grab` : "Built"}</span>}
+                </div>
               </div>
               <ul className="mt-1 divide-y divide-line-2">{p.lines.map(line)}</ul>
+              {fp && open3d === p.n && shown3d && (
+                <div className="mt-3">
+                  <Suspense fallback={<div className="h-[340px] rounded-lg border border-line grid place-items-center text-[12px] text-muted">Drawing the pallet…</div>}>
+                    <PalletView3D pallet={fp} spec={shown3d.pallet} colorOf={(sid) => teamColor(keyOf(sid))} labelOf={shortOf} typeName={typeName} />
+                  </Suspense>
+                </div>
+              )}
             </div>
           );
         })}
