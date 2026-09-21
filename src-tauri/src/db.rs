@@ -2193,4 +2193,31 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_items ADD COLUMN pallet_json TEXT DEFAULT '{}';
         "#,
     ),
+    (
+        103,
+        // R-347/R-348: the pallets of an order (an invoice), one row each — what is on it
+        // (`lines_json`, pallet_fit::PalletLine), its picture (`plan_json`, pallet_fit::PalletPlan,
+        // '' when unmeasured), the link its QR code opens (`token`) and the order's passcode
+        // (the same on every pallet of the order; '' for none). Removed pallets are archived.
+        // Synced (sync.rs ALLOWED_TABLES, netsync SNAPSHOT_TABLES) and mirrored in clienthub-api,
+        // which must be deployed first.
+        r#"
+        CREATE TABLE IF NOT EXISTS warehouse_pallets (
+            id TEXT PRIMARY KEY,
+            invoice_id TEXT DEFAULT '',
+            item_id TEXT DEFAULT '',
+            number INTEGER DEFAULT 0,
+            lines_json TEXT DEFAULT '[]',
+            plan_json TEXT DEFAULT '',
+            token TEXT DEFAULT '',
+            passcode TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            archived INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_warehouse_pallets_invoice ON warehouse_pallets(invoice_id);
+        "#,
+    ),
 ];

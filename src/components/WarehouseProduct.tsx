@@ -4,7 +4,7 @@
 //                   price, then an invoice or a take-out. The main way stock leaves.
 //   Plan a load   — the packer (planUnits): how much, and how it spreads across the teams
 //                   (R-334's lean), sent as it is or opened in Pick an order to adjust.
-//   Pallets       — the pallet and each box size measured; what fits, in 3D (R-346).
+//   Measurements  — the pallet and each box size measured; what fits, in 3D (R-346).
 //   History       — every move, with Put back.
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -12,7 +12,7 @@ import { ArrowLeft, Archive, ArchiveRestore, Check, FileText, MoreHorizontal, Pe
 import { api } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
-  FILL_SHORT, INVOICE_PREFILL_KEY, LEAN_STOPS, bigBox, boxesLeaving, buildKey, buildLot, builtUnits, countCheck, describePick, emptyPick, invoiceLines, itemTotals, looseRoom,
+  FILL_SHORT, INVOICE_PREFILL_KEY, LEAN_STOPS, bigBox, boxesLeaving, buildKey, buildLot, builtPallets, builtUnits, countCheck, describePick, emptyPick, invoiceLines, itemTotals, looseRoom,
   matchToPallets,
   pickFromPlan, pickUnits, placesHolding, planUnits, sectionBoxes, sectionUnits, takeFromPlaces, type BuildState, type GrabLine, type LooseGrab, type PickPlan,
   type WarehouseLayout,
@@ -136,7 +136,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
     { key: "shelf", label: "On the shelf" },
     { key: "pick", label: pickedUnits ? `Pick an order · ${n0(pickedUnits)}` : "Pick an order" },
     { key: "plan", label: "Plan a load" },
-    { key: "pallets", label: "Pallets" },
+    { key: "pallets", label: "Measurements" },
     { key: "history", label: "History" },
   ];
 
@@ -661,7 +661,7 @@ function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; 
               <div>
                 <div className="text-[12px] text-muted mb-1.5">{big.name} per pallet</div>
                 <div className="h-9 flex items-center text-[13px] text-ink tabular-nums"><span className="font-semibold">{n0(Math.round(item.units_per_pallet / big.per_box))}</span></div>
-                <div className="text-[11px] text-muted mt-1">Worked out from the measurements (Pallets tab)</div>
+                <div className="text-[11px] text-muted mt-1">Worked out from the measurements (Measurements tab)</div>
               </div>
             ) : big ? (
               <div>
@@ -928,7 +928,8 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
       description: `${item.name} — ${x.name}: ${describePick(item.box_types, x.boxes, x.loose)}`,
       qty: x.units, rate, amount: Math.round(x.units * rate * 100) / 100,
     }));
-    try { localStorage.setItem(INVOICE_PREFILL_KEY, JSON.stringify({ lines, warehouse: { item_id: item.id, item_name: item.name }, built: true })); } catch { /* ignore */ }
+    const pallets = builtPallets(item, state);
+    try { localStorage.setItem(INVOICE_PREFILL_KEY, JSON.stringify({ lines, warehouse: { item_id: item.id, item_name: item.name }, built: true, pallets: pallets.length ? { item_id: item.id, pallets } : undefined })); } catch { /* ignore */ }
     setState(null);
     window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
   };
@@ -976,7 +977,7 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
             {state ? `${doneCount} of ${total} grabs done. Each tick takes those boxes off that pallet and the shelf now; untick to put them back.`
               : fitted ? "Fitted to your pallet box by box: the big boxes on their own, the smaller ones together, nothing past the edge and every box standing on the one below. Start building to tick off each grab as you pull it."
               : fitting ? "Fitting the boxes onto your pallet…"
-              : perPallet > 0 ? `${bigBox(item.box_types)?.name ?? "Big boxes"} ${perPallet} to a pallet, the smaller boxes together on their own pallets. Measure the pallet and the boxes (Pallets tab) to have each pallet fitted and drawn. Start building to tick off each grab as you pull it.`
+              : perPallet > 0 ? `${bigBox(item.box_types)?.name ?? "Big boxes"} ${perPallet} to a pallet, the smaller boxes together on their own pallets. Measure the pallet and the boxes (Measurements tab) to have each pallet fitted and drawn. Start building to tick off each grab as you pull it.`
               : "Say how many big boxes fit on a pallet (Pallets, above) to split this into pallets. Start building to tick off each grab as you pull it."}
           </p>
         </div>
@@ -989,7 +990,7 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
       </div>
       {fitError && !state && (
         <div className="mt-3 p-3 rounded-lg border border-danger/40 bg-danger/5 text-[12.5px] text-danger-ink">
-          These boxes could not be fitted to the pallet: {fitError} The pallets below are split by count only — fix the measurements on the Pallets tab to see them fitted.
+          These boxes could not be fitted to the pallet: {fitError} The pallets below are split by count only — fix the measurements on the Measurements tab to see them fitted.
         </div>
       )}
       {stopping && state && (

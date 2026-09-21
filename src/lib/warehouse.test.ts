@@ -3,7 +3,7 @@ import {
   changesForInvoice, colName, describePick, doorWhere, emptyPick, emptyShape, invoiceLines, layoutSummary, mapView, pickFromPlan, pickUnits,
   planUnits, removeRow, rowLength, rowsFromText, sectionBoxes, sectionUnits, setPicked, shareOut, shares, spotName, takeUnits, wallAt,
   effectiveFill, mapPlaces, placesHolding, takeFromPlaces, type WarehouseLayout, buildLot, builtUnits, countCheck, matchToPallets,
-  countedFills, fillQuarter, palletFill, pctLabel, pctShort,
+  builtPallets, countedFills, fillQuarter, palletFill, pctLabel, pctShort,
   type BoxType, type WhSection,
 } from "./warehouse";
 
@@ -499,3 +499,26 @@ describe("building a lot on the fitted pallets (R-346)", () => {
     expect(b.fitted).toBeFalsy();
   });
 });
+
+describe("a build's pallets become records on its invoice (R-348)", () => {
+  const types: BoxType[] = [{ id: "big", name: "Big Box", per_box: 72 }];
+  const item = { box_types: types, sections: [{ id: "owls", name: "OWLS", counts: { big: 40 }, loose: 0 }] as WhSection[] };
+  const line = (id: string, pallet: number, boxes: number) => ({ id, pallet, section_id: "owls", name: "OWLS", type_id: "big", type_name: "Big Box", per_box: 72, boxes, place: null });
+  const fp = (n: number) => ({ n, boxes: [], layers: [], load_height: 12, total_height: 18, units: 0, counts: [] });
+  const st = {
+    item_id: "w", started_at: "", per_pallet: 21, done: { "1-0": "m1", "1-1": "m2", "2-0": "m3" } as Record<string, string>,
+    build: { totals: [], loose: [], units: 0, fitted: true, pallets: [
+      { n: 1, big: true, boxes: 20, units: 0, lines: [line("1-0", 1, 12), line("1-1", 1, 8)] },
+      { n: 2, big: true, boxes: 10, units: 0, lines: [line("2-0", 2, 6), line("2-1", 2, 4)] },
+      { n: 3, big: true, boxes: 2, units: 0, lines: [line("3-0", 3, 2)] },
+    ] },
+    fit: { pallet: { length: 48, width: 40, deck: 6, max_height: 72 }, pallets: [fp(1), fp(2), fp(3)] },
+  };
+  it("keeps only what was ticked, the fitted picture only for a whole pallet", () => {
+    const out = builtPallets(item, st as never);
+    expect(out.map((p) => p.lines.map((l) => l.boxes))).toEqual([[20], [6]]);
+    expect(out[0].plan?.pallet.n).toBe(1);
+    expect(out[1].plan).toBeNull();
+  });
+});
+

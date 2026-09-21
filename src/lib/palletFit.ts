@@ -74,3 +74,36 @@ export function parseInches(raw: string): number | null {
   const v = dec ? Number(dec[1]) : mixed ? Number(mixed[1]) + part(mixed[2], mixed[3]) : frac ? part(frac[1], frac[2]) : NaN;
   return Number.isFinite(v) ? Math.round(v * 100) / 100 : null;
 }
+
+// ---- The pallets of an order (R-347, R-348) ----
+
+/** Some boxes of one size of one team on a recorded pallet (names copied in). */
+export interface PalletLine { section_id: string; name: string; type_id: string; type_name: string; per_box: number; boxes: number }
+/** A recorded pallet's picture: the pallet it was fitted to and every box's place. */
+export interface PalletPlan { spec: PalletSpec; pallet: FitPallet }
+export interface WarehousePallet {
+  id: string; invoice_id: string; invoice_number: string; client_name: string; item_id: string; number: number;
+  lines: PalletLine[]; plan: PalletPlan | null; token: string; passcode: string; notes: string; archived: boolean;
+  created_at: string; updated_at: string;
+}
+/** A pallet to add: its lines, "N pallets like this", and (from Build this lot) the fitted picture. */
+export interface NewPallet { lines: PalletLine[]; copies?: number; plan?: PalletPlan | null; notes?: string }
+
+/** Where a pallet's QR code points. */
+export const manifestUrl = (token: string) => `https://ecliptr.app/p/${token}`;
+export const palletBoxes = (p: { lines: PalletLine[] }) => p.lines.reduce((a, l) => a + l.boxes, 0);
+export const palletUnits = (p: { lines: PalletLine[] }) => p.lines.reduce((a, l) => a + l.boxes * l.per_box, 0);
+
+/** An order's pallets together, newest order first. */
+export function byOrder(ps: WarehousePallet[]): { invoice_id: string; invoice_number: string; client_name: string; item_id: string; pallets: WarehousePallet[]; latest: string }[] {
+  const m = new Map<string, { invoice_id: string; invoice_number: string; client_name: string; item_id: string; pallets: WarehousePallet[]; latest: string }>();
+  for (const p of ps) {
+    const o = m.get(p.invoice_id) || { invoice_id: p.invoice_id, invoice_number: p.invoice_number, client_name: p.client_name, item_id: p.item_id, pallets: [], latest: "" };
+    o.pallets.push(p);
+    if (p.created_at > o.latest) o.latest = p.created_at;
+    m.set(p.invoice_id, o);
+  }
+  const out = [...m.values()];
+  for (const o of out) o.pallets.sort((a, b) => a.number - b.number);
+  return out.sort((a, b) => b.latest.localeCompare(a.latest));
+}

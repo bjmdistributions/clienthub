@@ -789,6 +789,12 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
             })
             .catch((e: any) => toast(`Invoice created, but the warehouse was not updated: ${e}`, "error"));
         }
+        // R-348: the pallets that were built go onto this order, each with its label and link.
+        if (prefill?.pallets && prefill.pallets.pallets.length) {
+          await api.addWarehousePallets(invId, prefill.pallets.item_id, prefill.pallets.pallets)
+            .then((ps) => toast(`${ps.length} ${ps.length === 1 ? "pallet" : "pallets"} saved to this order — print their labels in Warehouse, Pallets.`))
+            .catch((e: any) => toast(`Invoice created, but its pallets were not saved: ${e}`, "error"));
+        }
       }
       onClose();
     } catch (e: any) { toast(String(e), "error"); }

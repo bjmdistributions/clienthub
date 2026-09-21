@@ -19,7 +19,7 @@
 // www/app.js. Change both together; the tests pin the behaviour.
 
 import type { LineItem } from "./api";
-import type { FitPallet, PalletSetup, PalletSpec } from "./palletFit";
+import type { FitPallet, NewPallet, PalletLine, PalletSetup, PalletSpec } from "./palletFit";
 
 export interface BoxType { id: string; name: string; per_box: number }
 
@@ -399,6 +399,31 @@ export interface InvoicePrefill {
   warehouse: { item_id: string; item_name: string };
   /** R-342: built in the warehouse — the boxes already left the shelf as they were grabbed. */
   built?: boolean;
+  /** R-348: the pallets that were built, saved onto the invoice once it exists. */
+  pallets?: { item_id: string; pallets: NewPallet[] };
+}
+
+/**
+ * R-348: the pallets a build made, as pallet records — only what was ticked. A pallet whose every
+ * grab was ticked keeps its fitted picture (frozen with the build); a part-built one is pictured
+ * again from what is really on it.
+ */
+export function builtPallets(item: Pick<WarehouseItem, "box_types" | "sections">, st: BuildState): NewPallet[] {
+  const out: NewPallet[] = [];
+  for (const p of st.build.pallets) {
+    const done = p.lines.filter((g) => st.done[g.id]);
+    if (!done.length) continue;
+    const lines: PalletLine[] = [];
+    for (const g of done) {
+      const e = lines.find((l) => l.section_id === g.section_id && l.type_id === g.type_id);
+      if (e) e.boxes += g.boxes;
+      else lines.push({ section_id: g.section_id, name: g.name, type_id: g.type_id, type_name: g.type_name, per_box: g.per_box, boxes: g.boxes });
+    }
+    const whole = done.length === p.lines.length;
+    const fp = st.fit && st.build.fitted ? st.fit.pallets[p.n - 1] : undefined;
+    out.push({ lines, plan: whole && fp && st.fit ? { spec: st.fit.pallet, pallet: fp } : null });
+  }
+  return out;
 }
 
 /** localStorage key the packer stashes a prefilled invoice under (read once by Invoices). */

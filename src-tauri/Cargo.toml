@@ -62,6 +62,8 @@ keyring = "2"
 
 # PDF
 printpdf = { version = "0.7", features = ["embedded_images"] }
+# R-347: the QR code on a pallet label (the same crate and version the server uses).
+qrcode = { version = "0.14", default-features = false }
 
 # Encryption for sync events
 ring = "0.17"

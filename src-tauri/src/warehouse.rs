@@ -15,7 +15,7 @@
 //! Synced per column, last writer wins — see the vault's revisit/warehouse-counts-are-one-column.
 
 use crate::db::pool;
-use crate::pallet_fit::{self, Capacity, FitRequest, FitResult, FitType, PalletSetup, PalletSpec};
+use crate::pallet_fit::{self, Capacity, FitRequest, FitResult, FitType, PalletLine, PalletPlan, PalletSetup, PalletSpec};
 use crate::warehouse_core::{self as core, BoxType, Change, ImportResult, LayoutCell, LayoutShape, MapStock, Mapping, Move, PlaceMove, Section, Short};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -429,6 +429,399 @@ pub async fn warehouse_fit_pallets(request: FitRequest) -> Result<FitResult, Str
 }
 
 // ---------------------------------------------------------------------------------------
+// The pallets of an order (R-347, R-348): what is on each, its picture, the link its QR code
+// opens, and the order's passcode. Jack types them ("12 pallets like this") or they come from
+// Build this lot; combining two is the same fitter proving they go on one.
+// ---------------------------------------------------------------------------------------
+
+const PALLETS: &str = "warehouse_pallets";
+/// Where a pallet's QR code points: the server's public manifest page.
+pub const MANIFEST_BASE: &str = "https://ecliptr.app/p/";
+const MAX_NEW_PALLETS: i64 = 200;
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WarehousePallet {
+    pub id: String,
+    pub invoice_id: String,
+    pub invoice_number: String,
+    pub client_name: String,
+    pub item_id: String,
+    pub number: i64,
+    pub lines: Vec<PalletLine>,
+    pub plan: Option<PalletPlan>,
+    pub token: String,
+    pub passcode: String,
+    pub notes: String,
+    pub archived: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NewPallet {
+    #[serde(default)]
+    pub lines: Vec<PalletLine>,
+    /// "12 pallets like this".
+    #[serde(default)]
+    pub copies: Option<i64>,
+    /// The fitted pallet from Build this lot; kept only if it holds exactly these lines and checks.
+    #[serde(default)]
+    pub plan: Option<PalletPlan>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+const PALLET_SELECT: &str = "SELECT p.id, COALESCE(p.invoice_id,''), COALESCE(i.number,''), COALESCE(c.name,''), COALESCE(p.item_id,''), \
+    COALESCE(p.number,0), COALESCE(p.lines_json,'[]'), COALESCE(p.plan_json,''), COALESCE(p.token,''), COALESCE(p.passcode,''), \
+    COALESCE(p.notes,''), COALESCE(p.archived,0), p.created_at, p.updated_at \
+    FROM warehouse_pallets p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN clients c ON c.id = i.client_id";
+
+fn map_pallet(r: &rusqlite::Row) -> rusqlite::Result<WarehousePallet> {
+    let lines: String = r.get(6)?;
+    let plan: String = r.get(7)?;
+    Ok(WarehousePallet {
+        id: r.get(0)?,
+        invoice_id: r.get(1)?,
+        invoice_number: r.get(2)?,
+        client_name: r.get(3)?,
+        item_id: r.get(4)?,
+        number: r.get(5)?,
+        lines: serde_json::from_str(&lines).unwrap_or_default(),
+        plan: if plan.trim().is_empty() { None } else { serde_json::from_str(&plan).ok() },
+        token: r.get(8)?,
+        passcode: r.get(9)?,
+        notes: r.get(10)?,
+        archived: r.get::<_, i64>(11)? != 0,
+        created_at: r.get(12)?,
+        updated_at: r.get(13)?,
+    })
+}
+
+fn pallets_where(conn: &rusqlite::Connection, clause: &str, param: &str) -> Result<Vec<WarehousePallet>, String> {
+    let sql = format!("{PALLET_SELECT} WHERE {clause} ORDER BY p.number, p.created_at");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([param], map_pallet).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+fn order_pallets(conn: &rusqlite::Connection, invoice_id: &str) -> Result<Vec<WarehousePallet>, String> {
+    pallets_where(conn, "p.invoice_id = ?1 AND COALESCE(p.archived,0) = 0", invoice_id)
+}
+
+/// The order's passcode: kept on every pallet of the order, removed ones included, so an order
+/// whose pallets were all removed and built again keeps the code its customer was sent.
+fn order_code(conn: &rusqlite::Connection, invoice_id: &str) -> String {
+    conn.query_row(
+        "SELECT COALESCE(passcode,'') FROM warehouse_pallets WHERE invoice_id = ?1 ORDER BY updated_at DESC LIMIT 1",
+        [invoice_id],
+        |r| r.get(0),
+    )
+    .unwrap_or_default()
+}
+
+fn load_pallet(conn: &rusqlite::Connection, id: &str) -> Result<WarehousePallet, String> {
+    pallets_where(conn, "p.id = ?1", id)?.into_iter().next().filter(|p| !p.archived).ok_or_else(|| "That pallet is no longer there.".to_string())
+}
+
+/// An unguessable link code: 20 hex characters.
+fn pallet_token() -> String {
+    uuid::Uuid::new_v4().simple().to_string().chars().take(20).collect()
+}
+
+/// An order's pallets numbered 1, 2, 3… in the order they stand, after one is removed or combined.
+fn renumber(conn: &rusqlite::Connection, invoice_id: &str) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    for (k, p) in order_pallets(conn, invoice_id)?.into_iter().enumerate() {
+        let want = k as i64 + 1;
+        if p.number != want {
+            let mut cols = Map::new();
+            cols.insert("number".into(), json!(want));
+            cols.insert("updated_at".into(), json!(now));
+            write(conn, PALLETS, &p.id, cols, false)?;
+        }
+    }
+    Ok(())
+}
+
+fn plan_value(plan: &Option<PalletPlan>) -> Value {
+    match plan {
+        Some(p) => json_str(p),
+        None => json!(""),
+    }
+}
+
+/// Every pallet not removed, newest orders first (the screen groups them by order).
+#[tauri::command]
+pub async fn list_warehouse_pallets() -> Result<Vec<WarehousePallet>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    // (The archived flag is a number: compared with a number, never a bound '0' text.)
+    let mut v = pallets_where(&conn, "COALESCE(p.archived,0) = 0 AND p.id <> ?1", "")?;
+    v.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.number.cmp(&b.number)));
+    Ok(v)
+}
+
+/// Pallets onto an order: each worked out (and pictured when measured) before any is written, so a
+/// pallet that does not fit stops the whole lot with the reason.
+#[tauri::command]
+pub async fn add_warehouse_pallets(invoice_id: String, item_id: String, pallets: Vec<NewPallet>) -> Result<Vec<WarehousePallet>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    if invoice_id.trim().is_empty() {
+        return Err("Choose the order these pallets belong to.".into());
+    }
+    let found: i64 = conn.query_row("SELECT COUNT(*) FROM invoices WHERE id = ?1", [&invoice_id], |r| r.get(0)).unwrap_or(0);
+    if found == 0 {
+        return Err("That order is no longer there.".into());
+    }
+    let item = load(&conn, &item_id)?;
+    let mut ready: Vec<(Vec<PalletLine>, Option<PalletPlan>, String, i64)> = Vec::new();
+    let mut total = 0;
+    for (k, np) in pallets.into_iter().enumerate() {
+        // A kind set to 0 pallets is left out, never made into one.
+        let copies = np.copies.unwrap_or(1).min(MAX_NEW_PALLETS);
+        if copies <= 0 {
+            continue;
+        }
+        let lines = pallet_fit::clean_lines(&np.lines).map_err(|e| format!("Pallet {}: {e}", k + 1))?;
+        let plan = pallet_fit::keep_or_plan(&item.pallet, &lines, np.plan).map_err(|e| format!("Pallet {}: {e}", k + 1))?;
+        total += copies;
+        ready.push((lines, plan, np.notes.unwrap_or_default().trim().to_string(), copies));
+    }
+    if ready.is_empty() {
+        return Err("Add at least one pallet.".into());
+    }
+    if total > MAX_NEW_PALLETS {
+        return Err(format!("More than {MAX_NEW_PALLETS} pallets at once."));
+    }
+    // The order numbered 1, 2, 3… first: two devices adding at once can leave two pallets with one
+    // number, and this heals it before the new ones follow on.
+    renumber(&conn, &invoice_id)?;
+    let passcode = order_code(&conn, &invoice_id);
+    let mut next = order_pallets(&conn, &invoice_id)?.len() as i64 + 1;
+    let now = chrono::Utc::now().to_rfc3339();
+    for (lines, plan, notes, copies) in ready {
+        for _ in 0..copies {
+            let mut cols = Map::new();
+            cols.insert("invoice_id".into(), json!(invoice_id));
+            cols.insert("item_id".into(), json!(item_id));
+            cols.insert("number".into(), json!(next));
+            cols.insert("lines_json".into(), json_str(&lines));
+            cols.insert("plan_json".into(), plan_value(&plan));
+            cols.insert("token".into(), json!(pallet_token()));
+            cols.insert("passcode".into(), json!(passcode));
+            cols.insert("notes".into(), json!(notes));
+            cols.insert("archived".into(), json!(0));
+            cols.insert("created_at".into(), json!(now));
+            cols.insert("updated_at".into(), json!(now));
+            write(&conn, PALLETS, &uuid::Uuid::new_v4().to_string(), cols, true)?;
+            next += 1;
+        }
+    }
+    order_pallets(&conn, &invoice_id)
+}
+
+/// A pallet's contents changed: pictured again (or refused when they no longer go on one).
+#[tauri::command]
+pub async fn update_warehouse_pallet(id: String, lines: Vec<PalletLine>, notes: Option<String>) -> Result<WarehousePallet, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let p = load_pallet(&conn, &id)?;
+    let setup = load(&conn, &p.item_id).map(|i| i.pallet).unwrap_or_default();
+    let lines = pallet_fit::clean_lines(&lines)?;
+    let plan = pallet_fit::plan_lines(&setup, &lines)?;
+    let mut cols = Map::new();
+    cols.insert("lines_json".into(), json_str(&lines));
+    cols.insert("plan_json".into(), plan_value(&plan));
+    if let Some(n) = notes {
+        cols.insert("notes".into(), json!(n.trim()));
+    }
+    cols.insert("updated_at".into(), json!(chrono::Utc::now().to_rfc3339()));
+    write(&conn, PALLETS, &id, cols, false)?;
+    load_pallet(&conn, &id)
+}
+
+/// Two or more pallets of one order as one: the fitter must get them all on one pallet (when
+/// measured), the lowest-numbered keeps everything, the rest are removed and the order renumbered.
+#[tauri::command]
+pub async fn combine_warehouse_pallets(ids: Vec<String>) -> Result<Vec<WarehousePallet>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    if ids.len() < 2 {
+        return Err("Choose at least two pallets to combine.".into());
+    }
+    let mut ps: Vec<WarehousePallet> = ids.iter().map(|id| load_pallet(&conn, id)).collect::<Result<_, _>>()?;
+    ps.sort_by_key(|p| p.number);
+    ps.dedup_by(|a, b| a.id == b.id);
+    if ps.len() < 2 {
+        return Err("Choose at least two pallets to combine.".into());
+    }
+    if ps.iter().any(|p| p.invoice_id != ps[0].invoice_id) {
+        return Err("Only pallets of the same order combine.".into());
+    }
+    if ps.iter().any(|p| p.item_id != ps[0].item_id) {
+        return Err("Only pallets of the same product combine.".into());
+    }
+    let setup = load(&conn, &ps[0].item_id).map(|i| i.pallet).unwrap_or_default();
+    let merged = pallet_fit::merge_lines(&ps.iter().map(|p| p.lines.clone()).collect::<Vec<_>>())?;
+    let plan = pallet_fit::plan_lines(&setup, &merged)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let keep = &ps[0];
+    let mut cols = Map::new();
+    cols.insert("lines_json".into(), json_str(&merged));
+    cols.insert("plan_json".into(), plan_value(&plan));
+    let notes: Vec<&str> = ps.iter().map(|p| p.notes.as_str()).filter(|n| !n.is_empty()).collect();
+    cols.insert("notes".into(), json!(notes.join(" · ")));
+    cols.insert("updated_at".into(), json!(now));
+    write(&conn, PALLETS, &keep.id, cols, false)?;
+    for p in &ps[1..] {
+        let mut cols = Map::new();
+        cols.insert("archived".into(), json!(1));
+        cols.insert("updated_at".into(), json!(now));
+        write(&conn, PALLETS, &p.id, cols, false)?;
+    }
+    renumber(&conn, &keep.invoice_id)?;
+    order_pallets(&conn, &keep.invoice_id)
+}
+
+/// A pallet taken off its order (archived, never deleted); the rest renumbered.
+#[tauri::command]
+pub async fn remove_warehouse_pallet(id: String) -> Result<Vec<WarehousePallet>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let p = load_pallet(&conn, &id)?;
+    let mut cols = Map::new();
+    cols.insert("archived".into(), json!(1));
+    cols.insert("updated_at".into(), json!(chrono::Utc::now().to_rfc3339()));
+    write(&conn, PALLETS, &id, cols, false)?;
+    renumber(&conn, &p.invoice_id)?;
+    order_pallets(&conn, &p.invoice_id)
+}
+
+/// The passcode someone must type to open this order's manifests ('' for none), on every pallet.
+#[tauri::command]
+pub async fn set_order_passcode(invoice_id: String, passcode: String) -> Result<Vec<WarehousePallet>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let code = passcode.trim().to_string();
+    if code.chars().count() > 40 {
+        return Err("Keep the passcode to 40 characters or fewer.".into());
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    // Every pallet of the order, removed ones too (see order_code).
+    for p in pallets_where(&conn, "p.invoice_id = ?1", &invoice_id)? {
+        if p.passcode != code {
+            let mut cols = Map::new();
+            cols.insert("passcode".into(), json!(code));
+            cols.insert("updated_at".into(), json!(now));
+            write(&conn, PALLETS, &p.id, cols, false)?;
+        }
+    }
+    order_pallets(&conn, &invoice_id)
+}
+
+/// 4 × 6 in labels, one a pallet: the pallet's number of the order, the order, the product, a QR
+/// code to its manifest, and what is on it. Opened as a PDF for the label printer.
+#[tauri::command]
+pub async fn warehouse_pallet_labels(app: tauri::AppHandle, ids: Vec<String>) -> Result<String, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut labels = Vec::new();
+    for id in &ids {
+        let p = load_pallet(&conn, id)?;
+        let of = order_pallets(&conn, &p.invoice_id)?.len();
+        let product = load(&conn, &p.item_id).map(|i| i.name).unwrap_or_default();
+        labels.push((p, of, product));
+    }
+    if labels.is_empty() {
+        return Err("Choose the pallets to print.".into());
+    }
+    let bytes = pallet_labels_pdf(&labels)?;
+    let dir = crate::db::app_data_dir().join("labels");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("pallet-labels-{}.pdf", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    let path = path.to_string_lossy().to_string();
+    use tauri_plugin_shell::ShellExt;
+    app.shell().open(path.clone(), None).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// The QR code of a link, as its dark modules: (width, [row-major dark?]).
+pub fn qr_modules(text: &str) -> Result<(usize, Vec<bool>), String> {
+    let code = qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::M).map_err(|e| e.to_string())?;
+    Ok((code.width(), code.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect()))
+}
+
+fn pallet_labels_pdf(labels: &[(WarehousePallet, usize, String)]) -> Result<Vec<u8>, String> {
+    use printpdf::*;
+    const W: f32 = 101.6; // 4 in
+    const H: f32 = 152.4; // 6 in
+    const M: f32 = 6.0;
+    let (doc, p1, l1) = PdfDocument::new("Pallet labels", Mm(W), Mm(H), "Label");
+    let bold = doc.add_builtin_font(BuiltinFont::HelveticaBold).map_err(|e| e.to_string())?;
+    let regular = doc.add_builtin_font(BuiltinFont::Helvetica).map_err(|e| e.to_string())?;
+    let n0 = |n: i64| {
+        let s = n.abs().to_string();
+        let mut out = String::new();
+        for (i, ch) in s.chars().enumerate() {
+            if i > 0 && (s.len() - i) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(ch);
+        }
+        if n < 0 { format!("-{out}") } else { out }
+    };
+    let cut = |s: &str, n: usize| if s.chars().count() > n { format!("{}…", s.chars().take(n - 1).collect::<String>()) } else { s.to_string() };
+    for (k, (p, of, product)) in labels.iter().enumerate() {
+        let layer = if k == 0 { doc.get_page(p1).get_layer(l1) } else { let (pi, li) = doc.add_page(Mm(W), Mm(H), "Label"); doc.get_page(pi).get_layer(li) };
+        layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+        let mut y = H - M - 12.0;
+        layer.use_text(format!("Pallet {}", p.number), 34.0, Mm(M), Mm(y), &bold);
+        layer.use_text(format!("of {of}"), 14.0, Mm(M + 1.0), Mm(y - 8.0), &regular);
+        y -= 16.0;
+        let order = [if p.invoice_number.is_empty() { String::new() } else { format!("Order {}", p.invoice_number) }, p.client_name.clone()]
+            .into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+        if !order.is_empty() {
+            layer.use_text(cut(&order, 42), 11.0, Mm(M), Mm(y), &bold);
+            y -= 5.5;
+        }
+        if !product.is_empty() {
+            layer.use_text(cut(product, 48), 9.5, Mm(M), Mm(y), &regular);
+            y -= 4.0;
+        }
+        // The QR code, centred: its link opens this pallet's manifest.
+        let (n, dark) = qr_modules(&format!("{MANIFEST_BASE}{}", p.token))?;
+        let side = 58.0_f32;
+        let quiet = 4.0; // modules of white around it
+        let cell = side / (n as f32 + 2.0 * quiet);
+        let x0 = (W - side) / 2.0 + quiet * cell;
+        let top = y - 2.0 - quiet * cell;
+        for r in 0..n {
+            for c in 0..n {
+                if dark[r * n + c] {
+                    let (lx, ty) = (x0 + c as f32 * cell, top - r as f32 * cell);
+                    // A hair over a cell so neighbouring modules print as one block.
+                    layer.add_rect(Rect::new(Mm(lx), Mm(ty - cell - 0.02), Mm(lx + cell + 0.02), Mm(ty)));
+                }
+            }
+        }
+        y = top - n as f32 * cell - quiet * cell - 4.0;
+        let scan = if p.passcode.is_empty() { "Scan for the full manifest".to_string() } else { "Scan for the full manifest (passcode needed)".to_string() };
+        layer.use_text(scan, 8.5, Mm(M), Mm(y), &regular);
+        y -= 7.0;
+        let (boxes, units): (i64, i64) = p.lines.iter().fold((0, 0), |a, l| (a.0 + l.boxes, a.1 + l.boxes * l.per_box));
+        layer.use_text(format!("{} boxes · {} units", n0(boxes), n0(units)), 12.0, Mm(M), Mm(y), &bold);
+        y -= 6.0;
+        let room = ((y - M) / 4.6).floor().max(0.0) as usize;
+        let shown = if p.lines.len() > room { room.saturating_sub(1) } else { p.lines.len() };
+        for l in p.lines.iter().take(shown) {
+            layer.use_text(cut(&format!("{} · {} of {} · {}", l.name, l.type_name, l.per_box, n0(l.boxes)), 50), 9.0, Mm(M), Mm(y), &regular);
+            y -= 4.6;
+        }
+        if shown < p.lines.len() {
+            layer.use_text(format!("and {} more — scan for all", p.lines.len() - shown), 9.0, Mm(M), Mm(y), &regular);
+        }
+    }
+    let mut writer = std::io::BufWriter::new(Vec::new());
+    doc.save(&mut writer).map_err(|e| e.to_string())?;
+    writer.into_inner().map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------------------
 // The warehouse map (R-330): a floor of pallet spots or a run of shelving, each spot saying
 // what sits there and how full it is; R-332/R-333 add its shape (rows of their own lengths,
 // row titles, doors, short names, shelves on the floor). Cleaned by warehouse_core::clean_layout.
@@ -664,6 +1057,77 @@ mod tests {
 
     /// R-340: boxes recorded on a pallet come off it when stock leaves, part pallets first,
     /// and a put-back returns them.
+    /// R-347/R-348: an order's pallets — twelve like this, combined, removed, a passcode, labels.
+    #[tokio::test]
+    async fn an_orders_pallets_add_combine_renumber_and_print() {
+        crate::db::init_test_store();
+        let types = vec![BoxType { id: String::new(), name: "Big Box".into(), per_box: 72 }];
+        let it = save_warehouse_item(input(None, vec![], types)).await.unwrap();
+        let big = it.box_types[0].id.clone();
+        let mut setup = PalletSetup::default();
+        setup.pallet = PalletSpec { length: 48.0, width: 40.0, deck: 6.0, max_height: 72.0 };
+        setup.boxes.insert(big.clone(), pallet_fit::BoxSize { length: 24.0, width: 20.0, height: 12.0, side_ok: false });
+        let it = save_warehouse_item(WarehouseInput { pallet: Some(setup), ..input(Some(it.id.clone()), vec![], it.box_types.clone()) }).await.unwrap();
+        {
+            let conn = pool().get().unwrap();
+            conn.execute("INSERT INTO clients (id, name, created_at, updated_at) VALUES ('c-pal', 'Harbour Goods', 'now', 'now')", []).unwrap();
+            conn.execute("INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at) VALUES ('inv-pal', 'c-pal', 'INV-PAL-1', 'd', 'd', '[]', 0, 0, 'now')", []).unwrap();
+        }
+        let line = |n: i64| PalletLine { section_id: "owls".into(), name: "OWLS".into(), type_id: big.clone(), type_name: "Big Box".into(), per_box: 72, boxes: n };
+        // 288 boxes on 12 pallets: 24 does not go on one (20 a pallet here) — refused, nothing written.
+        let e = add_warehouse_pallets("inv-pal".into(), it.id.clone(), vec![NewPallet { lines: vec![line(24)], copies: Some(12), plan: None, notes: None }]).await.unwrap_err();
+        assert!(e.contains("do not go on one pallet"), "{e}");
+        assert!(list_warehouse_pallets().await.unwrap().is_empty());
+        // 12 of 8 each: numbered 1..12, each pictured, each with its own link code.
+        let ps = add_warehouse_pallets("inv-pal".into(), it.id.clone(), vec![NewPallet { lines: vec![line(8)], copies: Some(12), plan: None, notes: None }]).await.unwrap();
+        assert_eq!(ps.len(), 12);
+        assert_eq!(ps.iter().map(|p| p.number).collect::<Vec<_>>(), (1..=12).collect::<Vec<i64>>());
+        assert!(ps.iter().all(|p| p.plan.as_ref().map_or(false, |x| x.pallet.boxes.len() == 8)));
+        assert_eq!(ps.iter().map(|p| p.token.clone()).collect::<std::collections::BTreeSet<_>>().len(), 12);
+        assert_eq!(ps[0].invoice_number, "INV-PAL-1");
+        assert_eq!(ps[0].client_name, "Harbour Goods");
+        // Combine 2 and 3: 16 on one, the order is 11 pallets numbered 1..11.
+        let after = combine_warehouse_pallets(vec![ps[2].id.clone(), ps[1].id.clone()]).await.unwrap();
+        assert_eq!(after.len(), 11);
+        assert_eq!(after[1].lines[0].boxes, 16);
+        assert_eq!(after.iter().map(|p| p.number).collect::<Vec<_>>(), (1..=11).collect::<Vec<i64>>());
+        // Three together (24) do not go on one pallet: refused, nothing changed.
+        assert!(combine_warehouse_pallets(vec![after[1].id.clone(), after[2].id.clone()]).await.is_err());
+        assert_eq!(list_warehouse_pallets().await.unwrap().len(), 11);
+        // A passcode on the order, carried by a pallet added later.
+        set_order_passcode("inv-pal".into(), " harbour7 ".into()).await.unwrap();
+        let more = add_warehouse_pallets("inv-pal".into(), it.id.clone(), vec![NewPallet { lines: vec![line(4)], copies: None, plan: None, notes: None }]).await.unwrap();
+        assert!(more.iter().all(|p| p.passcode == "harbour7"));
+        assert_eq!(more.last().unwrap().number, 12);
+        // Removed: archived, the rest renumbered.
+        let left = remove_warehouse_pallet(more[0].id.clone()).await.unwrap();
+        assert_eq!(left.len(), 11);
+        assert_eq!(left[0].number, 1);
+        // A label: a PDF, and a QR that decodes to the manifest link.
+        let label = pallet_labels_pdf(&[(left[0].clone(), left.len(), "New Era 59FIFTY".into())]).unwrap();
+        assert!(label.starts_with(b"%PDF"));
+        let (n, dark) = qr_modules(&format!("{MANIFEST_BASE}{}", left[0].token)).unwrap();
+        assert_eq!(dark.len(), n * n);
+        // To look at a label: PALLET_LABEL_OUT=<path> cargo test … writes the PDF there.
+        if let Ok(out) = std::env::var("PALLET_LABEL_OUT") {
+            std::fs::write(out, &label).unwrap();
+        }
+        // Every pallet removed and built again: the order keeps its passcode; a kind set to 0 makes none.
+        for p in &left {
+            remove_warehouse_pallet(p.id.clone()).await.unwrap();
+        }
+        let again = add_warehouse_pallets("inv-pal".into(), it.id.clone(), vec![
+            NewPallet { lines: vec![line(4)], copies: Some(2), plan: None, notes: None },
+            NewPallet { lines: vec![line(4)], copies: Some(0), plan: None, notes: None },
+        ]).await.unwrap();
+        assert_eq!(again.len(), 2);
+        assert!(again.iter().all(|p| p.passcode == "harbour7"));
+        // Two pallets with one number (two devices adding at once) are numbered again by the next add.
+        pool().get().unwrap().execute("UPDATE warehouse_pallets SET number = 1 WHERE invoice_id = 'inv-pal'", []).unwrap();
+        let healed = add_warehouse_pallets("inv-pal".into(), it.id.clone(), vec![NewPallet { lines: vec![line(4)], copies: None, plan: None, notes: None }]).await.unwrap();
+        assert_eq!(healed.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
     /// R-346: measurements save in their own column and set the pallet size; a save without them keeps them.
     #[tokio::test]
     async fn measured_boxes_set_the_pallet_size_and_a_save_without_them_keeps_them() {

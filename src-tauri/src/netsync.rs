@@ -61,6 +61,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "warehouse_items",
     // The warehouse map (R-330).
     "warehouse_layouts",
+    // The pallets of each order (R-348).
+    "warehouse_pallets",
 ];
 
 pub fn ensure_tables() -> Result<()> {

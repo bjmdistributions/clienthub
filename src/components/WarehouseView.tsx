@@ -15,6 +15,7 @@ import StatusPill from "./StatusPill";
 import WarehouseImport from "./WarehouseImport";
 import ProductScreen, { CountsGrid, Seg } from "./WarehouseProduct";
 import WarehouseMap from "./WarehouseMap";
+import WarehouseOrders from "./WarehouseOrders";
 import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0, newId, plural } from "./warehouseUi";
 
 const BAR = { background: "rgb(var(--c-chart-1))" };
@@ -33,10 +34,10 @@ export default function WarehouseView() {
   const [pasting, setPasting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [view, setView] = useState<"products" | "map">(() => {
-    try { return localStorage.getItem("warehouse_view") === "map" ? "map" : "products"; } catch { return "products"; }
+  const [view, setView] = useState<"products" | "map" | "pallets">(() => {
+    try { const v = localStorage.getItem("warehouse_view"); return v === "map" || v === "pallets" ? v : "products"; } catch { return "products"; }
   });
-  const pickView = (v: "products" | "map") => { setView(v); setOpenId(null); try { localStorage.setItem("warehouse_view", v); } catch { /* ignore */ } };
+  const pickView = (v: "products" | "map" | "pallets") => { setView(v); setOpenId(null); try { localStorage.setItem("warehouse_view", v); } catch { /* ignore */ } };
   const openRef = useRef<string | null>(null);
   openRef.current = openId;
   const busyRef = useRef(false);
@@ -188,7 +189,7 @@ export default function WarehouseView() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Seg size="md" value={view} onChange={pickView} options={[{ key: "products", label: "Products" }, { key: "map", label: "Map" }]} />
+          <Seg size="md" value={view} onChange={pickView} options={[{ key: "products", label: "Products" }, { key: "map", label: "Map" }, { key: "pallets", label: "Pallets" }]} />
           {view === "products" && <>
             {importButtons}
             <button onClick={() => setEditing("new")} className={WH_BTN_PRIMARY}><Plus size={14} /> Add product</button>
@@ -196,7 +197,7 @@ export default function WarehouseView() {
         </div>
       </div>
 
-      {view === "map" ? <WarehouseMap items={items || []} /> : <>
+      {view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <WarehouseMap items={items || []} /> : <>
       {items === null ? (
         <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
           {[0, 1].map((i) => <div key={i} className="h-[112px] bg-surface-2 rounded-xl animate-pulse" />)}

@@ -122,6 +122,15 @@ const handlers: Record<string, (a: any) => any> = {
     return clone(row);
   },
   warehouse_pallet_capacity: ({ pallet, types }) => fitter("capacity", { pallet, types }),
+  // R-347/R-348: the pallets of each order, kept by the phone mock (the real fitter pictures them).
+  list_warehouse_pallets: async () => (await fetch(`${FITTER}/pallets`)).json(),
+  add_warehouse_pallets: ({ invoiceId, itemId, pallets }) => fitter("pallets", { invoice_id: invoiceId, item_id: itemId, pallets }),
+  update_warehouse_pallet: ({ id, lines, notes }) => fitter(`pallets/${id}`, { lines, notes }),
+  combine_warehouse_pallets: ({ ids }) => fitter("pallets/combine", { ids }),
+  remove_warehouse_pallet: ({ id }) => fitter(`pallets/${id}/remove`, {}),
+  set_order_passcode: ({ invoiceId, passcode }) => fitter("pallets/passcode", { invoice_id: invoiceId, passcode }),
+  warehouse_pallet_labels: () => "C:/labels/invented.pdf",
+  list_invoices: async () => (await fetch("http://localhost:8326/api/invoices")).json(),
   warehouse_fit_pallets: ({ request }) => fitter("fit", request),
   warehouse_adjust: ({ id, changes, reference, note }) => {
     const it = ITEMS.find((i) => i.id === id);

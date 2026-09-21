@@ -1123,6 +1123,116 @@ pub fn pallet_units_from(setup: &PalletSetup, big_id: &str, big_name: &str, per_
     caps.first().map(|c| c.boxes as i64 * per_box.max(0)).filter(|&u| u > 0)
 }
 
+/// Exactly these boxes on one pallet (R-348: a pallet Jack says he built, or two pallets combined):
+/// the same fitter with every size together, and an error naming how many pallets it would take
+/// when they do not all go on one.
+pub fn fit_one(pallet: &PalletSpec, types: &[FitType], groups: &[FitGroup]) -> Result<FitPallet, String> {
+    let r = fit(&FitRequest { pallet: pallet.clone(), types: types.to_vec(), groups: groups.to_vec(), big_alone: false })?;
+    match r.pallets.len() {
+        0 => Err("There is nothing on this pallet.".into()),
+        1 => Ok(r.pallets.into_iter().next().unwrap_or_default()),
+        n => Err(format!(
+            "These boxes do not go on one pallet: the fitter needs {n} to keep every box inside the edge, under {} in and standing on the ones below.",
+            show(q(pallet.max_height))
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pallet records (R-348): what is on a pallet Jack built, and the picture of it.
+
+/// Some boxes of one size of one section on a recorded pallet. Names are copied in, so a pallet
+/// still reads right after a team or a size is renamed or removed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PalletLine {
+    #[serde(default)]
+    pub section_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub type_id: String,
+    #[serde(default)]
+    pub type_name: String,
+    #[serde(default)]
+    pub per_box: i64,
+    #[serde(default)]
+    pub boxes: i64,
+}
+
+/// A recorded pallet's picture: the pallet it was fitted to and every box's place.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PalletPlan {
+    #[serde(default)]
+    pub spec: PalletSpec,
+    #[serde(default)]
+    pub pallet: FitPallet,
+}
+
+/// A pallet's lines as stored: one line per section and size (repeats added together), nothing
+/// at or below zero, a sane size.
+pub fn clean_lines(lines: &[PalletLine]) -> Result<Vec<PalletLine>, String> {
+    let mut out: Vec<PalletLine> = Vec::new();
+    let mut total: i64 = 0;
+    for l in lines {
+        if l.boxes < 0 {
+            return Err("A count of boxes cannot be below zero.".into());
+        }
+        if l.boxes == 0 || l.type_id.is_empty() {
+            continue;
+        }
+        total = total.checked_add(l.boxes).filter(|&n| n <= MAX_PER_PALLET as i64).ok_or_else(|| format!("More than {MAX_PER_PALLET} boxes on one pallet."))?;
+        match out.iter_mut().find(|o| o.section_id == l.section_id && o.type_id == l.type_id) {
+            Some(o) => o.boxes += l.boxes,
+            None => out.push(PalletLine { name: l.name.trim().to_string(), type_name: l.type_name.trim().to_string(), per_box: l.per_box.max(0), ..l.clone() }),
+        }
+    }
+    if out.is_empty() {
+        return Err("Say what is on the pallet: at least one box.".into());
+    }
+    out.sort_by(|a, b| b.per_box.cmp(&a.per_box).then(b.boxes.cmp(&a.boxes)).then(a.name.cmp(&b.name)));
+    Ok(out)
+}
+
+/// Several pallets' lines as one (combining pallets).
+pub fn merge_lines(sets: &[Vec<PalletLine>]) -> Result<Vec<PalletLine>, String> {
+    clean_lines(&sets.concat())
+}
+
+/// The picture of a pallet holding exactly these lines: Ok(None) when the pallet or a size on it is
+/// not measured (the record stands without a picture), Err when measured and they do not go on one.
+pub fn plan_lines(setup: &PalletSetup, lines: &[PalletLine]) -> Result<Option<PalletPlan>, String> {
+    let ready = q(setup.pallet.length) > 0 && q(setup.pallet.width) > 0 && q(setup.pallet.max_height) > q(setup.pallet.deck);
+    let measured = |id: &str| setup.boxes.get(id).map_or(false, |b| q(b.length) > 0 && q(b.width) > 0 && q(b.height) > 0);
+    if !ready || !lines.iter().all(|l| measured(&l.type_id)) {
+        return Ok(None);
+    }
+    let mut types: Vec<FitType> = Vec::new();
+    for l in lines {
+        if !types.iter().any(|t| t.type_id == l.type_id) {
+            types.push(FitType { type_id: l.type_id.clone(), name: l.type_name.clone(), per_box: l.per_box, size: setup.boxes[&l.type_id].clone() });
+        }
+    }
+    let groups: Vec<FitGroup> = lines.iter().map(|l| FitGroup { section_id: l.section_id.clone(), name: l.name.clone(), type_id: l.type_id.clone(), boxes: l.boxes }).collect();
+    let pallet = fit_one(&setup.pallet, &types, &groups)?;
+    Ok(Some(PalletPlan { spec: setup.pallet.clone(), pallet }))
+}
+
+/// A plan sent in (a pallet built from Build this lot) is kept only if it holds exactly these
+/// lines and passes the check; otherwise it is worked out again from the lines.
+pub fn keep_or_plan(setup: &PalletSetup, lines: &[PalletLine], sent: Option<PalletPlan>) -> Result<Option<PalletPlan>, String> {
+    if let Some(p) = sent {
+        let types: Vec<FitType> = lines.iter().filter_map(|l| {
+            setup.boxes.get(&l.type_id).map(|b| FitType { type_id: l.type_id.clone(), name: l.type_name.clone(), per_box: l.per_box, size: b.clone() })
+        }).collect();
+        let same = lines.iter().all(|l| p.pallet.boxes.iter().filter(|b| b.section_id == l.section_id && b.type_id == l.type_id).count() as i64 == l.boxes)
+            && p.pallet.boxes.len() as i64 == lines.iter().map(|l| l.boxes).sum::<i64>();
+        if same && types.len() == lines.iter().map(|l| &l.type_id).collect::<std::collections::BTreeSet<_>>().len() && check(&p.spec, &types, &p.pallet.boxes).is_empty() {
+            return Ok(Some(p));
+        }
+    }
+    plan_lines(setup, lines)
+}
+
 /// A full pallet of each size (for the setup screen). Sizes without measurements are left out.
 pub fn capacities(pallet: &PalletSpec, types: &[FitType]) -> Result<Vec<Capacity>, String> {
     let p = pallet_q(pallet)?;
@@ -1387,6 +1497,50 @@ mod tests {
         let r = fit(&FitRequest { pallet: spec.clone(), types: vec![big.clone(), t.clone()], groups: vec![g("owls", "big", 4), g("owls", "tall", 28)], big_alone: true }).unwrap();
         assert_eq!(r.pallets.len(), 2);
         assert!(r.pallets.iter().all(|p| check(&spec, &[big.clone(), t.clone()], &p.boxes).is_empty()));
+    }
+
+    #[test]
+    fn one_pallet_or_a_reason() {
+        let t = vec![ty("big", 72, size(24.0, 20.0, 12.0, false)), ty("tiny", 12, size(12.0, 10.0, 8.0, false))];
+        let spec = pallet(48.0, 40.0, 6.0, 60.0);
+        // 24 big boxes is 16 + 8 at 4 a layer under 54 in — it does not go on one.
+        let e = fit_one(&spec, &t, &[g("owls", "big", 12), g("hawks", "big", 12)]).unwrap_err();
+        assert!(e.contains("needs 2"), "{e}");
+        let p = fit_one(&spec, &t, &[g("owls", "big", 8), g("hawks", "big", 4), g("owls", "tiny", 10)]).unwrap();
+        assert_eq!(p.boxes.len(), 22);
+        assert!(check(&spec, &t, &p.boxes).is_empty());
+        assert!(fit_one(&spec, &t, &[]).is_err());
+    }
+
+    #[test]
+    fn pallet_records_add_up_combine_and_get_a_picture_only_when_they_fit() {
+        let line = |sec: &str, t: &str, per: i64, n: i64| PalletLine { section_id: sec.into(), name: sec.to_uppercase(), type_id: t.into(), type_name: t.into(), per_box: per, boxes: n };
+        let a = vec![line("owls", "big", 72, 8), line("owls", "big", 72, 4), line("hawks", "tiny", 12, 0)];
+        let c = clean_lines(&a).unwrap();
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].boxes, 12);
+        assert!(clean_lines(&[line("owls", "big", 72, -1)]).is_err());
+        assert!(clean_lines(&[]).is_err());
+        let m = merge_lines(&[c.clone(), vec![line("hawks", "big", 72, 4), line("owls", "big", 72, 2)]]).unwrap();
+        assert_eq!(m.iter().map(|l| (l.name.as_str(), l.boxes)).collect::<Vec<_>>(), vec![("OWLS", 14), ("HAWKS", 4)]);
+
+        let mut setup = PalletSetup::default();
+        // Unmeasured: the record stands, no picture.
+        assert_eq!(plan_lines(&setup, &m).unwrap(), None);
+        // 66 in of load: 5 layers of 4 = 20 Big Box a pallet.
+        setup.pallet = pallet(48.0, 40.0, 6.0, 72.0);
+        setup.boxes.insert("big".into(), size(24.0, 20.0, 12.0, false));
+        let p = plan_lines(&setup, &m).unwrap().unwrap();
+        assert_eq!(p.pallet.boxes.len(), 18);
+        // Too many for one pallet: an error, not a picture.
+        assert!(plan_lines(&setup, &[line("owls", "big", 72, 21)]).is_err());
+        // A plan sent in is kept only when it holds these lines and checks.
+        let kept = keep_or_plan(&setup, &m, Some(p.clone())).unwrap().unwrap();
+        assert_eq!(kept, p);
+        let mut wrong = p.clone();
+        wrong.pallet.boxes.pop();
+        let redone = keep_or_plan(&setup, &m, Some(wrong)).unwrap().unwrap();
+        assert_eq!(redone.pallet.boxes.len(), 18);
     }
 
     #[test]
