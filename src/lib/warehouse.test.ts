@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   changesForInvoice, colName, describePick, doorWhere, emptyPick, emptyShape, invoiceLines, layoutSummary, mapView, pickFromPlan, pickUnits,
   planUnits, removeRow, rowLength, rowsFromText, sectionBoxes, sectionUnits, setPicked, shareOut, shares, spotName, takeUnits, wallAt,
-  effectiveFill, mapPlaces, placesHolding, takeFromPlaces, type WarehouseLayout, buildLot, builtUnits,
+  effectiveFill, mapPlaces, placesHolding, takeFromPlaces, type WarehouseLayout, buildLot, builtUnits, countCheck, matchToPallets,
+  countedFills, fillQuarter, palletFill, pctLabel,
   type BoxType, type WhSection,
 } from "./warehouse";
 
@@ -375,5 +376,66 @@ describe("building a lot (R-342)", () => {
     const first = b.pallets[0].lines[0];
     const got = builtUnits({ build: b, done: { [first.id]: "m1", "L-owls": "m2" } });
     expect(got).toEqual([{ section_id: first.section_id, name: first.name, boxes: { [first.type_id]: first.boxes }, loose: first.section_id === "owls" ? 8 : 0, units: first.boxes * first.per_box + (first.section_id === "owls" ? 8 : 0) }]);
+  });
+});
+
+describe("checking the counts against the pallets (R-343)", () => {
+  const types: BoxType[] = [{ id: "big", name: "Big Box", per_box: 72 }, { id: "tiny", name: "Small Box", per_box: 12 }];
+  const item = { id: "w", box_types: types, sections: [sec("owls", { big: 25, tiny: 4 }, 7), sec("hawks", { big: 10 }), sec("bears", { big: 3 }), sec("lions", { big: 5 })] };
+  const cell = (c: number, s: string) => ({ r: 0, c, item_id: "w", section_id: s, label: "", fill: 4, note: "", aisle: false });
+  const map: WarehouseLayout = {
+    id: "floor", name: "Floor", kind: "pallets", rows: 1, cols: 5, notes: "", archived: false, created_at: "2026-01-01", updated_at: "2026-01-01",
+    cells: [cell(0, "owls"), cell(1, "owls"), cell(2, "hawks"), cell(3, "bears"), cell(4, "bears")],
+    shape: emptyShape(),
+    stock: {
+      "0:0": { item_id: "w", section_id: "owls", boxes: { big: 20, tiny: 4 } },
+      "0:1": { item_id: "w", section_id: "owls", boxes: { big: 3 } },
+      "0:2": { item_id: "w", section_id: "hawks", boxes: { big: 10 } },
+      "0:3": { item_id: "w", section_id: "bears", boxes: { big: 3 } },
+    },
+  };
+
+  it("says which teams differ, by size, and which have spots with no boxes entered", () => {
+    const c = countCheck(item, [map]);
+    const byName = Object.fromEntries(c.teams.map((t) => [t.name, t]));
+    expect(byName.OWLS.sizes).toEqual([{ type_id: "big", type_name: "Big Box", stock: 25, onMaps: 23, diff: -2 }, { type_id: "tiny", type_name: "Small Box", stock: 4, onMaps: 4, diff: 0 }]);
+    expect(byName.HAWKS.matches).toBe(true);
+    expect(byName.BEARS.uncounted).toEqual(["Floor A5"]); // a bears spot with no boxes entered
+    expect(byName.LIONS.places).toBe(0); // not on the map at all
+    expect(c.off.map((t) => t.name)).toEqual(["OWLS", "BEARS", "LIONS"]);
+    expect(c.matchable.map((t) => t.name)).toEqual(["OWLS"]); // only a fully counted team can be matched blindly
+    expect(c.boxesOff).toBe(2 + 5);
+  });
+
+  it("sets a team to what its pallets hold, keeping its loose units", () => {
+    const out = matchToPallets(item, [map], ["owls"]);
+    expect(out[0]).toEqual({ ...item.sections[0], counts: { big: 23, tiny: 4 } });
+    expect(out[0].loose).toBe(7);
+    expect(out[1]).toBe(item.sections[1]);
+  });
+});
+
+describe("a pallet's fullness from its boxes (R-344)", () => {
+  const types: BoxType[] = [{ id: "big", name: "Big Box", per_box: 72 }, { id: "tiny", name: "Small Box", per_box: 12 }];
+  const item = { id: "w", box_types: types, units_per_pallet: 21 * 72 };
+  const ps = (boxes: Record<string, number>) => ({ item_id: "w", section_id: "owls", boxes });
+
+  it("is units on the pallet over the pallet size, exactly", () => {
+    expect(palletFill(ps({ big: 21 }), item)).toBe(1);
+    expect(palletFill(ps({ big: 18 }), item)).toBeCloseTo(18 / 21);
+    expect(palletFill(ps({ big: 10, tiny: 12 }), item)).toBeCloseTo((720 + 144) / 1512);
+    expect(palletFill(ps({}), item)).toBe(0);
+    expect(palletFill(undefined, item)).toBeNull();
+    expect(palletFill(ps({ big: 3 }), { ...item, units_per_pallet: 0 })).toBeNull();
+    expect([fillQuarter(1), fillQuarter(0.99), fillQuarter(0.5), fillQuarter(0.01), fillQuarter(0)]).toEqual([4, 3, 2, 1, 0]);
+    expect([pctLabel(18 / 21), pctLabel(1), pctLabel(22 / 21)]).toEqual(["86%", "Full", "Full · 105%"]);
+  });
+
+  it("draws a counted pallet by its boxes and leaves the rest as marked", () => {
+    const cell = (c: number, fill: number) => ({ r: 0, c, item_id: "w", section_id: "owls", label: "", fill, note: "", aisle: false });
+    const shown = countedFills([cell(0, 4), cell(1, 2)], emptyShape(), { "0:0": ps({ big: 18 }) }, [item]);
+    expect(shown.cells[0].pct).toBeCloseTo(18 / 21);
+    expect(shown.cells[0].fill).toBe(3);
+    expect(shown.cells[1]).toEqual(cell(1, 2));
   });
 });

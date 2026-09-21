@@ -11,7 +11,8 @@ import { ArrowLeft, Archive, ArchiveRestore, Check, FileText, MoreHorizontal, Pe
 import { api } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
-  FILL_SHORT, INVOICE_PREFILL_KEY, LEAN_STOPS, bigBox, boxesLeaving, buildKey, buildLot, builtUnits, describePick, emptyPick, invoiceLines, itemTotals, looseRoom,
+  FILL_SHORT, INVOICE_PREFILL_KEY, LEAN_STOPS, bigBox, boxesLeaving, buildKey, buildLot, builtUnits, countCheck, describePick, emptyPick, invoiceLines, itemTotals, looseRoom,
+  matchToPallets,
   pickFromPlan, pickUnits, placesHolding, planUnits, sectionBoxes, sectionUnits, takeFromPlaces, type BuildState, type GrabLine, type LooseGrab, type PickPlan,
   type WarehouseLayout,
   setPicked, shares, type BoxType, type HandPick, type InvoicePrefill, type WarehouseItem, type WhMove, type WhSection,
@@ -185,7 +186,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
         ))}
       </div>
 
-      {tab === "shelf" && <ShelfTab item={item} onChanged={onChanged} />}
+      {tab === "shelf" && <ShelfTab item={item} layouts={layouts} onChanged={onChanged} />}
       {tab === "pick" && <PickTab item={item} layouts={layouts} pick={pick} setPick={setPick} onChanged={onChanged} />}
       {tab === "plan" && <PlanTab item={item} layouts={layouts} onChanged={onChanged} onAdjust={(p) => { setPick(p); setTab("pick"); }} />}
       {tab === "history" && <History item={item} onChanged={onChanged} />}
@@ -195,7 +196,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
 
 // ---------- On the shelf ----------
 
-function ShelfTab({ item, onChanged }: { item: WarehouseItem; onChanged: (it: WarehouseItem) => void }) {
+function ShelfTab({ item, layouts, onChanged }: { item: WarehouseItem; layouts: WarehouseLayout[]; onChanged: (it: WarehouseItem) => void }) {
   const [counting, setCounting] = useState<WhSection[] | null>(null);
   const [busy, setBusy] = useState(false);
   const label = item.section_label || "Section";
@@ -218,6 +219,8 @@ function ShelfTab({ item, onChanged }: { item: WarehouseItem; onChanged: (it: Wa
   };
 
   return (
+    <div className="space-y-4">
+    {!counting && <CountCheckCard item={item} layouts={layouts} onChanged={onChanged} />}
     <div className={`${WH_CARD} overflow-hidden`}>
       <div className="px-5 pt-4 pb-3 flex items-center justify-between gap-3 flex-wrap">
         <div>
@@ -240,6 +243,7 @@ function ShelfTab({ item, onChanged }: { item: WarehouseItem; onChanged: (it: Wa
       </div>
       <CountsGrid types={item.box_types} sections={counting ?? rows} label={label} editing={!!counting} share={counting ? undefined : sh}
         onChange={(next) => setCounting(next)} />
+    </div>
     </div>
   );
 }
@@ -980,6 +984,93 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------- Check the counts against the pallets (R-343) ----------
+
+/**
+ * Each team's master count next to the boxes recorded on its pallets and shelf levels, size by
+ * size. A team whose every spot is counted can be set to what its pallets hold (one recount);
+ * after that, every pick takes boxes off both, so they stay together.
+ */
+function CountCheckCard({ item, layouts, onChanged }: { item: WarehouseItem; layouts: WarehouseLayout[]; onChanged: (it: WarehouseItem) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [all, setAll] = useState(false);
+  const check = useMemo(() => countCheck(item, layouts), [item, layouts]);
+  const label = item.section_label || "Section";
+  if (!check.teams.some((t) => t.places > 0)) return null; // nothing on a map yet — nothing to check against
+
+  const matchTeams = async (ids: string[]) => {
+    setBusy(true);
+    try {
+      const it = await api.saveWarehouseItem({
+        id: item.id, name: item.name, section_label: item.section_label, box_types: item.box_types, sections: matchToPallets(item, layouts, ids),
+        units_per_pallet: item.units_per_pallet, unit_price: item.unit_price, notes: item.notes,
+      });
+      onChanged(it);
+      toast(ids.length === 1 ? "Set to what its pallets hold" : `${ids.length} ${plural(label)} set to what their pallets hold`);
+    } catch (e) { toast(String(e), "error"); }
+    finally { setBusy(false); }
+  };
+  const shown = all ? check.teams : check.off;
+  return (
+    <div className={`${WH_CARD} overflow-hidden`}>
+      <div className="px-5 pt-4 pb-3 flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-[14px] font-semibold text-ink">Check against the pallets</div>
+          <div className={`text-[12.5px] mt-0.5 ${check.off.length ? "text-warning-ink" : "text-ink-2"}`}>
+            {check.off.length === 0 ? `Every ${label.toLowerCase()} matches the boxes on its pallets. Every pick now takes boxes off both.`
+              : `${check.off.length} of ${check.teams.length} ${plural(label)} do not match their pallets (${n0(check.boxesOff)} ${check.boxesOff === 1 ? "box" : "boxes"} apart).`}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {check.matchable.length > 0 && <button onClick={() => matchTeams(check.matchable.map((t) => t.section_id))} disabled={busy} className={WH_BTN_PRIMARY}>Set {check.matchable.length === 1 ? "it" : `all ${check.matchable.length}`} to the pallets</button>}
+          <button onClick={() => setAll((v) => !v)} className="text-[12px] text-muted hover:text-ink-2 px-1">{all ? "Only the ones off" : "Show every one"}</button>
+        </div>
+      </div>
+      {shown.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[13px] min-w-[640px]">
+            <thead>
+              <tr className="text-[12px] text-muted border-y border-line bg-surface-2/60">
+                <th className="text-left font-medium py-2 pl-5 pr-3">{label}</th>
+                <th className="text-left font-medium py-2 px-3">Size</th>
+                <th className="text-right font-medium py-2 px-3">In stock</th>
+                <th className="text-right font-medium py-2 px-3">On pallets</th>
+                <th className="text-right font-medium py-2 px-3">Off by</th>
+                <th className="py-2 pl-3 pr-5" />
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((t) => {
+                const rows = t.sizes.length ? t.sizes : [{ type_id: "", type_name: "—", stock: 0, onMaps: 0, diff: 0 }];
+                const why = t.places === 0 ? "Not on the map — mark its pallets and enter their boxes."
+                  : t.uncounted.length ? `No boxes entered on ${t.uncounted.slice(0, 3).join(", ")}${t.uncounted.length > 3 ? ` and ${t.uncounted.length - 3} more` : ""}.` : "";
+                const canMatch = check.matchable.some((m) => m.section_id === t.section_id);
+                return rows.map((x, i) => (
+                  <tr key={`${t.section_id}:${x.type_id}`} className={i === rows.length - 1 ? "border-b border-line-2" : ""}>
+                    {i === 0 && <td rowSpan={rows.length} className="py-2 pl-5 pr-3 align-top">
+                      <div className="text-ink font-medium">{t.name}</div>
+                      {why && <div className="text-[11.5px] text-warning-ink max-w-[220px]">{why}</div>}
+                      {t.matches && <div className="text-[11.5px] text-muted">Matches</div>}
+                    </td>}
+                    <td className="py-2 px-3 text-ink-2">{x.type_name}</td>
+                    <td className="py-2 px-3 text-right tabular-nums text-ink">{n0(x.stock)}</td>
+                    <td className="py-2 px-3 text-right tabular-nums text-ink">{n0(x.onMaps)}</td>
+                    <td className={`py-2 px-3 text-right tabular-nums ${x.diff ? "text-warning-ink font-semibold" : "text-faint"}`}>{x.diff ? `${x.diff > 0 ? "+" : "−"}${n0(Math.abs(x.diff))}` : "—"}</td>
+                    {i === 0 && <td rowSpan={rows.length} className="py-2 pl-3 pr-5 text-right align-top">
+                      {canMatch && <button onClick={() => matchTeams([t.section_id])} disabled={busy} className={WH_BTN_SECONDARY}>Use the pallets</button>}
+                    </td>}
+                  </tr>
+                ));
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="px-5 py-3 text-[11.5px] text-muted">"Use the pallets" sets the master count to what the pallets hold — one recount in the history. Loose units in an opened box are not on pallets and stay as they are. To fix a pallet instead, change its boxes on the Map.</p>
     </div>
   );
 }

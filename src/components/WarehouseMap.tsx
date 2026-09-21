@@ -13,7 +13,7 @@ import { ArchiveRestore, FlipHorizontal, LayoutGrid, Pencil, Plus, RotateCw, Row
 import { api } from "../lib/api";
 import {
   DOOR_KINDS, FILL_LABELS, FILL_SHORT, SHELF_MAX, boxesOnMaps, cellKey, colName, countedFills, doorSpots, doorWhere, emptyShape, fillBucket, layoutSummary,
-  mapView, placeKey, removeRow, rowLength, spotKey, spotName, wallAt, wallLength,
+  mapView, palletFill, pctLabel, placeKey, removeRow, rowLength, spotKey, spotName, wallAt, wallLength, type ShownCell,
   type Door, type LayoutCell, type LayoutShape, type PlaceStock, type ShelfLevel, type WarehouseItem, type WarehouseLayout,
 } from "../lib/warehouse";
 import { toast } from "./Toast";
@@ -319,8 +319,8 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
   const fillValue = first ? same((c) => c.fill) : undefined;
   const all = Object.values(cells);
   // As it looks: a pallet counted down to no boxes shows empty (R-340).
-  const shownRaw = countedFills(all, shape, layout.stock);
-  const shown: Record<string, LayoutCell> = Object.fromEntries(shownRaw.cells.map((c) => [spotKey(c.r, c.c), c]));
+  const shownRaw = countedFills(all, shape, layout.stock, items);
+  const shown: Record<string, ShownCell> = Object.fromEntries(shownRaw.cells.map((c) => [spotKey(c.r, c.c), c]));
   const shownShape = shownRaw.shape;
   const summary = layoutSummary({ rows: layout.rows, cols: layout.cols, cells: shownRaw.cells, shape: shownShape });
 
@@ -381,7 +381,8 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
     const color = cell && !cell.aisle ? colorOf(ck, cell.fill) : "";
     const name = cell && !cell.aisle ? shownName(cell) : "";
     const full = cell ? nameOf(cell) : "";
-    const title = `${spotName(layout.kind, layout.rows, r, c)}${cell?.aisle ? " · aisle" : full ? ` · ${full} · ${FILL_LABELS[cell!.fill]}` : ""}${cell?.note ? ` · ${cell.note}` : ""}`;
+    const pct = cell?.pct;
+    const title = `${spotName(layout.kind, layout.rows, r, c)}${cell?.aisle ? " · aisle" : full ? ` · ${full} · ${pct != null ? `${pctLabel(pct)} by its boxes` : FILL_LABELS[cell!.fill]}` : ""}${cell?.note ? ` · ${cell.note}` : ""}`;
     return (
       <button key={k} title={title} onMouseDown={(e) => { e.preventDefault(); down(r, c, e); }} onMouseEnter={() => enter(r, c)}
         style={{ ...place(r, c), opacity: dim ? 0.25 : 1,
@@ -390,13 +391,13 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
         className={`relative rounded-md overflow-hidden text-left transition-[opacity,box-shadow] duration-[130ms] select-none
           ${cell?.aisle ? "border border-transparent" : ck || color ? "bg-surface border border-line" : "border border-dashed border-line-3 hover:border-line"}
           ${selected ? "ring-2 ring-accent ring-offset-1 ring-offset-bg z-10" : ""}`}>
-        {color && cell!.fill > 0 && (
-          <div className="absolute inset-x-0 bottom-0" style={{ height: `${(cell!.fill / 4) * 100}%`, background: rgba(color, colorBy === "fill" ? 0.3 : 0.22), borderTop: `2px solid ${rgba(color, 0.9)}` }} />
+        {color && (pct != null ? pct > 0 : cell!.fill > 0) && (
+          <div className="absolute inset-x-0 bottom-0" style={{ height: `${(pct != null ? Math.min(1, pct) : cell!.fill / 4) * 100}%`, background: rgba(color, colorBy === "fill" ? 0.3 : 0.22), borderTop: `2px solid ${rgba(color, 0.9)}` }} />
         )}
         {color && <div className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ background: rgba(color, 0.9) }} />}
         {/* Pinned to the top: a button centres its content, which put the name on the half-full line. */}
         <div className="absolute left-0 right-1 top-0 pl-1.5 pr-0.5 pt-1 text-[10px] leading-tight font-medium text-ink line-clamp-2 break-words">{name}</div>
-        {ck && !cell!.aisle && <div className="absolute right-1 bottom-0.5 text-[9.5px] font-medium text-ink-2 tabular-nums">{FILL_SHORT[cell!.fill]}</div>}
+        {ck && !cell!.aisle && <div className="absolute right-1 bottom-0.5 text-[9.5px] font-medium text-ink-2 tabular-nums">{pct != null ? (pct >= 1 ? "Full" : `${Math.round(pct * 100)}%`) : FILL_SHORT[cell!.fill]}</div>}
         {cell?.note && <StickyNote size={9} className="absolute right-1 top-1 text-muted" aria-hidden />}
       </button>
     );
@@ -647,10 +648,28 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
             <label className="block text-[12px] text-muted mb-1.5">What is here</label>
             {whatSelect(whatValue, setWhat, "spot")}
           </div>
-          <div>
-            <label className="block text-[12px] text-muted mb-1.5">How full</label>
-            {fillButtons(fillValue, (q) => apply((c) => ({ ...c, fill: q, aisle: false })))}
-          </div>
+          {(() => {
+            // R-344: a counted pallet's fullness comes from its boxes, exactly.
+            const one = sel.size === 1 && first && first.section_id && !first.aisle ? first : null;
+            const it = one ? items.find((i) => i.id === one.item_id) : undefined;
+            const pct = one ? palletFill(matchStock(placeKey(one.r, one.c), one), it) : null;
+            if (pct !== null && it) {
+              const big = [...it.box_types].sort((a, b) => b.per_box - a.per_box)[0];
+              return (
+                <div>
+                  <label className="block text-[12px] text-muted mb-1.5">How full</label>
+                  <div className="text-[13px] text-ink"><span className="font-semibold tabular-nums">{pctLabel(pct)}</span>
+                    <span className="text-muted"> — worked out from its boxes against a pallet of {big ? `${n0(it.units_per_pallet / big.per_box)} ${big.name}` : `${n0(it.units_per_pallet)} units`}</span></div>
+                </div>
+              );
+            }
+            return (
+              <div>
+                <label className="block text-[12px] text-muted mb-1.5">How full</label>
+                {fillButtons(fillValue, (q) => apply((c) => ({ ...c, fill: q, aisle: false })))}
+              </div>
+            );
+          })()}
           {sel.size === 1 && first && first.section_id && !first.aisle && (() => {
             const it = items.find((i) => i.id === first.item_id);
             if (!it || !it.box_types.length) return null;
