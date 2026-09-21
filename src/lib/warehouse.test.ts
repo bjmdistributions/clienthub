@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   changesForInvoice, colName, describePick, doorWhere, emptyPick, emptyShape, invoiceLines, layoutSummary, mapView, pickFromPlan, pickUnits,
   planUnits, removeRow, rowLength, rowsFromText, sectionBoxes, sectionUnits, setPicked, shareOut, shares, spotName, takeUnits, wallAt,
+  effectiveFill, mapPlaces, placesHolding, takeFromPlaces, type WarehouseLayout, buildLot, builtUnits,
   type BoxType, type WhSection,
 } from "./warehouse";
 
@@ -308,5 +309,71 @@ describe("the map's shape (R-332, R-333)", () => {
     expect(out.shape.row_names).toEqual(["", "", "Back"]);
     expect(out.shape.doors.map((x) => `${x.id}${x.at}/${x.width}`)).toEqual(["a0/1", "c0/2", "e2/1", "f1/1"]);
     expect(removeRow({ ...m, rows: 1 }, 0).rows).toBe(1);
+  });
+});
+
+describe("boxes on each pallet (R-339, R-340)", () => {
+  // The same map as warehouse_core's test: two owls pallets, a hawks pallet, an aisle, and a shelf whose bottom level holds owls.
+  const cell = (r: number, c: number, section_id: string, o: Partial<{ aisle: boolean; fill: number }> = {}) =>
+    ({ r, c, item_id: section_id ? "w" : "", section_id, label: "", fill: 4, note: "", aisle: false, ...o });
+  const floor = (stock: WarehouseLayout["stock"], created_at = "2026-01-01"): WarehouseLayout => ({
+    id: "floor", name: "Floor", kind: "pallets", rows: 2, cols: 3, notes: "", archived: false, created_at, updated_at: created_at,
+    cells: [cell(0, 0, "owls"), cell(0, 1, "owls", { fill: 2 }), cell(0, 2, "hawks"), cell(1, 0, "", { aisle: true })],
+    shape: { ...emptyShape(), shelves: { "1:1": { levels: [{ item_id: "w", section_id: "owls", label: "", fill: 2 }, { item_id: "", section_id: "", label: "", fill: 0 }], note: "" } } },
+    stock,
+  });
+  const ps = (boxes: Record<string, number>) => ({ item_id: "w", section_id: "owls", boxes });
+
+  it("lists the places holding a team in reading order", () => {
+    expect(mapPlaces(floor({})).map((p) => p.key)).toEqual(["0:0", "0:1", "0:2", "1:1:0"]);
+  });
+
+  it("takes part pallets first, then map order — the server's rule", () => {
+    const l = floor({ "0:0": ps({ big: 20 }), "0:1": ps({ big: 5, small: 3 }), "1:1:0": ps({ big: 2 }) });
+    const got = takeFromPlaces([l], "w", "owls", { big: 9, small: 1 });
+    expect(got.map((t) => [t.place, t.boxes])).toEqual([["1:1:0", { big: 2 }], ["0:1", { big: 5, small: 1 }], ["0:0", { big: 2 }]]);
+    expect(got[0].name).toBe("Floor B2 level 1");
+  });
+
+  it("says where a team is when nothing is recorded, part-full first, and a counted empty place is empty", () => {
+    const l = floor({ "0:0": ps({}) });
+    expect(placesHolding([l], "w", "owls").map((p) => [p.place, p.fill])).toEqual([["0:1", 2], ["1:1:0", 2], ["0:0", 0]]);
+    expect(effectiveFill(4, ps({}))).toBe(0);
+    expect(effectiveFill(4, ps({ big: 1 }))).toBe(4);
+    expect(effectiveFill(4, undefined)).toBe(4);
+  });
+});
+
+describe("building a lot (R-342)", () => {
+  const types: BoxType[] = [{ id: "big", name: "Big Box", per_box: 72 }, { id: "sq", name: "Big Square", per_box: 48 }, { id: "tiny", name: "Small Box", per_box: 12 }];
+  const item = { id: "w", box_types: types, sections: [sec("owls", { big: 30, sq: 10, tiny: 20 }), sec("hawks", { big: 20, tiny: 10 })] };
+  const layout: WarehouseLayout = {
+    id: "floor", name: "Floor", kind: "pallets", rows: 1, cols: 2, notes: "", archived: false, created_at: "2026-01-01", updated_at: "2026-01-01",
+    cells: [0, 1].map((c) => ({ r: 0, c, item_id: "w", section_id: "owls", label: "", fill: 4, note: "", aisle: false })),
+    shape: emptyShape(),
+    stock: { "0:0": { item_id: "w", section_id: "owls", boxes: { big: 20 } }, "0:1": { item_id: "w", section_id: "owls", boxes: { big: 5 } } },
+  };
+  const plan = { take: { owls: { big: 25, sq: 4, tiny: 6 }, hawks: { big: 20, tiny: 2 } }, loose: { owls: 8 } };
+
+  it("groups big boxes 21 to a pallet, smaller ones together on their own, each tied to its source", () => {
+    const b = buildLot(item, [layout], plan, 21);
+    expect(b.totals.map((t) => [t.name, t.boxes])).toEqual([["Big Box", 45], ["Big Square", 4], ["Small Box", 8]]);
+    // 45 big boxes -> 21 + 21 + 3; the smaller boxes (4 x 48 + 8 x 12 = 288 units) share one pallet of up to 21 x 72.
+    expect(b.pallets.map((p) => [p.n, p.big, p.boxes])).toEqual([[1, true, 21], [2, true, 21], [3, true, 3], [4, false, 12]]);
+    expect(b.pallets.flatMap((p) => p.lines).filter((l) => l.type_id === "big").reduce((a, l) => a + l.boxes, 0)).toBe(45);
+    // OWLS big: 5 off the part pallet first, then 20 off the full one; HAWKS have no counted pallet.
+    const owlsBig = b.pallets.flatMap((p) => p.lines).filter((l) => l.section_id === "owls" && l.type_id === "big");
+    expect(owlsBig.map((l) => [l.place?.place ?? null, l.boxes])).toEqual([["0:1", 5], ["0:0", 16], ["0:0", 4]]);
+    expect(b.pallets.flatMap((p) => p.lines).filter((l) => l.section_id === "hawks").every((l) => l.place === null)).toBe(true);
+    expect(b.loose).toEqual([{ id: "L-owls", section_id: "owls", name: "OWLS", units: 8 }]);
+    expect(b.units).toBe(45 * 72 + 4 * 48 + 8 * 12 + 8);
+  });
+
+  it("with no pallet size it is one list, and the invoice counts only what was ticked", () => {
+    const b = buildLot(item, [layout], plan, 0);
+    expect(b.pallets.length).toBe(1);
+    const first = b.pallets[0].lines[0];
+    const got = builtUnits({ build: b, done: { [first.id]: "m1", "L-owls": "m2" } });
+    expect(got).toEqual([{ section_id: first.section_id, name: first.name, boxes: { [first.type_id]: first.boxes }, loose: first.section_id === "owls" ? 8 : 0, units: first.boxes * first.per_box + (first.section_id === "owls" ? 8 : 0) }]);
   });
 });

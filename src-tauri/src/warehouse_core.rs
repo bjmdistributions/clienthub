@@ -80,6 +80,10 @@ pub struct Move {
     pub note: String,
     #[serde(default)]
     pub undone: bool,
+    /// Boxes this move took off (negative) or put back on (positive) the map's pallets and
+    /// shelf levels (R-340), so a put-back returns them to the same places.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<PlaceMove>,
 }
 
 /// One section's part of a move. Every field is optional and they apply in this order:
@@ -1005,6 +1009,189 @@ pub fn clean_layout(kind: &str, rows: i64, cols: i64, cells: Vec<LayoutCell>, sh
     })
 }
 
+// ---------------------------------------------------------------------------------------
+// Boxes on each place of a map (R-340): what is recorded on a pallet spot ("r:c") or a shelf
+// level ("r:c:L") for the team marked there. Live: a move that takes boxes off a team takes
+// them off its places too, fewest-first, and a put-back returns them. Kept in its own column
+// (stock_json) and written place by place, never with a whole-map save, so a map edited on
+// one device cannot put back boxes another device has already taken off.
+// ---------------------------------------------------------------------------------------
+
+/// The boxes recorded on one place, and the team they belong to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PlaceStock {
+    #[serde(default)]
+    pub item_id: String,
+    #[serde(default)]
+    pub section_id: String,
+    #[serde(default)]
+    pub boxes: BTreeMap<String, i64>,
+}
+
+/// Every place's boxes on one map, by place key.
+pub type MapStock = BTreeMap<String, PlaceStock>;
+
+/// Boxes a move took off (negative) or put back on (positive) one place of one map.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PlaceMove {
+    pub layout_id: String,
+    pub place: String,
+    #[serde(default)]
+    pub item_id: String,
+    #[serde(default)]
+    pub section_id: String,
+    #[serde(default)]
+    pub boxes: BTreeMap<String, i64>,
+}
+
+/// A place's key: a pallet spot "r:c", or level `l` (0 = bottom) of a shelf "r:c:l".
+pub fn place_key(r: i64, c: i64, level: Option<usize>) -> String {
+    match level {
+        Some(l) => format!("{r}:{c}:{l}"),
+        None => format!("{r}:{c}"),
+    }
+}
+
+/// The places on a map that hold a team, in reading order: (key, item_id, section_id).
+/// Aisles, labels and empty spots are not places; each level of a shelf is.
+pub fn map_places(cells: &[LayoutCell], shape: &LayoutShape) -> Vec<(String, String, String)> {
+    let mut out: Vec<((i64, i64, usize), String, String, String)> = Vec::new();
+    for c in cells {
+        if !c.aisle && !c.section_id.is_empty() && !shape.shelves.contains_key(&format!("{}:{}", c.r, c.c)) {
+            out.push(((c.r, c.c, 0), place_key(c.r, c.c, None), c.item_id.clone(), c.section_id.clone()));
+        }
+    }
+    for (k, sh) in &shape.shelves {
+        let Some((r, c)) = spot_key(k) else { continue };
+        for (i, lv) in sh.levels.iter().enumerate() {
+            if !lv.section_id.is_empty() {
+                out.push(((r, c, i + 1), place_key(r, c, Some(i)), lv.item_id.clone(), lv.section_id.clone()));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.into_iter().map(|(_, k, i, s)| (k, i, s)).collect()
+}
+
+/// Keep only what still makes sense: places that exist and still hold the same team, and
+/// whole positive box counts. A place with no boxes left stays — it was counted, and it is
+/// empty — so the map can show it empty.
+pub fn clean_stock(stock: MapStock, cells: &[LayoutCell], shape: &LayoutShape) -> MapStock {
+    let places = map_places(cells, shape);
+    let mut out = MapStock::new();
+    for (k, mut ps) in stock {
+        let holds = places.iter().any(|(pk, i, sid)| *pk == k && *i == ps.item_id && *sid == ps.section_id);
+        if !holds {
+            continue;
+        }
+        ps.boxes.retain(|t, n| !t.is_empty() && *n > 0);
+        out.insert(k, ps);
+    }
+    out
+}
+
+/// Set what one place holds. Refused when the place does not hold that team.
+pub fn set_place_stock(stock: &mut MapStock, cells: &[LayoutCell], shape: &LayoutShape, place: &str, item_id: &str, section_id: &str, boxes: BTreeMap<String, i64>) -> Result<(), String> {
+    let holds = map_places(cells, shape).iter().any(|(k, i, s)| k == place && i == item_id && s == section_id);
+    if !holds {
+        return Err("That spot no longer holds that team — mark it on the map first.".into());
+    }
+    let boxes: BTreeMap<String, i64> = boxes.into_iter().filter(|(t, n)| !t.is_empty() && *n > 0).collect();
+    stock.insert(place.to_string(), PlaceStock { item_id: item_id.into(), section_id: section_id.into(), boxes });
+    Ok(())
+}
+
+/// Which places a team's boxes come off: for each box type, the places holding it, fewest
+/// first (a part pallet empties before a full one is broken into), then map order. `maps`
+/// is every live map in order, as (layout_id, its stock, its places in reading order).
+/// Boxes no place records come off nowhere — the team's count still drops.
+pub fn take_from_places(maps: &[(String, MapStock, Vec<(String, String, String)>)], item_id: &str, section_id: &str, take: &BTreeMap<String, i64>) -> Vec<PlaceMove> {
+    let mut out: Vec<PlaceMove> = Vec::new();
+    for (tid, want) in take {
+        let mut need = *want;
+        if need <= 0 {
+            continue;
+        }
+        let mut cands: Vec<(i64, usize, usize, &String, &String)> = Vec::new();
+        for (mi, (lid, stock, places)) in maps.iter().enumerate() {
+            for (pi, (k, i, s)) in places.iter().enumerate() {
+                if i != item_id || s != section_id {
+                    continue;
+                }
+                let have = stock.get(k).filter(|ps| ps.item_id == item_id && ps.section_id == section_id)
+                    .and_then(|ps| ps.boxes.get(tid)).copied().unwrap_or(0);
+                if have > 0 {
+                    cands.push((have, mi, pi, lid, k));
+                }
+            }
+        }
+        cands.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
+        for (have, _, _, lid, k) in cands {
+            if need <= 0 {
+                break;
+            }
+            let n = have.min(need);
+            need -= n;
+            match out.iter_mut().find(|m| &m.layout_id == lid && &m.place == k) {
+                Some(m) => { m.boxes.insert(tid.clone(), -n); }
+                None => {
+                    let mut boxes = BTreeMap::new();
+                    boxes.insert(tid.clone(), -n);
+                    out.push(PlaceMove { layout_id: lid.clone(), place: k.clone(), item_id: item_id.into(), section_id: section_id.into(), boxes });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Apply place moves to one map's stock. Boxes taken never go below zero, and a place taken
+/// to nothing stays, empty; boxes put back land only on a place that still holds that team.
+/// Returns what actually changed, so a move records only boxes that really came off (or went
+/// back on) a place — and its put-back returns exactly those.
+pub fn apply_place_moves(stock: &mut MapStock, cells: &[LayoutCell], shape: &LayoutShape, layout_id: &str, moves: &[PlaceMove]) -> Vec<PlaceMove> {
+    let places = map_places(cells, shape);
+    let mut applied: Vec<PlaceMove> = Vec::new();
+    for m in moves.iter().filter(|m| m.layout_id == layout_id) {
+        let holds = places.iter().any(|(k, i, s)| *k == m.place && *i == m.item_id && *s == m.section_id);
+        if !holds {
+            continue;
+        }
+        let e = stock.entry(m.place.clone()).or_insert_with(|| PlaceStock { item_id: m.item_id.clone(), section_id: m.section_id.clone(), boxes: BTreeMap::new() });
+        if e.item_id != m.item_id || e.section_id != m.section_id {
+            *e = PlaceStock { item_id: m.item_id.clone(), section_id: m.section_id.clone(), boxes: BTreeMap::new() };
+        }
+        let mut done: BTreeMap<String, i64> = BTreeMap::new();
+        for (t, n) in &m.boxes {
+            let was = e.boxes.get(t).copied().unwrap_or(0);
+            let v = (was + n).max(0);
+            if v > 0 { e.boxes.insert(t.clone(), v); } else { e.boxes.remove(t); }
+            if v != was { done.insert(t.clone(), v - was); }
+        }
+        if !done.is_empty() {
+            applied.push(PlaceMove { boxes: done, ..m.clone() });
+        }
+    }
+    applied
+}
+
+/// Place moves a client named for a take (a grab from one pallet): always taking, never adding.
+pub fn taking(moves: Vec<PlaceMove>) -> Vec<PlaceMove> {
+    moves.into_iter().map(|m| PlaceMove { boxes: m.boxes.into_iter().filter(|(_, n)| *n != 0).map(|(t, n)| (t, -n.abs())).collect(), ..m }).filter(|m| !m.boxes.is_empty()).collect()
+}
+
+/// Boxes that left a team in a move — whole boxes taken plus boxes opened for loose units —
+/// by section, as positive counts. What comes off the places.
+pub fn boxes_out(lines: &[MoveLine]) -> Vec<(String, BTreeMap<String, i64>)> {
+    lines.iter().filter_map(|l| {
+        let mut m: BTreeMap<String, i64> = BTreeMap::new();
+        for (t, n) in &l.boxes { if *n < 0 { *m.entry(t.clone()).or_insert(0) += -n; } }
+        for (t, n) in &l.opened { if *n > 0 { *m.entry(t.clone()).or_insert(0) += n; } }
+        if m.is_empty() { None } else { Some((l.section_id.clone(), m)) }
+    }).collect()
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1059,7 +1246,7 @@ mod tests {
         let mut secs = vec![s("a", &[("small", 2)], 0)];
         let (lines, _) = apply_changes(&ty, &mut secs, &[Change { section_id: "a".into(), loose: -20, ..Default::default() }]).unwrap();
         assert_eq!((secs[0].counts.get("small").copied(), secs[0].loose), (Some(1), 4));
-        let m = Move { id: "m".into(), at: String::new(), kind: "out".into(), lines, reference: String::new(), note: String::new(), undone: false };
+        let m = Move { id: "m".into(), at: String::new(), kind: "out".into(), lines, reference: String::new(), note: String::new(), undone: false, places: Vec::new() };
         apply_changes(&ty, &mut secs, &undo_changes(&m)).unwrap();
         assert_eq!((secs[0].counts.get("small").copied(), secs[0].loose), (Some(2), 0));
     }
@@ -1250,5 +1437,65 @@ mod tests {
         assert!(rack.shape.doors.is_empty() && rack.shape.shelves.is_empty());
         assert!(clean_layout("pallets", 2, 4, vec![], LayoutShape { row_lengths: vec![0, 0], ..Default::default() }).is_err());
         assert!(clean_layout("pallets", 2, 4, vec![], LayoutShape { row_lengths: vec![61], ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn boxes_come_off_part_pallets_first_and_go_back_where_they_came_from() {
+        let cell = |r, c, sec: &str| LayoutCell { r, c, item_id: "w".into(), section_id: sec.into(), fill: 4, ..Default::default() };
+        let cells = vec![cell(0, 0, "owls"), cell(0, 1, "owls"), cell(0, 2, "hawks"), LayoutCell { r: 1, c: 0, aisle: true, ..Default::default() }];
+        let mut shelves = BTreeMap::new();
+        shelves.insert("1:1".to_string(), FloorShelf { levels: vec![ShelfLevel { item_id: "w".into(), section_id: "owls".into(), fill: 2, ..Default::default() }, ShelfLevel::default()], note: String::new() });
+        let shape = LayoutShape { shelves, ..Default::default() };
+        let places = map_places(&cells, &shape);
+        assert_eq!(places.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(), vec!["0:0", "0:1", "0:2", "1:1:0"]);
+
+        let b = |pairs: &[(&str, i64)]| pairs.iter().map(|(t, n)| (t.to_string(), *n)).collect::<BTreeMap<_, _>>();
+        let mut stock = MapStock::new();
+        set_place_stock(&mut stock, &cells, &shape, "0:0", "w", "owls", b(&[("big", 20)])).unwrap();
+        set_place_stock(&mut stock, &cells, &shape, "0:1", "w", "owls", b(&[("big", 5), ("small", 3)])).unwrap();
+        set_place_stock(&mut stock, &cells, &shape, "1:1:0", "w", "owls", b(&[("big", 2)])).unwrap();
+        assert!(set_place_stock(&mut stock, &cells, &shape, "0:2", "w", "owls", b(&[("big", 1)])).is_err()); // a hawks pallet
+        assert!(set_place_stock(&mut stock, &cells, &shape, "1:0", "w", "owls", b(&[("big", 1)])).is_err()); // an aisle
+
+        // 9 big + 1 small: the shelf level's 2 go first, then the part pallet's 5, then 2 off the full one.
+        let maps = vec![("floor".to_string(), stock.clone(), places.clone())];
+        let moves = take_from_places(&maps, "w", "owls", &b(&[("big", 9), ("small", 1)]));
+        let got: Vec<(String, BTreeMap<String, i64>)> = moves.iter().map(|m| (m.place.clone(), m.boxes.clone())).collect();
+        assert_eq!(got, vec![
+            ("1:1:0".to_string(), b(&[("big", -2)])),
+            ("0:1".to_string(), b(&[("big", -5), ("small", -1)])),
+            ("0:0".to_string(), b(&[("big", -2)])),
+        ]);
+        let applied = apply_place_moves(&mut stock, &cells, &shape, "floor", &moves);
+        assert_eq!(applied, moves); // everything asked for was there
+        assert_eq!(stock["0:0"].boxes, b(&[("big", 18)]));
+        assert_eq!(stock["0:1"].boxes, b(&[("small", 2)]));
+        assert!(stock["1:1:0"].boxes.is_empty()); // emptied, and still known to be empty
+
+        // A put-back returns them to the same places.
+        let back: Vec<PlaceMove> = moves.iter().map(|m| PlaceMove { boxes: m.boxes.iter().map(|(t, n)| (t.clone(), -n)).collect(), ..m.clone() }).collect();
+        apply_place_moves(&mut stock, &cells, &shape, "floor", &back);
+        assert_eq!(stock["0:0"].boxes, b(&[("big", 20)]));
+        assert_eq!(stock["1:1:0"].boxes, b(&[("big", 2)]));
+
+        // More than the places hold: they give what they have, the team still drops.
+        let all = take_from_places(&[("floor".to_string(), stock.clone(), places.clone())], "w", "owls", &b(&[("big", 100)]));
+        assert_eq!(all.iter().map(|m| -m.boxes["big"]).sum::<i64>(), 27);
+
+        // Re-marking a pallet with another team drops its recorded boxes.
+        let mut cells2 = cells.clone();
+        cells2[0].section_id = "hawks".into();
+        let cleaned = clean_stock(stock.clone(), &cells2, &shape);
+        assert!(!cleaned.contains_key("0:0") && cleaned.contains_key("0:1"));
+
+        // A grab named by the client takes, never adds, and records only what was there.
+        let asked = taking(vec![PlaceMove { layout_id: "floor".into(), place: "1:1:0".into(), item_id: "w".into(), section_id: "owls".into(), boxes: b(&[("big", 5)]) }]);
+        assert_eq!(asked[0].boxes, b(&[("big", -5)]));
+        let got = apply_place_moves(&mut stock, &cells, &shape, "floor", &asked);
+        assert_eq!(got[0].boxes, b(&[("big", -2)])); // the level held 2
+
+        // What left a team: whole boxes out plus boxes opened.
+        let line = MoveLine { section_id: "owls".into(), name: "OWLS".into(), boxes: b(&[("big", -3), ("small", 1)]), loose: -5, opened: b(&[("small", 1)]), units: 0 };
+        assert_eq!(boxes_out(&[line]), vec![("owls".to_string(), b(&[("big", 3), ("small", 1)]))]);
     }
 }

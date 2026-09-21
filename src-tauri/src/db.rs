@@ -2172,4 +2172,15 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_layouts ADD COLUMN shape_json TEXT DEFAULT '{}';
         "#,
     ),
+    (
+        101,
+        // R-340: the boxes recorded on each pallet spot and shelf level of a map
+        // (warehouse_core::MapStock), live — a move that takes boxes off a team takes them off
+        // its places, and a put-back returns them. Its own column, written place by place, so a
+        // whole-map save never puts back boxes another device has taken off. clienthub-api
+        // adds the same column (sync.rs ALTER list) and must be deployed first.
+        r#"
+        ALTER TABLE warehouse_layouts ADD COLUMN stock_json TEXT DEFAULT '{}';
+        "#,
+    ),
 ];

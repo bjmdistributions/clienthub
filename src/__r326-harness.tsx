@@ -64,6 +64,12 @@ const LAYOUTS: any[] = [
         "1:6": { levels: [{ ...T(2), label: "", fill: 3 }, { item_id: "", section_id: "", label: "", fill: 0 }, { ...T(0), label: "", fill: 4 }], note: "Top level is loose hats" },
       },
     },
+    // R-340: boxes counted on some OWLS pallets (big = the first box size), one counted down to nothing.
+    stock: {
+      "0:0": { ...T(0), boxes: { [preview.box_types[0].id]: 8, [preview.box_types[1].id]: 2 } },
+      "0:1": { ...T(0), boxes: { [preview.box_types[0].id]: 3 } },
+      "0:2": { ...T(0), boxes: {} },
+    },
   },
   {
     id: "L2", name: "Rack A", kind: "shelving", rows: 4, cols: 6, notes: "", archived: false, created_at: NOW, updated_at: NOW,
@@ -113,6 +119,11 @@ const handlers: Record<string, (a: any) => any> = {
     const row = { ...(l || { id: `L${LAYOUTS.length + 1}`, archived: false, created_at: NOW }), ...input, updated_at: NOW };
     if (l) Object.assign(l, row); else LAYOUTS.push(row);
     return clone(row);
+  },
+  set_warehouse_place_stock: ({ layoutId, place, itemId, sectionId, boxes }) => {
+    const l = LAYOUTS.find((x) => x.id === layoutId);
+    l.stock = { ...(l.stock || {}), [place]: { item_id: itemId, section_id: sectionId, boxes: Object.fromEntries(Object.entries(boxes).filter(([, n]) => (n as number) > 0)) } };
+    return clone(l);
   },
   archive_warehouse_layout: ({ id, archived }) => { const l = LAYOUTS.find((x) => x.id === id); if (l) l.archived = archived; return null; },
   warehouse_read_sheet: () => ({ rows: sheet.rows, sheet_name: "Sheet1", note: null, guess: sheet.guess }),

@@ -15,7 +15,7 @@
 //! Synced per column, last writer wins — see the vault's revisit/warehouse-counts-are-one-column.
 
 use crate::db::pool;
-use crate::warehouse_core::{self as core, BoxType, Change, ImportResult, LayoutCell, LayoutShape, Mapping, Move, Section, Short};
+use crate::warehouse_core::{self as core, BoxType, Change, ImportResult, LayoutCell, LayoutShape, MapStock, Mapping, Move, PlaceMove, Section, Short};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -174,7 +174,7 @@ fn save(conn: &rusqlite::Connection, input: WarehouseInput, note: &str) -> Resul
     let log_changed = !lines.is_empty();
     if log_changed {
         let kind = if existing.is_none() { "in" } else { "count" };
-        core::push_log(&mut log, Move { id: core::new_id(), at: now.clone(), kind: kind.into(), lines, reference: String::new(), note: note.into(), undone: false });
+        core::push_log(&mut log, Move { id: core::new_id(), at: now.clone(), kind: kind.into(), lines, reference: String::new(), note: note.into(), undone: false, places: Vec::new() });
     }
     let mut cols = Map::new();
     cols.insert("name".into(), json!(name));
@@ -239,6 +239,7 @@ pub async fn warehouse_adjust(
     reference: Option<String>,
     note: Option<String>,
     undo_of: Option<String>,
+    places: Option<Vec<PlaceMove>>,
 ) -> Result<AdjustResult, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut item = load(&conn, &id)?;
@@ -254,6 +255,8 @@ pub async fn warehouse_adjust(
     if lines.is_empty() {
         return Err("Nothing to move — those sections have nothing left.".into());
     }
+    // R-340: the same boxes come off (or go back on) the map's pallets and shelf levels.
+    let places = move_places(&conn, &item, undo_of.as_deref(), places.unwrap_or_default(), &lines)?;
     let now = chrono::Utc::now().to_rfc3339();
     if let Some(u) = undo_of.as_deref() {
         if let Some(m) = item.log.iter_mut().find(|m| m.id == u) { m.undone = true; }
@@ -267,6 +270,7 @@ pub async fn warehouse_adjust(
         reference: reference.unwrap_or_default().trim().to_string(),
         note: note.unwrap_or_default().trim().to_string(),
         undone: false,
+        places,
     });
     let mut cols = Map::new();
     cols.insert("sections_json".into(), json_str(&item.sections));
@@ -274,6 +278,48 @@ pub async fn warehouse_adjust(
     cols.insert("updated_at".into(), json!(now));
     write(&conn, ITEMS, &id, cols, false)?;
     Ok(AdjustResult { item: load(&conn, &id)?, short })
+}
+
+/// Take a move's boxes off the map's places (or, for a put-back, return them where they came
+/// from), write every map that changed, and say what moved — recorded on the move.
+fn move_places(conn: &rusqlite::Connection, item: &WarehouseItem, undo_of: Option<&str>, named: Vec<PlaceMove>, lines: &[core::MoveLine]) -> Result<Vec<PlaceMove>, String> {
+    let maps = live_maps(conn)?;
+    // A grab names its pallet (R-342); otherwise the boxes come off by the rule.
+    let named = core::taking(named);
+    let moves: Vec<PlaceMove> = if undo_of.is_none() && !named.is_empty() { named } else { match undo_of {
+        Some(u) => item.log.iter().find(|m| m.id == u).map(|m| m.places.iter().map(|p| PlaceMove {
+            boxes: p.boxes.iter().map(|(t, n)| (t.clone(), -n)).collect(), ..p.clone()
+        }).collect()).unwrap_or_default(),
+        None => {
+            let view: Vec<(String, MapStock, Vec<(String, String, String)>)> = maps.iter().map(|m| (m.id.clone(), m.stock.clone(), core::map_places(&m.cells, &m.shape))).collect();
+            core::boxes_out(lines).iter().flat_map(|(sid, take)| core::take_from_places(&view, &item.id, sid, take)).collect()
+        }
+    } };
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut applied: Vec<PlaceMove> = Vec::new();
+    for m in &maps {
+        if !moves.iter().any(|p| p.layout_id == m.id) {
+            continue;
+        }
+        let mut stock = m.stock.clone();
+        applied.extend(core::apply_place_moves(&mut stock, &m.cells, &m.shape, &m.id, &moves));
+        if stock != m.stock {
+            let mut cols = Map::new();
+            cols.insert("stock_json".into(), json_str(&stock));
+            cols.insert("updated_at".into(), json!(now));
+            write(conn, LAYOUTS, &m.id, cols, false)?;
+        }
+    }
+    Ok(applied)
+}
+
+/// Every map not removed, oldest first — the order places are taken in.
+fn live_maps(conn: &rusqlite::Connection) -> Result<Vec<WarehouseLayout>, String> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {LAYOUT_COLS} FROM warehouse_layouts WHERE COALESCE(archived,0)=0 ORDER BY created_at"))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], map_layout).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 /// Read a dropped or picked spreadsheet (CSV, TSV, Excel) into rows, with a first guess at
@@ -355,6 +401,8 @@ pub struct WarehouseLayout {
     pub cols: i64,
     pub cells: Vec<LayoutCell>,
     pub shape: LayoutShape,
+    /// Boxes recorded on each place (R-340); set place by place, never with the map.
+    pub stock: MapStock,
     pub notes: String,
     pub archived: bool,
     pub created_at: String,
@@ -379,7 +427,7 @@ pub struct LayoutInput {
     pub notes: String,
 }
 
-const LAYOUT_COLS: &str = "id, name, COALESCE(kind,'pallets'), COALESCE(rows,1), COALESCE(cols,1), COALESCE(cells_json,'[]'),     COALESCE(notes,''), COALESCE(archived,0), created_at, updated_at, COALESCE(shape_json,'{}')";
+const LAYOUT_COLS: &str = "id, name, COALESCE(kind,'pallets'), COALESCE(rows,1), COALESCE(cols,1), COALESCE(cells_json,'[]'),     COALESCE(notes,''), COALESCE(archived,0), created_at, updated_at, COALESCE(shape_json,'{}'), COALESCE(stock_json,'{}')";
 
 fn map_layout(r: &rusqlite::Row) -> rusqlite::Result<WarehouseLayout> {
     let cells: String = r.get(5)?;
@@ -391,6 +439,7 @@ fn map_layout(r: &rusqlite::Row) -> rusqlite::Result<WarehouseLayout> {
         cols: r.get(4)?,
         cells: serde_json::from_str(&cells).unwrap_or_default(),
         shape: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
+        stock: serde_json::from_str(&r.get::<_, String>(11)?).unwrap_or_default(),
         notes: r.get(6)?,
         archived: r.get::<_, i64>(7)? != 0,
         created_at: r.get(8)?,
@@ -440,6 +489,13 @@ pub async fn save_warehouse_layout(input: LayoutInput) -> Result<WarehouseLayout
     if send_shape || existing.is_none() {
         cols_map.insert("shape_json".into(), json_str(&m.shape));
     }
+    // The boxes on each place are never sent with the map; they are only cleaned against it,
+    // so a spot re-marked with another team, or taken out, drops what was recorded on it.
+    let stored = existing.as_ref().map(|e| e.stock.clone()).unwrap_or_default();
+    let stock = core::clean_stock(stored.clone(), &m.cells, &m.shape);
+    if stock != stored || existing.is_none() {
+        cols_map.insert("stock_json".into(), json_str(&stock));
+    }
     cols_map.insert("notes".into(), json!(input.notes.trim()));
     cols_map.insert("updated_at".into(), json!(now));
     if existing.is_none() {
@@ -448,6 +504,23 @@ pub async fn save_warehouse_layout(input: LayoutInput) -> Result<WarehouseLayout
     }
     write(&conn, LAYOUTS, &id, cols_map, existing.is_none())?;
     load_layout(&conn, &id)
+}
+
+/// Set the boxes recorded on one place of a map (R-340): a pallet spot "r:c" or a shelf level
+/// "r:c:L", for the team marked there. Only that place changes.
+#[tauri::command]
+pub async fn set_warehouse_place_stock(layout_id: String, place: String, item_id: String, section_id: String, boxes: std::collections::BTreeMap<String, i64>) -> Result<WarehouseLayout, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let l = load_layout(&conn, &layout_id)?;
+    let mut stock = l.stock.clone();
+    core::set_place_stock(&mut stock, &l.cells, &l.shape, &place, &item_id, &section_id, boxes)?;
+    if stock != l.stock {
+        let mut cols = Map::new();
+        cols.insert("stock_json".into(), json_str(&stock));
+        cols.insert("updated_at".into(), json!(chrono::Utc::now().to_rfc3339()));
+        write(&conn, LAYOUTS, &layout_id, cols, false)?;
+    }
+    load_layout(&conn, &layout_id)
 }
 
 /// Archive (or bring back) a map. Nothing is deleted.
@@ -493,7 +566,7 @@ mod tests {
 
         // 500 units by the rule: 6 Big (432), all 5 Small (60), then 8 loose out of an opened Big.
         let r = warehouse_adjust(item.id.clone(), vec![Change { section_id: nyy.clone(), units: -500, ..Default::default() }],
-            Some("INV-1001".into()), None, None).await.unwrap();
+            Some("INV-1001".into()), None, None, None).await.unwrap();
         assert!(r.short.is_empty());
         let y = &r.item.sections[0];
         assert_eq!(core::units_of(&r.item.box_types, y), 720 + 60 - 500);
@@ -501,10 +574,10 @@ mod tests {
         assert_eq!(r.item.log[0].kind, "out");
 
         let pick = r.item.log[0].id.clone();
-        let back = warehouse_adjust(item.id.clone(), vec![], None, Some("Put back".into()), Some(pick.clone())).await.unwrap();
+        let back = warehouse_adjust(item.id.clone(), vec![], None, Some("Put back".into()), Some(pick.clone()), None).await.unwrap();
         assert_eq!(back.item.sections[0].counts, BTreeMap::from([(big.clone(), 10), (small.clone(), 5)]));
         assert_eq!(back.item.sections[0].loose, 0);
-        assert!(warehouse_adjust(item.id.clone(), vec![], None, None, Some(pick)).await.is_err());
+        assert!(warehouse_adjust(item.id.clone(), vec![], None, None, Some(pick), None).await.is_err());
 
         // An import into the product replaces the named team's counts and adds a new one.
         let rows: Vec<Vec<String>> = "Team,Pack size,Total units\nDodgers,12,30\nMets,12,24"
@@ -543,5 +616,50 @@ mod tests {
         assert_eq!((kept.shape.row_lengths.clone(), kept.shape.doors.len(), kept.cells.len()), (vec![6, 3], 1, 0));
         archive_warehouse_layout(m.id.clone(), true).await.unwrap();
         assert!(list_warehouse_layouts().await.unwrap().iter().any(|l| l.id == m.id && l.archived));
+    }
+
+    /// R-340: boxes recorded on a pallet come off it when stock leaves, part pallets first,
+    /// and a put-back returns them.
+    #[tokio::test]
+    async fn a_pick_takes_boxes_off_the_pallets_and_a_put_back_returns_them() {
+        crate::db::init_test_store();
+        let types = vec![BoxType { id: String::new(), name: "Big Box".into(), per_box: 72 }];
+        let first = save_warehouse_item(input(None, vec![], types)).await.unwrap();
+        let big = first.box_types[0].id.clone();
+        let sections = vec![Section { name: "Owls".into(), counts: BTreeMap::from([(big.clone(), 30)]), ..Default::default() }];
+        let item = save_warehouse_item(input(Some(first.id.clone()), sections, first.box_types.clone())).await.unwrap();
+        let owls = item.sections[0].id.clone();
+        let spot = |c| LayoutCell { r: 0, c, item_id: item.id.clone(), section_id: owls.clone(), fill: 4, ..Default::default() };
+        let map = save_warehouse_layout(LayoutInput {
+            id: None, name: "Floor".into(), kind: "pallets".into(), rows: 1, cols: 3, cells: vec![spot(0), spot(1)], shape: None, notes: String::new(),
+        }).await.unwrap();
+        set_warehouse_place_stock(map.id.clone(), "0:0".into(), item.id.clone(), owls.clone(), BTreeMap::from([(big.clone(), 20)])).await.unwrap();
+        let l = set_warehouse_place_stock(map.id.clone(), "0:1".into(), item.id.clone(), owls.clone(), BTreeMap::from([(big.clone(), 6)])).await.unwrap();
+        assert_eq!(l.stock.len(), 2);
+        // A spot not marked with the team is refused.
+        assert!(set_warehouse_place_stock(map.id.clone(), "0:2".into(), item.id.clone(), owls.clone(), BTreeMap::from([(big.clone(), 1)])).await.is_err());
+
+        // 10 boxes: the part pallet's 6 first, then 4 off the full one.
+        let r = warehouse_adjust(item.id.clone(), vec![Change { section_id: owls.clone(), boxes: BTreeMap::from([(big.clone(), -10)]), ..Default::default() }],
+            Some("INV-7".into()), None, None, None).await.unwrap();
+        assert_eq!(r.item.log[0].places.len(), 2);
+        let after = list_warehouse_layouts().await.unwrap().into_iter().find(|x| x.id == map.id).unwrap();
+        assert_eq!(after.stock.get("0:0").map(|p| p.boxes[&big]), Some(16));
+        assert!(after.stock["0:1"].boxes.is_empty()); // emptied, and known to be empty
+
+        // Put back: the same pallets get them again.
+        warehouse_adjust(item.id.clone(), vec![], None, None, Some(r.item.log[0].id.clone()), None).await.unwrap();
+        let back = list_warehouse_layouts().await.unwrap().into_iter().find(|x| x.id == map.id).unwrap();
+        assert_eq!(back.stock.get("0:0").map(|p| p.boxes[&big]), Some(20));
+        assert_eq!(back.stock.get("0:1").map(|p| p.boxes[&big]), Some(6));
+
+        // A map save never carries the boxes, but re-marking a spot drops what was on it.
+        let mut cells = back.cells.clone();
+        cells[1].label = "Returns".into();
+        cells[1].section_id.clear();
+        let saved = save_warehouse_layout(LayoutInput {
+            id: Some(map.id.clone()), name: "Floor".into(), kind: "pallets".into(), rows: 1, cols: 3, cells, shape: None, notes: String::new(),
+        }).await.unwrap();
+        assert!(saved.stock.contains_key("0:0") && !saved.stock.contains_key("0:1"));
     }
 }

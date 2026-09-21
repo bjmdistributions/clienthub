@@ -392,6 +392,8 @@ export interface WhTag { section_id: string; name: string; boxes: Record<string,
 export interface InvoicePrefill {
   lines: (LineItem & { wh?: WhTag })[];
   warehouse: { item_id: string; item_name: string };
+  /** R-342: built in the warehouse — the boxes already left the shelf as they were grabbed. */
+  built?: boolean;
 }
 
 /** localStorage key the packer stashes a prefilled invoice under (read once by Invoices). */
@@ -565,6 +567,8 @@ export interface WarehouseLayout {
   cols: number;
   cells: LayoutCell[];
   shape: LayoutShape;
+  /** Boxes recorded on each place (R-340), set place by place — never saved with the map. */
+  stock?: MapStock;
   notes: string;
   archived: boolean;
   created_at: string;
@@ -724,4 +728,252 @@ export function removeRow<T extends Pick<LayoutInput, "rows" | "cols" | "cells" 
     cells,
     shape: { ...l.shape, row_lengths: cut(l.shape.row_lengths), row_names: cut(l.shape.row_names), doors, shelves },
   };
+}
+
+// ---------- Boxes on each pallet (R-339, R-340) ----------
+// A place is a pallet spot ("r:c") or a shelf level ("r:c:L", 0 = bottom) marked with a team.
+// Its recorded boxes go down on their own when stock leaves: the server and the desktop take
+// them off with warehouse_core::take_from_places; this is the same rule, to show the plan.
+
+/** The boxes recorded on one place, and whose they are. No boxes = counted and empty. */
+export interface PlaceStock { item_id: string; section_id: string; boxes: Record<string, number> }
+export type MapStock = Record<string, PlaceStock>;
+
+export const placeKey = (r: number, c: number, level?: number) => (level == null ? `${r}:${c}` : `${r}:${c}:${level}`);
+
+/** The places on a map holding a team, in reading order — warehouse_core::map_places. */
+export function mapPlaces(l: Pick<WarehouseLayout, "cells" | "shape">): { key: string; r: number; c: number; level: number | null; item_id: string; section_id: string; fill: number }[] {
+  const shelves = l.shape?.shelves || {};
+  const out: { order: [number, number, number]; key: string; r: number; c: number; level: number | null; item_id: string; section_id: string; fill: number }[] = [];
+  for (const c of l.cells) {
+    if (!c.aisle && c.section_id && !shelves[spotKey(c.r, c.c)]) out.push({ order: [c.r, c.c, 0], key: placeKey(c.r, c.c), r: c.r, c: c.c, level: null, item_id: c.item_id, section_id: c.section_id, fill: c.fill });
+  }
+  for (const [k, sh] of Object.entries(shelves)) {
+    const [r, c] = k.split(":").map(Number);
+    sh.levels.forEach((lv, i) => {
+      if (lv.section_id) out.push({ order: [r, c, i + 1], key: placeKey(r, c, i), r, c, level: i, item_id: lv.item_id, section_id: lv.section_id, fill: lv.fill });
+    });
+  }
+  out.sort((a, b) => a.order[0] - b.order[0] || a.order[1] - b.order[1] || a.order[2] - b.order[2]);
+  return out.map((x) => ({ key: x.key, r: x.r, c: x.c, level: x.level, item_id: x.item_id, section_id: x.section_id, fill: x.fill }));
+}
+
+/** A place in words: "Floor A2", "Floor B7 level 3". */
+export function placeName(l: Pick<WarehouseLayout, "name" | "kind" | "rows">, p: { r: number; c: number; level: number | null }): string {
+  return `${l.name} ${spotName(l.kind, l.rows, p.r, p.c)}${p.level == null ? "" : ` level ${p.level + 1}`}`;
+}
+
+/** How full a place looks: a place counted to no boxes is empty, whatever was marked. */
+export function effectiveFill(fill: number, stock: PlaceStock | undefined): number {
+  return stock && Object.values(stock.boxes).every((n) => !(n > 0)) ? 0 : fill;
+}
+
+export interface PlaceTake { layout_id: string; place: string; name: string; boxes: Record<string, number> }
+
+/**
+ * Which places a team's boxes come off — warehouse_core::take_from_places: for each box type,
+ * the places holding it, fewest first, then map order (maps oldest first). `take` is positive
+ * counts by box type. Boxes no place records are left out (they come off nowhere).
+ */
+export function takeFromPlaces(layouts: WarehouseLayout[], item_id: string, section_id: string, take: Record<string, number>): PlaceTake[] {
+  const maps = layouts.filter((l) => !l.archived).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const out: PlaceTake[] = [];
+  for (const tid of Object.keys(take).sort()) {
+    let need = take[tid];
+    if (!(need > 0)) continue;
+    const cands: { have: number; mi: number; pi: number; l: WarehouseLayout; p: ReturnType<typeof mapPlaces>[number] }[] = [];
+    maps.forEach((l, mi) => mapPlaces(l).forEach((p, pi) => {
+      if (p.item_id !== item_id || p.section_id !== section_id) return;
+      const ps = l.stock?.[p.key];
+      const have = ps && ps.item_id === item_id && ps.section_id === section_id ? ps.boxes[tid] || 0 : 0;
+      if (have > 0) cands.push({ have, mi, pi, l, p });
+    }));
+    cands.sort((a, b) => a.have - b.have || a.mi - b.mi || a.pi - b.pi);
+    for (const x of cands) {
+      if (need <= 0) break;
+      const n = Math.min(x.have, need);
+      need -= n;
+      const hit = out.find((o) => o.layout_id === x.l.id && o.place === x.p.key);
+      if (hit) hit.boxes[tid] = n;
+      else out.push({ layout_id: x.l.id, place: x.p.key, name: placeName(x.l, x.p), boxes: { [tid]: n } });
+    }
+  }
+  return out;
+}
+
+/** Every place on the live maps holding a team, part-full first — "where it is", when no boxes are recorded. */
+export function placesHolding(layouts: WarehouseLayout[], item_id: string, section_id: string) {
+  const out: { layout_id: string; place: string; name: string; fill: number; boxes: Record<string, number> | null }[] = [];
+  for (const l of layouts.filter((x) => !x.archived).sort((a, b) => a.created_at.localeCompare(b.created_at))) {
+    for (const p of mapPlaces(l)) {
+      if (p.item_id !== item_id || p.section_id !== section_id) continue;
+      const ps = l.stock?.[p.key];
+      const counted = ps && ps.item_id === item_id && ps.section_id === section_id ? ps.boxes : null;
+      out.push({ layout_id: l.id, place: p.key, name: placeName(l, p), fill: effectiveFill(p.fill, counted ? ps : undefined), boxes: counted });
+    }
+  }
+  // Part-full places first (they empty out), then full, then empty ones last.
+  const rank = (f: number) => (f > 0 && f < 4 ? 0 : f >= 4 ? 1 : 2);
+  return out.map((x, i) => ({ x, i })).sort((a, b) => rank(a.x.fill) - rank(b.x.fill) || a.i - b.i).map(({ x }) => x);
+}
+
+/** Boxes of a team recorded across every live map, by box type. */
+export function boxesOnMaps(layouts: WarehouseLayout[], item_id: string, section_id: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const p of placesHolding(layouts, item_id, section_id)) for (const [t, n] of Object.entries(p.boxes || {})) out[t] = (out[t] || 0) + n;
+  return out;
+}
+
+/** What a planned pick takes off a team's places: whole boxes plus boxes opened for loose units. */
+export function boxesLeaving(plan: Pick<PickPlan, "take" | "opened">, section_id: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [t, n] of Object.entries(plan.take[section_id] || {})) out[t] = (out[t] || 0) + n;
+  for (const [t, n] of Object.entries(plan.opened[section_id] || {})) out[t] = (out[t] || 0) + n;
+  return out;
+}
+
+/** A map as it looks: a place counted down to no boxes shows empty, whatever fill was marked. */
+export function countedFills(cells: LayoutCell[], shape: LayoutShape, stock: MapStock | undefined): { cells: LayoutCell[]; shape: LayoutShape } {
+  if (!stock || !Object.keys(stock).length) return { cells, shape };
+  const match = (key: string, x: { item_id: string; section_id: string }) => {
+    const ps = stock[key];
+    return ps && ps.item_id === x.item_id && ps.section_id === x.section_id ? ps : undefined;
+  };
+  const out = cells.map((c) => (c.section_id && !c.aisle ? { ...c, fill: effectiveFill(c.fill, match(placeKey(c.r, c.c), c)) } : c));
+  const shelves: LayoutShape["shelves"] = {};
+  for (const [k, sh] of Object.entries(shape.shelves)) {
+    const [r, c] = k.split(":").map(Number);
+    shelves[k] = { ...sh, levels: sh.levels.map((lv, i) => (lv.section_id ? { ...lv, fill: effectiveFill(lv.fill, match(placeKey(r, c, i), lv)) } : lv)) };
+  }
+  return { cells: out, shape: { ...shape, shelves } };
+}
+
+// ---------- Building a lot (R-342) ----------
+// A planned load, as the pallets Jack builds: every big box (the product's biggest size)
+// grouped on pallets of his number (21), then the smaller boxes together on their own pallets
+// of about the same hats — each box tied to the pallet it comes off. He ticks each grab as he
+// pulls it: that takes those boxes off that pallet and the shelf at once (a put-back unticks).
+
+/** One grab: some boxes of one size of one team, off one place (or off no counted pallet). */
+export interface GrabLine {
+  id: string;
+  pallet: number;
+  section_id: string;
+  name: string;
+  type_id: string;
+  type_name: string;
+  per_box: number;
+  boxes: number;
+  place: { layout_id: string; place: string; name: string } | null;
+}
+/** Loose units a load needs from a team, out of an open box (or by opening one). */
+export interface LooseGrab { id: string; section_id: string; name: string; units: number }
+export interface BuiltPallet { n: number; big: boolean; boxes: number; units: number; lines: GrabLine[] }
+export interface LotBuild {
+  totals: { type_id: string; name: string; per_box: number; boxes: number }[];
+  pallets: BuiltPallet[];
+  loose: LooseGrab[];
+  units: number;
+}
+
+/** The product's biggest box size — what a pallet's capacity is counted in. */
+export const bigBox = (types: BoxType[]) => [...types].filter((t) => t.per_box > 0).sort((a, b) => b.per_box - a.per_box)[0];
+
+/**
+ * Split a plan into the pallets to build. `perPallet` is how many big boxes fit on one; the
+ * smaller boxes share their own pallets up to the same number of units. 0 or less keeps it one
+ * list (pallet 1). Sources come from takeFromPlaces, so they match what the grab takes off.
+ */
+export function buildLot(item: Pick<WarehouseItem, "id" | "box_types" | "sections">, layouts: WarehouseLayout[], plan: Pick<PickPlan, "take" | "loose">, perPallet: number): LotBuild {
+  const big = bigBox(item.box_types);
+  const per = (tid: string) => item.box_types.find((t) => t.id === tid);
+  type Chunk = Omit<GrabLine, "id" | "pallet">;
+  const chunks: Chunk[] = [];
+  const sections = item.sections.filter((s) => Object.values(plan.take[s.id] || {}).some((n) => n > 0));
+  for (const s of sections) {
+    const take = plan.take[s.id] || {};
+    for (const [tid, want] of Object.entries(take)) {
+      const t = per(tid);
+      if (!t || !(want > 0)) continue;
+      // One size at a time, so its places come fewest first (the order they are taken in).
+      const from = takeFromPlaces(layouts, item.id, s.id, { [tid]: want });
+      let left = want;
+      for (const f of from) {
+        const n = f.boxes[tid] || 0;
+        if (n <= 0) continue;
+        chunks.push({ section_id: s.id, name: s.name, type_id: tid, type_name: t.name, per_box: t.per_box, boxes: n, place: { layout_id: f.layout_id, place: f.place, name: f.name } });
+        left -= n;
+      }
+      if (left > 0) chunks.push({ section_id: s.id, name: s.name, type_id: tid, type_name: t.name, per_box: t.per_box, boxes: left, place: null });
+    }
+  }
+  const teamBig = (sid: string) => chunks.filter((c) => c.section_id === sid && big && c.type_id === big.id).reduce((a, c) => a + c.boxes, 0);
+  const order = (a: Chunk, b: Chunk) => b.per_box - a.per_box || teamBig(b.section_id) - teamBig(a.section_id) || a.name.localeCompare(b.name);
+  const bigs = chunks.filter((c) => big && c.type_id === big.id).sort(order);
+  const smalls = chunks.filter((c) => !big || c.type_id !== big.id).sort(order);
+  const pallets: BuiltPallet[] = [];
+  let n = 0;
+  const fill = (list: Chunk[], isBig: boolean, cap: number, size: (c: Chunk) => number) => {
+    let cur: BuiltPallet | null = null;
+    for (const c of list) {
+      let left = c.boxes;
+      while (left > 0) {
+        if (!cur || (cap > 0 && cur[isBig ? "boxes" : "units"] + size(c) > cap)) {
+          n += 1;
+          cur = { n, big: isBig, boxes: 0, units: 0, lines: [] };
+          pallets.push(cur);
+        }
+        const room = cap > 0 ? Math.max(1, Math.floor((cap - (isBig ? cur.boxes : cur.units)) / size(c))) : left;
+        const k = Math.min(left, room);
+        cur.lines.push({ ...c, boxes: k, id: `${cur.n}-${cur.lines.length}`, pallet: cur.n });
+        cur.boxes += k;
+        cur.units += k * c.per_box;
+        left -= k;
+      }
+    }
+  };
+  if (perPallet > 0) {
+    fill(bigs, true, perPallet, () => 1);
+    fill(smalls, false, perPallet * (big ? big.per_box : 0), (c) => c.per_box);
+  } else {
+    fill([...bigs, ...smalls], true, 0, () => 1);
+  }
+  const totals = item.box_types
+    .map((t) => ({ type_id: t.id, name: t.name, per_box: t.per_box, boxes: chunks.filter((c) => c.type_id === t.id).reduce((a, c) => a + c.boxes, 0) }))
+    .filter((t) => t.boxes > 0)
+    .sort((a, b) => b.per_box - a.per_box);
+  const loose: LooseGrab[] = item.sections.filter((s) => (plan.loose[s.id] || 0) > 0).map((s) => ({ id: `L-${s.id}`, section_id: s.id, name: s.name, units: plan.loose[s.id] }));
+  const units = chunks.reduce((a, c) => a + c.boxes * c.per_box, 0) + loose.reduce((a, l) => a + l.units, 0);
+  return { totals, pallets, loose, units };
+}
+
+/** A build in progress, kept on this device while Jack builds: the grabs as planned (frozen, so
+ *  taking stock does not reshuffle them) and the move each tick made. */
+export interface BuildState {
+  item_id: string;
+  started_at: string;
+  per_pallet: number;
+  build: LotBuild;
+  /** grab or loose id -> the warehouse move that took it (for a put-back). */
+  done: Record<string, string>;
+}
+export const buildKey = (itemId: string) => `warehouse_build:${itemId}`;
+
+/** What a build has taken so far, per team — the invoice's lines. */
+export function builtUnits(state: Pick<BuildState, "build" | "done">): { section_id: string; name: string; boxes: Record<string, number>; loose: number; units: number }[] {
+  const out = new Map<string, { section_id: string; name: string; boxes: Record<string, number>; loose: number; units: number }>();
+  const get = (sid: string, name: string) => out.get(sid) || (out.set(sid, { section_id: sid, name, boxes: {}, loose: 0, units: 0 }), out.get(sid)!);
+  for (const p of state.build.pallets) for (const l of p.lines) {
+    if (!state.done[l.id]) continue;
+    const e = get(l.section_id, l.name);
+    e.boxes[l.type_id] = (e.boxes[l.type_id] || 0) + l.boxes;
+    e.units += l.boxes * l.per_box;
+  }
+  for (const l of state.build.loose) {
+    if (!state.done[l.id]) continue;
+    const e = get(l.section_id, l.name);
+    e.loose += l.units;
+    e.units += l.units;
+  }
+  return [...out.values()].sort((a, b) => b.units - a.units || a.name.localeCompare(b.name));
 }

@@ -917,6 +917,8 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
               {whUnits.toLocaleString()} {whUnits === 1 ? "unit" : "units"} of {prefill.warehouse.item_name} off the shelf, in the boxes each line names.
               <span className="text-muted"> Change a quantity and that many units are taken instead; delete a line and nothing is taken for it.</span>
             </>
+          ) : prefill.built ? (
+            <><strong className="font-semibold">Built in the warehouse.</strong> These boxes came off the shelf as they were grabbed, so creating this invoice takes nothing more.</>
           ) : (
             <>No warehouse lines are left on this invoice, so nothing will be taken off the shelf.</>
           )}

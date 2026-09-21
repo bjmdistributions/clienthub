@@ -1172,6 +1172,7 @@ fn main() {
             warehouse::warehouse_import,
             warehouse::list_warehouse_layouts,
             warehouse::save_warehouse_layout,
+            warehouse::set_warehouse_place_stock,
             warehouse::archive_warehouse_layout,
             books::list_books_changes,
             books::mark_books_changes_seen,

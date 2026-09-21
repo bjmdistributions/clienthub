@@ -5,12 +5,15 @@
 //   Plan a load   — the packer (planUnits): how much, and how it spreads across the teams
 //                   (R-334's lean), sent as it is or opened in Pick an order to adjust.
 //   History       — every move, with Put back.
-import { useMemo, useState, type ReactNode } from "react";
-import { ArrowLeft, Archive, ArchiveRestore, FileText, MoreHorizontal, Pencil, Search, SlidersHorizontal, Undo2 } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { ArrowLeft, Archive, ArchiveRestore, Check, FileText, MoreHorizontal, Pencil, Search, SlidersHorizontal, Undo2 } from "lucide-react";
 import { api } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
-  INVOICE_PREFILL_KEY, LEAN_STOPS, describePick, emptyPick, invoiceLines, itemTotals, looseRoom, pickFromPlan, pickUnits, planUnits, sectionBoxes, sectionUnits,
+  FILL_SHORT, INVOICE_PREFILL_KEY, LEAN_STOPS, bigBox, boxesLeaving, buildKey, buildLot, builtUnits, describePick, emptyPick, invoiceLines, itemTotals, looseRoom,
+  pickFromPlan, pickUnits, placesHolding, planUnits, sectionBoxes, sectionUnits, takeFromPlaces, type BuildState, type GrabLine, type LooseGrab, type PickPlan,
+  type WarehouseLayout,
   setPicked, shares, type BoxType, type HandPick, type InvoicePrefill, type WarehouseItem, type WhMove, type WhSection,
 } from "../lib/warehouse";
 import { toast } from "./Toast";
@@ -22,6 +25,37 @@ const BAR = { background: "rgb(var(--c-chart-1))" };
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const cap = (s: string) => s.replace(/^./, (c) => c.toUpperCase());
 type Tab = "shelf" | "pick" | "plan" | "history";
+
+/**
+ * Where a team's boxes are on the maps (R-339, R-340). With boxes recorded on its pallets, the
+ * exact boxes off each, part pallets first — the same places the pick will take them off; with
+ * none recorded, the places marked with the team, part-full first.
+ */
+function WhereFrom({ item, layouts, sectionId, take }: { item: WarehouseItem; layouts: WarehouseLayout[]; sectionId: string; take: Record<string, number> }) {
+  const places = placesHolding(layouts, item.id, sectionId);
+  if (!places.length) return null;
+  const exact = takeFromPlaces(layouts, item.id, sectionId, take);
+  const wanted = Object.values(take).reduce((a, b) => a + b, 0);
+  const found = exact.reduce((a, x) => a + Object.values(x.boxes).reduce((p, q) => p + q, 0), 0);
+  const text = exact.length
+    ? `From ${exact.map((x) => `${x.name}: ${describePick(item.box_types, x.boxes, 0)}`).join(" · ")}${found < wanted ? ` · ${n0(wanted - found)} more ${wanted - found === 1 ? "box" : "boxes"} not on a counted pallet` : ""}`
+    : `On the map: ${places.slice(0, 4).map((p) => `${p.name}${p.fill === 0 ? " (empty)" : p.fill < 4 ? ` (${FILL_SHORT[p.fill]})` : ""}`).join(", ")}${places.length > 4 ? `, +${places.length - 4} more` : ""}`;
+  return <div className="text-[11.5px] text-muted leading-snug line-clamp-2" title={text}>{text}</div>;
+}
+
+/** The maps, kept fresh — a pick changes the boxes on their pallets. */
+function useLayouts(stamp: string) {
+  const [layouts, setLayouts] = useState<WarehouseLayout[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.listWarehouseLayouts().then((l) => { if (alive) setLayouts(l); }).catch(() => {});
+    load();
+    let un: (() => void) | undefined;
+    listen("netsync-applied", load).then((u) => { un = u; }).catch(() => {});
+    return () => { alive = false; un?.(); };
+  }, [stamp]);
+  return layouts;
+}
 
 // R-334: how a load spreads across the teams, remembered on this computer. Matching the stock
 // is the default: every team is in the load, the bigger ones give more.
@@ -77,6 +111,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
   const [tab, setTab] = useState<Tab>("shelf");
   const [pick, setPick] = useState<HandPick>(emptyPick());
   const [menu, setMenu] = useState(false);
+  const layouts = useLayouts(item.updated_at);
   const label = item.section_label || "Section";
   const t = itemTotals(item);
 
@@ -151,8 +186,8 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
       </div>
 
       {tab === "shelf" && <ShelfTab item={item} onChanged={onChanged} />}
-      {tab === "pick" && <PickTab item={item} pick={pick} setPick={setPick} onChanged={onChanged} />}
-      {tab === "plan" && <PlanTab item={item} onChanged={onChanged} onAdjust={(p) => { setPick(p); setTab("pick"); }} />}
+      {tab === "pick" && <PickTab item={item} layouts={layouts} pick={pick} setPick={setPick} onChanged={onChanged} />}
+      {tab === "plan" && <PlanTab item={item} layouts={layouts} onChanged={onChanged} onAdjust={(p) => { setPick(p); setTab("pick"); }} />}
       {tab === "history" && <History item={item} onChanged={onChanged} />}
     </div>
   );
@@ -319,8 +354,8 @@ function Stepper({ value, max, onChange, onStep, label, caption }: {
   );
 }
 
-function PickTab({ item, pick, setPick, onChanged }: {
-  item: WarehouseItem; pick: HandPick; setPick: React.Dispatch<React.SetStateAction<HandPick>>; onChanged: (it: WarehouseItem) => void;
+function PickTab({ item, layouts, pick, setPick, onChanged }: {
+  item: WarehouseItem; layouts: WarehouseLayout[]; pick: HandPick; setPick: React.Dispatch<React.SetStateAction<HandPick>>; onChanged: (it: WarehouseItem) => void;
 }) {
   const types = item.box_types;
   const label = item.section_label || "Section";
@@ -419,13 +454,14 @@ function PickTab({ item, pick, setPick, onChanged }: {
                 const u = units[s.id] || 0;
                 return (
                   <tr key={s.id} className={`border-b border-line-2 last:border-0 transition-colors ${u ? "bg-accent/[0.04]" : ""}`}>
-                    <td className="py-2 pl-5 pr-3">
+                    <td className="py-2 pl-5 pr-3 max-w-[260px]">
                       <div className="text-ink font-medium truncate max-w-[180px]" title={s.name}>{s.name}</div>
                       <div className="text-[11.5px] text-muted tabular-nums">
                         {n0(sectionUnits(types, s))} on the shelf ·{" "}
                         {u ? <button onClick={() => clearRow(s)} className="text-accent hover:text-accent-hover">Clear</button>
                           : <button onClick={() => takeAll(s)} className="text-accent hover:text-accent-hover">Take all</button>}
                       </div>
+                      <WhereFrom item={item} layouts={layouts} sectionId={s.id} take={pick.take[s.id] || {}} />
                     </td>
                     {types.map((t) => (
                       <td key={t.id} className="py-2 px-1.5 text-center">
@@ -529,7 +565,7 @@ function PickTab({ item, pick, setPick, onChanged }: {
 
 // ---------- Plan a load ----------
 
-function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged: (it: WarehouseItem) => void; onAdjust: (p: HandPick) => void }) {
+function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; layouts: WarehouseLayout[]; onChanged: (it: WarehouseItem) => void; onAdjust: (p: HandPick) => void }) {
   const types = item.box_types;
   const label = item.section_label || "Section";
   const [mode, setMode] = useState<"pallets" | "units">(item.units_per_pallet > 0 ? "pallets" : "units");
@@ -537,6 +573,8 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
   const [finish, setFinish] = useState<"exact" | "whole">("exact");
   const [skip, setSkip] = useState<Set<string>>(new Set());
   const [upp, setUpp] = useState(item.units_per_pallet);
+  const [, setBuildRev] = useState(0);
+  const big = bigBox(types);
   const [lean, setLeanState] = useState(readLean);
   const setLean = (v: number) => { setLeanState(v); try { localStorage.setItem(LEAN_KEY, String(v)); } catch { /* ignore */ } };
 
@@ -576,6 +614,12 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
     window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
   };
 
+  // While a lot is being built, only the build shows: its list is frozen, and the plan above it
+  // would reshuffle as every tick takes stock.
+  const building = !!readBuild(item.id);
+  const buildCard = <BuildCard item={item} layouts={layouts} plan={plan} perPallet={big && upp > 0 ? Math.round(upp / big.per_box) : 0} onChanged={onChanged} onBuild={() => setBuildRev((r) => r + 1)} />;
+  if (building) return <div className="space-y-4">{buildCard}</div>;
+
   return (
     <div className="space-y-4">
       <div className={`${WH_CARD} p-5`}>
@@ -594,11 +638,20 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
             </div>
           </div>
           {mode === "pallets" ? (
-            <div>
-              <label className="block text-[12px] text-muted mb-1.5">Units per pallet</label>
-              <NumberInput integer value={upp || ""} onValue={setUpp} onBlur={saveUpp} placeholder="e.g. 1,500" style={WH_INPUT_BG}
-                className="w-28 border border-line px-3 h-9 rounded-lg text-[13px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
-            </div>
+            big ? (
+              <div>
+                <label className="block text-[12px] text-muted mb-1.5">{big.name} per pallet</label>
+                <NumberInput integer value={upp > 0 ? Math.round(upp / big.per_box) : ""} onValue={(n) => setUpp(Math.max(0, n) * big.per_box)} onBlur={saveUpp} placeholder="e.g. 21" style={WH_INPUT_BG}
+                  className="w-24 border border-line px-3 h-9 rounded-lg text-[13px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
+                {upp > 0 && <div className="text-[11px] text-muted mt-1 tabular-nums">about {n0(upp)} units a pallet</div>}
+              </div>
+            ) : (
+              <div>
+                <label className="block text-[12px] text-muted mb-1.5">Units per pallet</label>
+                <NumberInput integer value={upp || ""} onValue={setUpp} onBlur={saveUpp} placeholder="e.g. 1,500" style={WH_INPUT_BG}
+                  className="w-28 border border-line px-3 h-9 rounded-lg text-[13px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
+              </div>
+            )
           ) : (
             <div>
               <label className="block text-[12px] text-muted mb-1.5">If it does not come out even</label>
@@ -648,6 +701,8 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
         </div>
       </div>
 
+      {buildCard}
+
       <div className={`${WH_CARD} overflow-hidden`}>
         <div className="overflow-x-auto">
           <table className="w-full text-[13px] min-w-[780px]">
@@ -676,7 +731,8 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
                     </td>
                     <td className="py-2 pr-3 text-ink font-medium truncate max-w-[180px]" title={s.name}>{s.name}</td>
                     <td className="py-2 px-3 text-ink-2">
-                      {u > 0 ? <>{describePick(types, plan.take[s.id] || {}, plan.loose[s.id] || 0)}{openTxt && <div className="text-[11.5px] text-muted">opens {openTxt}</div>}</> : <span className="text-faint">—</span>}
+                      {u > 0 ? <>{describePick(types, plan.take[s.id] || {}, plan.loose[s.id] || 0)}{openTxt && <div className="text-[11.5px] text-muted">opens {openTxt}</div>}
+                        <WhereFrom item={item} layouts={layouts} sectionId={s.id} take={boxesLeaving(plan, s.id)} /></> : <span className="text-faint">—</span>}
                     </td>
                     <td className="py-2 px-3 text-right tabular-nums">{u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">—</span>}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-ink-2">{u && grabUnits ? pct(u / grabUnits) : ""}</td>
@@ -746,6 +802,183 @@ function History({ item, onChanged }: { item: WarehouseItem; onChanged: (it: War
       </div>
       {item.log.length > 15 && (
         <button onClick={() => setAll((v) => !v)} className="text-[12px] text-accent hover:text-accent-hover mt-2">{all ? "Show less" : `Show all ${item.log.length}`}</button>
+      )}
+    </div>
+  );
+}
+
+// ---------- Build this lot (R-342) ----------
+
+function readBuild(itemId: string): BuildState | null {
+  try { const raw = localStorage.getItem(buildKey(itemId)); return raw ? (JSON.parse(raw) as BuildState) : null; } catch { return null; }
+}
+
+/**
+ * The plan as pallets to build: boxes of each size, then each pallet with what goes on it and
+ * where it comes off. Start building freezes that list on this computer; each tick takes those
+ * boxes off that pallet and the shelf at once (untick puts them back), so the counts are live
+ * everywhere. Make the invoice fills it from what was ticked, without taking anything twice.
+ */
+function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
+  item: WarehouseItem; layouts: WarehouseLayout[]; plan: PickPlan; perPallet: number; onChanged: (it: WarehouseItem) => void; onBuild: () => void;
+}) {
+  const [state, setStateRaw] = useState<BuildState | null>(() => readBuild(item.id));
+  const [busy, setBusy] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const setState = (s: BuildState | null) => {
+    setStateRaw(s);
+    try { if (s) localStorage.setItem(buildKey(item.id), JSON.stringify(s)); else localStorage.removeItem(buildKey(item.id)); } catch { /* ignore */ }
+    onBuild();
+  };
+  const preview = useMemo(() => buildLot(item, layouts, plan, perPallet), [item, layouts, plan, perPallet]);
+  const build = state?.build ?? preview;
+  const size = state ? state.per_pallet : perPallet;
+  const grabs = build.pallets.flatMap((p) => p.lines);
+  const doneCount = state ? grabs.filter((g) => state.done[g.id]).length + build.loose.filter((l) => state.done[l.id]).length : 0;
+  const total = grabs.length + build.loose.length;
+  if (!state && build.units === 0) return null;
+
+  const take = async (g: GrabLine | LooseGrab) => {
+    if (!state || busy) return;
+    setBusy(g.id);
+    try {
+      const moveId = state.done[g.id];
+      if (moveId) {
+        const r = await api.warehouseAdjust(item.id, [], { undoOf: moveId, note: "Put back while building" });
+        onChanged(r.item);
+        const done = { ...state.done };
+        delete done[g.id];
+        setState({ ...state, done });
+      } else {
+        const isLoose = !("type_id" in g);
+        const r = isLoose
+          ? await api.warehouseAdjust(item.id, [{ section_id: g.section_id, loose: -(g as LooseGrab).units }], { note: "Built a lot" })
+          : await api.warehouseAdjust(item.id, [{ section_id: g.section_id, boxes: { [(g as GrabLine).type_id]: -(g as GrabLine).boxes } }], {
+            note: `Built pallet ${(g as GrabLine).pallet}`,
+            places: (g as GrabLine).place ? [{ layout_id: (g as GrabLine).place!.layout_id, place: (g as GrabLine).place!.place, item_id: item.id, section_id: g.section_id, boxes: { [(g as GrabLine).type_id]: (g as GrabLine).boxes } }] : [],
+          });
+        onChanged(r.item);
+        if (r.short.length) toast(`Short on the shelf: ${r.short.map((x) => `${x.name} had ${x.taken} of ${x.wanted} units`).join(", ")}`, "error");
+        setState({ ...state, done: { ...state.done, [g.id]: r.item.log[0].id } });
+      }
+    } catch (e) { toast(String(e), "error"); }
+    finally { setBusy(null); }
+  };
+
+  const makeInvoice = () => {
+    if (!state) return;
+    const rate = item.unit_price || 0;
+    const lines = builtUnits(state).map((x) => ({
+      description: `${item.name} — ${x.name}: ${describePick(item.box_types, x.boxes, x.loose)}`,
+      qty: x.units, rate, amount: Math.round(x.units * rate * 100) / 100,
+    }));
+    try { localStorage.setItem(INVOICE_PREFILL_KEY, JSON.stringify({ lines, warehouse: { item_id: item.id, item_name: item.name }, built: true })); } catch { /* ignore */ }
+    setState(null);
+    window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
+  };
+
+  const putAllBack = async () => {
+    if (!state) return;
+    setBusy("all");
+    const done = { ...state.done };
+    try {
+      for (const id of Object.keys(done).reverse()) {
+        const r = await api.warehouseAdjust(item.id, [], { undoOf: done[id], note: "Put back — stopped building" });
+        onChanged(r.item);
+        delete done[id];
+      }
+      setState(null);
+      toast("Everything is back on the shelf");
+    } catch (e) { toast(String(e), "error"); setState({ ...state, done }); }
+    finally { setBusy(null); setStopping(false); }
+  };
+
+  const line = (g: GrabLine) => {
+    const on = !!state?.done[g.id];
+    return (
+      <li key={g.id} className="flex items-center gap-3 py-1.5">
+        {state && (
+          <button onClick={() => take(g)} disabled={!!busy} aria-pressed={on} aria-label={on ? `Put back ${g.boxes} ${g.type_name} of ${g.name}` : `Grabbed ${g.boxes} ${g.type_name} of ${g.name}`}
+            className={`w-6 h-6 flex-shrink-0 rounded-md border flex items-center justify-center transition-colors ${on ? "bg-accent border-accent text-on-accent" : "border-line-3 hover:border-accent"} ${busy === g.id ? "opacity-50" : ""}`}>
+            {on && <Check size={14} strokeWidth={3} />}
+          </button>
+        )}
+        <span className={`min-w-0 flex-1 text-[13px] ${on ? "text-muted line-through" : "text-ink"}`}>
+          <span className="font-medium">{g.boxes} × {g.type_name}</span> of {g.name}
+          <span className="text-muted"> — {g.place ? g.place.name : "not on a counted pallet"}</span>
+        </span>
+      </li>
+    );
+  };
+
+  return (
+    <div className={`${WH_CARD} p-5`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-[14px] font-semibold text-ink">{state ? "Building this lot" : "Build this lot"}</div>
+          <p className="text-[12px] text-muted mt-0.5">
+            {state ? `${doneCount} of ${total} grabs done. Each tick takes those boxes off that pallet and the shelf now; untick to put them back.`
+              : perPallet > 0 ? `${bigBox(item.box_types)?.name ?? "Big boxes"} ${perPallet} to a pallet, the smaller boxes together on their own pallets. Start building to tick off each grab as you pull it.`
+              : "Say how many big boxes fit on a pallet (Pallets, above) to split this into pallets. Start building to tick off each grab as you pull it."}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {!state && <button onClick={() => setState({ item_id: item.id, started_at: new Date().toISOString(), per_pallet: perPallet, build: preview, done: {} })} className={WH_BTN_PRIMARY}>Start building</button>}
+          {state && <button onClick={makeInvoice} disabled={doneCount === 0 || !!busy} className={WH_BTN_PRIMARY}><FileText size={14} /> Make the invoice</button>}
+          {state && !stopping && <button onClick={() => (doneCount ? setStopping(true) : setState(null))} disabled={!!busy} className={WH_BTN_SECONDARY}>Stop building</button>}
+        </div>
+      </div>
+      {stopping && state && (
+        <div className="mt-3 p-3 rounded-lg bg-surface-2 border border-line text-[12.5px] text-ink-2 flex flex-wrap items-center gap-2">
+          {doneCount} {doneCount === 1 ? "grab is" : "grabs are"} already off the shelf.
+          <button onClick={putAllBack} disabled={!!busy} className={WH_BTN_SECONDARY}>Put them all back</button>
+          <button onClick={() => { setState(null); setStopping(false); }} disabled={!!busy} className={WH_BTN_SECONDARY}>Leave them out</button>
+          <button onClick={() => setStopping(false)} className="text-[12px] text-muted hover:text-ink-2 px-1">Keep building</button>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2 mt-3">
+        {build.totals.map((t) => (
+          <span key={t.type_id} className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-2 px-2 py-1 text-[12.5px] text-ink-2">
+            <span className="font-semibold text-ink tabular-nums">{n0(t.boxes)}</span> × {t.name}
+          </span>
+        ))}
+        {build.loose.length > 0 && <span className="inline-flex items-center rounded-md border border-line bg-surface-2 px-2 py-1 text-[12.5px] text-ink-2">{n0(build.loose.reduce((a, l) => a + l.units, 0))} loose</span>}
+        <span className="inline-flex items-center rounded-md px-1 py-1 text-[12.5px] text-muted tabular-nums">{n0(build.units)} units · {build.pallets.length} {build.pallets.length === 1 ? "pallet" : "pallets"}</span>
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mt-4">
+        {build.pallets.map((p) => {
+          const left = p.lines.filter((g) => !state?.done[g.id]).length;
+          return (
+            <div key={p.n} className="rounded-lg border border-line p-3">
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="text-[13px] font-semibold text-ink">Pallet {p.n}{size > 0 ? ` · ${p.big ? `${p.boxes} of ${size} ${bigBox(item.box_types)?.name ?? "big boxes"}` : `smaller boxes, ${n0(p.units)} units`}` : ""}</div>
+                {state && <span className={`text-[12px] ${left ? "text-muted" : "text-ink font-medium"}`}>{left ? `${left} to grab` : "Built"}</span>}
+              </div>
+              <ul className="mt-1 divide-y divide-line-2">{p.lines.map(line)}</ul>
+            </div>
+          );
+        })}
+      </div>
+      {build.loose.length > 0 && (
+        <div className="mt-3 rounded-lg border border-line p-3">
+          <div className="text-[13px] font-semibold text-ink">Loose units</div>
+          <ul className="mt-1 divide-y divide-line-2">
+            {build.loose.map((l) => {
+              const on = !!state?.done[l.id];
+              return (
+                <li key={l.id} className="flex items-center gap-3 py-1.5">
+                  {state && (
+                    <button onClick={() => take(l)} disabled={!!busy} aria-pressed={on} aria-label={`${on ? "Put back" : "Grabbed"} ${l.units} loose of ${l.name}`}
+                      className={`w-6 h-6 flex-shrink-0 rounded-md border flex items-center justify-center ${on ? "bg-accent border-accent text-on-accent" : "border-line-3 hover:border-accent"}`}>
+                      {on && <Check size={14} strokeWidth={3} />}
+                    </button>
+                  )}
+                  <span className={`text-[13px] ${on ? "text-muted line-through" : "text-ink"}`}><span className="font-medium">{l.units} loose</span> of {l.name} <span className="text-muted">— out of an open box, or open one</span></span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
     </div>
   );

@@ -3051,8 +3051,8 @@ export const api = {
   saveWarehouseItem: (input: WarehouseInput) => invoke<WarehouseItem>("save_warehouse_item", { input }),
   archiveWarehouseItem: (id: string, archived: boolean) => invoke<void>("archive_warehouse_item", { id, archived }),
   /** Stock moves (negative = out). With undoOf the server works the changes out from that logged move. */
-  warehouseAdjust: (id: string, changes: WhChange[], opts: { reference?: string; note?: string; undoOf?: string } = {}) =>
-    invoke<{ item: WarehouseItem; short: WhShort[] }>("warehouse_adjust", { id, changes, reference: opts.reference ?? null, note: opts.note ?? null, undoOf: opts.undoOf ?? null }),
+  warehouseAdjust: (id: string, changes: WhChange[], opts: { reference?: string; note?: string; undoOf?: string; places?: { layout_id: string; place: string; item_id: string; section_id: string; boxes: Record<string, number> }[] } = {}) =>
+    invoke<{ item: WarehouseItem; short: WhShort[] }>("warehouse_adjust", { id, changes, reference: opts.reference ?? null, note: opts.note ?? null, undoOf: opts.undoOf ?? null, places: opts.places ?? null }),
   // R-328 spreadsheet import: read -> map -> preview -> import
   warehouseReadSheet: (path: string) => invoke<SheetRead>("warehouse_read_sheet", { path }),
   warehouseGuess: (rows: string[][]) => invoke<Mapping>("warehouse_guess", { rows }),
@@ -3060,6 +3060,9 @@ export const api = {
   listWarehouseLayouts: () => invoke<WarehouseLayout[]>("list_warehouse_layouts"),
   saveWarehouseLayout: (input: LayoutInput) => invoke<WarehouseLayout>("save_warehouse_layout", { input }),
   archiveWarehouseLayout: (id: string, archived: boolean) => invoke<void>("archive_warehouse_layout", { id, archived }),
+  /** R-340: the boxes on one pallet spot ("r:c") or shelf level ("r:c:L"). */
+  setWarehousePlaceStock: (layoutId: string, place: string, itemId: string, sectionId: string, boxes: Record<string, number>) =>
+    invoke<WarehouseLayout>("set_warehouse_place_stock", { layoutId, place, itemId, sectionId, boxes }),
   warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
   warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
     invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),

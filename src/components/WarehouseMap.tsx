@@ -12,9 +12,9 @@ import { listen } from "@tauri-apps/api/event";
 import { ArchiveRestore, FlipHorizontal, LayoutGrid, Pencil, Plus, RotateCw, Rows3, StickyNote, Trash2, X } from "lucide-react";
 import { api } from "../lib/api";
 import {
-  DOOR_KINDS, FILL_LABELS, FILL_SHORT, SHELF_MAX, cellKey, colName, doorSpots, doorWhere, emptyShape, fillBucket, layoutSummary, mapView,
-  removeRow, rowLength, spotKey, spotName, wallAt, wallLength,
-  type Door, type LayoutCell, type LayoutShape, type ShelfLevel, type WarehouseItem, type WarehouseLayout,
+  DOOR_KINDS, FILL_LABELS, FILL_SHORT, SHELF_MAX, boxesOnMaps, cellKey, colName, countedFills, doorSpots, doorWhere, emptyShape, fillBucket, layoutSummary,
+  mapView, placeKey, removeRow, rowLength, spotKey, spotName, wallAt, wallLength,
+  type Door, type LayoutCell, type LayoutShape, type PlaceStock, type ShelfLevel, type WarehouseItem, type WarehouseLayout,
 } from "../lib/warehouse";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
@@ -126,7 +126,7 @@ export default function WarehouseMap({ items }: { items: WarehouseItem[] }) {
           <button onClick={() => setEditing("new")} className={`${WH_BTN_PRIMARY} mt-4`}><Plus size={14} /> Add a map</button>
         </div>
       ) : (
-        <MapEditor key={`${active.id}:${rev}`} layout={active} items={items} dirty={dirty} onSaved={put}
+        <MapEditor key={`${active.id}:${rev}`} layout={active} layouts={layouts || []} items={items} dirty={dirty} onSaved={put}
           onEdit={(snap) => setEditing(snap)} onRemove={() => setRemoved(active, true)} onRestore={() => setRemoved(active, false)} />
       )}
     </div>
@@ -142,8 +142,8 @@ function useChoices(items: WarehouseItem[]) {
 
 type Saved = { cells: Record<string, LayoutCell>; shape: LayoutShape };
 
-function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore }: {
-  layout: WarehouseLayout; items: WarehouseItem[]; dirty: React.MutableRefObject<boolean>;
+function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, onRestore }: {
+  layout: WarehouseLayout; layouts: WarehouseLayout[]; items: WarehouseItem[]; dirty: React.MutableRefObject<boolean>;
   onSaved: (l: WarehouseLayout) => void; onEdit: (snapshot: WarehouseLayout) => void; onRemove: () => void; onRestore: () => void;
 }) {
   const [cells, setCells] = useState<Record<string, LayoutCell>>(() => Object.fromEntries(layout.cells.map((c) => [spotKey(c.r, c.c), c])));
@@ -318,7 +318,11 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
   const whatValue = first ? same(whatOf) : "";
   const fillValue = first ? same((c) => c.fill) : undefined;
   const all = Object.values(cells);
-  const summary = layoutSummary({ rows: layout.rows, cols: layout.cols, cells: all, shape });
+  // As it looks: a pallet counted down to no boxes shows empty (R-340).
+  const shownRaw = countedFills(all, shape, layout.stock);
+  const shown: Record<string, LayoutCell> = Object.fromEntries(shownRaw.cells.map((c) => [spotKey(c.r, c.c), c]));
+  const shownShape = shownRaw.shape;
+  const summary = layoutSummary({ rows: layout.rows, cols: layout.cols, cells: shownRaw.cells, shape: shownShape });
 
   // The legend: what is on this map, biggest first — pallet spots and shelf levels alike.
   const legend = useMemo(() => {
@@ -331,11 +335,11 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
       if (x.fill >= 4) e.full += 1;
       m.set(k, e);
     };
-    for (const c of all) if (!c.aisle && !shape.shelves[spotKey(c.r, c.c)] && c.c < lenOf(c.r)) count(c);
-    for (const sh of Object.values(shape.shelves)) for (const lv of sh.levels) count(lv);
+    for (const c of shownRaw.cells) if (!c.aisle && !shownShape.shelves[spotKey(c.r, c.c)] && c.c < lenOf(c.r)) count(c);
+    for (const sh of Object.values(shownShape.shelves)) for (const lv of sh.levels) count(lv);
     return [...m.values()].sort((a, b) => b.spots - a.spots || a.name.localeCompare(b.name));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cells, shape, items]);
+  }, [cells, shape, items, layout.stock]);
   const labels = legend.filter((l) => l.key.startsWith("l:"));
 
   // ---- Drawing: a grid, turned and flipped, with the walls as a thin outer ring on a floor ----
@@ -370,7 +374,7 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
 
   const spotView = (r: number, c: number) => {
     const k = spotKey(r, c);
-    const cell = cells[k];
+    const cell = shown[k];
     const selected = sel.has(k);
     const ck = cell ? cellKey(cell) : "";
     const dim = focus !== null && ck !== focus;
@@ -400,7 +404,7 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
 
   const shelfView = (r: number, c: number) => {
     const k = spotKey(r, c);
-    const sh = shape.shelves[k];
+    const sh = shownShape.shelves[k];
     const selected = sel.has(k);
     const dim = focus !== null && !sh.levels.some((lv) => cellKey(lv) === focus);
     const title = `Shelf ${spotName(layout.kind, layout.rows, r, c)} · ` +
@@ -592,6 +596,13 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
               </div>
               {whatSelect(whatOf(lv), (val) => setLevel(k, i, (l) => whatPatch(val, l)), i, true)}
               {fillButtons(lv.fill, (q) => setLevel(k, i, (l) => ({ ...l, fill: q })), true)}
+              {lv.section_id && (() => {
+                const it = items.find((x) => x.id === lv.item_id);
+                if (!it || !it.box_types.length) return null;
+                const pk = placeKey(r, c, i);
+                return <PalletBoxes key={`${pk}:${lv.section_id}`} item={it} sectionId={lv.section_id} layouts={layouts} label="Boxes on this level" compact
+                  stock={matchStock(pk, lv)} onSave={(b) => saveStock(pk, lv.item_id, lv.section_id, b)} />;
+              })()}
             </div>
           ))}
         </div>
@@ -640,6 +651,13 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
             <label className="block text-[12px] text-muted mb-1.5">How full</label>
             {fillButtons(fillValue, (q) => apply((c) => ({ ...c, fill: q, aisle: false })))}
           </div>
+          {sel.size === 1 && first && first.section_id && !first.aisle && (() => {
+            const it = items.find((i) => i.id === first.item_id);
+            if (!it || !it.box_types.length) return null;
+            const k = placeKey(first.r, first.c);
+            return <PalletBoxes key={`${k}:${first.section_id}`} item={it} sectionId={first.section_id} layouts={layouts} label="Boxes on this pallet"
+              stock={matchStock(k, first)} onSave={(b) => saveStock(k, first.item_id, first.section_id, b)} />;
+          })()}
           <div>
             <label className="block text-[12px] text-muted mb-1.5">Note</label>
             <input key={selKeys.join(",")} defaultValue={same((c) => c.note) ?? ""} placeholder="e.g. damaged corner, count next week"
@@ -710,6 +728,17 @@ function MapEditor({ layout, items, dirty, onSaved, onEdit, onRemove, onRestore 
   );
 
   const openForm = async () => { await send(); onEdit({ ...layout, cells: Object.values(cells), shape }); };
+
+  // R-340: the boxes on one place. The map is saved first, so a spot marked a moment ago is known.
+  const matchStock = (key: string, x: { item_id: string; section_id: string }): PlaceStock | undefined => {
+    const ps = layout.stock?.[key];
+    return ps && ps.item_id === x.item_id && ps.section_id === x.section_id ? ps : undefined;
+  };
+  const saveStock = async (key: string, itemId: string, sectionId: string, boxes: Record<string, number>) => {
+    await send();
+    try { onSavedRef.current(await api.setWarehousePlaceStock(layout.id, key, itemId, sectionId, boxes)); }
+    catch (e) { toast(`The boxes did not save: ${e}`, "error"); }
+  };
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-4 items-start">
@@ -935,6 +964,52 @@ function LayoutForm({ initial, onCancel, onSaved }: { initial: WarehouseLayout |
         <button onClick={onCancel} className={WH_BTN_SECONDARY}>Cancel</button>
         <button onClick={save} disabled={busy || !name.trim() || widest < 1} className={WH_BTN_PRIMARY}>{initial ? "Save" : "Add map"}</button>
       </div>
+    </div>
+  );
+}
+
+// ---------- Boxes on a pallet (R-340) ----------
+
+/** The boxes on one pallet or shelf level, by the product's box sizes. Saves a moment after
+ *  the last change; from then on a pick takes them off here. */
+function PalletBoxes({ item, sectionId, layouts, label, stock, onSave, compact = false }: {
+  item: WarehouseItem; sectionId: string; layouts: WarehouseLayout[]; label: string; stock: PlaceStock | undefined;
+  onSave: (boxes: Record<string, number>) => Promise<void>; compact?: boolean;
+}) {
+  const [boxes, setBoxes] = useState<Record<string, number>>(() => ({ ...(stock?.boxes || {}) }));
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latest = useRef(boxes);
+  const saveRef = useRef(onSave);
+  saveRef.current = onSave;
+  useEffect(() => () => { if (timer.current) { clearTimeout(timer.current); void saveRef.current(latest.current); } }, []);
+  const set = (t: string, n: number) => {
+    const next = { ...boxes, [t]: Math.max(0, Math.floor(n || 0)) };
+    setBoxes(next);
+    latest.current = next;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => { timer.current = null; void saveRef.current(next); }, 600);
+  };
+  const section = item.sections.find((s) => s.id === sectionId);
+  const onMaps = boxesOnMaps(layouts, item.id, sectionId);
+  const hint = section ? item.box_types.filter((t) => (section.counts[t.id] || 0) > 0 || (onMaps[t.id] || 0) > 0)
+    .map((t) => `${n0(onMaps[t.id] || 0)} of ${n0(section.counts[t.id] || 0)} ${t.name}`).join(" · ") : "";
+  return (
+    <div>
+      <label className="block text-[12px] text-muted mb-1.5">{label}</label>
+      <div className={compact ? "grid grid-cols-2 gap-x-3 gap-y-1.5" : "space-y-1.5"}>
+        {item.box_types.map((t) => (
+          <div key={t.id} className="flex items-center justify-between gap-2">
+            <span className="text-[12.5px] text-ink-2 truncate">{t.name} <span className="text-faint">of {t.per_box}</span></span>
+            <span className="flex items-center gap-1 flex-shrink-0">
+              {!compact && <button onClick={() => set(t.id, (boxes[t.id] || 0) - 1)} disabled={!(boxes[t.id] > 0)} className="w-7 h-7 rounded-md border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-35" aria-label={`One less ${t.name}`}>−</button>}
+              <NumberInput integer value={boxes[t.id] || ""} placeholder="0" onValue={(n) => set(t.id, n)} aria-label={`${t.name} on this ${compact ? "level" : "pallet"}`}
+                style={WH_INPUT_BG} className={`${compact ? "w-12" : "w-14"} border border-line h-7 px-1.5 rounded-md text-[12.5px] text-right tabular-nums text-ink focus:outline-none focus:ring-2 focus:ring-accent/40`} />
+              {!compact && <button onClick={() => set(t.id, (boxes[t.id] || 0) + 1)} className="w-7 h-7 rounded-md border border-line text-ink-2 hover:bg-surface-2" aria-label={`One more ${t.name}`}>+</button>}
+            </span>
+          </div>
+        ))}
+      </div>
+      {hint && <p className="text-[11.5px] text-muted mt-1.5">{section?.name} on counted pallets: {hint} in stock. A pick takes boxes off counted pallets, part ones first.</p>}
     </div>
   );
 }
