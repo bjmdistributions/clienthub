@@ -120,9 +120,12 @@ const handlers: Record<string, (a: any) => any> = {
     if (l) Object.assign(l, row); else LAYOUTS.push(row);
     return clone(row);
   },
-  set_warehouse_place_stock: ({ layoutId, place, itemId, sectionId, boxes }) => {
+  set_warehouse_place_stock: ({ layoutId, place, itemId, sectionId, boxes, add }) => {
     const l = LAYOUTS.find((x) => x.id === layoutId);
-    l.stock = { ...(l.stock || {}), [place]: { item_id: itemId, section_id: sectionId, boxes: Object.fromEntries(Object.entries(boxes).filter(([, n]) => (n as number) > 0)) } };
+    const cur: Record<string, number> = { ...((l.stock || {})[place]?.boxes || {}) };
+    for (const [t, n] of Object.entries(boxes || {})) cur[t] = n as number;
+    for (const [t, d] of Object.entries(add || {})) cur[t] = Math.max(0, (cur[t] || 0) + (d as number));
+    l.stock = { ...(l.stock || {}), [place]: { item_id: itemId, section_id: sectionId, boxes: Object.fromEntries(Object.entries(cur).filter(([, n]) => n > 0)) } };
     return clone(l);
   },
   archive_warehouse_layout: ({ id, archived }) => { const l = LAYOUTS.find((x) => x.id === id); if (l) l.archived = archived; return null; },

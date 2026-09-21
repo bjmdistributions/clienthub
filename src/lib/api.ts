@@ -3061,8 +3061,8 @@ export const api = {
   saveWarehouseLayout: (input: LayoutInput) => invoke<WarehouseLayout>("save_warehouse_layout", { input }),
   archiveWarehouseLayout: (id: string, archived: boolean) => invoke<void>("archive_warehouse_layout", { id, archived }),
   /** R-340: the boxes on one pallet spot ("r:c") or shelf level ("r:c:L"). */
-  setWarehousePlaceStock: (layoutId: string, place: string, itemId: string, sectionId: string, boxes: Record<string, number>) =>
-    invoke<WarehouseLayout>("set_warehouse_place_stock", { layoutId, place, itemId, sectionId, boxes }),
+  setWarehousePlaceStock: (layoutId: string, place: string, itemId: string, sectionId: string, change: { set?: Record<string, number>; add?: Record<string, number> }) =>
+    invoke<WarehouseLayout>("set_warehouse_place_stock", { layoutId, place, itemId, sectionId, boxes: change.set ?? null, add: change.add ?? null }),
   warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
   warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
     invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),

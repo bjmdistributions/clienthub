@@ -283,7 +283,7 @@ pub async fn warehouse_adjust(
 /// Take a move's boxes off the map's places (or, for a put-back, return them where they came
 /// from), write every map that changed, and say what moved — recorded on the move.
 fn move_places(conn: &rusqlite::Connection, item: &WarehouseItem, undo_of: Option<&str>, named: Vec<PlaceMove>, lines: &[core::MoveLine]) -> Result<Vec<PlaceMove>, String> {
-    let maps = live_maps(conn)?;
+    let maps = all_maps(conn)?;
     // A grab names its pallet (R-342); otherwise the boxes come off by the rule.
     let named = core::taking(named);
     let moves: Vec<PlaceMove> = if undo_of.is_none() && !named.is_empty() { named } else { match undo_of {
@@ -291,7 +291,8 @@ fn move_places(conn: &rusqlite::Connection, item: &WarehouseItem, undo_of: Optio
             boxes: p.boxes.iter().map(|(t, n)| (t.clone(), -n)).collect(), ..p.clone()
         }).collect()).unwrap_or_default(),
         None => {
-            let view: Vec<(String, MapStock, Vec<(String, String, String)>)> = maps.iter().map(|m| (m.id.clone(), m.stock.clone(), core::map_places(&m.cells, &m.shape))).collect();
+            // Boxes come off live maps only; a put-back returns them even to a removed one.
+            let view: Vec<(String, MapStock, Vec<(String, String, String)>)> = maps.iter().filter(|m| !m.archived).map(|m| (m.id.clone(), m.stock.clone(), core::map_places(&m.cells, &m.shape))).collect();
             core::boxes_out(lines).iter().flat_map(|(sid, take)| core::take_from_places(&view, &item.id, sid, take)).collect()
         }
     } };
@@ -313,10 +314,10 @@ fn move_places(conn: &rusqlite::Connection, item: &WarehouseItem, undo_of: Optio
     Ok(applied)
 }
 
-/// Every map not removed, oldest first — the order places are taken in.
-fn live_maps(conn: &rusqlite::Connection) -> Result<Vec<WarehouseLayout>, String> {
+/// Every map, oldest first — the order places are taken in (removed ones only get boxes back).
+fn all_maps(conn: &rusqlite::Connection) -> Result<Vec<WarehouseLayout>, String> {
     let mut stmt = conn
-        .prepare(&format!("SELECT {LAYOUT_COLS} FROM warehouse_layouts WHERE COALESCE(archived,0)=0 ORDER BY created_at"))
+        .prepare(&format!("SELECT {LAYOUT_COLS} FROM warehouse_layouts ORDER BY created_at"))
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], map_layout).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -506,14 +507,15 @@ pub async fn save_warehouse_layout(input: LayoutInput) -> Result<WarehouseLayout
     load_layout(&conn, &id)
 }
 
-/// Set the boxes recorded on one place of a map (R-340): a pallet spot "r:c" or a shelf level
-/// "r:c:L", for the team marked there. Only that place changes.
+/// Change the boxes recorded on one place of a map (R-340): a pallet spot "r:c" or a shelf
+/// level "r:c:L", for the team marked there. `boxes` puts sizes at numbers, `add` moves sizes by
+/// some — against what is stored now. Only that place changes.
 #[tauri::command]
-pub async fn set_warehouse_place_stock(layout_id: String, place: String, item_id: String, section_id: String, boxes: std::collections::BTreeMap<String, i64>) -> Result<WarehouseLayout, String> {
+pub async fn set_warehouse_place_stock(layout_id: String, place: String, item_id: String, section_id: String, boxes: Option<std::collections::BTreeMap<String, i64>>, add: Option<std::collections::BTreeMap<String, i64>>) -> Result<WarehouseLayout, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let l = load_layout(&conn, &layout_id)?;
     let mut stock = l.stock.clone();
-    core::set_place_stock(&mut stock, &l.cells, &l.shape, &place, &item_id, &section_id, boxes)?;
+    core::change_place_stock(&mut stock, &l.cells, &l.shape, &place, &item_id, &section_id, &boxes.unwrap_or_default(), &add.unwrap_or_default())?;
     if stock != l.stock {
         let mut cols = Map::new();
         cols.insert("stock_json".into(), json_str(&stock));
@@ -633,11 +635,11 @@ mod tests {
         let map = save_warehouse_layout(LayoutInput {
             id: None, name: "Floor".into(), kind: "pallets".into(), rows: 1, cols: 3, cells: vec![spot(0), spot(1)], shape: None, notes: String::new(),
         }).await.unwrap();
-        set_warehouse_place_stock(map.id.clone(), "0:0".into(), item.id.clone(), owls.clone(), BTreeMap::from([(big.clone(), 20)])).await.unwrap();
-        let l = set_warehouse_place_stock(map.id.clone(), "0:1".into(), item.id.clone(), owls.clone(), BTreeMap::from([(big.clone(), 6)])).await.unwrap();
+        set_warehouse_place_stock(map.id.clone(), "0:0".into(), item.id.clone(), owls.clone(), Some(BTreeMap::from([(big.clone(), 20)])), None).await.unwrap();
+        let l = set_warehouse_place_stock(map.id.clone(), "0:1".into(), item.id.clone(), owls.clone(), Some(BTreeMap::from([(big.clone(), 6)])), None).await.unwrap();
         assert_eq!(l.stock.len(), 2);
         // A spot not marked with the team is refused.
-        assert!(set_warehouse_place_stock(map.id.clone(), "0:2".into(), item.id.clone(), owls.clone(), BTreeMap::from([(big.clone(), 1)])).await.is_err());
+        assert!(set_warehouse_place_stock(map.id.clone(), "0:2".into(), item.id.clone(), owls.clone(), Some(BTreeMap::from([(big.clone(), 1)])), None).await.is_err());
 
         // 10 boxes: the part pallet's 6 first, then 4 off the full one.
         let r = warehouse_adjust(item.id.clone(), vec![Change { section_id: owls.clone(), boxes: BTreeMap::from([(big.clone(), -10)]), ..Default::default() }],

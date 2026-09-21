@@ -1101,6 +1101,28 @@ pub fn set_place_stock(stock: &mut MapStock, cells: &[LayoutCell], shape: &Layou
     Ok(())
 }
 
+/// Change what one place holds, size by size: `set` puts a size at a number, `add` moves it by
+/// some — both against what is stored now, so an editor showing an older count never puts
+/// back boxes a pick has since taken off. Sizes not named are left as they are.
+pub fn change_place_stock(stock: &mut MapStock, cells: &[LayoutCell], shape: &LayoutShape, place: &str, item_id: &str, section_id: &str, set: &BTreeMap<String, i64>, add: &BTreeMap<String, i64>) -> Result<(), String> {
+    let holds = map_places(cells, shape).iter().any(|(k, i, s)| k == place && i == item_id && s == section_id);
+    if !holds {
+        return Err("That spot no longer holds that team — mark it on the map first.".into());
+    }
+    let e = stock.entry(place.to_string()).or_insert_with(|| PlaceStock { item_id: item_id.into(), section_id: section_id.into(), boxes: BTreeMap::new() });
+    if e.item_id != item_id || e.section_id != section_id {
+        *e = PlaceStock { item_id: item_id.into(), section_id: section_id.into(), boxes: BTreeMap::new() };
+    }
+    for (t, n) in set.iter().filter(|(t, _)| !t.is_empty()) {
+        if *n > 0 { e.boxes.insert(t.clone(), *n); } else { e.boxes.remove(t); }
+    }
+    for (t, d) in add.iter().filter(|(t, _)| !t.is_empty()) {
+        let v = (e.boxes.get(t).copied().unwrap_or(0) + d).max(0);
+        if v > 0 { e.boxes.insert(t.clone(), v); } else { e.boxes.remove(t); }
+    }
+    Ok(())
+}
+
 /// Which places a team's boxes come off: for each box type, the places holding it, fewest
 /// first (a part pallet empties before a full one is broken into), then map order. `maps`
 /// is every live map in order, as (layout_id, its stock, its places in reading order).
@@ -1493,6 +1515,16 @@ mod tests {
         assert_eq!(asked[0].boxes, b(&[("big", -5)]));
         let got = apply_place_moves(&mut stock, &cells, &shape, "floor", &asked);
         assert_eq!(got[0].boxes, b(&[("big", -2)])); // the level held 2
+
+        // An editor changes one size against what is stored now: a +1 made on an old screen after
+        // a pick took 3 off leaves the pallet at (stored - 3) + 1, never back at the old count.
+        let mut s2 = MapStock::new();
+        set_place_stock(&mut s2, &cells, &shape, "0:0", "w", "owls", b(&[("big", 20), ("small", 4)])).unwrap();
+        change_place_stock(&mut s2, &cells, &shape, "0:0", "w", "owls", &BTreeMap::new(), &b(&[("big", -3)])).unwrap(); // the pick
+        change_place_stock(&mut s2, &cells, &shape, "0:0", "w", "owls", &BTreeMap::new(), &b(&[("big", 1)])).unwrap(); // the editor
+        change_place_stock(&mut s2, &cells, &shape, "0:0", "w", "owls", &b(&[("small", 6)]), &BTreeMap::new()).unwrap(); // a typed size
+        assert_eq!(s2["0:0"].boxes, b(&[("big", 18), ("small", 6)]));
+        assert!(change_place_stock(&mut s2, &cells, &shape, "0:2", "w", "owls", &BTreeMap::new(), &b(&[("big", 1)])).is_err());
 
         // What left a team: whole boxes out plus boxes opened.
         let line = MoveLine { section_id: "owls".into(), name: "OWLS".into(), boxes: b(&[("big", -3), ("small", 1)]), loose: -5, opened: b(&[("small", 1)]), units: 0 };

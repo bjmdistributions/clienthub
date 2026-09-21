@@ -734,10 +734,10 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
     const ps = layout.stock?.[key];
     return ps && ps.item_id === x.item_id && ps.section_id === x.section_id ? ps : undefined;
   };
-  const saveStock = async (key: string, itemId: string, sectionId: string, boxes: Record<string, number>) => {
+  const saveStock = async (key: string, itemId: string, sectionId: string, change: { set?: Record<string, number>; add?: Record<string, number> }) => {
     await send();
-    try { onSavedRef.current(await api.setWarehousePlaceStock(layout.id, key, itemId, sectionId, boxes)); }
-    catch (e) { toast(`The boxes did not save: ${e}`, "error"); }
+    try { onSavedRef.current(await api.setWarehousePlaceStock(layout.id, key, itemId, sectionId, change)); return true; }
+    catch (e) { toast(`The boxes did not save: ${e}`, "error"); return false; }
   };
 
   return (
@@ -970,25 +970,40 @@ function LayoutForm({ initial, onCancel, onSaved }: { initial: WarehouseLayout |
 
 // ---------- Boxes on a pallet (R-340) ----------
 
-/** The boxes on one pallet or shelf level, by the product's box sizes. Saves a moment after
- *  the last change; from then on a pick takes them off here. */
+/** The boxes on one pallet or shelf level, by the product's box sizes. Shows what is stored now
+ *  plus what is waiting to save; − and + send "one less / one more" and a typed number sets
+ *  that size only, so a pick made meanwhile is never undone. From then on a pick takes them
+ *  off here. */
 function PalletBoxes({ item, sectionId, layouts, label, stock, onSave, compact = false }: {
   item: WarehouseItem; sectionId: string; layouts: WarehouseLayout[]; label: string; stock: PlaceStock | undefined;
-  onSave: (boxes: Record<string, number>) => Promise<void>; compact?: boolean;
+  onSave: (change: { set?: Record<string, number>; add?: Record<string, number> }) => Promise<boolean>; compact?: boolean;
 }) {
-  const [boxes, setBoxes] = useState<Record<string, number>>(() => ({ ...(stock?.boxes || {}) }));
+  const pending = useRef<{ set: Record<string, number>; add: Record<string, number> }>({ set: {}, add: {} });
+  const [, bump] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latest = useRef(boxes);
   const saveRef = useRef(onSave);
   saveRef.current = onSave;
-  useEffect(() => () => { if (timer.current) { clearTimeout(timer.current); void saveRef.current(latest.current); } }, []);
-  const set = (t: string, n: number) => {
-    const next = { ...boxes, [t]: Math.max(0, Math.floor(n || 0)) };
-    setBoxes(next);
-    latest.current = next;
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => { timer.current = null; void saveRef.current(next); }, 600);
+  const flush = async () => {
+    timer.current = null;
+    const sent = { set: { ...pending.current.set }, add: { ...pending.current.add } };
+    if (!Object.keys(sent.set).length && !Object.keys(sent.add).length) return;
+    const ok = await saveRef.current(sent);
+    if (!ok) return;
+    // Take off what was sent; taps made while it was saving stay pending.
+    for (const t of Object.keys(sent.set)) if (pending.current.set[t] === sent.set[t]) delete pending.current.set[t];
+    for (const [t, d] of Object.entries(sent.add)) { const left = (pending.current.add[t] || 0) - d; if (left) pending.current.add[t] = left; else delete pending.current.add[t]; }
+    bump((x) => x + 1);
   };
+  useEffect(() => () => { if (timer.current) { clearTimeout(timer.current); void flush(); } }, []);
+  const boxes: Record<string, number> = {};
+  for (const t of item.box_types) boxes[t.id] = t.id in pending.current.set ? pending.current.set[t.id] : Math.max(0, (stock?.boxes[t.id] || 0) + (pending.current.add[t.id] || 0));
+  const schedule = () => { bump((x) => x + 1); if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => { void flush(); }, 600); };
+  const step = (t: string, d: number) => {
+    if (t in pending.current.set) pending.current.set[t] = Math.max(0, pending.current.set[t] + d);
+    else if ((boxes[t] || 0) + d >= 0) pending.current.add[t] = (pending.current.add[t] || 0) + d;
+    schedule();
+  };
+  const set = (t: string, n: number) => { pending.current.set[t] = Math.max(0, Math.floor(n || 0)); delete pending.current.add[t]; schedule(); };
   const section = item.sections.find((s) => s.id === sectionId);
   const onMaps = boxesOnMaps(layouts, item.id, sectionId);
   const hint = section ? item.box_types.filter((t) => (section.counts[t.id] || 0) > 0 || (onMaps[t.id] || 0) > 0)
@@ -1001,10 +1016,10 @@ function PalletBoxes({ item, sectionId, layouts, label, stock, onSave, compact =
           <div key={t.id} className="flex items-center justify-between gap-2">
             <span className="text-[12.5px] text-ink-2 truncate">{t.name} <span className="text-faint">of {t.per_box}</span></span>
             <span className="flex items-center gap-1 flex-shrink-0">
-              {!compact && <button onClick={() => set(t.id, (boxes[t.id] || 0) - 1)} disabled={!(boxes[t.id] > 0)} className="w-7 h-7 rounded-md border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-35" aria-label={`One less ${t.name}`}>−</button>}
+              {!compact && <button onClick={() => step(t.id, -1)} disabled={!(boxes[t.id] > 0)} className="w-7 h-7 rounded-md border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-35" aria-label={`One less ${t.name}`}>−</button>}
               <NumberInput integer value={boxes[t.id] || ""} placeholder="0" onValue={(n) => set(t.id, n)} aria-label={`${t.name} on this ${compact ? "level" : "pallet"}`}
                 style={WH_INPUT_BG} className={`${compact ? "w-12" : "w-14"} border border-line h-7 px-1.5 rounded-md text-[12.5px] text-right tabular-nums text-ink focus:outline-none focus:ring-2 focus:ring-accent/40`} />
-              {!compact && <button onClick={() => set(t.id, (boxes[t.id] || 0) + 1)} className="w-7 h-7 rounded-md border border-line text-ink-2 hover:bg-surface-2" aria-label={`One more ${t.name}`}>+</button>}
+              {!compact && <button onClick={() => step(t.id, 1)} className="w-7 h-7 rounded-md border border-line text-ink-2 hover:bg-surface-2" aria-label={`One more ${t.name}`}>+</button>}
             </span>
           </div>
         ))}
