@@ -787,20 +787,155 @@ pub struct LayoutCell {
     pub aisle: bool,
 }
 
-/// Clean a map as drawn: "pallets" or "shelving", a size inside MAP_MAX, and only the spots
-/// that say something — one per position, inside the grid (a map that shrinks drops what
-/// fell off its edge).
-pub fn clean_layout(kind: &str, rows: i64, cols: i64, cells: Vec<LayoutCell>) -> Result<(String, i64, i64, Vec<LayoutCell>), String> {
+/// The most levels a shelf standing on a floor map holds (R-333).
+pub const SHELF_MAX: usize = 10;
+
+/// A door in one of a floor map's four walls (R-332). `side` is the wall — "top" (the row A
+/// side), "bottom" (the last row's side), "left" (spot 1's end), "right" (the far end); `at` is
+/// the first spot (top/bottom) or row (left/right) it spans, `width` how many.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Door {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub side: String,
+    #[serde(default)]
+    pub at: i64,
+    #[serde(default)]
+    pub width: i64,
+    /// "garage", "dock" or "door" (a walk-in door).
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+/// One level of a shelf on a floor map, bottom level first — the same "what and how full" a
+/// pallet spot says.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ShelfLevel {
+    #[serde(default)]
+    pub item_id: String,
+    #[serde(default)]
+    pub section_id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub fill: i64,
+}
+
+/// A shelf unit standing on a pallet floor, in place of a pallet spot (R-333).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct FloorShelf {
+    #[serde(default)]
+    pub levels: Vec<ShelfLevel>,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Everything about a map beyond its spots (R-332, R-333), in its own column so a client that
+/// predates it can save the spots without wiping any of it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct LayoutShape {
+    /// Spots in each row, top row first (pallets in a row; bays on a level of shelving). Empty
+    /// means every row is `cols` long — how every map before R-332 reads.
+    #[serde(default)]
+    pub row_lengths: Vec<i64>,
+    /// A title per row ("Back wall"), shown beside its letter. Empty = none.
+    #[serde(default)]
+    pub row_names: Vec<String>,
+    #[serde(default)]
+    pub doors: Vec<Door>,
+    /// A short name for what a spot holds, by the spot's key (lib/warehouse.ts cellKey) —
+    /// shown on the map in place of the full name.
+    #[serde(default)]
+    pub short_names: BTreeMap<String, String>,
+    /// Shelves standing on a pallet floor, by spot ("row:col").
+    #[serde(default)]
+    pub shelves: BTreeMap<String, FloorShelf>,
+}
+
+/// A map after cleaning.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CleanLayout {
+    pub kind: String,
+    pub rows: i64,
+    pub cols: i64,
+    pub cells: Vec<LayoutCell>,
+    pub shape: LayoutShape,
+}
+
+fn cut(s: &str, max: usize) -> String {
+    s.trim().chars().take(max).collect::<String>().trim().to_string()
+}
+
+fn spot_key(k: &str) -> Option<(i64, i64)> {
+    let (r, c) = k.split_once(':')?;
+    Some((r.trim().parse().ok()?, c.trim().parse().ok()?))
+}
+
+/// Clean a map as drawn: "pallets" or "shelving", a size inside MAP_MAX, rows of their own
+/// lengths, and only the spots that say something — one per position, inside its row (a map
+/// that shrinks drops what fell off its edge). Doors are kept inside their wall and never
+/// overlap; shelves stand only on a pallet floor, and a shelf's spot holds nothing else.
+pub fn clean_layout(kind: &str, rows: i64, cols: i64, cells: Vec<LayoutCell>, shape: LayoutShape) -> Result<CleanLayout, String> {
     let kind = if kind == "shelving" { "shelving" } else { "pallets" };
-    if rows < 1 || cols < 1 {
+    let floor = kind == "pallets";
+    if rows < 1 {
         return Err("A map needs at least one row and one column.".into());
     }
-    if rows > MAP_MAX || cols > MAP_MAX {
+    if rows > MAP_MAX {
         return Err(format!("A map can be at most {MAP_MAX} by {MAP_MAX}."));
     }
+    // Row lengths: given per row, or every row `cols` long.
+    let lengths: Vec<i64> = if shape.row_lengths.is_empty() {
+        if cols < 1 {
+            return Err("A map needs at least one row and one column.".into());
+        }
+        if cols > MAP_MAX {
+            return Err(format!("A map can be at most {MAP_MAX} by {MAP_MAX}."));
+        }
+        vec![cols; rows as usize]
+    } else {
+        if shape.row_lengths.iter().any(|&n| n > MAP_MAX) {
+            return Err(format!("A row can hold at most {MAP_MAX} spots."));
+        }
+        let last = *shape.row_lengths.last().unwrap_or(&cols);
+        (0..rows as usize).map(|i| shape.row_lengths.get(i).copied().unwrap_or(last).clamp(0, MAP_MAX)).collect()
+    };
+    let cols = lengths.iter().copied().max().unwrap_or(0);
+    if cols < 1 {
+        return Err("A map needs at least one spot.".into());
+    }
+    let inside = |r: i64, c: i64| r >= 0 && c >= 0 && r < rows && c < lengths[r as usize];
+
+    // Shelves on the floor.
+    let mut shelves: BTreeMap<String, FloorShelf> = BTreeMap::new();
+    if floor {
+        for (k, mut sh) in shape.shelves {
+            let Some((r, c)) = spot_key(&k) else { continue };
+            if !inside(r, c) {
+                continue;
+            }
+            sh.levels.truncate(SHELF_MAX);
+            if sh.levels.is_empty() {
+                sh.levels.push(ShelfLevel::default());
+            }
+            for l in sh.levels.iter_mut() {
+                l.fill = l.fill.clamp(0, 4);
+                l.label = cut(&l.label, 80);
+                if l.section_id.is_empty() {
+                    l.item_id.clear();
+                }
+            }
+            sh.note = sh.note.trim().to_string();
+            shelves.insert(format!("{r}:{c}"), sh);
+        }
+    }
+
     let mut out: Vec<LayoutCell> = Vec::new();
     for mut c in cells {
-        if c.r < 0 || c.c < 0 || c.r >= rows || c.c >= cols {
+        if !inside(c.r, c.c) || shelves.contains_key(&format!("{}:{}", c.r, c.c)) {
             continue;
         }
         c.fill = c.fill.clamp(0, 4);
@@ -823,7 +958,51 @@ pub fn clean_layout(kind: &str, rows: i64, cols: i64, cells: Vec<LayoutCell>) ->
         out.push(c);
     }
     out.sort_by_key(|c| (c.r, c.c));
-    Ok((kind.into(), rows, cols, out))
+
+    // Doors: a floor's walls only, inside the wall, never on top of each other.
+    let mut doors: Vec<Door> = Vec::new();
+    if floor {
+        let rank = |side: &str| match side { "top" => 0, "right" => 1, "bottom" => 2, "left" => 3, _ => 9 };
+        let mut given: Vec<Door> = shape.doors.into_iter().filter(|d| rank(&d.side) < 9).collect();
+        given.sort_by(|a, b| (rank(&a.side), a.at).cmp(&(rank(&b.side), b.at)));
+        for mut d in given {
+            let wall = if d.side == "top" || d.side == "bottom" { cols } else { rows };
+            d.at = d.at.clamp(0, wall - 1);
+            d.width = d.width.clamp(1, wall - d.at);
+            if !matches!(d.kind.as_str(), "garage" | "dock" | "door") {
+                d.kind = "door".into();
+            }
+            d.label = cut(&d.label, 40);
+            d.id = cut(&d.id, 64);
+            if d.id.is_empty() {
+                d.id = format!("door-{}-{}", d.side, d.at);
+            }
+            let clash = doors.iter().any(|o| o.id == d.id || (o.side == d.side && d.at < o.at + o.width && o.at < d.at + d.width));
+            if !clash && doors.len() < 40 {
+                doors.push(d);
+            }
+        }
+    }
+
+    // Row lengths are stored only when the rows differ; titles only when one is set.
+    let row_lengths = if lengths.iter().all(|&n| n == cols) { Vec::new() } else { lengths };
+    let mut row_names: Vec<String> = (0..rows as usize).map(|i| shape.row_names.get(i).map(|n| cut(n, 40)).unwrap_or_default()).collect();
+    if row_names.iter().all(|n| n.is_empty()) {
+        row_names.clear();
+    }
+    let short_names: BTreeMap<String, String> = shape.short_names.into_iter()
+        .map(|(k, v)| (cut(&k, 200), cut(&v, 8)))
+        .filter(|(k, v)| !k.is_empty() && !v.is_empty())
+        .take(300)
+        .collect();
+
+    Ok(CleanLayout {
+        kind: kind.into(),
+        rows,
+        cols,
+        cells: out,
+        shape: LayoutShape { row_lengths, row_names, doors, short_names, shelves },
+    })
 }
 
 #[cfg(test)]
@@ -1004,21 +1183,72 @@ mod tests {
     #[test]
     fn a_map_keeps_only_spots_that_say_something_inside_its_edges() {
         let cell = |r, c, fill, label: &str| LayoutCell { r, c, fill, label: label.into(), ..Default::default() };
-        let (kind, rows, cols, cells) = clean_layout("shelving", 3, 4, vec![
+        let m = clean_layout("shelving", 3, 4, vec![
             cell(0, 0, 4, "Owls"),
             cell(0, 1, 0, ""),            // says nothing
             cell(5, 1, 2, "Off the edge"), // outside a 3-row map
             cell(1, 2, 9, "Hawks"),        // fill clamps to full
             cell(0, 0, 2, "Owls again"),   // the last word on a spot wins
             LayoutCell { r: 2, c: 3, aisle: true, label: "ignored".into(), fill: 3, ..Default::default() },
-        ]).unwrap();
-        assert_eq!((kind.as_str(), rows, cols), ("shelving", 3, 4));
-        assert_eq!(cells.len(), 3);
-        assert_eq!((cells[0].label.as_str(), cells[0].fill), ("Owls again", 2));
-        assert_eq!(cells[1].fill, 4);
-        assert!(cells[2].aisle && cells[2].label.is_empty() && cells[2].fill == 0);
-        assert!(clean_layout("pallets", 0, 4, vec![]).is_err());
-        assert!(clean_layout("pallets", 61, 4, vec![]).is_err());
-        assert_eq!(clean_layout("anything", 1, 1, vec![]).unwrap().0, "pallets");
+        ], LayoutShape::default()).unwrap();
+        assert_eq!((m.kind.as_str(), m.rows, m.cols), ("shelving", 3, 4));
+        assert_eq!(m.cells.len(), 3);
+        assert_eq!((m.cells[0].label.as_str(), m.cells[0].fill), ("Owls again", 2));
+        assert_eq!(m.cells[1].fill, 4);
+        assert!(m.cells[2].aisle && m.cells[2].label.is_empty() && m.cells[2].fill == 0);
+        assert_eq!(m.shape, LayoutShape::default());
+        assert!(clean_layout("pallets", 0, 4, vec![], LayoutShape::default()).is_err());
+        assert!(clean_layout("pallets", 61, 4, vec![], LayoutShape::default()).is_err());
+        assert_eq!(clean_layout("anything", 1, 1, vec![], LayoutShape::default()).unwrap().kind, "pallets");
+    }
+
+    #[test]
+    fn rows_of_their_own_lengths_doors_titles_and_shelves() {
+        let cell = |r, c, label: &str| LayoutCell { r, c, fill: 4, label: label.into(), ..Default::default() };
+        let door = |side: &str, at, width, kind: &str| Door { side: side.into(), at, width, kind: kind.into(), ..Default::default() };
+        let mut shelves = BTreeMap::new();
+        shelves.insert("1:0".to_string(), FloorShelf {
+            levels: vec![ShelfLevel { label: "Owls".into(), fill: 7, ..Default::default() }, ShelfLevel { item_id: "stray".into(), ..Default::default() }],
+            note: "  top level loose  ".into(),
+        });
+        shelves.insert("2:5".to_string(), FloorShelf::default()); // row 2 is 4 long: off the end
+        shelves.insert("junk".to_string(), FloorShelf::default());
+        let mut short = BTreeMap::new();
+        short.insert("l:owls".to_string(), " OWLSVILLE ".to_string());
+        short.insert("l:empty".to_string(), "  ".to_string());
+        let m = clean_layout("pallets", 3, 99, vec![
+            cell(0, 5, "Hawks"),  // row 0 is 6 long: kept
+            cell(2, 4, "Bears"),  // row 2 is 4 long: dropped
+            cell(1, 0, "Under the shelf"), // the shelf holds this spot: dropped
+        ], LayoutShape {
+            row_lengths: vec![6, 4],       // the third row, not given, takes the last length
+            row_names: vec![" Back wall ".into()],
+            doors: vec![door("top", 2, 2, "garage"), door("top", 3, 1, "door"), door("left", 9, 5, "hatch"), door("roof", 0, 1, "door")],
+            short_names: short,
+            shelves,
+        }).unwrap();
+        assert_eq!((m.rows, m.cols), (3, 6));
+        assert_eq!(m.shape.row_lengths, vec![6, 4, 4]);
+        assert_eq!(m.shape.row_names, vec!["Back wall".to_string(), String::new(), String::new()]);
+        assert_eq!(m.cells.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), vec!["Hawks"]);
+        // The overlapping door goes, the one past the wall is pulled inside it, an unknown kind is a door.
+        assert_eq!(m.shape.doors.len(), 2);
+        assert_eq!((m.shape.doors[0].side.as_str(), m.shape.doors[0].at, m.shape.doors[0].width, m.shape.doors[0].kind.as_str()), ("top", 2, 2, "garage"));
+        assert_eq!((m.shape.doors[1].side.as_str(), m.shape.doors[1].at, m.shape.doors[1].width, m.shape.doors[1].kind.as_str()), ("left", 2, 1, "door"));
+        assert_eq!(m.shape.doors[1].id, "door-left-2");
+        assert_eq!(m.shape.short_names.len(), 1);
+        assert_eq!(m.shape.short_names["l:owls"], "OWLSVILL");
+        assert_eq!(m.shape.shelves.len(), 1);
+        let sh = &m.shape.shelves["1:0"];
+        assert_eq!((sh.levels[0].fill, sh.levels[1].item_id.as_str(), sh.note.as_str()), (4, "", "top level loose"));
+
+        // Every row the same length again: stored as no lengths at all, like a map before R-332.
+        let even = clean_layout("pallets", 2, 1, vec![], LayoutShape { row_lengths: vec![5, 5], ..Default::default() }).unwrap();
+        assert_eq!((even.cols, even.shape.row_lengths.len()), (5, 0));
+        // Shelving has no walls and no floor shelves.
+        let rack = clean_layout("shelving", 2, 3, vec![], LayoutShape { doors: vec![door("top", 0, 1, "dock")], shelves: m.shape.shelves.clone(), ..Default::default() }).unwrap();
+        assert!(rack.shape.doors.is_empty() && rack.shape.shelves.is_empty());
+        assert!(clean_layout("pallets", 2, 4, vec![], LayoutShape { row_lengths: vec![0, 0], ..Default::default() }).is_err());
+        assert!(clean_layout("pallets", 2, 4, vec![], LayoutShape { row_lengths: vec![61], ..Default::default() }).is_err());
     }
 }

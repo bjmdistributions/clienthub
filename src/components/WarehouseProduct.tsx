@@ -2,15 +2,15 @@
 //   On the shelf  — the counts by team and box size, edited in place ("Update counts").
 //   Pick an order — what was actually pulled: boxes of each size from each team, a sale
 //                   price, then an invoice or a take-out. The main way stock leaves.
-//   Plan a load   — the evening-out packer (planUnits), whose answer can be sent as it is
-//                   or opened in Pick an order to adjust box by box.
+//   Plan a load   — the packer (planUnits): how much, and how it spreads across the teams
+//                   (R-334's lean), sent as it is or opened in Pick an order to adjust.
 //   History       — every move, with Put back.
 import { useMemo, useState, type ReactNode } from "react";
 import { ArrowLeft, Archive, ArchiveRestore, FileText, MoreHorizontal, Pencil, Search, SlidersHorizontal, Undo2 } from "lucide-react";
 import { api } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
-  INVOICE_PREFILL_KEY, describePick, emptyPick, invoiceLines, itemTotals, looseRoom, pickFromPlan, pickUnits, planUnits, sectionBoxes, sectionUnits,
+  INVOICE_PREFILL_KEY, LEAN_STOPS, describePick, emptyPick, invoiceLines, itemTotals, looseRoom, pickFromPlan, pickUnits, planUnits, sectionBoxes, sectionUnits,
   setPicked, shares, type BoxType, type HandPick, type InvoicePrefill, type WarehouseItem, type WhMove, type WhSection,
 } from "../lib/warehouse";
 import { toast } from "./Toast";
@@ -22,6 +22,22 @@ const BAR = { background: "rgb(var(--c-chart-1))" };
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const cap = (s: string) => s.replace(/^./, (c) => c.toUpperCase());
 type Tab = "shelf" | "pick" | "plan" | "history";
+
+// R-334: how a load spreads across the teams, remembered on this computer. Matching the stock
+// is the default: every team is in the load, the bigger ones give more.
+const LEAN_KEY = "warehouse_lean";
+function readLean(): number {
+  try { const v = Number(localStorage.getItem(LEAN_KEY)); return localStorage.getItem(LEAN_KEY) !== null && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.5; } catch { return 0.5; }
+}
+function leanWords(lean: number, label: string): string {
+  const one = label.toLowerCase(), many = plural(label);
+  if (lean <= 0.02) return `Every ${one} gives about the same number of units.`;
+  if (Math.abs(lean - 0.5) <= 0.02) return `Every ${one} gives in proportion to what it holds, so the load looks like your shelf.`;
+  if (lean >= 0.98) return `The biggest ${many} give until your shelf is even; the rest give only once they are level.`;
+  return lean < 0.5
+    ? `Between the same from every ${one} and matching your stock.`
+    : `Between matching your stock and evening it out: the bigger ${many} give more than their share.`;
+}
 
 function fmtWhen(at: string): string {
   const d = new Date(at);
@@ -37,7 +53,7 @@ export function Seg<T extends string>({ value, options, onChange, size = "sm" }:
     <div className="flex rounded-lg border border-line p-0.5 bg-surface-2 w-fit" role="tablist">
       {options.map((o) => (
         <button key={o.key} role="tab" aria-selected={value === o.key} onClick={() => onChange(o.key)}
-          className={`px-3 ${size === "md" ? "h-8 text-[13px]" : "h-7 text-[12px]"} rounded-md transition-colors ${value === o.key ? "bg-surface text-ink font-medium shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
+          className={`px-3 whitespace-nowrap ${size === "md" ? "h-8 text-[13px]" : "h-7 text-[12px]"} rounded-md transition-colors ${value === o.key ? "bg-surface text-ink font-medium shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
           {o.label}
         </button>
       ))}
@@ -521,11 +537,13 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
   const [finish, setFinish] = useState<"exact" | "whole">("exact");
   const [skip, setSkip] = useState<Set<string>>(new Set());
   const [upp, setUpp] = useState(item.units_per_pallet);
+  const [lean, setLeanState] = useState(readLean);
+  const setLean = (v: number) => { setLeanState(v); try { localStorage.setItem(LEAN_KEY, String(v)); } catch { /* ignore */ } };
 
   const target = mode === "pallets" ? count * (upp || 0) : count;
   const plan = useMemo(
-    () => planUnits(types, item.sections, target, { skip, finish: mode === "pallets" ? "under" : finish }),
-    [types, item.sections, target, skip, finish, mode],
+    () => planUnits(types, item.sections, target, { skip, finish: mode === "pallets" ? "under" : finish, lean }),
+    [types, item.sections, target, skip, finish, mode, lean],
   );
   const grabUnits = Object.values(plan.units).reduce((a, b) => a + b, 0);
   const grabBoxes = Object.values(plan.take).reduce((a, m) => a + Object.values(m).reduce((x, y) => x + y, 0), 0);
@@ -535,6 +553,7 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
   const shAfter = shares(types, plan.left);
   const leftOf = (id: string) => plan.left.find((s) => s.id === id)!;
   const rows = [...item.sections].filter((s) => sectionUnits(types, s) > 0).sort((a, b) => (shNow[b.id] - shNow[a.id]) || a.name.localeCompare(b.name));
+  const inLoad = rows.filter((s) => (plan.units[s.id] || 0) > 0).length;
   const biggest = rows.find((s) => !skip.has(s.id));
   const story = picking && biggest && Math.round(shNow[biggest.id] * 100) !== Math.round(shAfter[biggest.id] * 100)
     ? `${biggest.name} goes from ${pct(shNow[biggest.id])} to ${pct(shAfter[biggest.id])} of what is left.` : "";
@@ -562,7 +581,7 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
       <div className={`${WH_CARD} p-5`}>
         <div className="text-[14px] font-semibold text-ink">Plan a load</div>
         <p className="text-[12px] text-muted mt-0.5 mb-4">
-          Say how much is going out and it picks the boxes for you: the biggest {plural(label)} first, biggest boxes first, so what stays on the shelf evens out.
+          Say how much is going out and how to spread it across your {plural(label)}; it picks the boxes, biggest first.
         </p>
         <div className="flex flex-wrap items-end gap-4">
           <div>
@@ -595,6 +614,21 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
               : <span className="text-[12px] text-muted">Type how many.</span>}
           </div>
         </div>
+        <div className="mt-5 max-w-[640px]">
+          <div className="flex items-baseline justify-between gap-3 mb-1">
+            <label htmlFor="wh-lean" className="text-[12px] text-muted">How the load is spread</label>
+            {picking && <span className="text-[12px] text-ink-2 tabular-nums">{inLoad} of {rows.length} {plural(label)} in this load</span>}
+          </div>
+          <input id="wh-lean" type="range" min={0} max={100} step={5} value={Math.round(lean * 100)}
+            onChange={(e) => setLean(Number(e.target.value) / 100)} className="w-full accent-accent cursor-pointer" />
+          <div className="flex justify-between gap-2 mt-0.5">
+            {LEAN_STOPS.map((st) => (
+              <button key={st.at} onClick={() => setLean(st.at)}
+                className={`text-[12px] transition-colors ${Math.abs(lean - st.at) < 0.03 ? "text-ink font-medium" : "text-muted hover:text-ink-2"}`}>{st.label}</button>
+            ))}
+          </div>
+          <p className="text-[12px] text-ink-2 mt-1.5">{leanWords(lean, label)}</p>
+        </div>
         {(story || openings.length > 0 || (plan.short !== 0 && target > 0)) && (
           <div className="mt-4 text-[13px] space-y-1">
             {story && <div className="text-ink-2">{story}</div>}
@@ -616,13 +650,14 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
 
       <div className={`${WH_CARD} overflow-hidden`}>
         <div className="overflow-x-auto">
-          <table className="w-full text-[13px] min-w-[720px]">
+          <table className="w-full text-[13px] min-w-[780px]">
             <thead>
               <tr className="text-[12px] text-muted border-b border-line bg-surface-2/60">
                 <th className="w-9 pl-5" />
                 <th className="text-left font-medium py-2.5 pr-3">{label}</th>
                 <th className="text-left font-medium py-2.5 px-3">Grab</th>
                 <th className="text-right font-medium py-2.5 px-3">Units</th>
+                <th className="text-right font-medium py-2.5 px-3">Of the load</th>
                 <th className="text-left font-medium py-2.5 px-3 w-[140px]">Share now</th>
                 <th className="text-right font-medium py-2.5 pl-3 pr-5">After</th>
               </tr>
@@ -644,6 +679,7 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
                       {u > 0 ? <>{describePick(types, plan.take[s.id] || {}, plan.loose[s.id] || 0)}{openTxt && <div className="text-[11.5px] text-muted">opens {openTxt}</div>}</> : <span className="text-faint">—</span>}
                     </td>
                     <td className="py-2 px-3 text-right tabular-nums">{u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">—</span>}</td>
+                    <td className="py-2 px-3 text-right tabular-nums text-ink-2">{u && grabUnits ? pct(u / grabUnits) : ""}</td>
                     <td className="py-2 px-3">
                       <div className="flex items-center gap-2">
                         <div className="flex-1 h-1.5 rounded-full bg-surface-3 overflow-hidden"><div className="h-full rounded-full" style={{ ...BAR, width: `${shNow[s.id] * 100}%` }} /></div>
@@ -654,7 +690,7 @@ function PlanTab({ item, onChanged, onAdjust }: { item: WarehouseItem; onChanged
                   </tr>
                 );
               })}
-              {rows.length === 0 && <tr><td colSpan={6} className="py-6 text-center text-[13px] text-muted">Nothing is on the shelf yet.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={7} className="py-6 text-center text-[13px] text-muted">Nothing is on the shelf yet.</td></tr>}
             </tbody>
           </table>
         </div>

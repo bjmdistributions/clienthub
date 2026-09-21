@@ -35,3 +35,7 @@ export function teamColor(key: string): string {
   return TEAM_COLORS[h % TEAM_COLORS.length];
 }
 export const rgba = (triplet: string, a: number) => `rgb(${triplet} / ${a})`;
+
+/** How full a spot is, as colour (R-332): full green, partly full orange, empty red — the
+ *  Apple semantic colours. A spot with nothing marked on it takes none. */
+export const FILL_COLORS = { full: "var(--c-chart-profit)", partial: "var(--c-chart-caution)", empty: "var(--c-chart-loss)" } as const;

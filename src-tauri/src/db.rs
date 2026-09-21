@@ -2161,4 +2161,15 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        100,
+        // R-332 / R-333: everything about a map beyond its spots — rows of their own lengths,
+        // row titles, doors in the walls, short names, and shelves standing on a pallet floor —
+        // as one JSON column (warehouse_core::LayoutShape). Its own column so a client that
+        // predates it saves the spots without wiping any of it. clienthub-api adds the same
+        // column (sync.rs ALTER list) and must be deployed first.
+        r#"
+        ALTER TABLE warehouse_layouts ADD COLUMN shape_json TEXT DEFAULT '{}';
+        "#,
+    ),
 ];

@@ -48,11 +48,31 @@ const LAYOUTS: any[] = [
       ...Array.from({ length: 9 }, (_, c) => cellAt(2, c, { aisle: true })),
       cellAt(1, 0, { ...T(4), fill: 4 }), cellAt(1, 1, { ...T(5), fill: 2 }), cellAt(1, 2, { label: "Returns to sort", fill: 2 }),
       cellAt(3, 0, { ...T(6), fill: 4 }), cellAt(3, 1, { ...T(7), fill: 4 }), cellAt(3, 2, { ...T(8), fill: 3 }), cellAt(4, 0, { label: "Empty pallets", fill: 1 }),
+      cellAt(4, 1, { ...T(9), fill: 0 }),
     ],
+    // R-332/R-333: rows of different lengths, titles, doors, a short name, two shelves on the floor.
+    shape: {
+      row_lengths: [9, 7, 9, 6, 9], row_names: ["Back wall", "", "Drive lane", "", "Dock side"],
+      doors: [
+        { id: "d1", side: "bottom", at: 2, width: 2, kind: "garage", label: "Dock 1" },
+        { id: "d2", side: "bottom", at: 6, width: 1, kind: "dock", label: "" },
+        { id: "d3", side: "left", at: 3, width: 1, kind: "door", label: "Office" },
+      ],
+      short_names: { "s:w1:t0": "OWL" },
+      shelves: {
+        "3:4": { levels: [{ ...T(10), label: "", fill: 4 }, { ...T(11), label: "", fill: 2 }, { item_id: "", section_id: "", label: "Samples", fill: 1 }, { item_id: "", section_id: "", label: "", fill: 0 }], note: "" },
+        "1:6": { levels: [{ ...T(2), label: "", fill: 3 }, { item_id: "", section_id: "", label: "", fill: 0 }, { ...T(0), label: "", fill: 4 }], note: "Top level is loose hats" },
+      },
+    },
   },
   {
     id: "L2", name: "Rack A", kind: "shelving", rows: 4, cols: 6, notes: "", archived: false, created_at: NOW, updated_at: NOW,
     cells: [cellAt(3, 0, { ...T(9), fill: 4 }), cellAt(3, 1, { ...T(10), fill: 2 }), cellAt(2, 0, { ...T(11), fill: 3 }), cellAt(0, 5, { label: "Samples", fill: 1 })],
+    shape: { row_lengths: [], row_names: [], doors: [], short_names: {}, shelves: {} },
+  },
+  {
+    id: "L3", name: "Test map", kind: "pallets", rows: 2, cols: 3, notes: "", archived: false, created_at: NOW, updated_at: NOW,
+    cells: [], shape: { row_lengths: [], row_names: [], doors: [], short_names: {}, shelves: {} },
   },
 ];
 

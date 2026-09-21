@@ -5,11 +5,14 @@
 // opened box, so a team's units are always sum(count x per_box) + loose.
 //
 // The packer answers "I'm shipping N pallets" or "I need 500 hats — which boxes do I grab?"
-// so that what is LEFT is as even as it can be: each box goes to whichever team has the most
-// units left at that moment, and from that team the biggest box that still fits. A team
-// holding 40% of the stock is drained first until it is level with the rest, then they all
-// come down together. What a whole box cannot make comes loose: out of a box already open,
-// else by opening the smallest box that covers it — or, if asked, by one more whole box.
+// First it decides how many units each team gives, by the `lean` (R-334): 0 takes the same
+// from every team, 0.5 takes from each in proportion to what it holds (the load looks like
+// the shelf), 1 evens out the shelf (a team holding 40% gives until it is level with the
+// rest, then they all come down together); in between blends the two neighbours. Then each
+// team's share is made of whole boxes, biggest first, and what whole boxes left over goes, a
+// box at a time, to the team furthest below its share. What a whole box cannot make comes
+// loose: out of a box already open, else by opening the smallest box that covers it — or, if
+// asked, by one more whole box.
 //
 // The server and the desktop apply picks with warehouse_core.rs (byte-identical in both
 // repos). The phone plans with a copy of this file's rule — `whPlan` in clienthub-api
@@ -185,6 +188,43 @@ export interface PlanOpts {
   fixed?: Record<string, number>;
   /** "exact": make the remainder loose. "whole": one more whole box instead. "under": whole boxes, never over (pallets). */
   finish?: "exact" | "whole" | "under";
+  /** R-334: 0 the same from every team, 0.5 in proportion to stock, 1 even out the stock (the default). */
+  lean?: number;
+}
+
+/** The lean's three stops, as the screens name them. */
+export const LEAN_STOPS = [
+  { at: 0, label: "Same from every team" },
+  { at: 0.5, label: "Match my stock" },
+  { at: 1, label: "Even out my stock" },
+] as const;
+
+/**
+ * How many units each team gives to a load of `want` (never more than it holds), by the lean.
+ * Worked in exact fractions; `planUnits` turns them into boxes.
+ */
+export function shareOut(held: number[], want: number, lean: number): number[] {
+  const total = held.reduce((a, b) => a + b, 0);
+  if (want <= 0 || total <= 0) return held.map(() => 0);
+  if (want >= total) return [...held];
+  // Same from every team: fill each up to a common amount, a small team giving all it has.
+  const fillTo = (cap: (u: number, x: number) => number, lo: number, hi: number) => {
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (held.reduce((a, u) => a + cap(u, mid), 0) < want) lo = mid; else hi = mid;
+    }
+    return hi;
+  };
+  const top = Math.max(...held);
+  const e = fillTo((u, x) => Math.min(u, x), 0, top);
+  const same = held.map((u) => Math.min(u, e));
+  const match = held.map((u) => (want * u) / total);
+  // Even out: everything above a common level.
+  const l = fillTo((u, x) => Math.max(0, u - (top - x)), 0, top);
+  const level = held.map((u) => Math.max(0, u - (top - l)));
+  const x = Math.min(1, Math.max(0, Number.isFinite(lean) ? lean : 1));
+  const [a, b, t] = x <= 0.5 ? [same, match, x / 0.5] : [match, level, (x - 0.5) / 0.5];
+  return held.map((_, i) => (1 - t) * a[i] + t * b[i]);
 }
 
 type Cursor = { s: WhSection; i: number };
@@ -237,8 +277,9 @@ export function takeUnits(types: BoxType[], s: WhSection, n: number) {
 }
 
 /**
- * The balancing pick for `target` units. See the header of this file for the rule; the
- * tests pin it on the shapes it has to get right.
+ * The pick for `target` units: each team's share by the lean, made of whole boxes, the rest
+ * finished by `finish`. See the header of this file; the tests pin it on the shapes it has to
+ * get right.
  */
 export function planUnits(types: BoxType[], sections: WhSection[], target: number, opts: PlanOpts = {}): PickPlan {
   const skip = opts.skip ?? new Set<string>();
@@ -262,32 +303,46 @@ export function planUnits(types: BoxType[], sections: WhSection[], target: numbe
     rem -= ask - r.short;
   }
 
-  const pool: Cursor[] = left.map((s, i) => ({ s, i })).filter(({ s }) => !skip.has(s.id) && fixed[s.id] == null);
-  const bigger = (a: Cursor, b: Cursor) => {
+  const pool: (Cursor & { owe: number })[] = left
+    .map((s, i) => ({ s, i, owe: 0 }))
+    .filter(({ s }) => !skip.has(s.id) && fixed[s.id] == null && sectionUnits(types, s) > 0);
+  const owed = shareOut(pool.map((c) => sectionUnits(types, c.s)), rem, opts.lean ?? 1);
+
+  // Each team's share in whole boxes, biggest first, never past the share.
+  pool.forEach((c, k) => {
+    let want = owed[k];
+    for (const t of sizesIn(types, c.s)) {
+      const n = Math.min(c.s.counts[t.id], Math.floor((want + 1e-9) / t.per_box));
+      if (n > 0) { c.s.counts[t.id] -= n; add(take, c.s.id, t.id, n); want -= n * t.per_box; rem -= n * t.per_box; }
+    }
+    c.owe = want;
+  });
+  // Who is furthest below its share; then the bigger team; then the first.
+  const behind = (a: (typeof pool)[number], b: (typeof pool)[number]) => {
+    if (Math.abs(a.owe - b.owe) > 1e-9) return a.owe > b.owe;
     const ua = sectionUnits(types, a.s), ub = sectionUnits(types, b.s);
-    if (ua !== ub) return ua > ub;
-    const ba = sectionBoxes(a.s), bb = sectionBoxes(b.s);
-    return ba !== bb ? ba > bb : a.i < b.i;
+    return ua !== ub ? ua > ub : a.i < b.i;
   };
 
-  // Whole boxes: the section with the most units left, its biggest box that still fits.
+  // What whole boxes left over, a box at a time to the team furthest below its share — the
+  // size nearest what it is owed that still fits.
   for (;;) {
-    let best: Cursor | null = null;
-    for (const c of pool) {
-      if (!sizesIn(types, c.s).some((t) => t.per_box <= rem)) continue;
-      if (!best || bigger(c, best)) best = c;
-    }
+    let best: (typeof pool)[number] | null = null;
+    for (const c of pool) if (sizesIn(types, c.s).some((t) => t.per_box <= rem) && (!best || behind(c, best))) best = c;
     if (!best) break;
-    const t = sizesIn(types, best.s).find((x) => x.per_box <= rem)!;
+    const fits = sizesIn(types, best.s).filter((t) => t.per_box <= rem);
+    const owe = best.owe;
+    const t = fits.reduce((p, q) => (Math.abs(q.per_box - owe) < Math.abs(p.per_box - owe) ? q : p));
     best.s.counts[t.id] -= 1;
     add(take, best.s.id, t.id, 1);
+    best.owe -= t.per_box;
     rem -= t.per_box;
   }
 
   if (rem > 0 && finish === "whole") {
-    // One more whole box: the smallest that covers the rest, from the biggest section with one.
-    let best: Cursor | null = null;
-    for (const c of pool) if (sizesIn(types, c.s).some((t) => t.per_box >= rem) && (!best || bigger(c, best))) best = c;
+    // One more whole box: the smallest that covers the rest, from the team furthest below its share.
+    let best: (typeof pool)[number] | null = null;
+    for (const c of pool) if (sizesIn(types, c.s).some((t) => t.per_box >= rem) && (!best || behind(c, best))) best = c;
     if (best) {
       const t = [...sizesIn(types, best.s)].reverse().find((x) => x.per_box >= rem)!;
       best.s.counts[t.id] -= 1;
@@ -297,22 +352,24 @@ export function planUnits(types: BoxType[], sections: WhSection[], target: numbe
   } else if (rem > 0 && finish === "exact") {
     // Boxes already open before opening another.
     while (rem > 0) {
-      let best: Cursor | null = null;
-      for (const c of pool) if (c.s.loose > 0 && (!best || bigger(c, best))) best = c;
+      let best: (typeof pool)[number] | null = null;
+      for (const c of pool) if (c.s.loose > 0 && (!best || behind(c, best))) best = c;
       if (!best) break;
       const x = Math.min(rem, best.s.loose);
       best.s.loose -= x;
+      best.owe -= x;
       loose[best.s.id] = (loose[best.s.id] || 0) + x;
       rem -= x;
     }
     while (rem > 0) {
-      let best: Cursor | null = null;
-      for (const c of pool) if (sectionBoxes(c.s) > 0 && (!best || bigger(c, best))) best = c;
+      let best: (typeof pool)[number] | null = null;
+      for (const c of pool) if (sectionBoxes(c.s) > 0 && (!best || behind(c, best))) best = c;
       if (!best) break;
       const op: Record<string, number> = {};
       const got = takeLoose(types, best.s, rem, op);
       for (const [t, n] of Object.entries(op)) add(opened, best.s.id, t, n);
       loose[best.s.id] = (loose[best.s.id] || 0) + got;
+      best.owe -= got;
       rem -= got;
       if (!got) break;
     }
@@ -455,7 +512,7 @@ export function setPicked(pick: HandPick, s: WhSection, typeId: string | null, n
 export const pickFromPlan = (plan: Pick<PickPlan, "take" | "loose">): HandPick =>
   ({ take: JSON.parse(JSON.stringify(plan.take)), loose: { ...plan.loose } });
 
-// ---------- The warehouse map (R-330) ----------
+// ---------- The warehouse map (R-330, R-332, R-333) ----------
 
 export interface LayoutCell {
   r: number;
@@ -469,6 +526,37 @@ export interface LayoutCell {
   aisle: boolean;
 }
 
+/** A door in a floor map's wall: "top" is the row A side, "bottom" the last row's, "left" spot 1's
+ *  end, "right" the far end. `at` is the first spot (top/bottom) or row (left/right) it spans. */
+export interface Door {
+  id: string;
+  side: "top" | "bottom" | "left" | "right";
+  at: number;
+  width: number;
+  kind: "garage" | "dock" | "door";
+  label: string;
+}
+
+/** One level of a shelf on a floor map, bottom level first. */
+export interface ShelfLevel { item_id: string; section_id: string; label: string; fill: number }
+
+/** A shelf unit standing on a pallet floor in place of a pallet spot (R-333). */
+export interface FloorShelf { levels: ShelfLevel[]; note: string }
+
+/** Everything about a map beyond its spots (R-332, R-333) — warehouse_core::LayoutShape. */
+export interface LayoutShape {
+  /** Spots in each row, top row first. Empty = every row is `cols` long. */
+  row_lengths: number[];
+  row_names: string[];
+  doors: Door[];
+  /** Short names by cellKey, shown on the map in place of the full name. */
+  short_names: Record<string, string>;
+  /** Shelves on a pallet floor, by spot key ("row:col"). */
+  shelves: Record<string, FloorShelf>;
+}
+
+export const emptyShape = (): LayoutShape => ({ row_lengths: [], row_names: [], doors: [], short_names: {}, shelves: {} });
+
 export interface WarehouseLayout {
   id: string;
   name: string;
@@ -476,6 +564,7 @@ export interface WarehouseLayout {
   rows: number;
   cols: number;
   cells: LayoutCell[];
+  shape: LayoutShape;
   notes: string;
   archived: boolean;
   created_at: string;
@@ -489,12 +578,19 @@ export interface LayoutInput {
   rows: number;
   cols: number;
   cells: LayoutCell[];
+  shape: LayoutShape;
   notes: string;
 }
 
 export const FILL_LABELS = ["Empty", "¼ full", "½ full", "¾ full", "Full"];
+export const FILL_SHORT = ["Empty", "¼", "½", "¾", "Full"];
+export const DOOR_KINDS: Record<Door["kind"], string> = { garage: "Garage door", dock: "Dock door", door: "Door" };
+export const SHELF_MAX = 10;
 
-/** What a spot holds, as the key its colour and the legend group by. */
+/** A spot's position as the key cells, shelves and selections use. */
+export const spotKey = (r: number, c: number) => `${r}:${c}`;
+
+/** What a spot holds, as the key its colour, its short name and the legend group by. */
 export const cellKey = (c: Pick<LayoutCell, "item_id" | "section_id" | "label">) =>
   c.section_id ? `s:${c.item_id}:${c.section_id}` : c.label ? `l:${c.label.trim().toLowerCase()}` : "";
 
@@ -504,12 +600,128 @@ export function spotName(kind: WarehouseLayout["kind"], rows: number, r: number,
   return `${colName(r)}${c + 1}`;
 }
 
-/** Totals for a map: spots that are spots (not aisles), and how full they are. */
-export function layoutSummary(l: Pick<WarehouseLayout, "rows" | "cols" | "cells">) {
-  const aisles = l.cells.filter((c) => c.aisle).length;
-  const spots = l.rows * l.cols - aisles;
-  const used = l.cells.filter((c) => !c.aisle && (c.section_id || c.label));
-  const full = used.filter((c) => c.fill >= 4).length;
-  const partial = used.filter((c) => c.fill > 0 && c.fill < 4).length;
-  return { spots, used: used.length, full, partial, empty: spots - full - partial };
+/** How many spots row `r` holds (R-332: rows can differ). */
+export function rowLength(l: Pick<WarehouseLayout, "cols"> & { shape?: LayoutShape }, r: number): number {
+  const ls = l.shape?.row_lengths || [];
+  return ls.length ? (ls[r] ?? ls[ls.length - 1] ?? l.cols) : l.cols;
+}
+
+/** Full, partly full or empty — the three colours a map uses for how full a spot is (R-332). */
+export const fillBucket = (fill: number): "full" | "partial" | "empty" => (fill >= 4 ? "full" : fill > 0 ? "partial" : "empty");
+
+/** Totals for a map. A place is a pallet spot (not an aisle, not a shelf) or one level of a
+ *  shelf. `used` places say what is on them and are full, partly full or empty (marked, with
+ *  nothing on it); `open` places have nothing marked. */
+export function layoutSummary(l: Pick<WarehouseLayout, "rows" | "cols" | "cells"> & { shape?: LayoutShape }) {
+  const shelves = l.shape?.shelves || {};
+  const at = new Map(l.cells.map((c) => [spotKey(c.r, c.c), c]));
+  let spots = 0, used = 0, full = 0, partial = 0, nShelves = 0, levels = 0;
+  const count = (says: boolean, fill: number) => {
+    spots++;
+    if (!says) return;
+    used++;
+    if (fill >= 4) full++; else if (fill > 0) partial++;
+  };
+  for (let r = 0; r < l.rows; r++) {
+    for (let c = 0; c < rowLength(l, r); c++) {
+      const sh = shelves[spotKey(r, c)];
+      if (sh) {
+        nShelves++;
+        for (const lv of sh.levels) { levels++; count(!!(lv.section_id || lv.label), lv.fill); }
+        continue;
+      }
+      const cell = at.get(spotKey(r, c));
+      if (cell?.aisle) continue;
+      count(!!cell && !!(cell.section_id || cell.label), cell?.fill ?? 0);
+    }
+  }
+  return { spots, used, full, partial, empty: used - full - partial, open: spots - used, shelves: nShelves, levels };
+}
+
+/**
+ * How the map is drawn when it is turned (R-332): `rot` quarter turns clockwise after an
+ * optional left-right flip. `ring` 1 adds the walls around a floor as an outer row and column
+ * on every side, so a door at r = -1 (the top wall) turns with the floor. `at` gives the drawn
+ * row and column of a spot; `back` the spot at a drawn row and column. Nothing is stored.
+ */
+export function mapView(rows: number, cols: number, ring: 0 | 1, rot: number, flip: boolean) {
+  const H = rows + 2 * ring, W = cols + 2 * ring;
+  const k = ((Math.trunc(rot) % 4) + 4) % 4;
+  const dh = k % 2 ? W : H, dw = k % 2 ? H : W;
+  const at = (r: number, c: number): [number, number] => {
+    let y = r + ring, x = c + ring, h = H, w = W;
+    if (flip) x = W - 1 - x;
+    for (let i = 0; i < k; i++) { [y, x] = [x, h - 1 - y]; [h, w] = [w, h]; }
+    return [y, x];
+  };
+  const back = (y: number, x: number): [number, number] => {
+    let h = dh, w = dw;
+    for (let i = 0; i < k; i++) { [y, x] = [w - 1 - x, y]; [h, w] = [w, h]; }
+    if (flip) x = W - 1 - x;
+    return [y - ring, x - ring];
+  };
+  return { dh, dw, turned: k % 2 === 1, at, back };
+}
+
+/** The wall a door can go in and how long it is: top and bottom run the width, left and right the rows. */
+export const wallLength = (l: Pick<WarehouseLayout, "rows" | "cols">, side: Door["side"]) =>
+  (side === "top" || side === "bottom" ? l.cols : l.rows);
+
+/** The wall position a ring spot (r or c just outside the floor) stands for, or null for a corner. */
+export function wallAt(l: Pick<WarehouseLayout, "rows" | "cols">, r: number, c: number): { side: Door["side"]; pos: number } | null {
+  if (r === -1 && c >= 0 && c < l.cols) return { side: "top", pos: c };
+  if (r === l.rows && c >= 0 && c < l.cols) return { side: "bottom", pos: c };
+  if (c === -1 && r >= 0 && r < l.rows) return { side: "left", pos: r };
+  if (c === l.cols && r >= 0 && r < l.rows) return { side: "right", pos: r };
+  return null;
+}
+
+/** The ring spots a door covers, first to last. */
+export function doorSpots(l: Pick<WarehouseLayout, "rows" | "cols">, d: Door): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = d.at; i < d.at + d.width; i++) {
+    if (d.side === "top") out.push([-1, i]);
+    else if (d.side === "bottom") out.push([l.rows, i]);
+    else if (d.side === "left") out.push([i, -1]);
+    else out.push([i, l.cols]);
+  }
+  return out;
+}
+
+/** Where a door is, in words that do not change when the map is turned. */
+export function doorWhere(l: Pick<WarehouseLayout, "rows" | "cols">, d: Door): string {
+  const span = (a: number, b: number, f: (n: number) => string) => (a === b ? f(a) : `${f(a)}–${f(b)}`);
+  if (d.side === "top" || d.side === "bottom") {
+    const wall = d.side === "top" ? "Row A wall" : `Row ${colName(l.rows - 1)} wall`;
+    return `${wall}, ${d.width === 1 ? "spot" : "spots"} ${span(d.at + 1, d.at + d.width, String)}`;
+  }
+  const wall = d.side === "left" ? "Spot 1 end" : "Far end";
+  return `${wall}, ${d.width === 1 ? "row" : "rows"} ${span(d.at, d.at + d.width - 1, colName)}`;
+}
+
+/** Take row `r` out of a map: the rows below move up one, with their spots, shelves, titles and
+ *  the doors along the side walls. The last row cannot go. */
+export function removeRow<T extends Pick<LayoutInput, "rows" | "cols" | "cells" | "shape">>(l: T, r: number): T {
+  if (l.rows <= 1 || r < 0 || r >= l.rows) return l;
+  const move = (row: number) => (row > r ? row - 1 : row);
+  const cells = l.cells.filter((c) => c.r !== r).map((c) => ({ ...c, r: move(c.r) }));
+  const shelves: Record<string, FloorShelf> = {};
+  for (const [k, sh] of Object.entries(l.shape.shelves)) {
+    const [sr, sc] = k.split(":").map(Number);
+    if (sr !== r) shelves[spotKey(move(sr), sc)] = sh;
+  }
+  const doors = l.shape.doors.flatMap((d) => {
+    if (d.side === "top" || d.side === "bottom") return [d];
+    const end = d.at + d.width; // exclusive
+    if (r >= end) return [d];
+    if (r < d.at) return [{ ...d, at: d.at - 1 }];
+    return d.width > 1 ? [{ ...d, width: d.width - 1 }] : [];
+  });
+  const cut = <X,>(xs: X[]) => xs.filter((_, i) => i !== r);
+  return {
+    ...l,
+    rows: l.rows - 1,
+    cells,
+    shape: { ...l.shape, row_lengths: cut(l.shape.row_lengths), row_names: cut(l.shape.row_names), doors, shelves },
+  };
 }

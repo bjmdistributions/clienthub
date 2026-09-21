@@ -15,7 +15,7 @@
 //! Synced per column, last writer wins — see the vault's revisit/warehouse-counts-are-one-column.
 
 use crate::db::pool;
-use crate::warehouse_core::{self as core, BoxType, Change, ImportResult, LayoutCell, Mapping, Move, Section, Short};
+use crate::warehouse_core::{self as core, BoxType, Change, ImportResult, LayoutCell, LayoutShape, Mapping, Move, Section, Short};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -341,7 +341,8 @@ pub async fn warehouse_import(
 
 // ---------------------------------------------------------------------------------------
 // The warehouse map (R-330): a floor of pallet spots or a run of shelving, each spot saying
-// what sits there and how full it is. Cleaned by warehouse_core::clean_layout.
+// what sits there and how full it is; R-332/R-333 add its shape (rows of their own lengths,
+// row titles, doors, short names, shelves on the floor). Cleaned by warehouse_core::clean_layout.
 // ---------------------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
@@ -353,6 +354,7 @@ pub struct WarehouseLayout {
     pub rows: i64,
     pub cols: i64,
     pub cells: Vec<LayoutCell>,
+    pub shape: LayoutShape,
     pub notes: String,
     pub archived: bool,
     pub created_at: String,
@@ -370,11 +372,14 @@ pub struct LayoutInput {
     pub cols: i64,
     #[serde(default)]
     pub cells: Vec<LayoutCell>,
+    /// None from a caller that predates R-332: the stored shape is kept as it is.
+    #[serde(default)]
+    pub shape: Option<LayoutShape>,
     #[serde(default)]
     pub notes: String,
 }
 
-const LAYOUT_COLS: &str = "id, name, COALESCE(kind,'pallets'), COALESCE(rows,1), COALESCE(cols,1), COALESCE(cells_json,'[]'),     COALESCE(notes,''), COALESCE(archived,0), created_at, updated_at";
+const LAYOUT_COLS: &str = "id, name, COALESCE(kind,'pallets'), COALESCE(rows,1), COALESCE(cols,1), COALESCE(cells_json,'[]'),     COALESCE(notes,''), COALESCE(archived,0), created_at, updated_at, COALESCE(shape_json,'{}')";
 
 fn map_layout(r: &rusqlite::Row) -> rusqlite::Result<WarehouseLayout> {
     let cells: String = r.get(5)?;
@@ -385,6 +390,7 @@ fn map_layout(r: &rusqlite::Row) -> rusqlite::Result<WarehouseLayout> {
         rows: r.get(3)?,
         cols: r.get(4)?,
         cells: serde_json::from_str(&cells).unwrap_or_default(),
+        shape: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
         notes: r.get(6)?,
         archived: r.get::<_, i64>(7)? != 0,
         created_at: r.get(8)?,
@@ -414,20 +420,26 @@ pub async fn save_warehouse_layout(input: LayoutInput) -> Result<WarehouseLayout
     if name.is_empty() {
         return Err("Give the map a name, like \"Floor\" or \"Rack A\".".into());
     }
-    let (kind, rows, cols, cells) = core::clean_layout(&input.kind, input.rows, input.cols, input.cells)?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     let existing = match input.id.as_deref().filter(|s| !s.is_empty()) {
         Some(id) => Some(load_layout(&conn, id)?),
         None => None,
     };
+    // A caller that sends no shape keeps the stored one (and the spots are cleaned against it).
+    let send_shape = input.shape.is_some();
+    let shape = input.shape.unwrap_or_else(|| existing.as_ref().map(|e| e.shape.clone()).unwrap_or_default());
+    let m = core::clean_layout(&input.kind, input.rows, input.cols, input.cells, shape)?;
     let id = existing.as_ref().map(|e| e.id.clone()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let mut cols_map = Map::new();
     cols_map.insert("name".into(), json!(name));
-    cols_map.insert("kind".into(), json!(kind));
-    cols_map.insert("rows".into(), json!(rows));
-    cols_map.insert("cols".into(), json!(cols));
-    cols_map.insert("cells_json".into(), json_str(&cells));
+    cols_map.insert("kind".into(), json!(m.kind));
+    cols_map.insert("rows".into(), json!(m.rows));
+    cols_map.insert("cols".into(), json!(m.cols));
+    cols_map.insert("cells_json".into(), json_str(&m.cells));
+    if send_shape || existing.is_none() {
+        cols_map.insert("shape_json".into(), json_str(&m.shape));
+    }
     cols_map.insert("notes".into(), json!(input.notes.trim()));
     cols_map.insert("updated_at".into(), json!(now));
     if existing.is_none() {
@@ -511,13 +523,24 @@ mod tests {
         let cell = |r, c, fill| LayoutCell { r, c, fill, label: "Owls".into(), ..Default::default() };
         let m = save_warehouse_layout(LayoutInput {
             id: None, name: "Floor".into(), kind: "pallets".into(), rows: 4, cols: 6,
-            cells: vec![cell(0, 0, 4), cell(3, 5, 2)], notes: String::new(),
+            cells: vec![cell(0, 0, 4), cell(3, 5, 2)], shape: None, notes: String::new(),
         }).await.unwrap();
         assert_eq!((m.kind.as_str(), m.cells.len()), ("pallets", 2));
         let smaller = save_warehouse_layout(LayoutInput {
-            id: Some(m.id.clone()), name: "Floor".into(), kind: "pallets".into(), rows: 2, cols: 6, cells: m.cells, notes: String::new(),
+            id: Some(m.id.clone()), name: "Floor".into(), kind: "pallets".into(), rows: 2, cols: 6, cells: m.cells, shape: None, notes: String::new(),
         }).await.unwrap();
         assert_eq!(smaller.cells.len(), 1);
+        // R-332: rows of their own lengths and a door; a save that sends no shape keeps them.
+        let door = core::Door { side: "bottom".into(), at: 1, width: 2, kind: "garage".into(), label: "Dock 1".into(), ..Default::default() };
+        let shaped = save_warehouse_layout(LayoutInput {
+            id: Some(m.id.clone()), name: "Floor".into(), kind: "pallets".into(), rows: 2, cols: 6, cells: smaller.cells.clone(),
+            shape: Some(LayoutShape { row_lengths: vec![6, 3], doors: vec![door], ..Default::default() }), notes: String::new(),
+        }).await.unwrap();
+        assert_eq!((shaped.shape.row_lengths.clone(), shaped.shape.doors.len()), (vec![6, 3], 1));
+        let kept = save_warehouse_layout(LayoutInput {
+            id: Some(m.id.clone()), name: "Floor".into(), kind: "pallets".into(), rows: 2, cols: 6, cells: vec![cell(1, 5, 4)], shape: None, notes: String::new(),
+        }).await.unwrap();
+        assert_eq!((kept.shape.row_lengths.clone(), kept.shape.doors.len(), kept.cells.len()), (vec![6, 3], 1, 0));
         archive_warehouse_layout(m.id.clone(), true).await.unwrap();
         assert!(list_warehouse_layouts().await.unwrap().iter().any(|l| l.id == m.id && l.archived));
     }
