@@ -832,48 +832,59 @@ export function boxesLeaving(plan: Pick<PickPlan, "take" | "opened">, section_id
   return out;
 }
 
-/** A pallet spot's exact fullness from its boxes (R-344): units on it over the product's pallet
- *  size (units_per_pallet, set as big boxes per pallet). Null when it cannot be worked out — no
- *  boxes recorded, or no pallet size. */
+/** The units on a place, from its boxes. */
+export const unitsOn = (stock: PlaceStock, types: BoxType[]) =>
+  Object.entries(stock.boxes).reduce((a, [t, n]) => a + n * perOf(types, t), 0);
+
+/** A place's exact fullness from its boxes (R-344): units on it over the product's pallet size
+ *  (units_per_pallet — 21 of the biggest box unless set, R-345, filled in where products are
+ *  read). Null when it cannot be worked out — no boxes recorded, or no pallet size. */
 export function palletFill(stock: PlaceStock | undefined, item: Pick<WarehouseItem, "box_types" | "units_per_pallet"> | undefined): number | null {
   if (!stock || !item || !(item.units_per_pallet > 0)) return null;
-  const units = Object.entries(stock.boxes).reduce((a, [t, n]) => a + n * perOf(item.box_types, t), 0);
-  return units / item.units_per_pallet;
+  return unitsOn(stock, item.box_types) / item.units_per_pallet;
 }
 
 /** An exact fullness as the quarters the colours and totals count in: full only at 100%. */
 export const fillQuarter = (pct: number) => (pct >= 1 ? 4 : pct > 0 ? Math.max(1, Math.min(3, Math.round(pct * 4))) : 0);
 
-/** A shown spot: its fill as the map draws it, and the exact fullness when its boxes give one. */
-export type ShownCell = LayoutCell & { pct?: number };
+/** What a counted place shows (R-345): its exact fullness and the units on it. */
+export interface Counted { pct?: number; units?: number }
+/** A shown spot: its fill as the map draws it, and its exact fullness and units when its boxes give them. */
+export type ShownCell = LayoutCell & Counted;
+export type ShownLevel = ShelfLevel & Counted;
+export type ShownShape = Omit<LayoutShape, "shelves"> & { shelves: Record<string, { levels: ShownLevel[]; note: string }> };
 
 /**
- * A map as it looks. A counted pallet spot's fullness comes from its boxes (R-344) when the
- * product has a pallet size; any place counted down to no boxes shows empty; everything else
- * shows the fill marked by hand. Shelf levels keep their marked fill (a level's size is not known).
+ * A map as it looks. A counted place's fullness comes from its boxes (R-344) — pallet spots and
+ * shelf levels alike (R-345: a level is measured against a pallet too) — with its units beside
+ * it; any place counted down to no boxes shows empty; everything else shows the fill marked by hand.
  */
-export function countedFills(cells: LayoutCell[], shape: LayoutShape, stock: MapStock | undefined, items: Pick<WarehouseItem, "id" | "box_types" | "units_per_pallet">[] = []): { cells: ShownCell[]; shape: LayoutShape } {
+export function countedFills(cells: LayoutCell[], shape: LayoutShape, stock: MapStock | undefined, items: Pick<WarehouseItem, "id" | "box_types" | "units_per_pallet">[] = []): { cells: ShownCell[]; shape: ShownShape } {
   if (!stock || !Object.keys(stock).length) return { cells, shape };
+  const counted = <T extends { item_id: string; fill: number }>(x: T, ps: PlaceStock | undefined): T & Counted => {
+    const it = items.find((i) => i.id === x.item_id);
+    const pct = palletFill(ps, it);
+    return pct === null || !ps || !it ? { ...x, fill: effectiveFill(x.fill, ps) } : { ...x, fill: fillQuarter(pct), pct, units: unitsOn(ps, it.box_types) };
+  };
   const match = (key: string, x: { item_id: string; section_id: string }) => {
     const ps = stock[key];
     return ps && ps.item_id === x.item_id && ps.section_id === x.section_id ? ps : undefined;
   };
-  const out: ShownCell[] = cells.map((c) => {
-    if (!c.section_id || c.aisle) return c;
-    const ps = match(placeKey(c.r, c.c), c);
-    const pct = palletFill(ps, items.find((i) => i.id === c.item_id));
-    return pct === null ? { ...c, fill: effectiveFill(c.fill, ps) } : { ...c, fill: fillQuarter(pct), pct };
-  });
-  const shelves: LayoutShape["shelves"] = {};
+  const out: ShownCell[] = cells.map((c) => (!c.section_id || c.aisle ? c : counted(c, match(placeKey(c.r, c.c), c))));
+  const shelves: ShownShape["shelves"] = {};
   for (const [k, sh] of Object.entries(shape.shelves)) {
     const [r, c] = k.split(":").map(Number);
-    shelves[k] = { ...sh, levels: sh.levels.map((lv, i) => (lv.section_id ? { ...lv, fill: effectiveFill(lv.fill, match(placeKey(r, c, i), lv)) } : lv)) };
+    shelves[k] = { ...sh, levels: sh.levels.map((lv, i) => (lv.section_id ? counted(lv, match(placeKey(r, c, i), lv)) : lv)) };
   }
   return { cells: out, shape: { ...shape, shelves } };
 }
 
-/** "86%", or "Full" at 100% and over. */
-export const pctLabel = (pct: number) => (pct >= 1 ? (pct > 1.005 ? `Full · ${Math.round(pct * 100)}%` : "Full") : `${Math.round(pct * 100)}%`);
+/** A percentage that never claims more than it is: 99.6% reads 99%, not 100%; a few units read "<1%". */
+const pctOf = (pct: number) => (pct > 0 && pct < 0.005 ? "<1%" : `${pct < 1 ? Math.min(99, Math.round(pct * 100)) : Math.round(pct * 100)}%`);
+/** "86%", or "Full" at 100%, "Full · 105%" over it. */
+export const pctLabel = (pct: number) => (pct >= 1 ? (pct > 1.005 ? `Full · ${pctOf(pct)}` : "Full") : pctOf(pct));
+/** The short form on a spot: "86%", "Full", or "105%" over a pallet. */
+export const pctShort = (pct: number) => (pct >= 1 && pct <= 1.005 ? "Full" : pctOf(pct));
 
 // ---------- Building a lot (R-342) ----------
 // A planned load, as the pallets Jack builds: every big box (the product's biggest size)

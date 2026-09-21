@@ -23,7 +23,7 @@ const ITEMS: any[] = [
   {
     id: "w1", name: "New Era 59FIFTY fitted hats", section_label: "Team", box_types: preview.box_types,
     sections: preview.sections.map((s, i) => ({ ...s, id: `t${i}` })),
-    units_per_pallet: 1440, unit_price: 6.5, notes: "", archived: false, created_at: NOW, updated_at: NOW, log: [],
+    units_per_pallet: 1512, unit_price: 6.5, notes: "", archived: false, created_at: NOW, updated_at: NOW, log: [],
   },
   {
     id: "w2", name: "Crew socks, 6 packs", section_label: "Size", box_types: [{ id: "b48", name: "Case", per_box: 48 }],
@@ -62,6 +62,7 @@ const LAYOUTS: any[] = [
       shelves: {
         "3:4": { levels: [{ ...T(10), label: "", fill: 4 }, { ...T(11), label: "", fill: 2 }, { item_id: "", section_id: "", label: "Samples", fill: 1 }, { item_id: "", section_id: "", label: "", fill: 0 }], note: "" },
         "1:6": { levels: [{ ...T(2), label: "", fill: 3 }, { item_id: "", section_id: "", label: "", fill: 0 }, { ...T(0), label: "", fill: 4 }], note: "Top level is loose hats" },
+        "4:8": { levels: [{ ...T(5), label: "", fill: 1 }, { ...T(6), label: "", fill: 1 }], note: "" },
       },
     },
     // R-340: boxes counted on some OWLS pallets (big = the first box size), one counted down to nothing.
@@ -69,6 +70,11 @@ const LAYOUTS: any[] = [
       "0:0": { ...T(0), boxes: { [preview.box_types[0].id]: 8, [preview.box_types[1].id]: 2 } },
       "0:1": { ...T(0), boxes: { [preview.box_types[0].id]: 3 } },
       "0:2": { ...T(0), boxes: {} },
+      // R-345: boxes on shelf levels, measured against a pallet too.
+      "3:4:0": { ...T(10), boxes: { [preview.box_types[0].id]: 7 } },
+      "1:6:0": { ...T(2), boxes: { [preview.box_types[0].id]: 5 } },
+      "4:8:0": { ...T(5), boxes: { [preview.box_types[0].id]: 12, [preview.box_types[1].id]: 4 } },
+      "4:8:1": { ...T(6), boxes: { [preview.box_types[0].id]: 21 } },
     },
   },
   {

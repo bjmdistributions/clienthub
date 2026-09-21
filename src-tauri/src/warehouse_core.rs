@@ -157,6 +157,18 @@ pub fn type_for(types: &mut Vec<BoxType>, name: &str, per: i64) -> String {
     id
 }
 
+/// Big boxes to a pallet when a product has no pallet size of its own (R-345) — Jack's number.
+pub const DEFAULT_BIG_PER_PALLET: i64 = 21;
+
+/// A product's pallet size in units: the one it has, or 21 of its biggest box when none is set
+/// (0 only for a product with no box sizes). Both storage layers read every product through it.
+pub fn pallet_units(set: i64, types: &[BoxType]) -> i64 {
+    if set > 0 {
+        return set;
+    }
+    types.iter().map(|t| t.per_box).filter(|&p| p > 0).max().map_or(0, |p| p * DEFAULT_BIG_PER_PALLET)
+}
+
 /// Convert R-326 sections (one size each) to box types, in place. Idempotent.
 pub fn upgrade(types: &mut Vec<BoxType>, sections: &mut [Section]) {
     for s in sections.iter_mut() {
@@ -1229,6 +1241,15 @@ mod tests {
     }
     fn rows(csv: &str) -> Vec<Vec<String>> {
         csv.lines().map(|l| l.split(',').map(|c| c.to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn a_product_with_no_pallet_size_is_21_of_its_biggest_box() {
+        assert_eq!(pallet_units(0, &sizes()), 21 * 72);
+        assert_eq!(pallet_units(-5, &sizes()), 21 * 72);
+        assert_eq!(pallet_units(1440, &sizes()), 1440, "a size he set is kept");
+        assert_eq!(pallet_units(0, &[t("tiny", 12), t("odd", 0)]), 21 * 12);
+        assert_eq!(pallet_units(0, &[]), 0, "no box sizes, no pallet");
     }
 
     #[test]

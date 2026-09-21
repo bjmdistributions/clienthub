@@ -3,7 +3,7 @@ import {
   changesForInvoice, colName, describePick, doorWhere, emptyPick, emptyShape, invoiceLines, layoutSummary, mapView, pickFromPlan, pickUnits,
   planUnits, removeRow, rowLength, rowsFromText, sectionBoxes, sectionUnits, setPicked, shareOut, shares, spotName, takeUnits, wallAt,
   effectiveFill, mapPlaces, placesHolding, takeFromPlaces, type WarehouseLayout, buildLot, builtUnits, countCheck, matchToPallets,
-  countedFills, fillQuarter, palletFill, pctLabel,
+  countedFills, fillQuarter, palletFill, pctLabel, pctShort,
   type BoxType, type WhSection,
 } from "./warehouse";
 
@@ -437,5 +437,35 @@ describe("a pallet's fullness from its boxes (R-344)", () => {
     expect(shown.cells[0].pct).toBeCloseTo(18 / 21);
     expect(shown.cells[0].fill).toBe(3);
     expect(shown.cells[1]).toEqual(cell(1, 2));
+  });
+});
+
+describe("every counted place shows its percentage and its units (R-345)", () => {
+  const types: BoxType[] = [{ id: "big", name: "Big Box", per_box: 72 }, { id: "tiny", name: "Small Box", per_box: 12 }];
+  const item = { id: "w", box_types: types, units_per_pallet: 21 * 72 };
+  const ps = (boxes: Record<string, number>) => ({ item_id: "w", section_id: "owls", boxes });
+  const lv = (fill: number) => ({ item_id: "w", section_id: "owls", label: "", fill });
+
+  it("gives a pallet spot its units beside its percentage", () => {
+    const cell = { r: 0, c: 0, item_id: "w", section_id: "owls", label: "", fill: 1, note: "", aisle: false };
+    const shown = countedFills([cell], emptyShape(), { "0:0": ps({ big: 9, tiny: 2 }) }, [item]);
+    expect(shown.cells[0].units).toBe(9 * 72 + 24);
+    expect(shown.cells[0].pct).toBeCloseTo((9 * 72 + 24) / 1512);
+  });
+
+  it("measures a shelf level with boxes against a pallet, and leaves an uncounted level as marked", () => {
+    const shape = { ...emptyShape(), shelves: { "1:1": { levels: [lv(4), lv(2)], note: "" } } };
+    const shown = countedFills([], shape, { "1:1:0": ps({ big: 7 }) }, [item]);
+    const [bottom, top] = shown.shape.shelves["1:1"].levels;
+    expect(bottom.units).toBe(504);
+    expect(bottom.pct).toBeCloseTo(1 / 3);
+    expect(bottom.fill).toBe(1);
+    expect(top).toEqual(lv(2));
+  });
+
+  it("never rounds a part pallet up to 100% or a few units down to 0%", () => {
+    expect([pctShort(0.996), pctShort(1), pctShort(1.004), pctShort(22 / 21), pctShort(0.002), pctShort(0), pctShort(0.47)])
+      .toEqual(["99%", "Full", "Full", "105%", "<1%", "0%", "47%"]);
+    expect(pctLabel(0.996)).toBe("99%");
   });
 });

@@ -5,7 +5,7 @@
 //   Plan a load   — the packer (planUnits): how much, and how it spreads across the teams
 //                   (R-334's lean), sent as it is or opened in Pick an order to adjust.
 //   History       — every move, with Put back.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, Archive, ArchiveRestore, Check, FileText, MoreHorizontal, Pencil, Search, SlidersHorizontal, Undo2 } from "lucide-react";
 import { api } from "../lib/api";
@@ -577,6 +577,8 @@ function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; 
   const [finish, setFinish] = useState<"exact" | "whole">("exact");
   const [skip, setSkip] = useState<Set<string>>(new Set());
   const [upp, setUpp] = useState(item.units_per_pallet);
+  const uppNow = useRef(upp);
+  uppNow.current = upp;
   const [, setBuildRev] = useState(0);
   const big = bigBox(types);
   const [lean, setLeanState] = useState(readLean);
@@ -604,11 +606,16 @@ function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; 
 
   const saveUpp = async () => {
     if (upp === item.units_per_pallet) return;
+    const sent = upp;
     try {
-      onChanged(await api.saveWarehouseItem({
+      const it = await api.saveWarehouseItem({
         id: item.id, name: item.name, section_label: item.section_label, box_types: item.box_types, sections: item.sections,
-        units_per_pallet: upp, unit_price: item.unit_price, notes: item.notes,
-      }));
+        units_per_pallet: sent, unit_price: item.unit_price, notes: item.notes,
+      });
+      onChanged(it);
+      // A cleared field comes back as the default, 21 of the biggest box (R-345) — unless a newer
+      // number was typed while this one saved.
+      if (uppNow.current === sent) setUpp(it.units_per_pallet);
     } catch (e) { toast(String(e), "error"); setUpp(item.units_per_pallet); }
   };
 

@@ -13,7 +13,7 @@ import { ArchiveRestore, FlipHorizontal, LayoutGrid, Pencil, Plus, RotateCw, Row
 import { api } from "../lib/api";
 import {
   DOOR_KINDS, FILL_LABELS, FILL_SHORT, SHELF_MAX, boxesOnMaps, cellKey, colName, countedFills, doorSpots, doorWhere, emptyShape, fillBucket, layoutSummary,
-  mapView, palletFill, pctLabel, placeKey, removeRow, rowLength, spotKey, spotName, wallAt, wallLength, type ShownCell,
+  mapView, palletFill, pctLabel, pctShort, placeKey, unitsOn, removeRow, rowLength, spotKey, spotName, wallAt, wallLength, type ShownCell,
   type Door, type LayoutCell, type LayoutShape, type PlaceStock, type ShelfLevel, type WarehouseItem, type WarehouseLayout,
 } from "../lib/warehouse";
 import { toast } from "./Toast";
@@ -382,7 +382,7 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
     const name = cell && !cell.aisle ? shownName(cell) : "";
     const full = cell ? nameOf(cell) : "";
     const pct = cell?.pct;
-    const title = `${spotName(layout.kind, layout.rows, r, c)}${cell?.aisle ? " · aisle" : full ? ` · ${full} · ${pct != null ? `${pctLabel(pct)} by its boxes` : FILL_LABELS[cell!.fill]}` : ""}${cell?.note ? ` · ${cell.note}` : ""}`;
+    const title = `${spotName(layout.kind, layout.rows, r, c)}${cell?.aisle ? " · aisle" : full ? ` · ${full} · ${pct != null ? `${pctLabel(pct)}, ${n0(cell!.units ?? 0)} units by its boxes` : FILL_LABELS[cell!.fill]}` : ""}${cell?.note ? ` · ${cell.note}` : ""}`;
     return (
       <button key={k} title={title} onMouseDown={(e) => { e.preventDefault(); down(r, c, e); }} onMouseEnter={() => enter(r, c)}
         style={{ ...place(r, c), opacity: dim ? 0.25 : 1,
@@ -396,8 +396,15 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
         )}
         {color && <div className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ background: rgba(color, 0.9) }} />}
         {/* Pinned to the top: a button centres its content, which put the name on the half-full line. */}
-        <div className="absolute left-0 right-1 top-0 pl-1.5 pr-0.5 pt-1 text-[10px] leading-tight font-medium text-ink line-clamp-2 break-words">{name}</div>
-        {ck && !cell!.aisle && <div className="absolute right-1 bottom-0.5 text-[9.5px] font-medium text-ink-2 tabular-nums">{pct != null ? (pct >= 1 ? "Full" : `${Math.round(pct * 100)}%`) : FILL_SHORT[cell!.fill]}</div>}
+        <div className={`absolute left-0 right-1 top-0 pl-1.5 pr-0.5 pt-1 text-[10px] leading-tight font-medium text-ink break-words ${pct != null ? "line-clamp-1" : "line-clamp-2"}`}>{name}</div>
+        {/* R-345: a counted pallet shows its units and its exact percentage; others the fill marked. */}
+        {ck && !cell!.aisle && (pct != null ? (
+          <div className="absolute right-0.5 bottom-0.5 flex flex-col items-end gap-px leading-none tabular-nums whitespace-nowrap">
+            {/* Stacked, each on a chip: a spot is too narrow for both on one line, and the fill line never runs through a figure. */}
+            <span className="rounded-[3px] bg-surface/85 px-[2px] py-px text-[9px] font-medium text-ink-2">{n0(cell!.units ?? 0)}</span>
+            <span className="rounded-[3px] bg-surface/85 px-[2px] py-px text-[10px] font-semibold text-ink">{pctShort(pct)}</span>
+          </div>
+        ) : <div className="absolute right-1 bottom-0.5 text-[9.5px] font-medium text-ink-2 tabular-nums">{FILL_SHORT[cell!.fill]}</div>)}
         {cell?.note && <StickyNote size={9} className="absolute right-1 top-1 text-muted" aria-hidden />}
       </button>
     );
@@ -409,7 +416,8 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
     const selected = sel.has(k);
     const dim = focus !== null && !sh.levels.some((lv) => cellKey(lv) === focus);
     const title = `Shelf ${spotName(layout.kind, layout.rows, r, c)} · ` +
-      sh.levels.map((lv, i) => `level ${i + 1}: ${nameOf(lv) || "nothing"}${cellKey(lv) ? ` (${FILL_LABELS[lv.fill]})` : ""}`).join(" · ") + (sh.note ? ` · ${sh.note}` : "");
+      sh.levels.map((lv, i) => `level ${i + 1}: ${nameOf(lv) || "nothing"}${cellKey(lv) ? ` (${lv.pct != null ? `${pctLabel(lv.pct)}, ${n0(lv.units ?? 0)} units by its boxes` : FILL_LABELS[lv.fill]})` : ""}`).join(" · ") + (sh.note ? ` · ${sh.note}` : "");
+    const two = sh.levels.length <= 2;
     return (
       <button key={k} title={title} onMouseDown={(e) => { e.preventDefault(); down(r, c, e); }} onMouseEnter={() => enter(r, c)}
         style={{ ...place(r, c), opacity: dim ? 0.25 : 1 }}
@@ -418,11 +426,25 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
         {sh.levels.map((lv, i) => {
           const lk = cellKey(lv);
           const color = colorOf(lk, lv.fill);
+          const pct = lv.pct;
           return (
             <div key={i} className={`relative flex-1 min-h-0 flex items-center ${i > 0 ? "border-b border-line-3" : ""}`}>
-              {color && lv.fill > 0 && <div className="absolute inset-y-0 left-0" style={{ width: `${(lv.fill / 4) * 100}%`, background: rgba(color, 0.28) }} />}
+              {color && (pct != null ? pct > 0 : lv.fill > 0) && <div className="absolute inset-y-0 left-0" style={{ width: `${(pct != null ? Math.min(1, pct) : lv.fill / 4) * 100}%`, background: rgba(color, 0.28) }} />}
               {color && <div className="absolute inset-y-0 left-0 w-[3px]" style={{ background: rgba(color, 0.9) }} />}
-              <span className="relative block w-full pl-1.5 pr-1 text-[9.5px] leading-none font-medium text-ink truncate">{lk ? shownName(lv) : ""}</span>
+              {pct != null && two ? (
+                <span className="relative block w-full min-w-0 pl-1.5 pr-0.5 leading-none">
+                  <span className="block text-[9.5px] font-medium text-ink truncate">{shownName(lv)}</span>
+                  <span className="flex items-baseline gap-0.5 mt-0.5 text-[9px] tabular-nums leading-none">
+                    <span className="min-w-0 truncate text-ink-2">{n0(lv.units ?? 0)}</span>
+                    <b className="shrink-0 ml-auto font-semibold text-ink">{pctShort(pct)}</b>
+                  </span>
+                </span>
+              ) : (
+                <span className="relative flex w-full min-w-0 items-baseline gap-0.5 pl-1.5 pr-0.5 leading-none">
+                  <span className="flex-1 min-w-0 text-[9.5px] font-medium text-ink truncate">{lk ? shownName(lv) : ""}</span>
+                  {pct != null && <span className="shrink-0 text-[9px] font-semibold tabular-nums text-ink">{pctShort(pct)}</span>}
+                </span>
+              )}
             </div>
           );
         })}
@@ -578,6 +600,20 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
     );
   };
 
+  // R-344/R-345: a counted place's fullness from its boxes — exact, with its units and the pallet it is measured against.
+  const exactFill = (ps: PlaceStock | undefined, it: WarehouseItem | undefined) => {
+    const pct = palletFill(ps, it);
+    if (pct === null || !ps || !it) return null;
+    const big = [...it.box_types].sort((a, b) => b.per_box - a.per_box)[0];
+    const size = big && big.per_box > 0 && it.units_per_pallet % big.per_box === 0 ? `${n0(it.units_per_pallet / big.per_box)} ${big.name}` : `${n0(it.units_per_pallet)} units`;
+    return (
+      <div>
+        <div className="text-[13px] text-ink tabular-nums"><span className="font-semibold">{pctLabel(pct)}</span> · {n0(unitsOn(ps, it.box_types))} of {n0(it.units_per_pallet)} units</div>
+        <div className="text-[11.5px] text-muted mt-0.5">Worked out from its boxes. A pallet is {size} — change it in Plan a load.</div>
+      </div>
+    );
+  };
+
   const shelfPanel = (k: string) => {
     const sh = shape.shelves[k];
     const [r, c] = k.split(":").map(Number);
@@ -596,7 +632,8 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
                 {n > 1 && <button onClick={() => setShelves((s) => { s[k].levels.splice(i, 1); })} className="text-muted hover:text-ink-2" title="Remove this level" aria-label={`Remove level ${i + 1}`}><X size={13} /></button>}
               </div>
               {whatSelect(whatOf(lv), (val) => setLevel(k, i, (l) => whatPatch(val, l)), i, true)}
-              {fillButtons(lv.fill, (q) => setLevel(k, i, (l) => ({ ...l, fill: q })), true)}
+              {(lv.section_id && exactFill(matchStock(placeKey(r, c, i), lv), items.find((x) => x.id === lv.item_id)))
+                || fillButtons(lv.fill, (q) => setLevel(k, i, (l) => ({ ...l, fill: q })), true)}
               {lv.section_id && (() => {
                 const it = items.find((x) => x.id === lv.item_id);
                 if (!it || !it.box_types.length) return null;
@@ -651,18 +688,8 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
           {(() => {
             // R-344: a counted pallet's fullness comes from its boxes, exactly.
             const one = sel.size === 1 && first && first.section_id && !first.aisle ? first : null;
-            const it = one ? items.find((i) => i.id === one.item_id) : undefined;
-            const pct = one ? palletFill(matchStock(placeKey(one.r, one.c), one), it) : null;
-            if (pct !== null && it) {
-              const big = [...it.box_types].sort((a, b) => b.per_box - a.per_box)[0];
-              return (
-                <div>
-                  <label className="block text-[12px] text-muted mb-1.5">How full</label>
-                  <div className="text-[13px] text-ink"><span className="font-semibold tabular-nums">{pctLabel(pct)}</span>
-                    <span className="text-muted"> — worked out from its boxes against a pallet of {big ? `${n0(it.units_per_pallet / big.per_box)} ${big.name}` : `${n0(it.units_per_pallet)} units`}</span></div>
-                </div>
-              );
-            }
+            const exact = one ? exactFill(matchStock(placeKey(one.r, one.c), one), items.find((i) => i.id === one.item_id)) : null;
+            if (exact) return <div><label className="block text-[12px] text-muted mb-1.5">How full</label>{exact}</div>;
             return (
               <div>
                 <label className="block text-[12px] text-muted mb-1.5">How full</label>

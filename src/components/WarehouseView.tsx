@@ -343,7 +343,7 @@ function ProductForm({ initial, onCancel, onSaved }: {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-[12px] text-muted mb-1.5">Units per pallet</label>
-              <NumberInput integer value={upp || ""} onValue={setUpp} placeholder="e.g. 1,500" style={WH_INPUT_BG} className={WH_INPUT} />
+              <NumberInput integer value={upp || ""} onValue={setUpp} placeholder="Blank = 21 of the biggest box" style={WH_INPUT_BG} className={WH_INPUT} />
             </div>
             <div>
               <label className="block text-[12px] text-muted mb-1.5">Price per unit</label>

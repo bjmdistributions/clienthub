@@ -89,6 +89,8 @@ fn map_row(r: &rusqlite::Row) -> rusqlite::Result<WarehouseItem> {
     if units_per_pallet == 0 && boxes_per_pallet > 0 && box_types.len() == 1 {
         units_per_pallet = boxes_per_pallet * box_types[0].per_box;
     }
+    // R-345: no pallet size set reads as 21 of the biggest box, on every screen.
+    let units_per_pallet = core::pallet_units(units_per_pallet, &box_types);
     Ok(WarehouseItem {
         id: r.get(0)?,
         name: r.get(1)?,
@@ -622,6 +624,23 @@ mod tests {
 
     /// R-340: boxes recorded on a pallet come off it when stock leaves, part pallets first,
     /// and a put-back returns them.
+    /// R-345: a product saved with no pallet size reads as 21 of its biggest box; one he set is kept.
+    #[tokio::test]
+    async fn no_pallet_size_reads_as_21_of_the_biggest_box() {
+        crate::db::init_test_store();
+        let types = vec![
+            BoxType { id: String::new(), name: "Big Box".into(), per_box: 72 },
+            BoxType { id: String::new(), name: "Small Box".into(), per_box: 12 },
+        ];
+        let blank = WarehouseInput { units_per_pallet: 0, ..input(None, vec![], types.clone()) };
+        let it = save_warehouse_item(blank).await.unwrap();
+        assert_eq!(it.units_per_pallet, 21 * 72);
+        let listed = list_warehouse_items().await.unwrap().into_iter().find(|x| x.id == it.id).unwrap();
+        assert_eq!(listed.units_per_pallet, 21 * 72);
+        let set = save_warehouse_item(input(Some(it.id.clone()), vec![], it.box_types.clone())).await.unwrap();
+        assert_eq!(set.units_per_pallet, 1440, "a pallet size he set is kept");
+    }
+
     #[tokio::test]
     async fn a_pick_takes_boxes_off_the_pallets_and_a_put_back_returns_them() {
         crate::db::init_test_store();
