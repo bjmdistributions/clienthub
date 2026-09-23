@@ -103,6 +103,14 @@ const LEAD_NOTIFICATIONS = [
     payload_json: JSON.stringify({ company: "Hendricks Freight", volume: "1 pallet", category: "Apparel", contact: "sam@hendricksfreight.com", phone: "701-555-0121" }),
     entity_id: null, status: "unread", acknowledged_at: null, acknowledged_by: null, created_at: hoursAgo(31),
   },
+  {
+    // R-366: the exact shape the website's sell-to-us form sends (lib/ecliptr.ts forwardSupplyLead).
+    id: "n3", org_id: "org1", kind: "supply_lead",
+    title: "Supplier lead: Dana Ortiz",
+    body: "Mixed general merchandise returns · Pallets: 26 · Location: Columbus, OH",
+    payload_json: JSON.stringify({ lead_kind: "supplier", name: "Dana Ortiz", email: "dana@ortizliquidation.com", company: "Ortiz Liquidation", load_details: "Mixed general merchandise returns", load_pallets: "26", load_location: "Columbus, OH" }),
+    entity_id: null, status: "unread", acknowledged_at: null, acknowledged_by: null, created_at: hoursAgo(2),
+  },
 ];
 
 const LEAD_STATS = {
@@ -127,7 +135,7 @@ const LEAD_CLICKS = [
 
 // ---- fixture dispatch --------------------------------------------------
 
-let supplyLeadStatus: Record<string, string> = { n1: "unread", n2: "unread" };
+let supplyLeadStatus: Record<string, string> = { n1: "unread", n2: "unread", n3: "unread" };
 let pendingClients = [...PENDING_CLIENTS];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -163,6 +171,7 @@ let pendingClients = [...PENDING_CLIENTS];
       if (args?.id) supplyLeadStatus[args.id] = "acknowledged";
       return null;
     case "list_lead_clicks": return LEAD_CLICKS;
+    case "open_external": (window as any).__opened = args?.url; return null;
     default: return null;
   }
 };

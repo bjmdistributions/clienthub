@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, isUnavailable, type ApprovalRequest, type Client, type ClientInput, type LeadNotification, type OrUnavailable } from "../lib/api";
 import PendingReviewModal from "./PendingReviewModal";
-import { UserPlus, Inbox, ChevronRight, X, Store, Megaphone, Check } from "lucide-react";
+import { UserPlus, Inbox, ChevronRight, X, Store, Megaphone, Check, Reply } from "lucide-react";
 import StatusPill from "./StatusPill";
 
 const kindLabel = (k: string) =>
@@ -96,6 +96,22 @@ function ApprovalDetail({ a, onClose, onResolved }: { a: ApprovalRequest; onClos
   );
 }
 
+// R-366: a Gmail compose addressed back to whoever sent the lead, so the reply is
+// only the typing. The website's forms send `email`; a hand-mapped form may call it
+// anything, so the first value shaped like an address is the fallback. Null when
+// the submission carries no address — there is nobody to reply to.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function gmailReplyUrl(n: LeadNotification, fields: Record<string, any>): string | null {
+  const to = [fields.email, ...Object.values(fields)].map((v) => String(v ?? "").trim()).find((v) => EMAIL_RE.test(v));
+  if (!to) return null;
+  const first = String(fields.contact_name || (n.kind === "supply_lead" ? fields.name : "") || "").trim().split(/\s+/)[0];
+  const load = String(fields.load_details || "").trim().replace(/\s+/g, " ");
+  const subject = n.kind === "supplier_profile" ? "Re: your supplier details"
+    : load ? `Re: ${load.length > 60 ? load.slice(0, 59) + "…" : load}` : "Re: your load";
+  const body = `Hi${first ? " " + first : ""},\n\n`;
+  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 // A standardized supply-lead alert (decision 3 in the R-263 plan): "Add as supplier"
 // is a follow-up, not v1, so Acknowledge is the only action here. Server-backed
 // (Pass 2) — shows "Unavailable" rather than the section disappearing. Fetched by
@@ -121,6 +137,7 @@ function SupplyLeadsSection({ leads, onAck }: { leads: OrUnavailable<LeadNotific
             let fields: Record<string, any> = {};
             try { fields = n.payload_json ? JSON.parse(n.payload_json) : {}; } catch { /* ignore */ }
             const fieldEntries = Object.entries(fields).filter(([, v]) => v != null && v !== "");
+            const replyUrl = gmailReplyUrl(n, fields);
             return (
               <div key={n.id} className="bg-surface border border-line rounded-xl p-4">
                 <div className="flex items-start justify-between gap-4">
@@ -131,10 +148,18 @@ function SupplyLeadsSection({ leads, onAck }: { leads: OrUnavailable<LeadNotific
                     </div>
                     <div className="text-[12px] text-muted mt-0.5">{n.body}</div>
                   </div>
-                  <button onClick={() => onAck(n.id)}
-                    className="flex items-center gap-1.5 border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium flex-shrink-0">
-                    <Check size={13} /> Acknowledge
-                  </button>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {replyUrl && (
+                      <button onClick={() => api.openExternal(replyUrl).catch(() => {})} title="Opens a Gmail reply to this person"
+                        className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">
+                        <Reply size={13} /> Reply
+                      </button>
+                    )}
+                    <button onClick={() => onAck(n.id)}
+                      className="flex items-center gap-1.5 border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">
+                      <Check size={13} /> Acknowledge
+                    </button>
+                  </div>
                 </div>
                 {fieldEntries.length > 0 && (
                   <div className="mt-3 pt-3 border-t border-line-2 grid grid-cols-2 gap-x-4 gap-y-1.5">
