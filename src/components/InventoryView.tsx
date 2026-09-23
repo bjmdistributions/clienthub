@@ -21,15 +21,17 @@ const STATUS_FILTERS = ["all", "available", "reserved", "sold", "archived"] as c
 type StatusFilter = typeof STATUS_FILTERS[number] | "all";
 type SortKey = "newest" | "profit" | "margin" | "value" | "stale";
 
-// A lot goes "stale" and should be re-blasted once it's been > 2 days since it
-// last changed. There's no dedicated last_blasted_at, so updated_at is the proxy.
-const STALE_DAYS = 2;
+// A lot goes "stale" and should be renewed once it's been STALE_DAYS since it last
+// changed. There's no dedicated last_blasted_at, so updated_at is the proxy. R-371:
+// the same 5 days, and the same clock, the server asks "Renew or mark sold" on
+// (clienthub-api STALE_LISTING_DAYS), so this chip and the bell agree.
+const STALE_DAYS = 5;
 const daysSince = (iso: string) => {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return 0;
   return Math.floor((Date.now() - t) / 86_400_000);
 };
-const isStale = (lot: Lot) => lot.status === "available" && daysSince(lot.updated_at) > STALE_DAYS;
+const isStale = (lot: Lot) => lot.status === "available" && daysSince(lot.updated_at) >= STALE_DAYS;
 
 // Per-pallet pricing. Suppliers quote "$1,500 A PALLET, 20 PALLETS" — the lot stores the
 // multiplied-out $30,000 in asking_price (price_type "total"), exactly as qty_basis does

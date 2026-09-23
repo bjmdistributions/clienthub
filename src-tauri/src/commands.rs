@@ -902,6 +902,41 @@ fn resolve_client_approvals(client_id: &str, status: &str) -> Result<(), String>
     Ok(())
 }
 
+/// R-371: one renewal clock for the whole system. A lot's `updated_at` is its last
+/// renewal, and every write to a lot moves it, so a "Renew or mark sold" request still
+/// waiting for that lot has been answered: 'approved' if the lot is still for sale (it
+/// was just renewed), 'withdrawn' if it is sold, archived, reserved or gone. Resolved
+/// and synced here so this device's bell clears at once and the others follow. Mirrors
+/// the server's reconcile_stale_listings (clienthub-api approvals.rs), which also answers
+/// requests for lots renewed on another device. Idempotent: no waiting request, no-op.
+fn settle_stale_listing_requests(lot_id: &str) -> Result<(), String> {
+    let (ids, for_sale): (Vec<String>, bool) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM pending_approvals WHERE entity_id=?1 AND kind='listing_stale' AND status='pending'",
+        ).map_err(|e| e.to_string())?;
+        let ids = stmt.query_map(rusqlite::params![lot_id], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        let for_sale = conn.query_row("SELECT status='available' FROM inventory WHERE id=?1",
+            rusqlite::params![lot_id], |r| r.get::<_, bool>(0)).unwrap_or(false);
+        (ids, for_sale)
+    };
+    let status = if for_sale { "approved" } else { "withdrawn" };
+    for id in ids {
+        let now = Utc::now().to_rfc3339();
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("UPDATE pending_approvals SET status=?1, resolved_at=?2 WHERE id=?3",
+                rusqlite::params![status, now, id]).map_err(|e| e.to_string())?;
+        }
+        let mut cols = Map::new();
+        cols.insert("status".into(), Value::String(status.into()));
+        cols.insert("resolved_at".into(), Value::String(now));
+        sync::record_upsert("pending_approvals", &id, cols).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Approve or reject a queued request. Approving an add activates the pending
 /// client; approving a delete removes the client; rejecting an add discards the
 /// pending client; rejecting a delete leaves it.
@@ -970,6 +1005,20 @@ pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), S
                 }
                 let mut cols = Map::new();
                 cols.insert("status".into(), Value::String("sold".into()));
+                cols.insert("updated_at".into(), Value::String(now));
+                sync::record_upsert("inventory", eid, cols).map_err(|e| e.to_string())?;
+            }
+            // R-371: Renew on the request is a renewal like any other. It moves the lot's
+            // clock (synced) so no surface asks about it again for 5 days. Mirrors the
+            // server's renew_lot.
+            ("listing_stale", true) => {
+                let now = Utc::now().to_rfc3339();
+                {
+                    let conn = pool().get().map_err(|e| e.to_string())?;
+                    conn.execute("UPDATE inventory SET updated_at=?1 WHERE id=?2",
+                        rusqlite::params![now, eid]).map_err(|e| e.to_string())?;
+                }
+                let mut cols = Map::new();
                 cols.insert("updated_at".into(), Value::String(now));
                 sync::record_upsert("inventory", eid, cols).map_err(|e| e.to_string())?;
             }
@@ -9921,6 +9970,8 @@ pub async fn update_lot(id: String, name: Option<String>, description: Option<St
     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     conn.execute(&sql, refs.as_slice()).map_err(|e| e.to_string())?;
     crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
+    drop(conn);
+    settle_stale_listing_requests(&id)?;
     Ok(())
 }
 
@@ -10829,6 +10880,8 @@ pub async fn set_lot_status(id: String, status: String) -> Result<(), String> {
         conn.execute("UPDATE inventory SET status = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![status, now, id]).map_err(|e| e.to_string())?;
     }
     crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
+    drop(conn);
+    settle_stale_listing_requests(&id)?;
     Ok(())
 }
 
@@ -10839,6 +10892,8 @@ pub async fn delete_lot(id: String) -> Result<(), String> {
     crate::sync::record_delete("inventory", &id).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM inventory WHERE id = ?1", [&id]).map_err(|e| e.to_string())?;
+    drop(conn);
+    settle_stale_listing_requests(&id)?;
     Ok(())
 }
 
@@ -10851,6 +10906,8 @@ pub async fn delete_lots(ids: Vec<String>) -> Result<u32, String> {
         conn.execute("DELETE FROM inventory WHERE id = ?1", [id]).map_err(|e| e.to_string())?;
         n += 1;
     }
+    drop(conn);
+    for id in &ids { settle_stale_listing_requests(id)?; }
     Ok(n)
 }
 
