@@ -909,7 +909,15 @@ fn resolve_client_approvals(client_id: &str, status: &str) -> Result<(), String>
 /// and synced here so this device's bell clears at once and the others follow. Mirrors
 /// the server's reconcile_stale_listings (clienthub-api approvals.rs), which also answers
 /// requests for lots renewed on another device. Idempotent: no waiting request, no-op.
-fn settle_stale_listing_requests(lot_id: &str) -> Result<(), String> {
+/// Best-effort: it runs after the lot write has committed, so a failure here is logged,
+/// never reported as the write failing; the server's hourly reconcile catches it up.
+fn settle_stale_listing_requests(lot_id: &str) {
+    if let Err(e) = try_settle_stale_listing_requests(lot_id) {
+        tracing::warn!("settling the stale-listing request for lot {}: {}", lot_id, e);
+    }
+}
+
+fn try_settle_stale_listing_requests(lot_id: &str) -> Result<(), String> {
     let (ids, for_sale): (Vec<String>, bool) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
@@ -1011,16 +1019,20 @@ pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), S
             // R-371: Renew on the request is a renewal like any other. It moves the lot's
             // clock (synced) so no surface asks about it again for 5 days. Mirrors the
             // server's renew_lot.
+            // A lot already deleted stays deleted: a synced write for its id would
+            // re-create it on the server as a blank 'available' row.
             ("listing_stale", true) => {
                 let now = Utc::now().to_rfc3339();
-                {
+                let changed = {
                     let conn = pool().get().map_err(|e| e.to_string())?;
                     conn.execute("UPDATE inventory SET updated_at=?1 WHERE id=?2",
-                        rusqlite::params![now, eid]).map_err(|e| e.to_string())?;
+                        rusqlite::params![now, eid]).map_err(|e| e.to_string())?
+                };
+                if changed > 0 {
+                    let mut cols = Map::new();
+                    cols.insert("updated_at".into(), Value::String(now));
+                    sync::record_upsert("inventory", eid, cols).map_err(|e| e.to_string())?;
                 }
-                let mut cols = Map::new();
-                cols.insert("updated_at".into(), Value::String(now));
-                sync::record_upsert("inventory", eid, cols).map_err(|e| e.to_string())?;
             }
             _ => {}
         }
@@ -9971,7 +9983,7 @@ pub async fn update_lot(id: String, name: Option<String>, description: Option<St
     conn.execute(&sql, refs.as_slice()).map_err(|e| e.to_string())?;
     crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
     drop(conn);
-    settle_stale_listing_requests(&id)?;
+    settle_stale_listing_requests(&id);
     Ok(())
 }
 
@@ -9986,6 +9998,8 @@ pub async fn archive_lot(id: String) -> Result<(), String> {
     cols.insert("status".into(), serde_json::json!("archived"));
     cols.insert("updated_at".into(), serde_json::json!(now));
     crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
+    drop(conn);
+    settle_stale_listing_requests(&id);
     Ok(())
 }
 
@@ -10001,6 +10015,8 @@ pub async fn link_lot_to_deal(lot_id: String, deal_id: String) -> Result<(), Str
     cols.insert("status".into(), serde_json::json!("reserved"));
     cols.insert("updated_at".into(), serde_json::json!(now));
     crate::sync::record_upsert("inventory", &lot_id, cols).map_err(|e| e.to_string())?;
+    drop(conn);
+    settle_stale_listing_requests(&lot_id);
     Ok(())
 }
 
@@ -10881,7 +10897,7 @@ pub async fn set_lot_status(id: String, status: String) -> Result<(), String> {
     }
     crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
     drop(conn);
-    settle_stale_listing_requests(&id)?;
+    settle_stale_listing_requests(&id);
     Ok(())
 }
 
@@ -10893,7 +10909,7 @@ pub async fn delete_lot(id: String) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM inventory WHERE id = ?1", [&id]).map_err(|e| e.to_string())?;
     drop(conn);
-    settle_stale_listing_requests(&id)?;
+    settle_stale_listing_requests(&id);
     Ok(())
 }
 
@@ -10907,7 +10923,7 @@ pub async fn delete_lots(ids: Vec<String>) -> Result<u32, String> {
         n += 1;
     }
     drop(conn);
-    for id in &ids { settle_stale_listing_requests(id)?; }
+    for id in &ids { settle_stale_listing_requests(id); }
     Ok(n)
 }
 
@@ -23477,17 +23493,17 @@ pub async fn apply_location_normalization(changes: Vec<LocationChange>) -> Resul
     }
 
     // 3. Now write, one column, through the oplog so every device gets it.
-    let now = chrono::Utc::now().to_rfc3339();
+    // R-371: updated_at is left alone. It is every lot's renewal clock, and a bulk
+    // clean-up across many lots is not Jack renewing each of them.
     let mut updated = 0i64;
     for (id, _old, new) in &affected {
         conn.execute(
-            "UPDATE inventory SET location = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![new, now, id],
+            "UPDATE inventory SET location = ?1 WHERE id = ?2",
+            rusqlite::params![new, id],
         )
         .map_err(|e| e.to_string())?;
         let mut cols = serde_json::Map::new();
         cols.insert("location".into(), serde_json::json!(new));
-        cols.insert("updated_at".into(), serde_json::json!(now));
         crate::sync::record_upsert("inventory", id, cols).map_err(|e| e.to_string())?;
         updated += 1;
     }
