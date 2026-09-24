@@ -58,7 +58,7 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
         setDragActive(false);
         const file = p.paths.find((path) => ACCEPTED.test(path));
         if (file) analyze(file);
-        else if (p.paths.length) toast("That file can't be read as a manifest — drop a CSV, Excel, TSV or PDF.", "error");
+        else if (p.paths.length) toast("That file can't be read as a manifest. Drop a CSV, Excel, TSV or PDF.", "error");
       }
     }).then((fn) => { if (cancelled) fn(); else un = fn; }).catch(() => {});
     return () => { cancelled = true; if (un) un(); };
@@ -115,7 +115,7 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
           </h1>
           <p className="text-[13px] text-muted mt-1 max-w-[560px]">
             Break down a manifest by its own categories and brands, count real units vs product lines,
-            estimate margins, and calculate a suggested bid — then send it straight to inventory.
+            estimate margins, and calculate a suggested bid, then send it straight to inventory.
           </p>
         </div>
         {manifest && (
@@ -192,7 +192,7 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
 
           <div className="flex items-center justify-between mb-1.5">
             <p className="text-[12px] font-semibold text-ink-2">By category</p>
-            <span className="text-[10px] text-muted">{manifest.categories_from_manifest ? "from manifest" : "estimated — no category column found"}</span>
+            <span className="text-[10px] text-muted">{manifest.categories_from_manifest ? "from manifest" : "estimated, no category column found"}</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-[12.5px] mb-5">
@@ -250,7 +250,7 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
               className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
               <Plus size={14} /> Create lot from this manifest
             </button>
-            <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => toast("Suggested bid copied — paste into your deal."))}
+            <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => toast("Suggested bid copied. Paste it into your deal."))}
               className="text-ink-2 border border-line-3 hover:border-accent hover:text-accent px-3.5 h-9 rounded-lg text-[12px] font-medium flex items-center gap-1.5 transition-colors">
               <Clipboard size={12} /> Copy bid
             </button>
