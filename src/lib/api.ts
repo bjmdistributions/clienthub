@@ -2081,6 +2081,93 @@ export interface ManifestAnalysis {
   detection: ManifestDetection;
 }
 
+// ── Manifest split (R-379) ──────────────────────────────────────────────────
+// Mirrors src-tauri/src/manifest_split.rs. The plan is worked out in Rust on every
+// call; nothing here computes a figure.
+
+/** pct = a % of retail, unit = a price per unit, sheet = each line's own sheet price. */
+export interface SplitPriceRule { mode: "pct" | "unit" | "sheet" | "none"; value?: number | null }
+
+export interface SplitEdits {
+  names?: Record<string, string>;
+  combine?: Record<string, string>;        // split key -> the key it joins
+  pricing?: Record<string, SplitPriceRule>;
+  line_prices?: Record<string, number>;    // row -> unit price
+  hidden_cols?: number[];
+  show_cols?: number[];                    // cost-like columns (left out by default) put back
+  skip?: string[];
+}
+
+export interface SplitChoice { id: string; label: string; input: "pct" | "money" | null }
+
+export interface SplitQuestion {
+  id: string;
+  text: string;
+  detail: string | null;
+  choices: SplitChoice[];
+  answer: string;        // Jack's answer, or the suggestion
+  answered: boolean;
+  value: number | null;  // the number beside a choice that takes one
+}
+
+export interface SplitColumn { index: number; header: string; role: string; hidden: boolean }
+
+export interface SplitOut {
+  key: string;
+  name: string;
+  lines: number;
+  units: number;
+  retail: number;
+  sheet_price: number | null;
+  price: number | null;
+  rule: SplitPriceRule;
+  photos: number;
+  unpriced: number;      // lines the rule gives no price, so the total is short by them
+  skipped: boolean;
+  examples: string[];
+}
+
+export interface SplitPlan {
+  file_name: string;
+  format: string;
+  sheet: string | null;
+  header_row: number;
+  questions: SplitQuestion[];
+  notes: string[];
+  columns: SplitColumn[];
+  sheet_pricing: { kind: "pct" | "unit" | "line" | "none"; pct: number | null; unit: number | null; evidence: string; total: number | null };
+  totals: { lines: number; units: number; retail: number; sheet_price: number | null; price: number | null };
+  splits: SplitOut[];
+  photos: { in_cell: number; placed: number; web: number; lines_with_photo: number; link_column: string | null };
+  reconciles: boolean;
+  show_price: boolean;
+}
+
+export interface SplitLine {
+  row: number;
+  desc: string;
+  qty: number;
+  retail: number;
+  sheet: number | null;
+  unit: number | null;
+  total: number | null;
+  edited: boolean;
+  photo: boolean;
+}
+
+export interface ExportedSplit {
+  key: string;
+  name: string;
+  file: string;
+  lines: number;
+  units: number;
+  retail: number;
+  price: number | null;
+  cost: number | null;
+  photos: string[];
+  categories: { name: string; quantity: number }[];
+}
+
 export interface ProfitForecast {
   actual_profit_mtd: number;
   projected_profit: number;
@@ -3975,6 +4062,13 @@ export const api = {
   // forceAi re-reads a PDF through Claude when the text-layer heuristic got it wrong.
   analyzeManifest: (path: string, forceAi?: boolean) =>
     invoke<ManifestAnalysis>("analyze_manifest", { path, forceAi: forceAi ?? false }),
+  manifestSplitPlan: (path: string, answers: Record<string, string>, edits: SplitEdits) =>
+    invoke<SplitPlan>("manifest_split_plan", { path, answers, edits }),
+  manifestSplitLines: (path: string, answers: Record<string, string>, edits: SplitEdits, key: string) =>
+    invoke<SplitLine[]>("manifest_split_lines", { path, answers, edits, key }),
+  // folder null = files for new lots, written to a temp folder with a few photos each.
+  manifestSplitExport: (path: string, answers: Record<string, string>, edits: SplitEdits, folder: string | null) =>
+    invoke<ExportedSplit[]>("manifest_split_export", { path, answers, edits, folder }),
 
   // Forecast
   getProfitForecast: () => invoke<ProfitForecast>("get_profit_forecast"),

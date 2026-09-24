@@ -19,6 +19,8 @@ mod lot_engine;
 mod lot_export_pdf;
 mod lot_store;
 mod manifest;
+mod manifest_images;
+mod manifest_split;
 mod oauth_flow;
 mod plaid;
 mod client_statement;
@@ -951,6 +953,9 @@ fn main() {
             save_portal_base_url,
             // Manifest
             analyze_manifest,
+            manifest_split_plan,
+            manifest_split_lines,
+            manifest_split_export,
             // Lot engine (R-200): a warehouse sheet becomes priced, pickable lots.
             lot_store::import_lot_sheet,
             lot_store::list_lot_sheets,

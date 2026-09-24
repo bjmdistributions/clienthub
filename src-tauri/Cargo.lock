@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "clienthub"
-version = "0.16.100"
+version = "0.16.102"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -754,6 +754,7 @@ dependencies = [
  "pdf-extract",
  "printpdf",
  "qrcode",
+ "quick-xml 0.31.0",
  "r2d2",
  "r2d2_sqlite",
  "rand 0.8.6",
@@ -780,6 +781,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zip 2.4.2",
 ]
 
 [[package]]

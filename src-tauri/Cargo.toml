@@ -2,7 +2,7 @@
 name = "clienthub"
 # Keep in step with src-tauri/tauri.conf.json — that file is what the release
 # pipeline reads, and these two drifted 118 patch versions apart before 2026-08-07.
-version = "0.16.100"
+version = "0.16.102"
 edition = "2021"
 
 [lib]
@@ -87,6 +87,12 @@ rust_xlsxwriter = "0.77"
 # Excel READING — supplier manifests arrive as .xlsx/.xls far more often than CSV
 # (rust_xlsxwriter above only writes). Used by manifest.rs.
 calamine = "0.26"
+
+# The photos inside an .xlsx manifest and the row each sits on (R-379). Both are already
+# in the tree through calamine; named here because manifest_images.rs reads the
+# package itself.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.31"
 
 # Bank statement PDF text extraction (Chase statements) + PDF manifests
 pdf-extract = "0.7"

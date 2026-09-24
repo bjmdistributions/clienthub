@@ -1,0 +1,46 @@
+[
+  {
+    "row": 0,
+    "desc": "Nike Air Zoom Pegasus 40",
+    "qty": 6.0,
+    "retail": 840.0,
+    "sheet": 126.0,
+    "unit": 21.0,
+    "total": 126.0,
+    "edited": false,
+    "photo": true
+  },
+  {
+    "row": 1,
+    "desc": "Nike Dri-FIT Running Tee",
+    "qty": 24.0,
+    "retail": 840.0,
+    "sheet": 126.0,
+    "unit": 5.25,
+    "total": 126.0,
+    "edited": false,
+    "photo": true
+  },
+  {
+    "row": 2,
+    "desc": "Nike Brasilia Duffel Bag",
+    "qty": 8.0,
+    "retail": 360.0,
+    "sheet": 54.0,
+    "unit": 6.75,
+    "total": 54.0,
+    "edited": false,
+    "photo": false
+  },
+  {
+    "row": 3,
+    "desc": "Nike Everyday Crew Socks 6 pack",
+    "qty": 40.0,
+    "retail": 880.0,
+    "sheet": 132.0,
+    "unit": 3.3,
+    "total": 132.0,
+    "edited": false,
+    "photo": true
+  }
+]

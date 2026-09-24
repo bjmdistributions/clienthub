@@ -1,0 +1,201 @@
+[
+  {
+    "key": "b:nike",
+    "name": "Nike",
+    "file": "C:/Invented/Splits/Truckload 5512 (Nike).xlsx",
+    "lines": 4,
+    "units": 78.0,
+    "retail": 2920.0,
+    "price": 438.0,
+    "cost": 438.0,
+    "photos": [
+      "C:/Invented/Splits/Truckload 5512 (Nike) photo 1.png",
+      "C:/Invented/Splits/Truckload 5512 (Nike) photo 2.png",
+      "C:/Invented/Splits/Truckload 5512 (Nike) photo 3.png"
+    ],
+    "categories": [
+      {
+        "name": "Apparel",
+        "quantity": 64
+      },
+      {
+        "name": "Accessories",
+        "quantity": 8
+      },
+      {
+        "name": "Footwear",
+        "quantity": 6
+      }
+    ]
+  },
+  {
+    "key": "b:samsung",
+    "name": "Samsung",
+    "file": "C:/Invented/Splits/Truckload 5512 (Samsung).xlsx",
+    "lines": 2,
+    "units": 28.0,
+    "retail": 1872.0,
+    "price": 280.8,
+    "cost": 280.8,
+    "photos": [
+      "C:/Invented/Splits/Truckload 5512 (Samsung) photo 1.png",
+      "C:/Invented/Splits/Truckload 5512 (Samsung) photo 2.png"
+    ],
+    "categories": [
+      {
+        "name": "Electronics",
+        "quantity": 28
+      }
+    ]
+  },
+  {
+    "key": "b:adidas",
+    "name": "Adidas",
+    "file": "C:/Invented/Splits/Truckload 5512 (Adidas).xlsx",
+    "lines": 2,
+    "units": 17.0,
+    "retail": 1670.0,
+    "price": 250.5,
+    "cost": 250.5,
+    "photos": [
+      "C:/Invented/Splits/Truckload 5512 (Adidas) photo 1.png"
+    ],
+    "categories": [
+      {
+        "name": "Apparel",
+        "quantity": 12
+      },
+      {
+        "name": "Footwear",
+        "quantity": 5
+      }
+    ]
+  },
+  {
+    "key": "b:ninja",
+    "name": "Ninja",
+    "file": "C:/Invented/Splits/Truckload 5512 (Ninja).xlsx",
+    "lines": 2,
+    "units": 10.0,
+    "retail": 1250.0,
+    "price": 187.5,
+    "cost": 187.5,
+    "photos": [
+      "C:/Invented/Splits/Truckload 5512 (Ninja) photo 1.png"
+    ],
+    "categories": [
+      {
+        "name": "Home & Kitchen",
+        "quantity": 10
+      }
+    ]
+  },
+  {
+    "key": "b:hydro flask",
+    "name": "Hydro Flask",
+    "file": "C:/Invented/Splits/Truckload 5512 (Hydro Flask).xlsx",
+    "lines": 2,
+    "units": 34.0,
+    "retail": 870.0,
+    "price": 130.5,
+    "cost": 130.5,
+    "photos": [
+      "C:/Invented/Splits/Truckload 5512 (Hydro Flask) photo 1.png",
+      "C:/Invented/Splits/Truckload 5512 (Hydro Flask) photo 2.png"
+    ],
+    "categories": [
+      {
+        "name": "Home & Kitchen",
+        "quantity": 34
+      }
+    ]
+  },
+  {
+    "key": "b:bose",
+    "name": "Bose",
+    "file": "C:/Invented/Splits/Truckload 5512 (Bose).xlsx",
+    "lines": 1,
+    "units": 3.0,
+    "retail": 837.0,
+    "price": 125.55,
+    "cost": 125.55,
+    "photos": [
+      "C:/Invented/Splits/Truckload 5512 (Bose) photo 1.png"
+    ],
+    "categories": [
+      {
+        "name": "Electronics",
+        "quantity": 3
+      }
+    ]
+  },
+  {
+    "key": "b:carhartt",
+    "name": "Carhartt",
+    "file": "C:/Invented/Splits/Truckload 5512 (Carhartt).xlsx",
+    "lines": 2,
+    "units": 42.0,
+    "retail": 816.0,
+    "price": 122.4,
+    "cost": 122.4,
+    "photos": [
+      "C:/Invented/Splits/Truckload 5512 (Carhartt) photo 1.png"
+    ],
+    "categories": [
+      {
+        "name": "Accessories",
+        "quantity": 42
+      }
+    ]
+  },
+  {
+    "key": "b:stanley",
+    "name": "Stanley",
+    "file": "C:/Invented/Splits/Truckload 5512 (Stanley).xlsx",
+    "lines": 1,
+    "units": 12.0,
+    "retail": 540.0,
+    "price": 81.0,
+    "cost": null,
+    "photos": [],
+    "categories": [
+      {
+        "name": "Home & Kitchen",
+        "quantity": 12
+      }
+    ]
+  },
+  {
+    "key": "mixed",
+    "name": "Mixed",
+    "file": "C:/Invented/Splits/Truckload 5512 (Mixed).xlsx",
+    "lines": 4,
+    "units": 19.0,
+    "retail": 207.0,
+    "price": 31.05,
+    "cost": 31.05,
+    "photos": [
+      "C:/Invented/Splits/Truckload 5512 (Mixed) photo 1.png",
+      "C:/Invented/Splits/Truckload 5512 (Mixed) photo 2.png",
+      "C:/Invented/Splits/Truckload 5512 (Mixed) photo 3.png"
+    ],
+    "categories": [
+      {
+        "name": "Accessories",
+        "quantity": 10
+      },
+      {
+        "name": "Outdoor",
+        "quantity": 4
+      },
+      {
+        "name": "Toys",
+        "quantity": 3
+      },
+      {
+        "name": "Home & Kitchen",
+        "quantity": 2
+      }
+    ]
+  }
+]
