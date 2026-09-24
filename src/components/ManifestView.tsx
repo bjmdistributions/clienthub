@@ -4,7 +4,8 @@ import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
-import { Upload, Clipboard, ClipboardList, Plus, RotateCcw, Sparkles } from "lucide-react";
+import { Upload, Clipboard, ClipboardList, Layers, Plus, RotateCcw, Sparkles } from "lucide-react";
+import ManifestSplit from "./ManifestSplit";
 
 /**
  * Standalone manifest analyzer. Lifted out of the inventory view into its own section:
@@ -27,6 +28,8 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
   // Kept so a PDF the text-layer heuristic mis-read can be re-read through the AI
   // path without asking for the file again.
   const [lastPath, setLastPath] = useState<string | null>(null);
+  // R-379: the split section under the breakdown, opened on request.
+  const [splitOpen, setSplitOpen] = useState(false);
 
   const analyze = async (path: string, forceAi = false) => {
     setBusy(true);
@@ -71,14 +74,15 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
         .filter((c) => c && c.name)
         .map((c) => ({ name: c.name, quantity: Math.round(c.quantity || 0) })),
     };
-    window.dispatchEvent(new CustomEvent("inventory-prefill-lot", {
-      detail: {
-        quantity: Math.round(manifest.total_quantity) || manifest.total_items || 1,
-        total_cost: manifest.suggested_bid || 0,
-        price_type: "total",
-        manifest: summary,
-      },
-    }));
+    const detail = {
+      quantity: Math.round(manifest.total_quantity) || manifest.total_items || 1,
+      total_cost: manifest.suggested_bid || 0,
+      price_type: "total",
+      manifest: summary,
+    };
+    // Inventory is not mounted until the tab switch, so it picks this up from here.
+    sessionStorage.setItem("inventory_prefill_lot", JSON.stringify(detail));
+    window.dispatchEvent(new CustomEvent("inventory-prefill-lot", { detail }));
     onNavigate("inventory");
   };
 
@@ -250,9 +254,19 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
               className="text-ink-2 border border-line-3 hover:border-accent hover:text-accent px-3.5 h-9 rounded-lg text-[12px] font-medium flex items-center gap-1.5 transition-colors">
               <Clipboard size={12} /> Copy bid
             </button>
-            <button onClick={() => setManifest(null)} className="text-[12px] text-muted hover:text-ink-2 px-3 h-9 rounded-lg hover:bg-surface-2">Clear</button>
+            {lastPath && !d?.format.startsWith("pdf") && (
+              <button onClick={() => setSplitOpen((o) => !o)}
+                className={`border px-3.5 h-9 rounded-lg text-[12px] font-medium flex items-center gap-1.5 transition-colors ${splitOpen ? "border-accent text-accent" : "text-ink-2 border-line-3 hover:border-accent hover:text-accent"}`}>
+                <Layers size={12} /> Split into separate manifests
+              </button>
+            )}
+            <button onClick={() => { setManifest(null); setSplitOpen(false); }} className="text-[12px] text-muted hover:text-ink-2 px-3 h-9 rounded-lg hover:bg-surface-2">Clear</button>
           </div>
         </div>
+      )}
+      {/* Wider than the breakdown: the split table carries a price editor per row. */}
+      {manifest && splitOpen && lastPath && !d?.format.startsWith("pdf") && (
+        <div className="max-w-[1120px]"><ManifestSplit path={lastPath} onNavigate={onNavigate} /></div>
       )}
     </div>
   );

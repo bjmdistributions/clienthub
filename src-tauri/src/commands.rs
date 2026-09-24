@@ -11431,6 +11431,56 @@ pub async fn analyze_manifest(
         .map_err(|e| e.to_string())
 }
 
+// R-379: split a manifest into several by brand or category. Every call works the plan
+// out again from the file, the answers and the edits (the sheet itself is cached), off
+// the async runtime because reading a big workbook is CPU work.
+
+#[tauri::command]
+pub async fn manifest_split_plan(
+    path: String,
+    answers: std::collections::HashMap<String, String>,
+    edits: crate::manifest_split::SplitEdits,
+) -> Result<crate::manifest_split::SplitPlan, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::manifest_split::plan(&path, &answers, &edits))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn manifest_split_lines(
+    path: String,
+    answers: std::collections::HashMap<String, String>,
+    edits: crate::manifest_split::SplitEdits,
+    key: String,
+) -> Result<Vec<crate::manifest_split::LineOut>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::manifest_split::lines(&path, &answers, &edits, &key))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// `folder` is where Jack chose to save the files. None means the files are for new
+/// lots, so they go to a fresh temp folder (with a few photos per split) and the lot
+/// form copies them into the lot's own media when it saves.
+#[tauri::command]
+pub async fn manifest_split_export(
+    path: String,
+    answers: std::collections::HashMap<String, String>,
+    edits: crate::manifest_split::SplitEdits,
+    folder: Option<String>,
+) -> Result<Vec<crate::manifest_split::ExportedSplit>, String> {
+    let for_lots = folder.is_none();
+    let dir = match folder {
+        Some(f) => std::path::PathBuf::from(f),
+        None => std::env::temp_dir().join("ecliptr-manifest-splits").join(Uuid::new_v4().simple().to_string()),
+    };
+    tauri::async_runtime::spawn_blocking(move || crate::manifest_split::export(&path, &answers, &edits, &dir, for_lots))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 // ============================================================
 //  Profit Forecasting
 // ============================================================

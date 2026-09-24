@@ -1,0 +1,146 @@
+{
+  "categories": [
+    {
+      "name": "Home & Kitchen",
+      "items": 6,
+      "quantity": 58.0,
+      "total_retail": 2736.0
+    },
+    {
+      "name": "Electronics",
+      "items": 3,
+      "quantity": 31.0,
+      "total_retail": 2709.0
+    },
+    {
+      "name": "Apparel",
+      "items": 3,
+      "quantity": 76.0,
+      "total_retail": 2440.0
+    },
+    {
+      "name": "Footwear",
+      "items": 2,
+      "quantity": 11.0,
+      "total_retail": 1790.0
+    },
+    {
+      "name": "Accessories",
+      "items": 4,
+      "quantity": 60.0,
+      "total_retail": 1236.0
+    },
+    {
+      "name": "Outdoor",
+      "items": 1,
+      "quantity": 4.0,
+      "total_retail": 44.0
+    },
+    {
+      "name": "Toys",
+      "items": 1,
+      "quantity": 3.0,
+      "total_retail": 27.0
+    }
+  ],
+  "brands": [
+    {
+      "name": "Samsung",
+      "items": 2,
+      "quantity": 28.0,
+      "total_retail": 1872.0
+    },
+    {
+      "name": "Nike",
+      "items": 2,
+      "quantity": 46.0,
+      "total_retail": 1720.0
+    },
+    {
+      "name": "Unbranded",
+      "items": 5,
+      "quantity": 60.0,
+      "total_retail": 1514.0
+    },
+    {
+      "name": "Ninja",
+      "items": 2,
+      "quantity": 10.0,
+      "total_retail": 1250.0
+    },
+    {
+      "name": "Adidas",
+      "items": 1,
+      "quantity": 5.0,
+      "total_retail": 950.0
+    },
+    {
+      "name": "NIKE",
+      "items": 1,
+      "quantity": 24.0,
+      "total_retail": 840.0
+    },
+    {
+      "name": "Bose",
+      "items": 1,
+      "quantity": 3.0,
+      "total_retail": 837.0
+    },
+    {
+      "name": "adidas",
+      "items": 1,
+      "quantity": 12.0,
+      "total_retail": 720.0
+    },
+    {
+      "name": "Carhartt",
+      "items": 1,
+      "quantity": 30.0,
+      "total_retail": 600.0
+    },
+    {
+      "name": "Nike, Inc.",
+      "items": 1,
+      "quantity": 8.0,
+      "total_retail": 360.0
+    },
+    {
+      "name": "Carhart",
+      "items": 1,
+      "quantity": 12.0,
+      "total_retail": 216.0
+    },
+    {
+      "name": "Yeti",
+      "items": 1,
+      "quantity": 2.0,
+      "total_retail": 76.0
+    },
+    {
+      "name": "Crayola",
+      "items": 1,
+      "quantity": 3.0,
+      "total_retail": 27.0
+    }
+  ],
+  "categories_from_manifest": true,
+  "suggested_bid": 2800.41,
+  "total_retail": 10982.0,
+  "overall_margin_pct": 30.0,
+  "total_items": 20,
+  "total_quantity": 243.0,
+  "skipped_rows": 0,
+  "formula": "Total retail $10982 × 30% margin (default, no completed deals yet) × 0.85 buffer = suggested bid $2800",
+  "detection": {
+    "format": "xlsx",
+    "sheet": "Manifest",
+    "header_row": 3,
+    "description_col": "Item Description",
+    "quantity_col": "Qty",
+    "price_col": "Unit Retail",
+    "category_col": "Category",
+    "brand_col": "Brand",
+    "price_is_extended": false,
+    "note": "2 sheets in the file — read the one with the most rows."
+  }
+}

@@ -63,9 +63,9 @@ pub struct ManifestAnalysis {
 /// A manifest reduced to plain string cells, whatever it arrived as. CSV, TSV,
 /// Excel and both PDF paths all produce one of these, so there is a single
 /// analysis path underneath and every format gets identical maths.
-struct Grid {
+pub(crate) struct Grid {
     /// Row 0 is not assumed to be the header — `find_header_row` locates it.
-    rows: Vec<Vec<String>>,
+    pub(crate) rows: Vec<Vec<String>>,
     format: String,
     sheet: Option<String>,
     note: Option<String>,
@@ -74,7 +74,7 @@ struct Grid {
     header_in_file: bool,
 }
 
-fn extension(path: &str) -> String {
+pub(crate) fn extension(path: &str) -> String {
     std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -85,7 +85,7 @@ fn extension(path: &str) -> String {
 /// Parse a money/number cell. Strips currency symbols, thousands separators and
 /// stray spaces, and reads `(123.45)` as negative. Deliberately strict after the
 /// strip so a SKU like `B08N5` does not parse as a number.
-fn parse_money(s: &str) -> Option<f64> {
+pub(crate) fn parse_money(s: &str) -> Option<f64> {
     let t = s.trim();
     if t.is_empty() {
         return None;
@@ -107,7 +107,7 @@ fn parse_money(s: &str) -> Option<f64> {
 /// `TOTAL … $45,000` row would otherwise be counted as a product line and inflate
 /// the retail, and a PDF's repeated `LOAD 4471 MANIFEST — PAGE 2` header would be
 /// read as a $1 item.
-fn is_summary_line(desc_lower: &str) -> bool {
+pub(crate) fn is_summary_line(desc_lower: &str) -> bool {
     // Only at the start: "Total Gym fitness system" is a real product.
     const PREFIX: [&str; 6] = ["total", "subtotal", "sub total", "grand total", "sum of", "count of"];
     // Anywhere in the line: these only ever appear in headers and footers.
@@ -167,7 +167,7 @@ fn sniff_delimiter(text: &str) -> u8 {
         .unwrap_or(b',')
 }
 
-fn grid_from_delimited(path: &str) -> Result<Grid> {
+pub(crate) fn grid_from_delimited(path: &str) -> Result<Grid> {
     grid_from_text(&read_text_lossy(path)?)
 }
 
@@ -318,7 +318,7 @@ fn synthetic_header(with_cat_brand: bool) -> Vec<String> {
 /// Find the header row. Real manifests open with a title, a blank line, or a legend,
 /// so row 1 is only a guess — score the first 25 rows on how many manifest-ish
 /// column names they hold and take the best one.
-fn find_header_row(rows: &[Vec<String>]) -> Option<usize> {
+pub(crate) fn find_header_row(rows: &[Vec<String>]) -> Option<usize> {
     let mut best: Option<(usize, usize)> = None;
     for (i, row) in rows.iter().take(25).enumerate() {
         let cells: Vec<String> = row.iter().map(|c| c.trim().to_lowercase()).collect();
@@ -350,7 +350,7 @@ fn find_header_row(rows: &[Vec<String>]) -> Option<usize> {
 /// Find a column by header name: exact matches (in candidate priority order) win
 /// over substring matches, and any column already used is excluded so e.g. an
 /// "item type" description column isn't mistaken for a category.
-fn find_col(headers: &[String], candidates: &[&str], exclude: &[Option<usize>]) -> Option<usize> {
+pub(crate) fn find_col(headers: &[String], candidates: &[&str], exclude: &[Option<usize>]) -> Option<usize> {
     let taken = |i: usize| exclude.iter().any(|u| *u == Some(i));
     for cand in candidates {
         if let Some(i) = headers.iter().position(|h| h == *cand) {
@@ -369,8 +369,11 @@ fn find_col(headers: &[String], candidates: &[&str], exclude: &[Option<usize>]) 
     None
 }
 
-fn keyword_map() -> HashMap<&'static str, &'static str> {
-    [
+/// The keyword guess behind a category when the manifest has no category column.
+/// An ORDERED list, first match wins: it used to be a `HashMap`, whose iteration order
+/// changes between runs, so a title matching two keywords ("boot" and "tool") could
+/// land in a different category each time the same file was read (R-379).
+const CATEGORY_KEYWORDS: &[(&str, &str)] = &[
         ("shoe", "Shoes"), ("sneaker", "Shoes"), ("boot", "Shoes"), ("sandal", "Shoes"),
         ("tv", "Electronics"), ("monitor", "Electronics"), ("laptop", "Electronics"),
         ("phone", "Electronics"), ("tablet", "Electronics"), ("camera", "Electronics"),
@@ -393,7 +396,15 @@ fn keyword_map() -> HashMap<&'static str, &'static str> {
         ("pallet", "General Merchandise"), ("lot", "General Merchandise"),
         ("misc", "General Merchandise"), ("assorted", "General Merchandise"),
         ("mixed", "General Merchandise"), ("general", "General Merchandise"),
-    ].into()
+];
+
+/// The generic category for a lowercased description, or "Uncategorized".
+pub(crate) fn guess_category(desc_lower: &str) -> &'static str {
+    CATEGORY_KEYWORDS
+        .iter()
+        .find(|(kw, _)| desc_lower.contains(kw))
+        .map(|(_, cat)| *cat)
+        .unwrap_or("Uncategorized")
 }
 
 // ── Analysis (shared by every format) ───────────────────────────────────────
@@ -466,17 +477,17 @@ fn analyze_grid_with_margin(grid: Grid, overall_margin_pct: f64) -> Result<Manif
 }
 
 /// Columns picked out of the data itself for a file with no header row.
-struct InferredCols {
-    desc: usize,
-    qty: Option<usize>,
-    price: usize,
+pub(crate) struct InferredCols {
+    pub(crate) desc: usize,
+    pub(crate) qty: Option<usize>,
+    pub(crate) price: usize,
 }
 
 /// Work out which columns hold the description, quantity and price by looking at
 /// the data: the wordiest column is the description, and the numeric columns are
 /// read by shape — `qty × unit ≈ extended` pins all three at once, a whole-number
 /// column is a quantity, and a 12-digit column is a UPC, not money.
-fn infer_columns(rows: &[Vec<String>]) -> Option<InferredCols> {
+pub(crate) fn infer_columns(rows: &[Vec<String>]) -> Option<InferredCols> {
     #[derive(Default, Clone)]
     struct Tally {
         nonempty: usize,
@@ -601,6 +612,16 @@ fn infer_columns(rows: &[Vec<String>]) -> Option<InferredCols> {
     }
 }
 
+/// Header names for each column the analyzer reads, in priority order. Shared with the
+/// split (`manifest_split.rs`) so both read the same column as the description,
+/// quantity, category and brand.
+pub(crate) const DESC_COLS: &[&str] = &["description", "item description", "product description", "desc",
+    "item name", "product name", "product", "item", "name", "title"];
+pub(crate) const QTY_COLS: &[&str] = &["qty", "quantity", "units", "unit count", "pcs", "pieces", "count", "quan", "unit"];
+pub(crate) const CATEGORY_COLS: &[&str] = &["category", "categories", "department", "dept", "class", "subclass",
+    "segment", "division", "group", "type"];
+pub(crate) const BRAND_COLS: &[&str] = &["brand", "brands", "manufacturer", "mfg", "make", "vendor"];
+
 fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis> {
     let header_idx = find_header_row(&grid.rows).ok_or_else(|| {
         anyhow::anyhow!(
@@ -612,12 +633,7 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
     let headers_raw: Vec<String> = grid.rows[header_idx].clone();
     let headers: Vec<String> = headers_raw.iter().map(|h| h.trim().to_lowercase()).collect();
 
-    let desc_idx = find_col(
-        &headers,
-        &["description", "item description", "product description", "desc", "item name",
-          "product name", "product", "item", "name", "title"],
-        &[],
-    )
+    let desc_idx = find_col(&headers, DESC_COLS, &[])
     .ok_or_else(|| {
         anyhow::anyhow!(
             "Found a header row but no description column. Columns seen: {}",
@@ -637,22 +653,9 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
           "total retail", "ext price", "amount"],
         &[Some(desc_idx)],
     );
-    let qty_idx = find_col(
-        &headers,
-        &["qty", "quantity", "units", "unit count", "pcs", "pieces", "count", "quan", "unit"],
-        &[Some(desc_idx), price_idx],
-    );
-    let category_idx = find_col(
-        &headers,
-        &["category", "categories", "department", "dept", "class", "subclass", "segment",
-          "division", "group", "type"],
-        &[Some(desc_idx), price_idx, qty_idx],
-    );
-    let brand_idx = find_col(
-        &headers,
-        &["brand", "brands", "manufacturer", "mfg", "make", "vendor"],
-        &[Some(desc_idx), price_idx, qty_idx, category_idx],
-    );
+    let qty_idx = find_col(&headers, QTY_COLS, &[Some(desc_idx), price_idx]);
+    let category_idx = find_col(&headers, CATEGORY_COLS, &[Some(desc_idx), price_idx, qty_idx]);
+    let brand_idx = find_col(&headers, BRAND_COLS, &[Some(desc_idx), price_idx, qty_idx, category_idx]);
 
     // An extended/total column already has the quantity in it.
     let price_is_extended = price_idx
@@ -662,7 +665,6 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         })
         .unwrap_or(false);
 
-    let keywords = keyword_map();
     let categories_from_manifest = category_idx.is_some();
 
     let mut cat_data: HashMap<String, ManifestGroup> = HashMap::new();
@@ -707,14 +709,7 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
             let v = cell(ci);
             if v.is_empty() { "Uncategorized".to_string() } else { v.to_string() }
         } else {
-            let mut c = "Uncategorized".to_string();
-            for (kw, cat_name) in &keywords {
-                if desc.contains(kw) {
-                    c = cat_name.to_string();
-                    break;
-                }
-            }
-            c
+            guess_category(&desc).to_string()
         };
         let entry = cat_data
             .entry(cat.clone())

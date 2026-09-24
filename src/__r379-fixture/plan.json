@@ -1,0 +1,475 @@
+{
+  "file_name": "Truckload 5512.xlsx",
+  "format": "xlsx",
+  "sheet": "Manifest",
+  "header_row": 3,
+  "questions": [
+    {
+      "id": "sheet",
+      "text": "This file has 2 sheets with rows on them. Which one is the manifest?",
+      "detail": null,
+      "choices": [
+        {
+          "id": "Cover",
+          "label": "Cover (1 row)",
+          "input": null
+        },
+        {
+          "id": "Manifest",
+          "label": "Manifest (21 rows)",
+          "input": null
+        }
+      ],
+      "answer": "Manifest",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "read_brands",
+      "text": "5 lines have no brand in the Brand column. Read the brand from the start of each title?",
+      "detail": "That finds 2 brands for 3 of them, such as Hydro Flask and Stanley. The other 2 stay unbranded.",
+      "choices": [
+        {
+          "id": "yes",
+          "label": "Yes, read them",
+          "input": null
+        },
+        {
+          "id": "no",
+          "label": "No, leave them unbranded",
+          "input": null
+        }
+      ],
+      "answer": "yes",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "merge:carhart|carhartt",
+      "text": "Are \"Carhart\" (1 line) and \"Carhartt\" (1 line) the same brand?",
+      "detail": null,
+      "choices": [
+        {
+          "id": "yes",
+          "label": "Same brand",
+          "input": null
+        },
+        {
+          "id": "no",
+          "label": "Different brands",
+          "input": null
+        }
+      ],
+      "answer": "yes",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "split_by",
+      "text": "How should this manifest be split?",
+      "detail": "Brands come from the Brand column and categories from the Category column.",
+      "choices": [
+        {
+          "id": "brand",
+          "label": "By brand (10)",
+          "input": null
+        },
+        {
+          "id": "category",
+          "label": "By category (7)",
+          "input": null
+        },
+        {
+          "id": "brand_in_category",
+          "label": "By brand within each category",
+          "input": null
+        }
+      ],
+      "answer": "brand",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "small",
+      "text": "2 brands each have under 2% of the retail. Put them together in one Mixed manifest?",
+      "detail": "2 lines and $103.00 of retail between them.",
+      "choices": [
+        {
+          "id": "mixed",
+          "label": "Yes, one Mixed manifest",
+          "input": null
+        },
+        {
+          "id": "keep",
+          "label": "No, keep every brand separate",
+          "input": null
+        }
+      ],
+      "answer": "mixed",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "blank",
+      "text": "2 lines have no brand ($104.00 of retail). Where should they go?",
+      "detail": null,
+      "choices": [
+        {
+          "id": "own",
+          "label": "Their own Unbranded manifest",
+          "input": null
+        },
+        {
+          "id": "mixed",
+          "label": "In with Mixed",
+          "input": null
+        }
+      ],
+      "answer": "mixed",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "pricing",
+      "text": "How should the new manifests be priced?",
+      "detail": "The sheet is priced at 15% of retail: Unit Cost is 15% of Unit Retail on 19 of 19 lines.",
+      "choices": [
+        {
+          "id": "pct",
+          "label": "A % of retail",
+          "input": "pct"
+        },
+        {
+          "id": "unit",
+          "label": "A price per unit",
+          "input": "money"
+        },
+        {
+          "id": "sheet",
+          "label": "Each line's own price from the sheet",
+          "input": null
+        },
+        {
+          "id": "none",
+          "label": "No price yet",
+          "input": null
+        }
+      ],
+      "answer": "sheet",
+      "answered": true,
+      "value": null
+    },
+    {
+      "id": "sheet_price_is",
+      "text": "Is the sheet's price ($1,566.30) what you pay for this load, or what you're asking?",
+      "detail": "It fills the cost on each lot you send to inventory.",
+      "choices": [
+        {
+          "id": "pay",
+          "label": "What I pay",
+          "input": null
+        },
+        {
+          "id": "ask",
+          "label": "What I'm asking",
+          "input": null
+        }
+      ],
+      "answer": "pay",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "show_price",
+      "text": "Put your price on each line of the new manifests?",
+      "detail": "With No, the sheet's own price columns are left out too, so its price never reaches a buyer.",
+      "choices": [
+        {
+          "id": "yes",
+          "label": "Yes, a unit and total price",
+          "input": null
+        },
+        {
+          "id": "no",
+          "label": "No, retail only",
+          "input": null
+        }
+      ],
+      "answer": "yes",
+      "answered": false,
+      "value": null
+    }
+  ],
+  "notes": [
+    "Read as one brand each, however the sheet spelled it: Adidas (Adidas / adidas); Nike (NIKE / Nike / Nike, Inc.).",
+    "Found 14 photos: 7 in cells, 7 placed on the sheet. 14 of 20 lines have one; each goes into its line's new manifest.",
+    "Left out of the files unless you put it back: Freight (read as your own costs or your supplier)."
+  ],
+  "columns": [
+    {
+      "index": 0,
+      "header": "Photo",
+      "role": "",
+      "hidden": false
+    },
+    {
+      "index": 1,
+      "header": "Item Description",
+      "role": "description",
+      "hidden": false
+    },
+    {
+      "index": 2,
+      "header": "Brand",
+      "role": "brand",
+      "hidden": false
+    },
+    {
+      "index": 3,
+      "header": "Category",
+      "role": "category",
+      "hidden": false
+    },
+    {
+      "index": 4,
+      "header": "UPC",
+      "role": "",
+      "hidden": false
+    },
+    {
+      "index": 5,
+      "header": "Qty",
+      "role": "quantity",
+      "hidden": false
+    },
+    {
+      "index": 6,
+      "header": "Unit Retail",
+      "role": "retail",
+      "hidden": false
+    },
+    {
+      "index": 7,
+      "header": "Ext Retail",
+      "role": "retail_total",
+      "hidden": false
+    },
+    {
+      "index": 8,
+      "header": "Unit Cost",
+      "role": "sheet_price",
+      "hidden": false
+    },
+    {
+      "index": 9,
+      "header": "Freight",
+      "role": "internal",
+      "hidden": true
+    }
+  ],
+  "sheet_pricing": {
+    "kind": "pct",
+    "pct": 15.0,
+    "unit": null,
+    "evidence": "Unit Cost is 15% of Unit Retail on 19 of 19 lines",
+    "total": 1566.3
+  },
+  "totals": {
+    "lines": 20,
+    "units": 243.0,
+    "retail": 10982.0,
+    "sheet_price": 1566.3,
+    "price": 1566.3
+  },
+  "splits": [
+    {
+      "key": "b:nike",
+      "name": "Nike",
+      "lines": 4,
+      "units": 78.0,
+      "retail": 2920.0,
+      "sheet_price": 438.0,
+      "price": 438.0,
+      "rule": {
+        "mode": "sheet",
+        "value": null
+      },
+      "photos": 3,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Nike Everyday Crew Socks 6 pack",
+        "Nike Air Zoom Pegasus 40",
+        "Nike Dri-FIT Running Tee"
+      ]
+    },
+    {
+      "key": "b:samsung",
+      "name": "Samsung",
+      "lines": 2,
+      "units": 28.0,
+      "retail": 1872.0,
+      "sheet_price": 280.8,
+      "price": 280.8,
+      "rule": {
+        "mode": "sheet",
+        "value": null
+      },
+      "photos": 2,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Samsung Galaxy Buds FE",
+        "Samsung 45W Charger"
+      ]
+    },
+    {
+      "key": "b:adidas",
+      "name": "Adidas",
+      "lines": 2,
+      "units": 17.0,
+      "retail": 1670.0,
+      "sheet_price": 250.5,
+      "price": 250.5,
+      "rule": {
+        "mode": "sheet",
+        "value": null
+      },
+      "photos": 1,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Adidas Ultraboost Light",
+        "Adidas Essentials Hoodie"
+      ]
+    },
+    {
+      "key": "b:ninja",
+      "name": "Ninja",
+      "lines": 2,
+      "units": 10.0,
+      "retail": 1250.0,
+      "sheet_price": 187.5,
+      "price": 187.5,
+      "rule": {
+        "mode": "sheet",
+        "value": null
+      },
+      "photos": 1,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Ninja Air Fryer AF101",
+        "Ninja Professional Blender"
+      ]
+    },
+    {
+      "key": "b:hydro flask",
+      "name": "Hydro Flask",
+      "lines": 2,
+      "units": 34.0,
+      "retail": 870.0,
+      "sheet_price": 130.5,
+      "price": 130.5,
+      "rule": {
+        "mode": "sheet",
+        "value": null
+      },
+      "photos": 2,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Hydro Flask 32 oz Bottle",
+        "Hydro Flask Straw Lid"
+      ]
+    },
+    {
+      "key": "b:bose",
+      "name": "Bose",
+      "lines": 1,
+      "units": 3.0,
+      "retail": 837.0,
+      "sheet_price": 125.55,
+      "price": 125.55,
+      "rule": {
+        "mode": "sheet",
+        "value": null
+      },
+      "photos": 1,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Bose QuietComfort Earbuds"
+      ]
+    },
+    {
+      "key": "b:carhartt",
+      "name": "Carhartt",
+      "lines": 2,
+      "units": 42.0,
+      "retail": 816.0,
+      "sheet_price": 122.4,
+      "price": 122.4,
+      "rule": {
+        "mode": "sheet",
+        "value": null
+      },
+      "photos": 1,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Carhartt Knit Beanie",
+        "Carhart Work Gloves"
+      ]
+    },
+    {
+      "key": "b:stanley",
+      "name": "Stanley",
+      "lines": 1,
+      "units": 12.0,
+      "retail": 540.0,
+      "sheet_price": null,
+      "price": null,
+      "rule": {
+        "mode": "sheet",
+        "value": null
+      },
+      "photos": 0,
+      "unpriced": 1,
+      "skipped": false,
+      "examples": [
+        "Stanley Quencher 40 oz"
+      ]
+    },
+    {
+      "key": "mixed",
+      "name": "Mixed",
+      "lines": 4,
+      "units": 19.0,
+      "retail": 207.0,
+      "sheet_price": 31.05,
+      "price": 31.05,
+      "rule": {
+        "mode": "sheet",
+        "value": null
+      },
+      "photos": 3,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Yeti Rambler 20 oz",
+        "Plain cotton tote bag",
+        "Garden hose nozzle"
+      ]
+    }
+  ],
+  "photos": {
+    "in_cell": 7,
+    "placed": 7,
+    "web": 0,
+    "lines_with_photo": 14,
+    "link_column": null
+  },
+  "reconciles": true,
+  "show_price": true
+}

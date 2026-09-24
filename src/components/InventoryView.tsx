@@ -160,6 +160,7 @@ export default function InventoryView() {
   const [prefillQueue, setPrefillQueue] = useState<Partial<Lot>[]>([]); // remaining pasted loads to step through
   const [prefillSeq, setPrefillSeq] = useState(0);                       // bumps to remount LotForm per queued load
   const [prefillTotal, setPrefillTotal] = useState(0);                   // how many loads this paste produced, for "load 2 of 5"
+  const [prefillFrom, setPrefillFrom] = useState<"paste" | "split">("paste"); // what produced the batch, for the form's label
   const [pasting, setPasting] = useState(false);
   const [blastLot, setBlastLot] = useState<Lot | null>(null);
   const [showSold, setShowSold] = useState(false);
@@ -238,18 +239,38 @@ export default function InventoryView() {
   // a new lot form prefilled with the manifest's numbers, carrying the manifest summary in
   // details_json so it persists to the lot and shows on the storefront.
   useEffect(() => {
-    const onPrefill = (e: Event) => {
-      const d = (e as CustomEvent).detail || {};
+    const toPrefill = (d: any) => ({
+      name: d.name,
+      category: d.category,
+      quantity: d.quantity ?? 1,
+      total_cost: d.total_cost ?? 0,
+      asking_price: d.asking_price,
+      price_type: d.price_type ?? "total",
+      details_json: d.manifest ? JSON.stringify({ manifest: d.manifest }) : undefined,
+      // R-379: a split's own manifest file and photos, attached when the lot saves.
+      manifest_file: d.manifest_file,
+      photo_paths: d.photo_paths,
+    } as Partial<Lot>);
+    const apply = (d: any) => {
       setEditing(null);
-      setPrefill({
-        quantity: d.quantity ?? 1,
-        total_cost: d.total_cost ?? 0,
-        price_type: d.price_type ?? "total",
-        details_json: d.manifest ? JSON.stringify({ manifest: d.manifest }) : undefined,
-      } as Partial<Lot>);
+      // A manifest split sends one lot per split, stepped through like a pasted batch.
+      if (Array.isArray(d.lots) && d.lots.length > 0) {
+        const pfs = d.lots.map(toPrefill);
+        setPrefill(pfs[0]); setPrefillQueue(pfs.slice(1)); setPrefillTotal(pfs.length); setPrefillFrom("split");
+      } else {
+        setPrefill(toPrefill(d)); setPrefillQueue([]); setPrefillTotal(0);
+      }
       setPrefillSeq((s) => s + 1);
       setShowForm(true);
     };
+    const onPrefill = (e: Event) => { sessionStorage.removeItem("inventory_prefill_lot"); apply((e as CustomEvent).detail || {}); };
+    // The analyzer sends and then switches to this tab, and this screen is only mounted
+    // while its tab is open, so the event alone lands on nothing. The sender leaves the
+    // same detail in sessionStorage (as the newsletter hand-off does) for this to pick up.
+    try {
+      const waiting = sessionStorage.getItem("inventory_prefill_lot");
+      if (waiting) { sessionStorage.removeItem("inventory_prefill_lot"); apply(JSON.parse(waiting)); }
+    } catch { /* a bad payload opens nothing rather than breaking the screen */ }
     window.addEventListener("inventory-prefill-lot", onPrefill as EventListener);
     return () => window.removeEventListener("inventory-prefill-lot", onPrefill as EventListener);
   }, []);
@@ -765,11 +786,12 @@ export default function InventoryView() {
         // Position in the pasted batch, so the form can say which load this is.
         pasteIndex={prefillTotal > 0 ? prefillTotal - prefillQueue.length : 0}
         pasteTotal={prefillTotal}
+        batchFrom={prefillFrom}
         deals={deals} suppliers={suppliers} categories={categoryOptions} mediaBase={mediaBase} lots={lots} />}
 
       {pasting && <PasteLoadModal
         onClose={() => setPasting(false)}
-        onParsed={(pfs) => { setPasting(false); setEditing(null); setPrefill(pfs[0] ?? null); setPrefillQueue(pfs.slice(1)); setPrefillTotal(pfs.length); setPrefillSeq((s) => s + 1); setShowForm(true); }}
+        onParsed={(pfs) => { setPasting(false); setEditing(null); setPrefill(pfs[0] ?? null); setPrefillQueue(pfs.slice(1)); setPrefillTotal(pfs.length); setPrefillFrom("paste"); setPrefillSeq((s) => s + 1); setShowForm(true); }}
       />}
 
       {blastLot && <BlastLoadModal lot={blastLot} onClose={() => setBlastLot(null)} onSent={() => { setBlastLot(null); load(); }} />}
@@ -1502,7 +1524,7 @@ function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
   );
 }
 
-function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, lots, pasteIndex = 0, pasteTotal = 0 }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string; lots: Lot[]; pasteIndex?: number; pasteTotal?: number }) {
+function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, lots, pasteIndex = 0, pasteTotal = 0, batchFrom = "paste" }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string; lots: Lot[]; pasteIndex?: number; pasteTotal?: number; batchFrom?: "paste" | "split" }) {
   const [name, setName] = useState(initial?.name ?? prefill?.name ?? "");
   const [desc, setDesc] = useState(initial?.description ?? prefill?.description ?? "");
   const [category, setCategory] = useState(initial?.category ?? prefill?.category ?? "");
@@ -1513,9 +1535,13 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const [notes, setNotes] = useState(initial?.notes ?? prefill?.notes ?? "");
   const [sentWa, setSentWa] = useState(initial?.sent_whatsapp ?? false);
   const [sentEmail, setSentEmail] = useState(initial?.sent_email ?? false);
-  const [photos, setPhotos] = useState<string[]>(() => { try { return JSON.parse(initial?.photos_json ?? "[]") ?? []; } catch { return []; } });
+  const [photos, setPhotos] = useState<string[]>(() => {
+    // A manifest split (R-379) hands a new lot the paths of photos taken from its lines.
+    if (!initial && Array.isArray((prefill as any)?.photo_paths)) return (prefill as any).photo_paths;
+    try { return JSON.parse(initial?.photos_json ?? "[]") ?? []; } catch { return []; }
+  });
   const [manifestPath, setManifestPath] = useState<string | null>(initial?.manifest_path ?? null);
-  const [newManifestFile, setNewManifestFile] = useState<string | null>(null); // picked file for a not-yet-created lot
+  const [newManifestFile, setNewManifestFile] = useState<string | null>((!initial && (prefill as any)?.manifest_file) || null); // picked file for a not-yet-created lot (or a split's own file)
   const [saving, setSaving] = useState(false);
 
   // Structured extras (details_json). Public: pallets/msrp/sizeRun/moq + the volume
@@ -1867,7 +1893,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                     paste never leaves you guessing how many are still to come. */}
                 {!initial && pasteTotal > 0 && (
                   <span className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums flex-shrink-0">
-                    {pasteTotal > 1 ? `Pasted load ${pasteIndex} of ${pasteTotal}` : "From a pasted load"}
+                    {batchFrom === "split"
+                      ? (pasteTotal > 1 ? `Split ${pasteIndex} of ${pasteTotal}` : "From a manifest split")
+                      : (pasteTotal > 1 ? `Pasted load ${pasteIndex} of ${pasteTotal}` : "From a pasted load")}
                   </span>
                 )}
               </div>
@@ -1875,7 +1903,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 {initial
                   ? "Update this inventory lot."
                   : pasteTotal > 0
-                    ? `Filled in from the text you pasted — check it before saving.${pasteTotal > 1 ? " Saving opens the next one." : ""}`
+                    ? `${batchFrom === "split" ? "Filled in from the manifest split, with its own manifest file and photos. Check it before saving." : "Filled in from the text you pasted — check it before saving."}${pasteTotal > 1 ? " Saving opens the next one." : ""}`
                     : "Add a lot to your inventory — only a name is required."}
               </p>
             </div>
