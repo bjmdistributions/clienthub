@@ -834,7 +834,9 @@ fn scan_blocking(
     for chunk in uid_list.chunks(FETCH_CHUNK) {
     let fetch_set = chunk.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
 
-    let messages = match session.uid_fetch(&fetch_set, "RFC822") {
+    // BODY.PEEK, never RFC822: a plain RFC822 fetch sets \Seen, so every new email
+    // the watcher read showed as already read in the user's own mail client.
+    let messages = match session.uid_fetch(&fetch_set, "(UID BODY.PEEK[])") {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(
@@ -1144,7 +1146,7 @@ fn fetch_latest_matching_blocking(
     }
     let start = total.saturating_sub(49).max(1);
     let fetch_set = format!("{}:{}", start, total);
-    let messages = session.fetch(&fetch_set, "RFC822").context("fetch")?;
+    let messages = session.fetch(&fetch_set, "BODY.PEEK[]").context("fetch")?;
 
     // Collect (seq, ParsedEmail) so we can scan newest-first.
     let mut parsed: Vec<(u32, ParsedEmail)> = Vec::new();
