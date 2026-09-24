@@ -230,7 +230,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
           <h2 className="text-[18px] font-bold text-ink">Client receipt</h2>
           <p className="text-[12.5px] text-muted mt-0.5 leading-relaxed">
             Pick a client, tick the deals, and send them one PDF of every payment with its
-            date — invoice numbers, item labels and refunds included. Nothing on it shows
+            date, invoice numbers, item labels and refunds included. Nothing on it shows
             cost or margin.
           </p>
         </div>
@@ -250,7 +250,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((c) => (
               <option key={c.id} value={c.id}>
-                {c.company ? `${c.name} — ${c.company}` : c.name}
+                {c.company ? `${c.name} · ${c.company}` : c.name}
               </option>
             ))}
         </select>
@@ -343,7 +343,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
                         </span>
                       </div>
                       <div className="text-[12px] text-muted mt-0.5">
-                        {d.issue_date || "—"}
+                        {d.issue_date || "–"}
                         {d.items.length > 0 && (
                           <>
                             {" · "}
@@ -397,7 +397,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
                   <h3 className="text-[13.5px] font-semibold text-ink">Missing information</h3>
                   <p className="text-[12px] text-muted mt-0.5 leading-relaxed">
                     These would print blank. Payment dates and methods are used on this
-                    document only — they sit on the bank transaction, and changing one
+                    document only. They sit on the bank transaction, and changing one
                     there would move the deal's closed date.
                   </p>
                 </div>
@@ -551,7 +551,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
                 <input
                   value={options.intro}
                   onChange={(e) => setOptions((o) => ({ ...o, intro: e.target.value }))}
-                  placeholder="Optional — printed under their address"
+                  placeholder="Optional: printed under their address"
                   style={{ background: "var(--t-input-bg)" }}
                   className={INPUT_CLASS}
                 />

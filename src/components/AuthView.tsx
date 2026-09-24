@@ -82,7 +82,7 @@ export default function AuthView({
       const msg = typeof e === "string" ? e : (e?.message || "Something went wrong");
       // Different-workspace credentials: confirm, then wipe + restart into it.
       if (msg.startsWith(SWITCH_PREFIX)) {
-        if (confirm(`These credentials belong to a different workspace. Switch to it now? Your current workspace stays intact and separate — you can switch back anytime by signing in with its email. The app will restart.`)) {
+        if (confirm(`These credentials belong to a different workspace. Switch to it now? Your current workspace stays intact and separate, so you can switch back anytime by signing in with its email. The app will restart.`)) {
           try { const { relaunch } = await import("@tauri-apps/plugin-process"); await relaunch(); return; }
           catch { /* fall through to reset busy state */ }
         }

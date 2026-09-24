@@ -442,7 +442,7 @@ fn read_delimited(path: &str) -> Result<Sheet> {
         rows.push(rec.iter().map(|c| c.trim().to_string()).collect());
         if rows.len() > MAX_ROWS {
             return Err(anyhow!(
-                "the file has more than {MAX_ROWS} rows — that is not a warehouse manifest"
+                "the file has more than {MAX_ROWS} rows: that is not a warehouse manifest"
             ));
         }
     }
@@ -462,7 +462,7 @@ pub fn read_sheet(path: &str) -> Result<Sheet> {
         "csv" | "tsv" | "txt" => read_delimited(path)?,
         other => {
             return Err(anyhow!(
-                "{other} is not a sheet the lot engine can read — send it as .xlsx or .csv"
+                "{other} is not a sheet the lot engine can read: send it as .xlsx or .csv"
             ))
         }
     };

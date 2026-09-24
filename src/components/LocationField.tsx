@@ -184,7 +184,7 @@ export default function LocationField({ value, onChange }: { value: string; onCh
             value={city}
             onChange={(e) => { push(e.target.value, state); setShowSug(true); }}
             onFocus={() => setShowSug(true)}
-            placeholder="City — optional"
+            placeholder="City (optional)"
           />
           {showSug && sug.length > 0 && (
             <div className="absolute z-30 mt-1 w-full bg-surface border border-line rounded-lg shadow-lg overflow-hidden max-h-56 overflow-y-auto py-1">
@@ -202,13 +202,13 @@ export default function LocationField({ value, onChange }: { value: string; onCh
             </div>
           )}
         </div>
-        <StatePicker value={state} onChange={(s) => push(city, s)} placeholder="State — optional" />
+        <StatePicker value={state} onChange={(s) => push(city, s)} placeholder="State (optional)" />
       </div>
 
       <p className="text-[10.5px] text-muted flex items-center gap-1.5">
         <MapPin size={11} className="shrink-0" />
         {preview ? (
-          <>Saved as <span className="text-ink-2 font-medium">{preview}</span>{state ? " — shows on the storefront map." : " — add a state to place it on the storefront map."}</>
+          <>Saved as <span className="text-ink-2 font-medium">{preview}</span>{state ? ". It shows on the storefront map." : ". Add a state to place it on the storefront map."}</>
         ) : (
           <>Optional. A lot with a state appears on the storefront's FOB map.</>
         )}

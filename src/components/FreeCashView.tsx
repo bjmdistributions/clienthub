@@ -301,7 +301,7 @@ export default function FreeCashView() {
               </div>
               <p className="text-[12px] text-muted mt-1 leading-relaxed">
                 Transactions have been added, removed or changed since this was last checked. The amount is
-                the size of what moved — it is not money missing from your bank, it is money missing from
+                the size of what moved. It is not money missing from your bank, it is money missing from
                 (or doubled in) your records.
               </p>
               <div className="mt-2.5 space-y-1.5">
@@ -318,7 +318,7 @@ export default function FreeCashView() {
                 onClick={() => api.reconcileAccounts(true).then(setRecon).catch(() => {})}
                 className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
               >
-                These records are correct — use them as the new baseline
+                These records are correct: use them as the new baseline
               </button>
             </div>
           );
@@ -330,7 +330,7 @@ export default function FreeCashView() {
           <div className="border border-line rounded-2xl p-5">
             <div className="text-[13px] font-semibold text-ink-2">Could not load your figures</div>
             <div className="text-[12px] text-muted mt-1 break-words">{loadError}</div>
-            <div className="text-[11.5px] text-faint mt-1">Nothing has changed — this is a read that failed.</div>
+            <div className="text-[11.5px] text-faint mt-1">Nothing has changed. This is a read that failed.</div>
             <button onClick={() => loadOverview()} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
               Try again
             </button>
@@ -400,7 +400,7 @@ export default function FreeCashView() {
                   {reserveLinked
                     ? <>A target based on {fmtAmount(ov.refund_reserve_base ?? 0)} of profit this year. {ov.reserve_account_label} holds
                         the money, and its balance is already out of the number above</>
-                    : <>A target based on {fmtAmount(ov.refund_reserve_base ?? 0)} of profit this year — for the record only,
+                    : <>A target based on {fmtAmount(ov.refund_reserve_base ?? 0)} of profit this year. For the record only,
                         not taken out of the number above</>}
                 </p>
                 {reserveDesignated && !reserveLinked && (
@@ -532,7 +532,7 @@ export default function FreeCashView() {
               )}
               <NumField
                 label="Current bank balance"
-                hint={ov?.has_plaid ? "Live from your connected bank — managed automatically." : ov?.balance_source === "synced" ? "Synced from your connected device — change it on the device that has the bank linked." : "Enter from your latest statement — this figure is maintained by you."}
+                hint={ov?.has_plaid ? "Live from your connected bank, managed automatically." : ov?.balance_source === "synced" ? "Synced from your connected device. Change it on the device that has the bank linked." : "Enter from your latest statement. This figure is maintained by you."}
                 prefix="$"
                 value={ov?.has_plaid || ov?.balance_source === "synced" ? String(ov?.bank_balance ?? 0) : bankStr}
                 onChange={setBankStr}
@@ -540,7 +540,7 @@ export default function FreeCashView() {
               />
               <NumField
                 label="Credit card balance owed"
-                hint={ov?.has_plaid ? "Live from your connected card — managed automatically." : ov?.balance_source === "synced" ? "Synced from your connected device — change it on the device that has the bank linked." : "Total owed across your business credit cards — enter from your latest statements."}
+                hint={ov?.has_plaid ? "Live from your connected card, managed automatically." : ov?.balance_source === "synced" ? "Synced from your connected device. Change it on the device that has the bank linked." : "Total owed across your business credit cards. Enter from your latest statements."}
                 prefix="$"
                 value={ov?.has_plaid || ov?.balance_source === "synced" ? String(ov?.credit_card_balance ?? 0) : cardStr}
                 onChange={setCardStr}
@@ -562,7 +562,7 @@ export default function FreeCashView() {
               />
               <NumField
                 label="Refund reserve"
-                hint="Share of this year's net profit to set aside for refunds — the amount to park in a separate account (link it later and reconcile)."
+                hint="Share of this year's net profit to set aside for refunds: the amount to park in a separate account (link it later and reconcile)."
                 suffix="%"
                 value={refundStr}
                 onChange={setRefundStr}
@@ -593,14 +593,14 @@ export default function FreeCashView() {
                   disabled={reserveAccounts.length === 0}
                   className={"w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" + (reserveAccounts.length === 0 ? " opacity-50 cursor-not-allowed" : "")}
                 >
-                  <option value="">None — keep the reserve as an estimate</option>
+                  <option value="">None: keep the reserve as an estimate</option>
                   {reserveAccounts.map((a) => (
-                    <option key={a.key} value={a.key}>{acctLabel(a)} — {fmtAmount(a.balance)}</option>
+                    <option key={a.key} value={a.key}>{acctLabel(a)} · {fmtAmount(a.balance)}</option>
                   ))}
                   {/* A previously chosen account that is no longer connected still has
                       to be shown, or saving this dialog would silently un-designate it. */}
                   {reserveKeyStr !== "" && !reserveAccounts.some((a) => a.key === reserveKeyStr) && (
-                    <option value={reserveKeyStr}>{ov?.reserve_account_label || "Chosen account"} — not connected</option>
+                    <option value={reserveKeyStr}>{ov?.reserve_account_label || "Chosen account"} · not connected</option>
                   )}
                 </select>
               </div>

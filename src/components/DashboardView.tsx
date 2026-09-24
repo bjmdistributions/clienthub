@@ -183,7 +183,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
     Number(profitMonth.split("-")[1]) - 1
   ).toLocaleString("default", { month: "long", year: "numeric" });
 
-  const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? "—";
+  const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? "–";
 
   const dateStr = new Date().toLocaleDateString("en-US", {
     weekday: "long", month: "long", day: "numeric",
@@ -351,7 +351,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
               <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-success-ink mb-3">
                 <CheckCircle2 size={18} />
               </div>
-              <div className="text-[13px] text-muted">All clear — nothing needs you right now</div>
+              <div className="text-[13px] text-muted">All clear, nothing needs you right now</div>
             </div>
           ) : (
             <div className="divide-y divide-line-2">

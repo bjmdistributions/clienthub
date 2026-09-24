@@ -115,7 +115,7 @@ export function FormsPanel() {
         </div>
 
         <div className="flex items-center justify-between mt-5 mb-2">
-          <div className="text-[12px] font-medium text-muted">Fields — drag ⠿ to reorder</div>
+          <div className="text-[12px] font-medium text-muted">Fields: drag ⠿ to reorder</div>
           {editing.collects === "suppliers" && (
             <button onClick={usePreset} className="text-[12px] text-accent hover:underline">Use the supplier details preset</button>
           )}
@@ -163,7 +163,7 @@ export function FormsPanel() {
       <div className="flex justify-between items-center">
         <div>
           <h4 className="text-[14px] font-semibold text-ink">Lead forms</h4>
-          <p className="text-[12px] text-muted">Build a form, share the link — submissions become pending clients. <button onClick={() => api.openExternal("https://ecliptr.app/guide#forms")} className="text-accent hover:underline">Setup guide →</button></p>
+          <p className="text-[12px] text-muted">Build a form, share the link, so submissions become pending clients. <button onClick={() => api.openExternal("https://ecliptr.app/guide#forms")} className="text-accent hover:underline">Setup guide →</button></p>
         </div>
         <button onClick={() => setEditing(blankForm())} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">+ New form</button>
       </div>

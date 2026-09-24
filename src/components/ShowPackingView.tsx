@@ -220,7 +220,7 @@ function SetupWizard({ initialConfig, onActivated }: { initialConfig: ShowAddonC
         {step === 1 && (
           <>
             <p className="text-[13px] text-ink leading-relaxed">
-              Every buyer who wins in a live show gets a box number the first time they win —
+              Every buyer who wins in a live show gets a box number the first time they win, and
               every later win goes to the same box, so the boxes are already the packages by the
               end of the show.
             </p>
@@ -913,7 +913,7 @@ function LiveTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () => v
             {last_sale.buyer && <div className="text-[16px] text-muted mt-2">@{last_sale.buyer}</div>}
           </>
         ) : (
-          <div className="text-[16px] text-muted">No sales yet — record the first one below.</div>
+          <div className="text-[16px] text-muted">No sales yet. Record the first one below.</div>
         )}
       </div>
 
@@ -921,7 +921,7 @@ function LiveTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () => v
         <div className="text-[12.5px] text-ink">
           {typedNumber !== null
             ? <>Recording <span className="font-semibold">#{typedNumber}</span></>
-            : current ? <>Now selling: <span className="font-semibold">#{current.item_number} — {current.title}</span></> : "Type the item number that just sold."}
+            : current ? <>Now selling: <span className="font-semibold">#{current.item_number} · {current.title}</span></> : "Type the item number that just sold."}
         </div>
         <div className="flex gap-2">
           <input
@@ -1006,7 +1006,7 @@ function LiveTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () => v
       </div>
 
       {next && (
-        <div className="text-[12px] text-muted px-1">Next: #{next.item_number} — {next.title}</div>
+        <div className="text-[12px] text-muted px-1">Next: #{next.item_number} · {next.title}</div>
       )}
     </div>
   );
@@ -1126,7 +1126,7 @@ function ResultsTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () =
     setImporting(true);
     try {
       const r = await api.showPacking.importRows(show.id, body);
-      toast(`Imported ${r.imported} rows — ${r.matched} matched.`);
+      toast(`Imported ${r.imported} rows: ${r.matched} matched.`);
       setRows(null);
       onChanged();
     } catch (e: any) {
@@ -1163,7 +1163,7 @@ function ResultsTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () =
           const bItems = (soldByUsername.get(b.username) || []).sort((a, c) => a.item_number - c.item_number);
           return (
             <div key={b.id} className="bg-surface border border-line rounded-xl p-3.5 min-w-0">
-              <div className="text-[13px] font-semibold text-ink mb-1.5">Box {b.bin_number} — @{b.username}</div>
+              <div className="text-[13px] font-semibold text-ink mb-1.5">Box {b.bin_number} · @{b.username}</div>
               <ul className="space-y-0.5 text-[12px] text-ink-2">
                 {bItems.map((i) => (
                   <li key={i.id} className="flex justify-between gap-2">

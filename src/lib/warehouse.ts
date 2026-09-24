@@ -458,7 +458,7 @@ export function invoiceLines(
       const lo = plan.loose[s.id] || 0;
       const rate = rates[s.id] ?? (item.unit_price || 0);
       return {
-        description: `${item.name} — ${s.name}: ${describePick(item.box_types, boxes, lo)}`,
+        description: `${item.name} · ${s.name}: ${describePick(item.box_types, boxes, lo)}`,
         qty,
         rate,
         amount: Math.round(qty * rate * 100) / 100,

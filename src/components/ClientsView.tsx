@@ -594,7 +594,7 @@ export default function ClientsView() {
               <div key={g.key} className="flex items-center justify-between text-[12px] py-1">
                 <div className="text-ink-2">
                   <span className="font-medium">{g.key}</span>
-                  <span className="text-muted ml-1">— {g.names.join(", ")}</span>
+                  <span className="text-muted ml-1">· {g.names.join(", ")}</span>
                 </div>
                 <div className="flex items-center gap-1">
                   {g.client_ids.slice(1).map((id, i) => (
@@ -883,15 +883,15 @@ export default function ClientsView() {
               // only ~118px wide at a 900px window; letting these wrap tripled the row height.
               const flags: { tone: "accent" | "danger" | "neutral"; label: string; title: string }[] = [];
               if (c.is_blacklisted) {
-                flags.push({ tone: "danger", label: "Blacklisted", title: "Blacklisted — excluded from all sends" });
+                flags.push({ tone: "danger", label: "Blacklisted", title: "Blacklisted: excluded from all sends" });
               } else {
-                if (c.metadata?.high_value) flags.push({ tone: "accent", label: "High value", title: "High-Value — one of your best buyers (label only)" });
-                if (c.metadata?.unsubscribed) flags.push({ tone: "neutral", label: "Unsubscribed", title: "Unsubscribed — opted out via an email link; kept off all sends" });
-                if (c.metadata?.exclusive && !c.metadata?.unsubscribed) flags.push({ tone: "accent", label: "No bulk", title: "No bulk-email — kept off mass newsletters & auto-add" });
-                if (c.first_contact) flags.push({ tone: "accent", label: "No contact yet", title: "Never been sent an email — introduce yourself" });
+                if (c.metadata?.high_value) flags.push({ tone: "accent", label: "High value", title: "High-Value: one of your best buyers (label only)" });
+                if (c.metadata?.unsubscribed) flags.push({ tone: "neutral", label: "Unsubscribed", title: "Unsubscribed: opted out via an email link; kept off all sends" });
+                if (c.metadata?.exclusive && !c.metadata?.unsubscribed) flags.push({ tone: "accent", label: "No bulk", title: "No bulk-email: kept off mass newsletters & auto-add" });
+                if (c.first_contact) flags.push({ tone: "accent", label: "No contact yet", title: "Never been sent an email: introduce yourself" });
               }
               if (c.approval_status === "pending") flags.push({ tone: "accent", label: "Pending", title: "Pending approval" });
-              if (c.approval_status === "rejected") flags.push({ tone: "neutral", label: "Rejected", title: "Rejected — kept for the record, and left out of the headline counts" });
+              if (c.approval_status === "rejected") flags.push({ tone: "neutral", label: "Rejected", title: "Rejected: kept for the record, and left out of the headline counts" });
               const missingInfo = !c.email || !c.phone || !c.street_address || !c.category;
               return (
                 <tr
@@ -928,24 +928,24 @@ export default function ClientsView() {
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-[13px] text-muted">{c.company || "—"}</td>
+                  <td className="px-4 py-3 text-[13px] text-muted">{c.company || "–"}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <div className="flex flex-col items-start gap-1">
                       <TierBadge tier={bt ? bt.tier : "New"} size="sm" />
                       {bt && <ReliabilityBadge reliability={bt.reliability} pct={bt.reliability_pct} quotesSent={bt.quotes_sent} quotesWon={bt.quotes_won} compact />}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-[12px] text-muted">{c.email || "—"}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted whitespace-nowrap">{c.phone ? fmtPhone(c.phone) : "—"}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted">{c.email || "–"}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted whitespace-nowrap">{c.phone ? fmtPhone(c.phone) : "–"}</td>
                   <td className="px-4 py-3 text-[12px] text-muted whitespace-nowrap">
-                    {[c.city, c.state].filter(Boolean).join(", ") || c.street_address || <span className="text-faint">—</span>}
+                    {[c.city, c.state].filter(Boolean).join(", ") || c.street_address || <span className="text-faint">–</span>}
                   </td>
                   <td className="px-4 py-3">
                     {(() => {
                       const a = activity[c.id];
                       const at = a?.at || c.last_contact_at;
                       const meta = a ? ACTIVITY_META[a.kind] : undefined;
-                      if (!at) return <span className="text-[12px] text-faint">—</span>;
+                      if (!at) return <span className="text-[12px] text-faint">–</span>;
                       const Icon = meta?.Icon || Clock;
                       return (
                         <span className="inline-flex items-center gap-1.5 text-[12px] text-muted whitespace-nowrap">
@@ -964,7 +964,7 @@ export default function ClientsView() {
                   }`}>
                     {bt && bt.total_profit !== 0
                       ? <>{bt.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(bt.total_profit))}</>
-                      : <span className="text-faint">—</span>}
+                      : <span className="text-faint">–</span>}
                   </td>
                   <td className="px-4 py-3 text-right text-[13px] text-muted tabular-nums">
                     {fmtAmount(c.total_revenue || 0)}

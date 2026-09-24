@@ -126,7 +126,7 @@ export default function PayablesView() {
         (p) => !p.paid && (p.supplier_name || "") === (it.payee || "") && Math.abs(p.amount - it.amount) < 0.005
       );
       if (matches.length === 0) {
-        setRowErr((e) => ({ ...e, [key]: "Couldn't match this cost on the deal — open the deal to mark it there." }));
+        setRowErr((e) => ({ ...e, [key]: "Couldn't match this cost on the deal. Open the deal to mark it there." }));
       } else {
         await api.markSupplierPaymentPaid(flow.id, matches[0].id);
         load();
@@ -179,8 +179,8 @@ export default function PayablesView() {
         <div className="flex items-start justify-between gap-3 bg-surface border border-line rounded-xl px-4 py-2.5">
           <p className="text-[11.5px] text-muted leading-snug">
             {showSpec
-              ? `Showing all ${allItems.length} unpaid — ${specCount} speculative early-stage cost${specCount !== 1 ? "s" : ""} included.`
-              : `Speculative early-stage deals hidden — they don't count until a deal is near closing. ${specCount} hidden.`}
+              ? `Showing all ${allItems.length} unpaid: ${specCount} speculative early-stage cost${specCount !== 1 ? "s" : ""} included.`
+              : `Speculative early-stage deals hidden. They don't count until a deal is near closing. ${specCount} hidden.`}
           </p>
           <label className="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
             <span className="text-[12px] text-ink-2">Show speculative</span>
@@ -223,7 +223,7 @@ export default function PayablesView() {
 
       {view === "chase" ? (
         items.length === 0 ? (
-          <EmptyState label="Nothing to pay right now — every cost is settled." />
+          <EmptyState label="Nothing to pay right now. Every cost is settled." />
         ) : (
           <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
             {chaseSort(items).map((it, i) => {
@@ -243,7 +243,7 @@ export default function PayablesView() {
                       <div className="flex items-center gap-2">
                         <span className="text-[13px] font-semibold text-ink truncate">{it.payee || "(unnamed)"}</span>
                         {!it.committed && (
-                          <StatusPill tone="neutral" title="Speculative early-stage deal — not yet counted toward owed totals">Speculative</StatusPill>
+                          <StatusPill tone="neutral" title="Speculative early-stage deal: not yet counted toward owed totals">Speculative</StatusPill>
                         )}
                         <span className={`text-[10.5px] font-semibold tabular-nums px-1.5 py-0.5 rounded flex-shrink-0 ${it.days > 90 ? "text-danger-ink bg-danger-bg" : "text-muted bg-surface-2"}`}>
                           {owedWords(it.days)}
@@ -284,7 +284,7 @@ export default function PayablesView() {
 
 function ByPayee({ payees }: { payees: PayableSupplier[] }) {
   if (payees.length === 0) {
-    return <EmptyState label="Nothing to pay right now — every cost is settled." />;
+    return <EmptyState label="Nothing to pay right now. Every cost is settled." />;
   }
   return (
     <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">

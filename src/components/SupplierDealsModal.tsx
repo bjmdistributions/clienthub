@@ -88,7 +88,7 @@ export default function SupplierDealsModal({
               {deals.length} completed deal{deals.length !== 1 ? "s" : ""}
             </p>
             <p className="text-[11px] text-faint mt-0.5">
-              Revenue and profit are the whole deal's, before refunds. Paid/Refunded/Net are this supplier's own share — a refund is apportioned by their part of the deal's total supplier payments.
+              Revenue and profit are the whole deal's, before refunds. Paid/Refunded/Net are this supplier's own share: a refund is apportioned by their part of the deal's total supplier payments.
             </p>
           </div>
           <button
@@ -139,7 +139,7 @@ export default function SupplierDealsModal({
                       />
                       <div className="flex-1 min-w-0">
                         <div className="text-[13px] font-medium text-ink truncate">
-                          {d.client_name || "—"}
+                          {d.client_name || "–"}
                         </div>
                         <div className="text-[11px] text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
                           {d.invoice_number && (
@@ -163,7 +163,7 @@ export default function SupplierDealsModal({
                           clr={d.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}
                         />
                         <Stat
-                          value={margin === null ? "—" : `${margin.toFixed(1)}%`}
+                          value={margin === null ? "–" : `${margin.toFixed(1)}%`}
                           clr={
                             margin === null ? "text-faint"
                             : margin >= 20 ? "text-success-ink"
@@ -173,7 +173,7 @@ export default function SupplierDealsModal({
                         />
                         <Stat value={fmtAmount(d.supplier_amount)} />
                         <Stat
-                          value={refunded > 0 ? signedAmount(-refunded) : "—"}
+                          value={refunded > 0 ? signedAmount(-refunded) : "–"}
                           clr={refunded > 0 ? "text-danger-ink" : "text-faint"}
                         />
                         <Stat value={fmtAmount(netPaid)} />
@@ -209,12 +209,12 @@ export default function SupplierDealsModal({
                       clr={totals.profit >= 0 ? "text-success-ink" : "text-danger-ink"}
                     />
                     <Stat
-                      value={totalMargin === null ? "—" : `${totalMargin.toFixed(1)}%`}
+                      value={totalMargin === null ? "–" : `${totalMargin.toFixed(1)}%`}
                       clr={totalMargin === null ? "text-faint" : "text-ink-2"}
                     />
                     <Stat value={fmtAmount(totals.paid)} />
                     <Stat
-                      value={totals.refunded > 0 ? signedAmount(-totals.refunded) : "—"}
+                      value={totals.refunded > 0 ? signedAmount(-totals.refunded) : "–"}
                       clr={totals.refunded > 0 ? "text-danger-ink" : "text-faint"}
                     />
                     <Stat value={fmtAmount(totals.paid - totals.refunded)} />

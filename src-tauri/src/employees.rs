@@ -563,14 +563,14 @@ pub fn update_staff(id: String, role_id: Option<String>, status: Option<String>,
         if let Some(v) = &role_id {
             // Don't let the org demote its only admin into lockout.
             if user_grants_admin(&conn, &id) && !role_grants_admin(&conn, v) && other_active_admins(&conn, &id) == 0 {
-                return Err("Can't demote the last admin — make someone else an admin first.".into());
+                return Err("Can't demote the last admin. Make someone else an admin first.".into());
             }
             conn.execute("UPDATE staff_accounts SET role_id=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("role_id".into(), json!(v));
         }
         if let Some(v) = &status {
             // Suspending the last active admin would lock the org out.
             if v == "suspended" && user_grants_admin(&conn, &id) && other_active_admins(&conn, &id) == 0 {
-                return Err("Can't suspend the last admin — make someone else an admin first.".into());
+                return Err("Can't suspend the last admin. Make someone else an admin first.".into());
             }
             conn.execute("UPDATE staff_accounts SET status=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("status".into(), json!(v));
         }

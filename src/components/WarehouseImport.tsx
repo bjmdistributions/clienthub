@@ -12,7 +12,7 @@ import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0, p
 
 type Role = "team_col" | "size_col" | "boxes_col" | "per_box_col" | "units_col";
 const ROLES: { key: Role; label: string; hint: string; layouts: Mapping["layout"][] }[] = [
-  { key: "team_col", label: "Team or name", hint: "What each row is — a team, a style, a colour.", layouts: ["rows", "grouped", "across"] },
+  { key: "team_col", label: "Team or name", hint: "What each row is: a team, a style, a colour.", layouts: ["rows", "grouped", "across"] },
   { key: "size_col", label: "Box size", hint: "Optional. The name of the box on that row.", layouts: ["rows"] },
   { key: "boxes_col", label: "Number of boxes", hint: "", layouts: ["rows", "grouped"] },
   { key: "per_box_col", label: "Units per box", hint: "", layouts: ["rows", "grouped"] },
@@ -54,7 +54,7 @@ export default function WarehouseImport({ read, fileName, items, defaultTargetId
     <>
       <option value="">Not in this sheet</option>
       {Array.from({ length: width }, (_, c) => (
-        <option key={c} value={c}>{colName(c)}{rows[m.header_row]?.[c] ? ` — ${rows[m.header_row][c]}` : ""}</option>
+        <option key={c} value={c}>{colName(c)}{rows[m.header_row]?.[c] ? ` · ${rows[m.header_row][c]}` : ""}</option>
       ))}
     </>
   );
@@ -104,7 +104,7 @@ export default function WarehouseImport({ read, fileName, items, defaultTargetId
           <h2 className="text-[18px] font-semibold text-ink tracking-tight truncate">Import {fileName}</h2>
           <p className="text-[12px] text-muted mt-0.5">
             {n0(rows.length)} rows{read.sheet_name ? ` · sheet ${read.sheet_name}` : ""}{read.note ? ` · ${read.note}` : ""}.
-            Check what each column is — the preview below updates as you change it.
+            Check what each column is. The preview below updates as you change it.
           </p>
         </div>
       </div>
@@ -116,7 +116,7 @@ export default function WarehouseImport({ read, fileName, items, defaultTargetId
             <label className="block text-[12px] text-muted mb-1.5">The headings are on row</label>
             <select value={m.header_row} onChange={(e) => setM({ ...m, header_row: Number(e.target.value) })} style={WH_INPUT_BG} className={SELECT}>
               {rows.slice(0, 40).map((r, i) => (
-                <option key={i} value={i}>{i + 1}{r.some((c) => c.trim()) ? ` — ${r.filter((c) => c.trim()).slice(0, 3).join(", ")}` : " — empty"}</option>
+                <option key={i} value={i}>{i + 1}{r.some((c) => c.trim()) ? ` · ${r.filter((c) => c.trim()).slice(0, 3).join(", ")}` : " · empty"}</option>
               ))}
             </select>
             <div className="text-[12px] text-muted mt-3 mb-1.5">How the sheet is laid out</div>

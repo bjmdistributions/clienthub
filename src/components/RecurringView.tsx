@@ -115,7 +115,7 @@ export default function RecurringView() {
                   <td className="px-4 py-3 text-[13px] font-medium text-ink">{t.template_name}</td>
                   <td className="px-4 py-3 text-[13px] text-ink-2">{t.client_name}</td>
                   <td className="px-4 py-3 text-[12px] text-muted capitalize">{t.frequency}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{t.is_active ? t.next_due_date.slice(0, 10) : "—"}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{t.is_active ? t.next_due_date.slice(0, 10) : "–"}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${t.is_active ? "bg-success-bg text-success-ink" : "bg-surface-3 text-muted"}`}>
                       {t.is_active ? "Active" : "Paused"}

@@ -1182,8 +1182,8 @@ function NewsletterTab() {
               <span className="font-medium">Include an unsubscribe link</span>
               <span className="block text-[10px] mt-0.5 opacity-80">
                 {unsubEnabled
-                  ? "Added automatically to every send — required by anti-spam law (CAN-SPAM)."
-                  : "Off for sends from this app. Sending marketing email without an opt-out can be illegal — turn this back on. Scheduled sends go out from the server and always carry the link."}
+                  ? "Added automatically to every send: required by anti-spam law (CAN-SPAM)."
+                  : "Off for sends from this app. Sending marketing email without an opt-out can be illegal, so turn this back on. Scheduled sends go out from the server and always carry the link."}
               </span>
             </span>
           </label>
@@ -1463,7 +1463,7 @@ function NewsletterTab() {
             {isScheduledSend ? <Clock size={16} /> : <Send size={16} />}
             {sending ? sendProgress
               : scheduling ? "Scheduling…"
-              : isScheduledSend ? `Schedule — ${scheduleOptLabel}`
+              : isScheduledSend ? `Schedule: ${scheduleOptLabel}`
               : `Send ${validRecipients.length} emails`}
           </button>
           {sending && (
@@ -1486,10 +1486,10 @@ function NewsletterTab() {
             <div className="mt-2 border border-line rounded-md p-3 bg-surface-2 space-y-2">
               <div className="text-[12px] font-medium text-ink-2 mb-1">When should this send?</div>
               {[
-                { val: 0, label: "Send now — all " + validRecipients.length + " at once" },
-                { val: 3600, label: "Spread over 1 hour — ~" + Math.ceil(validRecipients.length / 60) + " emails per minute" },
-                { val: 7200, label: "Spread over 2 hours — ~" + Math.ceil(validRecipients.length / 120) + " emails per minute" },
-                { val: 14400, label: "Spread over 4 hours — ~" + Math.ceil(validRecipients.length / 240) + " emails per minute" },
+                { val: 0, label: "Send now, all " + validRecipients.length + " at once" },
+                { val: 3600, label: "Spread over 1 hour, ~" + Math.ceil(validRecipients.length / 60) + " emails per minute" },
+                { val: 7200, label: "Spread over 2 hours, ~" + Math.ceil(validRecipients.length / 120) + " emails per minute" },
+                { val: 14400, label: "Spread over 4 hours, ~" + Math.ceil(validRecipients.length / 240) + " emails per minute" },
               ].map((opt) => (
                 <label key={opt.val} className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer">
                   <input type="radio" checked={scheduleInterval === opt.val} onChange={() => setScheduleInterval(opt.val)} className="accent-accent" />
@@ -1513,7 +1513,7 @@ function NewsletterTab() {
               )}
               <div className="text-[11px] text-muted pt-0.5">
                 {isScheduledSend
-                  ? `The button above now schedules this send — ${scheduleOptLabel}.`
+                  ? `The button above now schedules this send: ${scheduleOptLabel}.`
                   : "Pick an option above; the send button will switch to scheduling."}
               </div>
             </div>
@@ -1614,7 +1614,7 @@ function NewsletterTab() {
                           {sendResult.errors.map((err, i) => (
                             <div key={i} className="text-[11px] bg-surface/60 rounded px-2 py-1 border border-warning">
                               <span className="font-medium">{err.client_name}</span>
-                              <span className="text-warning-ink ml-1">— {err.error}</span>
+                              <span className="text-warning-ink ml-1">: {err.error}</span>
                             </div>
                           ))}
                         </div>

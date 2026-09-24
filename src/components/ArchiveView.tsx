@@ -60,7 +60,7 @@ export default function ArchiveView() {
 
   const recover = async () => {
     if (!confirm(
-      "Search your daily backups for deals and invoices that were deleted before the archive existed, and restore any found into this Archive?\n\nThis only ADDS archived records — it never changes or deletes anything you currently have."
+      "Search your daily backups for deals and invoices that were deleted before the archive existed, and restore any found into this Archive?\n\nThis only ADDS archived records. It never changes or deletes anything you currently have."
     )) return;
     setRecovering(true);
     try {
@@ -92,7 +92,7 @@ export default function ArchiveView() {
         <div>
           <h2 className="text-[18px] font-bold text-ink">Archive</h2>
           <p className="text-[12px] text-muted mt-0.5">
-            Deleted and fallen-through records — restore anything, nothing is destroyed.
+            Deleted and fallen-through records: restore anything, nothing is destroyed.
           </p>
         </div>
         <div className="flex items-center gap-4">
@@ -131,7 +131,7 @@ export default function ArchiveView() {
             <ArchiveIcon size={18} />
           </div>
           <div className="text-[13px] text-muted">
-            {all.length === 0 ? "Nothing archived — deleted items will appear here." : "Nothing matches these filters."}
+            {all.length === 0 ? "Nothing archived. Deleted items will appear here." : "Nothing matches these filters."}
           </div>
         </div>
       ) : (
@@ -149,7 +149,7 @@ export default function ArchiveView() {
                     <StatusPill tone="neutral">{meta.label}</StatusPill>
                   </div>
                   <div className="text-[11px] text-muted truncate mt-0.5">
-                    {it.client_name || "—"}{it.archived_at && <span className="text-faint"> · archived {whenWords(it.archived_at)}</span>}
+                    {it.client_name || "–"}{it.archived_at && <span className="text-faint"> · archived {whenWords(it.archived_at)}</span>}
                   </div>
                 </div>
                 {reasonPill(it.reason)}

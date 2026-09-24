@@ -520,7 +520,7 @@ fn find_gaps(client: &StatementClient, deals: &[StatementDeal]) -> Vec<Statement
             kind: "client_email".into(),
             target_id: client.id.clone(),
             deal_flow_id: String::new(),
-            label: "No email address — the statement can be saved but not sent".into(),
+            label: "No email address, so the statement can be saved but not sent".into(),
             writes_back: true,
         });
     }
@@ -544,7 +544,7 @@ fn find_gaps(client: &StatementClient, deals: &[StatementDeal]) -> Vec<Statement
                 kind: "deal_label".into(),
                 target_id: d.deal_flow_id.clone(),
                 deal_flow_id: d.deal_flow_id.clone(),
-                label: format!("{deal_ref} has no item lines — nothing describes what was sold"),
+                label: format!("{deal_ref} has no item lines, so nothing describes what was sold"),
                 writes_back: false,
             });
         }
@@ -633,7 +633,7 @@ fn ellipsize(s: &str, size: f32, max_w: f32, bold: bool) -> String {
 
 fn dash(s: &str) -> String {
     if s.trim().is_empty() {
-        "—".into()
+        "–".into()
     } else {
         s.trim().to_string()
     }

@@ -58,7 +58,7 @@ export function FromPicker({
         className="border border-line px-2.5 h-8 rounded-md text-[12.5px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
       >
         {options.map((o) => (
-          <option key={o.address} value={o.address}>{o.label} — {o.address}</option>
+          <option key={o.address} value={o.address}>{o.label} · {o.address}</option>
         ))}
       </select>
     </label>

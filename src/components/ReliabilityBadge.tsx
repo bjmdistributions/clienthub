@@ -19,7 +19,7 @@ export default function ReliabilityBadge({
   if (reliability === "unrated") {
     if (quotesSent === 0 || compact) return null;
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted" title={`${quotesSent} quote(s) sent — need 3 to rate reliability`}>
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted" title={`${quotesSent} quote(s) sent: need 3 to rate reliability`}>
         <MinusCircle size={11} /> Unrated
       </span>
     );

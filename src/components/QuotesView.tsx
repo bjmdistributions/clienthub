@@ -49,7 +49,7 @@ export default function QuotesView({ onNavigate }: Props) {
   const load = async () => { setQuotes(await api.listQuotes()); };
   useEffect(() => { load(); api.listClients().then(setClients).catch(() => {}); }, []);
 
-  const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? "—";
+  const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? "–";
   const clientEmail = (id: string) => clients.find((c) => c.id === id)?.email ?? "";
   // The most recent inbound email captured from this client — the conversation a quote
   // can reply into. Returns its subject (may be "") when a thread exists, else null.
@@ -75,7 +75,7 @@ export default function QuotesView({ onNavigate }: Props) {
 
   const handlePdf = async (id: string) => {
     setBusy(id);
-    try { await api.generateQuotePdf(id); toast("PDF saved — check your quotes folder"); load(); }
+    try { await api.generateQuotePdf(id); toast("PDF saved: check your quotes folder"); load(); }
     catch (e: any) { toast(String(e), "error"); } finally { setBusy(null); }
   };
   // Open the send dialog (lets you choose to reply into the customer's email thread).
@@ -276,7 +276,7 @@ export default function QuotesView({ onNavigate }: Props) {
                     </span>
                   </label>
                 ) : (
-                  <div className="text-[11.5px] text-muted rounded-lg border border-line bg-surface-2 px-3 py-2.5">No prior email from this customer to reply to — this sends as a new email.</div>
+                  <div className="text-[11.5px] text-muted rounded-lg border border-line bg-surface-2 px-3 py-2.5">No prior email from this customer to reply to. This sends as a new email.</div>
                 )}
                 <FromPicker options={fromOptions} value={sendFrom} onChange={setSendFrom} />
               </div>
@@ -439,7 +439,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
               <label className="block text-[12.5px] font-medium text-muted mb-1">Client *</label>
               <select className={inp} value={clientId} onChange={(e) => setClientId(e.target.value)}>
                 <option value="">Select a client…</option>
-                {clients.map((c) => <option key={c.id} value={c.id}>{c.name}{c.company ? ` — ${c.company}` : ""}</option>)}
+                {clients.map((c) => <option key={c.id} value={c.id}>{c.name}{c.company ? ` · ${c.company}` : ""}</option>)}
               </select>
             </div>
             <div>

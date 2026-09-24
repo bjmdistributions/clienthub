@@ -158,16 +158,16 @@ export default function WarehouseOrders({ items }: { items: WarehouseItem[] }) {
     setPallets((cur) => [...(cur || []).filter((p) => p.invoice_id !== invoiceId), ...ps]);
   const run = async (f: () => Promise<void>) => { setBusy(true); try { await f(); } catch (e) { toast(String(e), "error"); } finally { setBusy(false); } };
 
-  const print = (ids: string[]) => run(async () => { await api.warehousePalletLabels(ids); toast(`${ids.length === 1 ? "The label" : `${ids.length} labels`} opened as a PDF — print on 4 × 6.`); });
+  const print = (ids: string[]) => run(async () => { await api.warehousePalletLabels(ids); toast(`${ids.length === 1 ? "The label" : `${ids.length} labels`} opened as a PDF: print on 4 × 6.`); });
   const combine = (invoiceId: string, ids: string[]) => run(async () => {
     replaceOrder(invoiceId, await api.combineWarehousePallets(ids));
     setPicked(new Set());
-    toast(`Combined into one pallet — the order is renumbered.`);
+    toast(`Combined into one pallet. The order is renumbered.`);
   });
   const remove = (p: WarehousePallet) => run(async () => { replaceOrder(p.invoice_id, await api.removeWarehousePallet(p.id)); toast(`Pallet ${p.number} taken off the order.`); });
   const saveEdit = (p: WarehousePallet, item: WarehouseItem) => editing && run(async () => {
     const lines = toLines(item, editing.rows);
-    if (!lines.length) throw new Error("A pallet needs at least one box — remove it instead.");
+    if (!lines.length) throw new Error("A pallet needs at least one box. Remove it instead.");
     const np = await api.updateWarehousePallet(p.id, lines);
     setPallets((cur) => (cur || []).map((x) => (x.id === np.id ? np : x)));
     setEditing(null);
@@ -175,7 +175,7 @@ export default function WarehouseOrders({ items }: { items: WarehouseItem[] }) {
   const savePasscode = (invoiceId: string, code: string) => run(async () => {
     replaceOrder(invoiceId, await api.setOrderPasscode(invoiceId, code));
     setCodeFor(null);
-    toast(code.trim() ? "Passcode set — send it to your customer with the order." : "Passcode removed — anyone with a label can open it.");
+    toast(code.trim() ? "Passcode set: send it to your customer with the order." : "Passcode removed. Anyone with a label can open it.");
   });
   const copy = (text: string, what: string) => { navigator.clipboard.writeText(text).then(() => toast(`${what} copied`)).catch(() => toast(text)); };
 
@@ -193,7 +193,7 @@ export default function WarehouseOrders({ items }: { items: WarehouseItem[] }) {
         : !orders.length ? (
           <div className={`${WH_CARD} px-6 py-10 text-center border-dashed`}>
             <div className="text-[14px] font-semibold text-ink">No pallets yet</div>
-            <p className="text-[12.5px] text-muted mt-1 max-w-[520px] mx-auto">Add the pallets of an order — for 288 boxes on 12 pallets, say what one pallet holds and "12 like this". Each gets a label to print and a link its QR code opens.</p>
+            <p className="text-[12.5px] text-muted mt-1 max-w-[520px] mx-auto">Add the pallets of an order: for 288 boxes on 12 pallets, say what one pallet holds and "12 like this". Each gets a label to print and a link its QR code opens.</p>
           </div>
         ) : orders.map((o) => {
           const item = itemOf(o.item_id);
@@ -207,8 +207,8 @@ export default function WarehouseOrders({ items }: { items: WarehouseItem[] }) {
                   <div className="text-[15px] font-semibold text-ink">{o.invoice_number ? `Order ${o.invoice_number}` : "Order"}{o.client_name ? <span className="font-normal text-ink-2"> · {o.client_name}</span> : null}</div>
                   <div className="text-[12.5px] text-muted mt-0.5 tabular-nums">{o.pallets.length} {o.pallets.length === 1 ? "pallet" : "pallets"} · {n0(boxes)} boxes · {n0(units)} units{item ? ` · ${item.name}` : ""}</div>
                   <div className="text-[12px] mt-1">{code
-                    ? <span className="text-ink-2">Passcode <span className="font-medium text-ink">{code}</span> — send it to your customer. <button onClick={() => copy(code, "Passcode")} className="text-accent hover:underline">Copy</button></span>
-                    : <span className="text-muted">No passcode — anyone with a label can open it.</span>}</div>
+                    ? <span className="text-ink-2">Passcode <span className="font-medium text-ink">{code}</span>. Send it to your customer. <button onClick={() => copy(code, "Passcode")} className="text-accent hover:underline">Copy</button></span>
+                    : <span className="text-muted">No passcode. Anyone with a label can open it.</span>}</div>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <button onClick={() => print(o.pallets.map((p) => p.id))} disabled={busy} className={WH_BTN_PRIMARY}><Printer size={14} /> Print all labels</button>
@@ -228,7 +228,7 @@ export default function WarehouseOrders({ items }: { items: WarehouseItem[] }) {
               {sel.length >= 2 && (
                 <div className="mx-5 mb-3 flex items-center gap-2 flex-wrap text-[12.5px] text-ink-2">
                   <button onClick={() => combine(o.invoice_id, sel.map((p) => p.id))} disabled={busy} className={WH_BTN_PRIMARY}><Layers size={14} /> Combine {sel.length} pallets into one</button>
-                  <span className="text-muted">{n0(sel.reduce((a, p) => a + palletBoxes(p), 0))} boxes — the fitter checks they go on one pallet first.</span>
+                  <span className="text-muted">{n0(sel.reduce((a, p) => a + palletBoxes(p), 0))} boxes. The fitter checks they go on one pallet first.</span>
                   <button onClick={() => setPicked(new Set())} className="text-[12px] text-muted hover:text-ink-2">Clear</button>
                 </div>
               )}

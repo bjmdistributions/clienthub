@@ -119,7 +119,7 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
         <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 min-w-0">
           <div className="min-w-0">
             <div className="text-[11px] text-muted">Buyer</div>
-            <div className="text-[13px] text-ink font-medium truncate">{flow.client_name || "—"}</div>
+            <div className="text-[13px] text-ink font-medium truncate">{flow.client_name || "–"}</div>
           </div>
           {supplierLabel && (
             <div className="min-w-0">
@@ -171,7 +171,7 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
       {/* P&L summary — reflects linked payments once any are paired */}
       <div>
         <div className="text-[11px] text-muted mb-2">
-          {fromPayments ? "Profit & loss — from linked payments" : "Profit & loss — projected (no payments linked yet)"}
+          {fromPayments ? "Profit & loss: from linked payments" : "Profit & loss: projected (no payments linked yet)"}
         </div>
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
           {[
@@ -184,7 +184,7 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
             },
             {
               label: "Margin",
-              value: margin === null ? "—" : `${margin.toFixed(1)}%`,
+              value: margin === null ? "–" : `${margin.toFixed(1)}%`,
               clr:   margin === null ? "text-faint"
                    : margin >= 20   ? "text-success-ink"
                    : margin >= 10   ? "text-warning-ink"

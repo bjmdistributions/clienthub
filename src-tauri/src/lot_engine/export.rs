@@ -207,7 +207,7 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
     if opts.show_check && unverified > 0 {
         summary.rows.push(vec![
             "Lines to check".into(),
-            format!("{unverified} units — see the Description check column"),
+            format!("{unverified} units, see the Description check column"),
         ]);
     }
 
@@ -340,7 +340,7 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
     sections.push(Section { title: "Lines".into(), headers, rows });
 
     Doc {
-        name: format!("{} — manifest", opts.lot_name),
+        name: format!("{} · manifest", opts.lot_name),
         sections,
     }
 }
@@ -349,7 +349,7 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
 pub fn brand_counts(stacks: &[Stack], p: &Pricing, lot_name: &str) -> Doc {
     let t = lot_totals(stacks, p);
     Doc {
-        name: format!("{lot_name} — brand counts"),
+        name: format!("{lot_name} · brand counts"),
         sections: vec![Section {
             title: "By brand".into(),
             headers: vec![
@@ -414,7 +414,7 @@ pub fn pull_sheet(stacks: &[Stack], _p: &Pricing, lot_name: &str) -> Doc {
         .collect();
 
     Doc {
-        name: format!("{lot_name} — pull sheet"),
+        name: format!("{lot_name} · pull sheet"),
         sections: vec![Section {
             title: "Slots".into(),
             headers: vec!["Location".into(), "Units".into(), "Retail".into()],

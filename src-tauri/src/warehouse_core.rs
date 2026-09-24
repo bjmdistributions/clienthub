@@ -1106,7 +1106,7 @@ pub fn clean_stock(stock: MapStock, cells: &[LayoutCell], shape: &LayoutShape) -
 pub fn set_place_stock(stock: &mut MapStock, cells: &[LayoutCell], shape: &LayoutShape, place: &str, item_id: &str, section_id: &str, boxes: BTreeMap<String, i64>) -> Result<(), String> {
     let holds = map_places(cells, shape).iter().any(|(k, i, s)| k == place && i == item_id && s == section_id);
     if !holds {
-        return Err("That spot no longer holds that team — mark it on the map first.".into());
+        return Err("That spot no longer holds that team. Mark it on the map first.".into());
     }
     let boxes: BTreeMap<String, i64> = boxes.into_iter().filter(|(t, n)| !t.is_empty() && *n > 0).collect();
     stock.insert(place.to_string(), PlaceStock { item_id: item_id.into(), section_id: section_id.into(), boxes });
@@ -1119,7 +1119,7 @@ pub fn set_place_stock(stock: &mut MapStock, cells: &[LayoutCell], shape: &Layou
 pub fn change_place_stock(stock: &mut MapStock, cells: &[LayoutCell], shape: &LayoutShape, place: &str, item_id: &str, section_id: &str, set: &BTreeMap<String, i64>, add: &BTreeMap<String, i64>) -> Result<(), String> {
     let holds = map_places(cells, shape).iter().any(|(k, i, s)| k == place && i == item_id && s == section_id);
     if !holds {
-        return Err("That spot no longer holds that team — mark it on the map first.".into());
+        return Err("That spot no longer holds that team. Mark it on the map first.".into());
     }
     let e = stock.entry(place.to_string()).or_insert_with(|| PlaceStock { item_id: item_id.into(), section_id: section_id.into(), boxes: BTreeMap::new() });
     if e.item_id != item_id || e.section_id != section_id {

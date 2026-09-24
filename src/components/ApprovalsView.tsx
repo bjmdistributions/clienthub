@@ -280,7 +280,7 @@ export function ApprovalsView() {
                       <span className="text-[13.5px] font-semibold text-ink truncate">{c.name}</span>
                       {src && <StatusPill tone="neutral">{src}</StatusPill>}
                     </div>
-                    <div className="text-[11.5px] text-muted truncate">{[c.email, c.company].filter(Boolean).join(" · ") || "—"}</div>
+                    <div className="text-[11.5px] text-muted truncate">{[c.email, c.company].filter(Boolean).join(" · ") || "–"}</div>
                   </div>
                   <StatusPill tone={approved ? "success" : "danger"}>{approved ? "Approved" : "Rejected"}</StatusPill>
                 </div>
@@ -339,7 +339,7 @@ export function ApprovalsView() {
                   <div key={a.id} className="bg-surface border border-line rounded-xl p-4 flex items-center justify-between gap-4">
                     <div className="min-w-0 flex-1">
                       <div className="text-[14px] font-medium text-ink truncate">{(a.summary || "").replace(/^Renew or mark sold:\s*/, "") || "Listing"}</div>
-                      <div className="text-[11px] text-muted mt-0.5">Not renewed in 5+ days — renew to keep it live, or mark it sold.</div>
+                      <div className="text-[11px] text-muted mt-0.5">Not renewed in 5+ days: renew to keep it live, or mark it sold.</div>
                     </div>
                     <div className="flex gap-2 flex-shrink-0">
                       <button onClick={() => quick(a.id, true)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Renew</button>

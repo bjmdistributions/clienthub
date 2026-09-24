@@ -127,7 +127,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
     try {
       await startDrag({ item: [fsPath], icon: iconPath || fsPath });
     } catch {
-      toast("Couldn't start the drag — that file may still be syncing to this device.", "error");
+      toast("Couldn't start the drag. That file may still be syncing to this device.", "error");
     }
   };
 
@@ -255,7 +255,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
                           </div>
                         ) : (
                           <div className="h-11 px-2 rounded-md flex items-center gap-1.5 flex-shrink-0" style={{ border: "1px dashed var(--t-b1)", background: "var(--t-s1)", opacity: 0.6 }}
-                            title="This manifest is still syncing to this device — it'll be draggable once it arrives.">
+                            title="This manifest is still syncing to this device. It'll be draggable once it arrives.">
                             <RefreshCw size={12} className="animate-spin" style={{ color: "var(--t-tx4)" }} />
                             <span className="text-[11px] truncate max-w-[90px]" style={{ color: "var(--t-tx4)" }}>Manifest syncing…</span>
                           </div>

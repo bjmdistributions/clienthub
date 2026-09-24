@@ -220,7 +220,7 @@ fn box_q(t: &FitType) -> Result<Dims, String> {
     }
     // Under an inch a side, a pallet would be thousands of boxes a layer — not a box anyone stacks by hand.
     if d.l < q(1.0) || d.w < q(1.0) || d.h < q(1.0) {
-        return Err(format!("{} is under an inch on a side — check its measurements.", name_of(t)));
+        return Err(format!("{} is under an inch on a side. Check its measurements.", name_of(t)));
     }
     Ok(d)
 }
@@ -824,7 +824,7 @@ pub fn fit(req: &FitRequest) -> Result<FitResult, String> {
         if g.boxes < 0 {
             return Err("A count of boxes cannot be below zero.".into());
         }
-        asked = asked.checked_add(g.boxes).filter(|&n| n <= MAX_BOXES).ok_or_else(|| format!("That is more than {} boxes in one plan — split the load.", MAX_BOXES))?;
+        asked = asked.checked_add(g.boxes).filter(|&n| n <= MAX_BOXES).ok_or_else(|| format!("That is more than {} boxes in one plan. Split the load.", MAX_BOXES))?;
     }
     let mut types: Vec<(FitType, Dims, Stack)> = Vec::new();
     let mut capacity = Vec::new();
@@ -986,7 +986,7 @@ pub fn fit(req: &FitRequest) -> Result<FitResult, String> {
             built.push(Built { boxes: Vec::new(), flat: 0, flat_top: Vec::new(), alone: false });
             let j = built.len() - 1;
             roomy.push(j);
-            let (r, z) = place_one(&p, &built[j].boxes, way, &patterns[&(i, way)]).ok_or_else(|| format!("{} does not fit on an empty pallet — the plan is wrong.", name_of(&types[i].0)))?;
+            let (r, z) = place_one(&p, &built[j].boxes, way, &patterns[&(i, way)]).ok_or_else(|| format!("{} does not fit on an empty pallet. The plan is wrong.", name_of(&types[i].0)))?;
             built[j].boxes.push(Bx { t: i, way, r, z, full: false });
         }
     }
@@ -1007,7 +1007,7 @@ pub fn fit(req: &FitRequest) -> Result<FitResult, String> {
                 *qi += 1;
                 *used = 0;
             }
-            let section_id = queues[b.t].get(*qi).map(|(s, _)| s.clone()).ok_or("More places than boxes — the plan is wrong.")?;
+            let section_id = queues[b.t].get(*qi).map(|(s, _)| s.clone()).ok_or("More places than boxes. The plan is wrong.")?;
             *used += 1;
             let layer = starts.iter().position(|&z| z == b.z).unwrap_or(0) + 1;
             boxes.push(Placed {
@@ -1037,13 +1037,13 @@ pub fn fit(req: &FitRequest) -> Result<FitResult, String> {
         let want = q.iter().map(|(_, n)| n).sum::<i64>();
         let got = pallets.iter().flat_map(|p| &p.boxes).filter(|b| b.type_id == types[i].0.type_id).count() as i64;
         if want != got {
-            return Err(format!("The plan placed {} of {} {} — it is wrong and is not shown.", got, want, name_of(&types[i].0)));
+            return Err(format!("The plan placed {} of {} {}. It is wrong and is not shown.", got, want, name_of(&types[i].0)));
         }
     }
     for pl in &pallets {
         let bad = check(&req.pallet, &req.types, &pl.boxes);
         if let Some(e) = bad.first() {
-            return Err(format!("Pallet {} failed its check ({}) — the plan is not shown.", pl.n, e));
+            return Err(format!("Pallet {} failed its check ({}). The plan is not shown.", pl.n, e));
         }
     }
     Ok(FitResult { pallets, capacity })
@@ -1065,7 +1065,7 @@ fn finish(n: usize, p: &P, types: &[FitType], boxes: Vec<Placed>, layers: Vec<Fi
 fn too_many(t: &FitType, s: &Stack) -> Result<(), String> {
     if s.per_pallet() > MAX_PER_PALLET {
         return Err(format!(
-            "{} would be {} boxes on one pallet — more than anyone stacks by hand. Check its measurements.",
+            "{} would be {} boxes on one pallet, more than anyone stacks by hand. Check its measurements.",
             name_of(t), s.per_pallet()
         ));
     }

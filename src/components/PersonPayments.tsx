@@ -335,7 +335,7 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
         ? "Tied to one of their deals, and that deal's recorded revenue and cost are built from this money."
         : `${nBuilds} of these ${nBuilds === 1 ? "builds" : "build"} that deal's recorded revenue and cost.`),
     nRefunds > 0 &&
-      `${all(nRefunds) ? (nRefunds === 1 ? "This is a refund" : "Every one is a refund") : `${nRefunds} ${nRefunds === 1 ? "is a refund" : "are refunds"}`} back to the buyer: booked to the deal and counted in its refund total, but never in its recorded profit — that figure is taken before refunds, and the refund comes off revenue instead.`,
+      `${all(nRefunds) ? (nRefunds === 1 ? "This is a refund" : "Every one is a refund") : `${nRefunds} ${nRefunds === 1 ? "is a refund" : "are refunds"}`} back to the buyer: booked to the deal and counted in its refund total, but never in its recorded profit. That figure is taken before refunds, and the refund comes off revenue instead.`,
     nUnread > 0 &&
       `${all(nUnread) ? (nUnread === 1 ? "This carries a role" : "Every one carries a role") : `${nUnread} ${nUnread === 1 ? "carries a role" : "carry a role"}`} no deal figure reads, so no deal total counts ${nUnread === 1 ? "it" : "them"}.`,
     anySplit &&
@@ -401,7 +401,7 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
           ) : (
             <>
               Showing <span className="text-ink font-medium tabular-nums">{counts.total[method] || 0}</span>{" "}
-              {methodLabel(method).toLowerCase()} — <span className="tabular-nums">{counts.confirmed[method] || 0}</span>{" "}
+              {methodLabel(method).toLowerCase()}: <span className="tabular-nums">{counts.confirmed[method] || 0}</span>{" "}
               you confirmed, <span className="tabular-nums">{(counts.total[method] || 0) - (counts.confirmed[method] || 0)}</span>{" "}
               not confirmed.{" "}
               <span className="tabular-nums">{counts.unclassified}</span> could not be read and are not in this list.{" "}
@@ -433,8 +433,8 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
       {elsewhere.length > 0 && (
         <div className="pt-3 mt-3 border-t border-line-2">
           <Group
-            title="Booked to someone else's deal — worth a look"
-            caption={`Filed under ${person.name}, but booked to a deal that does not list them. One of the two is wrong: either the payment belongs to somebody else (change who it is filed under), or the deal is missing them. It counts on that deal — none of it counts here.`}
+            title="Booked to someone else's deal, worth a look"
+            caption={`Filed under ${person.name}, but booked to a deal that does not list them. One of the two is wrong: either the payment belongs to somebody else (change who it is filed under), or the deal is missing them. It counts on that deal. None of it counts here.`}
             rows={elsewhere}
             empty="None under this method."
             showClient
@@ -471,7 +471,7 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
           See all in Financials <ArrowRight size={12} />
         </button>
         {payments.length >= 100 && (
-          <span className="text-[11px] text-faint">Their 100 most recent — older ones are in Financials.</span>
+          <span className="text-[11px] text-faint">Their 100 most recent. Older ones are in Financials.</span>
         )}
       </div>
 
@@ -533,7 +533,7 @@ function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRo
                   {r.tagged && (
                     <button
                       onClick={() => onUntag(r.txn_id)}
-                      title="Remove this link — the payment itself stays exactly as it is"
+                      title="Remove this link. The payment itself stays exactly as it is"
                       className="ml-1 inline-flex align-middle items-center justify-center w-4 h-4 rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors"
                     >
                       <X size={10} />

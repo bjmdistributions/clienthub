@@ -102,7 +102,7 @@ export default function PalletsTab({ item, onChanged }: { item: WarehouseItem; o
       setFieldsKey((k) => k + 1);
       onChanged(it);
       const c = big ? capOf(big.id) : undefined;
-      toast(c && big ? `Saved. A pallet holds ${n0(c.boxes)} ${big.name} — Plan a load and the map use it now.` : "Measurements saved");
+      toast(c && big ? `Saved. A pallet holds ${n0(c.boxes)} ${big.name}. Plan a load and the map use it now.` : "Measurements saved");
     } catch (e) { toast(String(e), "error"); }
     finally { setBusy(false); }
   };
@@ -170,7 +170,7 @@ export default function PalletsTab({ item, onChanged }: { item: WarehouseItem; o
           <div className="px-5 py-3.5 border-t border-line flex items-center gap-2 flex-wrap bg-surface-2/40">
             <button onClick={save} disabled={!dirty || busy || invalid.size > 0} className={WH_BTN_PRIMARY}>{busy ? "Saving…" : "Save measurements"}</button>
             {(dirty || invalid.size > 0) && <button onClick={() => { edited.current = false; setDraft(saved); setInvalid(new Set()); setFieldsKey((k) => k + 1); }} className={WH_BTN_SECONDARY}>Undo changes</button>}
-            {big && capOf(big.id) && <span className="text-[12px] text-muted">{dirty ? "Once saved, a" : "A"} pallet is {n0(capOf(big.id)!.boxes)} {big.name} everywhere — Plan a load, Build this lot and the map.</span>}
+            {big && capOf(big.id) && <span className="text-[12px] text-muted">{dirty ? "Once saved, a" : "A"} pallet is {n0(capOf(big.id)!.boxes)} {big.name} everywhere. Plan a load, Build this lot and the map.</span>}
           </div>
         </div>
       </div>

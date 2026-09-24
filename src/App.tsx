@@ -634,7 +634,7 @@ export default function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<{ label: string }>("shipment-delivered", (e) => {
-      toast(`Delivered — ${e.payload.label}. Ready to mark the deal complete.`, "delivered");
+      toast(`Delivered: ${e.payload.label}. Ready to mark the deal complete.`, "delivered");
     }).then((u) => { unlisten = u; }).catch(() => {});
     return () => unlisten?.();
   }, []);
@@ -1338,7 +1338,7 @@ export default function App() {
                   Sync
                 </span>
                 <span className="tabular-nums">
-                  {lastSync ? new Date(lastSync).toLocaleTimeString() : "—"}
+                  {lastSync ? new Date(lastSync).toLocaleTimeString() : "–"}
                 </span>
               </button>
 

@@ -121,7 +121,7 @@ export default function WarehouseMap({ items }: { items: WarehouseItem[] }) {
           <LayoutGrid size={22} className="text-faint mx-auto mb-3" />
           <div className="text-[14px] font-semibold text-ink">Draw your warehouse</div>
           <p className="text-[13px] text-muted mt-1 max-w-[460px] mx-auto">
-            Add a map for each area — a floor of pallets, or a run of shelving — then mark each spot with the team on it and how full it is.
+            Add a map for each area (a floor of pallets, or a run of shelving), then mark each spot with the team on it and how full it is.
           </p>
           <button onClick={() => setEditing("new")} className={`${WH_BTN_PRIMARY} mt-4`}><Plus size={14} /> Add a map</button>
         </div>
@@ -473,7 +473,7 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
         if (!w) return null;
         const on = wall && wall.side === w.side && wall.pos === w.pos;
         return (
-          <button key={`w${r}:${c}`} style={place(r, c)} title={`${w.side === "top" ? "Row A wall" : w.side === "bottom" ? `Row ${colName(layout.rows - 1)} wall` : w.side === "left" ? "Spot 1 end" : "Far end"} — click to add a door`}
+          <button key={`w${r}:${c}`} style={place(r, c)} title={`${w.side === "top" ? "Row A wall" : w.side === "bottom" ? `Row ${colName(layout.rows - 1)} wall` : w.side === "left" ? "Spot 1 end" : "Far end"}, click to add a door`}
             onClick={() => { setSel(new Set()); setDoorId(null); setOther(null); setWall(w); }}
             className={`rounded-[4px] transition-colors ${on ? "bg-accent/30 ring-2 ring-accent" : "hover:bg-accent/15"}`} aria-label="Wall" />
         );
@@ -483,7 +483,7 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
         const [y0] = v.at(...doorSpots(layout, d)[0]);
         const upright = !wallRow(y0);
         return (
-          <button key={d.id} style={{ ...st, writingMode: upright ? "vertical-rl" : undefined }} title={`${DOOR_KINDS[d.kind]}${d.label ? ` · ${d.label}` : ""} — ${doorWhere(layout, d)}`}
+          <button key={d.id} style={{ ...st, writingMode: upright ? "vertical-rl" : undefined }} title={`${DOOR_KINDS[d.kind]}${d.label ? ` · ${d.label}` : ""}, ${doorWhere(layout, d)}`}
             onClick={() => { setSel(new Set()); setWall(null); setOther(null); setDoorId(d.id); }}
             className={`z-10 rounded-[4px] bg-ink text-surface text-[10px] font-medium leading-none flex items-center justify-center overflow-hidden whitespace-nowrap px-1 ${doorId === d.id ? "ring-2 ring-accent ring-offset-1 ring-offset-bg" : ""}`}>
             <span className="truncate">{DOOR_SHORT[d.kind]}{d.label ? ` · ${d.label}` : ""}</span>
@@ -609,7 +609,7 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
     return (
       <div>
         <div className="text-[13px] text-ink tabular-nums"><span className="font-semibold">{pctLabel(pct)}</span> · {n0(unitsOn(ps, it.box_types))} of {n0(it.units_per_pallet)} units</div>
-        <div className="text-[11.5px] text-muted mt-0.5">Worked out from its boxes. A pallet is {size} — change it in Plan a load.</div>
+        <div className="text-[11.5px] text-muted mt-0.5">Worked out from its boxes. A pallet is {size}. Change it in Plan a load.</div>
       </div>
     );
   };
@@ -679,7 +679,7 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
           </div>
           <button onClick={clearAll} className="text-[12px] text-muted hover:text-ink-2">Done</button>
         </div>
-        {shelvesIn > 0 && <p className="text-[12px] text-muted -mt-2">{shelvesIn === 1 ? "The shelf" : `The ${shelvesIn} shelves`} in this selection keep their levels — click a shelf on its own to change them.</p>}
+        {shelvesIn > 0 && <p className="text-[12px] text-muted -mt-2">{shelvesIn === 1 ? "The shelf" : `The ${shelvesIn} shelves`} in this selection keep their levels. Click a shelf on its own to change them.</p>}
         {selCells.length > 0 && <>
           <div>
             <label className="block text-[12px] text-muted mb-1.5">What is here</label>
@@ -957,7 +957,7 @@ function LayoutForm({ initial, onCancel, onSaved }: { initial: WarehouseLayout |
         <div>
           <label className="block text-[12px] text-muted mb-1.5">What it is</label>
           <Seg size="md" value={kind} onChange={setKind} options={[{ key: "pallets", label: "Pallets on the floor" }, { key: "shelving", label: "Shelving" }]} />
-          {!shelvingKind && <p className="text-[11.5px] text-muted mt-1.5">A floor can also hold shelves among its pallets, and doors in its walls — set those on the map.</p>}
+          {!shelvingKind && <p className="text-[11.5px] text-muted mt-1.5">A floor can also hold shelves among its pallets, and doors in its walls. Set those on the map.</p>}
         </div>
         <div className="flex flex-wrap items-end gap-4">
           <div>

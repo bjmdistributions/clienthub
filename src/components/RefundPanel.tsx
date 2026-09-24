@@ -65,7 +65,7 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
               onChange={(e) => run(async () => { await api.setDealLeadRep(dealFlowId, e.target.value || null); })}
               className="bg-surface-2 border border-line rounded-lg h-7 px-2 text-[12px] text-ink"
             >
-              <option value="">— Unassigned —</option>
+              <option value="">(Unassigned)</option>
               {reps.map((r) => <option key={r.id} value={r.id}>{r.display_name}</option>)}
             </select>
             {payout.lead_rep_id && (
@@ -85,7 +85,7 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
       {enabled && unmatched && (
         <div className="flex items-start gap-2 bg-warning-bg border border-warning rounded-lg px-3 py-2">
           <span className="text-[12px] text-warning-ink leading-snug">
-            Rep <strong>“{unmatchedName}”</strong> on this client isn't an employee — no payout is calculated for them. Fix the spelling on the client, or add/invite them under <strong>Settings → Team</strong>.
+            Rep <strong>“{unmatchedName}”</strong> on this client isn't an employee. No payout is calculated for them. Fix the spelling on the client, or add/invite them under <strong>Settings → Team</strong>.
           </span>
         </div>
       )}

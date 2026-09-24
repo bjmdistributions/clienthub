@@ -299,8 +299,8 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
             })
             .unwrap_or_default();
         let hint = match status.as_u16() {
-            401 => "Your Google sign-in needs refreshing — open Settings → Google Sheets and click Reconnect, then try again.",
-            403 => "The Google account you connected to Ecliptr can't read this sheet. Make sure the sheet is shared (view access) with that exact account — check Settings → Google Sheets to see which account is connected. (If the owner disabled copy/download, that can also block reading.)",
+            401 => "Your Google sign-in needs refreshing. Open Settings → Google Sheets and click Reconnect, then try again.",
+            403 => "The Google account you connected to Ecliptr can't read this sheet. Make sure the sheet is shared (view access) with that exact account. Check Settings → Google Sheets to see which account is connected. (If the owner disabled copy/download, that can also block reading.)",
             404 => "That sheet wasn't found for your connected Google account. Double-check the link, and that the sheet is shared with the exact account shown in Settings → Google Sheets.",
             _ => "Google refused to read that sheet.",
         };
@@ -315,11 +315,11 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
     // how many bytes we got (a very large sheet may still overflow the timeout /
     // truncate). Never panic — always a graceful Err.
     let body = read_resp.bytes().await.map_err(|_| {
-        "Ecliptr couldn't finish downloading that sheet's data. It may be extremely large — try a sheet with fewer tabs/rows, or tell support.".to_string()
+        "Ecliptr couldn't finish downloading that sheet's data. It may be extremely large. Try a sheet with fewer tabs/rows, or tell support.".to_string()
     })?;
     let source: Value = serde_json::from_slice(&body).map_err(|_| {
         format!(
-            "Ecliptr couldn't read that sheet's data (received {} bytes). It may be extremely large — try a sheet with fewer tabs/rows, or tell support.",
+            "Ecliptr couldn't read that sheet's data (received {} bytes). It may be extremely large. Try a sheet with fewer tabs/rows, or tell support.",
             body.len()
         )
     })?;
@@ -330,7 +330,7 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
         .and_then(|p| p.get("title"))
         .and_then(Value::as_str)
         .unwrap_or("Untitled");
-    let new_title = format!("{} — copy", source_title);
+    let new_title = format!("{} · copy", source_title);
 
     let new_sheets: Vec<Value> = source
         .get("sheets")
@@ -361,15 +361,15 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
         .send()
         .await
         .map_err(|_| {
-            "That sheet is too large or complex to copy automatically — try copying one tab at a time.".to_string()
+            "That sheet is too large or complex to copy automatically. Try copying one tab at a time.".to_string()
         })?;
 
     if !create_resp.status().is_success() {
-        return Err("That sheet is too large or complex to copy automatically — try copying one tab at a time.".into());
+        return Err("That sheet is too large or complex to copy automatically. Try copying one tab at a time.".into());
     }
 
     let created: Value = create_resp.json().await.map_err(|_| {
-        "The copy was created but the server response couldn't be read — check your Google Drive.".to_string()
+        "The copy was created but the server response couldn't be read. Check your Google Drive.".to_string()
     })?;
 
     let new_url = created

@@ -38,7 +38,7 @@ function SessionsList({ sessions, onOpen, reload }: { sessions: CheckupSession[]
         <h2 className="text-[18px] font-semibold text-ink">Checkup</h2>
         <button onClick={() => setCreating(true)} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"><Plus size={14} /> New session</button>
       </div>
-      <p className="text-[12px] text-muted mb-5">Work through your clients in three steps — reach out, note how it went, then mark them done. Move cards back any time.</p>
+      <p className="text-[12px] text-muted mb-5">Work through your clients in three steps: reach out, note how it went, then mark them done. Move cards back any time.</p>
 
       {creating && (
         <div className="bg-surface border border-line rounded-xl p-4 mb-4 space-y-3">

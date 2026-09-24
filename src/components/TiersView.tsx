@@ -165,7 +165,7 @@ function tierMoney(
 // gets a deliberate one-off exception at 380ms ease-out — every other transition
 // on this screen (hover, the swap icon, colour) stays at 130ms.
 const ODOMETER_ROLL_MS = 380;
-const EM_DASH = "—";
+const EM_DASH = "–";
 
 function reducedMotion(): boolean {
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -523,15 +523,15 @@ export default function TiersView() {
                   <TierBadge tier={t.tier} />
                 </td>
                 <td className="px-5 py-3 text-right text-[13px] font-semibold text-ink tabular-nums">
-                  {t.actual_paid > 0 ? fmtAmount(t.actual_paid) : "—"}
+                  {t.actual_paid > 0 ? fmtAmount(t.actual_paid) : "–"}
                 </td>
                 <td className={`px-5 py-3 text-right text-[13px] font-semibold tabular-nums ${
                   t.total_profit < 0 ? "text-danger-ink" : "text-ink"
                 }`}>
-                  {t.total_profit !== 0 ? <>{t.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(t.total_profit))}</> : "—"}
+                  {t.total_profit !== 0 ? <>{t.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(t.total_profit))}</> : "–"}
                 </td>
                 <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{t.invoices_sent}</td>
-                <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{t.quotes_sent || "—"}</td>
+                <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{t.quotes_sent || "–"}</td>
                 <td className="px-5 py-3">
                   <ReliabilityBadge reliability={t.reliability} pct={t.reliability_pct} quotesSent={t.quotes_sent} quotesWon={t.quotes_won} />
                 </td>
@@ -545,7 +545,7 @@ export default function TiersView() {
                       {t.avg_commission_pct.toFixed(1)}%
                     </span>
                   ) : (
-                    <span className="text-[12px] text-faint">—</span>
+                    <span className="text-[12px] text-faint">–</span>
                   )}
                 </td>
                 <td className="px-5 py-3 text-right text-[13px] tabular-nums">

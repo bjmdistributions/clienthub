@@ -52,7 +52,7 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
         <h3 className="text-[16px] font-bold text-ink">Get your Google credentials</h3>
       </div>
       <p className="text-[12.5px] text-muted mb-5 leading-relaxed">
-        A one-time setup in Google Cloud gives Ecliptr a Client ID + Secret so it can send and read mail on your behalf — without ever storing your Google password. Takes about 5 minutes.
+        A one-time setup in Google Cloud gives Ecliptr a Client ID + Secret so it can send and read mail on your behalf, without ever storing your Google password. Takes about 5 minutes.
       </p>
 
       <div className="mb-5">
@@ -91,7 +91,7 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
               <div className="h-5 rounded bg-surface border border-line flex items-center px-1.5 text-[9px] text-success-ink">+ you@gmail.com</div>
             </MockWindow>
           }>
-          Under <span className="text-ink-2">OAuth consent screen</span>, choose <span className="text-ink-2 font-medium">External</span>. On the "Test users" step, <span className="text-ink-2 font-medium">add your own Google address</span> — this keeps the app in testing mode (no Google review needed) and lets you authorize it.
+          Under <span className="text-ink-2">OAuth consent screen</span>, choose <span className="text-ink-2 font-medium">External</span>. On the "Test users" step, <span className="text-ink-2 font-medium">add your own Google address</span>. This keeps the app in testing mode (no Google review needed) and lets you authorize it.
         </Step>
 
         <Step n={4} icon={KeyRound} title="Create OAuth credentials"
@@ -102,7 +102,7 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
               <div className="h-5 mt-1.5 rounded bg-accent/90 flex items-center justify-center text-[9px] text-on-accent font-semibold">Create</div>
             </MockWindow>
           }>
-          Go to <span className="text-ink-2">Credentials → Create credentials → OAuth client ID</span>. For <span className="text-ink-2">Application type</span> pick <span className="text-ink-2 font-medium">Desktop app</span> (important — this enables the local loopback flow Ecliptr uses).
+          Go to <span className="text-ink-2">Credentials → Create credentials → OAuth client ID</span>. For <span className="text-ink-2">Application type</span> pick <span className="text-ink-2 font-medium">Desktop app</span> (important: this enables the local loopback flow Ecliptr uses).
         </Step>
 
         <Step n={5} icon={Copy} title="Copy the ID + secret into Ecliptr" last
@@ -114,13 +114,13 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
               <div className="h-4 rounded bg-surface border border-line" />
             </MockWindow>
           }>
-          Google shows your <span className="text-ink-2 font-medium">Client ID</span> and <span className="text-ink-2 font-medium">Client secret</span>. Paste both back into the Connect Google panel, then click <span className="text-ink-2">Connect</span> — your browser opens once to approve access.
+          Google shows your <span className="text-ink-2 font-medium">Client ID</span> and <span className="text-ink-2 font-medium">Client secret</span>. Paste both back into the Connect Google panel, then click <span className="text-ink-2">Connect</span>. Your browser opens once to approve access.
         </Step>
       </div>
 
       <div className="mt-5 flex items-start gap-2 text-[11.5px] text-muted bg-surface-2/60 border border-line-2 rounded-lg px-3.5 py-2.5 leading-relaxed">
         <ShieldCheck size={14} className="text-success-ink flex-shrink-0 mt-0.5" />
-        <span>Ecliptr stores the ID, secret, and Google token in your OS keychain — never your password, never synced to the cloud. You can revoke access anytime from your Google account's security settings.</span>
+        <span>Ecliptr stores the ID, secret, and Google token in your OS keychain: never your password, never synced to the cloud. You can revoke access anytime from your Google account's security settings.</span>
       </div>
     </div>
   );

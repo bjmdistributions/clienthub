@@ -70,7 +70,7 @@ const parseDay = (d: string): Date => {
 };
 
 const shortDate = (d?: string | null) =>
-  d ? parseDay(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
+  d ? parseDay(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "–";
 
 const daysSince = (d?: string | null) =>
   d ? (Date.now() - parseDay(d).getTime()) / 86400000 : Infinity;
@@ -412,7 +412,7 @@ export default function SuppliersView() {
         {[
           { label: "Spent with suppliers", value: fmtAmount(totals.spent) },
           { label: "Profit on their stock", value: fmtAmount(totals.profit) },
-          { label: "Blended margin", value: totals.rev > 0 ? `${((totals.profit / totals.rev) * 100).toFixed(1)}%` : "—" },
+          { label: "Blended margin", value: totals.rev > 0 ? `${((totals.profit / totals.rev) * 100).toFixed(1)}%` : "–" },
           { label: "Suppliers used", value: `${totals.used} of ${totals.count}` },
         ].map((c) => (
           <div key={c.label} className="bg-surface border border-line rounded-xl px-4 py-3 min-w-0">
@@ -511,20 +511,20 @@ export default function SuppliersView() {
                       <div className="text-[13px] font-medium text-ink truncate max-w-[220px]">{s.name}</div>
                       {s.archived && <div className="text-[10px] text-warning-ink font-medium mt-0.5">Archived</div>}
                     </td>
-                    <td className="px-5 py-3 text-[12px] text-muted truncate max-w-[160px]">{s.contact_name || "—"}</td>
+                    <td className="px-5 py-3 text-[12px] text-muted truncate max-w-[160px]">{s.contact_name || "–"}</td>
                     <td className="px-5 py-3 text-right text-[13px] font-semibold text-ink tabular-nums">
-                      {s.total_paid > 0 ? fmtAmount(s.total_paid) : "—"}
+                      {s.total_paid > 0 ? fmtAmount(s.total_paid) : "–"}
                     </td>
                     <td className={`px-5 py-3 text-right text-[13px] font-semibold tabular-nums ${
                       s.total_profit < 0 ? "text-danger-ink" : "text-ink"
                     }`}>
                       {s.total_profit !== 0
                         ? <>{s.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(s.total_profit))}</>
-                        : "—"}
+                        : "–"}
                     </td>
                     <td className="px-5 py-3 text-right">
                       {m === null ? (
-                        <span className="text-[12px] text-faint">—</span>
+                        <span className="text-[12px] text-faint">–</span>
                       ) : (
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tabular-nums ${
                           m >= 25 ? "bg-success-bg text-success-ink"
@@ -535,17 +535,17 @@ export default function SuppliersView() {
                         </span>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{s.deal_count || "—"}</td>
+                    <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{s.deal_count || "–"}</td>
                     <td className="px-5 py-3 text-right text-[13px] text-ink-2 tabular-nums">
-                      {s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "—"}
+                      {s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "–"}
                     </td>
                     <td className="px-5 py-3 text-[12px] text-muted">{shortDate(s.last_deal_date)}</td>
                     <td className="px-5 py-3 text-[12px] text-muted">
                       {s.last_contact
                         ? `${s.last_contact_kind === "email_out" ? "Out" : "In"} · ${shortDate(s.last_contact)}`
-                        : "—"}
+                        : "–"}
                     </td>
-                    <td className="px-5 py-3 text-[12px] text-muted truncate max-w-[140px]">{s.payment_method || "—"}</td>
+                    <td className="px-5 py-3 text-[12px] text-muted truncate max-w-[140px]">{s.payment_method || "–"}</td>
                   </tr>
                 );
               })}
@@ -731,18 +731,18 @@ function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment,
       {/* Money first */}
       <div className="grid grid-cols-2 gap-2">
         {[
-          { label: "Spent with them", value: s.total_paid > 0 ? fmtAmount(s.total_paid) : "—" },
+          { label: "Spent with them", value: s.total_paid > 0 ? fmtAmount(s.total_paid) : "–" },
           { label: "Profit on their stock", value: s.total_profit !== 0
-              ? `${s.total_profit < 0 ? "−" : ""}${fmtAmount(Math.abs(s.total_profit))}` : "—",
+              ? `${s.total_profit < 0 ? "−" : ""}${fmtAmount(Math.abs(s.total_profit))}` : "–",
             danger: s.total_profit < 0 },
-          { label: "Margin",   value: m === null ? "—" : `${m.toFixed(1)}%` },
+          { label: "Margin",   value: m === null ? "–" : `${m.toFixed(1)}%` },
           { label: "Deals",    value: String(s.deal_count) },
-          { label: "Avg deal", value: s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "—" },
+          { label: "Avg deal", value: s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "–" },
           { label: "Last deal",value: shortDate(s.last_deal_date) },
           { label: "Last contact",
             value: s.last_contact
               ? `${s.last_contact_kind === "email_out" ? "Out" : "In"} · ${shortDate(s.last_contact)}`
-              : "—" },
+              : "–" },
         ].map((st) => (
           <div key={st.label} className="bg-surface-2 border border-line rounded-lg px-3 py-2 min-w-0">
             <div className="text-[11.5px] text-muted truncate">{st.label}</div>

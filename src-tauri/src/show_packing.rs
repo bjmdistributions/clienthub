@@ -200,7 +200,7 @@ fn packing_list_pdf(payload: &Value) -> Result<Vec<u8>, String> {
             layer = pdf.get_page(pi).get_layer(li);
             y = PAGE_H - MARGIN;
         }
-        layer.use_text(format!("Box {bin} — @{username}"), 11.0, Mm(MARGIN), Mm(y), &font_bold);
+        layer.use_text(format!("Box {bin} · @{username}"), 11.0, Mm(MARGIN), Mm(y), &font_bold);
         y -= 6.0;
 
         for item in &items {

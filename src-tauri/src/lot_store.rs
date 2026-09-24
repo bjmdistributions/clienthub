@@ -167,7 +167,7 @@ pub async fn set_lot_retail(sheet_id: String, title: String, msrp: Option<f64>) 
     // A guard, not a limit anyone should hit: this rides in one JSON column on the sheet
     // row, and a five-figure map would make every sync event carry it.
     if map.len() > 5000 {
-        return Err("too many corrected prices on one sheet — fix the source workbook instead".into());
+        return Err("too many corrected prices on one sheet: fix the source workbook instead".into());
     }
     let json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
@@ -1050,7 +1050,7 @@ pub async fn save_lot_build(
         .cloned()
         .collect();
     if lot.is_empty() {
-        return Err("that lot has no stock in it — add some locations first".into());
+        return Err("that lot has no stock in it: add some locations first".into());
     }
 
     let pricing = pricing_with_cost(
@@ -1368,7 +1368,7 @@ fn insert_branch(id: &str, sheet_id: &str, name: &str) -> Result<(), String> {
 pub async fn create_lot_branch(sheet_id: String, name: String) -> Result<LotBuild, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("a branch needs a name — it is the title on its own spreadsheet".into());
+        return Err("a branch needs a name: it is the title on its own spreadsheet".into());
     }
     let id = uuid::Uuid::new_v4().to_string();
     insert_branch(&id, &sheet_id, &name)?;
@@ -1399,7 +1399,7 @@ pub async fn combine_lot_builds(
 ) -> Result<LotBuild, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("give the combined lot a name — it is what a buyer sees".into());
+        return Err("give the combined lot a name: it is what a buyer sees".into());
     }
     if child_ids.len() < 2 {
         return Err("pick at least two lots to combine".into());
@@ -1700,7 +1700,7 @@ fn lot_pages(build: &LotBuild, opts_base: &ManifestOpts) -> Result<(Doc, Doc), S
         .pop()
         .ok_or_else(|| "that manifest came out empty".to_string())?;
     Ok((
-        Doc { name: format!("{} — breakdown", build.name), sections: doc.sections },
+        Doc { name: format!("{} · breakdown", build.name), sections: doc.sections },
         Doc { name: build.name.clone(), sections: vec![items] },
     ))
 }
@@ -1799,7 +1799,7 @@ pub async fn export_lot_workbook(build_id: String, path: String) -> Result<Expor
             .map_err(|e| e.to_string())?
     };
     if build.kind == "branch" {
-        return Err("that is a branch — download the branch workbook instead".into());
+        return Err("that is a branch: download the branch workbook instead".into());
     }
     ensure_artifact(&build.sheet_id).await?;
     let (breakdown, items) = lot_pages(&build, &saved_manifest_opts())?;
@@ -1853,7 +1853,7 @@ pub async fn mark_lot_sold(build_id: String, sold: bool) -> Result<usize, String
         return Err("that lot has already left the building".into());
     }
     if build.kind == "branch" {
-        return Err("a branch is a folder — sell the lots inside it".into());
+        return Err("a branch is a folder: sell the lots inside it".into());
     }
     let (from, to) = if sold { ("saved", "sold") } else { ("sold", "saved") };
     let now = chrono::Utc::now().to_rfc3339();

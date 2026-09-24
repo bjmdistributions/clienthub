@@ -135,7 +135,7 @@ function RecordPaymentModal({ item, onClose, onSaved }: { item: ARItem; onClose:
           <div>
             <label className="block text-[11px] font-medium text-muted mb-1.5">Method</label>
             <select className={inp} value={method} onChange={(e) => setMethod(e.target.value)}>
-              <option value="">— select —</option>
+              <option value="">(select)</option>
               {methods.map((m) => <option key={m.id} value={m.label}>{m.label}</option>)}
             </select>
           </div>
@@ -224,8 +224,8 @@ export default function ReceivablesView() {
         <div className="flex items-start justify-between gap-3 bg-surface border border-line rounded-xl px-4 py-2.5">
           <p className="text-[11.5px] text-muted leading-snug">
             {showSpec
-              ? `Showing all ${allItems.length} open — ${specCount} speculative early-stage deal${specCount !== 1 ? "s" : ""} included.`
-              : `Speculative early-stage deals hidden — they don't count until a deal is near closing. ${specCount} hidden.`}
+              ? `Showing all ${allItems.length} open: ${specCount} speculative early-stage deal${specCount !== 1 ? "s" : ""} included.`
+              : `Speculative early-stage deals hidden. They don't count until a deal is near closing. ${specCount} hidden.`}
           </p>
           <label className="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
             <span className="text-[12px] text-ink-2">Show speculative</span>
@@ -292,7 +292,7 @@ function ChaseList({ items, lastContact, onRecord }: {
   onRecord: (it: ARItem) => void;
 }) {
   if (items.length === 0) {
-    return <EmptyState label="Nothing owed to you right now — all invoices are paid." />;
+    return <EmptyState label="Nothing owed to you right now. All invoices are paid." />;
   }
   return (
     <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
@@ -307,7 +307,7 @@ function ChaseList({ items, lastContact, onRecord }: {
               <div className="flex items-center gap-2">
                 <span className="text-[13px] font-semibold text-ink truncate">{it.client_name}</span>
                 {!it.committed && (
-                  <StatusPill tone="neutral" title="Speculative early-stage deal — not yet counted toward owed totals">Speculative</StatusPill>
+                  <StatusPill tone="neutral" title="Speculative early-stage deal: not yet counted toward owed totals">Speculative</StatusPill>
                 )}
                 <span className={`text-[10.5px] font-semibold tabular-nums px-1.5 py-0.5 rounded flex-shrink-0 ${due.overdue ? "text-danger-ink bg-danger-bg" : "text-muted bg-surface-2"}`}>
                   {due.text}
@@ -340,7 +340,7 @@ function ChaseList({ items, lastContact, onRecord }: {
 
 function ByClient({ clients }: { clients: ARClient[] }) {
   if (clients.length === 0) {
-    return <EmptyState label="Nothing owed to you right now — all invoices are paid." />;
+    return <EmptyState label="Nothing owed to you right now. All invoices are paid." />;
   }
   return (
     <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">

@@ -109,7 +109,7 @@ export default function QuickLogModal({ onClose }: Props) {
                   >
                     {c.name}
                     {c.company && (
-                      <span className="text-[13px] text-muted ml-2">— {c.company}</span>
+                      <span className="text-[13px] text-muted ml-2">· {c.company}</span>
                     )}
                   </button>
                 ))}

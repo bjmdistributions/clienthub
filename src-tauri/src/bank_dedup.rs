@@ -582,7 +582,7 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
             }
         }
         if let Some(f) = conflict {
-            review.push(review_item(idxs, s, format!("same date, amount and memo, but the {f} differs — could be two real transactions"), false));
+            review.push(review_item(idxs, s, format!("same date, amount and memo, but the {f} differs: could be two real transactions"), false));
             continue;
         }
 
@@ -618,7 +618,7 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
 
         let linked = idxs.iter().filter(|&&i| rows[i].linked).count();
         if linked > keep_n {
-            review.push(review_item(idxs, s, "more copies are linked to deals, loans or refunds than the bank shows — resolve by hand".into(), folded));
+            review.push(review_item(idxs, s, "more copies are linked to deals, loans or refunds than the bank shows: resolve by hand".into(), folded));
             continue;
         }
 
@@ -630,7 +630,7 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
             let target_n = per_label.get(target.as_str()).cloned().unwrap_or(0);
             if target_n > 0 && target_n < keep_n {
                 let mut g = review_item(idxs, s, format!(
-                    "all kept — the bank's current feed shows {target_n}, so delete the {} extra by hand if they are duplicates",
+                    "all kept: the bank's current feed shows {target_n}, so delete the {} extra by hand if they are duplicates",
                     keep_n - target_n), true);
                 g["account"] = json!(target);
                 g["count"] = json!(keep_n);
@@ -642,7 +642,7 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
         if keep_n >= idxs.len() { continue; }
         let (keep, losers) = ordered.split_at(keep_n);
         if losers.iter().any(|&i| rows[i].linked) {
-            review.push(review_item(idxs, s, "a copy linked to a deal would be removed — resolve by hand".into(), folded));
+            review.push(review_item(idxs, s, "a copy linked to a deal would be removed: resolve by hand".into(), folded));
             continue;
         }
         let cross = folded && per_label.keys().any(|l| unconfirmed.contains(l));
@@ -650,15 +650,15 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
         // transaction: every copy carries its connection, or the account's two names are a
         // proven rename. Older rows with no connection stamp keep the old rule.
         if (cross || (!folded && !all_have_pa)) && losers.iter().any(|&i| rows[i].reviewed) {
-            review.push(review_item(idxs, s, "a booked copy would be removed — resolve by hand".into(), folded));
+            review.push(review_item(idxs, s, "a booked copy would be removed: resolve by hand".into(), folded));
             continue;
         }
         let Some(removals) = removals_for(keep, losers) else {
-            review.push(review_item(idxs, s, "the copies are booked differently — resolve by hand".into(), folded));
+            review.push(review_item(idxs, s, "the copies are booked differently: resolve by hand".into(), folded));
             continue;
         };
         if cross && !aggressive {
-            review.push(review_item(idxs, s, "same transaction on two account labels — confirm these accounts are one".into(), true));
+            review.push(review_item(idxs, s, "same transaction on two account labels: confirm these accounts are one".into(), true));
             continue;
         }
         if !folded && !all_have_pa && !aggressive {
@@ -666,9 +666,9 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
             let dl = s.desc.to_lowercase();
             let generic = s.desc.trim().is_empty() || generic_terms.iter().any(|t| dl.contains(t));
             if generic || whole_dollar || idxs.len() > 2 {
-                review.push(review_item(idxs, s, (if generic { "generic memo — could be a real repeat (re-pull to confirm by connection)" }
-                    else if whole_dollar { "round amount — could be a real repeat (re-pull to confirm by connection)" }
-                    else { "more than two copies — re-pull to confirm by connection" }).into(), false));
+                review.push(review_item(idxs, s, (if generic { "generic memo: could be a real repeat (re-pull to confirm by connection)" }
+                    else if whole_dollar { "round amount: could be a real repeat (re-pull to confirm by connection)" }
+                    else { "more than two copies: re-pull to confirm by connection" }).into(), false));
                 continue;
             }
         }
@@ -705,7 +705,7 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
         ordered.sort_by(rank);
         let s = &rows[ordered[0]];
         if idxs.len() > 2 {
-            review.push(review_item(idxs, s, format!("the same bank reference is on {} transactions — resolve by hand", idxs.len()), false));
+            review.push(review_item(idxs, s, format!("the same bank reference is on {} transactions: resolve by hand", idxs.len()), false));
             continue;
         }
         let (a, b) = (&rows[idxs[0]], &rows[idxs[1]]);
@@ -716,25 +716,25 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
         let two_views = if !pa.is_empty() && !pb.is_empty() { pa != pb } else { a.account != b.account };
         if !two_views { continue; }
         if let Some(f) = metadata_conflict(a, b, false) {
-            review.push(review_item(idxs, s, format!("same bank reference, but the {f} differs — resolve by hand"), a.account != b.account));
+            review.push(review_item(idxs, s, format!("same bank reference, but the {f} differs: resolve by hand"), a.account != b.account));
             continue;
         }
         let (keep, losers) = ordered.split_at(1);
         if rows[losers[0]].linked {
-            review.push(review_item(idxs, s, "same bank reference on two dates, both linked to deals — resolve by hand".into(), a.account != b.account));
+            review.push(review_item(idxs, s, "same bank reference on two dates, both linked to deals: resolve by hand".into(), a.account != b.account));
             continue;
         }
         let Some(removals) = removals_for(keep, losers) else {
-            review.push(review_item(idxs, s, "same bank reference on two dates, booked differently — resolve by hand".into(), a.account != b.account));
+            review.push(review_item(idxs, s, "same bank reference on two dates, booked differently: resolve by hand".into(), a.account != b.account));
             continue;
         };
         let cross = a.account != b.account && (unconfirmed.contains(a.account.as_str()) || unconfirmed.contains(b.account.as_str()));
         if cross && rows[losers[0]].reviewed {
-            review.push(review_item(idxs, s, "a booked copy would be removed — resolve by hand".into(), true));
+            review.push(review_item(idxs, s, "a booked copy would be removed: resolve by hand".into(), true));
             continue;
         }
         if cross && !aggressive {
-            review.push(review_item(idxs, s, "same bank reference on two account labels — confirm these accounts are one".into(), true));
+            review.push(review_item(idxs, s, "same bank reference on two account labels: confirm these accounts are one".into(), true));
             continue;
         }
         removed.insert(losers[0]);

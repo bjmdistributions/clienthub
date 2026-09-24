@@ -289,7 +289,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                 <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-success-ink mb-3">
                   <CheckCircle2 size={18} />
                 </div>
-                <div className="text-[13px] text-muted">All clear — nothing needs you right now</div>
+                <div className="text-[13px] text-muted">All clear, nothing needs you right now</div>
               </div>
             ) : (
               <div className="divide-y divide-line-2">
@@ -333,7 +333,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                   <ActionRow
                     tone="success" icon={<PackageCheck size={14} />}
                     title={`${readyToClose.length} deal${readyToClose.length !== 1 ? "s" : ""} ready to close out`}
-                    sub="Supplier paid — mark them complete to book the profit"
+                    sub="Supplier paid: mark them complete to book the profit"
                     onClick={() => goTab("dealflow")}
                   />
                 )}

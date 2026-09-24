@@ -1706,7 +1706,7 @@ pub async fn export_tax_year_pnl_csv(year: i32, output_path: String) -> Result<u
             wtr.write_record(&[line.group.clone(), line.label.clone(), format!("{:.2}", line.in_amt), format!("{:.2}", line.out_amt), format!("{:.2}", line.net())]).map_err(|e| e.to_string())?;
         }
         if let Some((_, total)) = r.group_totals.iter().find(|(g, _)| g == &group) {
-            wtr.write_record(&[format!("{} — group total", group), String::new(), String::new(), String::new(), format!("{:.2}", total)]).map_err(|e| e.to_string())?;
+            wtr.write_record(&[format!("{} group total", group), String::new(), String::new(), String::new(), format!("{:.2}", total)]).map_err(|e| e.to_string())?;
         }
     }
 
@@ -1715,7 +1715,7 @@ pub async fn export_tax_year_pnl_csv(year: i32, output_path: String) -> Result<u
     wtr.write_record(&["Sales tax & owner's personal tax (not P&L)".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.tax_passthrough_net)]).map_err(|e| e.to_string())?;
     wtr.write_record(&["Transfers, owner draws & asset purchases (not P&L)".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.transfers_net)]).map_err(|e| e.to_string())?;
     wtr.write_record(&["Uncategorized (not P&L)".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.uncategorized_net)]).map_err(|e| e.to_string())?;
-    wtr.write_record(&["Total — all bank activity this year".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.net_income + r.tax_passthrough_net + r.transfers_net + r.uncategorized_net)]).map_err(|e| e.to_string())?;
+    wtr.write_record(&["Total: all bank activity this year".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.net_income + r.tax_passthrough_net + r.transfers_net + r.uncategorized_net)]).map_err(|e| e.to_string())?;
 
     wtr.flush().map_err(|e| e.to_string())?;
     Ok(txn_count)
@@ -1815,7 +1815,7 @@ pub async fn export_ledger_csv(ids: Vec<String>, output_path: String) -> Result<
         ))).map_err(|e| e.to_string())?;
         for (txn_id, name, role, amount) in rows.filter_map(|r| r.ok()) {
             deals.entry(txn_id).or_default()
-                .push(format!("{} — {} {:.2}", name, ledger_role_label(&role), amount));
+                .push(format!("{}: {} {:.2}", name, ledger_role_label(&role), amount));
         }
     }
 
@@ -1863,7 +1863,7 @@ pub async fn export_ledger_csv(ids: Vec<String>, output_path: String) -> Result<
     // The same two figures the Ledger prints above the list, so the file can be
     // checked against the screen without adding anything up by hand.
     wtr.write_record(vec![""; 17]).map_err(|e| e.to_string())?;
-    let mut total = vec![format!("Total — {} transaction{}", count, if count == 1 { "" } else { "s" })];
+    let mut total = vec![format!("Total: {} transaction{}", count, if count == 1 { "" } else { "s" })];
     total.extend(std::iter::repeat(String::new()).take(4));
     total.push(format!("{:.2}", sum_in));
     total.push(format!("{:.2}", sum_out));
@@ -5457,7 +5457,7 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
         None => None,
         Some((date, basis)) => match reason {
             None => return Err(format!(
-                "This deal's {} date is {} — it has not arrived yet. Complete it on or after that date, or override with a reason.",
+                "This deal's {} date is {}. It has not arrived yet. Complete it on or after that date, or override with a reason.",
                 basis, date)),
             Some(reason) => {
                 let (by_id, by) = actor_identity();
@@ -8580,7 +8580,7 @@ pub async fn parse_load(text: String, image_base64: Option<String>, image_media_
 pub async fn parse_loads(text: String, image_base64: Option<String>, _image_media_type: Option<String>) -> Result<Vec<Value>, String> {
     if text.trim().is_empty() {
         return Err(if image_base64.is_some() {
-            "Paste the message text — the free parser reads text, not screenshots.".into()
+            "Paste the message text. The free parser reads text, not screenshots.".into()
         } else {
             "Paste one or more load messages first.".into()
         });
@@ -9296,14 +9296,14 @@ fn friendly_conn_error(err: &str) -> String {
     if e.contains("auth") || e.contains("username and password") || e.contains("credential")
         || e.contains("login") || e.contains("535") || e.contains("534") || e.contains("invalid")
     {
-        "Authentication failed — check the username / app password.".to_string()
+        "Authentication failed. Check the username / app password.".to_string()
     } else if e.contains("dns") || e.contains("resolve") || e.contains("not known")
         || e.contains("no such host") || e.contains("connect") || e.contains("connection refused")
         || e.contains("timed out") || e.contains("timeout") || e.contains("unreachable")
     {
-        "Couldn't reach the mail server — check the host and port.".to_string()
+        "Couldn't reach the mail server. Check the host and port.".to_string()
     } else if e.contains("tls") || e.contains("certificate") || e.contains("ssl") {
-        "Secure connection (TLS) failed — check the port / security settings.".to_string()
+        "Secure connection (TLS) failed. Check the port / security settings.".to_string()
     } else if e.contains("not configured") || e.contains("not found") || e.contains("no imap host")
         || e.contains("no password") || e.contains("no email")
     {
@@ -9320,7 +9320,7 @@ fn friendly_conn_error(err: &str) -> String {
 #[tauri::command]
 pub async fn test_smtp_connection() -> Result<Value, String> {
     match crate::email::test_smtp().await {
-        Ok(()) => Ok(json!({ "ok": true, "message": "Connected — outbound email is working." })),
+        Ok(()) => Ok(json!({ "ok": true, "message": "Connected. Outbound email is working." })),
         Err(e) => Ok(json!({ "ok": false, "message": friendly_conn_error(&e.to_string()) })),
     }
 }
@@ -9330,7 +9330,7 @@ pub async fn test_smtp_connection() -> Result<Value, String> {
 #[tauri::command]
 pub async fn test_inbox_connection(id: String) -> Result<Value, String> {
     match crate::email::test_inbox(&id).await {
-        Ok(()) => Ok(json!({ "ok": true, "message": "Connected — inbox reachable and login succeeded." })),
+        Ok(()) => Ok(json!({ "ok": true, "message": "Connected. Inbox reachable and login succeeded." })),
         Err(e) => Ok(json!({ "ok": false, "message": friendly_conn_error(&e.to_string()) })),
     }
 }
@@ -10733,7 +10733,7 @@ pub async fn open_whatsapp_window(app: tauri::AppHandle) -> Result<(), String> {
     }
     let url = "https://web.whatsapp.com".parse().map_err(|e| format!("bad url: {e}"))?;
     tauri::WebviewWindowBuilder::new(&app, "whatsapp", tauri::WebviewUrl::External(url))
-        .title("WhatsApp Web — ClientHub")
+        .title("WhatsApp Web · ClientHub")
         .inner_size(1100.0, 820.0)
         .user_agent(WA_USER_AGENT)
         .build()
@@ -13319,7 +13319,7 @@ pub async fn analytics_reconciliation(start_date: String, end_date: String) -> R
     let overhead = shipping + fees;
     let deals: Vec<Value> = {
         let mut stmt = conn.prepare(&format!(
-            "SELECT COALESCE(NULLIF(i.number,''),'—'), c.name, df.completed_at, df.gross_revenue, \
+            "SELECT COALESCE(NULLIF(i.number,''),'–'), c.name, df.completed_at, df.gross_revenue, \
                     {money_in_sql}, {money_out_sql}, {RF}, {NP} \
              {df_clients} ORDER BY {NP} DESC, df.completed_at DESC LIMIT 500")
         ).map_err(|e| e.to_string())?;
@@ -17540,7 +17540,7 @@ pub async fn plaid_config() -> Result<Value, String> {
 #[tauri::command]
 pub async fn plaid_test_keys() -> Result<String, String> {
     crate::plaid::create_link_token().await
-        .map(|_| format!("Connected to Plaid {} — keys are valid.", crate::plaid::get_env()))
+        .map(|_| format!("Connected to Plaid {}. Keys are valid.", crate::plaid::get_env()))
         .map_err(|e| e.to_string())
 }
 
@@ -17701,7 +17701,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
     if items.is_empty() {
-        return Err("No banks connected yet — click Connect a bank first.".into());
+        return Err("No banks connected yet. Click Connect a bank first.".into());
     }
     // R-287. The duplicate checks below used to compare the account LABEL exactly, so when
     // the bank renamed an account on an upgrade (same last-4, a new product name) a re-pull
@@ -18604,7 +18604,7 @@ pub async fn plaid_refresh_sync() -> Result<Value, String> {
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
-    if items.is_empty() { return Err("No banks connected yet — connect a bank first.".into()); }
+    if items.is_empty() { return Err("No banks connected yet. Connect a bank first.".into()); }
     for (access, env) in &items {
         let _ = crate::plaid::transactions_refresh(access, env).await;
     }
@@ -19405,7 +19405,7 @@ pub async fn untag_bank_txn_counterparty(bank_txn_id: String) -> Result<(), Stri
             [&bank_txn_id], |r| r.get(0),
         ).map_err(|_| "Transaction not found".to_string())?;
         if ctype == "loan" {
-            return Err("This transaction is tagged to a loan — remove it from the loan instead".into());
+            return Err("This transaction is tagged to a loan. Remove it from the loan instead".into());
         }
         if ctype.is_empty() {
             return Err("This transaction has no supplier or client tag".into());
@@ -20973,8 +20973,8 @@ fn append_unsub_footer(body: &str, business: &str, url: Option<&str>, footer_lin
         if f.is_empty() { DEFAULT_NL_FOOTER_LINE } else { f }
     }.replace("{business}", &who);
     match url {
-        Some(u) => format!("{body}\n\n—\n{line}\nTo unsubscribe: {u}"),
-        None => format!("{body}\n\n—\n{line}\nTo stop receiving these, reply to this email with \"unsubscribe\"."),
+        Some(u) => format!("{body}\n\n--\n{line}\nTo unsubscribe: {u}"),
+        None => format!("{body}\n\n--\n{line}\nTo stop receiving these, reply to this email with \"unsubscribe\"."),
     }
 }
 
@@ -22100,7 +22100,7 @@ pub async fn sheet_writeback_status() -> Result<Value, String> {
     } else if !google_connected {
         ("not_connected", "Connect Google (OAuth) under Settings → Email to grant Sheets write access. Until then approvals won't reach the sheet.")
     } else {
-        ("active", "Active — approving a lead appends a row to the connected sheet.")
+        ("active", "Active. Approving a lead appends a row to the connected sheet.")
     };
     let active = state == "active";
 
@@ -22589,7 +22589,7 @@ pub async fn geocode_client(client_id: String) -> Result<GeocodeResult, String> 
 pub async fn geocode_all_clients() -> Result<GeocodeSummary, String> {
     let lookup = match crate::geocode::get() {
         Some(l) => l,
-        None => return Err("geocode not initialized — CSV may not have loaded".into()),
+        None => return Err("geocode not initialized, CSV may not have loaded".into()),
     };
 
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -23189,7 +23189,7 @@ pub async fn scan_data_integrity() -> Result<Vec<IntegrityItem>, String> {
             items.push(IntegrityItem {
                 kind: "resurrected_invoice".into(),
                 id: iid,
-                title: format!("Invoice {} — deleted on another device but still here", num_label),
+                title: format!("Invoice {}, deleted on another device but still here", num_label),
                 detail: format!(
                     "This {} invoice carries a tombstone (another device deleted it) yet the row still exists here, with {} linked row(s). It will not converge on its own. Converging deletes it and its dependents everywhere through the sync path.",
                     status, ndeps
@@ -23228,7 +23228,7 @@ pub async fn scan_data_integrity() -> Result<Vec<IntegrityItem>, String> {
             items.push(IntegrityItem {
                 kind: "orphan_payment".into(),
                 title: format!("Payment (${:.2}) with no live invoice", amt),
-                detail: format!("This payment is linked to an invoice where {} — money recorded against a deal that is not live. Converging deletes the payment everywhere.", why),
+                detail: format!("This payment is linked to an invoice where {}, money recorded against a deal that is not live. Converging deletes the payment everywhere.", why),
                 amount: Some(amt),
                 targets: vec![IntegrityTarget { table: "payments".into(), id: pid.clone(), label: format!("Payment (${:.2})", amt) }],
                 id: pid,
@@ -23258,7 +23258,7 @@ pub async fn scan_data_integrity() -> Result<Vec<IntegrityItem>, String> {
             items.push(IntegrityItem {
                 kind: "orphan_deal_flow".into(),
                 title: "Deal flow with no invoice".into(),
-                detail: "This deal flow points at an invoice that no longer exists here — a stray left behind when the invoice was removed. Converging deletes the deal flow everywhere.".into(),
+                detail: "This deal flow points at an invoice that no longer exists here, a stray left behind when the invoice was removed. Converging deletes the deal flow everywhere.".into(),
                 amount: None,
                 targets: vec![IntegrityTarget { table: "deal_flows".into(), id: did.clone(), label: "Deal flow".into() }],
                 id: did,
@@ -23299,7 +23299,7 @@ pub async fn converge_integrity_item(kind: String, id: String) -> Result<Vec<Str
                     > 0
             };
             if !has_tomb {
-                return Err("This invoice no longer looks resurrected — rescan.".into());
+                return Err("This invoice no longer looks resurrected. Rescan.".into());
             }
             let pays: Vec<String> = {
                 let conn = pool().get().map_err(|e| e.to_string())?;
@@ -23335,7 +23335,7 @@ pub async fn converge_integrity_item(kind: String, id: String) -> Result<Vec<Str
                 .unwrap_or(0)
             };
             if still == 0 {
-                return Err("This payment now has a live invoice — rescan.".into());
+                return Err("This payment now has a live invoice. Rescan.".into());
             }
             converge_delete_row("payments", &id)?;
             deleted.push("the payment".into());
@@ -23353,7 +23353,7 @@ pub async fn converge_integrity_item(kind: String, id: String) -> Result<Vec<Str
                 .unwrap_or(0)
             };
             if still == 0 {
-                return Err("This deal flow's invoice exists again — rescan.".into());
+                return Err("This deal flow's invoice exists again. Rescan.".into());
             }
             converge_delete_row("deal_flows", &id)?;
             deleted.push("the deal flow".into());
@@ -23468,7 +23468,7 @@ pub async fn apply_location_normalization(changes: Vec<LocationChange>) -> Resul
         }
     }
     if affected.is_empty() {
-        return Err("Those locations are no longer in use — nothing was changed.".into());
+        return Err("Those locations are no longer in use. Nothing was changed.".into());
     }
 
     // 2. Back up first, and prove the backup landed before touching anything.
@@ -23489,7 +23489,7 @@ pub async fn apply_location_normalization(changes: Vec<LocationChange>) -> Resul
         .map_err(|e| e.to_string())?;
     let written = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
     if written == 0 {
-        return Err("Backup file came out empty — nothing was changed.".into());
+        return Err("Backup file came out empty. Nothing was changed.".into());
     }
 
     // 3. Now write, one column, through the oplog so every device gets it.

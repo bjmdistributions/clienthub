@@ -165,7 +165,7 @@ export function proposeLocation(raw: string, cityStates: { state: string; popula
   if (isBareStateCode(s)) {
     return {
       city: "", state: parsed.state, formatted: parsed.state, confidence: "assumed",
-      reason: `Read as ${stateName(parsed.state)} — could also be a city abbreviation`,
+      reason: `Read as ${stateName(parsed.state)}, but could also be a city abbreviation`,
     };
   }
 
@@ -192,7 +192,7 @@ export function proposeLocation(raw: string, cityStates: { state: string; popula
       confidence: dominant ? "certain" : "assumed",
       reason: dominant
         ? `${titleCase(s)} is in ${stateName(top.state)}`
-        : `${titleCase(s)} exists in ${cityStates.length} states — ${stateName(top.state)} is the biggest`,
+        : `${titleCase(s)} exists in ${cityStates.length} states, and ${stateName(top.state)} is the biggest`,
     };
   }
 

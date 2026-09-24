@@ -62,7 +62,7 @@ function TxnPicker({ txns, onPick, onClose }: {
     return (
       <div className="border border-line rounded-lg bg-surface-2 mt-2 p-3 space-y-2">
         <div className="flex items-center gap-2 text-[12.5px]">
-          <span className="flex-1 min-w-0 truncate text-ink">{picked.counterparty_name || picked.description || "—"}</span>
+          <span className="flex-1 min-w-0 truncate text-ink">{picked.counterparty_name || picked.description || "–"}</span>
           <span className={`tabular-nums font-medium ${picked.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(max)}</span>
         </div>
         <div className="flex items-center gap-2">
@@ -94,7 +94,7 @@ function TxnPicker({ txns, onPick, onClose }: {
           <div className="px-3 py-4 text-[12px] text-muted text-center leading-relaxed">
             {txns.length === 0
               ? "No unlinked transactions in the bank feed."
-              : "No match. Transfers between your own accounts aren't listed here — find those in Financials, or add a custom line."}
+              : "No match. Transfers between your own accounts aren't listed here. Find those in Financials, or add a custom line."}
           </div>
         ) : filtered.map((t) => (
           <button
@@ -102,7 +102,7 @@ function TxnPicker({ txns, onPick, onClose }: {
             className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-3 border-b border-line-2 last:border-0 transition-colors"
           >
             <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(t.posted_at)}</span>
-            <span className="flex-1 min-w-0 truncate text-[12.5px] text-ink">{t.counterparty_name || t.description || "—"}</span>
+            <span className="flex-1 min-w-0 truncate text-[12.5px] text-ink">{t.counterparty_name || t.description || "–"}</span>
             <span className={`tabular-nums text-[12.5px] font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
               {fmtAmount(t.unallocated)}
             </span>
@@ -378,7 +378,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
                 <div className="mt-2 space-y-1 text-[11.5px] text-muted">
                   <div>
                     Buyer is owed <span className="text-ink tabular-nums font-medium">{fmtAmount(buyerFromUnits)}</span>
-                    {" "}— {shortNum} × {fmtAmount(shortage.buyer_rate)} from the invoice
+                    {": "}{shortNum} × {fmtAmount(shortage.buyer_rate)} from the invoice
                     {shortage.buyer_rate_blended && <span className="text-warning-ink"> (averaged across the invoice's lines)</span>}
                   </div>
                   {!locked ? (
@@ -391,7 +391,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
                       />
                       <span>
                         {shortNum} × {fmtAmount(shortage.supplier_rate)}
-                        {shortage.supplier_rate_estimated && <span className="text-warning-ink"> (no supplier quantity on record — cost spread over the invoiced units)</span>}
+                        {shortage.supplier_rate_estimated && <span className="text-warning-ink"> (no supplier quantity on record, cost spread over the invoiced units)</span>}
                       </span>
                     </div>
                   ) : (
@@ -400,12 +400,12 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
                   {shortage.charges_excluded > 0 && (
                     <div className="text-[10.5px]">
                       {shortage.charges_excluded} per-load charge{shortage.charges_excluded !== 1 ? "s" : ""}
-                      {" "}(freight, wire fees) {shortage.charges_excluded !== 1 ? "are" : "is"} left out of both rates —
-                      shipping does not come back with the units. {shortage.charges_excluded !== 1 ? "They" : "It"} still
+                      {" "}(freight, wire fees) {shortage.charges_excluded !== 1 ? "are" : "is"} left out of both rates.
+                      Shipping does not come back with the units. {shortage.charges_excluded !== 1 ? "They" : "It"} still
                       {" "}{shortage.charges_excluded !== 1 ? "count" : "counts"} in full toward the deal's cost.
                     </div>
                   )}
-                  {!locked && <div className="text-[10.5px]">Enter 0 if the supplier is crediting the next load instead — the deal is still short, but nothing is owed.</div>}
+                  {!locked && <div className="text-[10.5px]">Enter 0 if the supplier is crediting the next load instead. The deal is still short, but nothing is owed.</div>}
                 </div>
               )}
             </section>
@@ -436,7 +436,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
                   <div className="mt-2 flex items-start gap-1.5 text-[11px] text-warning-ink">
                     <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
                     <span>
-                      Until the supplier's money lands the units are gone but the cost isn't — profit on
+                      Until the supplier's money lands the units are gone but the cost isn't. Profit on
                       the {shortage.kept_units} kept units is {fmtAmount(shortage.actual.profit)}, not {fmtAmount(shortage.expected.profit)}.
                     </span>
                   </div>
