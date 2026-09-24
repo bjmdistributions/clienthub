@@ -244,7 +244,7 @@ fn grid_from_excel(path: &str) -> Result<Grid> {
 
     let (sheet, rows, _) = best.context("Couldn't read any sheet out of that spreadsheet.")?;
     let note = if names.len() > 1 {
-        Some(format!("{} sheets in the file — read the one with the most rows.", names.len()))
+        Some(format!("{} sheets in the file. Read the one with the most rows.", names.len()))
     } else {
         None
     };
@@ -409,12 +409,15 @@ pub(crate) fn guess_category(desc_lower: &str) -> &'static str {
 
 // ── Analysis (shared by every format) ───────────────────────────────────────
 
-/// Average margin across completed deals — the basis for the suggested bid. Split
-/// out so the analysis itself stays pure and testable without a live database.
+/// Average margin across completed deals, the basis for the suggested bid. Voided invoices
+/// are left out, as the server's copy (the phone's analyzer) leaves them out, so the same
+/// manifest suggests the same bid on both. Split out so the analysis itself stays pure and
+/// testable without a live database.
 fn avg_completed_margin() -> f64 {
     if let Ok(conn) = crate::db::pool().get() {
         conn.query_row(
-            "SELECT COALESCE(AVG(margin), 30.0) FROM invoices WHERE is_complete=1 AND margin IS NOT NULL",
+            "SELECT COALESCE(AVG(margin), 30.0) FROM invoices \
+             WHERE is_complete=1 AND margin IS NOT NULL AND COALESCE(voided,0)=0",
             [], |r| r.get(0),
         ).unwrap_or(30.0)
     } else { 30.0 }
@@ -456,7 +459,7 @@ fn analyze_grid_with_margin(grid: Grid, overall_margin_pct: f64) -> Result<Manif
     }
     let col = |i: usize| format!("column {}", i + 1);
     let inferred = format!(
-        "No header row — the columns were inferred from the data itself (description: {}, \
+        "No header row, so the columns were inferred from the data itself (description: {}, \
          quantity: {}, price: {}). Check the totals against the file.",
         col(inf.desc),
         inf.qty.map(col).unwrap_or_else(|| "none found, 1 unit per line".to_string()),
@@ -771,7 +774,7 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         });
     }
     if qty_idx.is_none() {
-        let extra = "No quantity column found — every line counted as 1 unit.";
+        let extra = "No quantity column found, so every line counted as 1 unit.";
         note = Some(match note {
             Some(n) => format!("{} {}", n, extra),
             None => extra.to_string(),
@@ -807,7 +810,7 @@ async fn analyze_pdf(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
     // like an empty manifest, and OCR is not something this path can do.
     if text.chars().filter(|c| c.is_alphanumeric()).count() < 40 {
         anyhow::bail!(
-            "This PDF has no text layer — it's a scan or a photo of a manifest, so there \
+            "This PDF has no text layer. It's a scan or a photo of a manifest, so there \
              are no rows to read out of it. Send the spreadsheet or CSV version, or use \
              Paste a load with the image instead."
         );
@@ -822,7 +825,7 @@ async fn analyze_pdf(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
                 rows: all,
                 format: "pdf".into(),
                 sheet: None,
-                note: Some("Read from the PDF's own text layer — check the units and retail against the document.".into()),
+                note: Some("Read from the PDF's own text layer. Check the units and retail against the document.".into()),
                 header_in_file: false,
             };
             // A layout the heuristic mis-reads produces a grid that analyses fine but
@@ -872,9 +875,9 @@ async fn analyze_via_ai(text: &str, format_label: &str, sheet: Option<String>) -
         ]);
     }
 
-    let mut note = format!("Read by AI from the document's text — {} lines. Spot-check the totals against the document.", rows.len() - 1);
+    let mut note = format!("Read by AI from the document's text: {} lines. Spot-check the totals against the document.", rows.len() - 1);
     if truncated {
-        note.push_str(" The document was longer than one pass could cover, so the tail was NOT read — totals are incomplete.");
+        note.push_str(" The document was longer than one pass could cover, so the tail was NOT read. Totals are incomplete.");
     }
     let mut a = analyze_grid(Grid {
         rows, format: format_label.to_string(), sheet, note: Some(note), header_in_file: false,

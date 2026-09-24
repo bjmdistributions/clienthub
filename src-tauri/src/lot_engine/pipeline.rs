@@ -362,7 +362,7 @@ pub fn clean_sheet_with(sheet: &Sheet, opts: &CleanOpts) -> Result<CleanResult> 
             && title.is_empty()
             && (units as f64) >= (gross_units as f64) * TOTALS_ROW_SHARE
         {
-            drops.add("totals row — a SUM() of the sheet, not stock", units, &label);
+            drops.add("totals row, a SUM() of the sheet, not stock", units, &label);
             continue;
         }
 
@@ -411,7 +411,7 @@ pub fn clean_sheet_with(sheet: &Sheet, opts: &CleanOpts) -> Result<CleanResult> 
         q.warnings.push(format!(
             "{dropped_with_title} rows had a description but no barcode and were dropped. If this \
              sheet legitimately ships stock without barcodes, the barcode column is the wrong \
-             test for it — check the drop examples before selling from this import."
+             test for it. Check the drop examples before selling from this import."
         ));
     }
 
@@ -601,7 +601,7 @@ pub fn clean_sheet_with(sheet: &Sheet, opts: &CleanOpts) -> Result<CleanResult> 
     for row in &rows {
         let Some(location) = row.location.clone() else {
             drops.add(
-                "location could not be read — excluded from lots",
+                "location could not be read, excluded from lots",
                 row.units,
                 &row.location_raw,
             );
@@ -685,7 +685,7 @@ pub fn clean_sheet_with(sheet: &Sheet, opts: &CleanOpts) -> Result<CleanResult> 
     if q.locations_unparsed > 0 {
         q.warnings.push(format!(
             "{} location spellings could not be read and their stock is excluded from every lot. \
-             The audit map lists them — they are usually worth fixing at source.",
+             The audit map lists them, and they are usually worth fixing at source.",
             q.locations_unparsed
         ));
     }

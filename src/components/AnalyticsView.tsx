@@ -426,7 +426,7 @@ export default function AnalyticsView() {
             color={range.true_net >= 0 ? CLR.emerald : CLR.rose} />
           <Kpi label="Margin" value={`${range.avg_margin.toFixed(1)}%`} hint="revenue-weighted" />
           <Kpi label="Deals closed" value={String(won)} hint={`${lost} fell through`} />
-          <Kpi label="Win rate" value={won + lost > 0 ? `${winRate.toFixed(0)}%` : "—"} hint="won vs fell through"
+          <Kpi label="Win rate" value={won + lost > 0 ? `${winRate.toFixed(0)}%` : "–"} hint="won vs fell through"
             color={won + lost === 0 ? undefined : winRate >= 60 ? CLR.emerald : winRate >= 40 ? CLR.amber : CLR.rose} />
         </div>
         {/* The range needs something to be compared against, on the same population. */}
@@ -580,7 +580,7 @@ export default function AnalyticsView() {
             </ResponsiveContainer>
             {range.run_rate && (
               <p className="text-[11px] text-muted mt-3 tabular-nums">
-                {longMonth(range.run_rate.month)} is still open — {range.run_rate.days_elapsed} of{" "}
+                {longMonth(range.run_rate.month)} is still open: {range.run_rate.days_elapsed} of{" "}
                 {range.run_rate.days_in_month} days in, so its bars are drawn at half strength.
               </p>
             )}
@@ -633,7 +633,7 @@ export default function AnalyticsView() {
                   {recon.bank.supplier_back_count} transaction
                   {recon.bank.supplier_back_count !== 1 ? "s" : ""} is not tied to a deal. A
                   deal's cost is built from what is linked to it, so that money has not come
-                  off any cost yet — tie each one to its deal in Financials as money back
+                  off any cost yet. Tie each one to its deal in Financials as money back
                   from the supplier.
                 </p>
               )}
@@ -651,7 +651,7 @@ export default function AnalyticsView() {
           <Card
             title="Every closed deal, and the money behind it"
             sub={recon.deals_capped
-              ? `The ${recon.deals.length} most profitable of ${recon.totals.deal_count} closed deals — the totals cover all of them`
+              ? `The ${recon.deals.length} most profitable of ${recon.totals.deal_count} closed deals: the totals cover all of them`
               : `${recon.totals.deal_count} closed deal${recon.totals.deal_count !== 1 ? "s" : ""} in ${rangeLabel}`}
           >
             {recon.deals.length > 0 ? (
@@ -694,7 +694,7 @@ export default function AnalyticsView() {
                           </td>
                           <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap"
                             style={d.refunds > 0 ? { color: CLR.rose } : undefined}>
-                            {d.refunds > 0 ? signed(-d.refunds) : "—"}
+                            {d.refunds > 0 ? signed(-d.refunds) : "–"}
                           </td>
                           <td className="py-2.5 px-3 text-right tabular-nums font-medium whitespace-nowrap"
                             style={{ color: d.profit >= 0 ? CLR.emerald : CLR.rose }}>{signed(d.profit)}</td>
@@ -720,7 +720,7 @@ export default function AnalyticsView() {
                         </td>
                         <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap"
                           style={recon.totals.refunds > 0 ? { color: CLR.rose } : undefined}>
-                          {recon.totals.refunds > 0 ? signed(-recon.totals.refunds) : "—"}
+                          {recon.totals.refunds > 0 ? signed(-recon.totals.refunds) : "–"}
                         </td>
                         <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap"
                           style={{ color: recon.totals.profit >= 0 ? CLR.emerald : CLR.rose }}>
@@ -744,7 +744,7 @@ export default function AnalyticsView() {
                 <div className="text-[11px] mt-3 space-y-1">
                   <p className="text-muted">
                     Profit and true net add back to the bridge exactly. Money in and money out
-                    are bank evidence — what is actually allocated to the deal — so they are
+                    are bank evidence (what is actually allocated to the deal), so they are
                     allowed to differ from revenue and cost, and here is by how much.
                   </p>
                   <Gap label="Buyer money banked" gap={recon.totals.money_in_gap} against="recorded revenue" CLR={CLR} />
@@ -1284,10 +1284,10 @@ export default function AnalyticsView() {
                             <div className="text-[10.5px] text-faint">+{d.products.length - 2} more</div>
                           )}
                         </div>
-                      ) : <span className="text-faint">—</span>}
+                      ) : <span className="text-faint">–</span>}
                     </td>
                     <td className="py-2.5 px-3 text-ink-2 min-w-0">
-                      <div className="truncate max-w-[160px]">{d.suppliers.join(", ") || "—"}</div>
+                      <div className="truncate max-w-[160px]">{d.suppliers.join(", ") || "–"}</div>
                     </td>
                     <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums whitespace-nowrap">{fmtAmount(d.revenue)}</td>
                     <td className="py-2.5 pl-3 text-right tabular-nums font-medium whitespace-nowrap"
@@ -1476,7 +1476,7 @@ function BridgeList({ rows, CLR }: { rows: ReconRow[]; CLR: { emerald: string; r
             </div>
             {Math.abs(drift) >= 0.005 && (
               <p className="text-[11px] text-danger-ink pb-1.5">
-                Does not tie — the lines above come to {signed(r.running ?? 0)}, a difference
+                Does not tie: the lines above come to {signed(r.running ?? 0)}, a difference
                 of {signed(drift)}.
               </p>
             )}
@@ -1498,7 +1498,7 @@ function Gap({ label, gap, against, because, CLR }: {
   return (
     <p className={because ? "text-muted" : undefined} style={because ? undefined : { color: CLR.rose }}>
       {label} is {fmtAmount(Math.abs(gap))} {gap > 0 ? "more than" : "less than"} {against}
-      {because ? ` — ${because}` : ""}.
+      {because ? `: ${because}` : ""}.
     </p>
   );
 }
@@ -1535,7 +1535,7 @@ function PaceSummary({ pace, metric, CLR }: {
           day {pace.day_of_month}, and <Delta v={now - avg} /> of the{" "}
           {pace.prior_count}-month average for this day.
         </>
-      ) : <> — there is no earlier month to compare it against yet.</>}
+      ) : <>. There is no earlier month to compare it against yet.</>}
       {" "}At this pace the month finishes near{" "}
       <b className="text-ink font-semibold tabular-nums">{signed(proj)}</b>.
     </p>

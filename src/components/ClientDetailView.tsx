@@ -205,9 +205,9 @@ const whenLabel = (raw: string): string => {
 };
 
 const relTime = (d: string | null): string => {
-  if (!d) return "—";
+  if (!d) return "–";
   const ms = Date.now() - atMs(d);
-  if (!Number.isFinite(ms)) return "—";
+  if (!Number.isFinite(ms)) return "–";
   const days = Math.floor(ms / 86400000);
   if (days <= 0) return "Today";
   if (days === 1) return "Yesterday";
@@ -681,7 +681,7 @@ export function PartyLinkPanel({
           <SubHeading icon={<Link2 size={15} className="text-muted" />}>{copy.linkOffer}</SubHeading>
           <p className="text-[12px] text-muted mt-1 leading-relaxed">
             Link the two records and both sides show here, kept apart. Nothing is merged and no figure is
-            netted — what they pay us stays revenue, what we pay them stays cost.
+            netted: what they pay us stays revenue, what we pay them stays cost.
           </p>
         </div>
         <button
@@ -715,7 +715,7 @@ export function PartyLinkPanel({
                   <span className="text-muted"> · {STAGE_LABEL[flow.stage] || flow.stage}</span>
                 </div>
                 <div className="text-[11px] text-muted">
-                  {flow.client_name || "—"}{paid < amount - 0.01 ? ` · ${fmtAmount(amount - paid)} still to pay them` : " · paid"}
+                  {flow.client_name || "–"}{paid < amount - 0.01 ? ` · ${fmtAmount(amount - paid)} still to pay them` : " · paid"}
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
@@ -768,7 +768,7 @@ export function PartyLinkPanel({
             className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-50 transition-colors">
             Change
           </button>
-          <button onClick={onUnlink} disabled={busy} title="Remove the link — neither record is changed otherwise"
+          <button onClick={onUnlink} disabled={busy} title="Remove the link. Neither record is changed otherwise"
             className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-line text-faint hover:text-ink-2 hover:border-line-3 disabled:opacity-50 transition-colors">
             <Unlink size={13} />
           </button>
@@ -798,7 +798,7 @@ export function PartyLinkPanel({
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
           <StatTile label="We paid them" value={fmtAmount(ourSide.cost)} tone="ink" />
           <StatTile label="Deals supplied" value={String(ourSide.deals)} tone="ink" />
-          <StatTile label="Last supplied" value={ourSide.last ? whenLabel(ourSide.last) : "—"} tone="muted" />
+          <StatTile label="Last supplied" value={ourSide.last ? whenLabel(ourSide.last) : "–"} tone="muted" />
         </div>
 
         {linkedDetailIsCost && linkedDetail}
@@ -807,7 +807,7 @@ export function PartyLinkPanel({
       {/* The one combined number, and what it is not. */}
       <div className="mt-5 pt-4 border-t border-line-2 flex items-baseline justify-between gap-3 flex-wrap">
         <span className="text-[12.5px] text-muted">
-          Position — what they paid us less what we paid them. It is not profit and no deal reads it.
+          Position: what they paid us less what we paid them. It is not profit and no deal reads it.
         </span>
         <span className={`text-[15px] font-bold tabular-nums ${position < 0 ? "text-danger-ink" : "text-ink"}`}>
           {fmtAmount(position)}
@@ -1098,7 +1098,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
     const days = Math.abs(daysFromToday(oldest.due_date));
     actions.push({
       tone: "danger",
-      text: `${fmtAmount(overdueTotal)} overdue across ${overdueInvs.length} invoice${overdueInvs.length === 1 ? "" : "s"} — oldest ${days} day${days === 1 ? "" : "s"} past due`,
+      text: `${fmtAmount(overdueTotal)} overdue across ${overdueInvs.length} invoice${overdueInvs.length === 1 ? "" : "s"}: oldest ${days} day${days === 1 ? "" : "s"} past due`,
       go: oldest.number ? { label: "Open the deal", onClick: () => openDeal(oldest.number) } : undefined,
     });
   }
@@ -1112,7 +1112,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
     const byStage = openDeals[0];
     actions.push({
       tone: "warning",
-      text: `${openDeals.length} deal${openDeals.length === 1 ? "" : "s"} in progress — ${WAITING_ON[byStage.stage] || STAGE_LABEL[byStage.stage] || byStage.stage}`,
+      text: `${openDeals.length} deal${openDeals.length === 1 ? "" : "s"} in progress: ${WAITING_ON[byStage.stage] || STAGE_LABEL[byStage.stage] || byStage.stage}`,
       go: byStage.invoice_number ? { label: "Open the deal", onClick: () => openDeal(byStage.invoice_number as string) } : undefined,
     });
   }
@@ -1310,7 +1310,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
               </button>
               <button
                 onClick={() => openStatement(client.id)}
-                title="Build a receipt covering their deals — every payment with its date — to download or email."
+                title="Build a receipt covering their deals (every payment with its date) to download or email."
                 className="inline-flex items-center gap-1.5 px-3 h-7 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
               >
                 <Receipt size={13} /> Receipt
@@ -1331,14 +1331,14 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
             </div>
             <FlagSwitch label="High-value" tone="accent"
               on={!!(client.high_value || client.metadata?.high_value)}
-              title="A positive label for your best buyers. Purely a tag — it does not change who receives newsletters."
+              title="A positive label for your best buyers. Purely a tag. It does not change who receives newsletters."
               onToggle={async () => {
                 const val = await api.toggleClientHighValue(client.id);
                 setClient((c) => c ? { ...c, high_value: val, metadata: { ...(c.metadata || {}), high_value: val } } : c);
               }} />
             <FlagSwitch label="No bulk email" tone="neutral"
               on={!!(client.exclusive || client.metadata?.exclusive)}
-              title="Keeps this client off mass newsletters and auto-add — for people you don't want to bulk-email."
+              title="Keeps this client off mass newsletters and auto-add, for people you don't want to bulk-email."
               onToggle={async () => {
                 try {
                   const val = await api.toggleClientExclusive(client.id);
@@ -1366,7 +1366,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
               }} />
             {client.metadata?.unsubscribed && (
               <span className="inline-flex items-center text-[10px] font-semibold text-ink-2 bg-surface-3 border border-line px-2 py-1 rounded-lg"
-                title={`Unsubscribed via an email link${client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : ""} — kept off all sends`}>
+                title={`Unsubscribed via an email link${client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : ""}, kept off all sends`}>
                 Unsubscribed
               </span>
             )}
@@ -1378,7 +1378,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mt-5">
           <StatTile
             label="Profit"
-            value={flows.length === 0 ? "—" : fmtAmount(clientProfit)}
+            value={flows.length === 0 ? "–" : fmtAmount(clientProfit)}
             tone={clientProfit < 0 ? "danger" : "success"}
             hint={refundedTotal > 0 ? `after ${fmtAmount(refundedTotal)} refunded` : `${completed.length} completed deal${completed.length === 1 ? "" : "s"}`}
           />
@@ -1556,7 +1556,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           sections above are the breakdown; this is demoted to a disclosure
           rather than deleted, because it is the only home on this screen for
           calls, notes and email — nothing else carries them. */}
-      <Disclosure title="Activity — notes, calls and email" icon={<MessageSquare size={14} className="text-muted" />}>
+      <Disclosure title="Activity: notes, calls and email" icon={<MessageSquare size={14} className="text-muted" />}>
         {showNoteForm && (
           <div className="bg-surface border border-line rounded-2xl mb-3 overflow-hidden">
             <NoteForm clientId={clientId} onClose={() => { setShowNoteForm(false); load(); }} />
@@ -1799,7 +1799,7 @@ function composeDetailsBody(clientName: string, info: CompanyInfo | null, method
       const kind = (m.kind || "").trim();
       const label = (m.label || "").trim();
       const details = (m.details || "").trim();
-      const head = [kind, label].filter(Boolean).join(" — ");
+      const head = [kind, label].filter(Boolean).join(" · ");
       const line = details ? (head ? `${head}: ${details}` : details) : head;
       if (line) lines.push(`- ${line}`);
     }
@@ -1837,7 +1837,7 @@ function SendOurDetailsModal({ clientName, clientEmail, onClose }: {
       ]);
       if (cancelled) return;
       const companyName = (info?.name || "").toString().trim();
-      setSubject(`Our billing & payment details${companyName ? ` — ${companyName}` : ""}`);
+      setSubject(`Our billing & payment details${companyName ? ` · ${companyName}` : ""}`);
       setBody(composeDetailsBody(clientName, info, methods));
       setLoading(false);
     })();
@@ -1869,7 +1869,7 @@ function SendOurDetailsModal({ clientName, clientEmail, onClose }: {
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/10 text-accent-hover flex-shrink-0"><Send size={16} /></span>
             <div>
               <h2 className="text-[16px] font-semibold text-ink">Send our details</h2>
-              <p className="text-[12px] text-muted mt-0.5">Review before sending — nothing goes out until you click Send.</p>
+              <p className="text-[12px] text-muted mt-0.5">Review before sending. Nothing goes out until you click Send.</p>
             </div>
           </div>
           <button onClick={onClose} className="text-muted hover:text-ink transition-colors p-1 -mr-1 -mt-1"><X size={18} /></button>

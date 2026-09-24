@@ -110,8 +110,8 @@ export default function PersonPickerModal({
             <p className="text-[12px] text-muted mt-1.5">
               {subtitle || (
                 <>
-                  This records who the money is with. It doesn't tie it to a deal and it changes no figure —
-                  tie it to a deal below if it belongs to one.
+                  This records who the money is with. It doesn't tie it to a deal and it changes no figure.
+                  Tie it to a deal below if it belongs to one.
                 </>
               )}
             </p>
@@ -136,7 +136,7 @@ export default function PersonPickerModal({
         <div className="overflow-y-auto p-2">
           {current && (
             <div className="px-3 py-2 text-[12px] text-muted">
-              Linked to <span className="text-ink-2 font-medium">{current.name}</span> — picking someone else replaces it.
+              Linked to <span className="text-ink-2 font-medium">{current.name}</span>. Picking someone else replaces it.
             </div>
           )}
           {suggested.length > 0 && !q.trim() && (

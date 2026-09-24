@@ -525,7 +525,7 @@ fn announce_delivered(shipment_id: &str) {
     use tauri_plugin_notification::NotificationExt;
     let _ = app.notification().builder()
         .title("Delivered")
-        .body(format!("{label} — ready to mark the deal complete"))
+        .body(format!("{label} · ready to mark the deal complete"))
         .show();
     let _ = app.emit("shipment-delivered", json!({ "id": s.id, "deal_flow_id": s.deal_flow_id, "label": label }));
     tracing::info!("priority1: shipment {} delivered, deal {} can be completed", s.id, s.deal_flow_id);

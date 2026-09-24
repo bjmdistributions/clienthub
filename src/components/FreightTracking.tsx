@@ -136,7 +136,7 @@ export function FreightPanel({ dealFlowId, locked, onReload }: { dealFlowId: str
       setRef("");
       await refreshShipments();
       onReload(); // Priority1's dates may have just replaced the deal's
-      toast(s.last_update_at ? "Shipment attached" : "Saved — updates for this number will land on this deal");
+      toast(s.last_update_at ? "Shipment attached" : "Saved: updates for this number will land on this deal");
     } catch (e) {
       toast(String(e), "error");
     } finally { setBusy(false); }
@@ -165,7 +165,7 @@ export function FreightPanel({ dealFlowId, locked, onReload }: { dealFlowId: str
       </div>
       {mine.length === 0 ? (
         <p className="text-[12px] text-muted">
-          No shipment yet. Paste the BOL when you book with Priority1 — even after the email has come in — and this deal's pickup and delivery dates will follow Priority1. Without one, the dates you set stay.
+          No shipment yet. Paste the BOL when you book with Priority1 (even after the email has come in) and this deal's pickup and delivery dates will follow Priority1. Without one, the dates you set stay.
         </p>
       ) : (
         <>
@@ -218,7 +218,7 @@ function ShipmentRow({ s, locked, onReload }: { s: Shipment; locked: boolean; on
         </span>
       </div>
       {(s.last_note || s.last_location) && (
-        <div className="text-[12px] text-muted mt-1">{[s.last_location, s.last_note].filter(Boolean).join(" — ")}</div>
+        <div className="text-[12px] text-muted mt-1">{[s.last_location, s.last_note].filter(Boolean).join(" · ")}</div>
       )}
       {open && (
         <ol className="mt-2 space-y-1 border-l border-line pl-3">
@@ -226,7 +226,7 @@ function ShipmentRow({ s, locked, onReload }: { s: Shipment; locked: boolean; on
             <li key={i} className="text-[11.5px]">
               <span className="text-faint tabular-nums">{fmtWhen(e.at)}</span>
               <span className="text-ink-2 font-medium ml-2">{e.status || "Update"}</span>
-              {(e.location || e.note) && <span className="text-muted ml-2">{[e.location, e.note].filter(Boolean).join(" — ")}</span>}
+              {(e.location || e.note) && <span className="text-muted ml-2">{[e.location, e.note].filter(Boolean).join(" · ")}</span>}
             </li>
           ))}
         </ol>
@@ -327,7 +327,7 @@ function LooseRow({ s, onChange }: { s: Shipment; onChange: () => void }) {
           className="h-8 px-3 rounded-lg text-[12px] font-medium bg-accent hover:bg-accent-hover text-on-accent disabled:opacity-50">
           Attach
         </button>
-        <button disabled={busy} onClick={() => act(() => api.dismissShipment(s.id), "Hidden — it is not a deal")}
+        <button disabled={busy} onClick={() => act(() => api.dismissShipment(s.id), "Hidden: it is not a deal")}
           title="Not a deal (a transfer between your own buildings, for example)"
           className="h-8 px-2.5 rounded-lg text-[12px] text-muted hover:text-ink-2 hover:bg-surface-3">
           Not a deal

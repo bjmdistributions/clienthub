@@ -111,7 +111,7 @@ export default function CustomerRequestsModal({ pending, onClose, onResolved }: 
                         <span className="text-[13.5px] font-semibold text-ink truncate">{c.name}</span>
                         {src && <StatusPill tone="neutral">{src}</StatusPill>}
                       </div>
-                      <div className="text-[11.5px] text-muted truncate">{[c.email, c.company].filter(Boolean).join(" · ") || "—"}</div>
+                      <div className="text-[11.5px] text-muted truncate">{[c.email, c.company].filter(Boolean).join(" · ") || "–"}</div>
                     </div>
                     <StatusPill tone={approved ? "success" : "danger"}>{approved ? "Approved" : "Rejected"}</StatusPill>
                   </div>

@@ -43,7 +43,7 @@ impl TitleRisk {
             TitleRisk::Typed => "",
             TitleRisk::NamedFromBarcode => "Description taken from the same barcode elsewhere",
             TitleRisk::GuessedFromBarcode => {
-                "VERIFY — description guessed from a barcode used for several products"
+                "VERIFY: description guessed from a barcode used for several products"
             }
             TitleRisk::Unknown => "NO DESCRIPTION in the source sheet",
         }

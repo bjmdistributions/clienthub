@@ -160,7 +160,7 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
             .map(([label]) => label);
           setTab("quality");
           toast(
-            `Nothing could be read from that sheet — ${n(r.quality.rows_in)} rows in, none usable.` +
+            `Nothing could be read from that sheet: ${n(r.quality.rows_in)} rows in, none usable.` +
               (missing.length
                 ? ` No column looked like ${missing.join(", ")}. Check the Quality tab for what was dropped.`
                 : " The Quality tab says what was dropped and why."),
@@ -171,7 +171,7 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
         toast(
           gap === 0
             ? `${n(r.quality.stacks)} stacks across ${n(r.quality.locations)} locations. Everything reconciles.`
-            : `Imported, but the units are off by ${n(gap)} — read the quality report before selling from it.`,
+            : `Imported, but the units are off by ${n(gap)}. Read the quality report before selling from it.`,
           gap === 0 ? undefined : "error",
         );
       } catch (e: any) {
@@ -205,7 +205,7 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
           const file = p.paths.find((x) => ACCEPTED.test(x));
           if (file) importSheet(file);
           else if (p.paths.length)
-            toast("That file can't be read as a warehouse sheet — drop an Excel or CSV export.", "error");
+            toast("That file can't be read as a warehouse sheet. Drop an Excel or CSV export.", "error");
         }
       })
       .then((fn) => {
@@ -227,7 +227,7 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
             <Layers size={18} className="text-accent" /> Lot engine
           </h1>
           <p className="text-[13px] text-muted mt-1 max-w-[620px]">
-            Build a lot by taking whole warehouse locations. Filters rank and qualify slots — they
+            Build a lot by taking whole warehouse locations. Filters rank and qualify slots. They
             never pick items out of one, because a slot is all or nothing.
           </p>
         </div>
@@ -259,7 +259,7 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
         <div className="fixed inset-0 z-40 bg-surface/80 flex items-center justify-center pointer-events-none">
           <div className="rounded-2xl border-2 border-dashed border-accent bg-surface px-8 py-6 text-center">
             <p className="text-[15px] font-semibold text-ink">Drop to import this sheet</p>
-            <p className="text-[12px] text-muted mt-1">It becomes a new sheet — nothing already here changes.</p>
+            <p className="text-[12px] text-muted mt-1">It becomes a new sheet. Nothing already here changes.</p>
           </div>
         </div>
       )}
@@ -274,7 +274,7 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
           </div>
           <p className="text-[15px] font-semibold text-ink">Drop a warehouse sheet here, or click to browse</p>
           <p className="text-[12.5px] text-muted mt-1 max-w-[420px]">
-            Excel or CSV. Six columns matter — barcode, location, box, quantity, description and retail.
+            Excel or CSV. Six columns matter: barcode, location, box, quantity, description and retail.
             Column order doesn't, and the header row can sit below junk rows.
           </p>
         </button>
@@ -354,17 +354,17 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
 function PoolBar({ sheet, facets }: { sheet: LotSheet; facets: LotFacets | null }) {
   const claimed = sheet.staged_slots + sheet.removed_slots;
   const cells = [
-    { label: "Still on the master list", value: facets ? n(facets.pool_units) : "—", accent: true },
-    { label: "Its retail", value: facets ? fmtAmount(facets.pool_msrp) : "—" },
-    { label: "Slots left to sell", value: facets ? n(facets.pool_slots) : "—" },
+    { label: "Still on the master list", value: facets ? n(facets.pool_units) : "–", accent: true },
+    { label: "Its retail", value: facets ? fmtAmount(facets.pool_msrp) : "–" },
+    { label: "Slots left to sell", value: facets ? n(facets.pool_slots) : "–" },
     { label: "Claimed by a lot", value: n(sheet.staged_slots) },
-    { label: "Shipped — gone for good", value: n(sheet.removed_slots) },
+    { label: "Shipped, gone for good", value: n(sheet.removed_slots) },
   ];
   return (
     <>
       {!sheet.has_stacks && (
         <p className="text-[11.5px] text-info-ink bg-info-bg border border-info rounded-lg px-3 py-2 mb-2.5 leading-snug">
-          This sheet was imported on another device. Its rows are here — the stock itself is
+          This sheet was imported on another device. Its rows are here. The stock itself is
           being fetched, and the numbers below fill in once it lands.
         </p>
       )}
@@ -385,7 +385,7 @@ function PoolBar({ sheet, facets }: { sheet: LotSheet; facets: LotFacets | null 
       <p className="text-[11.5px] text-muted mt-2 leading-snug">
         <span className="tabular-nums font-medium text-ink-2">{n(claimed)}</span> of this sheet's{" "}
         <span className="tabular-nums">{n(sheet.locations)}</span> locations are off the master
-        list — {n(sheet.staged_slots)} claimed by a saved lot and {n(sheet.removed_slots)} shipped.
+        list: {n(sheet.staged_slots)} claimed by a saved lot and {n(sheet.removed_slots)} shipped.
         They cannot appear in a search or in another lot, so no two lots can ever contain the same
         shoes.
       </p>
@@ -870,7 +870,7 @@ function Filters(p: {
         </button>
       </div>
 
-      <Section title="What you want" hint="Ranks the slots. Excludes nothing — a slot holding one unit of it still shows.">
+      <Section title="What you want" hint="Ranks the slots. Excludes nothing: a slot holding one unit of it still shows.">
         <div className="flex flex-wrap gap-1.5">
           {p.facets.brands.slice(0, 18).map((b) => (
             <Chip
@@ -927,7 +927,7 @@ function Filters(p: {
           point is that it is NOT the brand lock two sections down. */}
       <Section
         title="How concentrated a slot must be"
-        hint="A floor under the percentage on each card. Slots below it are hidden — but everything else in the ones above still comes with them. This is not 'nothing but'."
+        hint="A floor under the percentage on each card. Slots below it are hidden, but everything else in the ones above still comes with them. This is not 'nothing but'."
       >
         <div className="flex items-center gap-2.5">
           <input
@@ -954,7 +954,7 @@ function Filters(p: {
 
       <Section
         title="What a slot may contain"
-        hint="Decides which slots qualify at all. Because the take is all or nothing, this is about the whole slot — not the lines in it."
+        hint="Decides which slots qualify at all. Because the take is all or nothing, this is about the whole slot, not the lines in it."
       >
         <AllowCategoryChips facets={p.facets} allow={p.allow} setAllow={p.setAllow} />
         {p.facets.segments.length > 0 && (
@@ -994,7 +994,7 @@ function Filters(p: {
                 on={p.allow.brand_lock.length === 0}
                 onClick={() => p.setAllow({ ...p.allow, brand_lock: [] })}
                 title="Everything else in the location comes too"
-                hint="The normal way. You are buying shelves, not shoes — the other brands ride along, and each card shows exactly what they are."
+                hint="The normal way. You are buying shelves, not shoes: the other brands ride along, and each card shows exactly what they are."
               />
               <ModeRow
                 on={p.allow.brand_lock.length > 0}
@@ -1155,7 +1155,7 @@ function Results({
       {result.matched_slots > result.slots.length && (
         <p className="text-[11.5px] text-muted mt-3">
           Showing the top {n(result.slots.length)} of {n(result.matched_slots)}. The ranking ran over all of
-          them — narrow the filters to see further down.
+          them. Narrow the filters to see further down.
         </p>
       )}
 
@@ -1409,7 +1409,7 @@ function LotPanel(p: {
       </div>
       <p className="text-[10.5px] text-muted mt-1.5 leading-snug">
         Both apply per line, so a $75 shoe at 26% is $19.50. Leave the cost empty and no margin
-        is shown — an unrecorded cost is not a free one.
+        is shown: an unrecorded cost is not a free one.
       </p>
     </div>
   );
@@ -1420,7 +1420,7 @@ function LotPanel(p: {
         <p className="text-[12.5px] font-semibold text-ink">The lot</p>
         <p className="text-[11.5px] text-muted mt-1 mb-2.5 leading-snug">
           Nothing picked yet. Add a location and it leaves the master list straight away, so
-          nothing can end up in two lots. Set your percentages now or later — they apply either way.
+          nothing can end up in two lots. Set your percentages now or later. They apply either way.
         </p>
         {pricing}
       </div>
@@ -1558,7 +1558,7 @@ function LotPanel(p: {
         disabled={p.saving}
         className="w-full mt-2 h-9 rounded-lg bg-accent text-on-accent text-[12.5px] font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
       >
-        {p.saving ? "Saving…" : `Save lot — ${n(p.picked.length)} locations leave the list`}
+        {p.saving ? "Saving…" : `Save lot · ${n(p.picked.length)} locations leave the list`}
       </button>
     </div>
   );
@@ -1643,7 +1643,7 @@ function RetailTab({ sheetId, onChanged }: { sheetId: string; onChanged: () => v
     <div className="max-w-[900px]">
       <p className="text-[12.5px] text-muted mb-3 max-w-[620px] leading-relaxed">
         Retail comes from the sheet you imported. Correct it here when it is wrong or missing,
-        and every figure that mentions the product moves with it — the pool, the ranking, your
+        and every figure that mentions the product moves with it: the pool, the ranking, your
         saved lots and all three exports. Clear the box to go back to the sheet's own price.
       </p>
       <input
@@ -1746,7 +1746,7 @@ function QualityTab({ sheetId }: { sheetId: string }) {
 
       <p className="text-[11px] text-muted mt-2.5">
         The full audit map of every location spelling and what it became is written next to the sheet as a
-        CSV — it is how an unexpected merge gets traced, and what the warehouse needs to fix the spellings at
+        CSV. It is how an unexpected merge gets traced, and what the warehouse needs to fix the spellings at
         source.
       </p>
     </div>
@@ -1758,9 +1758,9 @@ function QualityTab({ sheetId }: { sheetId: string }) {
 // =========================================================================================
 
 const GRADE_WORDS: Record<string, string> = {
-  split: "Two brands in real quantity — hand this one back to the floor",
-  stray: "One or two stray units against the rest — a typo, not an ambiguity",
-  same_brand: "One brand under several names — kept as separate products, and the buyer gets the line they were shown",
+  split: "Two brands in real quantity: hand this one back to the floor",
+  stray: "One or two stray units against the rest: a typo, not an ambiguity",
+  same_brand: "One brand under several names: kept as separate products, and the buyer gets the line they were shown",
   other: "Mixed brands, small numbers",
 };
 
@@ -1801,7 +1801,7 @@ function BarcodesTab({ sheetId }: { sheetId: string }) {
     <div className="max-w-[880px]">
       <p className="text-[12.5px] text-muted mb-3 max-w-[620px] leading-relaxed">
         Nothing here merges a description, so a barcode can carry more than one product. This is where you
-        see what any barcode actually means — and the export is the list the warehouse needs in order to
+        see what any barcode actually means, and the export is the list the warehouse needs in order to
         fix the habit at source.
       </p>
       <div className="flex items-center gap-2 mb-3">
@@ -1847,7 +1847,7 @@ function BarcodesTab({ sheetId }: { sheetId: string }) {
                 <p className="text-[11px] text-muted mb-2">{GRADE_WORDS[c.grade] ?? ""}</p>
                 {c.one_price && (
                   <p className="text-[11px] text-info-ink bg-info-bg border border-info rounded-md px-2 py-1.5 mb-2 leading-snug">
-                    Every name on this barcode carries the same price — the signature of a barcode used as a
+                    Every name on this barcode carries the same price, the signature of a barcode used as a
                     price tier rather than a product code. That is a floor habit, not a typo.
                   </p>
                 )}
@@ -1996,7 +1996,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
     if (typed && typed !== suggested.replace(/-(manifest|brands|pull)$/i, "") && typed !== b.name) {
       try {
         await api.renameLotBuild(b.id, typed);
-        toast(`Lot renamed to "${typed}" — every export from it is filed under that now.`);
+        toast(`Lot renamed to "${typed}". Every export from it is filed under that now.`);
         load();
       } catch (e: any) {
         // A failed rename must not stop the download he actually asked for.
@@ -2007,7 +2007,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
       const r = await api.exportLotBuild(b.id, kind, { format, destPath: dest });
       toast(
         r.reconciled
-          ? `${label} saved — ${n(r.rows)} rows, and the three exports agree on the unit total.`
+          ? `${label} saved: ${n(r.rows)} rows, and the three exports agree on the unit total.`
           : `Saved, but the manifest, brand counts and pull sheet DISAGREE on the unit total. Don't send it.`,
         r.reconciled ? undefined : "error",
       );
@@ -2102,7 +2102,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
     const ids = [...selected];
     const pct = pickedPct ?? parseAmount(combinePct) / 100;
     if (!(pct > 0)) {
-      toast("Those lots are priced differently — set the percentage first.", "error");
+      toast("Those lots are priced differently. Set the percentage first.", "error");
       return;
     }
     const name = combineName;
@@ -2119,7 +2119,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
       onChanged();
       setCombineName("");
       setCombinePct("");
-      toast(`${b.name} combines ${ids.length} lots — ${n(b.units)} units. They stay sellable on their own.`);
+      toast(`${b.name} combines ${ids.length} lots: ${n(b.units)} units. They stay sellable on their own.`);
     } catch (e: any) {
       toast(String(e), "error");
     }
@@ -2259,7 +2259,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
           Apply to all {n(b.units)} units
         </ActBtn>
         <span className="text-[10.5px] text-muted leading-snug max-w-[290px]">
-          One percentage across every line, replacing any per-category rates — re-priced
+          One percentage across every line, replacing any per-category rates. Re-priced
           before you download it.
         </span>
       </div>
@@ -2395,7 +2395,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
           {!canCombine ? (
             <p className="text-[11.5px] text-muted">Pick one more to combine.</p>
           ) : branches.length === 0 ? (
-            <p className="text-[11.5px] text-muted">Make a branch first — a combined lot lives in one.</p>
+            <p className="text-[11.5px] text-muted">Make a branch first: a combined lot lives in one.</p>
           ) : (
             <>
               <input
@@ -2487,7 +2487,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
             </p>
             <p className="text-[12.5px] text-muted mt-2 leading-relaxed">
               This says the stock has physically left. Those locations stay off every future search, and they
-              stay off even when a refreshed export still lists them — absent means shipped, not undone.
+              stay off even when a refreshed export still lists them: absent means shipped, not undone.
               Nothing is deleted, and you can put them back from this screen.
             </p>
             <div className="flex justify-end gap-2 mt-4">
@@ -2609,7 +2609,7 @@ function LotBreakdown({ detail }: { detail: LotBuildDetail }) {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
           <RiskCell units={risk[0]} label="typed into the source sheet" />
           <RiskCell units={risk[1]} label="named from a clean barcode" />
-          <RiskCell units={risk[2]} label="to verify — a barcode used for several products" warn />
+          <RiskCell units={risk[2]} label="to verify: a barcode used for several products" warn />
           <RiskCell units={risk[3]} label="no description in the source sheet" warn />
         </div>
         <p className="text-[10.5px] text-muted mt-1.5 leading-snug">
@@ -3038,7 +3038,7 @@ function AutoLotsTab({
     <div className="max-w-[980px]">
       <p className="text-[12.5px] text-muted mb-3 max-w-[620px] leading-relaxed">
         Pick what you want and how big a lot should be, and this cuts the master list into as
-        many as it can — best slots first. Nothing is saved until you say so.
+        many as it can, best slots first. Nothing is saved until you say so.
       </p>
 
       <div className="rounded-xl border border-line bg-surface-2 p-3.5 mb-4">
@@ -3129,7 +3129,7 @@ function AutoLotsTab({
               >
                 {saving
                   ? "Saving…"
-                  : `Save all ${n(result.lots.length)} — ${n(result.lots.reduce((a, l) => a + l.locations.length, 0))} locations leave the list`}
+                  : `Save all ${n(result.lots.length)} · ${n(result.lots.reduce((a, l) => a + l.locations.length, 0))} locations leave the list`}
               </button>
             )}
           </div>
@@ -3208,13 +3208,13 @@ function ManifestSettings() {
   if (!opts) return null;
 
   const rows: [keyof LotManifestOpts, string, string][] = [
-    ["show_check", "Description check", "Prints VERIFY or NO DESCRIPTION beside lines whose description was guessed, and a \"Lines to check\" total. Off by default — the grading still happens and still warns you on screen."],
+    ["show_check", "Description check", "Prints VERIFY or NO DESCRIPTION beside lines whose description was guessed, and a \"Lines to check\" total. Off by default: the grading still happens and still warns you on screen."],
     ["show_upc", "UPC", "The barcode for each line."],
     ["show_brand", "Brand", ""],
     ["show_category", "Category", ""],
     ["show_segment", "Segment", "Men, Women, Kids."],
     ["show_size", "Size", ""],
-    ["show_msrp", "MSRP", "Retail per line — what the price is discounted from."],
+    ["show_msrp", "MSRP", "Retail per line: what the price is discounted from."],
     ["include_slots", "Slot codes", "Warehouse locations. Off by default: they belong on the pull sheet and hand over a map of the building."],
     ["show_summary", "Lot summary block", "Units, styles, retail, price, percent of retail."],
     ["show_by_category", "Per-category table", "Units and price per unit for each category."],
@@ -3237,7 +3237,7 @@ function ManifestSettings() {
         <div className="px-3.5 pb-3 border-t border-line pt-2.5">
           <p className="text-[11px] text-muted mb-2 leading-snug max-w-[560px]">
             Applies to every manifest from now on, on this device and any other signed in here.
-            Description, quantity, unit price and total are always on — without them it is not a
+            Description, quantity, unit price and total are always on: without them it is not a
             manifest, and the check that proves your three exports agree counts the quantity column.
           </p>
           <div className="grid sm:grid-cols-2 gap-x-4">

@@ -133,7 +133,7 @@ pub async fn create_hosted_link() -> Result<(String, String)> {
     let token = v.get("link_token").and_then(|t| t.as_str()).map(String::from)
         .ok_or_else(|| anyhow!("No link_token in Plaid response"))?;
     let url = v.get("hosted_link_url").and_then(|t| t.as_str()).map(String::from)
-        .ok_or_else(|| anyhow!("Plaid didn't return a hosted link URL — enable Hosted Link in your Plaid dashboard (Link → Hosted Link)."))?;
+        .ok_or_else(|| anyhow!("Plaid didn't return a hosted link URL. Enable Hosted Link in your Plaid dashboard (Link → Hosted Link)."))?;
     Ok((token, url))
 }
 

@@ -396,7 +396,7 @@ export default function DealFlowView() {
     setSyncing(true);
     try {
       const n = await api.resyncAllCompletedDeals();
-      toast(`Synced ${n} completed deal${n !== 1 ? "s" : ""} from bank — numbers and dates updated`);
+      toast(`Synced ${n} completed deal${n !== 1 ? "s" : ""} from bank: numbers and dates updated`);
       await load();
     } catch (e: any) { toast(String(e), "error"); }
     setSyncing(false);
@@ -491,7 +491,7 @@ export default function DealFlowView() {
           <div className="flex items-center gap-2.5 px-5 py-3.5 flex-wrap">
             <PackageCheck size={15} className="text-success flex-shrink-0" />
             <span className="text-[13px] font-semibold text-success-ink">
-              {arrived.length === 1 ? "Delivered — ready to complete" : `${arrived.length} delivered — ready to complete`}
+              {arrived.length === 1 ? "Delivered: ready to complete" : `${arrived.length} delivered: ready to complete`}
             </span>
             <span className="text-[11.5px] text-success-ink/75 min-w-0">
               Priority1 says the freight landed. Open the deal and run Review &amp; complete.
@@ -530,7 +530,7 @@ export default function DealFlowView() {
           {/* This week. Counted as events among active deals — one deal can both
               pick up and land inside the window, so these are not deal counts. */}
           <div className="px-5 pb-3 -mt-1.5 text-[11.5px] text-muted">
-            Next 7 days — {pickupsSoon} pickup{pickupsSoon === 1 ? "" : "s"}, {deliveriesSoon} {deliveriesSoon === 1 ? "delivery" : "deliveries"}.
+            Next 7 days: {pickupsSoon} pickup{pickupsSoon === 1 ? "" : "s"}, {deliveriesSoon} {deliveriesSoon === 1 ? "delivery" : "deliveries"}.
             {noAnswer > 0 && ` ${noAnswer} active deal${noAnswer === 1 ? " has" : "s have"} no date and no ships-direct answer.`}
           </div>
           {laneOpen && (
@@ -542,7 +542,7 @@ export default function DealFlowView() {
               ) : (
                 <>
                   <p className="text-[11.5px] text-muted px-1">
-                    Deals with a date set that are not complete — soonest first.
+                    Deals with a date set that are not complete, soonest first.
                   </p>
                   {lane.map(({ f }, i) => (
                     <DealFlowCard key={f.id} flow={f} onReload={load} refund={refundMap[f.id]} zebra={i % 2 === 1} reconStatus={recon[f.id]} />
@@ -563,7 +563,7 @@ export default function DealFlowView() {
           <div className="text-[13px] text-muted">
             {search
               ? "No active deals match your search"
-              : "No active deals — deals appear automatically when invoices are sent"}
+              : "No active deals. Deals appear automatically when invoices are sent"}
           </div>
         </div>
       ) : unscheduled.length > 0 ? (
@@ -685,7 +685,7 @@ function invoiceStatusPill(status: string | undefined): { label: string; cls: st
   if (s === "deposit_pending") return { label: "Sent",    cls: "bg-info-bg text-info-ink" };
   if (s === "paid")            return { label: "Paid",    cls: "bg-success-bg text-success-ink" };
   if (s === "overdue")         return { label: "Overdue", cls: "bg-danger-bg text-danger-ink" };
-  return { label: status ?? "—", cls: "bg-surface-3 text-muted" };
+  return { label: status ?? "–", cls: "bg-surface-3 text-muted" };
 }
 
 // ─── Section model ────────────────────────────────────────────────────────
@@ -885,7 +885,7 @@ function DealFlowCard({
               const proj = raw - refundPaid;
               return (
                 <span className={`flex items-baseline gap-1.5 text-[11px] font-semibold tabular-nums ${proj >= 0 ? "text-success-ink" : "text-danger-ink"}`}
-                  title="Projected profit — revenue minus supplier costs entered so far, minus anything refunded">
+                  title="Projected profit: revenue minus supplier costs entered so far, minus anything refunded">
                   {refundPaid > 0.005 && (
                     <span className="text-[10px] font-medium text-muted line-through decoration-danger-ink decoration-[1.5px]">{fmtAmount(raw)}</span>
                   )}
@@ -1017,7 +1017,7 @@ function DealFlowCard({
             <div className="mx-5 mt-1 mb-1 flex items-center justify-between gap-2 rounded-lg bg-success-bg/60 border border-success/30 px-3 py-2">
               <div className="flex items-center gap-2 text-[12px] text-success-ink font-medium">
                 <CheckCircle2 size={13} />
-                Completed{flow.completed_at ? ` ${parseLocalDay(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""} — every section stays editable
+                Completed{flow.completed_at ? ` ${parseLocalDay(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}, every section stays editable
               </div>
               <button
                 onClick={() => setEditMode((v) => !v)}
@@ -1118,13 +1118,13 @@ function ShipChip({ flow }: { flow: DealFlow }) {
 
   if (s.kind === "direct") return (
     <span className={`${pill} border border-line text-muted`}
-      title={`Ships direct — no pickup, so completion is not held for a date.${moved ? ` (${moved})` : ""}`}>
+      title={`Ships direct, no pickup, so completion is not held for a date.${moved ? ` (${moved})` : ""}`}>
       <Package size={10} /> Ships direct
     </span>
   );
   if (s.kind === "unset") return (
     <span className={`${pill} bg-warning-bg text-warning-ink`}
-      title="No pickup date, no expected delivery, and no ships-direct answer — this deal has no schedule">
+      title="No pickup date, no expected delivery, and no ships-direct answer: this deal has no schedule">
       <AlertTriangle size={10} /> No date set
     </span>
   );
@@ -1190,7 +1190,7 @@ function ShippingStrip({ flow, onReload, locked }: { flow: DealFlow; onReload: (
         <span className="text-[12.5px] font-semibold text-ink-2">Schedule</span>
         {s.kind === "unset" && (
           <span className="inline-flex items-center gap-1 text-[11px] text-warning-ink">
-            <AlertTriangle size={11} /> Not answered yet — set a date, or say it ships direct
+            <AlertTriangle size={11} /> Not answered yet: set a date, or say it ships direct
           </span>
         )}
       </div>
@@ -1210,7 +1210,7 @@ function ShippingStrip({ flow, onReload, locked }: { flow: DealFlow; onReload: (
           title="The explicit 'there is no pickup' answer. A deal that ships direct is never held for a date."
           className={`h-9 px-3 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors ${
             direct ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
-          {direct ? <Check size={12} /> : <Package size={12} />} No pickup — ships direct
+          {direct ? <Check size={12} /> : <Package size={12} />} No pickup, ships direct
         </button>
         {dirty && !locked && (
           <div className="flex items-center gap-1.5">
@@ -1233,11 +1233,11 @@ function ShippingStrip({ flow, onReload, locked }: { flow: DealFlow; onReload: (
       )}
       {gate && (
         <div className="text-[11px] text-muted mt-1.5">
-          Completing this deal is held until {dayLabel(gate.date)} — its {basisWord(gate.basis)} date. You can override it in Review &amp; complete, with a reason.
+          Completing this deal is held until {dayLabel(gate.date)}: its {basisWord(gate.basis)} date. You can override it in Review &amp; complete, with a reason.
         </div>
       )}
       {s.kind === "direct" && (
-        <div className="text-[11px] text-muted mt-1.5">Ships direct — completion is not held for a date.</div>
+        <div className="text-[11px] text-muted mt-1.5">Ships direct. Completion is not held for a date.</div>
       )}
     </div>
   );
@@ -1565,25 +1565,25 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
                 {p.split ? (
                   <div className="text-[11px] text-muted tabular-nums">
                     {p.split.share_pct}% of {fmtAmount(Math.max(0, p.split.sale_unit_price - p.split.basis_unit_cost))} a unit
-                    on {p.split.units.toLocaleString()} units — split taken on {fmtAmount(p.split.basis_unit_cost)}
+                    on {p.split.units.toLocaleString()} units, split taken on {fmtAmount(p.split.basis_unit_cost)}
                   </div>
                 ) : p.quantity != null && p.unit_price != null ? (
                   <div className="text-[11px] text-muted tabular-nums">{p.quantity} × {fmtAmount(p.unit_price)}</div>
                 ) : null}
                 {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
-                {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept — didn't pay, not counted as a cost</div>}
+                {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept: didn't pay, not counted as a cost</div>}
                 {!locked && (
                   <div className="flex items-center gap-2.5 mt-0.5">
                     {!p.kept && (
                       <button onClick={() => togglePaid(p.id, !p.paid)} disabled={saving}
                         className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
-                        {p.paid ? "Undo — not paid yet" : "Mark paid"}
+                        {p.paid ? "Undo, not paid yet" : "Mark paid"}
                       </button>
                     )}
                     {!p.paid && (
                       <button onClick={() => toggleKept(p.id, !p.kept)} disabled={saving}
                         className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
-                        {p.kept ? "Undo — I did pay this" : "Didn't pay — keep it"}
+                        {p.kept ? "Undo (I did pay this)" : "Didn't pay, keep it"}
                       </button>
                     )}
                   </div>
@@ -1612,7 +1612,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
               // be settled at any open stage (R-302).
               <button onClick={markAllPaid} disabled={saving}
                 className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors w-full justify-center">
-                <Check size={14} strokeWidth={2.5} /> Mark supplier paid — {fmtAmount(outstandingTotal)}
+                <Check size={14} strokeWidth={2.5} /> Mark supplier paid: {fmtAmount(outstandingTotal)}
               </button>
             )
           )}
@@ -1635,7 +1635,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
           <div>
             <div className="flex items-center gap-2"><Package size={15} className="text-accent" /><div className="text-[13px] font-medium text-ink">{isOwnKind ? "Cost on this deal" : "Supplier cost"}</div></div>
             <div className="text-[11.5px] text-muted mt-0.5">
-              {isOwnKind ? "A cost you are paying for this deal, not the goods" : "Itemized — your cost vs the client quote per line"}
+              {isOwnKind ? "A cost you are paying for this deal, not the goods" : "Itemized: your cost vs the client quote per line"}
             </div>
           </div>
           {/* R-315: what kind of cost this is, before anything else — the answer
@@ -1783,7 +1783,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
                           className="w-full border border-line pl-5 pr-1 h-8 rounded-md text-[12px] text-right focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent transition-colors tabular-nums" />
                       </div>
                       <div className="text-right">
-                        <div className="text-[12px] font-medium text-ink tabular-nums">{myRate > 0 ? fmtAmount(myTotal) : "—"}</div>
+                        <div className="text-[12px] font-medium text-ink tabular-nums">{myRate > 0 ? fmtAmount(myTotal) : "–"}</div>
                         {saving_pct !== null && myRate > 0 && (
                           <div className={`text-[10px] tabular-nums ${saving_pct >= 20 ? "text-success-ink" : saving_pct >= 0 ? "text-warning-ink" : "text-danger-ink"}`}>{saving_pct.toFixed(0)}% margin</div>
                         )}
@@ -1826,7 +1826,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
       {/* Advance */}
       <div className="flex items-center justify-between pt-1">
         <span className="text-[11.5px] text-muted">
-          {existingPayments.length === 0 ? "No supplier cost yet — you can continue and record this as 100% profit"
+          {existingPayments.length === 0 ? "No supplier cost yet. You can continue and record this as 100% profit"
             : suppliersPaid ? "Cost recorded, every leg settled"
             : `${outstanding.length} leg${outstanding.length === 1 ? "" : "s"} still to send`}
         </span>
@@ -1857,7 +1857,7 @@ function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: 
       <div>
         <div className="text-[14px] font-semibold text-ink">Link financials</div>
         <div className="text-[12px] text-muted mt-0.5">
-          Pair the real bank transactions to this deal — buyer payment, supplier payment, wire fees, refunds.
+          Pair the real bank transactions to this deal: buyer payment, supplier payment, wire fees, refunds.
           Anything you link here (or from Bank statements) is what the recorded profit is built from.
         </div>
       </div>
@@ -1907,7 +1907,7 @@ function DealNotes({ flow, onReload }: { flow: DealFlow; onReload: () => void })
     <div className="rounded-lg border border-line bg-surface px-3 py-2.5">
       <div className="text-[12px] font-medium text-muted mb-1.5">Notes</div>
       <textarea value={val} onChange={(e) => setVal(e.target.value)} rows={2}
-        placeholder="Explain anything about this deal — e.g. why a payment has no bank record"
+        placeholder="Explain anything about this deal (e.g. why a payment has no bank record)"
         className="w-full border border-line rounded-lg px-2.5 py-2 text-[12.5px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-y" />
       {dirty && (
         <div className="flex justify-end mt-1.5">
@@ -1937,7 +1937,7 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
         <div className="text-[12px] text-muted mt-0.5">
           {anyLinked
             ? "Derived from the bank transactions you linked. This is what gets recorded and shown in analytics."
-            : "No bank transactions linked yet — until you link some, the recorded profit uses the figures you entered."}
+            : "No bank transactions linked yet. Until you link some, the recorded profit uses the figures you entered."}
         </div>
       </div>
 
@@ -2082,7 +2082,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const handleCompleteClick = () => {
     // The confirm that used to sit on "Mark payment received".
     if ((flow.supplier_payments || []).length === 0
-      && !confirm("No supplier cost on this deal — it will be recorded as 100% profit. Complete it anyway?")) return;
+      && !confirm("No supplier cost on this deal. It will be recorded as 100% profit. Complete it anyway?")) return;
     if (recNet < 0) {
       const ok = confirm(`Warning: This deal is at a loss.\n\nRevenue: ${fmtAmount(recRev)}\nCosts: ${fmtAmount(recCost)}\nLoss: ${fmtAmount(recNet)}\n\nMark complete anyway?`);
       if (!ok) return;
@@ -2122,10 +2122,10 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         <div className="text-[14px] font-semibold text-ink">Review &amp; complete</div>
         <div className="text-[12px] text-muted mt-0.5">
           {isComplete
-            ? "Recorded from the linked bank transactions — saved with the deal so it never disappears."
+            ? "Recorded from the linked bank transactions, saved with the deal so it never disappears."
             : bankBacked
               ? "These are the real bank numbers that get recorded and shown everywhere."
-              : "No bank transactions linked yet — these use your entered figures. Link them in step 2 for bank-accurate profit."}
+              : "No bank transactions linked yet. These use your entered figures. Link them in step 2 for bank-accurate profit."}
         </div>
       </div>
 
@@ -2151,7 +2151,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           && Math.abs(flow.payment_received_amount - flow.invoice_total) > 0.005 && (
           <div className="mt-2.5 text-[11px] text-muted">
             Revenue is the {fmtAmount(flow.payment_received_amount)} recorded as received, not the invoice total of {fmtAmount(flow.invoice_total)}.
-            If that is wrong, link the buyer's payment in Link financials, or add it by hand there — a linked payment is what gets recorded.
+            If that is wrong, link the buyer's payment in Link financials, or add it by hand there. A linked payment is what gets recorded.
           </div>
         )}
       </div>
@@ -2178,7 +2178,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
                   className={`flex items-center gap-2 text-[12px] ${clickable ? "cursor-pointer hover:bg-surface-2 -mx-1.5 px-1.5 py-0.5 rounded-md transition-colors" : ""}`}
                 >
                   <span className="text-ink-2 flex-1 truncate">
-                    {roleLabel(s.role)} · {s.counterparty || "—"}
+                    {roleLabel(s.role)} · {s.counterparty || "–"}
                     {s.posted_at ? ` · ${new Date(s.posted_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
                   </span>
                   <span className={`tabular-nums font-medium ${s.direction === "out" ? "text-danger-ink" : "text-success-ink"}`}>
@@ -2205,7 +2205,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
                 <span className="font-medium">{o.by || "Unknown"}</span>
                 {o.at ? ` · ${new Date(o.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
                 {o.blocked_until ? ` · held until ${dayLabel(o.blocked_until)}` : ""}
-                {o.reason ? ` — ${o.reason}` : ""}
+                {o.reason ? ` · ${o.reason}` : ""}
               </div>
             ))}
           </div>
@@ -2249,7 +2249,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
               <div className="flex items-start gap-2 text-[12.5px] text-warning-ink">
                 <Truck size={14} className="mt-0.5 flex-shrink-0" />
                 <span>
-                  Held until {dayLabel(gate.date)} — this deal's {basisWord(gate.basis)} date has not arrived yet.
+                  Held until {dayLabel(gate.date)}: this deal's {basisWord(gate.basis)} date has not arrived yet.
                 </span>
               </div>
               {!overrideOn ? (
@@ -2282,12 +2282,12 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
             </span>
           </button>
           <button onClick={handleCompleteClick} disabled={saving || !moneyLinked || gateBlocks}
-            title={gateBlocks ? `Held until ${dayLabel(gate!.date)} — override above with a reason`
+            title={gateBlocks ? `Held until ${dayLabel(gate!.date)}, override above with a reason`
               : !moneyLinked ? "Confirm all money is linked first" : undefined}
             className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[14px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-            {gateBlocks ? `Complete deal — held until ${dayLabel(gate!.date)}`
-              : !moneyLinked ? "Complete deal — confirm money linked above"
-              : `Complete deal — record ${fmtAmount(recNet)} profit`}
+            {gateBlocks ? `Complete deal: held until ${dayLabel(gate!.date)}`
+              : !moneyLinked ? "Complete deal: confirm money linked above"
+              : `Complete deal: record ${fmtAmount(recNet)} profit`}
           </button>
         </div>
       )}
@@ -2324,7 +2324,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           </div>
           <div className="flex items-center gap-2 pt-1">
             <button onClick={handleShippingComplete} disabled={saving || gateBlocks}
-              title={gateBlocks ? `Held until ${dayLabel(gate!.date)} — override in the step before this` : undefined}
+              title={gateBlocks ? `Held until ${dayLabel(gate!.date)}, override in the step before this` : undefined}
               className="flex items-center gap-1.5 bg-success hover:opacity-90 text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all"><Check size={13} /> Confirm delivery &amp; complete</button>
             <button onClick={() => setShipHold("idle")} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9 hover:bg-surface-3 rounded-lg transition-colors">Cancel</button>
           </div>
@@ -2338,7 +2338,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
             className="flex items-center gap-1.5 text-[12px] text-warning-ink px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors">
             <RotateCcw size={11} /> Reopen deal
           </button>
-          <button onClick={async () => { setSaving(true); try { const r = await api.recalcDealFromBank(flow.id); toast(r?.from_bank ? `Recalculated from bank — profit ${fmtAmount(r?.net_profit ?? 0)}` : "No bank transactions linked — kept recorded figures", "success"); onReload(); } catch (e: any) { toast(String(e), "error"); } setSaving(false); }}
+          <button onClick={async () => { setSaving(true); try { const r = await api.recalcDealFromBank(flow.id); toast(r?.from_bank ? `Recalculated from bank: profit ${fmtAmount(r?.net_profit ?? 0)}` : "No bank transactions linked: kept recorded figures", "success"); onReload(); } catch (e: any) { toast(String(e), "error"); } setSaving(false); }}
             disabled={saving}
             className="flex items-center gap-1.5 text-[12px] text-accent px-2.5 py-1 rounded-lg hover:bg-accent/10 border border-accent/30 transition-colors">
             <RefreshCw size={11} /> Recalculate from bank

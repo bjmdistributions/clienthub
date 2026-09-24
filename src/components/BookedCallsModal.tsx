@@ -33,7 +33,7 @@ function ConsequenceStep({ kind, call, reason, setReason, onCancel, onNext }: {
     ? `This cancels the call with ${call.name} and lets them know it's no longer happening.`
     : kind === "reschedule"
     ? `You're about to reschedule the call with ${call.name}. You'll pick a new date and time on the next step.`
-    : `This archives the call with ${call.name}. It moves out of the active list — nothing is deleted.`;
+    : `This archives the call with ${call.name}. It moves out of the active list, and nothing is deleted.`;
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
       <div className="bg-surface border border-line rounded-2xl p-5 max-w-sm w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -173,7 +173,7 @@ function ConfirmedCallRow({ call, onAction }: { call: CallRequest; onAction: (ki
           <span className="text-[13.5px] font-semibold text-ink truncate">{call.name}{call.company ? ` · ${call.company}` : ""}</span>
           <StatusPill tone="success">Confirmed</StatusPill>
         </div>
-        <div className="text-[12px] text-ink-2 mt-1 tabular-nums">{call.scheduled_at ? fmtWhen(call.scheduled_at) : "—"}</div>
+        <div className="text-[12px] text-ink-2 mt-1 tabular-nums">{call.scheduled_at ? fmtWhen(call.scheduled_at) : "–"}</div>
         {call.confirmation_sent_via && (
           <div className="text-[11px] text-faint mt-1">
             Confirmation sent via {call.confirmation_sent_via === "desktop_smtp" ? "sales@ (desktop)" : "no-reply@ecliptr.app"}

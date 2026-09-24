@@ -151,7 +151,7 @@ export default function SheetCopyView() {
         <div className="flex items-start gap-1.5 text-[11.5px] text-muted leading-relaxed">
           <Info size={13} className="text-faint flex-shrink-0 mt-0.5" />
           <span>
-            Works on any sheet shared with your Google account — even when copying is disabled.
+            Works on any sheet shared with your Google account (even when copying is disabled).
             Charts, images, and pivot tables may not carry over.
           </span>
         </div>
@@ -166,7 +166,7 @@ export default function SheetCopyView() {
               <div className="text-[13.5px] font-semibold text-ink">Copying your sheet… ({elapsed}s)</div>
               <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
                 Reading every tab and rebuilding it in your Drive. A large sheet can take a minute or
-                two — keep this page open. It'll show a link here when it's done.
+                two. Keep this page open. It'll show a link here when it's done.
               </div>
             </div>
           </div>
@@ -196,7 +196,7 @@ export default function SheetCopyView() {
               <Check size={16} />
             </span>
             <div className="min-w-0 flex-1">
-              <div className="text-[13.5px] font-semibold text-ink">Done — your copy is ready</div>
+              <div className="text-[13.5px] font-semibold text-ink">Done: your copy is ready</div>
               <div className="text-[11.5px] text-muted mt-0.5 truncate">
                 {result.title} · {result.sheetCount}{" "}
                 {result.sheetCount === 1 ? "tab" : "tabs"} · saved in your Google Drive

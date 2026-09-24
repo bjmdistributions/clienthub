@@ -131,7 +131,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
               </div>
               <h3 className="text-[20px] font-bold text-ink mb-2">Welcome to Ecliptr</h3>
               <p className="text-[13px] text-muted max-w-[320px] mx-auto leading-relaxed mb-2">
-                Your clients, invoices, deal flow, and newsletters — all in one place.
+                Your clients, invoices, deal flow, and newsletters: all in one place.
               </p>
               <p className="text-[12px] text-muted mb-8">Let's get you set up in about 2 minutes.</p>
             </div>
@@ -198,7 +198,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                     {emailTested === "ok" && <span className="text-success-ink text-[12px] font-medium flex items-center gap-1"><Check size={13} /> Connected</span>}
                     {emailTested === "fail" && (
                       <span className="text-warning-ink text-[11px] flex items-center gap-1">
-                        <AlertCircle size={12} /> Connection failed — you can fix this in Settings later
+                        <AlertCircle size={12} /> Connection failed. You can fix this in Settings later
                       </span>
                     )}
                   </div>
@@ -232,7 +232,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                         <div key={f.key} className="grid grid-cols-3 gap-2 items-center">
                           <label className="text-[12px] text-ink-2">{f.label}</label>
                           <select className="col-span-2 border border-line px-2 h-8 rounded-lg text-[12px]" value={csvMapping[f.key] ?? ""} onChange={(e) => setCsvMapping({ ...csvMapping, [f.key]: e.target.value })}>
-                            <option value="">— skip —</option>
+                            <option value="">(skip)</option>
                             {csvPreview.headers.map((h) => (<option key={h} value={h}>{h}</option>))}
                           </select>
                         </div>

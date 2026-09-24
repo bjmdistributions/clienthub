@@ -190,7 +190,8 @@ pub async fn draft_reply_with_tone(email_body: &str, context: Option<&str>, tone
     let system = format!(
         "You are a professional business email assistant. Draft a concise, polite, \
          contextually appropriate reply. {}. Do not invent specifics. If you need \
-         information you don't have, ask a clear follow-up question instead of guessing.",
+         information you don't have, ask a clear follow-up question instead of guessing. \
+         Never use em dashes: write the way a person types, with commas, full stops or colons.",
         tone_instruction
     );
 
@@ -330,7 +331,8 @@ pub async fn summarize_history(interactions: &[String]) -> Result<String> {
         .join("\n\n---\n\n");
     let prompt = format!(
         "Summarize this client interaction history in 3-5 bullet points covering: \
-         outstanding asks, agreed deliverables, billing context. Be concise.\n\n{}",
+         outstanding asks, agreed deliverables, billing context. Be concise. \
+         Never use em dashes.\n\n{}",
         joined
     );
     generate(prompt, false, 0.3).await
@@ -670,8 +672,9 @@ pub async fn draft_newsletter(prompt: &str, tone: &str) -> Result<String> {
     let system = format!(
         "You are a professional business email writer for a wholesale distribution company. \
          Write a newsletter email in {} tone. \
-         The email will be personalized — use {{{{first_name}}}} as a placeholder where the recipient's name should appear (usually in the greeting). \
+         The email will be personalized: use {{{{first_name}}}} as a placeholder where the recipient's name should appear (usually in the greeting). \
          Write only the email body, no subject line. Keep it concise (150-250 words). \
+         Never use em dashes: write the way a person types, with commas, full stops or colons. \
          Do not include any explanation or metadata.",
         tone_instruction
     );

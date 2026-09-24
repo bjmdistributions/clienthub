@@ -336,7 +336,7 @@ export default function DealPicker({
         </div>
         <div className="text-right flex-shrink-0">
           <div className={`text-[12.5px] tabular-nums ${exact ? "text-accent font-semibold" : "text-ink-2"}`}>
-            {money.value ? fmtAmount(money.value) : "—"}
+            {money.value ? fmtAmount(money.value) : "–"}
           </div>
           <div className="text-[10px] text-muted tabular-nums">{money.label}</div>
         </div>
@@ -354,7 +354,7 @@ export default function DealPicker({
         onClick={onMore}
         className="w-full text-left px-3 py-1.5 text-[11px] text-accent hover:bg-surface-2 rounded-lg transition-colors"
       >
-        Showing {shown} of {total} — show the rest
+        Showing {shown} of {total}, show the rest
       </button>
     ) : null;
 

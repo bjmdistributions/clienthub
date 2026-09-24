@@ -287,7 +287,7 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           <div className="text-right">
             <div className="text-[11px] text-muted">Actual profit (from bank)</div>
             {!anyPaired ? (
-              <div className="text-[18px] font-bold tabular-nums mt-0.5 text-faint">—</div>
+              <div className="text-[18px] font-bold tabular-nums mt-0.5 text-faint">–</div>
             ) : (
               <div className={`text-[18px] font-bold tabular-nums mt-0.5 ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
                 {actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}
@@ -468,7 +468,7 @@ function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: st
           {/* A hand-entered line must never read as something that came off a statement. */}
           {manual && (
             <span className="text-[10px] font-medium text-muted border border-line rounded px-1 py-px flex-shrink-0"
-              title="Entered by hand — not matched to a bank statement">
+              title="Entered by hand: not matched to a bank statement">
               Cash
             </span>
           )}
@@ -562,7 +562,7 @@ function ManualLineForm({ leg, busy, defaultWho, onAdd, onCancel }: {
         value={note}
         onChange={(e) => setNote(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-        placeholder="What happened — e.g. cash on the side, cancelled out the wire on the statement"
+        placeholder="What happened: e.g. cash on the side, cancelled out the wire on the statement"
         className="w-full h-8 px-2.5 rounded-lg border border-line bg-surface text-[12.5px] text-ink placeholder:text-muted focus:outline-none"
       />
       <div className="flex items-center gap-2">
@@ -801,7 +801,7 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
                           <div className="text-[11px] text-muted truncate max-w-[380px]">{t.description}</div>
                         )}
                       </td>
-                      <td className="py-2 pr-3 text-[11.5px] text-muted truncate max-w-[140px]">{t.category || "—"}</td>
+                      <td className="py-2 pr-3 text-[11.5px] text-muted truncate max-w-[140px]">{t.category || "–"}</td>
                       <td className="py-2 pr-3 text-[11.5px] text-muted truncate max-w-[160px]">{t.account_id}</td>
                       <td className="py-2 pr-5 text-right whitespace-nowrap">
                         <div className={`text-[12.5px] font-semibold tabular-nums ${t.direction === "out" ? "text-danger-ink" : "text-success-ink"}`}>
@@ -821,7 +821,7 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
         <div className="border-t border-line px-5 py-3 bg-surface-2/40">
           {!sel ? (
             <div className="text-[12px] text-muted">
-              {txns === null ? "" : `${shown.length} transaction${shown.length === 1 ? "" : "s"} — pick one to pair it with this deal.`}
+              {txns === null ? "" : `${shown.length} transaction${shown.length === 1 ? "" : "s"}, pick one to pair it with this deal.`}
             </div>
           ) : (
             <div className="flex items-center gap-3 flex-wrap">

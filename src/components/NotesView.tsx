@@ -308,7 +308,7 @@ export default function NotesView({ me }: { me: string }) {
         <div>
           <h2 className="text-[17px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)" }}>Notes</h2>
           <p className="text-[12px] mt-0.5" style={{ color: "var(--t-tx4)" }}>
-            {notes.length === 0 ? "Pin quick notes to your board — drag to arrange" : `${notes.length} note${notes.length > 1 ? "s" : ""} · drag by the top bar to move`}
+            {notes.length === 0 ? "Pin quick notes to your board: drag to arrange" : `${notes.length} note${notes.length > 1 ? "s" : ""} · drag by the top bar to move`}
           </p>
         </div>
         <button onClick={addNote}
@@ -323,7 +323,7 @@ export default function NotesView({ me }: { me: string }) {
           <div className="flex items-center gap-1.5 mb-2">
             <Clock size={13} style={{ color: "#FB923C" }} />
             <span className="text-[12px] font-medium" style={{ color: "var(--t-tx2)" }}>
-              {attention.length} note{attention.length > 1 ? "s" : ""} up for a while — still needed?
+              {attention.length} note{attention.length > 1 ? "s" : ""} up for a while, still needed?
             </span>
           </div>
           <div className="flex gap-2 overflow-x-auto pb-1">
@@ -339,7 +339,7 @@ export default function NotesView({ me }: { me: string }) {
                       up {staleLabel(n)}{n.urgency !== "normal" ? ` · ${u.label.toLowerCase()}` : ""}
                     </div>
                   </button>
-                  <button onClick={() => keep(n.id)} title="Keep — still needed"
+                  <button onClick={() => keep(n.id)} title="Keep (still needed)"
                     className="w-7 h-7 flex items-center justify-center rounded-md flex-shrink-0"
                     style={{ color: "#34D399" }}><Check size={14} /></button>
                   <button onClick={() => remove(n.id)} title="Delete"
@@ -416,7 +416,7 @@ export default function NotesView({ me }: { me: string }) {
                       ))}
                     </div>
                     <div className="sn-actions">
-                      <button title={`Urgency: ${u.label} — click to change`} onClick={() => cycleUrgency(n.id)}
+                      <button title={`Urgency: ${u.label}, click to change`} onClick={() => cycleUrgency(n.id)}
                         style={{ color: n.urgency === "normal" ? "var(--t-tx4)" : u.color }}><Flag size={13} /></button>
                       <button title={n.pinned ? "Unpin" : "Pin"} onClick={() => togglePin(n.id, !n.pinned)} style={{ color: n.pinned ? c.accent : "var(--t-tx4)" }}><Pin size={13} /></button>
                       {!locker && <button title="Delete" onClick={() => remove(n.id)} className="sn-del" style={{ color: "var(--t-tx4)" }}><Trash2 size={13} /></button>}
@@ -427,7 +427,7 @@ export default function NotesView({ me }: { me: string }) {
                     {stale ? (
                       <>
                         <Clock size={10} /> up {staleLabel(n)}
-                        <button onClick={() => keep(n.id)} title="Still needed — keep it (resets the clock)"
+                        <button onClick={() => keep(n.id)} title="Still needed, keep it (resets the clock)"
                           className="flex items-center gap-0.5 rounded px-1" style={{ color: "#34D399", fontWeight: 600, marginLeft: 2 }}>
                           <Check size={11} /> Keep
                         </button>

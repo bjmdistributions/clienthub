@@ -70,7 +70,7 @@ export function VariableReference() {
   };
   return (
     <div className="border border-line rounded-lg p-3 bg-surface-2/40">
-      <div className="text-[12.5px] font-medium text-muted mb-2">Variables — click to copy, then paste into your email</div>
+      <div className="text-[12.5px] font-medium text-muted mb-2">Variables: click to copy, then paste into your email</div>
       <div className="grid sm:grid-cols-2 gap-1">
         {VARIABLES.map((v) => (
           <button key={v.token} type="button" onClick={() => copy(v.token)}

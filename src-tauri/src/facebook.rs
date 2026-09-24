@@ -116,7 +116,7 @@ pub async fn fb_connect(app: tauri::AppHandle) -> Result<Vec<FbPageLite>, String
             Ok(s) => s,
             Err(e) => {
                 let _ = tx.send(Err(format!(
-                    "Couldn't start the local sign-in listener on port {} — close whatever is using it and try again ({}).",
+                    "Couldn't start the local sign-in listener on port {}. Close whatever is using it and try again ({}).",
                     OAUTH_PORT, e
                 )));
                 return;
@@ -231,12 +231,12 @@ pub async fn fb_connect(app: tauri::AppHandle) -> Result<Vec<FbPageLite>, String
 /// Pick which Page to post to; persists that Page's long-lived token.
 #[tauri::command]
 pub fn fb_select_page(page_id: String) -> Result<String, String> {
-    let stash = secret(K_PENDING).ok_or("Connect to Facebook again — the session expired.")?;
+    let stash = secret(K_PENDING).ok_or("Connect to Facebook again. The session expired.")?;
     let pages: serde_json::Value = serde_json::from_str(&stash).map_err(|e| e.to_string())?;
     let page = pages
         .as_array()
         .and_then(|a| a.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(page_id.as_str())))
-        .ok_or("That Page wasn't in the list — reconnect and try again.")?;
+        .ok_or("That Page wasn't in the list. Reconnect and try again.")?;
     let token = page
         .get("access_token")
         .and_then(|v| v.as_str())
@@ -356,7 +356,7 @@ fn parse_callback(url: &str, want_state: &str) -> Result<String, String> {
     }
     let state = params.iter().find(|(k, _)| *k == "state").map(|(_, v)| *v).unwrap_or("");
     if state != want_state {
-        return Err("sign-in state mismatch — try again".into());
+        return Err("sign-in state mismatch: try again".into());
     }
     params
         .iter()

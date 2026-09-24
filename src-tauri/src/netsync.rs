@@ -411,7 +411,7 @@ pub async fn push_pending() -> Result<usize> {
                 }
             }
             note_auth_lost();
-            anyhow::bail!("unauthorized — sign in again");
+            anyhow::bail!("unauthorized: sign in again");
         }
         if !resp.status().is_success() {
             anyhow::bail!("push failed: HTTP {}", resp.status());
@@ -601,7 +601,7 @@ pub async fn pull_apply() -> Result<usize> {
                 }
             }
             note_auth_lost();
-            anyhow::bail!("unauthorized — sign in again");
+            anyhow::bail!("unauthorized: sign in again");
         }
         if !resp.status().is_success() {
             anyhow::bail!("pull failed: HTTP {}", resp.status());
@@ -950,7 +950,7 @@ fn run_invariant_checks() {
                     .unwrap_or(0);
                 if n > 0 && age > QUEUE_STALL_SECS {
                     findings.push(format!(
-                        "{} local change(s) have been waiting to upload for {} min while the server is reachable — this device is holding the only copy",
+                        "{} local change(s) have been waiting to upload for {} min while the server is reachable. This device is holding the only copy",
                         n,
                         age / 60
                     ));
@@ -973,7 +973,7 @@ fn run_invariant_checks() {
             .unwrap_or(0);
         if orphans > 0 {
             findings.push(format!(
-                "{} bank link(s) point at a transaction that no longer exists — open Deal flow to clear them",
+                "{} bank link(s) point at a transaction that no longer exists. Open Deal flow to clear them",
                 orphans
             ));
         }
@@ -1094,7 +1094,7 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
         .await
         .context("snapshot request")?;
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        anyhow::bail!("unauthorized — sign in again");
+        anyhow::bail!("unauthorized: sign in again");
     }
     if !resp.status().is_success() {
         anyhow::bail!("snapshot failed: HTTP {}", resp.status());
@@ -1417,9 +1417,9 @@ pub async fn get_my_plan() -> Result<serde_json::Value, String> {
         .bearer_auth(&cfg.token)
         .send()
         .await
-        .map_err(|_| "Couldn't reach the server — check your connection.".to_string())?;
+        .map_err(|_| "Couldn't reach the server. Check your connection.".to_string())?;
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));
@@ -1649,7 +1649,7 @@ pub async fn push_all_secrets_to_server() -> Result<u32, String> {
         .json(&serde_json::json!({ "secrets": secrets }))
         .send()
         .await
-        .map_err(|_| "Couldn't reach the server — check your connection.".to_string())?;
+        .map_err(|_| "Couldn't reach the server. Check your connection.".to_string())?;
     if resp.status() == reqwest::StatusCode::FORBIDDEN {
         return Err("Admin permission required.".into());
     }
@@ -1754,15 +1754,15 @@ pub async fn upload_company_logo() -> Result<(), String> {
         .body(bytes)
         .send()
         .await
-        .map_err(|_| "Couldn't reach the server — check your connection.".to_string())?;
+        .map_err(|_| "Couldn't reach the server. Check your connection.".to_string())?;
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if resp.status() == reqwest::StatusCode::FORBIDDEN {
         return Err("Admin permission required to sync the logo.".into());
     }
     if resp.status() == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
-        return Err("Logo is too large — use an image under 1 MB.".into());
+        return Err("Logo is too large. Use an image under 1 MB.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));
@@ -1931,7 +1931,7 @@ pub async fn upload_lot_artifact(sheet_id: &str, local: &std::path::Path) -> Res
 /// half-written artifact behind — a truncated `stacks.jsonl` would be read as a short lot,
 /// and a short lot reads as a legal answer.
 pub async fn download_lot_artifact(sheet_id: &str, local: &std::path::Path) -> Result<(), String> {
-    let cfg = config().ok_or("this sheet was imported on another device — sign in to fetch it")?;
+    let cfg = config().ok_or("this sheet was imported on another device: sign in to fetch it")?;
     let url = lot_artifact_url(sheet_id).ok_or("not signed in")?;
     let resp = http()
         .get(url)
@@ -2201,7 +2201,7 @@ pub async fn get_platform_signups() -> Result<serde_json::Value, String> {
         return Err("Superadmin only.".into());
     }
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));
@@ -2223,7 +2223,7 @@ pub async fn admin_waitlist_all() -> Result<serde_json::Value, String> {
         return Err("Superadmin only.".into());
     }
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));
@@ -2245,7 +2245,7 @@ pub async fn admin_feedback_all() -> Result<serde_json::Value, String> {
         return Err("Superadmin only.".into());
     }
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));
@@ -2268,7 +2268,7 @@ pub async fn admin_set_org_plan(org_id: String, plan: String) -> Result<serde_js
         return Err("Superadmin only.".into());
     }
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Err("Workspace not found.".into());
@@ -2297,7 +2297,7 @@ pub async fn admin_delete_workspace(org_id: String) -> Result<serde_json::Value,
         return Err("Superadmin only.".into());
     }
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Err("Workspace not found.".into());
@@ -2330,7 +2330,7 @@ pub async fn admin_onboarding() -> Result<serde_json::Value, String> {
         return Err("Superadmin only.".into());
     }
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));
@@ -2352,7 +2352,7 @@ pub async fn admin_platform_users() -> Result<serde_json::Value, String> {
         return Err("Superadmin only.".into());
     }
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));
@@ -2380,7 +2380,7 @@ pub async fn admin_broadcast_preview(
         .await
         .map_err(|_| "Couldn't reach the server.".to_string())?;
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));
@@ -2423,7 +2423,7 @@ pub async fn admin_broadcast_send(
         .await
         .map_err(|_| "Couldn't reach the server.".to_string())?;
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));
@@ -2459,7 +2459,7 @@ pub async fn admin_broadcast_test(
         .await
         .map_err(|_| "Couldn't reach the server.".to_string())?;
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("Your session expired — sign in again.".into());
+        return Err("Your session expired. Sign in again.".into());
     }
     if !resp.status().is_success() {
         return Err(format!("Server returned {}", resp.status()));

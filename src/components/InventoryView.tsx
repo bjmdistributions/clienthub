@@ -210,7 +210,7 @@ export default function InventoryView() {
     setStaleBusy(true);
     try {
       const stale = await api.listStaleServerLots();
-      if (stale.length === 0) toast("Everything's in sync — no removed lots to clean up.");
+      if (stale.length === 0) toast("Everything's in sync, no removed lots to clean up.");
       else setStaleModal(stale);
     } catch (e: any) { toast(String(e), "error"); }
     setStaleBusy(false);
@@ -220,7 +220,7 @@ export default function InventoryView() {
     setStaleBusy(true);
     try {
       const n = await api.deleteLots(staleModal.map((s) => s.id));
-      toast(`Cleaned up ${n} removed lot${n !== 1 ? "s" : ""} — they'll drop off mobile shortly.`);
+      toast(`Cleaned up ${n} removed lot${n !== 1 ? "s" : ""}. They'll drop off mobile shortly.`);
       setStaleModal(null);
       load();
     } catch (e: any) { toast(String(e), "error"); }
@@ -323,7 +323,7 @@ export default function InventoryView() {
   // updated_at server-side (which clears the stale flag) and sends no email —
   // that's deliberately separate from the Blast action, which emails buyers.
   const renewLot = async (lot: Lot) => {
-    try { await api.updateLot(lot.id, {}); toast("Renewed — freshness reset."); load(); }
+    try { await api.updateLot(lot.id, {}); toast("Renewed, freshness reset."); load(); }
     catch (e: any) { toast(String(e), "error"); }
   };
 
@@ -403,7 +403,7 @@ export default function InventoryView() {
     try {
       const tmpl = await api.getNewsletterProductTemplate();
       const body = buildNewsletterBody(tmpl, chosen.map(lotToBlockInput));
-      const subject = `New inventory — ${chosen.length} lot${chosen.length !== 1 ? "s" : ""}`;
+      const subject = `New inventory: ${chosen.length} lot${chosen.length !== 1 ? "s" : ""}`;
       // Audience: the selected lots' categories, handed over as the Newsletter's category
       // filter so it counts buyers the same way its own chips do (R-297 — matching the whole
       // category string here missed every buyer with more than one). Each lot's FULL list:
@@ -432,7 +432,7 @@ export default function InventoryView() {
       const parts = [];
       if (r.downloaded) parts.push(`pulled ${r.downloaded}`);
       if (r.uploaded) parts.push(`uploaded ${r.uploaded}`);
-      toast(parts.length ? `Photos synced — ${parts.join(", ")}` : "Photos already in sync");
+      toast(parts.length ? `Photos synced: ${parts.join(", ")}` : "Photos already in sync");
       if (r.downloaded) { mediaBust++; load(); }
     } catch (e: any) { toast(String(e), "error"); }
     setPhotoSyncBusy(false);
@@ -444,7 +444,7 @@ export default function InventoryView() {
   // returns a neutral zero/dash for them — the display never renders those lines.
   const unitCost = (lot: Lot) => lot.price_type === "total" && lot.quantity > 0 ? lot.total_cost / lot.quantity : lot.total_cost;
   const unitAsk = (lot: Lot) => lot.price_type === "custom" ? 0 : lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity : lot.asking_price;
-  const margin = (lot: Lot) => lot.price_type === "custom" ? "—" : unitCost(lot) > 0 ? `${(((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100).toFixed(0)}%` : "—";
+  const margin = (lot: Lot) => lot.price_type === "custom" ? "–" : unitCost(lot) > 0 ? `${(((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100).toFixed(0)}%` : "–";
   const marginPct = (lot: Lot) => lot.price_type === "custom" ? 0 : unitCost(lot) > 0 ? ((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100 : 0;
   const totalProfit = (lot: Lot) => lot.price_type === "custom" ? 0 : lot.price_type === "total" ? lot.asking_price - lot.total_cost : (lot.asking_price - lot.total_cost) * lot.quantity;
   const totalAsk = (lot: Lot) => lot.price_type === "custom" ? 0 : lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
@@ -525,7 +525,7 @@ export default function InventoryView() {
             </button>
           ) : (
             <>
-              <button onClick={() => setPasting(true)} title="Paste a supplier load message — it fills the form for you"
+              <button onClick={() => setPasting(true)} title="Paste a supplier load message: it fills the form for you"
                 className="flex items-center gap-1.5 border border-accent/40 text-accent px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-accent/10 transition-colors">
                 <Clipboard size={13} /> Paste a load
               </button>
@@ -571,7 +571,7 @@ export default function InventoryView() {
           </div>
         ) : (
           <p className="text-[12px] text-muted flex items-center gap-1.5 mb-4">
-            <Link2 size={13} className="text-faint flex-shrink-0" /> Your public storefront is off — turn it on in Settings → Storefront.
+            <Link2 size={13} className="text-faint flex-shrink-0" /> Your public storefront is off. Turn it on in Settings → Storefront.
           </p>
         )
       )}
@@ -606,7 +606,7 @@ export default function InventoryView() {
             <DollarSign size={16} className="text-accent flex-shrink-0" />
             <span className="text-[13px] text-ink min-w-0">
               <span className="font-semibold">{newOffers.length} new offer{newOffers.length !== 1 ? "s" : ""}</span>
-              <span className="text-muted"> · {first}{names.length > 1 ? ` +${names.length - 1} more` : ""} — review {newOffers.length !== 1 ? "them" : "it"} on the lot</span>
+              <span className="text-muted"> · {first}{names.length > 1 ? ` +${names.length - 1} more` : ""}, review {newOffers.length !== 1 ? "them" : "it"} on the lot</span>
             </span>
           </button>
         );
@@ -720,7 +720,7 @@ export default function InventoryView() {
           className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border text-left transition-colors mb-3 ${attentionOnly ? "border-warning bg-warning-bg" : "border-warning/40 bg-warning-bg/50 hover:bg-warning-bg"}`}>
           <RefreshCw size={14} className="text-warning-ink flex-shrink-0" />
           <span className="text-[12.5px] text-ink-2 flex-1 min-w-0">
-            <span className="font-semibold text-ink">{attentionCount} lot{attentionCount !== 1 ? "s" : ""}</span> need attention — missing photos, price, category, or media that hasn’t synced across devices.
+            <span className="font-semibold text-ink">{attentionCount} lot{attentionCount !== 1 ? "s" : ""}</span> need attention: missing photos, price, category, or media that hasn’t synced across devices.
           </span>
           <span className="text-[11.5px] font-medium text-warning-ink flex-shrink-0">{attentionOnly ? "Show all" : "Show these"}</span>
         </button>
@@ -1038,22 +1038,22 @@ function LotCard({
 
         {/* Sent toggles — always visible & clickable; tap to mark WhatsApp / Email / Facebook. */}
         <div className="flex items-center gap-1 mt-2.5 pt-2.5 border-t border-line">
-          <button onClick={(e) => { stop(e); onToggleSent("whatsapp"); }} title={lot.sent_whatsapp ? "Sent on WhatsApp — tap to unmark" : "Mark sent on WhatsApp"}
+          <button onClick={(e) => { stop(e); onToggleSent("whatsapp"); }} title={lot.sent_whatsapp ? "Sent on WhatsApp, tap to unmark" : "Mark sent on WhatsApp"}
             className={`flex items-center gap-1 text-[10px] px-1.5 h-6 rounded-md border transition-colors ${lot.sent_whatsapp ? "text-success-ink bg-success-bg border-success" : "text-faint border-line hover:text-ink-2"}`}>
             <MessageCircle size={11} /> WA {lot.sent_whatsapp && <Check size={10} />}
           </button>
-          <button onClick={(e) => { stop(e); onToggleSent("email"); }} title={lot.sent_email ? "Emailed — tap to unmark" : "Mark emailed"}
+          <button onClick={(e) => { stop(e); onToggleSent("email"); }} title={lot.sent_email ? "Emailed, tap to unmark" : "Mark emailed"}
             className={`flex items-center gap-1 text-[10px] px-1.5 h-6 rounded-md border transition-colors ${lot.sent_email ? "text-info-ink bg-info-bg border-info" : "text-faint border-line hover:text-ink-2"}`}>
             <Mail size={11} /> Email {lot.sent_email && <Check size={10} />}
           </button>
-          <button onClick={(e) => { stop(e); onToggleSent("facebook"); }} title={lot.sent_facebook ? "Posted to Facebook — tap to unmark" : "Mark posted to Facebook"}
+          <button onClick={(e) => { stop(e); onToggleSent("facebook"); }} title={lot.sent_facebook ? "Posted to Facebook, tap to unmark" : "Mark posted to Facebook"}
             className={`flex items-center gap-1 text-[10px] px-1.5 h-6 rounded-md border transition-colors ${lot.sent_facebook ? "text-accent bg-accent/10 border-accent/40" : "text-faint border-line hover:text-ink-2"}`}>
             <Facebook size={11} /> FB {lot.sent_facebook && <Check size={10} />}
           </button>
           <div className="flex-1" />
           {stale && (
             <button onClick={(e) => { stop(e); onRenew(); }}
-              title={`Last shared ${daysSince(lot.updated_at)} days ago — renew to reset freshness (no email sent).`}
+              title={`Last shared ${daysSince(lot.updated_at)} days ago, renew to reset freshness (no email sent).`}
               className="flex items-center gap-1 text-[10px] text-warning-ink bg-warning-bg border border-warning px-2 h-6 rounded-full hover:opacity-90 transition-opacity">
               <RefreshCw size={11} /> Renew
             </button>
@@ -1098,7 +1098,7 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
     setBusy(true); setErr(null);
     try {
       const loads: ParsedLoad[] = await api.parseLoads(text);
-      if (!loads.length) { setErr("Couldn't find a load in that text — add a bit more detail and retry."); setBusy(false); return; }
+      if (!loads.length) { setErr("Couldn't find a load in that text. Add a bit more detail and retry."); setBusy(false); return; }
       const prefills: Partial<Lot>[] = loads.map((p) => {
         const notes = [p.notes, p.condition ? `Condition: ${p.condition}` : ""].filter(Boolean).join(" · ");
         const pt = p.price_type === "per_unit" || p.price_type === "total" ? p.price_type : undefined;
@@ -1142,7 +1142,7 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
           <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Clipboard size={15} className="text-accent" /> Paste a load</h3>
           <button onClick={requestClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
         </div>
-        <p className="text-[12px] text-muted mb-3">Paste one or more loads — whole WhatsApp messages are fine. It strips the junk, splits multiple loads, and fills a form for each. Review, add photos and category, then save. Free — no AI, no key.</p>
+        <p className="text-[12px] text-muted mb-3">Paste one or more loads. Whole WhatsApp messages are fine. It strips the junk, splits multiple loads, and fills a form for each. Review, add photos and category, then save. Free, no AI, no key.</p>
 
         <textarea
           value={text}
@@ -1503,11 +1503,11 @@ function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
               return (
                 <div key={ci} className="flex items-center gap-3 px-3 py-2">
                   <span className="flex-1 min-w-0 text-[13px] text-ink truncate">{c.join(" / ")}</span>
-                  <NumberInput className={cellInp + " w-24 text-right tabular-nums"} integer value={v?.qty || ""} placeholder="—"
+                  <NumberInput className={cellInp + " w-24 text-right tabular-nums"} integer value={v?.qty || ""} placeholder="–"
                     onValue={(n) => upsert(c, { qty: n })} />
                   <div className="relative w-32">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                    <NumberInput className={cellInp + " w-32 pl-6 text-right tabular-nums"} value={v?.price ?? ""} placeholder="—"
+                    <NumberInput className={cellInp + " w-32 pl-6 text-right tabular-nums"} value={v?.price ?? ""} placeholder="–"
                       onValue={(n, raw) => upsert(c, { price: raw.trim() === "" ? null : n })} />
                   </div>
                 </div>
@@ -1903,8 +1903,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 {initial
                   ? "Update this inventory lot."
                   : pasteTotal > 0
-                    ? `${batchFrom === "split" ? "Filled in from the manifest split, with its own manifest file and photos. Check it before saving." : "Filled in from the text you pasted — check it before saving."}${pasteTotal > 1 ? " Saving opens the next one." : ""}`
-                    : "Add a lot to your inventory — only a name is required."}
+                    ? `${batchFrom === "split" ? "Filled in from the manifest split, with its own manifest file and photos. Check it before saving." : "Filled in from the text you pasted. Check it before saving."}${pasteTotal > 1 ? " Saving opens the next one." : ""}`
+                    : "Add a lot to your inventory. Only a name is required."}
               </p>
             </div>
             <button onClick={requestClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><X size={16} /></button>
@@ -1916,18 +1916,18 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
           <div className="space-y-3">
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Name</label>
-              <input className={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Nike overstock — mixed sneakers" autoFocus />
+              <input className={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Nike overstock, mixed sneakers" autoFocus />
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Categories</label>
               <ChipMultiSelect value={cats} onChange={setCats} options={categories} placeholder="Type or pick categories" />
-              <p className="text-[10.5px] text-muted mt-1">Pick one or more — type to add a new category. The first is used for buyer segments.</p>
+              <p className="text-[10.5px] text-muted mt-1">Pick one or more, type to add a new category. The first is used for buyer segments.</p>
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Tags</label>
               <ChipMultiSelect value={tags} onChange={setTags} options={knownTags} toggle={toggleTag}
-                placeholder="Brands and styles — Nike, Air Max, streetwear" createLabel="Add" suggestions={detectedTags} />
-              <p className="text-[10.5px] text-muted mt-1">Brands and styles, so buyers can filter the storefront and the website by them. Not a buyer segment — that is what categories are for.</p>
+                placeholder="Brands and styles: Nike, Air Max, streetwear" createLabel="Add" suggestions={detectedTags} />
+              <p className="text-[10.5px] text-muted mt-1">Brands and styles, so buyers can filter the storefront and the website by them. Not a buyer segment. That is what categories are for.</p>
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Description</label>
@@ -1938,11 +1938,11 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
           <div className="pt-5 border-t border-line-2 space-y-3">
             <div className="text-[12px] font-semibold text-ink">Condition &amp; location</div>
             <div>
-              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Condition <span className="font-normal text-muted">— optional</span></label>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Condition <span className="font-normal text-muted">(optional)</span></label>
               <ConditionField value={condition} onChange={setCondition} />
             </div>
             <div>
-              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Location <span className="font-normal text-muted">— where the load ships FOB</span></label>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Location <span className="font-normal text-muted">(where the load ships FOB)</span></label>
               <LocationField value={location} onChange={setLocation} />
             </div>
           </div>
@@ -2000,7 +2000,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                         <span className="font-semibold text-ink">
                           {perPalletTotal.toLocaleString()}{perPalletTotalMax ? `–${perPalletTotalMax.toLocaleString()}` : ""} units
                         </span>
-                        {perPalletTotalMax ? " — the lower figure is what's stored, so the lot never over-promises" : " stored on this lot"}
+                        {perPalletTotalMax ? ": the lower figure is what's stored, so the lot never over-promises" : " stored on this lot"}
                       </span>
                     ) : (
                       <span className="text-warning-ink">Add a pallet count and the total is worked out for you.</span>
@@ -2022,7 +2022,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
               </label>
             )}
             <div>
-              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Split into variants <span className="font-normal text-muted">— optional (e.g. 2 brands in one deal)</span></label>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Split into variants <span className="font-normal text-muted">(optional, e.g. 2 brands in one deal)</span></label>
               <VariantSplitEditor options={options} variants={variants} onOptions={setOptions} onVariants={setVariants} />
             </div>
           </div>
@@ -2079,7 +2079,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 Jack's own example: 5,000 MOQ at $6, 20,000+ at $5. */}
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">
-                Minimum order &amp; volume pricing <span className="font-normal text-muted">&mdash; optional</span>
+                Minimum order &amp; volume pricing <span className="font-normal text-muted">(optional)</span>
               </label>
               {tiers.length === 0 ? (
                 <button type="button" onClick={() => setTiers([{ min_qty: 0, price: 0 }])}
@@ -2198,7 +2198,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
               figure belongs. */}
           <div className="bg-surface-2 border border-line rounded-lg p-3 space-y-3">
             <div className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2">
-              <Lock size={13} className="text-muted" /> Internal — never shown to buyers
+              <Lock size={13} className="text-muted" /> Internal: never shown to buyers
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-muted mb-1">Supplier</label>
@@ -2366,7 +2366,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
   const uAsk = lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity : lot.asking_price;
   const profit = lot.price_type === "total" ? lot.asking_price - lot.total_cost : (lot.asking_price - lot.total_cost) * lot.quantity;
   const marginPct = uCost > 0 ? ((uAsk - uCost) / uCost) * 100 : 0;
-  const marginStr = uCost > 0 ? `${marginPct.toFixed(0)}%` : "—";
+  const marginStr = uCost > 0 ? `${marginPct.toFixed(0)}%` : "–";
   const totalCostAll = lot.price_type === "per_unit" ? lot.total_cost * lot.quantity : lot.total_cost;
   // Custom-priced lots show a free-text price verbatim (no per-unit / profit math).
   const isCustom = lot.price_type === "custom";
@@ -2458,15 +2458,15 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
 
           {/* Sent indicators — quiet flags, click to toggle (same language as the card) */}
           <div className="flex items-center gap-2">
-            <button onClick={() => onToggleSent("whatsapp")} title={lot.sent_whatsapp ? "Sent on WhatsApp — click to unmark" : "Not sent on WhatsApp — click to mark sent"}
+            <button onClick={() => onToggleSent("whatsapp")} title={lot.sent_whatsapp ? "Sent on WhatsApp, click to unmark" : "Not sent on WhatsApp, click to mark sent"}
               className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-full border transition-colors ${lot.sent_whatsapp ? "bg-success-bg text-success-ink border-success" : "bg-surface-2 text-muted border-line hover:bg-surface-3"}`}>
               <MessageCircle size={12} /> WhatsApp {lot.sent_whatsapp && <Check size={11} />}
             </button>
-            <button onClick={() => onToggleSent("email")} title={lot.sent_email ? "Emailed — click to unmark" : "Not emailed — click to mark sent"}
+            <button onClick={() => onToggleSent("email")} title={lot.sent_email ? "Emailed, click to unmark" : "Not emailed, click to mark sent"}
               className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-full border transition-colors ${lot.sent_email ? "bg-info-bg text-info-ink border-info" : "bg-surface-2 text-muted border-line hover:bg-surface-3"}`}>
               <Mail size={12} /> Email {lot.sent_email && <Check size={11} />}
             </button>
-            <button onClick={() => onToggleSent("facebook")} title={lot.sent_facebook ? "Posted to Facebook — click to unmark" : "Not posted to Facebook — click to mark posted"}
+            <button onClick={() => onToggleSent("facebook")} title={lot.sent_facebook ? "Posted to Facebook, click to unmark" : "Not posted to Facebook, click to mark posted"}
               className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-full border transition-colors ${lot.sent_facebook ? "bg-accent/10 text-accent border-accent/40" : "bg-surface-2 text-muted border-line hover:bg-surface-3"}`}>
               <Facebook size={12} /> Facebook {lot.sent_facebook && <Check size={11} />}
             </button>
@@ -2503,10 +2503,10 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
           {/* Details grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Row label="Quantity" value={unitsLabel(lot, det)} />
-            <Row label="Minimum order" value={(det.moq ?? 0) > 0 ? `${(det.moq as number).toLocaleString()} units` : "—"} />
-            <Row label="Supplier" value={lot.supplier || "—"} />
-            <Row label="Location" value={lot.location || "—"} />
-            <Row label="Notes" value={lot.notes || "—"} />
+            <Row label="Minimum order" value={(det.moq ?? 0) > 0 ? `${(det.moq as number).toLocaleString()} units` : "–"} />
+            <Row label="Supplier" value={lot.supplier || "–"} />
+            <Row label="Location" value={lot.location || "–"} />
+            <Row label="Notes" value={lot.notes || "–"} />
           </div>
           {/* Tags (R-310) — outlined, not accent-filled, so they never read as categories.
               Categories sit in the header strip above; these only drive filtering. */}
@@ -2695,7 +2695,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
                  nothing is offered. Never a padded top-three. */
               <p className="text-[12.5px] text-muted">
                 Nothing in the purchase history is close to this lot. Only buyers who have bought
-                something similar — same kind of goods, comparable price — appear here.
+                something similar (same kind of goods, comparable price) appear here.
               </p>
             ) : (
               <div className="space-y-1.5">
@@ -2769,7 +2769,7 @@ function LinkDealModal({ lot, deals, clients, mediaBase, onClose, onLink }: {
   const isCustom = lot.price_type === "custom";
   const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
   const totalAsk = lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
-  const priceLabel = isCustom ? (priceText || "—") : fmtAmount(totalAsk);
+  const priceLabel = isCustom ? (priceText || "–") : fmtAmount(totalAsk);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[3px] p-4" onClick={onClose}>

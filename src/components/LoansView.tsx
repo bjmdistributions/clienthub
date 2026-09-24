@@ -10,10 +10,10 @@ const today = () => localDay();
 // received_at is a "YYYY-MM-DD" date string; anchor it to local midnight so it
 // doesn't slip a day in negative timezones.
 const fmtDate = (s: string) => {
-  if (!s) return "—";
+  if (!s) return "–";
   const d = new Date(s.length <= 10 ? s + "T00:00:00" : s);
   return isNaN(d.getTime())
-    ? "—"
+    ? "–"
     : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
@@ -220,7 +220,7 @@ export default function LoansView() {
           <div className="min-w-0">
             <div className="text-[12.5px] font-medium text-ink-2">Could not load your loans</div>
             <div className="text-[12px] text-muted mt-0.5 break-words">{loadError}</div>
-            <div className="text-[11.5px] text-faint mt-0.5">Nothing has changed — this is a read that failed.</div>
+            <div className="text-[11.5px] text-faint mt-0.5">Nothing has changed. This is a read that failed.</div>
             <button onClick={() => refresh()} className="mt-1.5 text-[12px] font-medium text-accent hover:text-accent-hover">
               Try again
             </button>
@@ -298,7 +298,7 @@ export default function LoansView() {
               value={fNote}
               onChange={(e) => setFNote(e.target.value)}
               rows={2}
-              placeholder="Optional — terms, purpose, etc."
+              placeholder="Optional: terms, purpose, etc."
               className="field-input resize-none"
             />
           </Field>
@@ -354,7 +354,7 @@ export default function LoansView() {
                   <div className="min-w-0">
                     <div className="text-[13px] font-semibold text-ink truncate">{l.name}</div>
                     <div className="text-[11px] text-muted mt-0.5 truncate">
-                      {l.lender || "—"} · received {fmtDate(l.received_at)}
+                      {l.lender || "–"} · received {fmtDate(l.received_at)}
                     </div>
                   </div>
                   <span

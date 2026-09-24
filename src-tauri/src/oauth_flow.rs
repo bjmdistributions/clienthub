@@ -118,7 +118,7 @@ pub async fn start_consent_flow(
 
     let refresh = token
         .refresh_token()
-        .ok_or_else(|| anyhow!("no refresh token returned — try again"))?
+        .ok_or_else(|| anyhow!("no refresh token returned, try again"))?
         .secret()
         .clone();
 
@@ -153,7 +153,7 @@ fn parse_code(url: &str) -> Result<String> {
             .find(|(k, _)| *k == "error_description")
             .map(|(_, v)| v.to_string())
             .unwrap_or_default();
-        return Err(anyhow!("authorization error: {} — {}", error, desc));
+        return Err(anyhow!("authorization error: {}, {}", error, desc));
     }
 
     params

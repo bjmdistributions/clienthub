@@ -137,7 +137,7 @@ export default function InvoiceCostSection({
       <div className="flex items-center justify-between gap-3">
         <div>
           <div className="text-[12.5px] font-medium text-muted">Cost &amp; profit</div>
-          <div className="text-[11px] text-muted mt-0.5">Recorded on the deal — the same lines show under Deal Flow.</div>
+          <div className="text-[11px] text-muted mt-0.5">Recorded on the deal. The same lines show under Deal Flow.</div>
           {/* R-315: the two figures side by side, so a glance never confuses a cost
               Jack pays himself with money actually owed to the supplier. */}
           {payments.length > 0 && (
@@ -185,14 +185,14 @@ export default function InvoiceCostSection({
                   <div className="text-[11px] text-muted tabular-nums">{p.quantity} × {fmtAmount(p.unit_price)}</div>
                 )}
                 {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
-                {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept — didn't pay, not counted as a cost</div>}
+                {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept: didn't pay, not counted as a cost</div>}
                 {!locked && (
                   <div className="flex items-center gap-2.5 mt-0.5">
                     {!p.kept && (
                       <button disabled={saving}
                         onClick={() => act(() => p.paid ? api.unmarkSupplierPaymentPaid(flow.id, p.id) : api.markSupplierPaymentPaid(flow.id, p.id))}
                         className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
-                        {p.paid ? "Undo — not paid yet" : "Mark paid"}
+                        {p.paid ? "Undo (not paid yet)" : "Mark paid"}
                       </button>
                     )}
                     {!p.paid && (
@@ -203,7 +203,7 @@ export default function InvoiceCostSection({
                           act(() => api.setSupplierPaymentKept(flow.id, p.id, !p.kept));
                         }}
                         className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
-                        {p.kept ? "Undo — I did pay this" : "Didn't pay — keep it"}
+                        {p.kept ? "Undo (I did pay this)" : "Didn't pay, keep it"}
                       </button>
                     )}
                   </div>
@@ -281,7 +281,7 @@ export default function InvoiceCostSection({
               </div>
               <input className={inp} placeholder="Who this went to (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
               {!supplierBilled && (
-                <div className="text-[11px] text-muted">Not billed by the supplier — this is your own cost.</div>
+                <div className="text-[11px] text-muted">Not billed by the supplier. This is your own cost.</div>
               )}
             </div>
           )}

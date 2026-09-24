@@ -118,7 +118,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
         <div className="text-[13px] font-semibold text-ink-2 mb-3">The flow</div>
         <FlowIllustration />
         <p className="text-[12px] text-muted mt-4 leading-relaxed">
-          Every submission becomes a <span className="text-ink-2 font-medium">pending lead</span> in your Approvals queue — nothing is added to your client list until you approve it. Unknown fields are kept on the lead's record.
+          Every submission becomes a <span className="text-ink-2 font-medium">pending lead</span> in your Approvals queue. Nothing is added to your client list until you approve it. Unknown fields are kept on the lead's record.
         </p>
       </div>
 
@@ -136,7 +136,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
         <div className="space-y-4">
           <StepRow n={1} title="Copy this form snippet">
             <p className="text-[12px] text-muted mb-2.5">
-              Paste it into your site's HTML. The <code className="text-ink-2 bg-surface-2 px-1 rounded">action</code> is already set to your intake URL — no JavaScript needed.
+              Paste it into your site's HTML. The <code className="text-ink-2 bg-surface-2 px-1 rounded">action</code> is already set to your intake URL: no JavaScript needed.
             </p>
             <div className="relative">
               <pre className="bg-surface-2 border border-line rounded-lg p-3.5 pr-24 text-[11.5px] text-ink-2 overflow-x-auto font-mono leading-relaxed">{snippet}</pre>
@@ -161,7 +161,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
             <ul className="space-y-2 text-[12px] text-muted">
               <li className="flex gap-2">
                 <span className="text-accent font-mono text-[11px] mt-0.5">_redirect</span>
-                <span>A hidden input — after submitting, the visitor is sent (303) to this thank-you URL.</span>
+                <span>A hidden input: after submitting, the visitor is sent (303) to this thank-you URL.</span>
               </li>
               <li className="flex gap-2">
                 <span className="text-accent font-mono text-[11px] mt-0.5">website</span>
@@ -195,7 +195,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
 
           <StepRow n={2} title="Static sites (Webflow, Framer, plain HTML)" last>
             <p className="text-[12px] text-muted leading-relaxed">
-              Set the form element's <code className="text-ink-2 bg-surface-2 px-1 rounded">action</code> attribute to the URL above and its <code className="text-ink-2 bg-surface-2 px-1 rounded">method</code> to <code className="text-ink-2 bg-surface-2 px-1 rounded">post</code> — exactly like the HTML snippet. No backend or plugin required.
+              Set the form element's <code className="text-ink-2 bg-surface-2 px-1 rounded">action</code> attribute to the URL above and its <code className="text-ink-2 bg-surface-2 px-1 rounded">method</code> to <code className="text-ink-2 bg-surface-2 px-1 rounded">post</code>, exactly like the HTML snippet. No backend or plugin required.
             </p>
           </StepRow>
         </div>
@@ -203,7 +203,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
 
       {tab === "shopify" && (
         <div className="space-y-4">
-          <p className="text-[12px] text-muted">There are two ways to bring Shopify leads into Ecliptr — pick either or both.</p>
+          <p className="text-[12px] text-muted">There are two ways to bring Shopify leads into Ecliptr: pick either or both.</p>
 
           <div className="bg-surface border border-line rounded-xl p-4">
             <div className="flex items-center gap-2 mb-1.5">
@@ -228,7 +228,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
                 <>In Shopify admin, open <span className="text-ink-2">Online Store → Themes → Customize</span>.</>,
                 <>Add a <span className="text-ink-2">Custom Liquid</span> block to your contact page.</>,
                 <>Paste the HTML form snippet; keep the field <code className="text-ink-2 bg-surface-2 px-1 rounded">name</code> values as-is.</>,
-                <>Save. Test a submission — it lands in your <span className="text-ink-2">Approvals</span> queue.</>,
+                <>Save. Test a submission: it lands in your <span className="text-ink-2">Approvals</span> queue.</>,
               ].map((t, i) => (
                 <li key={i} className="flex gap-2.5 items-start text-[12px] text-muted">
                   <StepNum n={i + 1} /> <span className="mt-0.5 leading-relaxed">{t}</span>
@@ -243,12 +243,12 @@ export function SetupGuide({ source, baseUrl, onBack }: {
       <div className="bg-surface border border-line rounded-xl p-5 mt-5">
         <div className="text-[13px] font-semibold text-ink-2 mb-3">Lead kinds</div>
         <p className="text-[12px] text-muted mb-3 leading-relaxed">
-          Add a field named <code className="text-ink-2 bg-surface-2 px-1 rounded">lead_kind</code> to tell Ecliptr what kind of submission this is. Leave it out and the submission is treated as a buyer lead — the original behavior.
+          Add a field named <code className="text-ink-2 bg-surface-2 px-1 rounded">lead_kind</code> to tell Ecliptr what kind of submission this is. Leave it out and the submission is treated as a buyer lead (the original behavior).
         </p>
         <div className="space-y-2.5">
           <div className="flex items-start gap-2.5">
             <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">buyer</span>
-            <span className="text-[12px] text-muted leading-relaxed">A pending client in <span className="text-ink-2 font-medium">Approvals</span> — the default.</span>
+            <span className="text-[12px] text-muted leading-relaxed">A pending client in <span className="text-ink-2 font-medium">Approvals</span> (the default).</span>
           </div>
           <div className="flex items-start gap-2.5">
             <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">supplier</span>

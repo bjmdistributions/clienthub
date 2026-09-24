@@ -153,7 +153,7 @@ export default function InvoicesView() {
     setBusy(id);
     try {
       await api.generateInvoicePdf(id);
-      toast("PDF saved — check your invoices folder");
+      toast("PDF saved. Check your invoices folder");
       load();
     } catch (e: any) { toast(String(e), "error"); }
     finally { setBusy(null); }
@@ -205,7 +205,7 @@ export default function InvoicesView() {
 
   // Void ("deal fell through") — two-step confirm; un-void reverses it.
   const handleVoid = async (id: string, voided: boolean) => {
-    if (voided && !confirm("Mark this deal as fallen through? The invoice is voided — it drops out of receivables and owed totals, but nothing is deleted.")) return;
+    if (voided && !confirm("Mark this deal as fallen through? The invoice is voided. It drops out of receivables and owed totals, but nothing is deleted.")) return;
     try { await api.setInvoiceVoid(id, voided); toast(voided ? "Invoice voided" : "Invoice restored"); load(); }
     catch (e: any) { toast(String(e), "error"); }
   };
@@ -346,7 +346,7 @@ export default function InvoicesView() {
           leaving him to wonder why completed and voided rows appeared. */}
       {searching && (
         <p className="-mt-2 mb-4 text-[12px] text-muted">
-          Searching every invoice — {visible.length} match{visible.length === 1 ? "" : "es"}, including completed and fell-through.
+          Searching every invoice: {visible.length} match{visible.length === 1 ? "" : "es"}, including completed and fell-through.
         </p>
       )}
 
@@ -391,7 +391,7 @@ export default function InvoicesView() {
               <div>
                 <label className="block text-[11px] font-medium text-muted mb-1.5">Method</label>
                 <select className={inp} value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
-                  <option value="">— select —</option>
+                  <option value="">– select –</option>
                   {payMethods.map((m) => <option key={m.id} value={m.label}>{m.label}</option>)}
                 </select>
               </div>
@@ -486,11 +486,11 @@ export default function InvoicesView() {
                   <td className={`px-4 py-3 text-[13px] font-semibold text-ink tabular-nums ${voided ? "line-through" : ""}`}>{fmtAmount(inv.total)}</td>
                   <td className={`px-4 py-3 text-[13px] font-semibold tabular-nums ${voided ? "text-faint" : profit != null ? (profit >= 0 ? "text-success-ink" : "text-danger-ink") : "text-faint"}`}>
                     {profit != null ? (
-                      <span className="inline-flex items-baseline gap-1" title={projected ? "Projected profit — revenue minus costs entered so far" : undefined}>
+                      <span className="inline-flex items-baseline gap-1" title={projected ? "Projected profit: revenue minus costs entered so far" : undefined}>
                         {fmtAmount(profit)}
                         {projected && <span className="text-[9px] font-semibold text-muted">Proj</span>}
                       </span>
-                    ) : "—"}
+                    ) : "–"}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-0 flex-wrap gap-y-1">
@@ -717,7 +717,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
     const use = Math.round(Math.min(creditLeft, Math.max(subtotal, 0)) * 100) / 100;
     if (use <= 0) return;
     setItems([...items, {
-      description: `Credit applied${creditIssuedOn ? ` — issued ${creditIssuedOn}` : ""}`,
+      description: `Credit applied${creditIssuedOn ? `, issued ${creditIssuedOn}` : ""}`,
       qty: 1, rate: -use, amount: -use,
     }]);
     setCreditApplied(creditApplied + use);
@@ -728,7 +728,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
   const selectedClient = clients.find((c) => c.id === clientId);
   const fmtPreviewDate = (d: string) => d ? new Date(`${d}T00:00:00`).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }) : "";
   const previewData = {
-    clientName: createNew ? (newClient.name.trim() || "New client") : (selectedClient?.name || "—"),
+    clientName: createNew ? (newClient.name.trim() || "New client") : (selectedClient?.name || "–"),
     clientAddress: createNew ? "" : [selectedClient?.street_address, selectedClient?.city, selectedClient?.state, selectedClient?.zip_code].filter(Boolean).join(", "),
     number: initial?.number,
     issueDate: fmtPreviewDate(issueDate),
@@ -792,7 +792,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
         // R-348: the pallets that were built go onto this order, each with its label and link.
         if (prefill?.pallets && prefill.pallets.pallets.length) {
           await api.addWarehousePallets(invId, prefill.pallets.item_id, prefill.pallets.pallets)
-            .then((ps) => toast(`${ps.length} ${ps.length === 1 ? "pallet" : "pallets"} saved to this order — print their labels in Warehouse, Pallets.`))
+            .then((ps) => toast(`${ps.length} ${ps.length === 1 ? "pallet" : "pallets"} saved to this order. Print their labels in Warehouse, Pallets.`))
             .catch((e: any) => toast(`Invoice created, but its pallets were not saved: ${e}`, "error"));
         }
       }
@@ -869,7 +869,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
       {initial && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-5 p-4 bg-surface-2 border border-line rounded-xl">
           <div className="lg:col-span-3 text-[11px] text-warning-ink font-medium -mb-1">
-            Editing a {initial.status.toLowerCase() === "paid" ? "paid" : "sent"} invoice — amounts and dates can be adjusted.
+            Editing a {initial.status.toLowerCase() === "paid" ? "paid" : "sent"} invoice. Amounts and dates can be adjusted.
           </div>
           <Field label="Due date"><input type="date" className={inp} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
           <Field label="Issue date"><input type="date" className={inp} value={issueDate} onChange={(e) => setIssueDate(e.target.value)} /></Field>
@@ -1067,7 +1067,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
       <div className="w-full xl:w-[360px] xl:flex-shrink-0 xl:sticky xl:top-4">
         <div className="text-[12.5px] font-medium text-muted mb-2.5">Live preview</div>
         <InvoicePreview info={companyInfo} tpl={template} logoVersion={0} data={previewData} />
-        <p className="text-[11px] text-muted mt-2 text-center">A close approximation — the PDF is the ground truth.</p>
+        <p className="text-[11px] text-muted mt-2 text-center">A close approximation. The PDF is the ground truth.</p>
       </div>
     </div>
   );
@@ -1243,7 +1243,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           {voided && (
             <div className="flex items-center gap-2 bg-surface-2 border border-line rounded-xl px-4 py-3 text-[12.5px] text-ink-2">
               <XCircle size={15} className="text-muted flex-shrink-0" />
-              <span>This deal fell through — the invoice is voided and excluded from receivables. Nothing was deleted; you can restore it.</span>
+              <span>This deal fell through. The invoice is voided and excluded from receivables. Nothing was deleted; you can restore it.</span>
             </div>
           )}
 
@@ -1361,7 +1361,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                   <Trash2 size={13} /> Delete
                 </button>
               </div>
-              <button onClick={() => onVoid(true)} title="Void this invoice — drops it from receivables; nothing is deleted"
+              <button onClick={() => onVoid(true)} title="Void this invoice: drops it from receivables; nothing is deleted"
                 className="w-full bg-surface border border-line hover:bg-warning-bg hover:border-warning text-muted hover:text-warning-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
                 <XCircle size={13} /> Mark deal fell through
               </button>

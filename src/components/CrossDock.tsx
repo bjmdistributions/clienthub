@@ -357,7 +357,7 @@ function Paytable({ perLine, onClose }: { perLine: number; onClose: () => void }
             <p>
               Mini, Minor, Major and Grand each take 0.3% of every dollar wagered, 1.2% in all,
               and each pays out when its meter reaches a hidden mark somewhere between where it
-              reseeds and its ceiling — {JACKPOTS.map((t) => `${t.name} ${usd(t.seed * 100)} to ${usd(t.cap * 100)}`).reverse().join(", ")}.
+              reseeds and its ceiling: {JACKPOTS.map((t) => `${t.name} ${usd(t.seed * 100)} to ${usd(t.cap * 100)}`).reverse().join(", ")}.
               Betting more fills them faster rather than making them pay more, so no stake is
               better value than another.
             </p>
@@ -375,8 +375,8 @@ function Paytable({ perLine, onClose }: { perLine: number; onClose: () => void }
           </Section>
 
           <p className="text-[11px] text-faint mt-5 leading-relaxed">
-            Return to player 95.82% — 92.27% from the reels, 2.35% from free spins, 1.20% from the
-            progressives — the same at every denomination. Something pays on 25.95% of spins.
+            Return to player 95.82%: 92.27% from the reels, 2.35% from free spins, 1.20% from the
+            progressives. The same at every denomination. Something pays on 25.95% of spins.
             Five BJM on a line, the grand prize, lands about once in 105,600.
           </p>
         </div>
@@ -696,14 +696,14 @@ export default function CrossDock({ accountId, accountName, onClose }:
         const amount = usd(winC, true);
         setMsg(
           grand
-            ? { primary: "Grand prize — five BJM", secondary: amount, accent: true }
+            ? { primary: "Grand prize: five BJM", secondary: amount, accent: true }
             : big
               ? { primary: "Big win", secondary: amount, accent: true }
               : ranked.length > 5
-                ? { primary: `${ranked.length} lines — ${amount}` }
+                ? { primary: `${ranked.length} lines · ${amount}` }
                 : top
-                  ? { primary: `${top.count} x ${SYMBOL_BY_ID[top.symbol].name} — ${amount}` }
-                  : { primary: `${out.beacons.length} harbour beacons — ${amount}` },
+                  ? { primary: `${top.count} x ${SYMBOL_BY_ID[top.symbol].name} · ${amount}` }
+                  : { primary: `${out.beacons.length} harbour beacons · ${amount}` },
         );
         if (grand) arcade.current.fanfare("grand");
         else if (big) arcade.current.fanfare("big");
@@ -786,7 +786,7 @@ export default function CrossDock({ accountId, accountName, onClose }:
           return; // Collect resumes the reveal
         }
         arcade.current.fanfare("bonus");
-        setMsg({ primary: `${won.name} jackpot — ${usd(jackpotC)}`, accent: true });
+        setMsg({ primary: `${won.name} jackpot · ${usd(jackpotC)}`, accent: true });
       }
       reveal(out, bet, isFree, winC);
     };
@@ -1104,7 +1104,7 @@ export default function CrossDock({ accountId, accountName, onClose }:
                   </span>
                   <button onClick={() => setCredits(creditIndex + 1)} disabled={busy || creditIndex === CREDITS_PER_LINE.length - 1}
                     className="w-8 h-8 rounded-full text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-[15px] leading-none">+</button>
-                  <button onClick={maxBet} disabled={busy || stake >= MAX_BET} title={`Max bet — ${usd(MAX_BET * 100)}`}
+                  <button onClick={maxBet} disabled={busy || stake >= MAX_BET} title={`Max bet: ${usd(MAX_BET * 100)}`}
                     className="px-2.5 h-8 mr-1 rounded-full text-[11px] font-medium text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Max</button>
                 </div>
               </div>
@@ -1138,8 +1138,8 @@ export default function CrossDock({ accountId, accountName, onClose }:
                   className={`h-8 px-3.5 rounded-full border text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                     betOverride ? "border-accent text-accent bg-accent/10" : "border-line text-ink-2 hover:bg-surface-2"}`}>
                   {betOverride
-                    ? `Staking the month — ${usd(Math.round(betOverride * 100))} · cancel`
-                    : `Bet the month — ${usd(Math.round(monthProfit! * 100))}${fronted ? ", fronted" : ""}`}
+                    ? `Staking the month: ${usd(Math.round(betOverride * 100))} · cancel`
+                    : `Bet the month: ${usd(Math.round(monthProfit! * 100))}${fronted ? ", fronted" : ""}`}
                 </button>
               </div>
             )}

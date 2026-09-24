@@ -601,7 +601,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
             </div>
             {results.length === 0 ? (
               <p className="text-[13px] text-muted">
-                Nothing matches that. Try the name of the setting itself — “footer”, “tax”, “passphrase”, “payout”.
+                Nothing matches that. Try the name of the setting itself: “footer”, “tax”, “passphrase”, “payout”.
               </p>
             ) : (
               <div className="space-y-1.5">
@@ -918,7 +918,7 @@ function AppearanceTab() {
       <SectionLabel>Accent Color</SectionLabel>
       <p className="text-[12px] text-muted mb-3 mt-0.5">
         {matte
-          ? "Mono is on — accent colors are disabled while the interface is monochrome. Turn Mono off to choose an accent."
+          ? "Mono is on. Accent colors are disabled while the interface is monochrome. Turn Mono off to choose an accent."
           : "Sets the accent used across the sidebar, highlights and controls. Data colors (revenue, profit, charts) stay fixed for clarity."}
       </p>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
@@ -929,7 +929,7 @@ function AppearanceTab() {
               key={a.id}
               onClick={() => { if (!matte) setAccent(a.id); }}
               disabled={matte}
-              title={matte ? "Mono is on — accent colors don't apply" : a.label}
+              title={matte ? "Mono is on. Accent colors don't apply." : a.label}
               className={`relative flex flex-col items-center gap-2 py-4 rounded-xl border transition-all ${
                 matte
                   ? "border-line opacity-40 cursor-not-allowed"
@@ -994,7 +994,7 @@ function AppearanceTab() {
         <span className="flex-1 min-w-0">
           <span className={`block text-[13px] font-semibold ${matte ? "text-ink" : "text-ink-2"}`}>Mono</span>
           <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
-            Monochrome — strips accent color; pure black in dark, clean white/black in light.
+            Monochrome, strips accent color; pure black in dark, clean white/black in light.
           </span>
         </span>
         <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${matte ? "bg-accent" : "bg-surface-3"}`}>
@@ -1192,8 +1192,8 @@ function StatusDot({ state }: { state: TestState }) {
 }
 
 function TestResultLine({ state }: { state: TestState }) {
-  if (state.status === "ok") return <span className="inline-flex items-center gap-1 text-[12px] text-success-ink"><Check size={12} /> Connected {state.message ? `— ${state.message}` : ""}</span>;
-  if (state.status === "fail") return <span className="inline-flex items-center gap-1 text-[12px] text-danger-ink"><AlertCircle size={12} /> Failed — {state.message || "could not connect"}</span>;
+  if (state.status === "ok") return <span className="inline-flex items-center gap-1 text-[12px] text-success-ink"><Check size={12} /> Connected{state.message ? `: ${state.message}` : ""}</span>;
+  if (state.status === "fail") return <span className="inline-flex items-center gap-1 text-[12px] text-danger-ink"><AlertCircle size={12} /> Failed: {state.message || "could not connect"}</span>;
   if (state.status === "testing") return <span className="inline-flex items-center gap-1 text-[12px] text-muted"><RefreshCw size={12} className="animate-spin" /> Testing…</span>;
   return null;
 }
@@ -1276,7 +1276,7 @@ function SyncPill({ auth, connected }: { auth?: string; connected?: boolean }) {
   if (auth === "auth_lost")
     return (
       <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-danger-ink bg-danger-bg border border-danger-ink/20 px-2.5 h-7 rounded-full">
-        <AlertCircle size={13} /> Signed out — sign in again
+        <AlertCircle size={13} /> Signed out, sign in again
       </span>
     );
   if (auth === "ok") return <ConnectedPill ok />;
@@ -1487,7 +1487,7 @@ function SendingCard() {
     setPushState({ status: "testing" });
     try {
       await api.pushEmailLoginToServer();
-      setPushState({ status: "ok", message: "Server updated — mobile sends and newsletters now use this login." });
+      setPushState({ status: "ok", message: "Server updated, mobile sends and newsletters now use this login." });
     } catch (e: any) {
       setPushState({ status: "fail", message: String(e) });
     }
@@ -1559,7 +1559,7 @@ function SendingCard() {
         </div>
         <p className="text-[11.5px] text-muted">
           {useOrg
-            ? "Set up once — every admin inherits this send account and monitored inboxes automatically."
+            ? "Set up once, every admin inherits this send account and monitored inboxes automatically."
             : "This device sends from your own account instead of the shared team one. Other admins are unaffected."}
         </p>
       </div>
@@ -1610,7 +1610,7 @@ function SendingCard() {
         <p className="text-[11px] text-muted -mt-1">
           Leave either blank to send as {settings.user || "the account above"}. Quotes, newsletters and replies use the first;
           only invoices use the second. Gmail rewrites the From back to the login unless the address is verified under
-          Send mail as (or is an alias) on that account — there is no error when it does.
+          Send mail as (or is an alias) on that account. There is no error when it does.
         </p>
 
         <Advanced label="Advanced (mail server)">
@@ -1618,7 +1618,7 @@ function SendingCard() {
             <Field label="SMTP host"><input className={inpSm} value={settings.smtp_host} onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })} /></Field>
             <Field label="SMTP port"><NumberInput integer className={inpSm} value={settings.smtp_port} onValue={(n) => setSettings({ ...settings, smtp_port: n || 587 })} /></Field>
           </div>
-          <p className="text-[11px] text-muted mt-1">Credentials are stored in your OS keychain — never written to disk or synced.</p>
+          <p className="text-[11px] text-muted mt-1">Credentials are stored in your OS keychain, never written to disk or synced.</p>
         </Advanced>
       </div>
 
@@ -1634,7 +1634,7 @@ function SendingCard() {
         </button>
         {!useGoogle && (
           <button onClick={pushLogin} disabled={pushState.status === "testing"}
-            title="Push this device's working email login up to the server so mobile invoice sends and newsletters authenticate — no new app password needed."
+            title="Push this device's working email login up to the server so mobile invoice sends and newsletters authenticate, no new app password needed."
             className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 hover:bg-surface-2 disabled:opacity-50 transition-colors">
             {pushState.status === "testing" ? <RefreshCw size={13} className="animate-spin" /> : <Cloud size={13} />} {pushState.status === "testing" ? "Pushing…" : "Push login to server"}
           </button>
@@ -1648,7 +1648,7 @@ function SendingCard() {
       {admin && useOrg && staff.length > 0 && (
         <div className="mt-5 pt-4 border-t border-line">
           <Advanced label="Transfer shared inbox to another admin">
-          <p className="text-[11.5px] text-muted mb-2.5">Hands the send + monitored inboxes to a different email admin. Credentials move with it — no re-typing.</p>
+          <p className="text-[11.5px] text-muted mb-2.5">Hands the send + monitored inboxes to a different email admin. Credentials move with it, no re-typing.</p>
           <div className="flex items-center gap-2 flex-wrap">
             <select className={inpSm} value={transferTo} onChange={(e) => setTransferTo(e.target.value)}>
               <option value="">Choose an admin…</option>
@@ -1770,14 +1770,14 @@ function CapturedCustomerCard({ c }: { c: CapturedCustomer }) {
         <span className="w-10 h-10 rounded-full bg-accent/10 text-accent-hover flex items-center justify-center text-[14px] font-bold flex-shrink-0">{initials}</span>
         <div className="min-w-0">
           <div className="text-[14px] font-semibold text-ink truncate">{displayName}</div>
-          <div className="text-[11.5px] text-muted truncate">{[c.title, c.company].filter(Boolean).join(" · ") || "—"}</div>
+          <div className="text-[11.5px] text-muted truncate">{[c.title, c.company].filter(Boolean).join(" · ") || "–"}</div>
         </div>
       </div>
       <div className="px-3.5 py-2 divide-y divide-line-2">
         {rows.map(([label, val]) => (
           <div key={label} className="flex items-center justify-between gap-3 py-1.5">
             <span className="text-[11px] text-muted">{label}</span>
-            <span className={`text-[12.5px] tabular-nums truncate ${val ? "text-ink-2" : "text-faint"}`}>{val || "—"}</span>
+            <span className={`text-[12.5px] tabular-nums truncate ${val ? "text-ink-2" : "text-faint"}`}>{val || "–"}</span>
           </div>
         ))}
       </div>
@@ -1854,7 +1854,7 @@ function CaptureCard() {
         await api.toggleSignupRule(rule.id, !rule.active);
       } else {
         await api.createSignupRule({
-          name: `Form capture — ${inboxes.find((i) => i.id === inboxId)?.label || "inbox"}`,
+          name: `Form capture · ${inboxes.find((i) => i.id === inboxId)?.label || "inbox"}`,
           sender_pattern: fromPat || null, subject_pattern: subjPat || null,
           inbox_source: inboxLabel, active: true,
         });
@@ -1878,7 +1878,7 @@ function CaptureCard() {
     return (
       <SettingCard icon={Wand2} title="Capture form submissions" purpose="Shopify contact-form emails become customers automatically.">
         <div className="text-[12.5px] text-muted bg-surface-2/50 border border-line-2 rounded-xl px-4 py-3">
-          Add an inbox above first — that's the mailbox Ecliptr watches for form emails.
+          Add an inbox above first, that's the mailbox Ecliptr watches for form emails.
         </div>
       </SettingCard>
     );
@@ -1919,7 +1919,7 @@ function CaptureCard() {
         {previewErr && <div className="text-[12px] text-muted flex items-center gap-1.5"><AlertCircle size={13} className="text-danger-ink" /> {previewErr}</div>}
         {preview?.found && preview.customer && (
           <div>
-            <div className="text-[11px] text-muted mb-2">Preview — what Ecliptr would create</div>
+            <div className="text-[11px] text-muted mb-2">Preview: what Ecliptr would create</div>
             <CapturedCustomerCard c={preview.customer} />
           </div>
         )}
@@ -1972,7 +1972,7 @@ function OffWithText({ on, text }: { on: boolean; text: string }) {
   if (on || !text.trim()) return null;
   return (
     <p className="text-[11.5px] text-warning-ink bg-warning-bg border border-warning/30 rounded-lg px-2.5 py-1.5 mt-1.5">
-      Saved, but the switch is off — this wording is not on any invoice, quote or email.
+      Saved, but the switch is off. This wording is not on any invoice, quote or email.
     </p>
   );
 }
@@ -2055,7 +2055,7 @@ function NewsletterTemplateCard() {
   };
   const ta = "w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink resize-y focus:outline-none focus:border-accent";
   const preview = buildNewsletterBody(t, [
-    { title: "Nike overstock — mixed sneakers", units: 250, pricePerUnit: "$4.50", price: "", link: "https://ecliptr.app/i/abc123?lot=lot_001" },
+    { title: "Nike overstock, mixed sneakers", units: 250, pricePerUnit: "$4.50", price: "", link: "https://ecliptr.app/i/abc123?lot=lot_001" },
     { title: "Assorted apparel pallet", units: 40, pricePerUnit: "", price: "$1,200 for the lot", link: "https://ecliptr.app/i/abc123?lot=lot_002" },
   ]).replace(/\{first_name\}/g, "Alex");
   return (
@@ -2064,7 +2064,7 @@ function NewsletterTemplateCard() {
         <SectionLabel>Inventory newsletter</SectionLabel>
         <p className="text-[13px] text-muted mt-1 leading-relaxed">
           The template behind “Send to newsletter” in Inventory. Your selected products drop between the intro and outro.
-          Per-product tokens: <code className="text-ink-2 text-[12px]">{"{title} {units} {price_per_unit} {price} {link}"}</code> — any line whose value is blank is removed automatically.
+          Per-product tokens: <code className="text-ink-2 text-[12px]">{"{title} {units} {price_per_unit} {price} {link}"}</code>. Any line whose value is blank is removed automatically.
         </p>
       </div>
       <div>
@@ -2454,7 +2454,7 @@ function DocBrandingTab({ kind }: { kind: "invoice" | "quote" }) {
           </button>
         </div>
         <InvoicePreview info={info} tpl={tpl} logoVersion={logoVersion} kind={kind} />
-        <p className="text-[11px] text-muted mt-2 text-center">A close approximation — the PDF is the ground truth.</p>
+        <p className="text-[11px] text-muted mt-2 text-center">A close approximation. The PDF is the ground truth.</p>
       </div>
     </div>
   );
@@ -2479,11 +2479,11 @@ function AiTab() {
 
   return (
     <div className="max-w-2xl">
-      <SettingCard icon={Bot} title="Local AI" purpose="A local Ollama model reads emails and drafts text — nothing leaves your machine."
+      <SettingCard icon={Bot} title="Local AI" purpose="A local Ollama model reads emails and drafts text. Nothing leaves your machine."
         aside={online !== null ? <ConnectedPill ok={online} onLabel="Online" offLabel="Offline" /> : undefined}>
         {online === false && (
           <div className="text-[12.5px] text-muted bg-surface-2/50 border border-line-2 rounded-xl px-4 py-3 mb-4">
-            Ollama isn't running — start it with <code className="bg-surface-3 px-1.5 py-0.5 rounded-md text-[12px]">ollama serve</code>, then reopen this section.
+            Ollama isn't running. Start it with <code className="bg-surface-3 px-1.5 py-0.5 rounded-md text-[12px]">ollama serve</code>, then reopen this section.
           </div>
         )}
 
@@ -2493,7 +2493,7 @@ function AiTab() {
             value={selected}
             onChange={(e) => setSelected(e.target.value)}
           >
-            <option value="">— pick a model —</option>
+            <option value="">Pick a model</option>
             {models.map((m) => (
               <option key={m.name} value={m.name}>
                 {m.name}{m.size ? ` (${(m.size / 1e9).toFixed(1)} GB)` : ""}
@@ -2549,7 +2549,7 @@ function SyncTab() {
     setNBusy(true); setNErr(null); setNMsg(null);
     try {
       await api.netsyncConnect(nUrl.trim(), nEmail.trim(), nPass);
-      setNPass(""); setNMsg("Connected — your workspace is syncing.");
+      setNPass(""); setNMsg("Connected, your workspace is syncing.");
       await refreshNet();
     } catch (e: any) { setNErr(e.toString()); }
     finally { setNBusy(false); }
@@ -2572,22 +2572,22 @@ function SyncTab() {
 
   const repairSync = async () => {
     setNBusy(true); setNErr(null);
-    setNMsg("Re-pulling your full workspace from the server — this can take a minute…");
+    setNMsg("Re-pulling your full workspace from the server, this can take a minute…");
     try {
       const r = await api.netsyncRepair();
-      setNMsg(`Repair complete — re-applied ${r.reapplied} records from the server. If anything was missing, it's back now.`);
+      setNMsg(`Repair complete, re-applied ${r.reapplied} records from the server. If anything was missing, it's back now.`);
       await refreshNet();
     } catch (e: any) { setNErr(e.toString()); }
     finally { setNBusy(false); }
   };
 
   const repairSyncHard = async () => {
-    if (!confirm("Deep repair rebuilds this device's data from the server. Nothing on the server is touched and no data is lost — it just re-applies your full history. Use this if clients or deals are still missing after Repair sync. Continue?")) return;
+    if (!confirm("Deep repair rebuilds this device's data from the server. Nothing on the server is touched and no data is lost. It just re-applies your full history. Use this if clients or deals are still missing after Repair sync. Continue?")) return;
     setNBusy(true); setNErr(null);
-    setNMsg("Deep repair: rebuilding from the server. This re-applies your full history and can take a minute or two — keep the app open…");
+    setNMsg("Deep repair: rebuilding from the server. This re-applies your full history and can take a minute or two. Keep the app open…");
     try {
       const r = await api.netsyncRepairHard();
-      setNMsg(`Deep repair complete — re-applied ${r.reapplied} records from the server. Anything that was stuck is back now.`);
+      setNMsg(`Deep repair complete, re-applied ${r.reapplied} records from the server. Anything that was stuck is back now.`);
       await refreshNet();
     } catch (e: any) { setNErr(e.toString()); }
     finally { setNBusy(false); }
@@ -2596,12 +2596,12 @@ function SyncTab() {
   const restoreFromServer = async () => {
     if (!confirm("Make this device match the server exactly. Your unsynced local changes are pushed to the server FIRST so nothing you've entered here is lost; then any leftover rows that no longer exist on the server are removed from this device. This is the surest fix when clients or deals are still missing after Repair and Deep repair. Continue?")) return;
     setNBusy(true); setNErr(null);
-    setNMsg("Restoring from the server — cloning your current workspace onto this device…");
+    setNMsg("Restoring from the server, cloning your current workspace onto this device…");
     try {
       const r = await api.netsyncRestoreSnapshot();
       const total = Object.values(r).reduce((a, b) => a + b, 0);
       const nonZero = Object.entries(r).filter(([, n]) => n > 0).map(([t, n]) => `${t} ${n}`);
-      setNMsg(`Restore complete — wrote ${total} records from the server${nonZero.length ? ` (${nonZero.join(", ")})` : ""}. Anything that was missing is back now.`);
+      setNMsg(`Restore complete, wrote ${total} records from the server${nonZero.length ? ` (${nonZero.join(", ")})` : ""}. Anything that was missing is back now.`);
       await refreshNet();
       if (diag) await refreshDiag();
     } catch (e: any) { setNErr(e.toString()); }
@@ -2646,7 +2646,7 @@ function SyncTab() {
             {net.auth === "auth_lost" && (
               <div className="rounded-xl border border-danger-ink/20 bg-danger-bg px-4 py-3 text-[12.5px] text-danger-ink flex items-start gap-2">
                 <AlertCircle size={14} className="shrink-0 mt-px" />
-                <span>This device is signed out, so nothing is syncing. Sign out and back in to reconnect — your unsynced changes are kept and upload once you do.</span>
+                <span>This device is signed out, so nothing is syncing. Sign out and back in to reconnect, your unsynced changes are kept and upload once you do.</span>
               </div>
             )}
             {net.invariants.length > 0 && (
@@ -2711,7 +2711,7 @@ function SyncTab() {
               <button
                 onClick={restoreFromServer}
                 disabled={nBusy}
-                title="Copies the server's current data straight onto this device — the surest fix when clients or deals are still missing after Repair and Deep repair."
+                title="Copies the server's current data straight onto this device, the surest fix when clients or deals are still missing after Repair and Deep repair."
                 className="text-accent hover:underline font-medium disabled:opacity-50"
               >
                 Restore from server
@@ -2750,11 +2750,11 @@ function SyncTab() {
                       </div>
                       <div className="flex items-center justify-between gap-3 py-1.5">
                         <span className="text-muted">Signed in as</span>
-                        <span className="text-ink-2 truncate">{diag.connected ? (diag.email || "—") : "not connected"}</span>
+                        <span className="text-ink-2 truncate">{diag.connected ? (diag.email || "–") : "not connected"}</span>
                       </div>
                       <div className="flex items-center justify-between gap-3 py-1.5">
                         <span className="text-muted">Workspace</span>
-                        <span className="text-ink-2 truncate">{diag.org || "—"}</span>
+                        <span className="text-ink-2 truncate">{diag.org || "–"}</span>
                       </div>
                       <div className="flex items-center justify-between gap-3 py-1.5">
                         <span className="text-muted">Pull position</span>
@@ -2782,7 +2782,7 @@ function SyncTab() {
                                 <tr key={t} className={behind ? "text-danger-ink" : ""}>
                                   <td className="px-3 py-1.5">{t}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{local}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{server === null ? "—" : server}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{server === null ? "–" : server}</td>
                                 </tr>
                               );
                             })}
@@ -2790,10 +2790,10 @@ function SyncTab() {
                         </table>
                       </div>
                       {diag.server_counts === null && (
-                        <p className="text-muted mt-1">Server counts unavailable — offline or the session expired.</p>
+                        <p className="text-muted mt-1">Server counts unavailable, offline or the session expired.</p>
                       )}
                       {diag.server_counts !== null && Object.keys(diag.local_counts).some((t) => (diag.local_counts[t] ?? 0) < (diag.server_counts?.[t] ?? 0)) && (
-                        <p className="text-danger-ink mt-1.5">Rows in red are behind the server — try Restore from server above.</p>
+                        <p className="text-danger-ink mt-1.5">Rows in red are behind the server. Try Restore from server above.</p>
                       )}
                     </div>
                   </div>
@@ -2804,7 +2804,7 @@ function SyncTab() {
         ) : (
           <div>
             <p className="text-[12.5px] text-muted mb-4">
-              Sign in with your team account to sync over the internet — no shared folder needed.
+              Sign in with your team account to sync over the internet, no shared folder needed.
             </p>
             <div className="space-y-3 max-w-sm">
               <Field label="Email">
@@ -2910,7 +2910,7 @@ function SyncTab() {
           <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
             <span className="text-muted">Last applied</span>
             <span className="text-ink tabular-nums">
-              {status?.last_applied ? new Date(status.last_applied).toLocaleString() : "—"}
+              {status?.last_applied ? new Date(status.last_applied).toLocaleString() : "–"}
             </span>
           </div>
         </div>
@@ -3020,7 +3020,7 @@ function CsvImportSection() {
   };
 
   return (
-    <SettingCard icon={Upload} title="Import from CSV" purpose="Upload a spreadsheet export — existing clients are skipped by email.">
+    <SettingCard icon={Upload} title="Import from CSV" purpose="Upload a spreadsheet export, existing clients are skipped by email.">
       <button
         onClick={pickFile}
         className="border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 mb-4 transition-colors"
@@ -3052,7 +3052,7 @@ function CsvImportSection() {
                   value={mapping[f.key] ?? ""}
                   onChange={(e) => setMapping({ ...mapping, [f.key]: e.target.value })}
                 >
-                  <option value="">— skip —</option>
+                  <option value="">Skip</option>
                   {preview.headers.map((h) => (<option key={h} value={h}>{h}</option>))}
                 </select>
               </div>
@@ -3071,7 +3071,7 @@ function CsvImportSection() {
                       value={mapping[f.value] ?? ""}
                       onChange={(e) => setMapping({ ...mapping, [f.value]: e.target.value })}
                     >
-                      <option value="">— skip —</option>
+                      <option value="">Skip</option>
                       {preview.headers.map((h) => (<option key={h} value={h}>{h}</option>))}
                     </select>
                   </div>
@@ -3218,7 +3218,7 @@ function GoogleContactsSection() {
   );
 
   return (
-    <SettingCard icon={Users} title="Google Contacts" purpose="Bring contacts in from your Google account — duplicates are skipped."
+    <SettingCard icon={Users} title="Google Contacts" purpose="Bring contacts in from your Google account, duplicates are skipped."
       aside={<ConnectedPill ok={connected} />}>
       {!connected ? (
         <div className="max-w-sm">
@@ -3270,10 +3270,10 @@ function GoogleContactsSection() {
                           if (ns.has(c.resource_name)) ns.delete(c.resource_name); else ns.add(c.resource_name);
                           setSelected(ns);
                         }} /></td>
-                        <td className="px-3 py-2 text-[13px] text-ink">{c.name || "—"}</td>
-                        <td className="px-3 py-2 text-[12px] text-muted">{c.email || "—"}</td>
-                        <td className="px-3 py-2 text-[12px] text-muted">{c.organization || "—"}</td>
-                        <td className="px-3 py-2 text-[12px] text-muted">{c.phone || "—"}</td>
+                        <td className="px-3 py-2 text-[13px] text-ink">{c.name || "–"}</td>
+                        <td className="px-3 py-2 text-[12px] text-muted">{c.email || "–"}</td>
+                        <td className="px-3 py-2 text-[12px] text-muted">{c.organization || "–"}</td>
+                        <td className="px-3 py-2 text-[12px] text-muted">{c.phone || "–"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -3310,7 +3310,7 @@ function GoogleContactsSection() {
 // Each enables the existing email→AI-extract→create-client pipeline.
 const PREMADE_AUTOMATIONS: { name: string; desc: string; sender: string | null; subject: string | null }[] = [
   { name: "Form submissions → New clients",
-    desc: "Auto-create a client whenever a website or contact form is submitted — works with most providers.",
+    desc: "Auto-create a client whenever a website or contact form is submitted, works with most providers.",
     sender: null,
     subject: "(?i)(new (form )?(submission|response|signup|lead|inquiry|entry)|form submission|contact (request|form)|you('ve| have)? (got|received) a new)" },
   { name: "Typeform submissions",
@@ -3450,8 +3450,8 @@ function AutomationTab() {
 
       {/* Fastest path — the direct lead form (no email setup needed). */}
       <div className="border rounded-xl p-3.5 mb-5" style={{ borderColor: "rgb(var(--c-accent) / 0.3)", background: "rgb(var(--c-accent) / 0.06)" }}>
-        <div className="text-[12.5px] font-semibold text-ink mb-1">Fastest setup — your lead form link</div>
-        <p className="text-[11.5px] text-muted mb-2.5">Share or embed this link (add <code className="font-mono">?rep=Name</code> to attribute a rep). Every submission creates a client instantly — no email setup needed.</p>
+        <div className="text-[12.5px] font-semibold text-ink mb-1">Fastest setup: your lead form link</div>
+        <p className="text-[11.5px] text-muted mb-2.5">Share or embed this link (add <code className="font-mono">?rep=Name</code> to attribute a rep). Every submission creates a client instantly, no email setup needed.</p>
         <div className="flex items-center gap-2">
           <code className="flex-1 text-[12px] bg-surface-2 rounded-lg px-2.5 py-1.5 break-all select-all text-ink-2">{leadFormUrl}</code>
           <button onClick={copyLeadLink} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium whitespace-nowrap">{copied ? "Copied" : "Copy"}</button>
@@ -3492,7 +3492,7 @@ function AutomationTab() {
             <label className="block text-[12.5px] font-medium text-muted mb-1.5">Rule name</label>
             <input className={inp} placeholder="e.g. Typeform new client signups" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
-          <p className="text-[11px] text-muted">Patterns are <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-accent underline">regular expressions</a> — at least one is required.</p>
+          <p className="text-[11px] text-muted">Patterns are <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-accent underline">regular expressions</a>. At least one is required.</p>
           <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1.5">Sender pattern (regex)</label>
             <input className={`${inp} font-mono`} placeholder="e.g. noreply@typeform\.com" value={form.sender_pattern} onChange={(e) => setForm({ ...form, sender_pattern: e.target.value })} />
@@ -3617,7 +3617,7 @@ function AutomationTab() {
                 <div key={l.id} className="text-[11px] text-muted flex items-center gap-2">
                   <span className="text-muted w-16 flex-shrink-0">{l.triggered_at.slice(0, 10)}</span>
                   <span className="font-medium text-ink-2">{l.action_taken}</span>
-                  {l.details && <span className="text-muted truncate">— {l.details}</span>}
+                  {l.details && <span className="text-muted truncate">· {l.details}</span>}
                 </div>
               ))}
             </div>
@@ -3722,7 +3722,7 @@ function IntakeSourceCard({ source, fields, onChange }: { source: any; fields: {
       </div>
       {incoming.length === 0 ? (
         <div className="text-[12.5px] text-muted bg-surface-2 border border-line rounded-lg p-3 leading-relaxed">
-          Point your form at this URL (HTTP <strong>POST</strong>, JSON body). After the first submission its fields show up here to map — standard names (name, email, phone, company) link on their own.
+          Point your form at this URL (HTTP <strong>POST</strong>, JSON body). After the first submission its fields show up here to map. Standard names (name, email, phone, company) link on their own.
         </div>
       ) : (
         <div className="space-y-2">
@@ -3778,7 +3778,7 @@ function IntakeTab() {
           className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
         <button onClick={create} disabled={busy} className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium disabled:opacity-50 transition-opacity">Create link</button>
       </div>
-      {sources.length === 0 && <div className="text-[13px] text-muted">No intake links yet — create one above.</div>}
+      {sources.length === 0 && <div className="text-[13px] text-muted">No intake links yet, create one above.</div>}
       {sources.map((s) => <IntakeSourceCard key={s.id} source={s} fields={fields} onChange={load} />)}
     </div>
   );
@@ -3825,7 +3825,7 @@ function FacebookTab() {
       <div>
         <SectionLabel>Facebook Page posting</SectionLabel>
         <p className="text-[13px] text-muted mt-1 leading-relaxed">
-          Post an inventory lot — photos and caption — straight to a Facebook <strong>Page</strong> you manage.
+          Post an inventory lot (photos and caption) straight to a Facebook <strong>Page</strong> you manage.
           Meta doesn’t let apps post into groups, so this targets a Page. Connect once; then use
           <strong> Post to Facebook</strong> on any lot.
         </p>
@@ -3835,7 +3835,7 @@ function FacebookTab() {
         <div className="text-[12px] font-medium">
           Status: {st?.connected
             ? <span className="text-success-ink">Connected · {st.page_name}</span>
-            : st?.has_app ? <span className="text-muted">App saved — connect a Page</span>
+            : st?.has_app ? <span className="text-muted">App saved, connect a Page</span>
             : <span className="text-muted">Not set up yet</span>}
         </div>
 
@@ -3852,7 +3852,7 @@ function FacebookTab() {
               <div className="text-[12.5px] font-medium text-muted mb-1.5">App secret</div>
               <div className="flex items-center gap-2">
                 <input type="password" value={appSecret} onChange={(e) => setAppSecret(e.target.value)}
-                  placeholder={st?.has_app ? "•••••••  (saved — paste to replace)" : "From your Meta app"}
+                  placeholder={st?.has_app ? "•••••••  (saved, paste to replace)" : "From your Meta app"}
                   className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
                 <button onClick={saveApp} disabled={savingApp || !appId.trim() || !appSecret.trim()}
                   className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
@@ -3896,7 +3896,7 @@ function FacebookTab() {
             </div>
           </li>
           <li>In <strong className="text-ink-2">App settings → Basic</strong>, copy the <strong className="text-ink-2">App ID</strong> and <strong className="text-ink-2">App secret</strong> into the fields above and save.</li>
-          <li>Make sure you’re an admin of the app (you are, as its creator) — while the app is in <strong className="text-ink-2">Development</strong> mode you can post to Pages you manage without Meta app review.</li>
+          <li>Make sure you’re an admin of the app (you are, as its creator). While the app is in <strong className="text-ink-2">Development</strong> mode you can post to Pages you manage without Meta app review.</li>
           <li>Click <strong className="text-ink-2">Connect Facebook Page</strong>, approve in the Facebook window, and pick your Page.</li>
         </ol>
       </div>
@@ -3925,7 +3925,7 @@ function ShopifyTab() {
       <div>
         <SectionLabel>Shopify customer sync</SectionLabel>
         <p className="text-[13px] text-muted mt-1 leading-relaxed">
-          New Shopify customers arrive as <strong>pending</strong> clients for you to review — nothing is added automatically.
+          New Shopify customers arrive as <strong>pending</strong> clients for you to review. Nothing is added automatically.
         </p>
       </div>
 
@@ -3944,7 +3944,7 @@ function ShopifyTab() {
           <div className="text-[12.5px] font-medium text-muted mb-1.5">Webhook signing secret</div>
           <div className="flex items-center gap-2">
             <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)}
-              placeholder={cfg?.configured ? "•••••••  (set — paste to replace)" : "Paste the secret from Shopify"}
+              placeholder={cfg?.configured ? "•••••••  (set, paste to replace)" : "Paste the secret from Shopify"}
               className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
             <button onClick={save} disabled={busy || !secret.trim()}
               className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
@@ -4016,7 +4016,7 @@ function PaymentsTab() {
 
   return (
     <div className="max-w-3xl">
-     <SettingCard icon={CreditCard} title="Payment methods" purpose="How customers can pay you — these print on every invoice."
+     <SettingCard icon={CreditCard} title="Payment methods" purpose="How customers can pay you. These print on every invoice."
       aside={
         <button
           onClick={() => { setEditing(null); setForm({ kind: "ACH", label: "", details: "" }); setShowForm(true); }}
@@ -4252,14 +4252,14 @@ function StorefrontTab() {
   return (
     <div className="max-w-2xl space-y-6">
       <p className="text-[12px] text-muted leading-relaxed">
-        A clean public web page of your available inventory — share the link with your buyer network so they can browse what's in stock anytime, with photos, location, and (optionally) pricing. Sold or archived lots drop off automatically.
+        A clean public web page of your available inventory. Share the link with your buyer network so they can browse what's in stock anytime, with photos, location, and (optionally) pricing. Sold or archived lots drop off automatically.
       </p>
 
       {/* Enable */}
       <div className="flex items-center justify-between bg-surface border border-line rounded-xl px-4 py-3">
         <div>
           <div className="text-[13px] font-medium text-ink">Public storefront</div>
-          <div className="text-[11.5px] text-muted">{cfg.enabled ? "Live — anyone with the link can view your available lots" : "Off — turn on to generate your shareable link"}</div>
+          <div className="text-[11.5px] text-muted">{cfg.enabled ? "Live, anyone with the link can view your available lots" : "Off, turn on to generate your shareable link"}</div>
         </div>
         <Toggle on={cfg.enabled} onClick={() => save({ enabled: !cfg.enabled })} />
       </div>
@@ -4275,7 +4275,7 @@ function StorefrontTab() {
             </button>
             <button onClick={() => api.openExternal(cfg.url!)} className="border border-line rounded-lg px-3 h-9 text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Open</button>
           </div>
-          <p className="text-[11px] text-muted mt-1.5">Anyone can view it — the link is unguessable. Turning the storefront off makes it stop working.</p>
+          <p className="text-[11px] text-muted mt-1.5">Anyone can view it. The link is unguessable. Turning the storefront off makes it stop working.</p>
         </div>
       )}
 
@@ -4284,7 +4284,7 @@ function StorefrontTab() {
         <SectionLabel>Page content</SectionLabel>
         <div>
           <label className="text-[12px] text-muted">Headline</label>
-          <input value={cfg.title} onChange={(e) => set({ title: e.target.value })} placeholder="e.g. BJM Distributions — Available Now" className={inpCls} />
+          <input value={cfg.title} onChange={(e) => set({ title: e.target.value })} placeholder="e.g. BJM Distributions: Available Now" className={inpCls} />
         </div>
         <div>
           <label className="text-[12px] text-muted">Subtitle</label>
@@ -4583,7 +4583,7 @@ function CategoriesTab() {
               ? <div className="text-[12px] text-muted py-2">{imp.source === "sheet" ? "No category values found in the connected Sheet." : "No values found in that column."}</div>
               : <>
                   <div className="flex items-center justify-between mb-2">
-                    <div className="text-[12px] text-muted">{imp.values.length} distinct value{imp.values.length === 1 ? "" : "s"} — new ones are pre-selected.</div>
+                    <div className="text-[12px] text-muted">{imp.values.length} distinct value{imp.values.length === 1 ? "" : "s"}, new ones are pre-selected.</div>
                     <div className="flex gap-3 text-[11.5px]">
                       <button className="text-accent" onClick={() => setImp({ ...imp, chosen: Object.fromEntries(imp.values.map((v) => [v, true])) })}>All</button>
                       <button className="text-muted hover:text-ink-2" onClick={() => setImp({ ...imp, chosen: {} })}>None</button>
@@ -4829,7 +4829,7 @@ function SheetsTab() {
     <div className="max-w-4xl space-y-4">
       <div className="flex items-start justify-between gap-4">
         <p className="text-[12px] text-muted">
-          Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. Ecliptr pulls new clients in automatically every 10 minutes, and — once you approve a lead — writes it back out as a new row.
+          Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. Ecliptr pulls new clients in automatically every 10 minutes, and (once you approve a lead) writes it back out as a new row.
         </p>
         <GuideLink section="sheets" />
       </div>
@@ -4855,7 +4855,7 @@ function SheetsTab() {
               { label: "Category",   key: "category_col"   as const, val: config.category_col,   hint: "P" },
               { label: "Lead Status",key: "lead_status_col"as const, val: config.lead_status_col,hint: "V" },
               { label: "Notes",      key: "notes_col"      as const, val: config.notes_col,      hint: "AA" },
-              { label: "Fallback",   key: "name_col"       as const, val: config.name_col,       hint: "—" },
+              { label: "Fallback",   key: "name_col"       as const, val: config.name_col,       hint: "–" },
             ].map((f) => (
               <div key={f.key}>
                 <label className="block text-[10px] font-medium text-muted mb-1">
@@ -4873,7 +4873,7 @@ function SheetsTab() {
           </div>
           {customFields.length > 0 && (
             <div>
-              <label className="block text-[10px] font-medium text-muted mb-1.5">Custom fields — pick the column each lives in</label>
+              <label className="block text-[10px] font-medium text-muted mb-1.5">Custom fields: pick the column each lives in</label>
               <div className="grid grid-cols-3 xl:grid-cols-5 gap-3">
                 {customFields.map((f) => (
                   <div key={f.value}>
@@ -4883,7 +4883,7 @@ function SheetsTab() {
                       onChange={(e) => setCustomFieldCol(f.value, e.target.value)}
                       className={colSelect}
                     >
-                      <option value="">—</option>
+                      <option value="">–</option>
                       {columns.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
@@ -4912,7 +4912,7 @@ function SheetsTab() {
           <div>
             <SectionLabel>Sync approvals back to the sheet</SectionLabel>
             <p className="text-[12px] text-muted mt-2 max-w-xl">
-              When you approve a captured lead, Ecliptr adds it as a new row on this sheet —
+              When you approve a captured lead, Ecliptr adds it as a new row on this sheet,
               mapped to the same columns above. Runs on approvals made here on the desktop.
             </p>
           </div>
@@ -4977,7 +4977,7 @@ function SheetsTab() {
           </button>
           <span className="text-[12px] text-muted">
             {config.last_synced_at ? `Last sync: ${relTime(config.last_synced_at)}` : "Never synced"}
-            {config.last_synced_count > 0 && ` — ${config.last_synced_count} clients added`}
+            {config.last_synced_count > 0 && `, ${config.last_synced_count} clients added`}
           </span>
         </div>
         <div className="text-[11px] text-faint mt-1.5">Auto-syncs every 10 minutes</div>
@@ -5102,9 +5102,9 @@ function SplitsTab() {
 
   return (
     <div className="max-w-2xl space-y-4">
-      <SettingCard icon={Users} title="Sales reps" purpose="Each person's cut when they're the deal's lead rep — taken first, off the top.">
+      <SettingCard icon={Users} title="Sales reps" purpose="Each person's cut when they're the deal's lead rep, taken first, off the top.">
         {staff.length === 0 ? (
-          <div className="text-[12.5px] text-muted">No team members yet — invite people from the Team tab.</div>
+          <div className="text-[12.5px] text-muted">No team members yet, invite people from the Team tab.</div>
         ) : (
           <div className="divide-y divide-line">
             {staff.map((u) => (
@@ -5126,20 +5126,20 @@ function SplitsTab() {
         )}
       </SettingCard>
 
-      <SettingCard icon={Split} title="Profit split" purpose="Whatever's left after the rep's cut is divided by these recipients — people, the business, investment set-asides, anything. Saves when the total is exactly 100%."
+      <SettingCard icon={Split} title="Profit split" purpose="Whatever's left after the rep's cut is divided by these recipients: people, the business, investment set-asides, anything. Saves when the total is exactly 100%."
         aside={
           <span className={`text-[12.5px] font-medium tabular-nums ${
             !valid ? "text-warning-ink" : saveState === "error" ? "text-danger-ink" : saveState === "saved" ? "text-success-ink" : "text-muted"
           }`}>
             {!valid
-              ? `Not saved — total is ${total.toFixed(1)}% (${remaining > 0 ? `${remaining}% left` : `${Math.abs(remaining)}% over`})`
-              : saveState === "error" ? `Couldn't save — ${saveErr}`
+              ? `Not saved: total is ${total.toFixed(1)}% (${remaining > 0 ? `${remaining}% left` : `${Math.abs(remaining)}% over`})`
+              : saveState === "error" ? `Couldn't save: ${saveErr}`
               : saveState === "saved" ? "Saved · 100%"
               : "Saving…"}
           </span>
         }>
         {shares.length === 0 ? (
-          <div className="text-[12.5px] text-muted">No recipients yet — add people, the business, or an investment share to define the split.</div>
+          <div className="text-[12.5px] text-muted">No recipients yet, add people, the business, or an investment share to define the split.</div>
         ) : (
           <div className="space-y-2">
             {shares.map((s, i) => (
@@ -5188,15 +5188,15 @@ function SplitsTab() {
           </div>
         </div>
         <div className="text-[13px] space-y-1.5">
-          {previewRep && <div className="flex justify-between"><span className="text-ink-2">Rep cut — {previewRep.display_name} ({previewRep.commission_pct}%)</span><span className="tabular-nums text-ink">${repCut.toFixed(2)}</span></div>}
+          {previewRep && <div className="flex justify-between"><span className="text-ink-2">Rep cut · {previewRep.display_name} ({previewRep.commission_pct}%)</span><span className="tabular-nums text-ink">${repCut.toFixed(2)}</span></div>}
           <div className="flex justify-between border-t border-line pt-1.5"><span className="text-ink-2 font-medium">Remainder</span><span className="tabular-nums text-ink font-medium">${remainder.toFixed(2)}</span></div>
           {shares.map((s, i) => (
             <div key={i} className="flex justify-between pl-3">
-              <span className="text-muted">{s.name || "—"} <span className="text-faint">· {KIND_LABEL[s.kind]}</span> · <span className="tabular-nums">{s.pct}%</span></span>
+              <span className="text-muted">{s.name || "–"} <span className="text-faint">· {KIND_LABEL[s.kind]}</span> · <span className="tabular-nums">{s.pct}%</span></span>
               <span className="tabular-nums text-ink">${(remainder * (Number(s.pct) || 0) / 100).toFixed(2)}</span>
             </div>
           ))}
-          {!previewRep && <p className="text-[11px] text-muted pt-1">No rep with a profit-% rule yet — the full profit goes to the split above.</p>}
+          {!previewRep && <p className="text-[11px] text-muted pt-1">No rep with a profit-% rule yet, the full profit goes to the split above.</p>}
         </div>
       </SettingCard>
     </div>
@@ -5262,7 +5262,7 @@ function BackupTab() {
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[12.5px] font-medium text-muted">Backup location</p>
-            <p className="text-[12px] text-ink-2 font-mono mt-0.5">{status?.backup_dir || "—"}</p>
+            <p className="text-[12px] text-ink-2 font-mono mt-0.5">{status?.backup_dir || "–"}</p>
           </div>
           <button onClick={handleDirChange} className="text-[11px] text-accent hover:text-accent-hover">Change</button>
         </div>
@@ -5557,7 +5557,7 @@ function PeoplePanel() {
   const shareConnections = async () => {
     if (!window.confirm(
       "Share your connections with your team?\n\n" +
-      "This uploads the logins saved on this device — email (SMTP/IMAP), Stripe keys, Google connections, Shopify and Plaid keys, and any linked banks — to your team's secure server store so other admins inherit them without re-typing.\n\n" +
+      "This uploads the logins saved on this device (email (SMTP/IMAP), Stripe keys, Google connections, Shopify and Plaid keys, and any linked banks) to your team's secure server store so other admins inherit them without re-typing.\n\n" +
       "Nothing is added to the sync log."
     )) return;
     setSharing(true);
@@ -5586,7 +5586,7 @@ function PeoplePanel() {
           <div className="text-[11.5px] text-muted">Upload the email, Stripe, Google, Shopify, Plaid and bank logins saved on this device so other admins inherit them without re-typing.</div>
         </div>
         <button onClick={shareConnections} disabled={sharing}
-          title="Push this device's saved connections up to your team's secure server store — no re-typing on other admins' devices."
+          title="Push this device's saved connections up to your team's secure server store, no re-typing on other admins' devices."
           className="inline-flex items-center gap-2 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors whitespace-nowrap flex-shrink-0">
           {sharing ? <RefreshCw size={13} className="animate-spin" /> : <Share2 size={13} />} {sharing ? "Sharing…" : "Share connections"}
         </button>
@@ -5693,7 +5693,7 @@ function PeoplePanel() {
         </tbody>
       </table>
       </div>
-      {viewing && <ProfileModal u={viewing} roleName={roles.find((r) => r.id === viewing.role_id)?.name || viewing.role_name || "—"} onClose={() => setViewing(null)} />}
+      {viewing && <ProfileModal u={viewing} roleName={roles.find((r) => r.id === viewing.role_id)?.name || viewing.role_name || "–"} onClose={() => setViewing(null)} />}
     </div>
   );
 }
@@ -5771,7 +5771,7 @@ function RolesPanel() {
               {!full && <button onClick={() => save(r.id)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Save</button>}
             </div>
             {full ? (
-              <p className="text-[12px] text-muted">Full access — everything (can't be limited).</p>
+              <p className="text-[12px] text-muted">Full access, everything (can't be limited).</p>
             ) : (
               <>
                 <label className="flex items-center gap-2 text-[13px] font-medium text-ink-2 mb-3 cursor-pointer">
@@ -5845,7 +5845,7 @@ function InvitesPanel() {
     <div className="space-y-4">
       <div className="bg-surface border border-line rounded-xl p-4">
         <p className="text-[13px] font-semibold text-ink">Invite someone</p>
-        <p className="text-[12px] text-muted mb-3">Pick a role, create the link, and share it — it works once and expires in 7 days.</p>
+        <p className="text-[12px] text-muted mb-3">Pick a role, create the link, and share it. It works once and expires in 7 days.</p>
         <div className="flex gap-2">
           <select value={roleId} onChange={(e) => setRoleId(e.target.value)} className="border border-line px-2 h-9 rounded-lg text-[13px] bg-surface">
             {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
@@ -5855,12 +5855,12 @@ function InvitesPanel() {
         </div>
         {created && (created.live === false ? (
           <div className="mt-3 bg-warning-bg border border-warning rounded-lg px-3 py-2">
-            <p className="text-[12px] font-medium text-warning-ink mb-1">Saved, but the server doesn't have it yet. The link works once this computer syncs — keep Ecliptr open and online, then share it:</p>
+            <p className="text-[12px] font-medium text-warning-ink mb-1">Saved, but the server doesn't have it yet. The link works once this computer syncs. Keep Ecliptr open and online, then share it:</p>
             <code className="text-[12px] text-warning-ink break-all select-all">{base}{created.signup_path}</code>
           </div>
         ) : (
           <div className="mt-3 bg-success-bg border border-success rounded-lg px-3 py-2">
-            <p className="text-[12px] font-medium text-success-ink mb-1">Invite link ready — share it:</p>
+            <p className="text-[12px] font-medium text-success-ink mb-1">Invite link ready, share it:</p>
             <code className="text-[12px] text-success-ink break-all select-all">{base}{created.signup_path}</code>
           </div>
         ))}
@@ -5875,7 +5875,7 @@ function InvitesPanel() {
             {invites.map((i) => (
               <tr key={i.token} style={{ borderBottom: "1px solid var(--t-b2)" }}>
                 <td className="px-4 py-2.5 text-ink">{i.role_name || i.role_id}</td>
-                <td className="px-4 py-2.5 text-muted">{i.email || "—"}</td>
+                <td className="px-4 py-2.5 text-muted">{i.email || "–"}</td>
                 <td className="px-4 py-2.5"><span className="text-[11px] text-ink-2">{status(i)}</span></td>
                 <td className="px-4 py-2.5 text-muted text-[12px]">{i.expires_at.slice(0, 10)}</td>
                 <td className="px-4 py-2.5 text-right">

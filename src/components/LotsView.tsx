@@ -165,7 +165,7 @@ export default function LotsView({
     const pcts = new Set(picked.map((p) => p.price_pct));
     const pct = pcts.size === 1 ? [...pcts][0] : parseAmount(combinePct) / 100;
     if (!(pct > 0)) {
-      toast("Those lots are priced differently — set the percentage first.", "error");
+      toast("Those lots are priced differently. Set the percentage first.", "error");
       return;
     }
     setBusy("combine");
@@ -180,7 +180,7 @@ export default function LotsView({
       setCombinePct("");
       load();
       onChanged();
-      toast(`${b.name} — ${n(b.units)} units. The ${picked.length} lots it came from are untouched.`);
+      toast(`${b.name} · ${n(b.units)} units. The ${picked.length} lots it came from are untouched.`);
     } catch (e: any) {
       toast(String(e), "error");
     }
@@ -251,7 +251,7 @@ export default function LotsView({
     setBusy(b.id);
     try {
       const r = await api.exportLotBuild(b.id, emailKind, { format: "pdf" });
-      await api.sendEmail(to, `${b.name} — ${label}`, `${label} for ${b.name} is attached.`, r.path);
+      await api.sendEmail(to, `${b.name}: ${label}`, `${label} for ${b.name} is attached.`, r.path);
       toast(`${label} emailed to ${to}.`);
       setEmailOpen(false);
       setEmailTo("");
@@ -288,7 +288,7 @@ export default function LotsView({
     setBusy(node?.id ?? "__top");
     try {
       const r = await api.exportBranchWorkbook(sheetId, node?.id ?? null, title, dest);
-      toast(`${n(r.rows + 1)} pages — MASTER, then one per lot.`);
+      toast(`${n(r.rows + 1)} pages: MASTER, then one per lot.`);
     } catch (e: any) {
       toast(String(e), "error");
     }
@@ -305,7 +305,7 @@ export default function LotsView({
     setBusy(b.id);
     try {
       await api.exportLotWorkbook(b.id, dest);
-      toast("Two pages — the breakdown and every line.");
+      toast("Two pages: the breakdown and every line.");
     } catch (e: any) {
       toast(String(e), "error");
     }
@@ -541,7 +541,7 @@ export default function LotsView({
             </p>
             <p className="text-[12.5px] text-muted mt-2 leading-relaxed">
               This says the stock has physically left. Those locations stay off every future
-              search, and they stay off even when a refreshed export still lists them — absent
+              search, and they stay off even when a refreshed export still lists them. Absent
               means shipped, not undone. Nothing is deleted, and you can put them back here.
             </p>
             <div className="flex justify-end gap-2 mt-4">
@@ -638,7 +638,7 @@ function SelectionBar(p: {
       {mode === "group" && (
         <div className="flex items-center gap-2 flex-wrap border-t border-line-2 pt-2">
           <span className="text-[11.5px] text-muted">
-            Moves them into a branch. <b>Nothing is combined</b> — each keeps its own page.
+            Moves them into a branch. <b>Nothing is combined</b>: each keeps its own page.
           </span>
           <div className="flex-1" />
           {p.branches.map((b) => (
@@ -974,7 +974,7 @@ function Workbench(p: {
 
       <div className="flex flex-wrap items-center gap-1.5">
         <Btn onClick={p.onWorkbook} busy={p.busy === b.id}>
-          Workbook — 2 pages
+          Workbook: 2 pages
         </Btn>
         <Btn onClick={() => p.onExport("manifest")} busy={p.busy === b.id}>
           Manifest
@@ -1066,7 +1066,7 @@ function Lines({ lines }: { lines: LotLines | undefined }) {
   return (
     <div>
       <p className="text-[11px] font-medium text-ink-2 mb-1">
-        What is in it — {n(lines.rows.length)} lines
+        What is in it: {n(lines.rows.length)} lines
       </p>
       <div className="rounded-lg border border-line-2 overflow-hidden">
         <div className="max-h-[300px] overflow-y-auto overflow-x-auto">

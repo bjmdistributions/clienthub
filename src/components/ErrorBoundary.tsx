@@ -59,7 +59,7 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
             Something went wrong
           </h1>
           <p style={{ fontSize: 14, lineHeight: 1.5, color: "#B9AEA3", margin: "0 0 20px" }}>
-            The screen hit an unexpected error. Your data is safe — reloading usually
+            The screen hit an unexpected error. Your data is safe, and reloading usually
             fixes it.
           </p>
           <button

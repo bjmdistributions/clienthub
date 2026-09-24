@@ -277,7 +277,7 @@ pub async fn warehouse_adjust(
     };
     let (lines, short) = core::apply_changes(&item.box_types, &mut item.sections, &changes)?;
     if lines.is_empty() {
-        return Err("Nothing to move — those sections have nothing left.".into());
+        return Err("Nothing to move. Those sections have nothing left.".into());
     }
     // R-340: the same boxes come off (or go back on) the map's pallets and shelf levels.
     let places = move_places(&conn, &item, undo_of.as_deref(), places.unwrap_or_default(), &lines)?;
@@ -813,7 +813,7 @@ fn pallet_labels_pdf(labels: &[(WarehousePallet, usize, String)]) -> Result<Vec<
             y -= 4.6;
         }
         if shown < p.lines.len() {
-            layer.use_text(format!("and {} more — scan for all", p.lines.len() - shown), 9.0, Mm(M), Mm(y), &regular);
+            layer.use_text(format!("and {} more: scan for all", p.lines.len() - shown), 9.0, Mm(M), Mm(y), &regular);
         }
     }
     let mut writer = std::io::BufWriter::new(Vec::new());

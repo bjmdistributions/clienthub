@@ -214,7 +214,7 @@ export default function ReleaseLetterView() {
           onTouchEnd={() => (drawing.current = false)}
           className="w-full h-[180px] rounded-lg border border-line-2 bg-white cursor-crosshair touch-none"
         />
-        <p className="text-[11.5px] text-muted">Draw your signature above — it prints over the signature line.</p>
+        <p className="text-[11.5px] text-muted">Draw your signature above. It prints over the signature line.</p>
       </div>
 
       <div className="flex justify-end">

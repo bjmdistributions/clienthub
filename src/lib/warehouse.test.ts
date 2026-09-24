@@ -161,8 +161,8 @@ describe("send to invoice", () => {
   it("writes one line per team, biggest first, with the boxes in the description", () => {
     const lines = invoiceLines(item, plan);
     expect(lines.map((l) => [l.description, l.qty, l.amount])).toEqual([
-      ["New Era 59FIFTY — NYY: 2 × Big Box", 144, 1296],
-      ["New Era 59FIFTY — LAD: 1 × Small Square, 5 loose", 29, 261],
+      ["New Era 59FIFTY · NYY: 2 × Big Box", 144, 1296],
+      ["New Era 59FIFTY · LAD: 1 × Small Square, 5 loose", 29, 261],
     ]);
   });
 

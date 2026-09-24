@@ -178,7 +178,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
         <Tile label="Units on the shelf" value={n0(t.units)} sub={item.unit_price > 0 ? `${fmtAmount(t.units * item.unit_price)} at ${fmtAmount(item.unit_price)}` : undefined} />
         <Tile label="Boxes" value={n0(t.boxes)} sub={`${item.box_types.length} ${item.box_types.length === 1 ? "size" : "sizes"}`} />
         <Tile label={cap(plural(label))} value={n0(item.sections.filter((s) => sectionUnits(item.box_types, s) > 0).length)} sub={`of ${item.sections.length} with stock`} />
-        <Tile label="Pallets" value={t.pallets !== null ? t.pallets.toLocaleString("en-US", { maximumFractionDigits: 1 }) : "—"}
+        <Tile label="Pallets" value={t.pallets !== null ? t.pallets.toLocaleString("en-US", { maximumFractionDigits: 1 }) : "–"}
           sub={item.units_per_pallet > 0 ? `at ${n0(item.units_per_pallet)} a pallet` : "Set units per pallet"} />
       </div>
 
@@ -486,7 +486,7 @@ function PickTab({ item, layouts, pick, setPick, onChanged }: {
                         onChange={(n) => setOne(s, null, n)} onStep={(d) => step(s, null, d)} />
                     </td>
                     <td className="py-2 pl-3 pr-5 text-right tabular-nums">
-                      {u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">—</span>}
+                      {u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">–</span>}
                     </td>
                   </tr>
                 );
@@ -713,10 +713,10 @@ function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; 
             {openings.length > 0 && <div className="text-ink-2">Open {openings.join(", ")} for the last {n0(grabLoose)}.</div>}
             {plan.short > 0 && target > 0 && (
               <div className="text-warning-ink">{mode === "pallets" && grabUnits > 0
-                ? `Whole boxes come to ${n0(grabUnits)} of the ${n0(target)} — ${n0(plan.short)} under.`
+                ? `Whole boxes come to ${n0(grabUnits)} of the ${n0(target)}, ${n0(plan.short)} under.`
                 : `Only ${n0(target - plan.short)} of the ${n0(target)} units are on the shelf for the ${plural(label)} you picked.`}</div>
             )}
-            {plan.short < 0 && <div className="text-ink-2">Whole boxes come to {n0(grabUnits)} — {n0(-plan.short)} over.</div>}
+            {plan.short < 0 && <div className="text-ink-2">Whole boxes come to {n0(grabUnits)}, {n0(-plan.short)} over.</div>}
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2 mt-4">
@@ -757,9 +757,9 @@ function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; 
                     <td className="py-2 pr-3 text-ink font-medium truncate max-w-[180px]" title={s.name}>{s.name}</td>
                     <td className="py-2 px-3 text-ink-2">
                       {u > 0 ? <>{describePick(types, plan.take[s.id] || {}, plan.loose[s.id] || 0)}{openTxt && <div className="text-[11.5px] text-muted">opens {openTxt}</div>}
-                        <WhereFrom item={item} layouts={layouts} sectionId={s.id} take={boxesLeaving(plan, s.id)} /></> : <span className="text-faint">—</span>}
+                        <WhereFrom item={item} layouts={layouts} sectionId={s.id} take={boxesLeaving(plan, s.id)} /></> : <span className="text-faint">–</span>}
                     </td>
-                    <td className="py-2 px-3 text-right tabular-nums">{u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">—</span>}</td>
+                    <td className="py-2 px-3 text-right tabular-nums">{u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">–</span>}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-ink-2">{u && grabUnits ? pct(u / grabUnits) : ""}</td>
                     <td className="py-2 px-3">
                       <div className="flex items-center gap-2">
@@ -925,7 +925,7 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
     if (!state) return;
     const rate = item.unit_price || 0;
     const lines = builtUnits(state).map((x) => ({
-      description: `${item.name} — ${x.name}: ${describePick(item.box_types, x.boxes, x.loose)}`,
+      description: `${item.name} · ${x.name}: ${describePick(item.box_types, x.boxes, x.loose)}`,
       qty: x.units, rate, amount: Math.round(x.units * rate * 100) / 100,
     }));
     const pallets = builtPallets(item, state);
@@ -940,7 +940,7 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
     const done = { ...state.done };
     try {
       for (const id of Object.keys(done).reverse()) {
-        const r = await api.warehouseAdjust(item.id, [], { undoOf: done[id], note: "Put back — stopped building" });
+        const r = await api.warehouseAdjust(item.id, [], { undoOf: done[id], note: "Put back, stopped building" });
         onChanged(r.item);
         delete done[id];
       }
@@ -962,7 +962,7 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
         )}
         <span className={`min-w-0 flex-1 text-[13px] ${on ? "text-muted line-through" : "text-ink"}`}>
           <span className="font-medium">{g.boxes} × {g.type_name}</span> of {g.name}
-          <span className="text-muted"> — {g.place ? g.place.name : "not on a counted pallet"}</span>
+          <span className="text-muted"> · {g.place ? g.place.name : "not on a counted pallet"}</span>
         </span>
       </li>
     );
@@ -990,7 +990,7 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
       </div>
       {fitError && !state && (
         <div className="mt-3 p-3 rounded-lg border border-danger/40 bg-danger/5 text-[12.5px] text-danger-ink">
-          These boxes could not be fitted to the pallet: {fitError} The pallets below are split by count only — fix the measurements on the Measurements tab to see them fitted.
+          These boxes could not be fitted to the pallet: {fitError} The pallets below are split by count only. Fix the measurements on the Measurements tab to see them fitted.
         </div>
       )}
       {stopping && state && (
@@ -1051,7 +1051,7 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
                       {on && <Check size={14} strokeWidth={3} />}
                     </button>
                   )}
-                  <span className={`text-[13px] ${on ? "text-muted line-through" : "text-ink"}`}><span className="font-medium">{l.units} loose</span> of {l.name} <span className="text-muted">— out of an open box, or open one</span></span>
+                  <span className={`text-[13px] ${on ? "text-muted line-through" : "text-ink"}`}><span className="font-medium">{l.units} loose</span> of {l.name} <span className="text-muted">· out of an open box, or open one</span></span>
                 </li>
               );
             })}
@@ -1119,8 +1119,8 @@ function CountCheckCard({ item, layouts, onChanged }: { item: WarehouseItem; lay
             </thead>
             <tbody>
               {shown.map((t) => {
-                const rows = t.sizes.length ? t.sizes : [{ type_id: "", type_name: "—", stock: 0, onMaps: 0, diff: 0 }];
-                const why = t.places === 0 ? "Not on the map — mark its pallets and enter their boxes."
+                const rows = t.sizes.length ? t.sizes : [{ type_id: "", type_name: "–", stock: 0, onMaps: 0, diff: 0 }];
+                const why = t.places === 0 ? "Not on the map. Mark its pallets and enter their boxes."
                   : t.uncounted.length ? `No boxes entered on ${t.uncounted.slice(0, 3).join(", ")}${t.uncounted.length > 3 ? ` and ${t.uncounted.length - 3} more` : ""}.` : "";
                 const canMatch = check.matchable.some((m) => m.section_id === t.section_id);
                 return rows.map((x, i) => (
@@ -1133,7 +1133,7 @@ function CountCheckCard({ item, layouts, onChanged }: { item: WarehouseItem; lay
                     <td className="py-2 px-3 text-ink-2">{x.type_name}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-ink">{n0(x.stock)}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-ink">{n0(x.onMaps)}</td>
-                    <td className={`py-2 px-3 text-right tabular-nums ${x.diff ? "text-warning-ink font-semibold" : "text-faint"}`}>{x.diff ? `${x.diff > 0 ? "+" : "−"}${n0(Math.abs(x.diff))}` : "—"}</td>
+                    <td className={`py-2 px-3 text-right tabular-nums ${x.diff ? "text-warning-ink font-semibold" : "text-faint"}`}>{x.diff ? `${x.diff > 0 ? "+" : "−"}${n0(Math.abs(x.diff))}` : "–"}</td>
                     {i === 0 && <td rowSpan={rows.length} className="py-2 pl-3 pr-5 text-right align-top">
                       {canMatch && <button onClick={() => matchTeams([t.section_id])} disabled={busy} className={WH_BTN_SECONDARY}>Use the pallets</button>}
                     </td>}
@@ -1144,7 +1144,7 @@ function CountCheckCard({ item, layouts, onChanged }: { item: WarehouseItem; lay
           </table>
         </div>
       )}
-      <p className="px-5 py-3 text-[11.5px] text-muted">"Use the pallets" sets the master count to what the pallets hold — one recount in the history. Loose units in an opened box are not on pallets and stay as they are. To fix a pallet instead, change its boxes on the Map.</p>
+      <p className="px-5 py-3 text-[11.5px] text-muted">"Use the pallets" sets the master count to what the pallets hold, one recount in the history. Loose units in an opened box are not on pallets and stay as they are. To fix a pallet instead, change its boxes on the Map.</p>
     </div>
   );
 }

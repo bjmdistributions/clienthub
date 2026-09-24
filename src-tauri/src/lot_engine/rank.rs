@@ -597,7 +597,7 @@ pub fn auto_lots(
         format!(
             "{} lots averaging {} units. A location is never split, so each lot lands a little \
              over the target rather than exactly on it. {} qualifying slots ({} units) are left \
-             over — too few for another lot of this size.",
+             over: too few for another lot of this size.",
             lots.len(),
             total_units / lots.len() as i64,
             leftover_slots,

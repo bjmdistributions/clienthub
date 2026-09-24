@@ -34,12 +34,12 @@ export default function DataSafetyView() {
     const rows = it.targets.map((t) => `  • ${t.label}`).join("\n");
     if (!confirm(
       `Converge "${it.title}"?\n\n` +
-      `This deletes the following EVERYWHERE — this device, the server, and every other device — through the sync path. It cannot be undone from here:\n\n${rows}\n`
+      `This deletes the following EVERYWHERE (this device, the server, and every other device) through the sync path. It cannot be undone from here:\n\n${rows}\n`
     )) return;
     setWorking(it.id);
     try {
       const deleted = await api.convergeIntegrityItem(it.kind, it.id);
-      toast(`Converged — deleted ${deleted.join(", ")} everywhere`);
+      toast(`Converged: deleted ${deleted.join(", ")} everywhere`);
       load();
     } catch (e: any) {
       toast(String(e), "error");
@@ -67,7 +67,7 @@ export default function DataSafetyView() {
             <ShieldAlert size={17} className="text-accent" /> Data safety
           </h2>
           <p className="text-[12px] text-muted mt-0.5 max-w-[640px] leading-relaxed">
-            Rows that disagree across devices — an invoice deleted elsewhere but still here, a payment or
+            Rows that disagree across devices: an invoice deleted elsewhere but still here, a payment or
             deal flow with no live invoice. Review each, then converge it to deleted everywhere through the
             sync path. Nothing is touched until you converge it.
           </p>
@@ -118,7 +118,7 @@ export default function DataSafetyView() {
           <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-emerald-500 mb-3">
             <ShieldCheck size={18} />
           </div>
-          <div className="text-[13px] text-muted">No anomalies found — every device agrees.</div>
+          <div className="text-[13px] text-muted">No anomalies found. Every device agrees.</div>
         </div>
       ) : (
         <div className="space-y-3">

@@ -87,7 +87,7 @@ export default function WarehouseView() {
           setDragging(false);
           const file = p.paths.find((x) => SHEET_RE.test(x));
           if (file) openSheet(file);
-          else if (p.paths.length) toast("Drop a spreadsheet — Excel or CSV.", "error");
+          else if (p.paths.length) toast("Drop a spreadsheet: Excel or CSV.", "error");
         }
       })
       .then((fn) => { if (cancelled) fn(); else un = fn; })
@@ -207,7 +207,7 @@ export default function WarehouseView() {
           <WarehouseIcon size={22} className="text-faint mx-auto mb-3" />
           <div className="text-[14px] font-semibold text-ink">Count what is on your shelves</div>
           <p className="text-[13px] text-muted mt-1 max-w-[460px] mx-auto">
-            Drop in the spreadsheet you keep your stock in — any layout — and pick what each column is.
+            Drop in the spreadsheet you keep your stock in (any layout) and pick what each column is.
             Or add a product by hand. The packer then tells you exactly which boxes to pull for an order.
           </p>
           <div className="flex items-center justify-center gap-2 mt-4 flex-wrap">

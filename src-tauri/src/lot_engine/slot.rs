@@ -43,7 +43,7 @@ impl Rung {
             Rung::OcrSwap => "letter read as a digit (O/I/L)",
             Rung::Separators => "separators normalised",
             Rung::Split => "glued run split",
-            Rung::Unparsed => "no match — excluded",
+            Rung::Unparsed => "no match: excluded",
         }
     }
 

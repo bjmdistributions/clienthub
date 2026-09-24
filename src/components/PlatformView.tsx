@@ -4,14 +4,14 @@ import { toast } from "./Toast";
 import { Building2, Users, UserCircle, RefreshCw, Send, Mail, MessageSquare, ClipboardList, Check, Minus, Search, Trash2, AlertTriangle, Plus } from "lucide-react";
 
 function fmtDate(s?: string | null): string {
-  if (!s) return "—";
+  if (!s) return "–";
   const d = new Date(s);
-  return isNaN(d.getTime()) ? "—" : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return isNaN(d.getTime()) ? "–" : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 function relTime(s?: string | null): string {
   if (!s) return "never";
   const ms = Date.now() - new Date(s).getTime();
-  if (isNaN(ms)) return "—";
+  if (isNaN(ms)) return "–";
   const d = Math.floor(ms / 86400000);
   if (d <= 0) return "today";
   if (d === 1) return "1d ago";
@@ -87,7 +87,7 @@ export default function PlatformView() {
           <AlertTriangle size={15} className="text-warning-ink flex-shrink-0 mt-px" />
           <p className="text-[12.5px] text-warning-ink leading-relaxed">
             {syncWarn.kind === "expired"
-              ? "Your server connection has expired — reconnect in Settings → Sync, then reopen this tab."
+              ? "Your server connection has expired. Reconnect in Settings → Sync, then reopen this tab."
               : <>This device's server connection is signed in as <span className="font-medium">{syncWarn.email}</span>, which doesn't have platform access. Reconnect the server sync with your owner account, then reopen this tab.</>}
           </p>
         </div>
@@ -120,8 +120,8 @@ export default function PlatformView() {
               {orgs.length === 0 && !loading && <div className="px-4 py-10 text-center text-[13px] text-muted">No signups yet.</div>}
               {orgs.map((o) => (
                 <div key={o.org_id} className={`${COLS} px-4 py-2.5 text-[12.5px] items-center border-b border-line last:border-0`}>
-                  <div className="text-ink font-medium truncate" title={o.name}>{o.name || "—"}</div>
-                  <div className="text-ink-2 truncate" title={o.owner_email || ""}>{o.owner_email || "—"}</div>
+                  <div className="text-ink font-medium truncate" title={o.name}>{o.name || "–"}</div>
+                  <div className="text-ink-2 truncate" title={o.owner_email || ""}>{o.owner_email || "–"}</div>
                   <div>
                     <select
                       value={o.plan || "free"}
@@ -198,8 +198,8 @@ function DeleteWorkspaceModal({ org, onClose, onDeleted }: { org: any; onClose: 
           <h3 className="text-[15px] font-semibold text-ink">Delete this workspace?</h3>
         </div>
         <p className="text-[13px] text-muted mt-1.5 leading-relaxed">
-          This permanently deletes the workspace <span className="font-medium text-ink">{org.name || "—"}</span>
-          {org.owner_email ? <> (<span className="text-ink-2">{org.owner_email}</span>)</> : null} and all of its data — clients, invoices, inventory, everything. This cannot be undone.
+          This permanently deletes the workspace <span className="font-medium text-ink">{org.name || "–"}</span>
+          {org.owner_email ? <> (<span className="text-ink-2">{org.owner_email}</span>)</> : null} and all of its data: clients, invoices, inventory, everything. This cannot be undone.
         </p>
 
         <div className="bg-danger-bg border border-danger-ink/25 rounded-lg px-3 py-2.5 mt-3 text-[12.5px] text-danger-ink">
@@ -319,7 +319,7 @@ function Broadcast() {
   const sendTest = () => {
     setTesting(true);
     api.adminBroadcastTest(subject.trim() || undefined, body.trim() || undefined)
-      .then((r) => toast(`Test sent to ${r.to} — check your inbox (and spam).`))
+      .then((r) => toast(`Test sent to ${r.to}. Check your inbox (and spam).`))
       .catch((e) => toast(String(e), "error"))
       .finally(() => setTesting(false));
   };
@@ -329,7 +329,7 @@ function Broadcast() {
     setSending(true);
     api.adminBroadcastSend(subject.trim(), body.trim(), accounts, waitlist, Array.from(checked))
       .then((r) => {
-        toast(`Broadcast queued — ${r.recipients} recipients (id ${r.id.slice(0, 8)})`);
+        toast(`Broadcast queued: ${r.recipients} recipients (id ${r.id.slice(0, 8)})`);
         setSubject(""); setBody(""); resetPreview();
       })
       .catch((e) => toast(String(e), "error"))
@@ -498,9 +498,9 @@ function Waitlist() {
       {rows.length === 0 && !loading && <div className="px-4 py-10 text-center text-[13px] text-muted">No signups yet.</div>}
       {rows.map((r) => (
         <div key={r.id} className="grid grid-cols-[1fr_1.5fr_2fr_0.9fr] gap-2 px-4 py-2.5 text-[12.5px] items-center border-b border-line last:border-0">
-          <div className="text-ink truncate" title={r.first_name}>{r.first_name || "—"}</div>
+          <div className="text-ink truncate" title={r.first_name}>{r.first_name || "–"}</div>
           <div className="text-ink-2 truncate" title={r.email}>{r.email}</div>
-          <div className="text-muted truncate" title={r.features}>{r.features || "—"}</div>
+          <div className="text-muted truncate" title={r.features}>{r.features || "–"}</div>
           <div className="text-muted tabular-nums">{fmtDate(r.created_at)}</div>
         </div>
       ))}
@@ -541,7 +541,7 @@ function Feedback() {
           >
             <div className="text-ink-2 truncate" title={r.submitter_email || ""}>{r.submitter_name || r.submitter_email || "Anonymous"}</div>
             <div className="text-muted capitalize truncate">{r.kind}</div>
-            <div className="text-ink truncate" title={r.title}>{r.title || "—"}</div>
+            <div className="text-ink truncate" title={r.title}>{r.title || "–"}</div>
             <div><span className="text-[11px] px-2 py-0.5 rounded-full border border-line text-ink-2 capitalize">{r.status}</span></div>
             <div className="text-muted tabular-nums">{fmtDate(r.created_at)}</div>
           </button>
@@ -581,7 +581,7 @@ function Onboarding() {
       {rows.length === 0 && !loading && <div className="px-4 py-10 text-center text-[13px] text-muted">No workspaces yet.</div>}
       {rows.map((o) => (
         <div key={o.org_id} className={`${cols} px-4 py-2.5 text-[12.5px] items-center border-b border-line last:border-0`}>
-          <div className="text-ink font-medium truncate" title={o.name}>{o.name || "—"}</div>
+          <div className="text-ink font-medium truncate" title={o.name}>{o.name || "–"}</div>
           <div><span className="text-[11px] px-2 py-0.5 rounded-full border border-line text-ink-2 capitalize">{o.plan || "free"}</span></div>
           <div className="text-ink-2 tabular-nums">{o.members ?? 0}</div>
           <div><Mark on={o.has_client} /></div>
@@ -648,15 +648,15 @@ function PlatformUsers() {
       {filtered.map((u) => (
         <div key={u.id} className={`${cols} px-4 py-2.5 text-[12.5px] items-center border-b border-line last:border-0`}>
           <div className="min-w-0">
-            <div className="text-ink font-medium truncate" title={u.display_name || ""}>{u.display_name || "—"}</div>
+            <div className="text-ink font-medium truncate" title={u.display_name || ""}>{u.display_name || "–"}</div>
             <div className="text-muted truncate" title={u.email}>{u.email}</div>
           </div>
-          <div className="text-ink-2 truncate" title={u.org_name}>{u.org_name || "—"}</div>
+          <div className="text-ink-2 truncate" title={u.org_name}>{u.org_name || "–"}</div>
           <div><span className="text-[11px] px-2 py-0.5 rounded-full border border-line text-ink-2 capitalize">{u.plan || "free"}</span></div>
-          <div className="text-ink-2 capitalize truncate">{u.role || "—"}</div>
+          <div className="text-ink-2 capitalize truncate">{u.role || "–"}</div>
           <div>
             <span className={`text-[11px] px-2 py-0.5 rounded-full border capitalize ${u.status === "active" ? "border-accent/40 text-accent" : "border-line text-muted"}`}>
-              {u.status || "—"}
+              {u.status || "–"}
             </span>
           </div>
           <div className="text-muted tabular-nums">{fmtDate(u.created_at)}</div>

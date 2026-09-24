@@ -16,9 +16,9 @@ export function FeedbackPanel({ me }: { me: { display_name?: string; email?: str
     setBusy(true); setMsg("");
     try {
       await api.submitFeedback(kind, title.trim(), body.trim(), me?.display_name, me?.email);
-      setMsg("Thanks — sent."); setTitle(""); setBody("");
+      setMsg("Thanks, sent."); setTitle(""); setBody("");
     } catch {
-      setMsg("Failed to send — check your connection.");
+      setMsg("Failed to send. Check your connection.");
     }
     setBusy(false);
   };

@@ -63,7 +63,7 @@ export default function UpdateNotification() {
   const openDownload = () => { api.openExternal("https://ecliptr.app/download").catch(() => {}); };
   const friendlyError = (e: string) =>
     /read-only|os error 30/i.test(e)
-      ? "macOS is running Ecliptr from a read-only spot, so it can't update itself. Tap Download update, then in Finder drag Ecliptr into Applications and reopen it from there. (Re-downloading into Downloads won't fix it — it must live in Applications.)"
+      ? "macOS is running Ecliptr from a read-only spot, so it can't update itself. Tap Download update, then in Finder drag Ecliptr into Applications and reopen it from there. (Re-downloading into Downloads won't fix it: it must live in Applications.)"
       : `Update failed: ${e}`;
 
   return (

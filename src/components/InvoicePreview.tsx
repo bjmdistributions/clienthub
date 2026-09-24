@@ -64,11 +64,11 @@ export default function InvoicePreview({ info, tpl, logoVersion, kind = "invoice
   const tax = subtotal * (taxPct / 100);
   const total = subtotal + tax;
 
-  const clientName = data ? (data.clientName || "—") : "Sample Client";
+  const clientName = data ? (data.clientName || "–") : "Sample Client";
   const clientAddress = data ? (data.clientAddress || "") : "123 Example St";
   const number = data?.number || (isQuote ? "QUO-0001" : "INV-0001");
-  const issueLabel = data ? (data.issueDate || "—") : "Jan 1, 2025";
-  const dueLabel = data ? (data.dueDate || "—") : "Jan 15, 2025";
+  const issueLabel = data ? (data.issueDate || "–") : "Jan 1, 2025";
+  const dueLabel = data ? (data.dueDate || "–") : "Jan 15, 2025";
   const notes = (data?.notes || "").trim();
 
   return (

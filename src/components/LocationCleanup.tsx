@@ -155,7 +155,7 @@ export default function LocationCleanup({ onClose, onDone }: { onClose: () => vo
                         className="border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
                         value={r.city}
                         onChange={(e) => patch(i, { city: e.target.value })}
-                        placeholder="City — optional"
+                        placeholder="City (optional)"
                       />
                       <StatePicker value={r.state} onChange={(s) => patch(i, { state: s })} placeholder="Pick a state" />
                       <div className="text-[12px] tabular-nums pl-1 min-w-[7.5rem]">

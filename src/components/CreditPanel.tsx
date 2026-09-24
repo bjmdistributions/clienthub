@@ -37,7 +37,7 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
   if (!data) return null;
   const balance: number = data.balance || 0;
   const entries: any[] = data.entries || [];
-  const dealLabel = (d: DealFlow) => `#${d.invoice_number || "—"} · ${fmtAmount(d.invoice_total)}`;
+  const dealLabel = (d: DealFlow) => `#${d.invoice_number || "–"} · ${fmtAmount(d.invoice_total)}`;
   const dealNo = (id: string) => deals.find((d) => d.id === id)?.invoice_number || "";
 
   const act = (sign: number) => {

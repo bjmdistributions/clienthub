@@ -159,7 +159,7 @@ export default function CloseoutView() {
                     {/* Left: client + invoice info */}
                     <div className="min-w-0 flex-1">
                       <div className="text-[14px] font-semibold text-ink truncate">
-                        {flow.client_name || "—"}
+                        {flow.client_name || "–"}
                       </div>
                       <div className="text-[11px] text-muted mt-0.5 flex items-center gap-2 flex-wrap">
                         <span className="font-mono bg-surface-3 px-1.5 py-0.5 rounded text-ink-2">

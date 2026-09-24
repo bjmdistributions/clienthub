@@ -64,7 +64,7 @@ pub fn quality_report_text(r: &CleanResult, sheet_name: &str) -> String {
     }
     if !r.detection.flag_cols.is_empty() {
         o.push_str(&format!(
-            "  approval     \"{}\" — rows marked no were dropped\n",
+            "  approval     \"{}\": rows marked no were dropped\n",
             r.detection.flag_cols.join("\", \"")
         ));
     }
@@ -137,7 +137,7 @@ pub fn quality_report_text(r: &CleanResult, sheet_name: &str) -> String {
         n(q.title_risk_units[1])
     ));
     o.push_str(&format!(
-        "  {:>10} units  VERIFY — guessed from a barcode used for several products\n",
+        "  {:>10} units  VERIFY: guessed from a barcode used for several products\n",
         n(q.title_risk_units[2])
     ));
     o.push_str(&format!(
@@ -147,7 +147,7 @@ pub fn quality_report_text(r: &CleanResult, sheet_name: &str) -> String {
     let risky = q.title_risk_units[2] + q.title_risk_units[3];
     if q.units > 0 {
         o.push_str(&format!(
-            "  Only the last two can mis-describe a lot — {} units, {:.1}% of stock.\n",
+            "  Only the last two can mis-describe a lot: {} units, {:.1}% of stock.\n",
             n(risky),
             risky as f64 / q.units as f64 * 100.0
         ));
@@ -160,7 +160,7 @@ pub fn quality_report_text(r: &CleanResult, sheet_name: &str) -> String {
         n(q.upcs_multi_name as i64)
     ));
     o.push_str(&format!(
-        "  {:>10} carry two brands in real quantity ({} units) — hand these back to the floor\n",
+        "  {:>10} carry two brands in real quantity ({} units): hand these back to the floor\n",
         n(q.upcs_ambiguous as i64),
         n(q.units_ambiguous)
     ));

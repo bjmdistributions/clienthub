@@ -137,7 +137,7 @@ export const CATEGORIES: { value: string; label: string; group: string; hidden?:
 // the distinction is readable at the moment of choosing rather than in a manual.
 const CAT_HINTS: Record<string, string> = {
   service_income:      "Brokerage or commission you earned, not goods you sold",
-  shipping_income:     "Freight you charged the customer — income, not a cost offset",
+  shipping_income:     "Freight you charged the customer: income, not a cost offset",
   customer_refund:     "Money back to a buyer. Reduces sales, never counts as cost of goods",
   sales_discount:      "A price break or allowance granted after the sale",
   bad_debt:            "An invoice you have given up on collecting",
@@ -146,20 +146,20 @@ const CAT_HINTS: Record<string, string> = {
   storage:             "3PL, pallet and warehousing charges tied to stock",
   supplier_refund:     "A supplier reversal or credit. Lowers what the goods cost you",
   purchase_discount:   "A rebate or early-payment discount from a supplier",
-  health_insurance:    "Your own premiums — deducted separately from business expenses",
-  retirement:          "SEP or solo 401(k) contributions — deducted on the personal return",
+  health_insurance:    "Your own premiums, deducted separately from business expenses",
+  retirement:          "SEP or solo 401(k) contributions, deducted on the personal return",
   commissions:         "What you paid a rep or partner out of a deal",
   merchant_fees:       "Stripe, Shopify, PayPal and card-processing charges",
   interest_expense:    "Interest only. The principal of a loan repayment is not an expense",
   gifts:               "Deductible up to $25 per recipient per year",
   equipment:           "Cheap, short-lived tools. Anything lasting years is an asset purchase",
   taxes:               "Business taxes only. Your own income tax is Owner estimated tax",
-  sales_tax_collected: "Not income — you are holding it for the state",
+  sales_tax_collected: "Not income: you are holding it for the state",
   sales_tax_remitted:  "Handing the state what you collected. Not an expense",
   estimated_tax:       "Your personal income tax. NOT a business deduction",
   owner_draw:          "Money you took out. Not a deduction",
   owner_contribution:  "Money you put in. Not income",
-  asset_purchase:      "Something with years of life — depreciated, not expensed this year",
+  asset_purchase:      "Something with years of life: depreciated, not expensed this year",
   card_payment:        "Paying down a card. The charges themselves are the expense",
 };
 
@@ -329,9 +329,9 @@ function CategoryOptions({ includeUncat = true }: { includeUncat?: boolean }) {
 // entirely — so mis-picking silently moves a deal's recorded profit.
 const ROLES: { value: string; label: string; hint?: string }[] = [
   { value: "buyer_payment",    label: "Payment from the buyer",       hint: "Money the customer paid you for this deal" },
-  { value: "supplier_payment", label: "Payment to the supplier",      hint: "What the goods cost you — counts as cost of the deal" },
-  { value: "refund_out",       label: "Refund back to the buyer",     hint: "Money returned to your customer — does not change the deal's cost" },
-  { value: "refund_in",        label: "Money back from the supplier", hint: "A supplier reversal — lowers what this deal cost you" },
+  { value: "supplier_payment", label: "Payment to the supplier",      hint: "What the goods cost you: counts as cost of the deal" },
+  { value: "refund_out",       label: "Refund back to the buyer",     hint: "Money returned to your customer does not change the deal's cost" },
+  { value: "refund_in",        label: "Money back from the supplier", hint: "A supplier reversal lowers what this deal cost you" },
   { value: "adjustment",       label: "Adjustment" },
 ];
 
@@ -1316,7 +1316,7 @@ export default function FinancialsView() {
       await api.addCashTransaction(amt, cashDir, cashDate || localDay(), cashCp.trim() || undefined, cashNote.trim() || undefined);
       setCashOpen(false); setCashAmount(""); setCashCp(""); setCashNote("");
       await refreshAll(false);
-      toast(`Cash ${cashDir === "out" ? "payment" : "receipt"} recorded — link it to deals below`);
+      toast(`Cash ${cashDir === "out" ? "payment" : "receipt"} recorded, link it to deals below`);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setCashSaving(false); }
   };
@@ -1368,11 +1368,11 @@ export default function FinancialsView() {
     if (r.imported > 0) setPendingRefSeen(r.with_pending_ref > 0 ? "yes" : "no");
     // Work the bank moved for you, carried automatically onto the posted twin.
     if (r.settled > 0) {
-      toast(`${r.settled} transaction${r.settled === 1 ? "" : "s"} settled at your bank — ${r.settled === 1 ? "its booking was" : "their bookings were"} carried over, no re-work needed.`, "success");
+      toast(`${r.settled} transaction${r.settled === 1 ? "" : "s"} settled at your bank. ${r.settled === 1 ? "Its booking was" : "Their bookings were"} carried over, no re-work needed.`, "success");
     }
     if (r.over_allocated?.length) {
       toast(
-        `${r.over_allocated.length} transaction${r.over_allocated.length === 1 ? " was" : "s were"} changed by the bank to less than what's booked against ${r.over_allocated.length === 1 ? "it" : "them"}: ${r.over_allocated.join("; ")}. Nothing was removed — please review the allocations.`,
+        `${r.over_allocated.length} transaction${r.over_allocated.length === 1 ? " was" : "s were"} changed by the bank to less than what's booked against ${r.over_allocated.length === 1 ? "it" : "them"}: ${r.over_allocated.join("; ")}. Nothing was removed. Please review the allocations.`,
         "error",
       );
     }
@@ -1385,7 +1385,7 @@ export default function FinancialsView() {
     }
     if ((r.settled_inferred ?? 0) > 0) {
       const n = r.settled_inferred ?? 0;
-      toast(`${n} charge${n === 1 ? "" : "s"} you booked while pending posted at your bank — the booking moved to the posted copy.`, "success");
+      toast(`${n} charge${n === 1 ? "" : "s"} you booked while pending posted at your bank. The booking moved to the posted copy.`, "success");
     }
     if (r.retracted_kept > 0) {
       toast(`Your bank retracted ${r.retracted_kept} transaction${r.retracted_kept === 1 ? "" : "s"} you'd already booked. Nothing was deleted. When the posted copy arrives, the booking moves over on its own, or it shows a "Take over booking" button in To book.`, "error");
@@ -1393,7 +1393,7 @@ export default function FinancialsView() {
     // A pending/posted pair was identified but the booking could not be moved
     // automatically. Both rows are intact; which one keeps the work is a human call.
     if (r.settle_refused?.length) {
-      toast(`${r.settle_refused.length} settled transaction${r.settle_refused.length === 1 ? "" : "s"} couldn't have the booking moved automatically: ${r.settle_refused.join("; ")}. Nothing was changed — please re-link by hand.`, "error");
+      toast(`${r.settle_refused.length} settled transaction${r.settle_refused.length === 1 ? "" : "s"} couldn't have the booking moved automatically: ${r.settle_refused.join("; ")}. Nothing was changed. Please re-link by hand.`, "error");
     }
     // Surface the actual per-bank Plaid error so a silent empty result is never a mystery.
     for (const x of r.results.filter((x) => x.status === "error")) {
@@ -1422,7 +1422,7 @@ export default function FinancialsView() {
       // Retries exhausted — clear the "preparing" banner so it doesn't sit forever,
       // and tell the user how to finish once the bank's history is ready.
       setPlaidPreparing(false);
-      toast("Your bank is still preparing transactions — use Sync now in a few minutes.");
+      toast("Your bank is still preparing transactions. Use Sync now in a few minutes.");
       return;
     }
     prepTimerRef.current = window.setTimeout(async () => {
@@ -1483,7 +1483,7 @@ export default function FinancialsView() {
           }
           if (attempts >= maxAttempts) {
             stopPolling();
-            toast("Didn't detect a completed connection — click Connect a bank to try again.", "error");
+            toast("Didn't detect a completed connection. Click Connect a bank to try again.", "error");
             setPlaidConnecting(false);
             return;
           }
@@ -1530,13 +1530,13 @@ export default function FinancialsView() {
       if (r.imported === 0 && r.removed === 0 && amended === 0 && stillPreparing) {
         setPlaidPreparing(true);
         schedulePrepRetries(6);
-        toast("Plaid is still preparing your transactions — this can take a minute.");
+        toast("Plaid is still preparing your transactions. This can take a minute.");
       } else {
         setPlaidPreparing(stillPreparing);
         if (mode === "refresh" && r.imported === 0 && r.removed === 0 && amended === 0) {
-          toast("Refreshed from bank — nothing new yet. Same-day wires can take a few hours to post; try again shortly.");
+          toast("Refreshed from bank, nothing new yet. Same-day wires can take a few hours to post; try again shortly.");
         } else {
-          const lead = mode === "refresh" ? "Refreshed — " : "";
+          const lead = mode === "refresh" ? "Refreshed: " : "";
           const bits = [`Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}`];
           if (r.removed > 0) bits.push(`removed ${r.removed}`);
           // The bank changed a transaction we already held (a pending row settling at
@@ -1588,7 +1588,7 @@ export default function FinancialsView() {
 
   const clearAndRepull = async () => {
     if (!confirm(
-      "Clear bank transactions and re-pull fresh from your currently connected banks?\n\nAnything reviewed or linked to a deal is kept — you'll be asked separately before those go. Use this after removing a wrong account. This can't be undone."
+      "Clear bank transactions and re-pull fresh from your currently connected banks?\n\nAnything reviewed or linked to a deal is kept. You'll be asked separately before those go. Use this after removing a wrong account. This can't be undone."
     )) return;
     setPlaidSyncing(true);
     try {
@@ -1662,7 +1662,7 @@ export default function FinancialsView() {
 
   const disconnectBank = async (item: PlaidItem) => {
     if (!confirm(
-      `Disconnect ${item.institution}?\n\nThe live feed from this bank stops. Transactions already imported stay in the list — nothing is deleted — but to start pulling again you'd have to link the bank from scratch.`
+      `Disconnect ${item.institution}?\n\nThe live feed from this bank stops. Transactions already imported stay in the list. Nothing is deleted, but to start pulling again you'd have to link the bank from scratch.`
     )) return;
     try {
       await api.plaidRemoveItem(item.id);
@@ -1745,7 +1745,7 @@ export default function FinancialsView() {
     }
     setBulkProgress("");
     setBulkBusy(false);
-    const failNote = errors.length ? ` — ${errors.length} file${errors.length === 1 ? "" : "s"} failed` : "";
+    const failNote = errors.length ? `, ${errors.length} file${errors.length === 1 ? "" : "s"} failed` : "";
     toast(
       ai
         ? `AI imported ${imported} (extracted ${extracted}), skipped ${skipped} across ${paths.length} files${failNote}`
@@ -1807,7 +1807,7 @@ export default function FinancialsView() {
   const clearStatementImports = async () => {
     if (clearing) return;
     if (!window.confirm(
-      "Remove all transactions imported from statement files (PDF/OFX/CSV)? This keeps everything from the live bank feed (Plaid), plus anything reviewed or linked to a deal — you'll be asked separately before those go. This can't be undone (you can re-import statements later)."
+      "Remove all transactions imported from statement files (PDF/OFX/CSV)? This keeps everything from the live bank feed (Plaid), plus anything reviewed or linked to a deal. You'll be asked separately before those go. This can't be undone (you can re-import statements later)."
     )) return;
     setClearing(true);
     try {
@@ -1816,7 +1816,7 @@ export default function FinancialsView() {
         [
           `Removed ${r.deleted} statement transactions`,
           r.allocations_removed > 0 ? ` (${r.allocations_removed} allocations cleared)` : "",
-          r.kept > 0 ? ` — kept ${r.kept} reviewed or deal-linked` : "",
+          r.kept > 0 ? `, kept ${r.kept} reviewed or deal-linked` : "",
         ].join(""),
       );
       await refreshAll(false);
@@ -1935,7 +1935,7 @@ export default function FinancialsView() {
       if (booked || (fullyTied && t.reviewed)) {
         toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)} and booked it`);
       } else if (!fullyTied) {
-        toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)} — ${fmtAmount(t.unallocated - amt)} still to file`);
+        toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)}, ${fmtAmount(t.unallocated - amt)} still to file`);
       }
       await refreshRows([t.id]);
     } catch (e: any) { toast(errText(e), "error"); }
@@ -2004,8 +2004,8 @@ export default function FinancialsView() {
       await api.createTxnRule(matchCounterparty, category, tType, targetId, "", direction, autoBook);
       const r = await api.applyTxnRules();
       const dirWord = direction === "in" ? " money-in" : direction === "out" ? " money-out" : "";
-      const booked = (r.auto_booked ?? 0) > 0 ? ` — ${r.auto_booked} booked automatically` : "";
-      toast(`Remembered — tagged ${r.updated}${dirWord} transaction${r.updated === 1 ? "" : "s"}${booked}. Applies on every device.`);
+      const booked = (r.auto_booked ?? 0) > 0 ? `, ${r.auto_booked} booked automatically` : "";
+      toast(`Remembered, tagged ${r.updated}${dirWord} transaction${r.updated === 1 ? "" : "s"}${booked}. Applies on every device.`);
       setRules(await api.listTxnRules());
       await refreshAll(false);
       return true;
@@ -2029,7 +2029,7 @@ export default function FinancialsView() {
   const applyRules = async () => {
     try {
       const r = await api.applyTxnRules();
-      const booked = (r.auto_booked ?? 0) > 0 ? ` — ${r.auto_booked} booked automatically` : "";
+      const booked = (r.auto_booked ?? 0) > 0 ? `, ${r.auto_booked} booked automatically` : "";
       toast(`Applied to ${r.updated} transaction${r.updated === 1 ? "" : "s"}${booked}`);
       await refreshAll(true);
       setRules(await api.listTxnRules());
@@ -2071,7 +2071,7 @@ export default function FinancialsView() {
     setBulkActionBusy(false);
     clearSelection();
     await refreshRows(ids);
-    if (failed > 0) toast(`${failed} of ${ids.length} couldn't be updated${firstErr ? ` — ${firstErr}` : ""}`, "error");
+    if (failed > 0) toast(`${failed} of ${ids.length} couldn't be updated${firstErr ? `: ${firstErr}` : ""}`, "error");
   };
 
   const bulkSetCategory = (cat: string) =>
@@ -2099,7 +2099,7 @@ export default function FinancialsView() {
     if (ids.length === 0) return;
     const ok = window.confirm(
       `Delete ${ids.length} transaction${ids.length === 1 ? "" : "s"}?\n\n` +
-        `Anything linked to a deal, loan or refund is kept — those are skipped and reported.\n` +
+        `Anything linked to a deal, loan or refund is kept. Those are skipped and reported.\n` +
         `This can't be undone from here, though a copy of everything removed is saved locally.`
     );
     if (!ok) return;
@@ -2126,7 +2126,7 @@ export default function FinancialsView() {
       for (let round = 0; round < 25; round++) {
         const { updated, remaining } = await api.aiCategorizeBankTxns();
         total += updated;
-        if (remaining > 0 && updated > 0) setAiProgress(`Categorized ${total} — ${remaining} left…`);
+        if (remaining > 0 && updated > 0) setAiProgress(`Categorized ${total}, ${remaining} left…`);
         if (remaining <= 0 || updated === 0) break;
       }
       setAiProgress("");
@@ -2565,12 +2565,12 @@ export default function FinancialsView() {
       return `${fmtAmount(t.allocated)} of ${fmtAmount(t.amount)} linked${acct}`;
     if (t.allocated > 0.0001) {
       const d = t.links?.length ? dealById.get(t.links[0].deal_id) : undefined;
-      return `Linked to ${d ? matchLabel(d) : "a deal"} — book it${acct}`;
+      return `Linked to ${d ? matchLabel(d) : "a deal"}, book it${acct}`;
     }
     const noCat = !(t.category || "").trim();
     if (noCat) return `Needs a category${acct}`;
-    if (needsADeal(t)) return `${catLabel(t.category)} — needs a deal${acct}`;
-    return `${catLabel(t.category || "")} — ready to book${acct}`;
+    if (needsADeal(t)) return `${catLabel(t.category)} needs a deal${acct}`;
+    return `${catLabel(t.category || "")}, ready to book${acct}`;
   };
 
   // Reset every Ledger filter in one click — the filtered-to-nothing state used
@@ -2719,7 +2719,7 @@ export default function FinancialsView() {
   // by "booked" or "this year" than the list it came from.
   const handleExportLedger = async () => {
     const rows = splitView ? [...filteredIn, ...filteredOut] : filtered;
-    if (rows.length === 0) { toast("Nothing to export — no transactions match these filters", "error"); return; }
+    if (rows.length === 0) { toast("Nothing to export, no transactions match these filters", "error"); return; }
     const span = taxYearValue === "all" ? "all-years"
       : taxYearValue === "custom" ? `${fromDate || "start"}-to-${toDate || "today"}`
       : taxYearValue;
@@ -2897,7 +2897,7 @@ export default function FinancialsView() {
   // carries the one-click "Tie it". A bare accent "match" in this cell said less, had
   // no action attached, and read as a typo rather than an affordance.
   const dealCell = (t: BankTxn) => {
-    if (t.counterparty_type === "loan") return <span className="text-muted">—</span>;
+    if (t.counterparty_type === "loan") return <span className="text-muted">–</span>;
     if (t.allocated > 0.0001) return <DealLinkChip t={t} dealById={dealById} compact onOpen={() => toggleRow(t)} />;
     return (
       <button
@@ -2954,7 +2954,7 @@ export default function FinancialsView() {
             <tbody>
               {rows.slice(0, rowLimit).map((t) => {
                 const payee = t.counterparty_name?.trim();
-                const mainLabel = payee || t.description || "—";
+                const mainLabel = payee || t.description || "–";
                 const memo = payee ? t.description : "";
                 // The obvious-deal suggestion. Hidden while the row is expanded — the
                 // full allocate panel is already open there.
@@ -3041,7 +3041,7 @@ export default function FinancialsView() {
                             <>
                               <button
                                 onClick={() => setPersonPickerFor(t.id)}
-                                title={`${personTypeLabel(linked.type)} — click to change`}
+                                title={`${personTypeLabel(linked.type)}, click to change`}
                                 className="min-w-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-line-2 text-[11px] text-ink-2 hover:border-line-3 transition-colors"
                               >
                                 <Building2 size={10} className="text-muted flex-shrink-0" />
@@ -3062,7 +3062,7 @@ export default function FinancialsView() {
                               <button
                                 onClick={() => tagPerson(t, { type: psug.type, id: psug.id, name: psug.name })}
                                 disabled={personBusy === t.id}
-                                title={`Link this payment to ${psug.name} — ${psug.reason}`}
+                                title={`Link this payment to ${psug.name}: ${psug.reason}`}
                                 className="min-w-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-accent/40 bg-accent/5 text-accent text-[11px] font-medium hover:bg-accent/10 disabled:opacity-50 transition-colors"
                               >
                                 {personBusy === t.id
@@ -3094,7 +3094,7 @@ export default function FinancialsView() {
                           onClick={(e) => { e.stopPropagation(); setPersonPickerFor(t.id); }}
                           className="mt-0.5 block text-[11px] text-accent hover:text-accent-hover text-left transition-colors"
                         >
-                          Renaming only changed the label — link this to a person too?
+                          Renaming only changed the label. Link this to a person too?
                         </button>
                       )}
                     </td>
@@ -3134,7 +3134,7 @@ export default function FinancialsView() {
                         <select
                           value={t.confirmed_method || ""}
                           aria-label="Payment method"
-                          title={mr.state === "unclassified" ? "No payment method could be read from the memo" : `${methodLabel(mr.method)} — ${mr.reason}`}
+                          title={mr.state === "unclassified" ? "No payment method could be read from the memo" : `${methodLabel(mr.method)}: ${mr.reason}`}
                           onChange={(e) => setMethod(t, e.target.value as BankMethod | "")}
                           className={`appearance-none h-7 pl-2 pr-6 rounded-md border text-[12px] cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors ${
                             mr.state === "certain"
@@ -3145,7 +3145,7 @@ export default function FinancialsView() {
                           }`}
                         >
                           <option value="">
-                            {mr.state === "likely" ? `${methodLabel(mr.method)} — likely` : "Set method"}
+                            {mr.state === "likely" ? `${methodLabel(mr.method)}, likely` : "Set method"}
                           </option>
                           {METHODS.map((m) => (
                             <option key={m.value} value={m.value}>{m.label}</option>
@@ -3164,7 +3164,7 @@ export default function FinancialsView() {
                     <td className="py-3 text-center align-top" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => saveReview(t, { reviewed: !t.reviewed })}
-                        title={t.reviewed ? "Booked — click to reopen" : "Mark this transaction booked"}
+                        title={t.reviewed ? "Booked, click to reopen" : "Mark this transaction booked"}
                         className={`h-7 px-2.5 rounded-md inline-flex items-center gap-1 justify-center border text-[11.5px] font-semibold transition-colors whitespace-nowrap ${
                           t.reviewed
                             ? "bg-ink border-ink text-surface"
@@ -3224,7 +3224,7 @@ export default function FinancialsView() {
                               key={c.deal.id}
                               onClick={(e) => { e.stopPropagation(); tieMatch(t, c.deal, c.candidate); }}
                               disabled={tyingId === t.id}
-                              title={`Tie to ${dealLabel(c.deal)} as ${c.candidate?.role === "supplier_payment" ? "a supplier payment" : c.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${c.reason}`}
+                              title={`Tie to ${dealLabel(c.deal)} as ${c.candidate?.role === "supplier_payment" ? "a supplier payment" : c.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"}: ${c.reason}`}
                               className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0 max-w-[280px]"
                             >
                               {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
@@ -3232,7 +3232,7 @@ export default function FinancialsView() {
                                 {matchLabel(c.deal)}
                                 {c.candidate?.supplier_name ? ` · ${c.candidate.supplier_name}` : ""}
                               </span>
-                              <span className="text-muted font-normal truncate hidden xl:inline">— {c.reason}</span>
+                              <span className="text-muted font-normal truncate hidden xl:inline">· {c.reason}</span>
                             </button>
                           ))}
                           {offer.more > 0 && (
@@ -3302,7 +3302,7 @@ export default function FinancialsView() {
       </div>
       <p className="text-[14px] font-semibold text-ink-2">Could not load your transactions</p>
       <p className="text-[12px] text-muted mt-1 max-w-[420px] mx-auto break-words">{loadError}</p>
-      <p className="text-[11.5px] text-faint mt-1">Nothing has been changed or lost — this is a read that failed.</p>
+      <p className="text-[11.5px] text-faint mt-1">Nothing has been changed or lost. This is a read that failed.</p>
       <button
         onClick={() => { setLoading(true); loadAll(); }}
         className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
@@ -3341,7 +3341,7 @@ export default function FinancialsView() {
           </div>
           <p className="text-[12px] text-muted mt-0.5">
             {tab === "tobook" ? "Book the money that came in and went out"
-              : tab === "ledger" ? "Everything ever — search, filter, drill in"
+              : tab === "ledger" ? "Everything ever: search, filter, drill in"
               : tab === "cash" ? "Free cash, reserves and loans"
               : "Bank connections, statement imports and cleanup tools"}
           </p>
@@ -3357,7 +3357,7 @@ export default function FinancialsView() {
           {tab !== "tobook" && (
             <button
               onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
-              title="Record a cash movement — reachable from any tab"
+              title="Record a cash movement, reachable from any tab"
               className="text-[12px] text-muted hover:text-ink-2 flex items-center gap-1.5 whitespace-nowrap"
             >
               <Plus size={13} />
@@ -3367,7 +3367,7 @@ export default function FinancialsView() {
           <button
             onClick={refreshScreen}
             disabled={refreshing}
-            title="Re-read transactions, deals and loans on this device. Does not contact your bank — use Sync bank for that."
+            title="Re-read transactions, deals and loans on this device. Does not contact your bank. Use Sync bank for that."
             className="text-[12px] text-muted hover:text-ink-2 disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
           >
             <RotateCcw size={13} className={refreshing ? "animate-spin" : ""} />
@@ -3456,12 +3456,12 @@ export default function FinancialsView() {
               <div className={`text-[22px] font-semibold tabular-nums ${pnlReport.netIncome >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
                 {fmtAmount(pnlReport.netIncome)}
               </div>
-              <div className="text-[11.5px] text-muted mt-0.5">Income, cost of goods and expenses — refunds and discounts subtracted in full</div>
+              <div className="text-[11.5px] text-muted mt-0.5">Income, cost of goods and expenses; refunds and discounts subtracted in full</div>
             </div>
             <div className="border border-line rounded-xl p-4">
               <div className="text-[12px] text-muted">All bank activity this year</div>
               <div className="text-[22px] font-semibold tabular-nums text-ink">{fmtAmount(pnlReport.grandTotal)}</div>
-              <div className="text-[11.5px] text-muted mt-0.5">Every dollar in or out — same total as the Ledger for this year</div>
+              <div className="text-[11.5px] text-muted mt-0.5">Every dollar in or out, same total as the Ledger for this year</div>
             </div>
           </div>
 
@@ -3471,7 +3471,7 @@ export default function FinancialsView() {
               <p className="text-[12px] text-ink-2 flex-1 min-w-0 leading-relaxed">
                 <span className="font-medium text-ink tabular-nums">{fmtAmount(pnlReport.uncategorizedNet)}</span> across{" "}
                 {pnlReport.uncategorized.length} categor{pnlReport.uncategorized.length === 1 ? "y" : "ies"} in {pnlYear} has no
-                category and is <span className="font-medium">not counted</span> in net income above — categorize it in the
+                category and is <span className="font-medium">not counted</span> in net income above. Categorize it in the
                 Ledger to include it. It is included in "All bank activity" so nothing goes missing quietly.
               </p>
             </div>
@@ -3484,7 +3484,7 @@ export default function FinancialsView() {
                 <div className="flex items-center justify-between px-4 py-2.5 bg-surface-2 border-b border-line">
                   <div>
                     <span className="text-[13px] font-semibold text-ink">{g.group}</span>
-                    {excluded && <span className="ml-2 text-[11px] text-muted">Not profit or loss — shown for the record</span>}
+                    {excluded && <span className="ml-2 text-[11px] text-muted">Not profit or loss, shown for the record</span>}
                   </div>
                   <span className={`text-[13px] font-semibold tabular-nums ${g.net >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(g.net)}</span>
                 </div>
@@ -3537,7 +3537,7 @@ export default function FinancialsView() {
             {suggScope.truncated && (
               <div className="text-[11.5px] text-muted mt-0.5">
                 Suggestions cover the newest <span className="tabular-nums">{suggScope.scanned}</span> of{" "}
-                <span className="tabular-nums">{suggScope.eligible}</span> unbooked transactions — older rows weren't scored.
+                <span className="tabular-nums">{suggScope.eligible}</span> unbooked transactions. Older rows weren't scored.
               </div>
             )}
           </div>
@@ -3638,7 +3638,7 @@ export default function FinancialsView() {
             <div className="px-5 py-4 border-b border-line flex items-start justify-between gap-3">
               <div>
                 <div className="text-[15px] font-semibold text-ink">Missing payment links</div>
-                <div className="text-[11.5px] text-muted mt-0.5">Completed deals whose payments were never tied to bank transactions — candidates from history, confirm before attaching.</div>
+                <div className="text-[11.5px] text-muted mt-0.5">Completed deals whose payments were never tied to bank transactions. Candidates from history, confirm before attaching.</div>
               </div>
               <button onClick={() => setMissingLinksOpen(false)} className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2"><X size={16} /></button>
             </div>
@@ -3702,7 +3702,7 @@ export default function FinancialsView() {
                 ))
               )}
               {!missingLinksLoading && missingLinks.length > 0 && missingLinksScope.truncated && (
-                <div className="text-[11.5px] text-muted">Scanned the latest {missingLinksScope.checked} completed deals — older completed deals weren't checked.</div>
+                <div className="text-[11.5px] text-muted">Scanned the latest {missingLinksScope.checked} completed deals. Older completed deals weren't checked.</div>
               )}
             </div>
           </div>
@@ -3728,7 +3728,7 @@ export default function FinancialsView() {
           <button
             onClick={clearStatementImports}
             disabled={clearing || bulkBusy}
-            title="Delete transactions imported from statement files — keeps the live bank feed"
+            title="Delete transactions imported from statement files, keeps the live bank feed"
             className="flex items-center gap-1.5 px-3 h-9 border border-line text-muted rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/30 hover:bg-danger-bg disabled:opacity-50 transition-colors"
           >
             {clearing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Remove statement imports
@@ -3797,7 +3797,7 @@ export default function FinancialsView() {
                     <div className="grid grid-cols-3 gap-2">
                       <div className="rounded-xl border border-line bg-surface-2/40 px-3 py-2.5">
                         <div className="text-[11px] text-muted">Total</div>
-                        <div className="text-[18px] font-semibold text-ink tabular-nums">{dedupe.total_transactions ?? "—"}</div>
+                        <div className="text-[18px] font-semibold text-ink tabular-nums">{dedupe.total_transactions ?? "–"}</div>
                       </div>
                       <div className="rounded-xl border border-accent/30 bg-accent/5 px-3 py-2.5">
                         <div className="text-[11px] text-muted">Auto-remove</div>
@@ -3842,12 +3842,12 @@ export default function FinancialsView() {
                     </div>
                     <p className="text-[12px] text-muted leading-relaxed">
                       {dedupeAggressive
-                        ? "Removes every extra copy with the same account, date, amount, direction and description, where no detail the bank sent disagrees — including round amounts and generic memos. Anything linked to a deal, loan or refund is never touched, and every removed row is backed up. Run this from one device."
+                        ? "Removes every extra copy with the same account, date, amount, direction and description, where no detail the bank sent disagrees, including round amounts and generic memos. Anything linked to a deal, loan or refund is never touched, and every removed row is backed up. Run this from one device."
                         : "Removes extra copies with the same account, date, amount, direction and description, where no detail the bank sent disagrees. Round amounts and generic memos (like ATM / cash / transfer) are left for you below, unless each copy came from a different bank connection or from an account the bank renamed. Anything linked to a deal, loan or refund is never touched, and every removed row is backed up. Run this from one device."}
                     </p>
                     {((dedupe.booked_duplicates || 0) > 0 || (dedupe.reference_matches || 0) > 0) && (
                       <p className="text-[12px] text-ink-2 leading-relaxed">
-                        {(dedupe.booked_duplicates || 0) > 0 && <>{dedupe.booked_duplicates} of these {dedupe.booked_duplicates === 1 ? "is a booked copy" : "are booked copies"} whose twin is booked the same way — the booking stays on the copy that's kept. </>}
+                        {(dedupe.booked_duplicates || 0) > 0 && <>{dedupe.booked_duplicates} of these {dedupe.booked_duplicates === 1 ? "is a booked copy" : "are booked copies"} whose twin is booked the same way. The booking stays on the copy that's kept. </>}
                         {(dedupe.reference_matches || 0) > 0 && <>{dedupe.reference_matches} {dedupe.reference_matches === 1 ? "is a payment" : "are payments"} the bank re-sent with a different date or memo; the bank's reference number matches.</>}
                       </p>
                     )}
@@ -3946,7 +3946,7 @@ export default function FinancialsView() {
                   <input value={cashNote} onChange={(e) => setCashNote(e.target.value)} placeholder="e.g. cash pickup"
                     className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
                 </label>
-                <p className="text-[11px] text-muted">Saved as a cash transaction — then link it to deals below. It tracks how much is left of the original.</p>
+                <p className="text-[11px] text-muted">Saved as a cash transaction, then link it to deals below. It tracks how much is left of the original.</p>
               </div>
               <div className="px-5 py-4 border-t border-line flex justify-end gap-2">
                 <button onClick={() => setCashOpen(false)} className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
@@ -3959,7 +3959,7 @@ export default function FinancialsView() {
         )}
         {tab === "setup" && (
         <p className="text-[11px] text-muted text-right leading-relaxed">
-          Smart import reads any statement with AI — for credit cards and other banks. Set a distinct account per card
+          Smart import reads any statement with AI, for credit cards and other banks. Set a distinct account per card
           (e.g. chase-card, amex) so each groups and dedupes separately. Selecting several files imports them all to the
           Account above, so import one account's statements together.
         </p>
@@ -4000,7 +4000,7 @@ export default function FinancialsView() {
         {(plaidItems.length === 0 || bankFeedOpen) && (
           <>
         <p className="text-[11px] text-muted leading-relaxed">
-          Plaid pulls clean transactions straight from the bank — no statement uploads. After connecting,
+          Plaid pulls clean transactions straight from the bank. No statement uploads. After connecting,
           transactions appear in the list below to review and allocate.
         </p>
 
@@ -4062,7 +4062,7 @@ export default function FinancialsView() {
                   </label>
                 </div>
                 <p className="text-[11px] text-muted leading-relaxed">
-                  Each environment has its own secret. Start in Sandbox to test the flow instantly — in the connect popup,
+                  Each environment has its own secret. Start in Sandbox to test the flow instantly. In the connect popup,
                   log in with username <span className="font-medium text-ink-2">user_good</span> and password{" "}
                   <span className="font-medium text-ink-2">pass_good</span>. Switch to Production with your production secret
                   for real accounts once your Plaid OAuth is approved. Stored only on this device.
@@ -4110,7 +4110,7 @@ export default function FinancialsView() {
                   <button
                     onClick={() => syncPlaid("refresh")}
                     disabled={plaidSyncing}
-                    title="Ask your bank for the very latest activity — today's wires and spending — then sync. Use this when something you just did isn't showing yet."
+                    title="Ask your bank for the very latest activity (today's wires and spending), then sync. Use this when something you just did isn't showing yet."
                     className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
                   >
                     {plaidSyncing ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />} Refresh from bank
@@ -4126,7 +4126,7 @@ export default function FinancialsView() {
                   <button
                     onClick={() => syncPlaid("full")}
                     disabled={plaidSyncing}
-                    title="Reset each bank's sync position and re-pull all transactions from the start — use if transactions are missing."
+                    title="Reset each bank's sync position and re-pull all transactions from the start. Use if transactions are missing."
                     className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
                   >
                     <RotateCcw size={14} /> Re-pull all
@@ -4134,7 +4134,7 @@ export default function FinancialsView() {
                   <button
                     onClick={clearAndRepull}
                     disabled={plaidSyncing}
-                    title="Delete every bank transaction (and its tags/allocations) and re-pull fresh — use after removing a wrong account."
+                    title="Delete every bank transaction (and its tags/allocations) and re-pull fresh. Use after removing a wrong account."
                     className="flex items-center gap-1.5 h-9 px-3 ml-auto border border-danger-ink/25 text-danger-ink/80 rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/40 hover:bg-danger-bg disabled:opacity-50 transition-colors"
                   >
                     <Trash2 size={14} /> Clear all & re-pull
@@ -4144,7 +4144,7 @@ export default function FinancialsView() {
             </div>
 
             <p className="text-[11px] text-muted leading-relaxed">
-              Connecting opens Plaid in your browser (that's where bank logins work). Finish there, then come back — it
+              Connecting opens Plaid in your browser (that's where bank logins work). Finish there, then come back. It
               syncs automatically.{plaidEnv === "sandbox" && (
                 <> Sandbox test login: <span className="font-medium text-ink-2">user_good</span> /{" "}
                 <span className="font-medium text-ink-2">pass_good</span>.</>
@@ -4158,7 +4158,7 @@ export default function FinancialsView() {
                 <div className="min-w-0">
                   <div className="text-[13px] font-semibold text-ink flex items-center gap-1.5"><ShieldCheck size={14} className="text-success-ink" /> Backup to Google Sheet</div>
                   <p className="text-[11px] text-muted leading-relaxed mt-0.5">
-                    Keeps an append-only copy of every transaction in a sheet you own — a record that stays even if a transaction is removed here. Uses your connected Google account.
+                    Keeps an append-only copy of every transaction in a sheet you own: a record that stays even if a transaction is removed here. Uses your connected Google account.
                   </p>
                 </div>
                 <button
@@ -4192,7 +4192,7 @@ export default function FinancialsView() {
               <div className="flex items-center gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
                 <Loader2 size={15} className="animate-spin text-accent flex-shrink-0" />
                 <p className="text-[12px] text-ink-2 flex-1 min-w-0">
-                  Finish connecting your bank in the browser window that just opened, then come back here — it syncs
+                  Finish connecting your bank in the browser window that just opened, then come back here. It syncs
                   automatically.
                 </p>
                 <button
@@ -4208,7 +4208,7 @@ export default function FinancialsView() {
               <div className="flex items-center gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
                 <Loader2 size={15} className="animate-spin text-accent flex-shrink-0" />
                 <p className="text-[12px] text-ink-2 flex-1 min-w-0">
-                  Plaid is preparing your transactions — this can take a minute. They'll appear here automatically, or
+                  Plaid is preparing your transactions. This can take a minute. They'll appear here automatically, or
                   use Sync now to check again.
                 </p>
               </div>
@@ -4223,7 +4223,7 @@ export default function FinancialsView() {
                 <AlertTriangle size={15} className="text-warning-ink flex-shrink-0 mt-0.5" />
                 <p className="text-[12px] text-ink-2 flex-1 min-w-0 leading-relaxed">
                   Your bank isn't telling us which pending transaction each posted one replaces, so bookings can't be
-                  carried over automatically when something settles. Nothing gets deleted — you'll be told instead, and
+                  carried over automatically when something settles. Nothing gets deleted. You'll be told instead, and
                   can move the booking yourself.
                 </p>
               </div>
@@ -4243,7 +4243,7 @@ export default function FinancialsView() {
                       {syncSkips.skipped_unsaved.length > 0 && (
                         <div>
                           <span className="text-ink">{syncSkips.skipped_unsaved.length} couldn't be saved.</span>{" "}
-                          Your bank won't offer {syncSkips.skipped_unsaved.length === 1 ? "it" : "them"} again — re-pull all history to recover {syncSkips.skipped_unsaved.length === 1 ? "it" : "them"}.
+                          Your bank won't offer {syncSkips.skipped_unsaved.length === 1 ? "it" : "them"} again. Re-pull all history to recover {syncSkips.skipped_unsaved.length === 1 ? "it" : "them"}.
                           <div className="mt-0.5 text-muted">{syncSkips.skipped_unsaved.join("; ")}</div>
                         </div>
                       )}
@@ -4256,7 +4256,7 @@ export default function FinancialsView() {
                       {syncSkips.page_capped.length > 0 && (
                         <div>
                           <span className="text-ink">Stopped part-way through {syncSkips.page_capped.join(", ")}.</span>{" "}
-                          The rest of the history is still waiting — sync again to continue.
+                          The rest of the history is still waiting. Sync again to continue.
                         </div>
                       )}
                       {syncSkips.amend_unknown > 0 && (
@@ -4267,8 +4267,8 @@ export default function FinancialsView() {
                       )}
                       {syncSkips.held_reference_collision.length > 0 && (
                         <div>
-                          <span className="text-ink">{syncSkips.held_reference_collision.length} transaction{syncSkips.held_reference_collision.length === 1 ? "" : "s"} held back — {syncSkips.held_reference_collision.length === 1 ? "it shares" : "they share"} a payment reference with money you've already reviewed or booked.</span>{" "}
-                          Nothing was imported or changed — check by hand, then sync again.
+                          <span className="text-ink">{syncSkips.held_reference_collision.length} transaction{syncSkips.held_reference_collision.length === 1 ? "" : "s"} held back: {syncSkips.held_reference_collision.length === 1 ? "it shares" : "they share"} a payment reference with money you've already reviewed or booked.</span>{" "}
+                          Nothing was imported or changed. Check by hand, then sync again.
                           <div className="mt-0.5 flex flex-col text-muted">
                             {syncSkips.held_reference_collision.slice(0, 8).map((s, i) => (
                               <span key={i} className="truncate">{skipLine(s)}</span>
@@ -4280,7 +4280,7 @@ export default function FinancialsView() {
                       {syncSkips.possible_duplicates.length > 0 && (
                         <div>
                           <span className="text-ink">{syncSkips.possible_duplicates.length} imported transaction{syncSkips.possible_duplicates.length === 1 ? "" : "s"} share a payment reference with one you already have.</span>{" "}
-                          Nothing was removed — check whether {syncSkips.possible_duplicates.length === 1 ? "it is" : "they are"} the same money.
+                          Nothing was removed. Check whether {syncSkips.possible_duplicates.length === 1 ? "it is" : "they are"} the same money.
                           <div className="mt-0.5 flex flex-col text-muted">
                             {syncSkips.possible_duplicates.slice(0, 8).map((s, i) => (
                               <span key={i} className="truncate">{skipLine(s)}{s.reference ? ` · ${s.reference}` : ""}</span>
@@ -4371,7 +4371,7 @@ export default function FinancialsView() {
 
           {!preview.has_fitid && (
             <p className="text-[11px] text-muted leading-relaxed">
-              This format has no transaction id — duplicates are caught by a fingerprint, so re-importing is safe but
+              This format has no transaction id. Duplicates are caught by a fingerprint, so re-importing is safe but
               near-identical same-day rows could collide.
             </p>
           )}
@@ -4446,7 +4446,7 @@ export default function FinancialsView() {
                   <tr key={i}>
                     <td className="px-3 py-2 tabular-nums text-muted whitespace-nowrap">{(r.date || "").slice(0, 10)}</td>
                     <td className="px-3 py-2 text-ink-2 max-w-0 truncate"><span className="truncate block">{r.description}</span></td>
-                    <td className="px-3 py-2 text-muted whitespace-nowrap">{r.category || "—"}</td>
+                    <td className="px-3 py-2 text-muted whitespace-nowrap">{r.category || "–"}</td>
                     <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${r.direction === "in" ? "text-success-ink" : "text-ink"}`}>
                       {r.direction === "in" ? "+" : "-"}{fmtAmount(r.amount)}
                     </td>
@@ -4647,7 +4647,7 @@ export default function FinancialsView() {
                   <label className="flex items-center justify-between gap-3 pt-1 cursor-pointer">
                     <span>
                       <span className="block text-[12.5px] font-medium text-ink-2">Split money in and out</span>
-                      <span className="block text-[11px] text-muted">Side by side, each with its own search — for reconciling a refund</span>
+                      <span className="block text-[11px] text-muted">Side by side, each with its own search, for reconciling a refund</span>
                     </span>
                     <input type="checkbox" checked={splitView} onChange={() => setSplitView((v) => !v)} className="accent-accent flex-shrink-0" />
                   </label>
@@ -4667,7 +4667,7 @@ export default function FinancialsView() {
               it exports is whatever those filters left showing. */}
           <button
             onClick={handleExportLedger}
-            title="Download these transactions as a CSV — one row each, with category, linked deals and notes"
+            title="Download these transactions as a CSV: one row each, with category, linked deals and notes"
             className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-line text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 hover:border-line-3 transition-colors"
           >
             <Download size={13} /> Export CSV
@@ -4709,7 +4709,7 @@ export default function FinancialsView() {
             <>
               <span>
                 Showing <span className="text-ink font-medium tabular-nums">{methodCounts.total[methodFilter] || 0}</span>{" "}
-                {methodLabel(methodFilter).toLowerCase()} —{" "}
+                {methodLabel(methodFilter).toLowerCase()},{" "}
                 <span className="tabular-nums">{methodCounts.confirmed[methodFilter] || 0}</span> you confirmed,{" "}
                 <span className="tabular-nums">{(methodCounts.total[methodFilter] || 0) - (methodCounts.confirmed[methodFilter] || 0)}</span> inferred, not confirmed.
               </span>
@@ -4904,7 +4904,7 @@ export default function FinancialsView() {
                 <div className="divide-y divide-line-2">
                   {g.rows.map((t) => {
                     const payee = t.counterparty_name?.trim();
-                    const mainLabel = payee || t.description || "—";
+                    const mainLabel = payee || t.description || "–";
                     const memo = payee ? t.description : "";
                     // The offer stays visible while the drawer is open (R-204):
                     // it used to vanish the moment you opened the full picker,
@@ -4961,7 +4961,7 @@ export default function FinancialsView() {
                               >
                                 {takingOver === t.id ? <Loader2 size={10} className="animate-spin flex-shrink-0" /> : <RotateCcw size={10} className="flex-shrink-0" />}
                                 <span className="truncate">
-                                  Already booked {s.from_date.slice(5)} · {fmtAmount(s.from_amount)} — take over booking
+                                  Already booked {s.from_date.slice(5)} · {fmtAmount(s.from_amount)}, take over booking
                                 </span>
                               </button>
                             ))}
@@ -4971,7 +4971,7 @@ export default function FinancialsView() {
                               return sg ? (
                                 <button
                                   onClick={(e) => { e.stopPropagation(); saveReview(t, { category: sg.cat }); }}
-                                  title={`Booked as ${catLabel(sg.cat)} ${sg.count} time${sg.count === 1 ? "" : "s"} before — click to apply`}
+                                  title={`Booked as ${catLabel(sg.cat)} ${sg.count} time${sg.count === 1 ? "" : "s"} before, click to apply`}
                                   className="mt-1 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-medium hover:bg-accent/10 transition-colors max-w-full"
                                 >
                                   <Wand2 size={10} className="flex-shrink-0" />
@@ -5013,7 +5013,7 @@ export default function FinancialsView() {
                                     key={c.deal.id}
                                     onClick={() => tieMatch(t, c.deal, c.candidate)}
                                     disabled={tyingId === t.id}
-                                    title={`Tie to ${dealLabel(c.deal)} as ${c.candidate?.role === "supplier_payment" ? "a supplier payment" : c.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${c.reason}`}
+                                    title={`Tie to ${dealLabel(c.deal)} as ${c.candidate?.role === "supplier_payment" ? "a supplier payment" : c.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"}: ${c.reason}`}
                                     className={`inline-flex items-center gap-1.5 px-2.5 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors whitespace-nowrap ${
                                       offer.choices.length > 1 ? "h-7" : "h-8"
                                     }`}
@@ -5031,7 +5031,7 @@ export default function FinancialsView() {
                                     onClick={() => toggleRow(t)}
                                     className="text-[10.5px] text-muted hover:text-ink-2 transition-colors text-left px-0.5"
                                   >
-                                    {offer.choices.length > 1 ? "Two close matches — " : ""}
+                                    {offer.choices.length > 1 ? "Two close matches, " : ""}
                                     {offer.more > 0 ? `${offer.more} more` : "see all deals"}
                                   </button>
                                 )}
@@ -5059,7 +5059,7 @@ export default function FinancialsView() {
                                   : "bg-accent hover:bg-accent-hover text-on-accent"
                               }`}
                             >
-                              <Check size={12} strokeWidth={2.4} /> {armedBook === t.id ? "No deal — book anyway?" : "Book"}
+                              <Check size={12} strokeWidth={2.4} /> {armedBook === t.id ? "No deal, book anyway?" : "Book"}
                             </button>
                           </span>
                         </div>
@@ -5132,7 +5132,7 @@ export default function FinancialsView() {
                     <div className="divide-y divide-line-2">
                       {g.rows.map((t) => {
                         const payee = t.counterparty_name?.trim();
-                        const mainLabel = payee || t.description || "—";
+                        const mainLabel = payee || t.description || "–";
                         const memo = payee ? t.description : "";
                         const sug = serverSugg.get(t.id)?.[0];
                         return (
@@ -5383,7 +5383,7 @@ export default function FinancialsView() {
                       : "bg-accent hover:bg-accent-hover text-on-accent"
                 }`}
               >
-                <Check size={14} /> {openTxn.reviewed ? "Booked — reopen" : armedBook === openTxn.id ? "No deal linked — book anyway?" : "Book it"}
+                <Check size={14} /> {openTxn.reviewed ? "Booked, reopen" : armedBook === openTxn.id ? "No deal linked, book anyway?" : "Book it"}
               </button>
             </div>
 
@@ -5443,7 +5443,7 @@ export default function FinancialsView() {
                       </button>
                       {linkOfferFor === openTxn.id && (
                         <p className="text-[11.5px] text-muted">
-                          Renaming the payee changed the label on this transaction only — it does not
+                          Renaming the payee changed the label on this transaction only. It does not
                           put the payment on anyone's profile. Linking a person does.
                         </p>
                       )}
@@ -5467,7 +5467,7 @@ export default function FinancialsView() {
                       className={`${inp} text-ink-2`}
                     >
                       <option value="">
-                        {mr.state === "likely" ? `${methodLabel(mr.method)} — likely, not confirmed` : "Not set"}
+                        {mr.state === "likely" ? `${methodLabel(mr.method)}: likely, not confirmed` : "Not set"}
                       </option>
                       {METHODS.map((m) => (
                         <option key={m.value} value={m.value}>{m.label}</option>
@@ -5476,7 +5476,7 @@ export default function FinancialsView() {
                   </label>
                   <p className="text-[11.5px] text-muted">
                     {mr.state === "certain"
-                      ? `${methodLabel(mr.method)} — ${mr.reason}.`
+                      ? `${methodLabel(mr.method)}: ${mr.reason}.`
                       : mr.state === "likely"
                         ? `Reads like ${methodLabel(mr.method).toLowerCase()}: ${mr.reason}. Your bank sends no payment method, so this is a guess until you set it.`
                         : "Your bank sends no payment method and the memo doesn't name one. Set it here and it sticks."}
@@ -5531,7 +5531,7 @@ export default function FinancialsView() {
                     >
                       <Wand2 size={11} className="flex-shrink-0" />
                       <span className="truncate">
-                        Usually {catLabel(sg.cat)} — booked that way {sg.count} time{sg.count === 1 ? "" : "s"}
+                        Usually {catLabel(sg.cat)}, booked that way {sg.count} time{sg.count === 1 ? "" : "s"}
                       </span>
                     </button>
                   ) : null;
@@ -5678,7 +5678,7 @@ function TxnNote({ txn, saveReview }: {
       <textarea
         value={value}
         rows={2}
-        placeholder="Why this payment happened — the accountant sees this"
+        placeholder="Why this payment happened: the accountant sees this"
         onChange={(e) => {
           setValue(e.target.value);
           setDirty(e.target.value.trim() !== (txn.note || "").trim());
@@ -5761,8 +5761,8 @@ function BulkAllocateModal({
             </h2>
             <p className="text-[12px] text-muted mt-0.5">
               {mode === "deal"
-                ? "Each remaining amount is tied to the deal you pick — receipts as buyer payments, payments as supplier payments."
-                : "Each transaction is tagged to the loan you pick — money in as loan received, money out as repayment."}
+                ? "Each remaining amount is tied to the deal you pick: receipts as buyer payments, payments as supplier payments."
+                : "Each transaction is tagged to the loan you pick: money in as loan received, money out as repayment."}
             </p>
           </div>
           <button
@@ -5829,7 +5829,7 @@ function BulkAllocateModal({
               >
                 <div className="text-[13px] font-medium text-ink truncate">{loanLabel(l)}</div>
                 <div className="text-[11px] text-muted truncate tabular-nums">
-                  {l.lender || "—"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
+                  {l.lender || "–"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
                 </div>
               </button>
             ))
@@ -5948,7 +5948,7 @@ function AllocationPanel(props: {
           </div>
           <button
             onClick={alwaysTag}
-            title="Remember this booking — applies to every matching unbooked transaction now, and to future ones as they arrive. Synced to your other devices."
+            title="Remember this booking, applies to every matching unbooked transaction now, and to future ones as they arrive. Synced to your other devices."
             className="flex-shrink-0 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 transition-colors"
           >
             Remember
@@ -5961,7 +5961,7 @@ function AllocationPanel(props: {
             onChange={(e) => setRememberAuto(e.target.checked)}
             className="accent-accent"
           />
-          Book it automatically too — matched transactions skip the queue entirely
+          Book it automatically too: matched transactions skip the queue entirely
         </label>
       </div>
     );
@@ -6166,7 +6166,7 @@ function AllocationPanel(props: {
                     >
                       <div className="text-[12px] font-medium text-ink truncate">{loanLabel(l)}</div>
                       <div className="text-[11px] text-muted truncate tabular-nums">
-                        {l.lender || "—"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
+                        {l.lender || "–"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
                       </div>
                     </button>
                   ))}
@@ -6192,7 +6192,7 @@ function AllocationPanel(props: {
       {targetType === "expense" && (
         <>
           <p className="text-[12px] text-muted">
-            Tracked by category only — set the category on the row above; it isn't tied to a deal or loan.
+            Tracked by category only. Set the category on the row above; it isn't tied to a deal or loan.
           </p>
           {renderRememberRow()}
         </>
@@ -6294,10 +6294,10 @@ function RulesCard({
           <p className="text-[11px] text-muted leading-relaxed">
             Booking teaches the app. Once a payee has been booked the same way twice, its unbooked transactions show a
             one-tap "Usually …" suggestion drawn from your own history. "Remember" in the booking sheet goes one step
-            further — it applies the booking to every matching transaction now and to future ones as they arrive, and
+            further. It applies the booking to every matching transaction now and to future ones as they arrive, and
             it reaches every device signed into your workspace. A memory can be limited to money in or money out, so
             the same payer (e.g. Whatnot) can be a sale one way and an expense the other. "Suggests" rows wait in
-            To book for your click; "Auto-books" rows are booked outright and skip the queue — flip it per rule.
+            To book for your click; "Auto-books" rows are booked outright and skip the queue. Flip it per rule.
           </p>
 
           {rules.length > 0 && (
@@ -6317,8 +6317,8 @@ function RulesCard({
                   <button
                     onClick={() => onToggleAuto(r)}
                     title={r.auto_book
-                      ? "Auto-book is ON — matched transactions are booked outright and skip the queue. Click to turn off."
-                      : "Auto-book is OFF — matched transactions are pre-filled but wait in To book. Click to book them automatically."}
+                      ? "Auto-book is ON. Matched transactions are booked outright and skip the queue. Click to turn off."
+                      : "Auto-book is OFF. Matched transactions are pre-filled but wait in To book. Click to book them automatically."}
                     className={`flex-shrink-0 h-6 px-2 rounded-md border text-[11px] font-semibold transition-colors ${
                       r.auto_book
                         ? "border-accent/40 bg-accent/10 text-accent"
@@ -6329,7 +6329,7 @@ function RulesCard({
                   </button>
                   <button
                     onClick={() => onDelete(r.id)}
-                    title="Delete rule — on every device"
+                    title="Delete rule (on every device)"
                     className="flex-shrink-0 text-faint hover:text-danger-ink transition-colors"
                   >
                     <Trash2 size={13} />
