@@ -28,8 +28,17 @@ pub fn pool_opt() -> Option<&'static DbPool> {
 
 /// A throwaway store for tests that need the real schema and sync bookkeeping (R-279's
 /// email-then-BOL test). A fresh directory per test process; initialised once.
+///
+/// Returns a guard that runs the tests using the store one at a time; hold it for the whole
+/// test (`let _db = init_test_store();`). They share one pool of 8, and a write holds its
+/// connection while the sync bookkeeping checks out more, so eight such tests in parallel
+/// each held one and waited out r2d2's 30 s for another ("timed out waiting for connection").
 #[cfg(test)]
-pub fn init_test_store() {
+#[must_use = "hold the guard for the whole test: `let _db = init_test_store();`"]
+pub fn init_test_store() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A test that panicked while holding it poisons it; the next test still runs.
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -49,6 +58,7 @@ pub fn init_test_store() {
         crate::sync::init(dir.join("sync")).expect("sync init");
         crate::netsync::ensure_tables().expect("netsync tables");
     });
+    guard
 }
 
 pub fn app_data_dir() -> &'static PathBuf {

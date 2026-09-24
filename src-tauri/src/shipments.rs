@@ -1069,7 +1069,7 @@ mod tests {
     /// Gmail, nothing on the deal), the BOL typed on the deal afterwards, then a later email.
     #[tokio::test]
     async fn an_email_read_before_the_bol_is_typed_still_moves_the_deal() {
-        crate::db::init_test_store();
+        let _db = crate::db::init_test_store();
         {
             let conn = pool().get().unwrap();
             conn.execute("INSERT INTO clients (id, name, created_at, updated_at) VALUES ('c-r279', 'Acme', '2026-09-01', '2026-09-01')", []).unwrap();
@@ -1132,7 +1132,7 @@ mod tests {
     /// already delivered (the mailbox backfill reading old mail) reports none.
     #[test]
     fn only_the_update_that_lands_it_reports_a_delivery() {
-        crate::db::init_test_store();
+        let _db = crate::db::init_test_store();
         let ev = |status: &str, when: &str| {
             let text = format!("Update on Shipment #80330022114
 Status: {status}

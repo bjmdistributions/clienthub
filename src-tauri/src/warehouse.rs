@@ -983,7 +983,7 @@ mod tests {
     /// End to end on the real schema: create, pick, put back, recount, import.
     #[tokio::test]
     async fn save_pick_put_back_recount_import() {
-        crate::db::init_test_store();
+        let _db = crate::db::init_test_store();
         let types = vec![
             BoxType { id: String::new(), name: "Big Box".into(), per_box: 72 },
             BoxType { id: String::new(), name: "Small Box".into(), per_box: 12 },
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_map_saves_and_shrinks() {
-        crate::db::init_test_store();
+        let _db = crate::db::init_test_store();
         let cell = |r, c, fill| LayoutCell { r, c, fill, label: "Owls".into(), ..Default::default() };
         let m = save_warehouse_layout(LayoutInput {
             id: None, name: "Floor".into(), kind: "pallets".into(), rows: 4, cols: 6,
@@ -1060,7 +1060,7 @@ mod tests {
     /// R-347/R-348: an order's pallets — twelve like this, combined, removed, a passcode, labels.
     #[tokio::test]
     async fn an_orders_pallets_add_combine_renumber_and_print() {
-        crate::db::init_test_store();
+        let _db = crate::db::init_test_store();
         let types = vec![BoxType { id: String::new(), name: "Big Box".into(), per_box: 72 }];
         let it = save_warehouse_item(input(None, vec![], types)).await.unwrap();
         let big = it.box_types[0].id.clone();
@@ -1131,7 +1131,7 @@ mod tests {
     /// R-346: measurements save in their own column and set the pallet size; a save without them keeps them.
     #[tokio::test]
     async fn measured_boxes_set_the_pallet_size_and_a_save_without_them_keeps_them() {
-        crate::db::init_test_store();
+        let _db = crate::db::init_test_store();
         let types = vec![BoxType { id: String::new(), name: "Big Box".into(), per_box: 72 }];
         let it = save_warehouse_item(input(None, vec![], types)).await.unwrap();
         let big = it.box_types[0].id.clone();
@@ -1160,7 +1160,7 @@ mod tests {
     /// R-345: a product saved with no pallet size reads as 21 of its biggest box; one he set is kept.
     #[tokio::test]
     async fn no_pallet_size_reads_as_21_of_the_biggest_box() {
-        crate::db::init_test_store();
+        let _db = crate::db::init_test_store();
         let types = vec![
             BoxType { id: String::new(), name: "Big Box".into(), per_box: 72 },
             BoxType { id: String::new(), name: "Small Box".into(), per_box: 12 },
@@ -1176,7 +1176,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_pick_takes_boxes_off_the_pallets_and_a_put_back_returns_them() {
-        crate::db::init_test_store();
+        let _db = crate::db::init_test_store();
         let types = vec![BoxType { id: String::new(), name: "Big Box".into(), per_box: 72 }];
         let first = save_warehouse_item(input(None, vec![], types)).await.unwrap();
         let big = first.box_types[0].id.clone();
