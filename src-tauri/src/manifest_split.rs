@@ -780,6 +780,32 @@ fn brand_display(spellings: &HashMap<String, usize>, known: &HashMap<String, &'s
     top.to_string()
 }
 
+/// The key the analyzer's breakdown groups a brand by, the same one the split folds
+/// spellings with (R-386), so "NIKE", "Nike" and "Nike, Inc." are one row in both. None
+/// when the value means no brand ("N/A", "Generic", blank).
+pub(crate) fn brand_group_key(raw: &str) -> Option<String> {
+    if is_no_brand(raw) { None } else { Some(brand_key(raw)) }
+}
+
+/// The name a folded brand is shown by: the split's choice, from how often each spelling
+/// appeared.
+pub(crate) fn brand_group_name(spellings: &HashMap<String, usize>) -> String {
+    let known: HashMap<String, &'static str> = KNOWN_BRANDS.iter().map(|b| (brand_key(b), *b)).collect();
+    brand_display(spellings, &known)
+}
+
+/// The key a category is grouped by: case, punctuation and "&" for "and" fall away, so
+/// "Home & Kitchen" and "home and kitchen" are one category.
+pub(crate) fn category_group_key(raw: &str) -> String {
+    title_words(raw).join(" ")
+}
+
+/// The name a folded category is shown by: its most common spelling, and on a tie the
+/// one that sorts first.
+pub(crate) fn category_group_name(spellings: &HashMap<String, usize>) -> String {
+    spellings.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(s, _)| s.clone()).unwrap_or_default()
+}
+
 fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -1273,14 +1299,12 @@ fn build(path: &str, answers: &HashMap<String, String>, edits: &SplitEdits) -> R
         })
         .collect();
     for c in cat_of_raw.iter().flatten() {
-        *cat_spell.entry(title_words(c).join(" ")).or_default().entry(c.clone()).or_insert(0) += 1;
+        *cat_spell.entry(category_group_key(c)).or_default().entry(c.clone()).or_insert(0) += 1;
     }
     let cat_of = |i: usize| -> Option<(String, String)> {
         let c = cat_of_raw[i].as_ref()?;
-        let k = title_words(c).join(" ");
-        let sp = &cat_spell[&k];
-        let name = sp.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(s, _)| s.clone()).unwrap_or_default();
-        Some((k, name))
+        let k = category_group_key(c);
+        Some((k.clone(), category_group_name(&cat_spell[&k])))
     };
     if cols.category.is_none() {
         notes.push("There is no category column, so categories are guessed from words in each title.".into());

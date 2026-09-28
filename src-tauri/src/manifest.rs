@@ -670,8 +670,13 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
 
     let categories_from_manifest = category_idx.is_some();
 
+    // Grouped by the split's spelling-folded keys (R-386), so "NIKE", "Nike" and "Nike, Inc."
+    // are one brand here as they are in the split, each group named by its most used
+    // spelling once every line is in.
     let mut cat_data: HashMap<String, ManifestGroup> = HashMap::new();
     let mut brand_data: HashMap<String, ManifestGroup> = HashMap::new();
+    let mut cat_names: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    let mut brand_names: HashMap<String, HashMap<String, usize>> = HashMap::new();
     let mut total_items = 0usize;
     let mut total_quantity = 0.0f64;
     let mut total_retail = 0.0f64;
@@ -714,8 +719,10 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         } else {
             guess_category(&desc).to_string()
         };
+        let cat_key = crate::manifest_split::category_group_key(&cat);
+        *cat_names.entry(cat_key.clone()).or_default().entry(cat.clone()).or_insert(0) += 1;
         let entry = cat_data
-            .entry(cat.clone())
+            .entry(cat_key)
             .or_insert_with(|| ManifestGroup { name: cat, items: 0, quantity: 0.0, total_retail: 0.0 });
         entry.items += 1;
         entry.quantity += qty;
@@ -724,9 +731,16 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         // Brand: only when the manifest actually has a brand column.
         if let Some(bi) = brand_idx {
             let v = cell(bi);
-            let bname = if v.is_empty() { "Unbranded".to_string() } else { v.to_string() };
+            // "N/A", "Generic" and a blank are all Unbranded, under the empty key.
+            let (bkey, bname) = match crate::manifest_split::brand_group_key(v) {
+                Some(k) => (k, v.to_string()),
+                None => (String::new(), "Unbranded".to_string()),
+            };
+            if !bkey.is_empty() {
+                *brand_names.entry(bkey.clone()).or_default().entry(bname.clone()).or_insert(0) += 1;
+            }
             let e = brand_data
-                .entry(bname.clone())
+                .entry(bkey)
                 .or_insert_with(|| ManifestGroup { name: bname, items: 0, quantity: 0.0, total_retail: 0.0 });
             e.items += 1;
             e.quantity += qty;
@@ -752,6 +766,16 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         v.sort_by(|a, b| b.total_retail.partial_cmp(&a.total_retail).unwrap_or(std::cmp::Ordering::Equal));
         v
     };
+    for (k, g) in cat_data.iter_mut() {
+        if let Some(sp) = cat_names.get(k) {
+            g.name = crate::manifest_split::category_group_name(sp);
+        }
+    }
+    for (k, g) in brand_data.iter_mut() {
+        if let Some(sp) = brand_names.get(k) {
+            g.name = crate::manifest_split::brand_group_name(sp);
+        }
+    }
     let categories = sort_desc(cat_data.into_values().collect());
     let brands = sort_desc(brand_data.into_values().collect());
 
@@ -923,6 +947,22 @@ pub async fn analyze(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R-386: the breakdown folds spellings the way the split does, so the two agree.
+    #[test]
+    fn the_breakdown_folds_brand_and_category_spellings() {
+        let csv = "Description,Brand,Category,Qty,Unit Retail\n\
+Air Max,NIKE,Home & Kitchen,1,100\n\
+Dri-Fit Tee,Nike,home and kitchen,2,20\n\
+Duffel,\"Nike, Inc.\",Home & Kitchen,1,45\n\
+Mystery box,N/A,Toys,1,10\n\
+Plain tote,,Toys,1,5\n";
+        let a = analyze_grid_with_margin(grid_from_text(csv).unwrap(), 30.0).unwrap();
+        let brands: Vec<(&str, usize)> = a.brands.iter().map(|b| (b.name.as_str(), b.items)).collect();
+        assert_eq!(brands, vec![("Nike", 3), ("Unbranded", 2)]);
+        let cats: Vec<(&str, usize)> = a.categories.iter().map(|c| (c.name.as_str(), c.items)).collect();
+        assert_eq!(cats, vec![("Home & Kitchen", 3), ("Toys", 2)]);
+    }
 
     /// A real supplier manifest: a title row, a blank row, the header on row 4, and a
     /// grand-total row at the bottom. Every one of those breaks a row-1-is-the-header
