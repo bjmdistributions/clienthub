@@ -102,15 +102,22 @@ export default function InvoicesView() {
     try { setDetailInvoice(await api.getInvoice(id)); } catch { setDetailInvoice(null); }
   };
 
-  // invoice_id -> { stage, cost } from in-progress deal flows, for projected profit
-  const [flowMap, setFlowMap] = useState<Record<string, { stage: string; cost: number }>>({});
+  // invoice_id -> its deal, for the profit column and tile. R-392: profit is the deal's,
+  // the figure Deal flow shows; invoices.profit is a completion snapshot that editing a
+  // completed deal's costs does not rewrite.
+  const [flowMap, setFlowMap] = useState<Record<string, { id: string; stage: string; cost: number; net: number }>>({});
 
   const load = async () => {
     const [inv, cli, flows, refundList] = await Promise.all([api.listInvoices(), api.listClients(), api.listDealFlows().catch(() => []), api.refundStatusAll().catch(() => [])]);
     setInvoices(inv);
     setClients(cli);
-    const fm: Record<string, { stage: string; cost: number }> = {};
-    for (const f of flows) fm[f.invoice_id] = { stage: f.stage, cost: f.total_supplier_cost ?? 0 };
+    const fm: Record<string, { id: string; stage: string; cost: number; net: number }> = {};
+    const stageIdx: Record<string, number> = { invoiced: 0, payment_received: 1, supplier_paid: 2, complete: 3 };
+    for (const f of flows) {
+      const prev = fm[f.invoice_id];
+      if (prev && (stageIdx[prev.stage] ?? 0) >= (stageIdx[f.stage] ?? 0)) continue;   // the furthest-along deal wins
+      fm[f.invoice_id] = { id: f.id, stage: f.stage, cost: f.total_supplier_cost ?? 0, net: f.net_profit ?? 0 };
+    }
     setFlowMap(fm);
     setRefundMap(Object.fromEntries(refundList.map((r) => [r.deal_flow_id, r])));
   };
@@ -274,8 +281,12 @@ export default function InvoicesView() {
   const completedCount = invoices.filter((i) => i.is_complete).length;
   const sentCount     = invoices.filter((i) => i.status === "sent").length;
   const draftCount    = invoices.filter((i) => i.status === "draft").length;
-  // Only count profit once a deal is fully closed (is_complete = true); voided out.
-  const totalProfit   = invoices.filter((i) => i.is_complete && !isVoided(i)).reduce((s, i) => s + (i.profit ?? 0), 0);
+  // Only count profit once a deal is fully closed (is_complete = true); voided out. Each
+  // one is the deal's recorded profit less what was refunded, as Deal flow counts it.
+  const totalProfit   = invoices.filter((i) => i.is_complete && !isVoided(i)).reduce((s, i) => {
+    const df = flowMap[i.id];
+    return s + (df && df.stage === "complete" ? df.net - (refundMap[df.id]?.refunded ?? 0) : (i.profit ?? 0));
+  }, 0);
 
   const handleExportInvoices = async () => {
     const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "invoices.csv" });
@@ -455,15 +466,17 @@ export default function InvoicesView() {
           </thead>
           <tbody>
             {visible.map((inv, rowIdx) => {
-              // Completed → actual profit. In-progress deal flow → projected
-              // (revenue − supplier costs entered so far). Else fall back to costs.
+              // The deal's profit, as its Deal flow card states it: recorded profit once
+              // complete, else projected (revenue − supplier costs entered so far), less
+              // anything refunded. An invoice with no deal falls back to its own figures.
               const df = flowMap[inv.id];
+              const refundPaid = df ? (refundMap[df.id]?.refunded ?? 0) : 0;
               let profit: number | null;
               let projected = false;
-              if (inv.is_complete && inv.profit != null) {
-                profit = inv.profit;
-              } else if (df && df.stage !== "complete") {
-                profit = inv.total - df.cost;
+              if (df && df.stage === "complete") {
+                profit = df.net - refundPaid;
+              } else if (df) {
+                profit = inv.total - df.cost - refundPaid;
                 projected = true;
               } else if (inv.profit != null) {
                 profit = inv.profit;
