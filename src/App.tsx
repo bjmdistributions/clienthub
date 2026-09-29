@@ -1031,7 +1031,7 @@ export default function App() {
   const paneContent = (t: Tab) => {
     if (!visible(t)) return null;
     if (t === "dashboard") return <Suspense fallback={paneFallback}><DashboardView onNavigate={setTab} me={me} /></Suspense>;
-    if (t === "globe") return <Suspense fallback={globeFallback}><GlobeView /></Suspense>;
+    if (t === "globe") return <Suspense fallback={globeFallback}><GlobeView me={me} /></Suspense>;
     if (t === "notes") return <NotesView me={me?.display_name || ""} />;
     if (t === "approvals") return <ApprovalsView />;
     if (t === "checkup") return <CheckupView />;

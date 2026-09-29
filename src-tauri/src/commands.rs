@@ -22579,10 +22579,61 @@ pub struct GeocodeResult {
 #[derive(Serialize)]
 pub struct GeocodeSummary {
     pub total: u32,
+    /// Pins placed or moved this pass.
     pub matched: u32,
+    /// Clients with no city, state or country at all.
     pub skipped: u32,
+    /// Clients whose address does not resolve, so they have no pin.
     pub not_found: u32,
+    /// Pins dropped this pass because the address no longer resolves.
+    pub removed: u32,
     pub message: String,
+}
+
+fn parse_client_meta(meta_str: &Option<String>) -> serde_json::Map<String, Value> {
+    match meta_str {
+        Some(s) => serde_json::from_str(s).unwrap_or_else(|_| serde_json::Map::new()),
+        None => serde_json::Map::new(),
+    }
+}
+
+/// Writes (or clears) one client's pin on its current metadata. The row is
+/// re-read first and left alone if it changed since `snapshot` was read, so an
+/// address edit that lands mid-pass is never overwritten with the old blob; the
+/// next pass picks it up. Returns whether anything was written.
+fn write_client_pin(id: &str, snapshot: &Option<String>, pin: Option<(f64, f64)>) -> Result<bool, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let current: Option<String> = conn
+        .query_row("SELECT metadata FROM clients WHERE id=?1", [id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if &current != snapshot {
+        return Ok(false);
+    }
+
+    let mut meta = parse_client_meta(&current);
+    match pin {
+        Some((lat, lng)) => {
+            meta.insert("lat".into(), json!(lat));
+            meta.insert("lng".into(), json!(lng));
+        }
+        None => {
+            meta.remove("lat");
+            meta.remove("lng");
+        }
+    }
+    let metadata_str = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
+
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("metadata".into(), Value::String(metadata_str.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("clients", id, cols).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE clients SET metadata=?1, updated_at=?2 WHERE id=?3",
+        rusqlite::params![metadata_str, now, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -22593,48 +22644,21 @@ pub async fn geocode_client(client_id: String) -> Result<GeocodeResult, String> 
     let (meta_str,): (Option<String>,) = conn
         .query_row("SELECT metadata FROM clients WHERE id=?1", [&client_id], |r| Ok((r.get(0)?,)))
         .map_err(|e| e.to_string())?;
+    drop(conn);
 
-    let mut meta: serde_json::Map<String, Value> = match &meta_str {
-        Some(s) => serde_json::from_str(s).unwrap_or_else(|_| serde_json::Map::new()),
-        None => serde_json::Map::new(),
-    };
-
-    if let Some(lat) = meta.get("lat").and_then(|v| v.as_f64()) {
-        let lng = meta.get("lng").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        return Ok(GeocodeResult { lat, lng });
+    let meta = parse_client_meta(&meta_str);
+    let want = lookup.client_pin(&meta);
+    if crate::geocode::pin_change(crate::geocode::stored_pin(&meta), want) != crate::geocode::PinChange::Keep {
+        write_client_pin(&client_id, &meta_str, want)?;
     }
-
-    let city = meta.get("city").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let state = meta.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let country = meta.get("country").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-    if city.is_empty() && state.is_empty() {
-        return Err("client has no city/state".into());
-    }
-
-    let (lat, lng) = lookup.lookup(&city, &state)
-        .or_else(|| crate::geocode::lookup_international(&city, &state, &country))
-        .ok_or("location not found in dataset")?;
-
-    meta.insert("lat".into(), json!(lat));
-    meta.insert("lng".into(), json!(lng));
-    let metadata_str = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
-
-    let now = Utc::now().to_rfc3339();
-    let mut cols = Map::new();
-    cols.insert("metadata".into(), Value::String(metadata_str.clone()));
-    cols.insert("updated_at".into(), Value::String(now.clone()));
-    sync::record_upsert("clients", &client_id, cols).map_err(|e| e.to_string())?;
-
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE clients SET metadata=?1, updated_at=?2 WHERE id=?3",
-        rusqlite::params![metadata_str, now, client_id],
-    ).map_err(|e| e.to_string())?;
-
+    let (lat, lng) = want.ok_or("location not found in dataset")?;
     Ok(GeocodeResult { lat, lng })
 }
 
+/// Recomputes every client's pin from the address on its row today and writes
+/// only the ones that changed: new pins, pins whose address was edited, and pins
+/// whose address no longer resolves (dropped, so the client shows in the globe's
+/// "not on the globe" list instead of sitting at an old location).
 #[tauri::command]
 pub async fn geocode_all_clients() -> Result<GeocodeSummary, String> {
     let lookup = match crate::geocode::get() {
@@ -22642,86 +22666,54 @@ pub async fn geocode_all_clients() -> Result<GeocodeSummary, String> {
         None => return Err("geocode not initialized, CSV may not have loaded".into()),
     };
 
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT id, metadata FROM clients")
-        .map_err(|e| e.to_string())?;
-    let rows: Vec<(String, Option<String>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+    let rows: Vec<(String, Option<String>)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, metadata FROM clients")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
+    };
 
     let total = rows.len();
     let mut matched = 0u32;
     let mut skipped = 0u32;
     let mut not_found = 0u32;
-    let mut sample_logged = false;
+    let mut removed = 0u32;
 
     for (id, meta_str) in &rows {
-        let mut meta: serde_json::Map<String, Value> = match meta_str {
-            Some(s) => serde_json::from_str(s).unwrap_or_else(|_| serde_json::Map::new()),
-            None => serde_json::Map::new(),
-        };
+        let meta = parse_client_meta(meta_str);
+        let want = lookup.client_pin(&meta);
+        if want.is_none() {
+            let has_address = ["city", "state", "country"]
+                .iter()
+                .any(|k| meta.get(*k).and_then(|v| v.as_str()).map_or(false, |s| !s.trim().is_empty()));
+            if has_address { not_found += 1 } else { skipped += 1 }
+        }
 
-        if meta.get("lat").and_then(|v| v.as_f64()).is_some() {
-            skipped += 1;
+        let change = crate::geocode::pin_change(crate::geocode::stored_pin(&meta), want);
+        if change == crate::geocode::PinChange::Keep {
             continue;
         }
-
-        let city = meta.get("city").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let state = meta.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let country = meta.get("country").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-        if city.is_empty() && state.is_empty() {
-            skipped += 1;
-            continue;
-        }
-
-        if !sample_logged {
-            tracing::info!("geocode sample: city={:?}, state={:?}, country={:?}", city, state, country);
-            sample_logged = true;
-        }
-
-        match lookup.lookup(&city, &state).or_else(|| crate::geocode::lookup_international(&city, &state, &country)) {
-            Some((lat, lng)) => {
-                meta.insert("lat".into(), json!(lat));
-                meta.insert("lng".into(), json!(lng));
-                let metadata_str = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
-
-                let now = Utc::now().to_rfc3339();
-                let mut cols = Map::new();
-                cols.insert("metadata".into(), Value::String(metadata_str.clone()));
-                cols.insert("updated_at".into(), Value::String(now.clone()));
-                if let Err(e) = sync::record_upsert("clients", id, cols) {
-                    tracing::warn!("geocode: sync failed for client {}: {}", id, e);
-                    continue;
-                }
-
-                let conn = pool().get().map_err(|e| e.to_string())?;
-                if let Err(e) = conn.execute(
-                    "UPDATE clients SET metadata=?1, updated_at=?2 WHERE id=?3",
-                    rusqlite::params![metadata_str, now, id],
-                ) {
-                    tracing::warn!("geocode: db update failed for client {}: {}", id, e);
-                    continue;
-                }
-
-                matched += 1;
+        match write_client_pin(id, meta_str, want) {
+            Ok(true) => {
+                if change == crate::geocode::PinChange::Remove { removed += 1 } else { matched += 1 }
             }
-            None => {
-                tracing::debug!("geocode: not found for city={:?}, state={:?}", city, state);
-                not_found += 1;
-            }
+            Ok(false) => tracing::debug!("geocode: client {} changed mid-pass, left for the next one", id),
+            Err(e) => tracing::warn!("geocode: pin write failed for client {}: {}", id, e),
         }
     }
 
     let msg = format!(
-        "geocode: matched {}/{}, skipped {} (already geocoded or no city/state), {} not found in dataset",
-        matched, total, skipped, not_found
+        "geocode: {} placed or moved, {} removed, {} not found, {} with no address, of {}",
+        matched, removed, not_found, skipped, total
     );
     tracing::info!("{}", msg);
-    Ok(GeocodeSummary { total: total as u32, matched, skipped, not_found, message: msg })
+    Ok(GeocodeSummary { total: total as u32, matched, skipped, not_found, removed, message: msg })
 }
 
 // ============================================================

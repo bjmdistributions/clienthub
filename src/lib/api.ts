@@ -3941,7 +3941,7 @@ export const api = {
 
   // Geocoding
   geocodeClient: (clientId: string) => invoke<{ lat: number; lng: number }>("geocode_client", { clientId }),
-  geocodeAllClients: () => invoke<{ total: number; matched: number; skipped: number; not_found: number; message: string }>("geocode_all_clients"),
+  geocodeAllClients: () => invoke<{ total: number; matched: number; skipped: number; not_found: number; removed: number; message: string }>("geocode_all_clients"),
 
   // Users
   listUsers: () => invoke<User[]>("list_users"),

@@ -262,7 +262,48 @@ fn country_centroid(country: &str) -> Option<(f64, f64)> {
     }
 }
 
+/// The pin a client's metadata carries now, if it has a complete one.
+pub fn stored_pin(meta: &serde_json::Map<String, serde_json::Value>) -> Option<(f64, f64)> {
+    let lat = meta.get("lat").and_then(|v| v.as_f64())?;
+    let lng = meta.get("lng").and_then(|v| v.as_f64())?;
+    Some((lat, lng))
+}
+
+/// What the geocoder does to one client's pin: the pin it has against the pin
+/// its address resolves to today.
+#[derive(Debug, PartialEq)]
+pub enum PinChange {
+    Keep,
+    Place((f64, f64)),
+    Move((f64, f64)),
+    Remove,
+}
+
+pub fn pin_change(stored: Option<(f64, f64)>, want: Option<(f64, f64)>) -> PinChange {
+    match (stored, want) {
+        (None, None) => PinChange::Keep,
+        (None, Some(p)) => PinChange::Place(p),
+        (Some(_), None) => PinChange::Remove,
+        (Some(a), Some(b)) if (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6 => PinChange::Keep,
+        (Some(_), Some(b)) => PinChange::Move(b),
+    }
+}
+
 impl CityLookup {
+    /// Where a client's pin belongs, from the address on its metadata today.
+    /// `None` means no pin: there is no address, or it does not resolve (a
+    /// misspelt city, a country with no centroid). The geocoder asks this of
+    /// every client on every pass, so an edited address moves or drops its pin
+    /// instead of keeping the old one forever.
+    pub fn client_pin(&self, meta: &serde_json::Map<String, serde_json::Value>) -> Option<(f64, f64)> {
+        let field = |k: &str| meta.get(k).and_then(|v| v.as_str()).unwrap_or("");
+        let (city, state, country) = (field("city"), field("state"), field("country"));
+        if city.trim().is_empty() && state.trim().is_empty() && country.trim().is_empty() {
+            return None;
+        }
+        self.lookup(city, state).or_else(|| lookup_international(city, state, country))
+    }
+
     pub fn lookup(&self, city: &str, state: &str) -> Option<(f64, f64)> {
         let city_lower = city.trim().to_lowercase();
         let state_lower = state.trim().to_lowercase();
@@ -334,6 +375,36 @@ mod tests {
         // case for US clients) or a country we don't have data for stays None.
         assert_eq!(lookup_international("Chicago", "IL", ""), None);
         assert_eq!(lookup_international("Nowhereville", "", "Narnia"), None);
+    }
+
+    fn meta(city: &str, state: &str, country: &str) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        m.insert("city".into(), city.into());
+        m.insert("state".into(), state.into());
+        m.insert("country".into(), country.into());
+        m
+    }
+
+    #[test]
+    fn client_pin_follows_the_address_on_the_row() {
+        let _ = init();
+        let l = get().expect("city list loads");
+        assert!(l.client_pin(&meta("Chicago", "IL", "")).is_some());
+        assert_eq!(l.client_pin(&meta("Chicgo", "IL", "")), None); // misspelt: no pin
+        assert!(l.client_pin(&meta("", "", "France")).is_some()); // country only plots at its centroid
+        assert_eq!(l.client_pin(&meta("", "", "USA")), None); // a US client needs a city and state
+        assert_eq!(l.client_pin(&meta("", "", "")), None);
+    }
+
+    #[test]
+    fn pin_change_moves_and_drops_stale_pins() {
+        let a = (41.88, -87.63);
+        let b = (40.71, -74.01);
+        assert_eq!(pin_change(Some(a), Some(a)), PinChange::Keep);
+        assert_eq!(pin_change(None, None), PinChange::Keep);
+        assert_eq!(pin_change(None, Some(a)), PinChange::Place(a));
+        assert_eq!(pin_change(Some(a), Some(b)), PinChange::Move(b));
+        assert_eq!(pin_change(Some(a), None), PinChange::Remove);
     }
 
     #[test]

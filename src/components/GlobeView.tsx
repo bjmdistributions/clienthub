@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import Globe from "globe.gl";
-import { api, Client } from "../lib/api";
+import { api, Client, Me } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { can } from "../lib/permissions";
 import TierBadge from "./TierBadge";
 import StatusPill from "./StatusPill";
-import { X, MapPin, Clock, DollarSign, ExternalLink, RotateCcw, RefreshCw, Search } from "lucide-react";
+import { X, MapPin, MapPinOff, Map as MapIcon, Clock, DollarSign, ExternalLink, RotateCcw, RefreshCw, Search } from "lucide-react";
 
 const STAR_COUNT  = 450;
 // How long the globe waits after a manual drag release before it starts
@@ -13,7 +14,7 @@ const AUTO_ROTATE_RESUME_MS = 3000;
 
 // Initial camera — slightly tilted view of Earth
 const HOME_POV = { lat: 25, lng: -30, altitude: 2.0 };
-// Clicking the globe zooms to the continental US so all clients are visible
+// The "Zoom to the US" button: the continental US with every client in view
 const US_POV   = { lat: 38, lng: -97, altitude: 0.7 };
 
 interface Point {
@@ -22,6 +23,7 @@ interface Point {
   name: string;
   city: string;
   state: string;
+  country: string;
   tier: string;          // real buyer tier: S / A / B / C / New / Prospect
   highValue: boolean;
   revenue: number;
@@ -54,6 +56,39 @@ function passesFilter(p: Point, f: TierFilter): boolean {
   return true;
 }
 
+// Why a client has no pin, in the geocoder's own terms (CityLookup::client_pin):
+// a US address needs a city and a state that match the city list; any other
+// recognized country plots at its centroid.
+type MissingReason = "No address" | "Needs a city and state" | "City not recognized" | "Country not recognized";
+const MISSING_ORDER: MissingReason[] = ["City not recognized", "Needs a city and state", "Country not recognized", "No address"];
+const MISSING_HINT: Record<MissingReason, string> = {
+  "City not recognized":    "Check the spelling of the city and state.",
+  "Needs a city and state": "Has one of the two, and the globe needs both.",
+  "Country not recognized": "The country is not in the globe's country list.",
+  "No address":             "No city, state or country on the client.",
+};
+const US_NAMES = new Set(["", "us", "usa", "u.s.", "u.s.a.", "united states", "united states of america", "america"]);
+const CANADA   = new Set(["canada", "ca", "can"]);
+
+function missingReason(c: Client): MissingReason {
+  const m = c.metadata || {};
+  const city    = String(m.city || "").trim();
+  const state   = String(m.state || "").trim();
+  const country = String(m.country || "").trim().toLowerCase();
+  if (!city && !state && !country) return "No address";
+  if (US_NAMES.has(country)) return city && state ? "City not recognized" : "Needs a city and state";
+  if (CANADA.has(country)) return "City not recognized";
+  return "Country not recognized";
+}
+
+const hasPin = (c: Client) => Number.isFinite(c.metadata?.lat) && Number.isFinite(c.metadata?.lng);
+
+// "Newark, NJ", or "Paris, France" for a client outside the US.
+function placeLabel(city: string, state: string, country: string): string {
+  const abroad = US_NAMES.has(country.trim().toLowerCase()) ? "" : country.trim();
+  return [city.trim(), state.trim(), abroad].filter(Boolean).join(", ");
+}
+
 const relTime = (d: string | null | undefined): string => {
   if (!d) return "Never";
   const ms   = Date.now() - new Date(d).getTime();
@@ -66,16 +101,22 @@ const relTime = (d: string | null | undefined): string => {
   return `${Math.floor(months / 12)}y ago`;
 };
 
-export default function GlobeView() {
+export default function GlobeView({ me }: { me?: Me | null }) {
+  // Dollar figures follow the "See exact client spend" permission.
+  const showMoney = can(me, "clients:view_revenue");
+
   const [selected,    setSelected]    = useState<Point | null>(null);
-  const [points,      setPoints]      = useState<Point[]>([]);
+  // Every client except rejected leads, which the rest of the app also leaves out.
+  const [clients,     setClients]     = useState<Client[]>([]);
+  const [showMissing, setShowMissing] = useState(false);
   const [filter,      setFilter]      = useState<TierFilter>("all");
   const [query,       setQuery]       = useState("");
   const [loading,     setLoading]     = useState(true);
+  const [globeReady,  setGlobeReady]  = useState(false);
   const [error,       setError]       = useState<string | null>(null);
   const [geocoding,   setGeocoding]   = useState(false);
   const [geocodeMsg,  setGeocodeMsg]  = useState<string | null>(null);
-  const [geocodeSummary, setGeocodeSummary] = useState<{ total: number; matched: number; skipped: number; not_found: number } | null>(null);
+  const [geocodeSummary, setGeocodeSummary] = useState<{ total: number; matched: number; skipped: number; not_found: number; removed: number } | null>(null);
 
   const containerRef       = useRef<HTMLDivElement>(null);
   const starCanvasRef      = useRef<HTMLCanvasElement>(null);
@@ -85,11 +126,13 @@ export default function GlobeView() {
   const cleanupRef         = useRef<(() => void) | null>(null);
   // client_id → buyer tier, fetched once and reused by geocode refreshes.
   const tierMapRef         = useRef<Record<string, string>>({});
+  // Last Point built per client. Handing globe.gl the same object for an
+  // unchanged client keeps its dot instead of tearing it down and rebuilding it.
+  const pointCacheRef      = useRef(new Map<string, Point>());
   // Prevents the OrbitControls "start" event from cancelling programmatic navigation
   const isProgNavRef       = useRef(false);
-  // Set briefly when a client dot is clicked so the page-level click handler
-  // (which would otherwise re-route to US_POV) leaves the client zoom alone.
-  const justClickedDotRef  = useRef(false);
+  // rAF id of the camera flight in progress (navTo).
+  const flightRef          = useRef(0);
 
   const viewProfile = useCallback((clientId: string) => {
     sessionStorage.setItem("clienthub.globe.clientId", clientId);
@@ -99,46 +142,70 @@ export default function GlobeView() {
   // Programmatic camera move. Only thing we toggle is autoRotate — locking
   // controls.enabled made the globe feel unresponsive during the tween, and
   // it was unnecessary anyway since the tween writes the camera directly.
-  const navTo = useCallback((pov: object, duration = 600, thenSpin = false) => {
+  //
+  // The flight is driven here, one pointOfView per frame. globe.gl's own
+  // pointOfView(pov, ms) starts a tween in tween.js's shared group, which
+  // nothing updates any more (its three-render-objects 1.42 keeps a private
+  // group), so a transition handed to globe.gl never moves the camera.
+  const navTo = useCallback((pov: { lat: number; lng: number; altitude: number }, duration = 600, thenSpin = false) => {
     const globe = globeRef.current;
     if (!globe) return;
     isProgNavRef.current = true;
     const c = globe.controls?.();
     if (c) c.autoRotate = false;
-    globe.pointOfView(pov, duration);
     if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
-    setTimeout(() => {
+    cancelAnimationFrame(flightRef.current);
+    const from = globe.pointOfView();
+    const dLng = ((pov.lng - from.lng + 540) % 360) - 180; // the short way round
+    const t0 = performance.now();
+    const step = (t: number) => {
+      const k = Math.min(1, Math.max(0, (t - t0) / duration));
+      const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; // cubic in-out
+      globeRef.current?.pointOfView({
+        lat:      from.lat + (pov.lat - from.lat) * e,
+        lng:      from.lng + dLng * e,
+        altitude: from.altitude + (pov.altitude - from.altitude) * e,
+      });
+      if (k < 1) { flightRef.current = requestAnimationFrame(step); return; }
       isProgNavRef.current = false;
       if (thenSpin && globeRef.current?.controls()) {
         const cc = globeRef.current.controls();
         cc.autoRotate      = true;
         cc.autoRotateSpeed = 0.45;
       }
-    }, duration + 80);
+    };
+    flightRef.current = requestAnimationFrame(step);
   }, []);
 
   const focusPoint = useCallback((d: Point) => {
-    justClickedDotRef.current = true;
-    setTimeout(() => { justClickedDotRef.current = false; }, 250);
+    setShowMissing(false);
     setSelected(d);
     navTo({ lat: d.lat, lng: d.lng, altitude: 0.35 }, 500, false);
   }, [navTo]);
   const focusPointRef = useRef(focusPoint);
   focusPointRef.current = focusPoint;
 
-  const runGeocode = useCallback(async () => {
-    setGeocoding(true);
-    setGeocodeMsg("Geocoding clients…");
+  // Re-checks every pin against the address on the client today. `quiet` is the
+  // check that runs each time the page opens: no spinner, no message.
+  const runGeocode = useCallback(async (quiet = false) => {
+    if (!quiet) { setGeocoding(true); setGeocodeMsg(null); }
     try {
       const result = await api.geocodeAllClients();
-      setGeocodeMsg(result.message);
-      setGeocodeSummary({ total: result.total, matched: result.matched, skipped: result.skipped, not_found: result.not_found });
-      const allClients = await api.listClientsFiltered({});
-      setPoints(toPoints(allClients, tierMapRef.current));
+      setGeocodeSummary(result);
+      // Nothing moved, so the list on screen is already right: skip the reload
+      // and the redraw of every dot it would cause.
+      if (result.matched > 0 || result.removed > 0) {
+        setClients(liveClients(await api.listClientsFiltered({})));
+      }
+      if (!quiet) {
+        setGeocodeMsg(result.matched || result.removed
+          ? `${result.matched} placed or moved${result.removed ? `, ${result.removed} removed` : ""}`
+          : "Every pin is up to date");
+      }
     } catch (e: any) {
-      setGeocodeMsg(e?.toString?.() || "Geocode failed");
+      if (!quiet) setGeocodeMsg(e?.toString?.() || "Could not refresh pins");
     } finally {
-      setGeocoding(false);
+      if (!quiet) setGeocoding(false);
     }
   }, []);
 
@@ -148,11 +215,11 @@ export default function GlobeView() {
     const init = async () => {
       let allClients: Client[] = [];
       try {
-        const [clients, tiers] = await Promise.all([
+        const [list, tiers] = await Promise.all([
           api.listClientsFiltered({}),
           api.buyerTiers().catch(() => [] as any[]),
         ]);
-        allClients = clients;
+        allClients = list;
         const tm: Record<string, string> = {};
         for (const t of tiers as any[]) tm[t.client_id] = t.tier;
         tierMapRef.current = tm;
@@ -164,17 +231,13 @@ export default function GlobeView() {
       }
       if (destroyed) return;
 
-      setPoints(toPoints(allClients, tierMapRef.current));
+      setClients(liveClients(allClients));
       setLoading(false);
 
-      // Auto-geocode any client that has a city/state/country but isn't placed
-      // yet — so newly added or freshly synced clients (incl. international ones)
-      // get a pin without needing a manual refresh.
-      const hasUnmappedAddressable = allClients.some((c) => {
-        const m = c.metadata || {};
-        return (m.city || m.state) && !(m.lat || m.lng);
-      });
-      if (hasUnmappedAddressable) runGeocode();
+      // Places clients added or synced since launch, moves pins whose address
+      // was edited, and drops pins whose address no longer resolves. Reloads
+      // the list only when something changed.
+      runGeocode(true);
 
       if (destroyed) return;
 
@@ -190,13 +253,14 @@ export default function GlobeView() {
       // ── Globe instance ──────────────────────────────────────
       let globe: any;
       try {
+        // Dark earth and a quiet rim, so the client dots are the brightest thing on screen.
         globe = Globe()
-          .globeImageUrl("/globe/earth-blue-marble.jpg")
+          .globeImageUrl("/globe/earth-dark.jpg")
           .bumpImageUrl("/globe/earth-topology.png")
           .backgroundColor("rgba(0,0,0,0)")
           .showAtmosphere(true)
-          .atmosphereColor("#1a6dff")
-          .atmosphereAltitude(0.14)
+          .atmosphereColor("#4A6FB5")
+          .atmosphereAltitude(0.1)
           .width(containerRef.current.clientWidth)
           .height(containerRef.current.clientHeight)
           (containerRef.current);
@@ -205,13 +269,23 @@ export default function GlobeView() {
         return;
       }
 
-      globeRef.current = globe;
-      // Dots are applied by the [points, filter] effect below.
+      // The dot accessors are set once. Afterwards only htmlElementsData changes
+      // (the effect below), so globe.gl diffs by object and a filter click adds or
+      // removes dots instead of rebuilding every one.
+      globe
+        .htmlLat((d: Point) => d.lat)
+        .htmlLng((d: Point) => d.lng)
+        .htmlAltitude(0.005)
+        .htmlTransitionDuration(0)
+        .htmlElement((d: Point) => makeDot(d, (p) => focusPointRef.current(p)));
 
+      globeRef.current = globe;
+      setGlobeReady(true);
+
+      // A click on the sphere only closes what is open; the camera stays put.
       globe.onGlobeClick(() => {
-        // Clicking the globe sphere → zoom into US to see all clients
         setSelected(null);
-        navTo(US_POV, 600, false);
+        setShowMissing(false);
       });
 
       // ── Controls ────────────────────────────────────────────
@@ -252,6 +326,7 @@ export default function GlobeView() {
       cleanupRef.current = () => {
         window.removeEventListener("resize", onResize);
         if (starRafRef.current) cancelAnimationFrame(starRafRef.current);
+        cancelAnimationFrame(flightRef.current);
         if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
         if (globe._destructor) globe._destructor();
         globeRef.current = null;
@@ -262,12 +337,24 @@ export default function GlobeView() {
     return () => { destroyed = true; cleanupRef.current?.(); };
   }, [navTo, runGeocode]);
 
-  // ── Plotted points follow the tier filter (one htmlElementsData call —
-  //    nothing per-frame, so a large client list stays cheap). ─────────
+  const points  = useMemo(() => toPoints(clients, tierMapRef.current, pointCacheRef.current), [clients]);
+  // Clients with no pin, and why, for the "not on the globe" list.
+  const missing = useMemo(() => {
+    const groups = new Map<MissingReason, Client[]>();
+    for (const c of clients) {
+      if (hasPin(c)) continue;
+      const r = missingReason(c);
+      groups.set(r, [...(groups.get(r) || []), c]);
+    }
+    const ordered = MISSING_ORDER.filter((r) => groups.has(r)).map((r) => [r, groups.get(r)!] as const);
+    return { count: ordered.reduce((s, [, list]) => s + list.length, 0), groups: ordered };
+  }, [clients]);
+
+  // ── Plotted points follow the tier filter ─────────────────────
   const visible = useMemo(() => points.filter((p) => passesFilter(p, filter)), [points, filter]);
   useEffect(() => {
-    if (globeRef.current) applyDots(globeRef.current, visible, (d) => focusPointRef.current(d));
-  }, [visible, loading]);
+    if (globeRef.current) globeRef.current.htmlElementsData(visible);
+  }, [visible, globeReady]);
 
   // Search — match by name or city, fly to the pick.
   const q = query.trim().toLowerCase();
@@ -290,18 +377,6 @@ export default function GlobeView() {
     navTo(HOME_POV, 800, true);
   };
 
-  // Clicking anywhere on the globe page (other than dots, buttons, or the
-  // client panel) zooms into the US. The native click bubbles up here even
-  // when the user clicks empty canvas space that globe.gl didn't handle.
-  const handleRootClick = (e: React.MouseEvent) => {
-    if (justClickedDotRef.current) return; // a dot click is mid-flight
-    const t = e.target as HTMLElement;
-    // Skip clicks on UI overlays/buttons/panels so they keep working
-    if (t.closest("button, input, .globe-client-panel, .globe-bottom-bar, .globe-top-controls, .globe-geocode-msg, .globe-chips, .globe-search-wrap, .globe-legend")) return;
-    if (selected) return; // panel is open — let X-button handle close
-    navTo(US_POV, 600, false);
-  };
-
   // ── Render ──────────────────────────────────────────────────
   // Always render the container so containerRef is mounted before the async
   // init resolves — otherwise containerRef.current would be null when checked.
@@ -310,7 +385,6 @@ export default function GlobeView() {
     <div
       className="globe-root relative w-full h-full"
       style={{ background: "#060610", color: "#eef0f6" }}
-      onClick={handleRootClick}
     >
       <div className="globe-neb" />
       <canvas ref={starCanvasRef} className="globe-starfield" />
@@ -369,9 +443,9 @@ export default function GlobeView() {
                     <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: `rgb(${ds.c})` }} />
                     <span className="min-w-0 flex-1">
                       <span className="block text-[12.5px] font-medium truncate" style={{ color: "#F2F4F8" }}>{p.name}</span>
-                      {(p.city || p.state) && (
+                      {placeLabel(p.city, p.state, p.country) && (
                         <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>
-                          {p.city}{p.state ? `, ${p.state}` : ""}
+                          {placeLabel(p.city, p.state, p.country)}
                         </span>
                       )}
                     </span>
@@ -412,7 +486,7 @@ export default function GlobeView() {
             {geocodeSummary ? (
               <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#7E8798" }}>
                 {geocodeSummary.total} client{geocodeSummary.total !== 1 ? "s" : ""} total ·
-                {geocodeSummary.matched > 0 && <span> {geocodeSummary.matched} newly plotted ·</span>} {geocodeSummary.skipped} have no city/state
+                {geocodeSummary.matched > 0 && <span> {geocodeSummary.matched} newly plotted ·</span>} {geocodeSummary.skipped} have no address
               </div>
             ) : (
               <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#7E8798" }}>
@@ -436,15 +510,26 @@ export default function GlobeView() {
       {/* Bottom bar — live stats for what's plotted */}
       <div className="globe-bottom-bar">
         <div className="globe-stats-badge">
-          {visible.length} client{visible.length !== 1 ? "s" : ""} mapped
-          {stats.revenue > 0 && <span> · {fmtAmount(stats.revenue)} represented</span>}
+          {filter !== "all" && <span>{visible.length} shown · </span>}
+          {points.length} of {clients.length} client{clients.length !== 1 ? "s" : ""} on the globe
+          {showMoney && stats.revenue > 0 && <span> · {fmtAmount(stats.revenue)} represented</span>}
           {stats.topState && <span> · top: {stats.topState}</span>}
         </div>
+        {missing.count > 0 && (
+          <button
+            onClick={() => { setSelected(null); setShowMissing(true); }}
+            className="globe-missing-btn"
+          >
+            <MapPinOff size={12} />
+            {missing.count} not on the globe
+          </button>
+        )}
         <button
-          onClick={runGeocode}
+          onClick={() => runGeocode()}
           disabled={geocoding}
           className="globe-geocode-btn"
-          title="Re-geocode all clients"
+          title="Re-check every pin against its address"
+          aria-label="Re-check every pin against its address"
         >
           <RefreshCw size={13} className={geocoding ? "animate-spin" : ""} />
         </button>
@@ -459,10 +544,62 @@ export default function GlobeView() {
           onClick={handleRespin}
           className="globe-ctrl-btn"
           title="Reset view and spin"
+          aria-label="Reset view and spin"
         >
           <RotateCcw size={15} />
         </button>
+        <button
+          onClick={() => navTo(US_POV, 600, false)}
+          className="globe-ctrl-btn"
+          title="Zoom to the US"
+          aria-label="Zoom to the US"
+        >
+          <MapIcon size={15} />
+        </button>
       </div>
+
+      {/* Every client without a pin, grouped by why */}
+      {showMissing && !selected && (
+        <div className="globe-client-panel open">
+          <div className="p-5">
+            <div className="flex items-start justify-between mb-1.5">
+              <h3 className="text-[15px] font-semibold">Not on the globe</h3>
+              <button
+                onClick={() => setShowMissing(false)}
+                className="globe-panel-close"
+                aria-label="Close"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <p className="text-[12px] leading-relaxed mb-4" style={{ color: "#7E8798" }}>
+              {missing.count} of {clients.length} clients have no pin. Fix the address on the client and it lands on the globe the next time this page opens.
+            </p>
+            {missing.groups.map(([reason, list]) => (
+              <div key={reason} className="mb-4">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-[12.5px] font-medium" style={{ color: "#E7ECF6" }}>{reason}</span>
+                  <span className="text-[11.5px] tabular-nums" style={{ color: "#7E8798" }}>{list.length}</span>
+                </div>
+                <div className="text-[11px] mb-1.5" style={{ color: "#7E8798" }}>{MISSING_HINT[reason]}</div>
+                {list.map((c) => {
+                  const m = c.metadata || {};
+                  const where = placeLabel(String(m.city || ""), String(m.state || ""), String(m.country || ""));
+                  return (
+                    <button key={c.id} onClick={() => viewProfile(c.id)} className="globe-missing-row">
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[12.5px] truncate" style={{ color: "#F2F4F8" }}>{c.name}</span>
+                        {where && <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>{where}</span>}
+                      </span>
+                      <ExternalLink size={12} className="flex-shrink-0" style={{ color: "#6B7488" }} />
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Client detail panel */}
       {selected && (
@@ -490,20 +627,22 @@ export default function GlobeView() {
             </div>
 
             <div className="space-y-2.5 text-[13px]" style={{ color: "#A9B1C6" }}>
-              {(selected.city || selected.state) && (
+              {placeLabel(selected.city, selected.state, selected.country) && (
                 <div className="flex items-center gap-2">
                   <MapPin size={13} style={{ color: "var(--accent-500)" }} />
-                  {selected.city}{selected.state ? `, ${selected.state}` : ""}
+                  {placeLabel(selected.city, selected.state, selected.country)}
                 </div>
               )}
               <div className="flex items-center gap-2">
                 <Clock size={13} style={{ color: "#7E8798" }} />
                 Last contact: {relTime(selected.lastContact)}
               </div>
-              <div className="flex items-center gap-2">
-                <DollarSign size={13} style={{ color: "#3EC785" }} />
-                Total revenue: <span className="tabular-nums font-semibold" style={{ color: "#F2F4F8" }}>{fmtAmount(selected.revenue)}</span>
-              </div>
+              {showMoney && (
+                <div className="flex items-center gap-2">
+                  <DollarSign size={13} style={{ color: "#3EC785" }} />
+                  Total revenue: <span className="tabular-nums font-semibold" style={{ color: "#F2F4F8" }}>{fmtAmount(selected.revenue)}</span>
+                </div>
+              )}
             </div>
 
             <button
@@ -529,23 +668,33 @@ export default function GlobeView() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function toPoints(clients: Client[], tierMap: Record<string, string>): Point[] {
+// Rejected leads stay out of the globe, as they stay out of the Clients counts.
+const liveClients = (list: Client[]) => list.filter((c) => c.approval_status !== "rejected");
+
+function toPoints(clients: Client[], tierMap: Record<string, string>, cache: Map<string, Point>): Point[] {
   return clients
     .map(c => {
       const meta = c.metadata || {};
-      if (!meta.lat || !meta.lng) return null;
-      return {
+      // Number.isFinite, not truthiness: a pin on the equator or the prime
+      // meridian (Kenya's centroid is -0.0) is a real pin.
+      if (!hasPin(c)) return null;
+      const p: Point = {
         lat:         meta.lat,
         lng:         meta.lng,
         name:        c.name,
-        city:        meta.city  || "",
-        state:       meta.state || "",
+        city:        meta.city    || "",
+        state:       meta.state   || "",
+        country:     meta.country || "",
         tier:        tierMap[c.id] || "New",
         highValue:   !!(c.high_value || meta.high_value),
         revenue:     c.total_revenue || 0,
         lastContact: c.last_contact_at || null,
         id:          c.id,
       };
+      const prev = cache.get(c.id);
+      if (prev && (Object.keys(p) as (keyof Point)[]).every((k) => prev[k] === p[k])) return prev;
+      cache.set(c.id, p);
+      return p;
     })
     .filter(Boolean) as Point[];
 }
@@ -555,38 +704,32 @@ function toPoints(clients: Client[], tierMap: Record<string, string>): Point[] {
 // fight that inline transform. Instead, the outer wrap (zero-sized) is what
 // globe.gl positions, and the inner dot is absolutely positioned so that
 // its center sits exactly on the wrap's origin — i.e. the geo coord.
-function applyDots(globe: any, points: Point[], onClick: (d: Point) => void) {
-  globe
-    .htmlElementsData(points)
-    .htmlLat((d: Point) => d.lat)
-    .htmlLng((d: Point) => d.lng)
-    .htmlAltitude(0.005)
-    .htmlElement((d: Point) => {
-      const ds = dotStyle(d.tier);
+function makeDot(d: Point, onClick: (d: Point) => void): HTMLElement {
+  const ds = dotStyle(d.tier);
 
-      const wrap = document.createElement("div");
-      wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
 
-      const dot = document.createElement("div");
-      dot.className = "globe-dot";
-      dot.style.background = `rgb(${ds.c})`;
-      dot.style.setProperty("--dot-s", `${ds.size + (d.highValue ? 2 : 0)}px`);
-      dot.style.setProperty("--dot-c", ds.c);
-      dot.style.setProperty("--dot-glow", String(d.highValue ? Math.min(ds.glow + 0.2, 0.9) : ds.glow));
-      if (ds.dim && !d.highValue) dot.style.opacity = "0.75";
-      dot.innerHTML = `
-        <div class="globe-dot-tip">
-          <strong>${escapeHtml(d.name)}</strong>
-          <span>${escapeHtml(tierLabel(d.tier))}${d.city || d.state ? ` · ${escapeHtml(d.city)}${d.state ? ", " + escapeHtml(d.state) : ""}` : ""}</span>
-        </div>`;
-      dot.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        onClick(d);
-      });
+  const dot = document.createElement("div");
+  dot.className = "globe-dot";
+  dot.style.background = `rgb(${ds.c})`;
+  dot.style.setProperty("--dot-s", `${ds.size + (d.highValue ? 2 : 0)}px`);
+  dot.style.setProperty("--dot-c", ds.c);
+  dot.style.setProperty("--dot-glow", String(d.highValue ? Math.min(ds.glow + 0.2, 0.9) : ds.glow));
+  if (ds.dim && !d.highValue) dot.style.opacity = "0.75";
+  const where = placeLabel(d.city, d.state, d.country);
+  dot.innerHTML = `
+    <div class="globe-dot-tip">
+      <strong>${escapeHtml(d.name)}</strong>
+      <span>${escapeHtml(tierLabel(d.tier))}${where ? ` · ${escapeHtml(where)}` : ""}</span>
+    </div>`;
+  dot.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    onClick(d);
+  });
 
-      wrap.appendChild(dot);
-      return wrap;
-    });
+  wrap.appendChild(dot);
+  return wrap;
 }
 
 function tierLabel(t: string): string {

@@ -947,10 +947,10 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
    colour depth so the globe sits in space rather than flat black. */
 .globe-neb {
   position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  /* Kept faint and off the tier hues (no violet, no teal) so no wash reads as a dot colour. */
   background:
-    radial-gradient(42% 52% at 18% 24%, rgba(255,101,32,0.14), transparent 70%),
-    radial-gradient(36% 46% at 84% 20%, rgba(124,58,237,0.13), transparent 70%),
-    radial-gradient(52% 52% at 62% 90%, rgba(13,148,136,0.10), transparent 72%);
+    radial-gradient(42% 52% at 18% 24%, rgba(255,101,32,0.08), transparent 70%),
+    radial-gradient(52% 52% at 70% 88%, rgba(60,90,160,0.10), transparent 72%);
   filter: blur(34px);
 }
 .globe-starfield {
@@ -1127,32 +1127,55 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   border: 1px solid rgba(165, 180, 252, 0.18);
   padding: 5px 13px;
   border-radius: 999px;
-  color: #6EE7B7;
+  color: #A9B1C6;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.02em;
   pointer-events: none;
   backdrop-filter: blur(8px);
 }
+/* Opens the "not on the globe" list. */
+.globe-missing-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 12px; border-radius: 999px;
+  background: rgba(8, 8, 20, 0.82);
+  border: 1px solid rgba(165, 180, 252, 0.18);
+  color: #F2F4F8; font-size: 11px; font-weight: 500;
+  cursor: pointer;
+  transition: background 130ms ease-out, border-color 130ms ease-out;
+  backdrop-filter: blur(8px);
+}
+.globe-missing-btn:hover {
+  background: rgba(255, 101, 32, 0.15);
+  border-color: rgba(255, 164, 92, 0.4);
+}
+.globe-missing-row {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 8px; text-align: left;
+  transition: background 130ms ease-out;
+}
+.globe-missing-row:hover { background: rgba(165, 180, 252, 0.08); }
+.globe-panel-close { color: #7E8798; transition: color 130ms ease-out; }
+.globe-panel-close:hover { color: #F2F4F8; }
 .globe-geocode-btn {
   width: 30px; height: 30px;
   display: flex; align-items: center; justify-content: center;
   background: rgba(8, 8, 20, 0.82);
   border: 1px solid rgba(165, 180, 252, 0.15);
   border-radius: 9px;
-  color: #34D399;
+  color: #A9B1C6;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 130ms ease-out, border-color 130ms ease-out, color 130ms ease-out;
   backdrop-filter: blur(8px);
 }
 .globe-geocode-btn:hover {
   background: rgba(255, 101, 32, 0.15);
   border-color: rgba(255, 164, 92, 0.4);
-  color: #6EE7B7;
+  color: #F2F4F8;
 }
 .globe-geocode-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .globe-geocode-msg {
-  font-size: 11px; color: #555;
+  font-size: 11px; color: #7E8798;
   white-space: nowrap; max-width: 260px;
   overflow: hidden; text-overflow: ellipsis;
 }
@@ -1169,15 +1192,15 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   background: rgba(8, 8, 20, 0.82);
   border: 1px solid rgba(165, 180, 252, 0.15);
   border-radius: 10px;
-  color: #34D399;
+  color: #A9B1C6;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 130ms ease-out, border-color 130ms ease-out, color 130ms ease-out;
   backdrop-filter: blur(8px);
 }
 .globe-ctrl-btn:hover {
   background: rgba(255, 101, 32, 0.18);
   border-color: rgba(255, 164, 92, 0.4);
-  color: #6EE7B7;
+  color: #F2F4F8;
 }
 
 /* ── Life: page atmosphere — a whisper of accent light + film grain ─────────
