@@ -1,29 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Globe from "globe.gl";
 import * as THREE from "three";
-import { geoContains } from "d3-geo";
-import type { FeatureCollection, Geometry } from "geojson";
 import { api, BuyerTier, Client, Me } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import { can } from "../lib/permissions";
 import TierBadge from "./TierBadge";
 import StatusPill from "./StatusPill";
 import ClientMap2D from "./globe/ClientMap2D";
-import countriesJson from "../assets/countries-110m.json";
 import {
   arcDeg, buildPlaces, clusterPlaces, dueToReorder, FOLLOWUP_LABEL, FOLLOWUP_RGB, lensRgb,
   missingReason, MISSING_HINT, MISSING_ORDER, placeLabel, PROFIT_NEGATIVE, PROFIT_STEPS,
   RECENCY_STEPS, NEVER_RGB, regionRollup, TIER_NAME, TIER_RGB, toRows,
   type ClientRow, type FollowUp, type Group, type Lens, type MissingReason,
 } from "./globe/places";
-import { disposeMarkTextures, makeSprite, styleSprite } from "./globe/marks";
-import { buildLand, type Land } from "./globe/land";
+import { disposeMarkTextures, makeSprite, markRoom, styleSprite } from "./globe/marks";
 import {
   X, MapPin, MapPinOff, Map as MapIcon, Globe2, Maximize2, ChevronLeft, ExternalLink,
   RotateCcw, RefreshCw, Search, SlidersHorizontal,
 } from "lucide-react";
-
-const countries = countriesJson as unknown as FeatureCollection<Geometry, { name: string; iso: string }>;
 
 // How long the globe waits after a manual drag release before it starts
 // auto-rotating again.
@@ -31,8 +25,6 @@ const AUTO_ROTATE_RESUME_MS = 3000;
 // With no pointer, wheel or key for this long the globe stops turning and stops
 // drawing; the next touch wakes it.
 const IDLE_MS = 60_000;
-// Marks closer than this on screen merge into one, so none ever sit on top of another.
-const MARK_SPACING_PX = 26;
 const MARK_ALTITUDE = 0.012;
 
 // Initial camera — slightly tilted view of Earth
@@ -131,6 +123,7 @@ export default function GlobeView({ me }: { me?: Me | null }) {
   const styleRef = useRef({ lens: "tier" as Lens, profitTop: 0, selected: new Set<string>(), hover: "", pxToScale: 0.01 });
   const groupsRef = useRef<Group[]>([]);
   const wakeRef   = useRef<() => void>(() => {});
+  const pauseRef  = useRef<() => void>(() => {});
   const viewRef   = useRef(view);
   viewRef.current = view;
 
@@ -289,8 +282,10 @@ export default function GlobeView({ me }: { me?: Me | null }) {
   // Marks on the globe: places merged by on-screen distance at this altitude.
   const globeGroups = useMemo(() => {
     const fov = globeRef.current?.camera?.().fov ?? 50;
-    const deg = (MARK_SPACING_PX / Math.max(1, size.h)) * 2 * Math.tan((fov * RAD) / 2) * levelToAlt(altLevel) / RAD;
-    const out = clusterPlaces(places, deg, today).map((g) => {
+    // Degrees of arc per CSS pixel at the centre of the view at this altitude:
+    // a mark's room on screen, in the same units as the distance between places.
+    const degPerPx = (2 * Math.tan((fov * RAD) / 2) * levelToAlt(altLevel)) / Math.max(1, size.h) / RAD;
+    const out = clusterPlaces(places, today, (n) => markRoom(n) * degPerPx).map((g) => {
       const sig = `${g.count}|${g.bestTier}|${g.profit}|${g.followUp}|${g.lastActivity}|${g.approximate}|${g.lat}|${g.lng}`;
       const prev = groupCacheRef.current.get(g.key);
       if (prev && (prev as any).__sig === sig) return prev;
@@ -332,13 +327,17 @@ export default function GlobeView({ me }: { me?: Me | null }) {
       return;
     }
 
-    // A deep navy sphere; the land is drawn over it as a field of small hexagons
-    // (buildLand, below), so the continents read at a glance and never compete
-    // with the client marks.
+    // The real earth, dimmed: the photo's colour times a blue-grey, so the land
+    // and oceans read clearly but stay quieter than the client marks.
+    // (v0.16.106's near-black texture read as a black ball; v0.16.107's hexagon
+    // land did not land with Jack.)
+    globe
+      .globeImageUrl("/globe/earth-blue-marble.jpg")
+      .bumpImageUrl("/globe/earth-topology.png");
     const mat = globe.globeMaterial() as THREE.MeshPhongMaterial;
-    mat.color = new THREE.Color("#12203F");
-    mat.emissive = new THREE.Color("#0A1328");
-    mat.shininess = 6;
+    mat.color = new THREE.Color("#A3ADC2");
+    mat.specular = new THREE.Color("#0E1422");
+    mat.shininess = 5;
 
     // Marks: one sprite per group, styled from styleRef so restyling never rebuilds.
     globe
@@ -351,7 +350,8 @@ export default function GlobeView({ me }: { me?: Me | null }) {
           count: g.count,
           approximate: g.approximate,
           selected: st.selected.has(g.key),
-        }, st.pxToScale, st.hover === g.key ? 1.18 : 1);
+        }, st.pxToScale, st.hover === g.key ? 1.15 : 1);
+        fadeToHorizon(globe, obj);
       })
       .customLayerLabel((g: Group) => tooltipHtml(g, showMoney))
       .onCustomLayerHover((g: Group | null) => {
@@ -405,28 +405,30 @@ export default function GlobeView({ me }: { me?: Me | null }) {
         ctrl.autoRotateSpeed = 0.45;
       }, AUTO_ROTATE_RESUME_MS);
     });
-    // Regroup marks when the zoom crosses a level (rotation alone never does).
+    // Regroup marks when the zoom crosses a level (rotation alone never does), and
+    // fade them toward the horizon as the globe turns.
     ctrl.addEventListener("change", () => {
       const lvl = altToLevel(globe.pointOfView().altitude);
       setAltLevel((cur) => (cur === lvl ? cur : lvl));
+      globe.scene().traverse((o: any) => { if (o.__globeObjType === "custom") fadeToHorizon(globe, o); });
     });
 
     // ── Drawing only when someone is looking ──────────────────
     let paused = false, idleTimer: ReturnType<typeof setTimeout> | undefined, rotateBeforeIdle = false;
     const pause = () => { if (!paused) { paused = true; globe.pauseAnimation(); } };
     const resume = () => { if (paused) { paused = false; globe.resumeAnimation(); } };
+    // Not gated on window focus: a webview that misreports focus would leave the
+    // globe undrawn, and a visible globe is watched even when another window has focus.
     const wake = () => {
       if (idleTimer) clearTimeout(idleTimer);
-      if (!document.hidden && document.hasFocus() && viewRef.current === "globe") resume();
+      if (!document.hidden && viewRef.current === "globe") resume();
       if (rotateBeforeIdle) { ctrl.autoRotate = true; rotateBeforeIdle = false; }
       idleTimer = setTimeout(() => { rotateBeforeIdle = ctrl.autoRotate; ctrl.autoRotate = false; pause(); }, IDLE_MS);
     };
     wakeRef.current = wake;
+    pauseRef.current = pause;
     const onVisibility = () => (document.hidden ? pause() : wake());
-    const onBlur = () => pause();
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("blur", onBlur);
-    window.addEventListener("focus", wake);
     const activity = ["pointermove", "pointerdown", "wheel", "keydown"];
     activity.forEach((ev) => root.addEventListener(ev, wake, { passive: true }));
     wake();
@@ -453,8 +455,6 @@ export default function GlobeView({ me }: { me?: Me | null }) {
       ro.disconnect();
       stopStars();
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("blur", onBlur);
-      window.removeEventListener("focus", wake);
       activity.forEach((ev) => root.removeEventListener(ev, wake));
       if (idleTimer) clearTimeout(idleTimer);
       cancelAnimationFrame(flightRef.current);
@@ -473,43 +473,16 @@ export default function GlobeView({ me }: { me?: Me | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The land: built once per visit as a single mesh, then recoloured in place so
-  // countries with clients read a little brighter.
-  const landRef = useRef<Land | null>(null);
+  // Hover tests run every 50ms against everything in the scene; the atmosphere
+  // is only a glow and never needs one.
   useEffect(() => {
     const globe = globeRef.current;
     if (!globe) return;
-    let land: Land | null = null;
-    // After the first frame: the first build of the session takes ~120ms, and the
-    // sphere and the marks should not wait for it.
-    const t = setTimeout(() => {
-      land = buildLand(countries.features, (lat, lng, alt) => globe.getCoords(lat, lng, alt));
-      land.paint((f) => countriesRef.current.has(f));
-      globe.scene().add(land.mesh);
-      landRef.current = land;
-      // Hover tests run every 50ms against everything in the scene; the
-      // atmosphere is only a glow and never needs one.
-      globe.scene().traverse((o: any) => { if (o.__globeObjType === "atmosphere") o.raycast = () => {}; });
-    }, 60);
-    return () => {
-      clearTimeout(t);
-      if (land) { globe.scene().remove(land.mesh); land.dispose(); }
-      landRef.current = null;
-    };
+    const t = setTimeout(() => globe.scene().traverse((o: any) => {
+      if (o.__globeObjType === "atmosphere") o.raycast = () => {};
+    }), 60);
+    return () => clearTimeout(t);
   }, [globeReady]);
-  const countriesWithClients = useMemo(() => {
-    const s = new Set<object>();
-    for (const p of allPlaces) {
-      const f = countries.features.find((c) => geoContains(c, [p.lng, p.lat]));
-      if (f) s.add(f);
-    }
-    return s;
-  }, [allPlaces]);
-  const countriesRef = useRef(countriesWithClients);
-  countriesRef.current = countriesWithClients;
-  useEffect(() => {
-    landRef.current?.paint((f) => countriesWithClients.has(f));
-  }, [countriesWithClients, globeReady]);
 
   // Keep the sprite scale right for the canvas height and camera.
   useEffect(() => {
@@ -532,7 +505,8 @@ export default function GlobeView({ me }: { me?: Me | null }) {
   useEffect(() => {
     const globe = globeRef.current;
     if (!globe) return;
-    if (view === "map") globe.pauseAnimation();
+    // Through the same pause/wake pair as idle, so their paused flag stays true.
+    if (view === "map") pauseRef.current();
     else wakeRef.current();
   }, [view, globeReady]);
 
@@ -560,8 +534,10 @@ export default function GlobeView({ me }: { me?: Me | null }) {
       closest = Math.min(closest, arcDeg(pts[i].lat!, pts[i].lng!, pts[j].lat!, pts[j].lng!));
     }
     const fov = globeRef.current.camera().fov;
-    const degPerAlt = (MARK_SPACING_PX / Math.max(1, size.h)) * 2 * Math.tan((fov * RAD) / 2) / RAD;
-    const target = Math.min(alt * 0.8, Math.max(0.06, (closest / degPerAlt) * 0.85));
+    // Two single dots need 2 x markRoom(1) px between them; find the altitude
+    // where the closest pair's arc covers that many pixels.
+    const degPerPxPerAlt = (2 * Math.tan((fov * RAD) / 2)) / Math.max(1, size.h) / RAD;
+    const target = Math.min(alt * 0.8, Math.max(0.06, (closest / (2 * markRoom(1) * degPerPxPerAlt)) * 0.9));
     navTo({ lat: g.lat, lng: g.lng, altitude: target }, 800);
   }, [navTo, view, size.h]);
   const openGroupRef = useRef(openGroup);
@@ -998,6 +974,22 @@ const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matche
 // Altitude levels 18% apart: fine enough that marks regroup smoothly as you zoom.
 const altToLevel = (alt: number) => Math.round(Math.log(Math.max(0.05, alt)) / Math.log(1.18));
 const levelToAlt = (lvl: number) => Math.pow(1.18, lvl);
+
+/**
+ * Marks are not depth-tested (the globe cut them in half at its edge), so this
+ * does the hiding: full strength facing the camera, fading over the last stretch
+ * before the horizon, gone behind it.
+ */
+function fadeToHorizon(globe: any, s: THREE.Sprite) {
+  const cam = globe.camera().position as THREE.Vector3;
+  const camLen = cam.length();
+  const p = s.position;
+  const facing = (p.x * cam.x + p.y * cam.y + p.z * cam.z) / (Math.max(1e-6, p.length()) * camLen);
+  const horizon = globe.getGlobeRadius() / camLen;
+  const k = Math.min(1, Math.max(0, (facing - horizon) / 0.12));
+  (s.material as THREE.SpriteMaterial).opacity = k;
+  s.visible = k > 0.02;
+}
 
 function escapeHtml(s: string): string {
   return (s || "").replace(/[&<>"']/g, ch =>

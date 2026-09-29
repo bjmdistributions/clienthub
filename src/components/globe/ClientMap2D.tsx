@@ -11,7 +11,7 @@ import { US_MAP_VIEWBOX, US_STATE_PATHS } from "../../lib/us-map";
 import { stateName } from "../../lib/location";
 import { fmtAmount } from "../../lib/format";
 import { clusterPlaces, lensRgb, type Group, type Lens, type RegionRow } from "./places";
-import { countLabel, markPx } from "./marks";
+import { countLabel, inkFor, markDiameter, markRoom, SELECTED_RGB } from "./marks";
 
 type Countries = FeatureCollection<Geometry, { name: string; iso: string }>;
 const countries = countriesJson as unknown as Countries;
@@ -23,8 +23,6 @@ const natural = geoNaturalEarth1().fitExtent([[6, 6], [WORLD_BOX[0] - 6, WORLD_B
 const worldPath = geoPath(natural);
 const WORLD_PATHS = countries.features.map((f) => ({ f, d: worldPath(f) || "" }));
 
-// Wider than the globe's: flat-map clusters carry a count and must not touch.
-const MARK_SPACING_PX = 34;
 const NO_CLIENTS = "rgba(120,138,175,0.07)";
 
 interface Props {
@@ -76,10 +74,11 @@ export default function ClientMap2D({ scope, places, regions, lens, today, showM
   const inScope = useMemo(() => places.filter((p) => projected.has(p.key)), [places, projected]);
   const outside = places.reduce((s, p) => s + (projected.has(p.key) ? 0 : p.count), 0);
 
-  // Merge by distance on screen: the radius shrinks as you zoom in.
+  // Merge marks that would touch on screen, by each mark's real size; zooming in
+  // shrinks every mark's room in map units, so clusters come apart.
   const groups = useMemo(() => {
-    const r = (MARK_SPACING_PX * unitsPerPx) / view.k;
-    return clusterPlaces(inScope, r, today, (a, b) => {
+    const unit = unitsPerPx / view.k;
+    return clusterPlaces(inScope, today, (n) => markRoom(n) * unit, (a, b) => {
       const pa = projected.get(a.key)!, pb = projected.get(b.key)!;
       return Math.hypot(pa[0] - pb[0], pa[1] - pb[1]);
     });
@@ -164,29 +163,12 @@ export default function ClientMap2D({ scope, places, regions, lens, today, showM
 
   const cx = vbX + vbW / 2, cy = vbY + vbH / 2;
   const s = unitsPerPx / view.k; // one CSS pixel in map units at this zoom
-  const colors = [...new Set(groups.map((g) => lensRgb(g, lens, today, profitTop)))];
 
   return (
     <div ref={wrapRef} className="globe-map" onPointerLeave={() => setTip(null)}>
       <svg viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`} preserveAspectRatio="xMidYMid meet"
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
         style={{ cursor: view.k > 1 ? "grab" : "default" }}>
-        <defs>
-          {colors.map((c) => (
-            <radialGradient key={c} id={`gm-glow-${c.replace(/,/g, "-")}`}>
-              <stop offset="0%" stopColor={`rgb(${c})`} stopOpacity="0.5" />
-              <stop offset="45%" stopColor={`rgb(${c})`} stopOpacity="0.16" />
-              <stop offset="100%" stopColor={`rgb(${c})`} stopOpacity="0" />
-            </radialGradient>
-          ))}
-          {colors.map((c) => (
-            <radialGradient key={`b${c}`} id={`gm-bead-${c.replace(/,/g, "-")}`} cx="35%" cy="30%" r="75%">
-              <stop offset="0%" stopColor="#fff" stopOpacity="0.55" />
-              <stop offset="40%" stopColor={`rgb(${c})`} />
-              <stop offset="100%" stopColor={`rgb(${c})`} stopOpacity="0.85" />
-            </radialGradient>
-          ))}
-        </defs>
         <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
           {scope === "us"
             ? Object.entries(US_STATE_PATHS).map(([code, d]) => (
@@ -201,32 +183,30 @@ export default function ClientMap2D({ scope, places, regions, lens, today, showM
                   onPointerMove={(e) => regionTip(f.properties.name, f.properties.name, e)} />
               ))}
 
-          {groups.map((g) => {
-            const xy = scope === "us" ? albers([g.lng, g.lat]) : natural([g.lng, g.lat]);
-            if (!xy) return null;
-            const rgb = lensRgb(g, lens, today, profitTop);
-            const id = rgb.replace(/,/g, "-");
-            const px = markPx(g.count);
-            const core = px * (g.count > 1 ? 30 : 19) / 128;
-            const label = countLabel(g.count);
-            return (
-              <g key={g.key} transform={`translate(${xy[0]} ${xy[1]}) scale(${s})`} className="globe-map-mark"
-                onPointerMove={(e) => { e.stopPropagation(); showTip(e, g.count > 1 ? `${g.count} clients` : g.clients[0].name, markLines(g, showMoney)); }}
-                onClick={(e) => { e.stopPropagation(); if (clickable()) onSelect(g); }}>
-                <circle r={px / 2} fill={`url(#gm-glow-${id})`} />
-                <circle r={core + 3.5 * px / 128} fill="rgba(6,8,18,0.88)" />
-                {g.approximate
-                  ? <circle r={core - 1.5 * px / 128} fill={`rgba(${rgb},0.16)`} stroke={`rgb(${rgb})`} strokeWidth={6 * px / 128} />
-                  : <circle r={core} fill={`url(#gm-bead-${id})`} stroke="rgba(255,255,255,0.35)" strokeWidth={0.75} />}
-                {label && (
-                  <text textAnchor="middle" dominantBaseline="central" y={0.5}
-                    fontSize={(label.length > 2 ? 22 : 28) * px / 128} fontWeight={700}
-                    fill={g.approximate ? "rgba(242,244,248,0.96)" : "rgba(8,10,20,0.9)"}>{label}</text>
-                )}
-                {selectedKey === g.key && <circle r={core + 9 * px / 128} fill="none" stroke="rgba(255,255,255,0.95)" strokeWidth={3.5 * px / 128} />}
-              </g>
-            );
-          })}
+          <g className="globe-map-marks">
+            {groups.map((g) => {
+              const xy = scope === "us" ? albers([g.lng, g.lat]) : natural([g.lng, g.lat]);
+              if (!xy) return null;
+              const rgb = lensRgb(g, lens, today, profitTop);
+              const r = markDiameter(g.count) / 2;
+              const label = countLabel(g.count);
+              const on = selectedKey === g.key;
+              return (
+                <g key={g.key} transform={`translate(${xy[0]} ${xy[1]}) scale(${s})`} className="globe-map-mark"
+                  onPointerMove={(e) => { e.stopPropagation(); showTip(e, g.count > 1 ? `${g.count} clients` : g.clients[0].name, markLines(g, showMoney)); }}
+                  onClick={(e) => { e.stopPropagation(); if (clickable()) onSelect(g); }}>
+                  {on && <circle r={r + 5} fill={`rgba(${SELECTED_RGB},0.35)`} />}
+                  <circle r={r - 1} fill={g.approximate ? `rgba(${rgb},0.55)` : `rgb(${rgb})`}
+                    stroke={on ? `rgb(${SELECTED_RGB})` : "rgba(255,255,255,0.95)"} strokeWidth={2} />
+                  {label && (
+                    <text textAnchor="middle" dominantBaseline="central" y={0.5}
+                      fontSize={label.length > 3 ? 10 : label.length > 2 ? 11 : 12.5} fontWeight={700}
+                      fill={g.approximate ? "#FFFFFF" : inkFor(rgb)}>{label}</text>
+                  )}
+                </g>
+              );
+            })}
+          </g>
         </g>
       </svg>
 

@@ -62,14 +62,29 @@ describe("buildPlaces / clusterPlaces", () => {
 
   it("merges nearby places when zoomed out and keeps them apart when zoomed in", () => {
     const places = buildPlaces([newark1, newark2, edison, chicago], TODAY);
-    const far = clusterPlaces(places, 1.0, TODAY);   // Newark and Edison are ~0.3° apart
+    const far = clusterPlaces(places, TODAY, () => 0.5);   // Newark and Edison are ~0.3° apart
     expect(far).toHaveLength(2);
     const nj = far.find((g) => g.count === 3)!;
     expect(nj.label).toBe("Near Newark, NJ");     // sits on the heaviest place
     expect(nj.placeCount).toBe(2);
-    expect(clusterPlaces(places, 0.1, TODAY)).toHaveLength(3);
+    expect(clusterPlaces(places, TODAY, () => 0.05)).toHaveLength(3);
     // Same members, same key: the mark is reused instead of rebuilt.
-    expect(clusterPlaces(places, 1.0, TODAY).find((g) => g.count === 3)!.key).toBe(nj.key);
+    expect(clusterPlaces(places, TODAY, () => 0.5).find((g) => g.count === 3)!.key).toBe(nj.key);
+  });
+
+  it("gives a bigger badge more room, and never leaves two marks touching", () => {
+    // Three places in a row, 1 unit apart. Single dots fit; once two merge, the
+    // badge's larger room swallows the third as well.
+    const mk = (id: string, lng: number) => row({ id, name: id, lat: 0, lng, city: id });
+    const places = buildPlaces([mk("a", 0), mk("a2", 0), mk("b", 1), mk("c", 2), mk("d", 10)], TODAY);
+    const flat = (g: { lng: number }, h: { lng: number }) => Math.abs(g.lng - h.lng);
+    const room = (n: number) => (n < 2 ? 0.45 : 1.6);
+    const out = clusterPlaces(places, TODAY, room, flat);
+    for (let i = 0; i < out.length; i++) for (let j = i + 1; j < out.length; j++) {
+      expect(flat(out[i], out[j])).toBeGreaterThanOrEqual(room(out[i].count) + room(out[j].count));
+    }
+    // b and c were each far enough from a single dot, not from the growing badge.
+    expect(out.map((g) => g.count).sort()).toEqual([1, 4]);
   });
 });
 

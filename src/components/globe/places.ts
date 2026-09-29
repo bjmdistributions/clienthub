@@ -217,34 +217,43 @@ export function arcDeg(aLat: number, aLng: number, bLat: number, bLng: number): 
 }
 
 /**
- * Merges places closer than `radius` into one mark, biggest place first, so the
- * cluster sits on its heaviest member rather than drifting to an empty midpoint.
- * `dist` is the metric: degrees on the globe, pixels on the flat map. A cluster's
- * key is its members' keys, so an unchanged cluster keeps its identity (and its
- * three.js object) across recomputes.
+ * Merges marks that would touch, until none do. `room(count)` is the space a mark
+ * with that many clients claims around its centre and `dist` the distance between
+ * two places, in the same units (degrees on the globe, pixels on the flat map), so
+ * a count badge claims more room than a single dot and two badges never overlap.
+ * A merged mark sits on its heaviest place rather than drifting to an empty
+ * midpoint, and its key is its members' keys, so an unchanged cluster keeps its
+ * identity (and its three.js object) across recomputes.
  */
 export function clusterPlaces(
-  places: Group[], radius: number, today: string,
+  places: Group[], today: string, room: (count: number) => number,
   dist: (a: Group, b: Group) => number = (a, b) => arcDeg(a.lat, a.lng, b.lat, b.lng),
 ): Group[] {
-  if (radius <= 0) return places;
-  const order = [...places].sort((a, b) => b.count - a.count || b.profit - a.profit || a.key.localeCompare(b.key));
-  const taken = new Set<string>();
-  const out: Group[] = [];
-  for (const seed of order) {
-    if (taken.has(seed.key)) continue;
-    taken.add(seed.key);
-    const members = [seed];
-    for (const p of order) {
-      if (taken.has(p.key)) continue;
-      if (dist(seed, p) <= radius) { taken.add(p.key); members.push(p); }
+  type C = { seed: Group; members: Group[]; count: number };
+  const cs: C[] = [...places]
+    .sort((a, b) => b.count - a.count || b.profit - a.profit || a.key.localeCompare(b.key))
+    .map((p) => ({ seed: p, members: [p], count: p.count }));
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < cs.length; i++) {
+      for (let j = i + 1; j < cs.length; j++) {
+        if (dist(cs[i].seed, cs[j].seed) >= room(cs[i].count) + room(cs[j].count)) continue;
+        const [keep, drop] = cs[j].count > cs[i].count ? [cs[j], cs[i]] : [cs[i], cs[j]];
+        keep.members.push(...drop.members);
+        keep.count += drop.count;
+        cs[i] = keep;
+        cs.splice(j, 1);
+        merged = true;
+        j = i; // the grown mark claims more room: check its neighbours again
+      }
     }
-    if (members.length === 1) { out.push(seed); continue; }
-    const clients = members.flatMap((m) => m.clients);
-    const key = members.map((m) => m.key).sort().join("|");
-    out.push(summarise(key, seed.lat, seed.lng, `Near ${seed.label}`, clients, members.length, today));
   }
-  return out;
+  return cs.map(({ seed, members }) => {
+    if (members.length === 1) return seed;
+    const key = members.map((m) => m.key).sort().join("|");
+    return summarise(key, seed.lat, seed.lng, `Near ${seed.label}`, members.flatMap((m) => m.clients), members.length, today);
+  });
 }
 
 // ── Lenses ─────────────────────────────────────────────────────────────────
