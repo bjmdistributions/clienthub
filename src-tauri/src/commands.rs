@@ -22601,7 +22601,7 @@ fn parse_client_meta(meta_str: &Option<String>) -> serde_json::Map<String, Value
 /// re-read first and left alone if it changed since `snapshot` was read, so an
 /// address edit that lands mid-pass is never overwritten with the old blob; the
 /// next pass picks it up. Returns whether anything was written.
-fn write_client_pin(id: &str, snapshot: &Option<String>, pin: Option<(f64, f64)>) -> Result<bool, String> {
+fn write_client_pin(id: &str, snapshot: &Option<String>, pin: Option<crate::geocode::Pin>) -> Result<bool, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let current: Option<String> = conn
         .query_row("SELECT metadata FROM clients WHERE id=?1", [id], |r| r.get(0))
@@ -22612,13 +22612,18 @@ fn write_client_pin(id: &str, snapshot: &Option<String>, pin: Option<(f64, f64)>
 
     let mut meta = parse_client_meta(&current);
     match pin {
-        Some((lat, lng)) => {
+        Some(((lat, lng), precision)) => {
             meta.insert("lat".into(), json!(lat));
             meta.insert("lng".into(), json!(lng));
+            match precision.as_meta() {
+                Some(p) => { meta.insert("geo_precision".into(), json!(p)); }
+                None => { meta.remove("geo_precision"); }
+            }
         }
         None => {
             meta.remove("lat");
             meta.remove("lng");
+            meta.remove("geo_precision");
         }
     }
     let metadata_str = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
@@ -22651,7 +22656,7 @@ pub async fn geocode_client(client_id: String) -> Result<GeocodeResult, String> 
     if crate::geocode::pin_change(crate::geocode::stored_pin(&meta), want) != crate::geocode::PinChange::Keep {
         write_client_pin(&client_id, &meta_str, want)?;
     }
-    let (lat, lng) = want.ok_or("location not found in dataset")?;
+    let ((lat, lng), _) = want.ok_or("location not found in dataset")?;
     Ok(GeocodeResult { lat, lng })
 }
 

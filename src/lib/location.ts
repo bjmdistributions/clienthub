@@ -236,7 +236,7 @@ const titleCase = (s: string) =>
   }).join(" ");
 
 /** Resolve a state fragment (full name or 2-letter abbr, any case) to its abbreviation, else null. */
-const resolveState = (frag: string): string | null => {
+export const resolveState = (frag: string): string | null => {
   const f = frag.trim().toLowerCase();
   if (!f) return null;
   if (f.length === 2 && ABBR_SET.has(f.toUpperCase())) return f.toUpperCase();

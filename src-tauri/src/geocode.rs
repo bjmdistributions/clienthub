@@ -13,6 +13,12 @@ pub struct CityEntry {
 pub struct CityLookup {
     by_state_id: HashMap<String, (f64, f64)>,
     by_state_name: HashMap<String, (f64, f64)>,
+    /// 5-digit ZIP → the most populous city listing it. Places a client whose city
+    /// is misspelt but whose ZIP is right.
+    by_zip: HashMap<String, (f64, f64)>,
+    /// Population-weighted centre of each state, keyed by lowercased code and name.
+    /// An approximate pin for a US client with a state and no city.
+    state_centroid: HashMap<String, (f64, f64)>,
     /// Every city, for prefix search and for resolving a bare city name to a state.
     cities: Vec<CityEntry>,
     /// Lowercased city name → indices into `cities`. A name like "Portland" has several.
@@ -27,6 +33,9 @@ pub fn init() -> Result<u32, String> {
 
     let mut by_state_id: HashMap<String, (f64, f64)> = HashMap::new();
     let mut by_state_name: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut zips: HashMap<String, ((f64, f64), u32)> = HashMap::new();
+    // state code → (Σ lat·w, Σ lng·w, Σ w, full name)
+    let mut state_sums: HashMap<String, (f64, f64, f64, String)> = HashMap::new();
     let mut cities: Vec<CityEntry> = Vec::new();
     let mut by_city: HashMap<String, Vec<u32>> = HashMap::new();
     let mut count = 0u32;
@@ -77,11 +86,12 @@ pub fn init() -> Result<u32, String> {
             Err(_) => continue,
         };
 
+        let city_key = norm_city(city);
         if !state_id.is_empty() {
-            by_state_id.insert(format!("{}|{}", city.to_lowercase(), state_id), (lat, lng));
+            by_state_id.insert(format!("{}|{}", city_key, state_id), (lat, lng));
         }
         if !state_name.is_empty() {
-            by_state_name.insert(format!("{}|{}", city.to_lowercase(), state_name), (lat, lng));
+            by_state_name.insert(format!("{}|{}", city_key, state_name), (lat, lng));
         }
         // Index for the location picker. Population is column 8 and is blank for
         // some small places — those rank last rather than being dropped.
@@ -92,6 +102,19 @@ pub fn init() -> Result<u32, String> {
                 .and_then(|f| f.parse::<f64>().ok())
                 .map(|p| p as u32)
                 .unwrap_or(0);
+            // ZIPs are column 14, space-separated. A ZIP shared by several places
+            // goes to the most populous one.
+            for zip in fields.get(14).map(|f| f.trim_matches('"')).unwrap_or("").split_whitespace() {
+                let e = zips.entry(zip.to_string()).or_insert(((lat, lng), population));
+                if population > e.1 {
+                    *e = ((lat, lng), population);
+                }
+            }
+            let w = population.max(1) as f64;
+            let s = state_sums.entry(state_id.clone()).or_insert((0.0, 0.0, 0.0, state_name.clone()));
+            s.0 += lat * w;
+            s.1 += lng * w;
+            s.2 += w;
             by_city
                 .entry(city.to_lowercase())
                 .or_default()
@@ -103,7 +126,17 @@ pub fn init() -> Result<u32, String> {
 
     tracing::info!("geocode: loaded {} city entries", count);
 
-    let lookup = CityLookup { by_state_id, by_state_name, cities, by_city, loaded: count };
+    let by_zip = zips.into_iter().map(|(z, (p, _))| (z, p)).collect();
+    let mut state_centroid = HashMap::new();
+    for (code, (la, ln, w, name)) in state_sums {
+        let c = (la / w, ln / w);
+        state_centroid.insert(code, c);
+        if !name.is_empty() {
+            state_centroid.insert(name, c);
+        }
+    }
+
+    let lookup = CityLookup { by_state_id, by_state_name, by_zip, state_centroid, cities, by_city, loaded: count };
     CITY_LOOKUP.set(lookup).map_err(|_| "geocode already initialized".to_string())?;
     Ok(count)
 }
@@ -119,12 +152,18 @@ pub fn get() -> Option<&'static CityLookup> {
 /// than per city, which is enough to put the client on the right side of the
 /// globe instead of dropping them off the map entirely.
 pub fn lookup_international(city: &str, region: &str, country: &str) -> Option<(f64, f64)> {
+    international_pin(city, region, country).map(|(p, _)| p)
+}
+
+/// `lookup_international` with how exact the pin is: a Canadian city, a province
+/// centre, or a country centre.
+pub fn international_pin(city: &str, region: &str, country: &str) -> Option<Pin> {
     let c = country.trim().to_lowercase();
     if c.is_empty() {
         return None;
     }
     if !(c == "canada" || c == "ca" || c == "can") {
-        return country_centroid(&c);
+        return country_centroid(&c).map(|p| (p, Precision::Country));
     }
     let city_l = city.trim().to_lowercase();
     let city_coord = match city_l.as_str() {
@@ -157,11 +196,11 @@ pub fn lookup_international(city: &str, region: &str, country: &str) -> Option<(
         "charlottetown" => Some((46.2382, -63.1311)),
         _ => None,
     };
-    if city_coord.is_some() {
-        return city_coord;
+    if let Some(p) = city_coord {
+        return Some((p, Precision::City));
     }
     // Province centroid fallback (2-letter code or full name).
-    match region.trim().to_lowercase().as_str() {
+    let province = match region.trim().to_lowercase().as_str() {
         "on" | "ontario" => Some((50.0, -85.0)),
         "qc" | "quebec" | "québec" => Some((52.0, -72.0)),
         "bc" | "british columbia" => Some((53.7267, -127.6476)),
@@ -176,7 +215,59 @@ pub fn lookup_international(city: &str, region: &str, country: &str) -> Option<(
         "nt" | "northwest territories" => Some((64.8255, -124.8457)),
         "nu" | "nunavut" => Some((70.2998, -83.1076)),
         _ => None,
+    };
+    province.map(|p| (p, Precision::Region))
+}
+
+/// How exact a pin is. Only `City` is a real place; the others are the centre of a
+/// state, province or country, and the globe draws them as approximate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Precision {
+    City,
+    Region,
+    Country,
+}
+
+impl Precision {
+    /// The `metadata.geo_precision` value. City is stored as no key at all, so the
+    /// pins written before precision existed need no rewrite.
+    pub fn as_meta(self) -> Option<&'static str> {
+        match self {
+            Precision::City => None,
+            Precision::Region => Some("region"),
+            Precision::Country => Some("country"),
+        }
     }
+}
+
+pub type Pin = ((f64, f64), Precision);
+
+const US_NAMES: [&str; 8] = ["", "us", "usa", "u.s.", "u.s.a.", "united states", "united states of america", "america"];
+
+fn is_us(country: &str) -> bool {
+    US_NAMES.contains(&country.trim().to_lowercase().as_str())
+}
+
+/// A city name as the index keys it: lowercase, no periods, single spaces, and the
+/// St/Ft/Mt abbreviations spelled out the way the city list spells them
+/// ("St. Louis" and "Saint Louis" are one key).
+fn norm_city(s: &str) -> String {
+    s.to_lowercase()
+        .replace('.', " ")
+        .split_whitespace()
+        .map(|w| match w {
+            "st" => "saint",
+            "ft" => "fort",
+            "mt" => "mount",
+            _ => w,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A state as typed ("N.J.", " nj ", "New Jersey") in the index's form.
+fn norm_state(s: &str) -> String {
+    s.to_lowercase().replace('.', "").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// One centroid per country, keyed by lowercased common name and ISO
@@ -262,11 +353,17 @@ fn country_centroid(country: &str) -> Option<(f64, f64)> {
     }
 }
 
-/// The pin a client's metadata carries now, if it has a complete one.
-pub fn stored_pin(meta: &serde_json::Map<String, serde_json::Value>) -> Option<(f64, f64)> {
+/// The pin a client's metadata carries now, if it has a complete one. A pin with
+/// no `geo_precision` is a city pin (everything written before precision existed).
+pub fn stored_pin(meta: &serde_json::Map<String, serde_json::Value>) -> Option<Pin> {
     let lat = meta.get("lat").and_then(|v| v.as_f64())?;
     let lng = meta.get("lng").and_then(|v| v.as_f64())?;
-    Some((lat, lng))
+    let precision = match meta.get("geo_precision").and_then(|v| v.as_str()) {
+        Some("region") => Precision::Region,
+        Some("country") => Precision::Country,
+        _ => Precision::City,
+    };
+    Some(((lat, lng), precision))
 }
 
 /// What the geocoder does to one client's pin: the pin it has against the pin
@@ -274,17 +371,18 @@ pub fn stored_pin(meta: &serde_json::Map<String, serde_json::Value>) -> Option<(
 #[derive(Debug, PartialEq)]
 pub enum PinChange {
     Keep,
-    Place((f64, f64)),
-    Move((f64, f64)),
+    Place(Pin),
+    Move(Pin),
     Remove,
 }
 
-pub fn pin_change(stored: Option<(f64, f64)>, want: Option<(f64, f64)>) -> PinChange {
+pub fn pin_change(stored: Option<Pin>, want: Option<Pin>) -> PinChange {
     match (stored, want) {
         (None, None) => PinChange::Keep,
         (None, Some(p)) => PinChange::Place(p),
         (Some(_), None) => PinChange::Remove,
-        (Some(a), Some(b)) if (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6 => PinChange::Keep,
+        (Some((a, pa)), Some((b, pb)))
+            if (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6 && pa == pb => PinChange::Keep,
         (Some(_), Some(b)) => PinChange::Move(b),
     }
 }
@@ -292,21 +390,41 @@ pub fn pin_change(stored: Option<(f64, f64)>, want: Option<(f64, f64)>) -> PinCh
 impl CityLookup {
     /// Where a client's pin belongs, from the address on its metadata today.
     /// `None` means no pin: there is no address, or it does not resolve (a
-    /// misspelt city, a country with no centroid). The geocoder asks this of
-    /// every client on every pass, so an edited address moves or drops its pin
-    /// instead of keeping the old one forever.
-    pub fn client_pin(&self, meta: &serde_json::Map<String, serde_json::Value>) -> Option<(f64, f64)> {
+    /// misspelt city with no usable ZIP, a country with no centroid). The
+    /// geocoder asks this of every client on every pass, so an edited address
+    /// moves or drops its pin instead of keeping the old one forever.
+    ///
+    /// Order: city and state; then the ZIP (a US client whose city is misspelt);
+    /// then the state's centre for a US client with a state and no city
+    /// (approximate); then Canada and the country centres.
+    pub fn client_pin(&self, meta: &serde_json::Map<String, serde_json::Value>) -> Option<Pin> {
         let field = |k: &str| meta.get(k).and_then(|v| v.as_str()).unwrap_or("");
         let (city, state, country) = (field("city"), field("state"), field("country"));
         if city.trim().is_empty() && state.trim().is_empty() && country.trim().is_empty() {
             return None;
         }
-        self.lookup(city, state).or_else(|| lookup_international(city, state, country))
+        if let Some(p) = self.lookup(city, state) {
+            return Some((p, Precision::City));
+        }
+        if is_us(country) {
+            let zip: String = field("zip_code").chars().filter(|c| c.is_ascii_digit()).take(5).collect();
+            if zip.len() == 5 {
+                if let Some(p) = self.by_zip.get(&zip) {
+                    return Some((*p, Precision::City));
+                }
+            }
+            if city.trim().is_empty() {
+                if let Some(p) = self.state_centroid.get(&norm_state(state)) {
+                    return Some((*p, Precision::Region));
+                }
+            }
+        }
+        international_pin(city, state, country)
     }
 
     pub fn lookup(&self, city: &str, state: &str) -> Option<(f64, f64)> {
-        let city_lower = city.trim().to_lowercase();
-        let state_lower = state.trim().to_lowercase();
+        let city_lower = norm_city(city);
+        let state_lower = norm_state(state);
         if city_lower.is_empty() || state_lower.is_empty() {
             return None;
         }
@@ -385,26 +503,62 @@ mod tests {
         m
     }
 
+    fn precision_of(m: &serde_json::Map<String, serde_json::Value>) -> Option<Precision> {
+        get().expect("city list loads").client_pin(m).map(|(_, p)| p)
+    }
+
     #[test]
     fn client_pin_follows_the_address_on_the_row() {
         let _ = init();
-        let l = get().expect("city list loads");
-        assert!(l.client_pin(&meta("Chicago", "IL", "")).is_some());
-        assert_eq!(l.client_pin(&meta("Chicgo", "IL", "")), None); // misspelt: no pin
-        assert!(l.client_pin(&meta("", "", "France")).is_some()); // country only plots at its centroid
-        assert_eq!(l.client_pin(&meta("", "", "USA")), None); // a US client needs a city and state
-        assert_eq!(l.client_pin(&meta("", "", "")), None);
+        assert_eq!(precision_of(&meta("Chicago", "IL", "")), Some(Precision::City));
+        assert_eq!(precision_of(&meta("Chicgo", "IL", "")), None); // misspelt, no ZIP: no pin
+        assert_eq!(precision_of(&meta("", "", "France")), Some(Precision::Country));
+        assert_eq!(precision_of(&meta("", "", "USA")), None); // a US client needs more than the country
+        assert_eq!(precision_of(&meta("", "", "")), None);
+    }
+
+    #[test]
+    fn client_pin_places_more_clients() {
+        let _ = init();
+        // Abbreviations and punctuation the city list spells out.
+        assert_eq!(precision_of(&meta("St. Louis", "MO", "")), Some(Precision::City));
+        assert_eq!(precision_of(&meta("Ft Worth", "tx", "")), Some(Precision::City));
+        assert_eq!(precision_of(&meta("Newark", "N.J.", "")), Some(Precision::City));
+        // A misspelt city with a good ZIP lands on the ZIP's city.
+        let mut m = meta("Chicgo", "IL", "");
+        m.insert("zip_code".into(), "60601".into());
+        assert_eq!(precision_of(&m), Some(Precision::City));
+        // A state and no city: the state's centre, marked approximate.
+        assert_eq!(precision_of(&meta("", "VA", "")), Some(Precision::Region));
+        assert_eq!(precision_of(&meta("", "Virginia", "USA")), Some(Precision::Region));
+        // A misspelt city with a state stays unplaced, so it can be fixed.
+        assert_eq!(precision_of(&meta("Richmnd", "VA", "")), None);
+        // Canada: city, then province centre.
+        assert_eq!(precision_of(&meta("Toronto", "", "Canada")), Some(Precision::City));
+        assert_eq!(precision_of(&meta("", "ON", "Canada")), Some(Precision::Region));
     }
 
     #[test]
     fn pin_change_moves_and_drops_stale_pins() {
-        let a = (41.88, -87.63);
-        let b = (40.71, -74.01);
+        let a = ((41.88, -87.63), Precision::City);
+        let b = ((40.71, -74.01), Precision::City);
+        let a_region = ((41.88, -87.63), Precision::Region);
         assert_eq!(pin_change(Some(a), Some(a)), PinChange::Keep);
         assert_eq!(pin_change(None, None), PinChange::Keep);
         assert_eq!(pin_change(None, Some(a)), PinChange::Place(a));
         assert_eq!(pin_change(Some(a), Some(b)), PinChange::Move(b));
+        assert_eq!(pin_change(Some(a), Some(a_region)), PinChange::Move(a_region));
         assert_eq!(pin_change(Some(a), None), PinChange::Remove);
+    }
+
+    #[test]
+    fn stored_pin_reads_precision_and_defaults_to_city() {
+        let mut m = serde_json::Map::new();
+        m.insert("lat".into(), 38.0.into());
+        m.insert("lng".into(), (-78.0).into());
+        assert_eq!(stored_pin(&m), Some(((38.0, -78.0), Precision::City)));
+        m.insert("geo_precision".into(), "region".into());
+        assert_eq!(stored_pin(&m), Some(((38.0, -78.0), Precision::Region)));
     }
 
     #[test]

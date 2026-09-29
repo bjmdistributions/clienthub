@@ -963,82 +963,170 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   width: 100%; height: 100%;
   z-index: 1;
 }
+/* Docked rail: the globe (and the flat map) centre in the space beside it, and
+   again beside the right panel, so a place you open never sits under the panel. */
+.globe-container.with-rail { left: 304px; width: calc(100% - 304px); }
+.globe-root.has-panel .globe-container { width: calc(100% - 300px); }
+.globe-root.has-panel .globe-container.with-rail { width: calc(100% - 604px); }
+.globe-root.has-panel .globe-map-pane { right: 300px; }
 
-/* Client dots — DOM-based, fixed pixel size so clusters resolve on zoom.
-   The dot is absolutely positioned inside a zero-sized wrap that globe.gl
-   moves. Negative offsets center the 12px circle on the wrap origin. */
-.globe-dot {
-  position: absolute;
-  /* Per-tier visuals set inline: --dot-s size, --dot-c color triplet, --dot-glow strength. */
-  --dot-s: 10px; --dot-c: 139,147,168; --dot-glow: 0.45;
-  left: calc(var(--dot-s) / -2); top: calc(var(--dot-s) / -2);
-  width: var(--dot-s); height: var(--dot-s);
-  border-radius: 50%;
-  cursor: pointer;
-  pointer-events: auto;
-  transition: transform 0.14s cubic-bezier(0.16,1,0.3,1);
-  /* Crisp dark seat + tier-colored bloom so each pin reads cleanly over the globe. */
-  box-shadow:
-    0 0 0 1.5px rgba(8,10,22,0.9),
-    0 0 7px 1px rgba(var(--dot-c), calc(var(--dot-glow) + 0.15)),
-    0 0 15px 3px rgba(var(--dot-c), calc(var(--dot-glow) * 0.5));
+/* globe.gl's hover tooltip, restyled to match the chrome. */
+.globe-root .float-tooltip-kap {
+  padding: 8px 10px; border-radius: 10px;
+  background: rgba(8, 10, 22, 0.95);
+  border: 1px solid rgba(165, 180, 252, 0.2);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+  font: 12px 'Satoshi', system-ui, sans-serif; color: #E7ECF6;
 }
-/* Soft expanding halo — one GPU-composited ring per pin (transform+opacity only). */
-.globe-dot::after {
-  content: "";
-  position: absolute; inset: -2px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(var(--dot-c), 0.55);
-  animation: globeDotPulse 3s ease-out infinite;
-  pointer-events: none;
-}
-@keyframes globeDotPulse {
-  0%   { transform: scale(0.6); opacity: 0.65; }
-  70%  { opacity: 0; }
-  100% { transform: scale(2.6); opacity: 0; }
-}
-.globe-dot:hover {
-  transform: scale(1.55);
-  z-index: 10;
-  box-shadow:
-    0 0 0 1.5px rgba(8,10,22,0.9),
-    0 0 10px 2px rgba(var(--dot-c), 0.85),
-    0 0 22px 5px rgba(var(--dot-c), 0.45);
-}
+.globe-tip { display: flex; flex-direction: column; gap: 1px; max-width: 240px; }
+.globe-tip strong { font-weight: 600; font-size: 12.5px; color: #F2F4F8; }
+.globe-tip em { font-style: normal; font-size: 11px; color: #A9B1C6; margin-bottom: 2px; }
+.globe-tip span { font-size: 11px; color: #7E8798; }
 
-/* Globe overlay chrome — fixed dark glass (the globe scene is always space). */
-.globe-glass {
-  background: rgba(10, 12, 24, 0.82);
-  border: 1px solid rgba(165, 180, 252, 0.16);
-  backdrop-filter: blur(8px);
-  border-radius: 12px;
+/* ── Left rail ───────────────────────────────────────────── */
+.globe-rail {
+  position: absolute; top: 12px; left: 12px; bottom: 12px; z-index: 8;
+  width: 280px; overflow-y: auto; overscroll-behavior: contain;
+  padding: 12px;
+  background: rgba(9, 11, 23, 0.9);
+  border: 1px solid rgba(165, 180, 252, 0.14);
+  border-radius: 14px;
+  font-size: 12.5px; color: #E7ECF6;
+  scrollbar-width: thin; scrollbar-color: rgba(165, 180, 252, 0.22) transparent;
 }
-.globe-chips {
-  position: absolute; top: 18px; left: 18px; z-index: 6;
-  display: flex; gap: 6px; padding: 4px;
+.globe-rail.floating { box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55); }
+.globe-rail-toggle { position: absolute; top: 18px; left: 18px; z-index: 8; }
+.globe-rail-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.globe-rail-section { padding: 12px 2px 12px; border-top: 1px solid rgba(165, 180, 252, 0.1); }
+.globe-rail-label { font-size: 11.5px; font-weight: 500; color: #7E8798; margin-bottom: 7px; }
+.globe-rail-empty { font-size: 11.5px; color: #7E8798; padding: 6px 2px; }
+
+.globe-seg {
+  display: inline-flex; padding: 3px; gap: 2px; border-radius: 9px;
+  background: rgba(165, 180, 252, 0.07);
 }
-.globe-chip {
-  height: 28px; padding: 0 11px; border-radius: 8px;
-  font-size: 12px; font-weight: 500; color: #A9B1C6;
+.globe-seg.full { display: flex; }
+.globe-seg button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  height: 26px; padding: 0 10px; border-radius: 7px; flex: 1 1 auto;
+  font-size: 12px; font-weight: 500; color: #A9B1C6; white-space: nowrap;
   transition: background 130ms ease-out, color 130ms ease-out;
 }
-.globe-chip:hover { color: #E7ECF6; background: rgba(165,180,252,0.10); }
-.globe-chip.on { color: #F2F4F8; background: rgba(255,101,32,0.26); }
-.globe-search-wrap {
-  position: absolute; top: 18px; right: 64px; z-index: 6; width: 240px;
+.globe-seg button:hover { color: #E7ECF6; }
+.globe-seg button.on { color: #F2F4F8; background: rgba(255, 101, 32, 0.26); }
+
+.globe-rail-search { position: relative; margin-bottom: 4px; }
+.globe-rail-search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #6B7488; pointer-events: none; }
+.globe-rail-search input {
+  width: 100%; height: 34px; padding: 0 10px 0 30px; border-radius: 9px;
+  font-size: 12.5px; color: #F2F4F8;
+  background: rgba(165, 180, 252, 0.07); border: 1px solid transparent;
+  outline: none; transition: border-color 130ms ease-out;
 }
-.globe-search-wrap input {
-  width: 100%; height: 34px; padding: 0 12px 0 32px;
-  font-size: 12.5px; color: #F2F4F8; outline: none;
-  background: transparent; border: none;
+.globe-rail-search input:focus { border-color: rgba(255, 164, 92, 0.55); }
+.globe-rail-search input::placeholder { color: #6B7488; }
+.globe-rail-results { margin: 4px 0 8px; }
+.globe-rail-result {
+  width: 100%; display: flex; align-items: center; gap: 9px; padding: 6px 8px;
+  border-radius: 8px; text-align: left; transition: background 130ms ease-out;
 }
-.globe-search-wrap input::placeholder { color: #6B7488; }
-.globe-legend {
-  position: absolute; left: 18px; bottom: 56px; z-index: 6;
-  display: flex; align-items: center; gap: 12px;
-  padding: 7px 12px; font-size: 11px; color: #A9B1C6;
+.globe-rail-result.on { background: rgba(165, 180, 252, 0.1); }
+
+.globe-swatch { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1.5px rgba(6, 8, 18, 0.9); }
+.globe-legend-row {
+  width: 100%; display: flex; align-items: center; gap: 9px;
+  padding: 5px 6px; border-radius: 7px; font-size: 12.5px; color: #E7ECF6;
+  transition: background 130ms ease-out, opacity 130ms ease-out;
 }
-@media (prefers-reduced-motion: reduce) { .globe-dot::after { animation: none; } }
+.globe-legend-row:not(.static):hover { background: rgba(165, 180, 252, 0.08); }
+.globe-legend-row.off { opacity: 0.38; }
+.globe-legend-row.static { padding: 3px 6px; font-size: 12px; color: #A9B1C6; }
+.globe-check { display: flex; align-items: center; gap: 8px; padding: 6px 6px 2px; font-size: 12.5px; color: #E7ECF6; cursor: pointer; }
+.globe-check input { accent-color: var(--accent-500); }
+.globe-select {
+  width: 100%; min-width: 0; height: 30px; padding: 0 8px; border-radius: 8px;
+  font-size: 12px; color: #E7ECF6;
+  background: rgba(165, 180, 252, 0.07); border: 1px solid rgba(165, 180, 252, 0.12);
+  outline: none;
+}
+.globe-select option { background: #0b0e1c; color: #E7ECF6; }
+.globe-chip-on {
+  display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px;
+  border-radius: 999px; font-size: 11.5px; color: #F2F4F8;
+  background: rgba(255, 101, 32, 0.22); border: 1px solid rgba(255, 164, 92, 0.35);
+}
+
+.globe-coverage { font-size: 12.5px; color: #E7ECF6; }
+.globe-coverage-bar { height: 3px; margin-top: 7px; border-radius: 3px; background: rgba(165, 180, 252, 0.1); overflow: hidden; }
+.globe-coverage-bar span { display: block; height: 100%; border-radius: 3px; background: var(--accent-500); }
+.globe-link {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 500; color: #F2F4F8;
+  transition: color 130ms ease-out;
+}
+.globe-link:hover { color: var(--accent-400); }
+.globe-icon-btn {
+  width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 7px; color: #A9B1C6; background: rgba(165, 180, 252, 0.07);
+  transition: background 130ms ease-out, color 130ms ease-out;
+}
+.globe-icon-btn:hover { color: #F2F4F8; background: rgba(255, 101, 32, 0.18); }
+.globe-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.globe-region-row { width: 100%; display: block; padding: 5px 6px; border-radius: 7px; font-size: 12.5px; color: #E7ECF6; transition: background 130ms ease-out; }
+.globe-region-row:hover { background: rgba(165, 180, 252, 0.08); }
+.globe-region-row.on { background: rgba(255, 101, 32, 0.16); }
+.globe-region-bar { display: block; height: 3px; margin-top: 4px; border-radius: 3px; background: rgba(165, 180, 252, 0.08); overflow: hidden; }
+.globe-region-bar span { display: block; height: 100%; border-radius: 3px; background: rgba(124, 142, 220, 0.8); }
+
+.globe-note { font-size: 11px; line-height: 1.45; color: #7E8798; }
+
+/* ── Client panel pieces ─────────────────────────────────── */
+.globe-figures { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; border-radius: 11px; background: rgba(165, 180, 252, 0.06); }
+.globe-fig-label { font-size: 11px; color: #7E8798; margin-bottom: 2px; }
+.globe-fig { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+.globe-fig.small { font-size: 14px; font-weight: 500; color: #A9B1C6; padding-top: 4px; }
+.globe-facts { display: flex; flex-direction: column; gap: 7px; font-size: 12.5px; }
+.globe-fact { display: grid; grid-template-columns: 92px 1fr; gap: 8px; }
+.globe-fact dt { color: #7E8798; }
+.globe-fact dd { color: #E7ECF6; min-width: 0; }
+.globe-primary {
+  width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;
+  height: 34px; border-radius: 9px; font-size: 12.5px; font-weight: 500;
+  color: var(--accent-400); background: var(--accent-tint); border: 1px solid var(--accent-glow);
+  transition: background 130ms ease-out;
+}
+.globe-primary:hover { background: var(--accent-glow); }
+
+/* ── Flat map ────────────────────────────────────────────── */
+.globe-map-pane { position: absolute; inset: 0; z-index: 2; }
+.globe-map-pane.with-rail { left: 304px; }
+.globe-map { position: absolute; inset: 24px 24px 56px; user-select: none; }
+.globe-map svg { width: 100%; height: 100%; display: block; }
+.globe-map-region {
+  stroke: rgba(165, 180, 252, 0.22); stroke-width: 0.7; vector-effect: non-scaling-stroke;
+  transition: fill 130ms ease-out;
+}
+.globe-map-region:hover { stroke: rgba(242, 244, 248, 0.7); }
+.globe-map-region.on { stroke: var(--accent-400); stroke-width: 1.6; }
+.globe-map-mark { cursor: pointer; }
+.globe-map-legend {
+  position: absolute; left: 0; bottom: -40px;
+  display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #7E8798;
+}
+.globe-map-ramp { width: 90px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, rgba(124,142,220,0.14), rgba(124,142,220,0.64)); }
+.globe-map-outside { margin-left: 10px; color: #F2F4F8; font-weight: 500; transition: color 130ms ease-out; }
+.globe-map-outside:hover { color: var(--accent-400); }
+.globe-map-zoom { position: absolute; right: 0; bottom: -44px; display: flex; gap: 6px; }
+.globe-map-tip {
+  position: absolute; z-index: 20; pointer-events: none;
+  display: flex; flex-direction: column; gap: 1px; max-width: 240px;
+  padding: 8px 10px; border-radius: 10px;
+  background: rgba(8, 10, 22, 0.95); border: 1px solid rgba(165, 180, 252, 0.2);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+  font-size: 11px; color: #7E8798;
+}
+.globe-map-tip strong { font-size: 12.5px; font-weight: 600; color: #F2F4F8; }
 
 /* ── Notes board (draggable sticky notes) ── */
 .notes-board {
@@ -1067,88 +1155,22 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
 .sn-actions button { background: transparent; border: 0; cursor: pointer; padding: 4px; border-radius: 6px; }
 .sn-del:hover { color: #f87171 !important; }
 .sn-time { padding: 1px 13px 10px; font-size: 10px; color: var(--t-tx4); }
-.globe-dot-tip {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(6, 6, 18, 0.96);
-  border: 1px solid rgba(165, 180, 252, 0.22);
-  border-radius: 8px;
-  padding: 6px 10px;
-  white-space: nowrap;
-  font-size: 11px;
-  font-family: 'Satoshi', system-ui, sans-serif;
-  color: #eef0f6;
-  opacity: 0;
-  transition: opacity 0.15s;
-  pointer-events: none;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.6);
-  z-index: 20;
-}
-.globe-dot-tip strong {
-  display: block;
-  font-weight: 600;
-  font-size: 12px;
-  color: #fff;
-  margin-bottom: 1px;
-}
-.globe-dot-tip span {
-  font-size: 10px;
-  color: #94a3b8;
-}
-.globe-dot:hover .globe-dot-tip {
-  opacity: 1;
-}
 
-/* Client detail panel — slides in from right */
+/* Right panel: a client, a place's clients, or the not-on-the-map list. Opaque
+   enough to need no backdrop blur, which would re-blur the live canvas every frame. */
 .globe-client-panel {
   position: absolute; right: 0; top: 0; bottom: 0;
-  width: 290px;
-  background: rgba(8, 8, 20, 0.94);
+  width: 300px;
+  background: rgba(8, 9, 20, 0.96);
   border-left: 1px solid rgba(165, 180, 252, 0.12);
-  backdrop-filter: blur(12px);
-  transform: translateX(100%);
-  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
-  overflow-y: auto;
+  overflow-y: auto; overscroll-behavior: contain;
   z-index: 10;
   color: #eef0f6;
+  animation: globePanelIn 130ms ease-out;
 }
-.globe-client-panel.open { transform: translateX(0); }
+@keyframes globePanelIn { from { opacity: 0; transform: translateX(12px); } }
+@media (prefers-reduced-motion: reduce) { .globe-client-panel { animation: none; } }
 
-/* Bottom-left: client count + geocode button */
-.globe-bottom-bar {
-  position: absolute; bottom: 18px; left: 18px;
-  z-index: 5;
-  display: flex; align-items: center; gap: 8px;
-}
-.globe-stats-badge {
-  background: rgba(8, 8, 20, 0.82);
-  border: 1px solid rgba(165, 180, 252, 0.18);
-  padding: 5px 13px;
-  border-radius: 999px;
-  color: #A9B1C6;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  pointer-events: none;
-  backdrop-filter: blur(8px);
-}
-/* Opens the "not on the globe" list. */
-.globe-missing-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 26px; padding: 0 12px; border-radius: 999px;
-  background: rgba(8, 8, 20, 0.82);
-  border: 1px solid rgba(165, 180, 252, 0.18);
-  color: #F2F4F8; font-size: 11px; font-weight: 500;
-  cursor: pointer;
-  transition: background 130ms ease-out, border-color 130ms ease-out;
-  backdrop-filter: blur(8px);
-}
-.globe-missing-btn:hover {
-  background: rgba(255, 101, 32, 0.15);
-  border-color: rgba(255, 164, 92, 0.4);
-}
 .globe-missing-row {
   width: 100%; display: flex; align-items: center; gap: 8px;
   padding: 6px 8px; border-radius: 8px; text-align: left;
@@ -1157,35 +1179,20 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
 .globe-missing-row:hover { background: rgba(165, 180, 252, 0.08); }
 .globe-panel-close { color: #7E8798; transition: color 130ms ease-out; }
 .globe-panel-close:hover { color: #F2F4F8; }
-.globe-geocode-btn {
-  width: 30px; height: 30px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(8, 8, 20, 0.82);
-  border: 1px solid rgba(165, 180, 252, 0.15);
-  border-radius: 9px;
-  color: #A9B1C6;
-  cursor: pointer;
-  transition: background 130ms ease-out, border-color 130ms ease-out, color 130ms ease-out;
-  backdrop-filter: blur(8px);
-}
-.globe-geocode-btn:hover {
-  background: rgba(255, 101, 32, 0.15);
-  border-color: rgba(255, 164, 92, 0.4);
-  color: #F2F4F8;
-}
-.globe-geocode-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .globe-geocode-msg {
-  font-size: 11px; color: #7E8798;
-  white-space: nowrap; max-width: 260px;
+  margin-top: 6px; font-size: 11px; color: #7E8798;
+  white-space: nowrap; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis;
 }
 
-/* Top-right: respin button */
+/* Top-right: reset, US, fit. They step aside when the right panel opens. */
 .globe-top-controls {
   position: absolute; top: 18px; right: 18px;
   z-index: 5;
   display: flex; flex-direction: column; gap: 8px;
+  transition: right 130ms ease-out;
 }
+.globe-root.has-panel .globe-top-controls { right: 318px; }
 .globe-ctrl-btn {
   width: 36px; height: 36px;
   display: flex; align-items: center; justify-content: center;
@@ -1195,7 +1202,6 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   color: #A9B1C6;
   cursor: pointer;
   transition: background 130ms ease-out, border-color 130ms ease-out, color 130ms ease-out;
-  backdrop-filter: blur(8px);
 }
 .globe-ctrl-btn:hover {
   background: rgba(255, 101, 32, 0.18);

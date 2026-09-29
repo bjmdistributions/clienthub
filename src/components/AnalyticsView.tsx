@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api, AnalyticsRange, AnalyticsMonth, AnalyticsReconciliation, ReconRow, AnalyticsPace,
-  DashboardStats, FinancialsOverview,
+  DashboardStats, FinancialsOverview, BuyerTier, Client,
 } from "../lib/api";
+import { regionRollup, toRows } from "./globe/places";
 import { fmtAmount, fmtCompactCurrency, localDay, parseLocalDay } from "../lib/format";
 import { RefreshCw, FileDown } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -193,6 +194,7 @@ export default function AnalyticsView() {
   const [recon,     setRecon]     = useState<AnalyticsReconciliation | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);
   const [money,     setMoney]     = useState<FinancialsOverview | null>(null);
+  const [clients,   setClients]   = useState<Client[] | null>(null);
   const [loading,   setLoading]   = useState(true);
   const [bars,      setBars]      = useState(false);
   const [preset,    setPreset]    = useState<string>("All time");
@@ -246,6 +248,7 @@ export default function AnalyticsView() {
       // Cash position is secondary — load separately so a Plaid/overview hiccup
       // never blanks the analytics page. Same for the reconciliation read.
       api.financialsOverview().then(setMoney).catch(() => {});
+      api.listClientsFiltered({}).then(setClients).catch(() => setClients(null));
       api.analyticsReconciliation(startDate, endDate).then(setRecon).catch(() => setRecon(null));
     } catch {}
     setLoading(false);
@@ -257,6 +260,17 @@ export default function AnalyticsView() {
   }, [loading, stats]);
 
   const rangeLabel = preset === "Custom" ? "the selected range" : preset.toLowerCase();
+
+  // Where the profit is: client profit (the Tiers figure) summed by US state or
+  // country, the same rollup the Globe's region list shows. Rejected leads are out,
+  // as everywhere; a client with no state or country is counted apart.
+  const regions = useMemo(() => {
+    if (!clients) return null;
+    const tierMap: Record<string, BuyerTier> = Object.fromEntries((tiers as BuyerTier[]).map((t) => [t.client_id, t]));
+    const rows = toRows(clients.filter((c) => c.approval_status !== "rejected"), tierMap);
+    const list = regionRollup(rows).sort((a, b) => b.profit - a.profit || b.count - a.count);
+    return { list, unplaced: rows.filter((r) => !r.region).length };
+  }, [clients, tiers]);
 
   // The primary trend. The in-progress month is marked but NOT projected here: R-316
   // stacked the projection as a remainder on top of the real bar, which asked the eye to
@@ -1015,6 +1029,52 @@ export default function AnalyticsView() {
         </Card>
       </div>
       </Defer>
+
+      {regions && (
+      <Defer h={300}>
+      {/* ── Where the profit is (by state or country) ─────────── */}
+      <Card title="Where the profit is"
+        sub={`Client profit by state, or by country outside the US · all time${regions.unplaced ? ` · ${regions.unplaced} client${regions.unplaced !== 1 ? "s" : ""} with no state or country` : ""}`}>
+        {regions.list.length > 0 ? (
+          <>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-8 gap-y-3.5">
+              {(() => {
+                const top = Math.max(1, ...regions.list.map((r) => Math.abs(r.profit)));
+                return regions.list.slice(0, 10).map((r, i) => (
+                  <div key={r.region} className="min-w-0">
+                    <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
+                      <span className="text-[12px] font-medium text-ink-2 truncate min-w-0">{r.label}</span>
+                      <div className="flex items-center gap-2.5 flex-shrink-0">
+                        <span className="text-[11px] text-muted tabular-nums">
+                          {r.count} client{r.count !== 1 ? "s" : ""}
+                        </span>
+                        <span className="text-[12px] font-semibold tabular-nums" style={{ color: r.profit < 0 ? CLR.rose : undefined }}>
+                          {fmtAmount(r.profit)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700 ease-out"
+                        style={{
+                          width: bars ? `${(Math.abs(r.profit) / top) * 100}%` : "0%",
+                          backgroundColor: r.profit < 0 ? CLR.rose : i < P.cat.length ? P.cat[i] : P.neutral,
+                          transitionDelay: `${i * 55}ms`,
+                        }} />
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "globe" }))}
+              className="mt-5 text-[12px] font-medium text-accent hover:underline">
+              See them on the globe
+            </button>
+          </>
+        ) : <Blank h={160} text="No client has a state or country yet" />}
+      </Card>
+      </Defer>
+      )}
 
       <Defer h={280}>
       {/* ── What went wrong + standouts ────────────────────────── */}

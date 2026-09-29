@@ -1,99 +1,73 @@
-import { useEffect, useMemo, useState, useRef, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Globe from "globe.gl";
-import { api, Client, Me } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import * as THREE from "three";
+import { geoContains } from "d3-geo";
+import type { FeatureCollection, Geometry } from "geojson";
+import { api, BuyerTier, Client, Me } from "../lib/api";
+import { fmtAmount, localDay } from "../lib/format";
 import { can } from "../lib/permissions";
 import TierBadge from "./TierBadge";
 import StatusPill from "./StatusPill";
-import { X, MapPin, MapPinOff, Map as MapIcon, Clock, DollarSign, ExternalLink, RotateCcw, RefreshCw, Search } from "lucide-react";
+import ClientMap2D from "./globe/ClientMap2D";
+import countriesJson from "../assets/countries-110m.json";
+import {
+  arcDeg, buildPlaces, clusterPlaces, dueToReorder, FOLLOWUP_LABEL, FOLLOWUP_RGB, lensRgb,
+  missingReason, MISSING_HINT, MISSING_ORDER, placeLabel, PROFIT_NEGATIVE, PROFIT_STEPS,
+  RECENCY_STEPS, NEVER_RGB, regionRollup, TIER_NAME, TIER_RGB, toRows,
+  type ClientRow, type FollowUp, type Group, type Lens, type MissingReason,
+} from "./globe/places";
+import { disposeMarkTextures, makeSprite, styleSprite } from "./globe/marks";
+import { buildLand, type Land } from "./globe/land";
+import {
+  X, MapPin, MapPinOff, Map as MapIcon, Globe2, Maximize2, ChevronLeft, ExternalLink,
+  RotateCcw, RefreshCw, Search, SlidersHorizontal,
+} from "lucide-react";
 
-const STAR_COUNT  = 450;
+const countries = countriesJson as unknown as FeatureCollection<Geometry, { name: string; iso: string }>;
+
 // How long the globe waits after a manual drag release before it starts
 // auto-rotating again.
 const AUTO_ROTATE_RESUME_MS = 3000;
+// With no pointer, wheel or key for this long the globe stops turning and stops
+// drawing; the next touch wakes it.
+const IDLE_MS = 60_000;
+// Marks closer than this on screen merge into one, so none ever sit on top of another.
+const MARK_SPACING_PX = 26;
+const MARK_ALTITUDE = 0.012;
 
 // Initial camera — slightly tilted view of Earth
 const HOME_POV = { lat: 25, lng: -30, altitude: 2.0 };
 // The "Zoom to the US" button: the continental US with every client in view
 const US_POV   = { lat: 38, lng: -97, altitude: 0.7 };
 
-interface Point {
-  lat: number;
-  lng: number;
-  name: string;
-  city: string;
-  state: string;
-  country: string;
-  tier: string;          // real buyer tier: S / A / B / C / New / Prospect
-  highValue: boolean;
-  revenue: number;
-  lastContact: string | null;
-  id: string;
+// Tier rows double as the tier legend and the tier filter. "Prospect" covers New.
+const TIER_ROWS = ["P", "S", "A", "B", "C", "Prospect"] as const;
+const tierKey = (t: string) => (t === "New" ? "Prospect" : t);
+
+const LENSES: [Lens, string][] = [["tier", "Tier"], ["profit", "Profit"], ["recency", "Recency"], ["followup", "Follow-up"]];
+
+// View settings survive a trip to a client and back (per session).
+const SAVE_KEY = "clienthub.globe.view.v2";
+interface Saved {
+  view?: "globe" | "map"; scope?: "us" | "world"; lens?: Lens; tiers?: string[];
+  high?: boolean; category?: string; lead?: string; region?: string;
+  pov?: { lat: number; lng: number; altitude: number };
+}
+function readSaved(): Saved {
+  try { return JSON.parse(sessionStorage.getItem(SAVE_KEY) || "{}"); } catch { return {}; }
 }
 
-// Dots mean something: tier drives color, size, and glow. S/A read brighter
-// and larger; prospects sit dim so the whales pop.
-const DOT_STYLE: Record<string, { c: string; size: number; glow: number; dim?: boolean }> = {
-  P:        { c: "167,139,250", size: 14, glow: 0.85 },  // Platinum — brightest violet (top tier)
-  S:        { c: "56,189,248",  size: 13, glow: 0.70 },  // Diamond — bright sky
-  A:        { c: "251,191,36",  size: 12, glow: 0.60 },  // Gold
-  B:        { c: "199,210,224", size: 10, glow: 0.40 },  // Silver
-  C:        { c: "224,149,92",  size: 9,  glow: 0.35 },  // Bronze
-  Prospect: { c: "139,147,168", size: 7,  glow: 0.20, dim: true },
-  New:      { c: "139,147,168", size: 7,  glow: 0.20, dim: true },
-};
-const dotStyle = (tier: string) => DOT_STYLE[tier] ?? DOT_STYLE.New;
-const RANKED = ["P", "S", "A", "B", "C"];
-
-type TierFilter = "all" | "ranked" | "high" | "prospect";
-const FILTERS: [TierFilter, string][] = [
-  ["all", "All"], ["ranked", "Ranked"], ["high", "High-value"], ["prospect", "Prospects"],
-];
-function passesFilter(p: Point, f: TierFilter): boolean {
-  if (f === "ranked")   return RANKED.includes(p.tier);
-  if (f === "high")     return p.highValue;
-  if (f === "prospect") return !RANKED.includes(p.tier);
-  return true;
-}
-
-// Why a client has no pin, in the geocoder's own terms (CityLookup::client_pin):
-// a US address needs a city and a state that match the city list; any other
-// recognized country plots at its centroid.
-type MissingReason = "No address" | "Needs a city and state" | "City not recognized" | "Country not recognized";
-const MISSING_ORDER: MissingReason[] = ["City not recognized", "Needs a city and state", "Country not recognized", "No address"];
-const MISSING_HINT: Record<MissingReason, string> = {
-  "City not recognized":    "Check the spelling of the city and state.",
-  "Needs a city and state": "Has one of the two, and the globe needs both.",
-  "Country not recognized": "The country is not in the globe's country list.",
-  "No address":             "No city, state or country on the client.",
-};
-const US_NAMES = new Set(["", "us", "usa", "u.s.", "u.s.a.", "united states", "united states of america", "america"]);
-const CANADA   = new Set(["canada", "ca", "can"]);
-
-function missingReason(c: Client): MissingReason {
-  const m = c.metadata || {};
-  const city    = String(m.city || "").trim();
-  const state   = String(m.state || "").trim();
-  const country = String(m.country || "").trim().toLowerCase();
-  if (!city && !state && !country) return "No address";
-  if (US_NAMES.has(country)) return city && state ? "City not recognized" : "Needs a city and state";
-  if (CANADA.has(country)) return "City not recognized";
-  return "Country not recognized";
-}
-
-const hasPin = (c: Client) => Number.isFinite(c.metadata?.lat) && Number.isFinite(c.metadata?.lng);
-
-// "Newark, NJ", or "Paris, France" for a client outside the US.
-function placeLabel(city: string, state: string, country: string): string {
-  const abroad = US_NAMES.has(country.trim().toLowerCase()) ? "" : country.trim();
-  return [city.trim(), state.trim(), abroad].filter(Boolean).join(", ");
-}
+type Panel =
+  | { kind: "group"; group: Group }
+  | { kind: "client"; id: string; from: Group | null }
+  | { kind: "missing" }
+  | null;
 
 const relTime = (d: string | null | undefined): string => {
   if (!d) return "Never";
   const ms   = Date.now() - new Date(d).getTime();
   const days = Math.floor(ms / 86400000);
-  if (days === 0)  return "Today";
+  if (days <= 0)   return "Today";
   if (days === 1)  return "Yesterday";
   if (days < 30)   return `${days}d ago`;
   const months = Math.floor(days / 30);
@@ -101,44 +75,71 @@ const relTime = (d: string | null | undefined): string => {
   return `${Math.floor(months / 12)}y ago`;
 };
 
+const niceStatus = (s: string) => (s ? (s[0].toUpperCase() + s.slice(1)).replace(/_/g, " ") : "");
+const RELIABILITY: Record<string, string> = { reliable: "Pays reliably", mixed: "Mixed payment record", low: "Often pays late", unrated: "Not rated yet" };
+const RAD = Math.PI / 180;
+
 export default function GlobeView({ me }: { me?: Me | null }) {
   // Dollar figures follow the "See exact client spend" permission.
   const showMoney = can(me, "clients:view_revenue");
+  const today = localDay();
+  const saved = useRef(readSaved()).current;
 
-  const [selected,    setSelected]    = useState<Point | null>(null);
+  const [view,     setView]     = useState<"globe" | "map">(saved.view ?? "globe");
+  const [scope,    setScope]    = useState<"us" | "world">(saved.scope ?? "us");
+  const [lensPick, setLens]     = useState<Lens>(saved.lens ?? "tier");
+  const lens: Lens = lensPick === "profit" && !showMoney ? "tier" : lensPick;
+  const [tiersOn,  setTiersOn]  = useState<string[]>(saved.tiers ?? [...TIER_ROWS]);
+  const [highOnly, setHighOnly] = useState(!!saved.high);
+  const [category, setCategory] = useState(saved.category ?? "");
+  const [lead,     setLead]     = useState(saved.lead ?? "");
+  const [region,   setRegion]   = useState(saved.region ?? "");
+  const [allRegions, setAllRegions] = useState(false);
+
   // Every client except rejected leads, which the rest of the app also leaves out.
-  const [clients,     setClients]     = useState<Client[]>([]);
-  const [showMissing, setShowMissing] = useState(false);
-  const [filter,      setFilter]      = useState<TierFilter>("all");
-  const [query,       setQuery]       = useState("");
-  const [loading,     setLoading]     = useState(true);
-  const [globeReady,  setGlobeReady]  = useState(false);
-  const [error,       setError]       = useState<string | null>(null);
-  const [geocoding,   setGeocoding]   = useState(false);
-  const [geocodeMsg,  setGeocodeMsg]  = useState<string | null>(null);
-  const [geocodeSummary, setGeocodeSummary] = useState<{ total: number; matched: number; skipped: number; not_found: number; removed: number } | null>(null);
+  const [clients,  setClients]  = useState<Client[]>([]);
+  const [tiers,    setTiers]    = useState<Record<string, BuyerTier>>({});
+  const [panel,    setPanel]    = useState<Panel>(null);
+  const [query,    setQuery]    = useState("");
+  const [active,   setActive]   = useState(0);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState<string | null>(null);
+  const [globeReady, setGlobeReady] = useState(false);
+  const [geocoding,  setGeocoding]  = useState(false);
+  const [geocodeMsg, setGeocodeMsg] = useState<string | null>(null);
+  const [size,     setSize]     = useState({ w: 1200, h: 800 });   // the globe canvas
+  const [rootW,    setRootW]    = useState(1200);                   // the whole tab
+  const [railOpen, setRailOpen] = useState(false);
+  // Cluster level: the camera altitude, quantised, so marks regroup as you zoom
+  // but not on every frame of a rotation.
+  const [altLevel, setAltLevel] = useState(() => altToLevel(saved.pov?.altitude ?? HOME_POV.altitude));
 
+  const rootRef            = useRef<HTMLDivElement>(null);
   const containerRef       = useRef<HTMLDivElement>(null);
   const starCanvasRef      = useRef<HTMLCanvasElement>(null);
+  const searchRef          = useRef<HTMLInputElement>(null);
   const globeRef           = useRef<any>(null);
-  const starRafRef         = useRef<number>(0);
   const autoRotateTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const cleanupRef         = useRef<(() => void) | null>(null);
-  // client_id → buyer tier, fetched once and reused by geocode refreshes.
-  const tierMapRef         = useRef<Record<string, string>>({});
-  // Last Point built per client. Handing globe.gl the same object for an
-  // unchanged client keeps its dot instead of tearing it down and rebuilding it.
-  const pointCacheRef      = useRef(new Map<string, Point>());
   // Prevents the OrbitControls "start" event from cancelling programmatic navigation
   const isProgNavRef       = useRef(false);
   // rAF id of the camera flight in progress (navTo).
   const flightRef          = useRef(0);
+  // Last Group handed to globe.gl per key. An unchanged mark keeps its object, so
+  // globe.gl keeps its sprite instead of tearing it down and making a new one.
+  const groupCacheRef      = useRef(new Map<string, Group>());
+  // What the sprite updater reads; kept in refs so restyling never rebuilds a mark.
+  const styleRef = useRef({ lens: "tier" as Lens, profitTop: 0, selected: new Set<string>(), hover: "", pxToScale: 0.01 });
+  const groupsRef = useRef<Group[]>([]);
+  const wakeRef   = useRef<() => void>(() => {});
+  const viewRef   = useRef(view);
+  viewRef.current = view;
 
   const viewProfile = useCallback((clientId: string) => {
     sessionStorage.setItem("clienthub.globe.clientId", clientId);
     window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "clients" }));
   }, []);
 
+  // ── Camera ───────────────────────────────────────────────────
   // Programmatic camera move. Only thing we toggle is autoRotate — locking
   // controls.enabled made the globe feel unresponsive during the tween, and
   // it was unnecessary anyway since the tween writes the camera directly.
@@ -150,6 +151,7 @@ export default function GlobeView({ me }: { me?: Me | null }) {
   const navTo = useCallback((pov: { lat: number; lng: number; altitude: number }, duration = 600, thenSpin = false) => {
     const globe = globeRef.current;
     if (!globe) return;
+    wakeRef.current();
     isProgNavRef.current = true;
     const c = globe.controls?.();
     if (c) c.autoRotate = false;
@@ -168,6 +170,7 @@ export default function GlobeView({ me }: { me?: Me | null }) {
       });
       if (k < 1) { flightRef.current = requestAnimationFrame(step); return; }
       isProgNavRef.current = false;
+      setAltLevel(altToLevel(pov.altitude));
       if (thenSpin && globeRef.current?.controls()) {
         const cc = globeRef.current.controls();
         cc.autoRotate      = true;
@@ -177,23 +180,33 @@ export default function GlobeView({ me }: { me?: Me | null }) {
     flightRef.current = requestAnimationFrame(step);
   }, []);
 
-  const focusPoint = useCallback((d: Point) => {
-    setShowMissing(false);
-    setSelected(d);
-    navTo({ lat: d.lat, lng: d.lng, altitude: 0.35 }, 500, false);
+  /** Frames a set of marks: the centre of their spread, far enough out to see them all. */
+  const fitTo = useCallback((groups: { lat: number; lng: number }[]) => {
+    if (!groups.length) return;
+    let x = 0, y = 0, z = 0;
+    for (const g of groups) {
+      x += Math.cos(g.lat * RAD) * Math.cos(g.lng * RAD);
+      y += Math.cos(g.lat * RAD) * Math.sin(g.lng * RAD);
+      z += Math.sin(g.lat * RAD);
+    }
+    const lat = Math.atan2(z, Math.hypot(x, y)) / RAD, lng = Math.atan2(y, x) / RAD;
+    let maxDeg = 0;
+    for (const g of groups) {
+      const s = Math.sin((g.lat - lat) * RAD / 2) ** 2 + Math.cos(lat * RAD) * Math.cos(g.lat * RAD) * Math.sin((g.lng - lng) * RAD / 2) ** 2;
+      maxDeg = Math.max(maxDeg, 2 * Math.asin(Math.min(1, Math.sqrt(s))) / RAD);
+    }
+    navTo({ lat, lng, altitude: Math.min(2.6, Math.max(0.3, maxDeg / 18)) }, 900);
   }, [navTo]);
-  const focusPointRef = useRef(focusPoint);
-  focusPointRef.current = focusPoint;
 
+  // ── Data ─────────────────────────────────────────────────────
   // Re-checks every pin against the address on the client today. `quiet` is the
   // check that runs each time the page opens: no spinner, no message.
   const runGeocode = useCallback(async (quiet = false) => {
     if (!quiet) { setGeocoding(true); setGeocodeMsg(null); }
     try {
       const result = await api.geocodeAllClients();
-      setGeocodeSummary(result);
       // Nothing moved, so the list on screen is already right: skip the reload
-      // and the redraw of every dot it would cause.
+      // and the redraw of every mark it would cause.
       if (result.matched > 0 || result.removed > 0) {
         setClients(liveClients(await api.listClientsFiltered({})));
       }
@@ -210,385 +223,711 @@ export default function GlobeView({ me }: { me?: Me | null }) {
   }, []);
 
   useEffect(() => {
-    let destroyed = false;
-
-    const init = async () => {
-      let allClients: Client[] = [];
+    let dead = false;
+    (async () => {
       try {
-        const [list, tiers] = await Promise.all([
+        const [list, tierList] = await Promise.all([
           api.listClientsFiltered({}),
-          api.buyerTiers().catch(() => [] as any[]),
+          api.buyerTiers().catch(() => [] as BuyerTier[]),
         ]);
-        allClients = list;
-        const tm: Record<string, string> = {};
-        for (const t of tiers as any[]) tm[t.client_id] = t.tier;
-        tierMapRef.current = tm;
+        if (dead) return;
+        setTiers(Object.fromEntries(tierList.map((t) => [t.client_id, t])));
+        setClients(liveClients(list));
       } catch {
-        if (destroyed) return;
-        setError("Failed to load clients");
-        setLoading(false);
-        return;
+        if (!dead) setError("Failed to load clients");
+      } finally {
+        if (!dead) setLoading(false);
       }
-      if (destroyed) return;
-
-      setClients(liveClients(allClients));
-      setLoading(false);
-
       // Places clients added or synced since launch, moves pins whose address
       // was edited, and drops pins whose address no longer resolves. Reloads
       // the list only when something changed.
-      runGeocode(true);
+      if (!dead) runGeocode(true);
+    })();
+    return () => { dead = true; };
+  }, [runGeocode]);
 
-      if (destroyed) return;
+  const rows = useMemo(() => toRows(clients, tiers), [clients, tiers]);
+  // Every filter but the region one: the region list and the map's shading read
+  // this, so picking a state never hides the other states you could pick.
+  const unregioned = useMemo(() => rows.filter((r) =>
+    tiersOn.includes(tierKey(r.tier))
+    && (!highOnly || r.highValue)
+    && (!category || r.category === category)
+    && (!lead || r.leadStatus === lead)
+  ), [rows, tiersOn, highOnly, category, lead]);
+  const shown = useMemo(() => (region ? unregioned.filter((r) => r.region === region) : unregioned), [unregioned, region]);
 
-      // containerRef is always mounted now (rendered unconditionally above)
-      if (!containerRef.current) {
-        setError("Globe container not ready");
-        return;
-      }
+  const allPlaces = useMemo(() => buildPlaces(rows, today), [rows, today]);
+  const places    = useMemo(() => buildPlaces(shown, today), [shown, today]);
+  const mapped    = rows.filter((r) => r.lat !== null).length;
+  const shownMapped = shown.filter((r) => r.lat !== null).length;
 
-      // ── Starfield ───────────────────────────────────────────
-      initStarfield(starCanvasRef, starRafRef);
-
-      // ── Globe instance ──────────────────────────────────────
-      let globe: any;
-      try {
-        // Dark earth and a quiet rim, so the client dots are the brightest thing on screen.
-        globe = Globe()
-          .globeImageUrl("/globe/earth-dark.jpg")
-          .bumpImageUrl("/globe/earth-topology.png")
-          .backgroundColor("rgba(0,0,0,0)")
-          .showAtmosphere(true)
-          .atmosphereColor("#4A6FB5")
-          .atmosphereAltitude(0.1)
-          .width(containerRef.current.clientWidth)
-          .height(containerRef.current.clientHeight)
-          (containerRef.current);
-      } catch (e: any) {
-        setError(`Globe init failed: ${e?.message ?? e}`);
-        return;
-      }
-
-      // The dot accessors are set once. Afterwards only htmlElementsData changes
-      // (the effect below), so globe.gl diffs by object and a filter click adds or
-      // removes dots instead of rebuilding every one.
-      globe
-        .htmlLat((d: Point) => d.lat)
-        .htmlLng((d: Point) => d.lng)
-        .htmlAltitude(0.005)
-        .htmlTransitionDuration(0)
-        .htmlElement((d: Point) => makeDot(d, (p) => focusPointRef.current(p)));
-
-      globeRef.current = globe;
-      setGlobeReady(true);
-
-      // A click on the sphere only closes what is open; the camera stays put.
-      globe.onGlobeClick(() => {
-        setSelected(null);
-        setShowMissing(false);
-      });
-
-      // ── Controls ────────────────────────────────────────────
-      const ctrl = globe.controls();
-      ctrl.autoRotate      = true;
-      ctrl.autoRotateSpeed = 0.45;
-      ctrl.zoomSpeed       = 5.0;   // was 2.5 — much snappier
-      ctrl.enableDamping   = true;
-      ctrl.dampingFactor   = 0.22;  // was 0.12 — more responsive
-      ctrl.minDistance     = 101;
-      ctrl.maxDistance     = 700;
-
-      ctrl.addEventListener("start", () => {
-        if (isProgNavRef.current) return; // programmatic nav — don't interfere
-        ctrl.autoRotate = false;
-        if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
-      });
-
-      // Resume auto-rotate after the user releases the drag, once it's been
-      // idle for a bit — "start" above only ever turns it off.
-      ctrl.addEventListener("end", () => {
-        if (isProgNavRef.current) return; // programmatic nav — don't interfere
-        if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
-        autoRotateTimerRef.current = setTimeout(() => {
-          ctrl.autoRotate      = true;
-          ctrl.autoRotateSpeed = 0.45;
-        }, AUTO_ROTATE_RESUME_MS);
-      });
-
-      // ── Resize ──────────────────────────────────────────────
-      const onResize = () => {
-        if (!containerRef.current) return;
-        globe.width(containerRef.current.clientWidth);
-        globe.height(containerRef.current.clientHeight);
-      };
-      window.addEventListener("resize", onResize);
-
-      cleanupRef.current = () => {
-        window.removeEventListener("resize", onResize);
-        if (starRafRef.current) cancelAnimationFrame(starRafRef.current);
-        cancelAnimationFrame(flightRef.current);
-        if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
-        if (globe._destructor) globe._destructor();
-        globeRef.current = null;
-      };
-    };
-
-    init();
-    return () => { destroyed = true; cleanupRef.current?.(); };
-  }, [navTo, runGeocode]);
-
-  const points  = useMemo(() => toPoints(clients, tierMapRef.current, pointCacheRef.current), [clients]);
-  // Clients with no pin, and why, for the "not on the globe" list.
   const missing = useMemo(() => {
-    const groups = new Map<MissingReason, Client[]>();
-    for (const c of clients) {
-      if (hasPin(c)) continue;
-      const r = missingReason(c);
-      groups.set(r, [...(groups.get(r) || []), c]);
+    const groups = new Map<MissingReason, ClientRow[]>();
+    for (const r of rows) {
+      if (r.lat !== null) continue;
+      const why = missingReason(r);
+      groups.set(why, [...(groups.get(why) || []), r]);
     }
-    const ordered = MISSING_ORDER.filter((r) => groups.has(r)).map((r) => [r, groups.get(r)!] as const);
-    return { count: ordered.reduce((s, [, list]) => s + list.length, 0), groups: ordered };
-  }, [clients]);
+    const ordered = MISSING_ORDER.filter((w) => groups.has(w)).map((w) => [w, groups.get(w)!] as const);
+    return { count: rows.length - mapped, groups: ordered };
+  }, [rows, mapped]);
 
-  // ── Plotted points follow the tier filter ─────────────────────
-  const visible = useMemo(() => points.filter((p) => passesFilter(p, filter)), [points, filter]);
+  const byProfit = lens === "profit";
+  const regionList = useMemo(() => regionRollup(unregioned), [unregioned]);
+  const regions = useMemo(() => [...regionList].sort((a, b) =>
+    (byProfit ? b.profit - a.profit : b.count - a.count) || a.label.localeCompare(b.label)), [regionList, byProfit]);
+
+  const categories = useMemo(() => [...new Set(rows.map((r) => r.category).filter(Boolean))].sort(), [rows]);
+  const leads      = useMemo(() => [...new Set(rows.map((r) => r.leadStatus).filter(Boolean))].sort(), [rows]);
+  const tierCounts = useMemo(() => {
+    const n: Record<string, number> = {};
+    for (const r of rows) n[tierKey(r.tier)] = (n[tierKey(r.tier)] || 0) + 1;
+    return n;
+  }, [rows]);
+
+  // Marks on the globe: places merged by on-screen distance at this altitude.
+  const globeGroups = useMemo(() => {
+    const fov = globeRef.current?.camera?.().fov ?? 50;
+    const deg = (MARK_SPACING_PX / Math.max(1, size.h)) * 2 * Math.tan((fov * RAD) / 2) * levelToAlt(altLevel) / RAD;
+    const out = clusterPlaces(places, deg, today).map((g) => {
+      const sig = `${g.count}|${g.bestTier}|${g.profit}|${g.followUp}|${g.lastActivity}|${g.approximate}|${g.lat}|${g.lng}`;
+      const prev = groupCacheRef.current.get(g.key);
+      if (prev && (prev as any).__sig === sig) return prev;
+      (g as any).__sig = sig;
+      groupCacheRef.current.set(g.key, g);
+      return g;
+    });
+    return out;
+    // globeReady: the camera's fov is only readable once the globe exists.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [places, altLevel, size.h, today, globeReady]);
+
+  const selectedClient = panel?.kind === "client" ? panel.id : null;
+  const selectedGroup  = panel?.kind === "group" ? panel.group : panel?.kind === "client" ? panel.from : null;
+  const selectedKeys = useMemo(() => {
+    const s = new Set<string>();
+    for (const g of globeGroups) {
+      if ((selectedGroup && g.key === selectedGroup.key) || (selectedClient && g.clients.some((c) => c.id === selectedClient))) s.add(g.key);
+    }
+    return s;
+  }, [globeGroups, selectedGroup, selectedClient]);
+
+  // ── Globe instance ───────────────────────────────────────────
   useEffect(() => {
-    if (globeRef.current) globeRef.current.htmlElementsData(visible);
-  }, [visible, globeReady]);
+    const el = containerRef.current, root = rootRef.current;
+    if (!el || !root) return;
+    let globe: any;
+    try {
+      globe = Globe({ rendererConfig: { antialias: true, alpha: true, powerPreference: "high-performance" } })
+        .backgroundColor("rgba(0,0,0,0)")
+        .showAtmosphere(true)
+        .atmosphereColor("#4C74E0")
+        .atmosphereAltitude(0.18)
+        .width(el.clientWidth)
+        .height(el.clientHeight)
+        (el);
+    } catch (e: any) {
+      setError(`Globe init failed: ${e?.message ?? e}`);
+      return;
+    }
 
-  // Search — match by name or city, fly to the pick.
-  const q = query.trim().toLowerCase();
-  const results = useMemo(() => (
-    q ? points.filter((p) => p.name.toLowerCase().includes(q) || p.city.toLowerCase().includes(q)).slice(0, 8) : []
-  ), [q, points]);
+    // A deep navy sphere; the land is drawn over it as a field of small hexagons
+    // (buildLand, below), so the continents read at a glance and never compete
+    // with the client marks.
+    const mat = globe.globeMaterial() as THREE.MeshPhongMaterial;
+    mat.color = new THREE.Color("#12203F");
+    mat.emissive = new THREE.Color("#0A1328");
+    mat.shininess = 6;
 
-  // Small stats strip: what's on the map right now.
-  const stats = useMemo(() => {
-    const revenue = visible.reduce((s, p) => s + (p.revenue || 0), 0);
-    const byState: Record<string, number> = {};
-    for (const p of visible) if (p.state) byState[p.state] = (byState[p.state] || 0) + 1;
-    const top = Object.entries(byState).sort((a, b) => b[1] - a[1])[0];
-    return { revenue, topState: top ? `${top[0]} (${top[1]})` : null };
-  }, [visible]);
+    // Marks: one sprite per group, styled from styleRef so restyling never rebuilds.
+    globe
+      .customThreeObject(() => makeSprite())
+      .customThreeObjectUpdate((obj: THREE.Sprite, g: Group) => {
+        Object.assign(obj.position, globe.getCoords(g.lat, g.lng, MARK_ALTITUDE));
+        const st = styleRef.current;
+        styleSprite(obj, {
+          rgb: lensRgb(g, st.lens, today, st.profitTop),
+          count: g.count,
+          approximate: g.approximate,
+          selected: st.selected.has(g.key),
+        }, st.pxToScale, st.hover === g.key ? 1.18 : 1);
+      })
+      .customLayerLabel((g: Group) => tooltipHtml(g, showMoney))
+      .onCustomLayerHover((g: Group | null) => {
+        const key = g?.key ?? "";
+        if (styleRef.current.hover === key) return;
+        styleRef.current.hover = key;
+        globe.customLayerData(groupsRef.current);
+      })
+      .onCustomLayerClick((g: Group) => openGroupRef.current(g));
 
-  // ── Handlers ────────────────────────────────────────────────
-  const handleRespin = () => {
-    setSelected(null);
-    navTo(HOME_POV, 800, true);
+    // Follow-ups due today or overdue pulse, and nothing else does.
+    globe
+      .ringColor(() => (t: number) => `rgba(255,159,10,${((1 - t) * 0.85).toFixed(3)})`)
+      .ringMaxRadius(2.4)
+      .ringPropagationSpeed(2.2)
+      .ringRepeatPeriod(1500)
+      .ringAltitude(MARK_ALTITUDE - 0.001);
+
+    globeRef.current = globe;
+
+    // A click on the sphere only closes what is open; the camera stays put.
+    globe.onGlobeClick(() => setPanel(null));
+
+    const ctrl = globe.controls();
+    ctrl.autoRotateSpeed = 0.45;
+    ctrl.zoomSpeed       = 5.0;   // was 2.5 — much snappier
+    ctrl.enableDamping   = true;
+    ctrl.dampingFactor   = 0.22;  // was 0.12 — more responsive
+    ctrl.minDistance     = 101;
+    ctrl.maxDistance     = 700;
+    if (saved.pov) {
+      globe.pointOfView(saved.pov);           // back from a client: keep the view
+    } else {
+      globe.pointOfView(HOME_POV);
+      ctrl.autoRotate = !reduceMotion();
+    }
+
+    ctrl.addEventListener("start", () => {
+      if (isProgNavRef.current) return; // programmatic nav — don't interfere
+      ctrl.autoRotate = false;
+      if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
+    });
+    // Resume auto-rotate after the user releases the drag, once it's been
+    // idle for a bit — "start" above only ever turns it off.
+    ctrl.addEventListener("end", () => {
+      if (isProgNavRef.current) return; // programmatic nav — don't interfere
+      if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
+      if (reduceMotion()) return;
+      autoRotateTimerRef.current = setTimeout(() => {
+        ctrl.autoRotate      = true;
+        ctrl.autoRotateSpeed = 0.45;
+      }, AUTO_ROTATE_RESUME_MS);
+    });
+    // Regroup marks when the zoom crosses a level (rotation alone never does).
+    ctrl.addEventListener("change", () => {
+      const lvl = altToLevel(globe.pointOfView().altitude);
+      setAltLevel((cur) => (cur === lvl ? cur : lvl));
+    });
+
+    // ── Drawing only when someone is looking ──────────────────
+    let paused = false, idleTimer: ReturnType<typeof setTimeout> | undefined, rotateBeforeIdle = false;
+    const pause = () => { if (!paused) { paused = true; globe.pauseAnimation(); } };
+    const resume = () => { if (paused) { paused = false; globe.resumeAnimation(); } };
+    const wake = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (!document.hidden && document.hasFocus() && viewRef.current === "globe") resume();
+      if (rotateBeforeIdle) { ctrl.autoRotate = true; rotateBeforeIdle = false; }
+      idleTimer = setTimeout(() => { rotateBeforeIdle = ctrl.autoRotate; ctrl.autoRotate = false; pause(); }, IDLE_MS);
+    };
+    wakeRef.current = wake;
+    const onVisibility = () => (document.hidden ? pause() : wake());
+    const onBlur = () => pause();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", wake);
+    const activity = ["pointermove", "pointerdown", "wheel", "keydown"];
+    activity.forEach((ev) => root.addEventListener(ev, wake, { passive: true }));
+    wake();
+
+    // ── Size ──────────────────────────────────────────────────
+    // A ResizeObserver, not window resize: the split-view divider and the sidebar
+    // collapse change this pane's size without resizing the window.
+    const ro = new ResizeObserver(() => {
+      setRootW(root.clientWidth);
+      const w = el.clientWidth, h = el.clientHeight;
+      if (!w || !h) return;
+      globe.width(w);
+      globe.height(h);
+      setSize({ w, h });
+    });
+    ro.observe(el);
+    ro.observe(root);
+
+    const stopStars = initStarfield(starCanvasRef.current);
+    setGlobeReady(true);
+
+    return () => {
+      try { sessionStorage.setItem(SAVE_KEY, JSON.stringify({ ...readSaved(), pov: globe.pointOfView() })); } catch { /* storage off */ }
+      ro.disconnect();
+      stopStars();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", wake);
+      activity.forEach((ev) => root.removeEventListener(ev, wake));
+      if (idleTimer) clearTimeout(idleTimer);
+      cancelAnimationFrame(flightRef.current);
+      if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
+      // globe.gl's destructor empties the layers but keeps the WebGL context,
+      // the controls and their listeners; release those too, or every visit to
+      // the tab leaves one behind.
+      globe._destructor?.();
+      globe.controls()?.dispose?.();
+      const renderer = globe.renderer?.();
+      renderer?.dispose?.();
+      renderer?.forceContextLoss?.();
+      disposeMarkTextures();
+      globeRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The land: built once per visit as a single mesh, then recoloured in place so
+  // countries with clients read a little brighter.
+  const landRef = useRef<Land | null>(null);
+  useEffect(() => {
+    const globe = globeRef.current;
+    if (!globe) return;
+    let land: Land | null = null;
+    // After the first frame: the first build of the session takes ~120ms, and the
+    // sphere and the marks should not wait for it.
+    const t = setTimeout(() => {
+      land = buildLand(countries.features, (lat, lng, alt) => globe.getCoords(lat, lng, alt));
+      land.paint((f) => countriesRef.current.has(f));
+      globe.scene().add(land.mesh);
+      landRef.current = land;
+      // Hover tests run every 50ms against everything in the scene; the
+      // atmosphere is only a glow and never needs one.
+      globe.scene().traverse((o: any) => { if (o.__globeObjType === "atmosphere") o.raycast = () => {}; });
+    }, 60);
+    return () => {
+      clearTimeout(t);
+      if (land) { globe.scene().remove(land.mesh); land.dispose(); }
+      landRef.current = null;
+    };
+  }, [globeReady]);
+  const countriesWithClients = useMemo(() => {
+    const s = new Set<object>();
+    for (const p of allPlaces) {
+      const f = countries.features.find((c) => geoContains(c, [p.lng, p.lat]));
+      if (f) s.add(f);
+    }
+    return s;
+  }, [allPlaces]);
+  const countriesRef = useRef(countriesWithClients);
+  countriesRef.current = countriesWithClients;
+  useEffect(() => {
+    landRef.current?.paint((f) => countriesWithClients.has(f));
+  }, [countriesWithClients, globeReady]);
+
+  // Keep the sprite scale right for the canvas height and camera.
+  useEffect(() => {
+    const fov = globeRef.current?.camera?.().fov ?? 50;
+    styleRef.current.pxToScale = (2 * Math.tan((fov * RAD) / 2)) / Math.max(1, size.h);
+  }, [size.h, globeReady]);
+
+  // Hand the marks to globe.gl, and restyle them when the lens or selection moves.
+  const profitTop = Math.max(0, ...globeGroups.map((g) => g.profit));
+  useEffect(() => {
+    const globe = globeRef.current;
+    if (!globe) return;
+    Object.assign(styleRef.current, { lens, profitTop, selected: selectedKeys });
+    groupsRef.current = globeGroups;
+    globe.customLayerData(globeGroups);
+    globe.ringsData(reduceMotion() ? [] : globeGroups.filter((g) => g.followUp === "overdue" || g.followUp === "today"));
+  }, [globeGroups, lens, profitTop, selectedKeys, globeReady, size.h]);
+
+  // The globe draws nothing while the flat map is up.
+  useEffect(() => {
+    const globe = globeRef.current;
+    if (!globe) return;
+    if (view === "map") globe.pauseAnimation();
+    else wakeRef.current();
+  }, [view, globeReady]);
+
+  // Remember the view settings for this session.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SAVE_KEY, JSON.stringify({
+        ...readSaved(), view, scope, lens: lensPick, tiers: tiersOn, high: highOnly, category, lead, region,
+      }));
+    } catch { /* storage off */ }
+  }, [view, scope, lensPick, tiersOn, highOnly, category, lead, region]);
+
+  // ── Opening things ───────────────────────────────────────────
+  const openGroup = useCallback((g: Group) => {
+    if (g.count === 1) setPanel({ kind: "client", id: g.clients[0].id, from: null });
+    else setPanel({ kind: "group", group: g });
+    if (view !== "globe" || !globeRef.current) return;
+    const alt = globeRef.current.pointOfView().altitude;
+    if (g.placeCount < 2) { navTo({ lat: g.lat, lng: g.lng, altitude: Math.min(alt, 0.45) }, 700); return; }
+    // A cluster of several places flies in just far enough that its two closest
+    // places come apart, so one click always separates it.
+    const pts = [...new Map(g.clients.map((c) => [`${c.lat},${c.lng}`, c])).values()];
+    let closest = Infinity;
+    for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+      closest = Math.min(closest, arcDeg(pts[i].lat!, pts[i].lng!, pts[j].lat!, pts[j].lng!));
+    }
+    const fov = globeRef.current.camera().fov;
+    const degPerAlt = (MARK_SPACING_PX / Math.max(1, size.h)) * 2 * Math.tan((fov * RAD) / 2) / RAD;
+    const target = Math.min(alt * 0.8, Math.max(0.06, (closest / degPerAlt) * 0.85));
+    navTo({ lat: g.lat, lng: g.lng, altitude: target }, 800);
+  }, [navTo, view, size.h]);
+  const openGroupRef = useRef(openGroup);
+  openGroupRef.current = openGroup;
+
+  const openClient = useCallback((r: ClientRow, from: Group | null = null) => {
+    setPanel({ kind: "client", id: r.id, from });
+    if (view === "globe" && r.lat !== null && r.lng !== null) navTo({ lat: r.lat, lng: r.lng, altitude: 0.35 }, 600);
+  }, [navTo, view]);
+
+  const pickRegion = (key: string) => {
+    const next = region === key ? "" : key;
+    setRegion(next);
+    if (next && view === "globe") fitTo(allPlaces.filter((p) => p.clients.some((c) => c.region === next)));
   };
 
+  // ── Search ───────────────────────────────────────────────────
+  const q = query.trim().toLowerCase();
+  const results = useMemo(() => (
+    q ? rows.filter((r) => [r.name, r.company, r.city, r.state, r.country].some((f) => f.toLowerCase().includes(q))).slice(0, 8) : []
+  ), [q, rows]);
+  useEffect(() => setActive(0), [q]);
+  const choose = (r: ClientRow) => { setQuery(""); openClient(r); };
+
+  // Esc closes whatever is open; Ctrl/Cmd+F finds a client.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        if (rootW < 820) setRailOpen(true);
+        setTimeout(() => searchRef.current?.focus(), 0);
+      } else if (e.key === "Escape" && document.activeElement !== searchRef.current) {
+        setPanel(null);
+        setRailOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [rootW]);
+
+  const narrow = rootW < 820;
+  const panelRow = selectedClient ? rows.find((r) => r.id === selectedClient) ?? null : null;
+  const toggleTier = (t: string) => setTiersOn((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
+  const topRegions = allRegions ? regions : regions.slice(0, 8);
+  const regionTop = Math.max(1, ...regions.map((r) => (byProfit ? Math.max(0, r.profit) : r.count)));
+  const filtered = shown.length !== rows.length;
+
   // ── Render ──────────────────────────────────────────────────
-  // Always render the container so containerRef is mounted before the async
-  // init resolves — otherwise containerRef.current would be null when checked.
-  // Loading and error states are overlays, not replacements.
   return (
-    <div
-      className="globe-root relative w-full h-full"
-      style={{ background: "#060610", color: "#eef0f6" }}
-    >
+    <div ref={rootRef} className={`globe-root relative w-full h-full ${panel ? "has-panel" : ""}`}
+      style={{ background: "#060610", color: "#eef0f6" }}>
       <div className="globe-neb" />
       <canvas ref={starCanvasRef} className="globe-starfield" />
-      <div ref={containerRef} className="globe-container" />
+      <div ref={containerRef} className={`globe-container ${narrow ? "" : "with-rail"}`} style={{ visibility: view === "globe" ? "visible" : "hidden" }} />
 
-      {/* Loading overlay */}
-      {loading && (
-        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-          <div className="text-[13px]" style={{ color: "#7E8798" }}>Loading globe…</div>
+      {view === "map" && (
+        <div className={`globe-map-pane ${narrow ? "" : "with-rail"}`}>
+          <ClientMap2D
+            scope={scope} places={places} regions={regionList} lens={lens} today={today}
+            showMoney={showMoney} selectedKey={selectedGroup?.key ?? null} regionFilter={region}
+            onSelect={openGroup} onRegion={pickRegion} onScope={setScope}
+          />
         </div>
       )}
 
-      {/* Error overlay */}
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="text-[13px]" style={{ color: "#7E8798" }}>Loading clients…</div>
+        </div>
+      )}
       {error && (
         <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
           <div className="text-[13px] text-center" style={{ color: "#7E8798" }}>{error}</div>
         </div>
       )}
 
-      {/* Tier filter chips */}
-      {points.length > 0 && (
-        <div className="globe-chips globe-glass">
-          {FILTERS.map(([f, label]) => (
-            <button key={f} onClick={() => setFilter(f)} className={`globe-chip ${filter === f ? "on" : ""}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+      {/* ── Left rail: search, what is shown, how it is coloured, where ── */}
+      {narrow && !railOpen && (
+        <button className="globe-rail-toggle globe-ctrl-btn" onClick={() => setRailOpen(true)} aria-label="Show filters" title="Show filters">
+          <SlidersHorizontal size={15} />
+        </button>
       )}
-
-      {/* Client search — fly to a client */}
-      {points.length > 0 && (
-        <div className="globe-search-wrap">
-          <div className="globe-glass relative">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "#6B7488" }} />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Find a client…"
-              spellCheck={false}
-            />
-          </div>
-          {results.length > 0 && (
-            <div className="globe-glass mt-1.5 overflow-hidden">
-              {results.map((p) => {
-                const ds = dotStyle(p.tier);
-                return (
-                  <button key={p.id}
-                    onClick={() => {
-                      setQuery("");
-                      // If the current filter hides this client, widen it so the dot exists.
-                      if (!passesFilter(p, filter)) setFilter("all");
-                      focusPoint(p);
-                    }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.06]">
-                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: `rgb(${ds.c})` }} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[12.5px] font-medium truncate" style={{ color: "#F2F4F8" }}>{p.name}</span>
-                      {placeLabel(p.city, p.state, p.country) && (
-                        <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>
-                          {placeLabel(p.city, p.state, p.country)}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
+      {(!narrow || railOpen) && (
+        <aside className={`globe-rail ${narrow ? "floating" : ""}`}>
+          <div className="globe-rail-head">
+            <div className="globe-seg" role="tablist" aria-label="View">
+              <button className={view === "globe" ? "on" : ""} onClick={() => setView("globe")}><Globe2 size={13} /> Globe</button>
+              <button className={view === "map" ? "on" : ""} onClick={() => setView("map")}><MapIcon size={13} /> Map</button>
             </div>
-          )}
-          {q && results.length === 0 && (
-            <div className="globe-glass mt-1.5 px-3 py-2 text-[11.5px]" style={{ color: "#7E8798" }}>
-              No mapped client matches
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Legend — what dot color/size means */}
-      {points.length > 0 && (
-        <div className="globe-legend globe-glass">
-          {(["P", "S", "A", "B", "C", "Prospect"] as const).map((t) => {
-            const ds = dotStyle(t);
-            return (
-              <span key={t} className="inline-flex items-center gap-1.5">
-                <span className="rounded-full flex-shrink-0"
-                  style={{ width: Math.max(5, ds.size - 4), height: Math.max(5, ds.size - 4), background: `rgb(${ds.c})`, opacity: ds.dim ? 0.7 : 1 }} />
-                {t === "P" ? "Platinum" : t === "S" ? "Diamond" : t === "A" ? "Gold" : t === "B" ? "Silver" : t === "C" ? "Bronze" : "Prospect"}
-              </span>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Zero-clients overlay */}
-      {points.length === 0 && !loading && !geocoding && (
-        <div className="absolute inset-0 flex items-center justify-center z-[5]">
-          <div className="text-center px-7 py-5 rounded-2xl pointer-events-auto globe-glass">
-            <div className="text-[13px] mb-2" style={{ color: "#A9B1C6" }}>No client locations mapped</div>
-            {geocodeSummary ? (
-              <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#7E8798" }}>
-                {geocodeSummary.total} client{geocodeSummary.total !== 1 ? "s" : ""} total ·
-                {geocodeSummary.matched > 0 && <span> {geocodeSummary.matched} newly plotted ·</span>} {geocodeSummary.skipped} have no address
-              </div>
-            ) : (
-              <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#7E8798" }}>
-                Add city/state to your client records to plot them on the globe.
+            {view === "map" && (
+              <div className="globe-seg" aria-label="Map area">
+                <button className={scope === "us" ? "on" : ""} onClick={() => setScope("us")}>US</button>
+                <button className={scope === "world" ? "on" : ""} onClick={() => setScope("world")}>World</button>
               </div>
             )}
-            <button
-              onClick={() => {
-                sessionStorage.setItem("clienthub.clients.filter.missing", "address");
-                window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "clients" }));
+            {narrow && (
+              <button className="globe-panel-close ml-auto" onClick={() => setRailOpen(false)} aria-label="Hide filters"><X size={16} /></button>
+            )}
+          </div>
+
+          <div className="globe-rail-search">
+            <Search size={13} className="globe-rail-search-icon" />
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(results.length - 1, a + 1)); }
+                else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
+                else if (e.key === "Enter" && results[active]) choose(results[active]);
+                else if (e.key === "Escape") { setQuery(""); searchRef.current?.blur(); }
               }}
-              className="text-[11px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
-              style={{ background: "var(--accent-tint)", color: "var(--accent-400)", border: "1px solid var(--accent-glow)" }}
-            >
-              Fill in addresses
+              placeholder="Find a client, city or state"
+              spellCheck={false}
+              aria-label="Find a client"
+            />
+          </div>
+          {q && (
+            <div className="globe-rail-results">
+              {results.length === 0 && <div className="globe-rail-empty">No client matches</div>}
+              {results.map((r, i) => (
+                <button key={r.id} onClick={() => choose(r)} onMouseEnter={() => setActive(i)}
+                  className={`globe-rail-result ${i === active ? "on" : ""}`}>
+                  <span className="globe-swatch" style={{ background: `rgb(${TIER_RGB[r.tier] ?? TIER_RGB.New})` }} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[12.5px] font-medium truncate" style={{ color: "#F2F4F8" }}>{r.name}</span>
+                    <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>
+                      {r.lat === null ? `Not on the map · ${missingReason(r).toLowerCase()}` : placeLabel(r.city, r.state, r.country)}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <section className="globe-rail-section">
+            <div className="globe-coverage">
+              <span className="tabular-nums">{mapped} of {rows.length}</span> clients on the map
+              {filtered && <span style={{ color: "#7E8798" }}> · {shownMapped} shown</span>}
+            </div>
+            <div className="globe-coverage-bar"><span style={{ width: `${rows.length ? (mapped / rows.length) * 100 : 0}%` }} /></div>
+            <div className="flex items-center gap-2 mt-2">
+              {missing.count > 0 && (
+                <button className="globe-link" onClick={() => setPanel({ kind: "missing" })}>
+                  <MapPinOff size={12} /> {missing.count} not on the map
+                </button>
+              )}
+              <button onClick={() => runGeocode()} disabled={geocoding} className="globe-icon-btn ml-auto"
+                title="Re-check every pin against its address" aria-label="Re-check every pin against its address">
+                <RefreshCw size={12} className={geocoding ? "animate-spin" : ""} />
+              </button>
+            </div>
+            {geocodeMsg && <div className="globe-geocode-msg">{geocodeMsg}</div>}
+          </section>
+
+          <section className="globe-rail-section">
+            <div className="globe-rail-label">Colour by</div>
+            <div className="globe-seg full">
+              {LENSES.filter(([l]) => l !== "profit" || showMoney).map(([l, label]) => (
+                <button key={l} className={lens === l ? "on" : ""} onClick={() => setLens(l)}>{label}</button>
+              ))}
+            </div>
+            {lens !== "tier" && <LensLegend lens={lens} />}
+          </section>
+
+          <section className="globe-rail-section">
+            <div className="globe-rail-label">Show</div>
+            {TIER_ROWS.map((t) => (
+              <button key={t} className={`globe-legend-row ${tiersOn.includes(t) ? "" : "off"}`} onClick={() => toggleTier(t)}
+                aria-pressed={tiersOn.includes(t)}>
+                <span className="globe-swatch" style={{ background: `rgb(${TIER_RGB[t]})` }} />
+                <span className="flex-1 text-left">{TIER_NAME[t]}</span>
+                <span className="tabular-nums" style={{ color: "#7E8798" }}>{tierCounts[t] || 0}</span>
+              </button>
+            ))}
+            <label className="globe-check">
+              <input type="checkbox" checked={highOnly} onChange={(e) => setHighOnly(e.target.checked)} />
+              High value only
+            </label>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <select className="globe-select" value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Category">
+                <option value="">All categories</option>
+                {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select className="globe-select" value={lead} onChange={(e) => setLead(e.target.value)} aria-label="Lead status">
+                <option value="">Any status</option>
+                {leads.map((l) => <option key={l} value={l}>{niceStatus(l)}</option>)}
+              </select>
+            </div>
+            {region && (
+              <button className="globe-chip-on mt-2" onClick={() => setRegion("")}>
+                {regions.find((r) => r.region === region)?.label ?? region} <X size={11} />
+              </button>
+            )}
+          </section>
+
+          <section className="globe-rail-section">
+            <div className="globe-rail-label">{byProfit ? "Regions by profit" : "Regions by clients"}</div>
+            {regions.length === 0 && <div className="globe-rail-empty">No client has a state or country yet</div>}
+            {topRegions.map((r) => {
+              const v = byProfit ? Math.max(0, r.profit) : r.count;
+              return (
+                <button key={r.region} className={`globe-region-row ${region === r.region ? "on" : ""}`} onClick={() => pickRegion(r.region)}>
+                  <span className="flex items-baseline gap-2 min-w-0">
+                    <span className="truncate flex-1 text-left">{r.label}</span>
+                    <span className="tabular-nums flex-shrink-0" style={{ color: "#A9B1C6" }}>
+                      {showMoney && byProfit ? fmtAmount(r.profit) : r.count}
+                    </span>
+                  </span>
+                  <span className="globe-region-bar"><span style={{ width: `${(v / regionTop) * 100}%` }} /></span>
+                </button>
+              );
+            })}
+            {regions.length > 8 && (
+              <button className="globe-link mt-1" onClick={() => setAllRegions((a) => !a)}>
+                {allRegions ? "Show fewer" : `Show all ${regions.length}`}
+              </button>
+            )}
+          </section>
+        </aside>
+      )}
+
+      {/* Camera controls */}
+      {view === "globe" && (
+        <div className="globe-top-controls">
+          <button onClick={() => { setPanel(null); navTo(HOME_POV, 800, !reduceMotion()); }} className="globe-ctrl-btn" title="Reset view and spin" aria-label="Reset view and spin">
+            <RotateCcw size={15} />
+          </button>
+          <button onClick={() => navTo(US_POV, 600, false)} className="globe-ctrl-btn" title="Zoom to the US" aria-label="Zoom to the US">
+            <MapIcon size={15} />
+          </button>
+          <button onClick={() => fitTo(places)} className="globe-ctrl-btn" title="Fit every client in view" aria-label="Fit every client in view">
+            <Maximize2 size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* ── Right panel ── */}
+      {panel?.kind === "group" && (
+        <div className="globe-client-panel open">
+          <div className="p-5">
+            <PanelHead title={panel.group.label} onClose={() => setPanel(null)} />
+            <div className="text-[12px] mb-3" style={{ color: "#A9B1C6" }}>
+              {panel.group.count} clients{panel.group.placeCount > 1 ? ` in ${panel.group.placeCount} places` : ""}
+              {showMoney && <> · <span className="tabular-nums">{fmtAmount(panel.group.profit)}</span> profit</>}
+            </div>
+            {panel.group.approximate && <div className="globe-note mb-3">These pins are the centre of a state or country, not an exact city.</div>}
+            {panel.group.clients.map((c) => (
+              <button key={c.id} className="globe-missing-row" onClick={() => openClient(c, panel.group)}>
+                <span className="globe-swatch" style={{ background: `rgb(${TIER_RGB[c.tier] ?? TIER_RGB.New})` }} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12.5px] truncate" style={{ color: "#F2F4F8" }}>{c.name}</span>
+                  <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>
+                    {TIER_NAME[c.tier] ?? c.tier}{panel.group.placeCount > 1 ? ` · ${placeLabel(c.city, c.state, c.country)}` : ""}
+                  </span>
+                </span>
+                {showMoney && <span className="text-[11.5px] tabular-nums" style={{ color: "#A9B1C6" }}>{fmtAmount(c.profit)}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {panel?.kind === "client" && panelRow && (
+        <div className="globe-client-panel open">
+          <div className="p-5 space-y-4">
+            {panel.from && (
+              <button className="globe-link" onClick={() => setPanel({ kind: "group", group: panel.from! })}>
+                <ChevronLeft size={13} /> {panel.from.label}
+              </button>
+            )}
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-[15px] font-semibold mb-1.5">{panelRow.name}</h3>
+                {panelRow.company && panelRow.company !== panelRow.name && (
+                  <div className="text-[12px] mb-1.5 truncate" style={{ color: "#A9B1C6" }}>{panelRow.company}</div>
+                )}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <TierBadge tier={panelRow.tier} size="sm" />
+                  {panelRow.highValue && <StatusPill tone="accent">High value</StatusPill>}
+                  {dueToReorder(panelRow, today) && <StatusPill tone="warning">Due to reorder</StatusPill>}
+                </div>
+              </div>
+              <button onClick={() => setPanel(null)} className="globe-panel-close" aria-label="Close"><X size={16} /></button>
+            </div>
+
+            {showMoney && (
+              <div className="globe-figures">
+                <div>
+                  <div className="globe-fig-label">Profit</div>
+                  <div className="globe-fig tabular-nums" style={{ color: panelRow.profit < 0 ? `rgb(${PROFIT_NEGATIVE})` : "#F2F4F8" }}>{fmtAmount(panelRow.profit)}</div>
+                </div>
+                <div>
+                  <div className="globe-fig-label">Revenue</div>
+                  <div className="globe-fig small tabular-nums">{fmtAmount(panelRow.revenue)}</div>
+                </div>
+              </div>
+            )}
+
+            <dl className="globe-facts">
+              <Fact label="Location">
+                {panelRow.lat === null
+                  ? <span>Not on the map · {missingReason(panelRow).toLowerCase()}</span>
+                  : <span className="inline-flex items-center gap-1.5">
+                      <MapPin size={12} style={{ color: "var(--accent-500)" }} />
+                      {placeLabel(panelRow.city, panelRow.state, panelRow.country)}
+                      {panelRow.precision !== "city" && <span style={{ color: "#7E8798" }}>(approximate)</span>}
+                    </span>}
+              </Fact>
+              <Fact label="Deals landed">{panelRow.dealsLanded}</Fact>
+              <Fact label="Last invoice">{panelRow.lastInvoice ? relTime(panelRow.lastInvoice) : "None yet"}</Fact>
+              {panelRow.cadenceDays ? <Fact label="Orders">About every {Math.round(panelRow.cadenceDays)} days</Fact> : null}
+              <Fact label="Payment">{RELIABILITY[panelRow.reliability] ?? niceStatus(panelRow.reliability)}</Fact>
+              <Fact label="Last contact">{relTime(panelRow.lastContact)}</Fact>
+              {panelRow.nextFollowUp && (
+                <Fact label="Follow-up">
+                  <span style={{ color: followColor(panelRow.nextFollowUp, today) }}>{panelRow.nextFollowUp.slice(0, 10)}</span>
+                </Fact>
+              )}
+              {panelRow.category && <Fact label="Category">{panelRow.category}</Fact>}
+              {panelRow.leadStatus && <Fact label="Status">{niceStatus(panelRow.leadStatus)}</Fact>}
+            </dl>
+
+            {(() => {
+              const others = panel.from ? [] : (allPlaces.find((p) => p.clients.some((c) => c.id === panelRow.id))?.clients ?? []).filter((c) => c.id !== panelRow.id);
+              return others.length > 0 && (
+                <div>
+                  <div className="globe-rail-label">Also in {placeLabel(panelRow.city, panelRow.state, panelRow.country)}</div>
+                  {others.slice(0, 6).map((c) => (
+                    <button key={c.id} className="globe-missing-row" onClick={() => openClient(c)}>
+                      <span className="globe-swatch" style={{ background: `rgb(${TIER_RGB[c.tier] ?? TIER_RGB.New})` }} />
+                      <span className="block text-[12.5px] truncate flex-1 text-left" style={{ color: "#F2F4F8" }}>{c.name}</span>
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
+
+            <button onClick={() => viewProfile(panelRow.id)} className="globe-primary">
+              <ExternalLink size={12} /> Open client
             </button>
           </div>
         </div>
       )}
 
-      {/* Bottom bar — live stats for what's plotted */}
-      <div className="globe-bottom-bar">
-        <div className="globe-stats-badge">
-          {filter !== "all" && <span>{visible.length} shown · </span>}
-          {points.length} of {clients.length} client{clients.length !== 1 ? "s" : ""} on the globe
-          {showMoney && stats.revenue > 0 && <span> · {fmtAmount(stats.revenue)} represented</span>}
-          {stats.topState && <span> · top: {stats.topState}</span>}
-        </div>
-        {missing.count > 0 && (
-          <button
-            onClick={() => { setSelected(null); setShowMissing(true); }}
-            className="globe-missing-btn"
-          >
-            <MapPinOff size={12} />
-            {missing.count} not on the globe
-          </button>
-        )}
-        <button
-          onClick={() => runGeocode()}
-          disabled={geocoding}
-          className="globe-geocode-btn"
-          title="Re-check every pin against its address"
-          aria-label="Re-check every pin against its address"
-        >
-          <RefreshCw size={13} className={geocoding ? "animate-spin" : ""} />
-        </button>
-        {geocodeMsg && (
-          <div className="globe-geocode-msg">{geocodeMsg}</div>
-        )}
-      </div>
-
-      {/* Top-right controls */}
-      <div className="globe-top-controls">
-        <button
-          onClick={handleRespin}
-          className="globe-ctrl-btn"
-          title="Reset view and spin"
-          aria-label="Reset view and spin"
-        >
-          <RotateCcw size={15} />
-        </button>
-        <button
-          onClick={() => navTo(US_POV, 600, false)}
-          className="globe-ctrl-btn"
-          title="Zoom to the US"
-          aria-label="Zoom to the US"
-        >
-          <MapIcon size={15} />
-        </button>
-      </div>
-
       {/* Every client without a pin, grouped by why */}
-      {showMissing && !selected && (
+      {panel?.kind === "missing" && (
         <div className="globe-client-panel open">
           <div className="p-5">
-            <div className="flex items-start justify-between mb-1.5">
-              <h3 className="text-[15px] font-semibold">Not on the globe</h3>
-              <button
-                onClick={() => setShowMissing(false)}
-                className="globe-panel-close"
-                aria-label="Close"
-              >
-                <X size={16} />
-              </button>
-            </div>
+            <PanelHead title="Not on the map" onClose={() => setPanel(null)} />
             <p className="text-[12px] leading-relaxed mb-4" style={{ color: "#7E8798" }}>
-              {missing.count} of {clients.length} clients have no pin. Fix the address on the client and it lands on the globe the next time this page opens.
+              {missing.count} of {rows.length} clients have no pin. Fix the address on the client and it lands on the map the next time this page opens.
             </p>
-            {missing.groups.map(([reason, list]) => (
-              <div key={reason} className="mb-4">
+            {missing.groups.map(([why, list]) => (
+              <div key={why} className="mb-4">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-[12.5px] font-medium" style={{ color: "#E7ECF6" }}>{reason}</span>
+                  <span className="text-[12.5px] font-medium" style={{ color: "#E7ECF6" }}>{why}</span>
                   <span className="text-[11.5px] tabular-nums" style={{ color: "#7E8798" }}>{list.length}</span>
                 </div>
-                <div className="text-[11px] mb-1.5" style={{ color: "#7E8798" }}>{MISSING_HINT[reason]}</div>
-                {list.map((c) => {
-                  const m = c.metadata || {};
-                  const where = placeLabel(String(m.city || ""), String(m.state || ""), String(m.country || ""));
+                <div className="text-[11px] mb-1.5" style={{ color: "#7E8798" }}>{MISSING_HINT[why]}</div>
+                {list.map((r) => {
+                  const where = placeLabel(r.city, r.state, r.country);
                   return (
-                    <button key={c.id} onClick={() => viewProfile(c.id)} className="globe-missing-row">
+                    <button key={r.id} onClick={() => viewProfile(r.id)} className="globe-missing-row">
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[12.5px] truncate" style={{ color: "#F2F4F8" }}>{c.name}</span>
+                        <span className="block text-[12.5px] truncate" style={{ color: "#F2F4F8" }}>{r.name}</span>
                         {where && <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>{where}</span>}
                       </span>
                       <ExternalLink size={12} className="flex-shrink-0" style={{ color: "#6B7488" }} />
@@ -600,70 +939,53 @@ export default function GlobeView({ me }: { me?: Me | null }) {
           </div>
         </div>
       )}
-
-      {/* Client detail panel */}
-      {selected && (
-        <div className="globe-client-panel open">
-          <div className="p-5 space-y-4">
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="text-[15px] font-semibold mb-1.5">{selected.name}</h3>
-                <div className="flex items-center gap-1.5">
-                  <TierBadge tier={selected.tier} size="sm" />
-                  {selected.highValue && (
-                    <StatusPill tone="accent">High value</StatusPill>
-                  )}
-                </div>
-              </div>
-              <button
-                onClick={() => setSelected(null)}
-                className="transition-colors"
-                style={{ color: "#7E8798" }}
-                onMouseEnter={e => (e.currentTarget.style.color = "#eee")}
-                onMouseLeave={e => (e.currentTarget.style.color = "#7E8798")}
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="space-y-2.5 text-[13px]" style={{ color: "#A9B1C6" }}>
-              {placeLabel(selected.city, selected.state, selected.country) && (
-                <div className="flex items-center gap-2">
-                  <MapPin size={13} style={{ color: "var(--accent-500)" }} />
-                  {placeLabel(selected.city, selected.state, selected.country)}
-                </div>
-              )}
-              <div className="flex items-center gap-2">
-                <Clock size={13} style={{ color: "#7E8798" }} />
-                Last contact: {relTime(selected.lastContact)}
-              </div>
-              {showMoney && (
-                <div className="flex items-center gap-2">
-                  <DollarSign size={13} style={{ color: "#3EC785" }} />
-                  Total revenue: <span className="tabular-nums font-semibold" style={{ color: "#F2F4F8" }}>{fmtAmount(selected.revenue)}</span>
-                </div>
-              )}
-            </div>
-
-            <button
-              onClick={() => viewProfile(selected.id)}
-              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-medium transition-colors"
-              style={{
-                background: "var(--accent-tint)",
-                color: "var(--accent-400)",
-                border: "1px solid var(--accent-glow)",
-              }}
-              onMouseEnter={e => (e.currentTarget.style.background = "var(--accent-glow)")}
-              onMouseLeave={e => (e.currentTarget.style.background = "var(--accent-tint)")}
-            >
-              <ExternalLink size={12} />
-              Open client
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
+}
+
+// ── Pieces ───────────────────────────────────────────────────────────────────
+
+function PanelHead({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <div className="flex items-start justify-between gap-3 mb-1.5">
+      <h3 className="text-[15px] font-semibold min-w-0">{title}</h3>
+      <button onClick={onClose} className="globe-panel-close" aria-label="Close"><X size={16} /></button>
+    </div>
+  );
+}
+
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="globe-fact">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </div>
+  );
+}
+
+function LensLegend({ lens }: { lens: Lens }) {
+  const rows: [string, string][] =
+    lens === "recency" ? [...RECENCY_STEPS.map((s) => [s.rgb, s.label] as [string, string]), [NEVER_RGB, "No invoice or contact"]]
+    : lens === "followup" ? (["overdue", "today", "soon", "none"] as FollowUp[]).map((f) => [FOLLOWUP_RGB[f], FOLLOWUP_LABEL[f]] as [string, string])
+    : [[PROFIT_STEPS[4], "Most profit on screen"], [PROFIT_STEPS[2], "Middle"], [PROFIT_STEPS[0], "None yet"], [PROFIT_NEGATIVE, "A loss"]];
+  return (
+    <div className="mt-2">
+      {rows.map(([rgb, label]) => (
+        <div key={label} className="globe-legend-row static">
+          <span className="globe-swatch" style={{ background: `rgb(${rgb})` }} />
+          <span>{label}</span>
+        </div>
+      ))}
+      {lens === "recency" && <div className="globe-note mt-1">Days since the last invoice, or the last contact when there is none.</div>}
+    </div>
+  );
+}
+
+function followColor(date: string, today: string): string {
+  const d = date.slice(0, 10);
+  if (d < today) return `rgb(${FOLLOWUP_RGB.overdue})`;
+  if (d === today) return `rgb(${FOLLOWUP_RGB.today})`;
+  return "#E7ECF6";
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -671,70 +993,11 @@ export default function GlobeView({ me }: { me?: Me | null }) {
 // Rejected leads stay out of the globe, as they stay out of the Clients counts.
 const liveClients = (list: Client[]) => list.filter((c) => c.approval_status !== "rejected");
 
-function toPoints(clients: Client[], tierMap: Record<string, string>, cache: Map<string, Point>): Point[] {
-  return clients
-    .map(c => {
-      const meta = c.metadata || {};
-      // Number.isFinite, not truthiness: a pin on the equator or the prime
-      // meridian (Kenya's centroid is -0.0) is a real pin.
-      if (!hasPin(c)) return null;
-      const p: Point = {
-        lat:         meta.lat,
-        lng:         meta.lng,
-        name:        c.name,
-        city:        meta.city    || "",
-        state:       meta.state   || "",
-        country:     meta.country || "",
-        tier:        tierMap[c.id] || "New",
-        highValue:   !!(c.high_value || meta.high_value),
-        revenue:     c.total_revenue || 0,
-        lastContact: c.last_contact_at || null,
-        id:          c.id,
-      };
-      const prev = cache.get(c.id);
-      if (prev && (Object.keys(p) as (keyof Point)[]).every((k) => prev[k] === p[k])) return prev;
-      cache.set(c.id, p);
-      return p;
-    })
-    .filter(Boolean) as Point[];
-}
+const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-// Two-element pattern: globe.gl writes `style.transform` directly on the
-// element it gets back from htmlElement. If we styled the dot itself we'd
-// fight that inline transform. Instead, the outer wrap (zero-sized) is what
-// globe.gl positions, and the inner dot is absolutely positioned so that
-// its center sits exactly on the wrap's origin — i.e. the geo coord.
-function makeDot(d: Point, onClick: (d: Point) => void): HTMLElement {
-  const ds = dotStyle(d.tier);
-
-  const wrap = document.createElement("div");
-  wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
-
-  const dot = document.createElement("div");
-  dot.className = "globe-dot";
-  dot.style.background = `rgb(${ds.c})`;
-  dot.style.setProperty("--dot-s", `${ds.size + (d.highValue ? 2 : 0)}px`);
-  dot.style.setProperty("--dot-c", ds.c);
-  dot.style.setProperty("--dot-glow", String(d.highValue ? Math.min(ds.glow + 0.2, 0.9) : ds.glow));
-  if (ds.dim && !d.highValue) dot.style.opacity = "0.75";
-  const where = placeLabel(d.city, d.state, d.country);
-  dot.innerHTML = `
-    <div class="globe-dot-tip">
-      <strong>${escapeHtml(d.name)}</strong>
-      <span>${escapeHtml(tierLabel(d.tier))}${where ? ` · ${escapeHtml(where)}` : ""}</span>
-    </div>`;
-  dot.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    onClick(d);
-  });
-
-  wrap.appendChild(dot);
-  return wrap;
-}
-
-function tierLabel(t: string): string {
-  return t === "P" ? "Platinum" : t === "S" ? "Diamond" : t === "A" ? "Gold" : t === "B" ? "Silver" : t === "C" ? "Bronze" : t;
-}
+// Altitude levels 18% apart: fine enough that marks regroup smoothly as you zoom.
+const altToLevel = (alt: number) => Math.round(Math.log(Math.max(0.05, alt)) / Math.log(1.18));
+const levelToAlt = (lvl: number) => Math.pow(1.18, lvl);
 
 function escapeHtml(s: string): string {
   return (s || "").replace(/[&<>"']/g, ch =>
@@ -742,73 +1005,44 @@ function escapeHtml(s: string): string {
   );
 }
 
-function initStarfield(
-  canvasRef: React.RefObject<HTMLCanvasElement | null>,
-  rafRef:    React.MutableRefObject<number>
-) {
-  const canvas = canvasRef.current;
-  if (!canvas) return;
+function tooltipHtml(g: Group, showMoney: boolean): string {
+  const head = g.count === 1 ? escapeHtml(g.clients[0].name) : `${g.count} clients`;
+  const where = `${escapeHtml(g.label)}${g.approximate ? " (approximate)" : ""}`;
+  const names = g.count > 1
+    ? g.clients.slice(0, 3).map((c) => `<span>${escapeHtml(c.name)}</span>`).join("") + (g.count > 3 ? `<span>and ${g.count - 3} more</span>` : "")
+    : `<span>${escapeHtml(TIER_NAME[g.clients[0].tier] ?? g.clients[0].tier)}</span>`;
+  const money = showMoney ? `<span>${escapeHtml(fmtAmount(g.profit))} profit</span>` : "";
+  return `<div class="globe-tip"><strong>${head}</strong><em>${where}</em>${names}${money}</div>`;
+}
+
+/**
+ * Stars drawn once, not every frame. A shooting star crosses now and then, and
+ * only while it is in flight does anything animate. Returns a cleanup.
+ */
+function initStarfield(canvas: HTMLCanvasElement | null): () => void {
+  if (!canvas) return () => {};
   const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-
-  const resize = () => {
-    const p = canvas.parentElement;
-    if (!p) return;
-    canvas.width  = p.clientWidth;
-    canvas.height = p.clientHeight;
-  };
-  resize();
-  window.addEventListener("resize", resize);
-
-  const reduceMotion = matchMedia("(prefers-reduced-motion:reduce)").matches;
+  if (!ctx) return () => {};
+  const STAR_COUNT = 450;
   // Subtle blue/white palette so the field reads as deep space, not TV static.
   const COLORS = ["#ffffff", "#e3edff", "#c2d6ff", "#a9c2ff", "#d7e4ff"];
   const stars = Array.from({ length: STAR_COUNT }, () => {
     const bright = Math.random() < 0.06; // a few hero stars get a soft glow
     return {
-      x: Math.random(),
-      y: Math.random(),
+      x: Math.random(), y: Math.random(),
       size: bright ? 1.3 + Math.random() * 1.0 : 0.4 + Math.random() * 1.1,
-      baseOpacity: bright ? 0.7 + Math.random() * 0.3 : 0.18 + Math.random() * 0.62,
-      speed: 0.4 + Math.random() * 1.8,
+      alpha: bright ? 0.7 + Math.random() * 0.3 : 0.12 + Math.random() * 0.5,
       color: bright ? "#eaf2ff" : COLORS[(Math.random() * COLORS.length) | 0],
       bright,
     };
   });
-
-  // Occasional shooting star — same motif as the website, random cadence.
-  type Shoot = { x: number; y: number; vx: number; vy: number; life: number; max: number };
-  let shoots: Shoot[] = [];
-  let nextShoot = 4 + Math.random() * 6;
-  const spawnShoot = (W: number, H: number) => {
-    const fromLeft = Math.random() < 0.5;
-    const speed = (0.7 + Math.random() * 0.5) * W;
-    const ang = (fromLeft ? 0.22 : 0.78) * Math.PI + (Math.random() - 0.5) * 0.18;
-    shoots.push({
-      x: fromLeft ? Math.random() * W * 0.35 : W * 0.65 + Math.random() * W * 0.35,
-      y: Math.random() * H * 0.4,
-      vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
-      life: 0, max: 0.9 + Math.random() * 0.5,
-    });
-  };
-
-  let frame = 0;
-  let lastDraw = 0;
-  // Cap redraw at ~30 FPS — twinkle is imperceptibly different from 60 and
-  // halves the CPU spent on the background canvas.
-  const FRAME_MS = 1000 / 30;
-  const draw = (t: number) => {
-    rafRef.current = requestAnimationFrame(draw);
-    if (t - lastDraw < FRAME_MS) return;
-    const dt = Math.min(0.06, (t - lastDraw) / 1000 || 0);
-    lastDraw = t;
-    frame++;
+  const paint = () => {
     const { width: w, height: h } = canvas;
     ctx.clearRect(0, 0, w, h);
     for (const s of stars) {
-      const opacity = s.baseOpacity * (0.5 + 0.5 * Math.sin(frame * 0.018 * s.speed));
-      if (s.bright) { ctx.shadowBlur = 6; ctx.shadowColor = s.color; } else { ctx.shadowBlur = 0; }
-      ctx.globalAlpha = opacity;
+      ctx.shadowBlur = s.bright ? 6 : 0;
+      ctx.shadowColor = s.color;
+      ctx.globalAlpha = s.alpha;
       ctx.fillStyle = s.color;
       ctx.beginPath();
       ctx.arc(s.x * w, s.y * h, s.size, 0, Math.PI * 2);
@@ -816,26 +1050,60 @@ function initStarfield(
     }
     ctx.shadowBlur = 0;
     ctx.globalAlpha = 1;
-
-    if (!reduceMotion) {
-      nextShoot -= dt;
-      if (nextShoot <= 0) { spawnShoot(w, h); nextShoot = 7 + Math.random() * 10; }
-      for (let i = shoots.length - 1; i >= 0; i--) {
-        const sh = shoots[i];
-        sh.life += dt; sh.x += sh.vx * dt; sh.y += sh.vy * dt;
-        if (sh.life >= sh.max || sh.x < -200 || sh.x > w + 200 || sh.y > h + 200) { shoots.splice(i, 1); continue; }
-        const a = Math.sin(Math.min(1, sh.life / sh.max) * Math.PI);
-        const tx = sh.x - sh.vx * 0.07, ty = sh.y - sh.vy * 0.07;
-        const g = ctx.createLinearGradient(sh.x, sh.y, tx, ty);
-        g.addColorStop(0, `rgba(234,242,255,${0.9 * a})`);
-        g.addColorStop(1, "rgba(120,170,255,0)");
-        ctx.strokeStyle = g; ctx.lineWidth = 2; ctx.lineCap = "round";
-        ctx.beginPath(); ctx.moveTo(sh.x, sh.y); ctx.lineTo(tx, ty); ctx.stroke();
-        ctx.globalAlpha = a; ctx.fillStyle = "#eaf2ff";
-        ctx.beginPath(); ctx.arc(sh.x, sh.y, 1.6, 0, Math.PI * 2); ctx.fill();
-        ctx.globalAlpha = 1;
-      }
-    }
   };
-  rafRef.current = requestAnimationFrame(draw);
+  let base: ImageData | null = null;
+  const resize = () => {
+    const p = canvas.parentElement;
+    if (!p) return;
+    canvas.width = p.clientWidth;
+    canvas.height = p.clientHeight;
+    paint();
+    base = canvas.width && canvas.height ? ctx.getImageData(0, 0, canvas.width, canvas.height) : null;
+  };
+  const ro = new ResizeObserver(resize);
+  if (canvas.parentElement) ro.observe(canvas.parentElement);
+  resize();
+
+  // Occasional shooting star — same motif as the website, random cadence.
+  let raf = 0, timer: ReturnType<typeof setTimeout> | undefined;
+  const shoot = () => {
+    timer = setTimeout(shoot, 7000 + Math.random() * 10000);
+    if (reduceMotion() || document.hidden || !base) return;
+    const W = canvas.width, H = canvas.height;
+    const fromLeft = Math.random() < 0.5;
+    const speed = (0.7 + Math.random() * 0.5) * W;
+    const ang = (fromLeft ? 0.22 : 0.78) * Math.PI + (Math.random() - 0.5) * 0.18;
+    const sh = {
+      x: fromLeft ? Math.random() * W * 0.35 : W * 0.65 + Math.random() * W * 0.35,
+      y: Math.random() * H * 0.4,
+      vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed, life: 0, max: 0.9 + Math.random() * 0.5,
+    };
+    let last = performance.now();
+    const frame = (t: number) => {
+      const dt = Math.min(0.06, (t - last) / 1000);
+      last = t;
+      sh.life += dt; sh.x += sh.vx * dt; sh.y += sh.vy * dt;
+      if (base) ctx.putImageData(base, 0, 0);
+      if (sh.life >= sh.max) return;
+      const a = Math.sin(Math.min(1, sh.life / sh.max) * Math.PI);
+      const tx = sh.x - sh.vx * 0.07, ty = sh.y - sh.vy * 0.07;
+      const g = ctx.createLinearGradient(sh.x, sh.y, tx, ty);
+      g.addColorStop(0, `rgba(234,242,255,${0.9 * a})`);
+      g.addColorStop(1, "rgba(120,170,255,0)");
+      ctx.strokeStyle = g; ctx.lineWidth = 2; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(sh.x, sh.y); ctx.lineTo(tx, ty); ctx.stroke();
+      ctx.globalAlpha = a; ctx.fillStyle = "#eaf2ff";
+      ctx.beginPath(); ctx.arc(sh.x, sh.y, 1.6, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+  };
+  timer = setTimeout(shoot, 4000 + Math.random() * 6000);
+
+  return () => {
+    ro.disconnect();
+    if (timer) clearTimeout(timer);
+    cancelAnimationFrame(raf);
+  };
 }

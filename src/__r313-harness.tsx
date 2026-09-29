@@ -298,6 +298,13 @@ const DAYS = Array.from({ length: 16 }, (_, i) => ({
     case "due_followups": return [];
     case "list_invoices": return [];
     case "list_clients": return [];
+    // R-133: invented clients for "Where the profit is", one per tier fixture row.
+    case "list_clients_filtered": return TIERS.map((t, i) => ({
+      id: t.client_id, name: `Invented Client ${i + 1}`, approval_status: "approved",
+      metadata: i % 13 === 12 ? {} : i % 11 === 10
+        ? { country: ["France", "Mexico"][i % 2] }
+        : { state: ["NJ", "New York", "PA", "TX", "CA", "IL", "FL", "GA"][i % 8], city: "Invented" },
+    }));
     case "financials_overview": return {
       free_cash: 61_480, bank_balance: 128_900, credit_card_balance: 7_240,
       supplier_payables: 34_100, refund_liability: 1_080, cash_floor: 20_000,
@@ -313,12 +320,12 @@ const DAYS = Array.from({ length: 16 }, (_, i) => ({
 
 // Invented tier spread so the Client mix donut has something to draw.
 const TIERS = [
-  ...Array(3).fill(0).map((_, i) => ({ tier: "P", client_id: `p${i}` })),
-  ...Array(6).fill(0).map((_, i) => ({ tier: "S", client_id: `s${i}` })),
-  ...Array(11).fill(0).map((_, i) => ({ tier: "A", client_id: `a${i}` })),
-  ...Array(14).fill(0).map((_, i) => ({ tier: "B", client_id: `b${i}` })),
-  ...Array(9).fill(0).map((_, i) => ({ tier: "C", client_id: `c${i}` })),
-  ...Array(5).fill(0).map((_, i) => ({ tier: "Prospect", client_id: `x${i}` })),
+  ...Array(3).fill(0).map((_, i) => ({ tier: "P", client_id: `p${i}`, total_profit: 38_000 - i * 4_100 })),
+  ...Array(6).fill(0).map((_, i) => ({ tier: "S", client_id: `s${i}`, total_profit: 19_500 - i * 1_300 })),
+  ...Array(11).fill(0).map((_, i) => ({ tier: "A", client_id: `a${i}`, total_profit: 9_800 - i * 450 })),
+  ...Array(14).fill(0).map((_, i) => ({ tier: "B", client_id: `b${i}`, total_profit: 3_900 - i * 170 })),
+  ...Array(9).fill(0).map((_, i) => ({ tier: "C", client_id: `c${i}`, total_profit: i === 4 ? -2_400 : 1_100 - i * 60 })),
+  ...Array(5).fill(0).map((_, i) => ({ tier: "Prospect", client_id: `x${i}`, total_profit: 0 })),
 ];
 
 const ME = { id: "u1", name: "Invented Admin", email: "admin@example.invalid", role: "admin", permissions: ["*"] } as any;
