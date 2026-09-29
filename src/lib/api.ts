@@ -2079,6 +2079,13 @@ export interface ManifestAnalysis {
   skipped_rows: number;
   formula: string;
   detection: ManifestDetection;
+  // R-396: how much of the breakdown is guesswork, and what was left out and why.
+  uncategorized_lines: number;
+  uncategorized_retail: number;
+  categories_guessed: number;   // lines whose category was read from the title
+  brands_from_titles: boolean;
+  unpriced_lines: number;
+  skipped_note: string | null;
 }
 
 // ── Manifest split (R-379) ──────────────────────────────────────────────────
@@ -2125,6 +2132,7 @@ export interface SplitOut {
   unpriced: number;      // lines the rule gives no price, so the total is short by them
   skipped: boolean;
   examples: string[];
+  category: string | null;  // for a split by category: the category its lines share
 }
 
 export interface SplitPlan {
@@ -2136,7 +2144,10 @@ export interface SplitPlan {
   notes: string[];
   columns: SplitColumn[];
   sheet_pricing: { kind: "pct" | "unit" | "line" | "none"; pct: number | null; unit: number | null; evidence: string; total: number | null };
-  totals: { lines: number; units: number; retail: number; sheet_price: number | null; price: number | null };
+  totals: {
+    lines: number; units: number; retail: number; sheet_price: number | null; price: number | null;
+    kept_lines: number; kept_units: number; kept_retail: number;  // the manifests not left out
+  };
   splits: SplitOut[];
   photos: { in_cell: number; placed: number; web: number; lines_with_photo: number; link_column: string | null };
   reconciles: boolean;
@@ -2166,6 +2177,7 @@ export interface ExportedSplit {
   cost: number | null;
   photos: string[];
   categories: { name: string; quantity: number }[];
+  category: string | null;  // the category a lot from this split files under
 }
 
 export interface ProfitForecast {

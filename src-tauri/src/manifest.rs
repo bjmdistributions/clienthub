@@ -58,6 +58,25 @@ pub struct ManifestAnalysis {
     pub skipped_rows: usize,
     pub formula: String,
     pub detection: ManifestDetection,
+    /// R-396: lines no category could be found for, and their retail, so the screen can
+    /// say how much of the breakdown is guesswork.
+    #[serde(default)]
+    pub uncategorized_lines: usize,
+    #[serde(default)]
+    pub uncategorized_retail: f64,
+    /// Lines whose category was read from the title rather than a category column.
+    #[serde(default)]
+    pub categories_guessed: usize,
+    /// true when the brand table came (at least partly) from the titles.
+    #[serde(default)]
+    pub brands_from_titles: bool,
+    /// Lines kept with no retail value (counted in units, not in retail).
+    #[serde(default)]
+    pub unpriced_lines: usize,
+    /// What was left out and why ("Left out 1 total row ("TOTAL")."), replacing the old
+    /// "N skipped (no price)" that was wrong for every reason but one.
+    #[serde(default)]
+    pub skipped_note: Option<String>,
 }
 
 /// A manifest reduced to plain string cells, whatever it arrived as. CSV, TSV,
@@ -82,20 +101,44 @@ pub(crate) fn extension(path: &str) -> String {
         .to_lowercase()
 }
 
-/// Parse a money/number cell. Strips currency symbols, thousands separators and
-/// stray spaces, and reads `(123.45)` as negative. Deliberately strict after the
-/// strip so a SKU like `B08N5` does not parse as a number.
+/// Parse a money/number cell. Strips currency symbols and codes ("$", "USD 130.00",
+/// "130.00 USD", "US$20"), thousands separators and stray spaces, reads `(123.45)` as
+/// negative, and reads a European decimal comma ("130,50", "1.234,50") as a decimal.
+/// Deliberately strict after the strip so a SKU like `B08N5` does not parse as a number.
 pub(crate) fn parse_money(s: &str) -> Option<f64> {
     let t = s.trim();
     if t.is_empty() {
         return None;
     }
     let neg = t.starts_with('(') && t.ends_with(')');
-    let core = t.trim_start_matches('(').trim_end_matches(')');
-    let cleaned: String = core
+    let mut core = t.trim_start_matches('(').trim_end_matches(')').trim_end_matches('*').trim().to_string();
+    let upper = core.to_uppercase();
+    for code in ["US$", "USD", "CAD", "C$", "AUD", "A$", "NZD", "EUR", "GBP", "MXN"] {
+        if let Some(rest) = upper.strip_prefix(code) {
+            core = rest.trim().to_string();
+            break;
+        }
+        if let Some(rest) = upper.strip_suffix(code) {
+            core = rest.trim().to_string();
+            break;
+        }
+    }
+    let mut cleaned: String = core
         .chars()
-        .filter(|c| !matches!(c, '$' | '£' | '€' | ',' | ' ' | '\u{a0}' | '%'))
+        .filter(|c| !matches!(c, '$' | '£' | '€' | '¥' | ' ' | '\u{a0}' | '%'))
         .collect();
+    if cleaned.contains(',') {
+        let last_comma = cleaned.rfind(',').unwrap();
+        let after = &cleaned[last_comma + 1..];
+        let grouped = cleaned.split(',').skip(1).all(|g| g.len() == 3 || (g.len() > 3 && g.as_bytes()[3] == b'.'));
+        if let Some(dot) = cleaned.rfind('.') {
+            cleaned = if dot > last_comma { cleaned.replace(',', "") } else { cleaned.replace('.', "").replace(',', ".") };
+        } else if !grouped && cleaned.matches(',').count() == 1 && (1..=2).contains(&after.len()) {
+            cleaned = cleaned.replace(',', ".");
+        } else {
+            cleaned = cleaned.replace(',', "");
+        }
+    }
     let v: f64 = cleaned.parse().ok()?;
     if !v.is_finite() {
         return None;
@@ -103,16 +146,46 @@ pub(crate) fn parse_money(s: &str) -> Option<f64> {
     Some(if neg { -v.abs() } else { v })
 }
 
-/// Summary lines and page furniture that are not products. A trailing
-/// `TOTAL … $45,000` row would otherwise be counted as a product line and inflate
-/// the retail, and a PDF's repeated `LOAD 4471 MANIFEST — PAGE 2` header would be
-/// read as a $1 item.
+/// Summary lines and page furniture that are not products: "TOTAL", "Grand Total:",
+/// "Pallet 3 Total", "Sub-Total", "TTL", "Total Pallets = 25", "Page 2 of 5", "Continued
+/// on next page", a PDF's repeated "LOAD 4471 MANIFEST PAGE 2". Decided by whole words,
+/// so "Total Gym", "Totally Awesome Slime", "Discontinued Colorway" and "200 Page
+/// Notebook" stay products: every word of a summary line is a summary word or a number.
 pub(crate) fn is_summary_line(desc_lower: &str) -> bool {
-    // Only at the start: "Total Gym fitness system" is a real product.
-    const PREFIX: [&str; 6] = ["total", "subtotal", "sub total", "grand total", "sum of", "count of"];
-    // Anywhere in the line: these only ever appear in headers and footers.
-    const ANYWHERE: [&str; 4] = ["manifest", "page ", "continued", "printed on"];
-    PREFIX.iter().any(|n| desc_lower.starts_with(n)) || ANYWHERE.iter().any(|n| desc_lower.contains(n))
+    const SUMMARY: &[&str] = &["total", "totals", "subtotal", "subtotals", "ttl", "grand", "sum", "summary", "overall"];
+    const ALSO: &[&str] = &["sub", "pallet", "pallets", "load", "lot", "page", "pages", "manifest", "net", "est", "estimated",
+        "ext", "extended", "retail", "qty", "quantity", "units", "unit", "value", "cost", "price", "amount", "of", "the",
+        "and", "all", "items", "item", "lines", "line", "invoice", "order", "shipment", "truck", "box", "boxes",
+        "carton", "cartons", "section", "count", "on", "next", "continued", "printed", "end", "for", "this", "msrp",
+        "pcs", "pieces", "dollars", "usd"];
+    let words: Vec<&str> = desc_lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    if words.is_empty() || words.len() > 8 {
+        return false;
+    }
+    let known = |w: &&str| SUMMARY.contains(w) || ALSO.contains(w) || w.chars().all(|c| c.is_ascii_digit());
+    if !words.iter().all(known) {
+        return false;
+    }
+    // A total word, "Page 2 of 5", "Continued on next page", a pivot table's "Sum of Retail".
+    words.iter().any(|w| SUMMARY.contains(w))
+        || words.windows(2).any(|p| p[0] == "page" && p[1].chars().all(|c| c.is_ascii_digit()))
+        || words.contains(&"continued")
+        || (words.contains(&"manifest") && words.contains(&"page"))
+}
+
+/// A label that reads like a total but carries an id or a word the strict test does not
+/// know: "Total for Pallet A", "Total Pallet 3A", "Subtotal - Pallet B", "Total: Pallet C".
+/// A caller confirms it by the row's shape (no unit price, or figures that are the sums of
+/// the rows above), since "Total Gym XLS" reads the same way.
+pub(crate) fn looks_like_total(desc_lower: &str) -> bool {
+    const SUMMARY: &[&str] = &["total", "totals", "subtotal", "subtotals", "ttl", "grand", "tot"];
+    let words: Vec<&str> = desc_lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    !words.is_empty()
+        && words.len() <= 6
+        && (SUMMARY.contains(&words[0])
+            || SUMMARY.contains(words.last().unwrap())
+            || (words[0] == "sub" && words.get(1) == Some(&"total"))
+            || (words.len() == 1 && matches!(words[0], "balance" | "combined" | "sum" | "summary")))
 }
 
 /// Read a line's trailing numbers by shape and report how many of them were used,
@@ -144,27 +217,75 @@ fn read_trailing_figures(n: &[f64]) -> (usize, f64, f64) {
 
 // ── Input layer: one Grid per format ────────────────────────────────────────
 
-/// Decode a text file. Manifests come out of Excel and Windows tools as often as
-/// UTF-8, so a BOM is stripped and invalid bytes are replaced rather than failing.
+/// Decode a text file. Manifests come out of Excel and Windows tools as often as UTF-8:
+/// a UTF-16 file ("Unicode Text") is decoded as UTF-16, and bytes that are not UTF-8 are
+/// read as Windows-1252 (Excel's own CSV encoding), so "Levi’s" keeps its apostrophe
+/// instead of turning into a replacement mark.
 fn read_text_lossy(path: &str) -> Result<String> {
     let bytes = std::fs::read(path).context("open the file")?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    Ok(text.trim_start_matches('\u{feff}').to_string())
+    Ok(decode_text(&bytes))
 }
 
-/// Pick the delimiter by counting candidates over the first lines. A tab-delimited
-/// manifest read as CSV collapses into one column, which is the most common reason
-/// a "CSV" import silently fails.
+pub(crate) fn decode_text(bytes: &[u8]) -> String {
+    let utf16 = |b: &[u8], le: bool| -> String {
+        let units: Vec<u16> = b.chunks(2).filter(|c| c.len() == 2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        String::from_utf16_lossy(&units)
+    };
+    let text = if bytes.starts_with(&[0xFF, 0xFE]) {
+        utf16(&bytes[2..], true)
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        utf16(&bytes[2..], false)
+    } else if bytes.len() >= 4 && bytes.iter().take(200).skip(1).step_by(2).all(|b| *b == 0) {
+        utf16(bytes, true)
+    } else {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => bytes.iter().map(|&b| cp1252(b)).collect(),
+        }
+    };
+    text.trim_start_matches('\u{feff}').to_string()
+}
+
+/// One Windows-1252 byte as its character.
+fn cp1252(b: u8) -> char {
+    const HIGH: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—',
+        '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+    ];
+    if (0x80..0xA0).contains(&b) { HIGH[(b - 0x80) as usize] } else { b as char }
+}
+
+/// Pick the delimiter that splits the first lines into the most consistent number of
+/// columns, counting only separators outside quotes: a comma CSV whose titles carry pipes
+/// or semicolons ("Nike | Dri-FIT | Shorts") is still a comma CSV. Comma wins a tie.
 fn sniff_delimiter(text: &str) -> u8 {
     let sample: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).take(20).collect();
-    let count = |d: char| -> usize { sample.iter().map(|l| l.matches(d).count()).sum() };
-    let candidates = [(b'\t', count('\t')), (b';', count(';')), (b'|', count('|')), (b',', count(','))];
-    candidates
-        .iter()
-        .filter(|(_, n)| *n > 0)
-        .max_by_key(|(_, n)| *n)
-        .map(|(d, _)| *d)
-        .unwrap_or(b',')
+    let outside = |line: &str, d: char| -> usize {
+        let mut quoted = false;
+        let mut n = 0;
+        for c in line.chars() {
+            if c == '"' {
+                quoted = !quoted;
+            } else if c == d && !quoted {
+                n += 1;
+            }
+        }
+        n
+    };
+    let mut best: Option<(u8, (usize, usize))> = None;
+    for (d, c) in [(b',', ','), (b'\t', '\t'), (b';', ';'), (b'|', '|')] {
+        let counts: Vec<usize> = sample.iter().map(|l| outside(l, c)).collect();
+        let mut freq: HashMap<usize, usize> = HashMap::new();
+        for &n in counts.iter().filter(|n| **n > 0) {
+            *freq.entry(n).or_insert(0) += 1;
+        }
+        let Some((&cols, &lines)) = freq.iter().max_by_key(|(n, k)| (**k, **n)) else { continue };
+        let score = (lines, cols);
+        if best.map_or(true, |(_, b)| score > b) {
+            best = Some((d, score));
+        }
+    }
+    best.map(|(d, _)| d).unwrap_or(b',')
 }
 
 pub(crate) fn grid_from_delimited(path: &str) -> Result<Grid> {
@@ -200,6 +321,46 @@ fn grid_from_text(text: &str) -> Result<Grid> {
     Ok(Grid { rows, format, sheet: None, note, header_in_file: true })
 }
 
+/// The first table of an HTML page as rows of cell text: what many exports save and name
+/// .xls. Tags inside a cell are dropped and the common entities decoded.
+pub(crate) fn grid_from_html(html: &str) -> Option<Grid> {
+    let row_re = regex::Regex::new(r"(?is)<tr[^>]*>(.*?)</tr>").ok()?;
+    let cell_re = regex::Regex::new(r"(?is)<t[dh][^>]*>(.*?)</t[dh]>").ok()?;
+    let tag_re = regex::Regex::new(r"(?s)<[^>]*>").ok()?;
+    let text = |s: &str| -> String {
+        tag_re
+            .replace_all(s, " ")
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut rows: Vec<Vec<String>> = row_re
+        .captures_iter(html)
+        .map(|r| cell_re.captures_iter(&r[1]).map(|c| text(&c[1])).collect::<Vec<String>>())
+        .filter(|r| !r.is_empty())
+        .collect();
+    // Excel 2003's XML spreadsheet ("<Row><Cell><Data>"), also often saved as .xls.
+    if rows.is_empty() {
+        let xrow = regex::Regex::new(r"(?is)<(?:ss:)?Row[^>]*>(.*?)</(?:ss:)?Row>").ok()?;
+        let xcell = regex::Regex::new(r"(?is)<(?:ss:)?Cell[^>]*?(?:/>|>(.*?)</(?:ss:)?Cell>)").ok()?;
+        rows = xrow
+            .captures_iter(html)
+            .map(|r| xcell.captures_iter(&r[1]).map(|c| c.get(1).map(|m| text(m.as_str())).unwrap_or_default()).collect::<Vec<String>>())
+            .filter(|r| r.iter().any(|c| !c.is_empty()))
+            .collect();
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    Some(Grid { rows, format: "html".into(), sheet: None, note: None, header_in_file: true })
+}
+
 fn cell_text(d: &calamine::Data) -> String {
     use calamine::Data;
     match d {
@@ -220,8 +381,20 @@ fn cell_text(d: &calamine::Data) -> String {
 
 fn grid_from_excel(path: &str) -> Result<Grid> {
     use calamine::Reader;
-    let mut wb = calamine::open_workbook_auto(path)
-        .map_err(|e| anyhow::anyhow!("Couldn't open the spreadsheet: {}", e))?;
+    let mut wb = match calamine::open_workbook_auto(path) {
+        Ok(wb) => wb,
+        Err(e) => {
+            // Many exports write CSV or an HTML table and call it .xls.
+            let text = decode_text(&std::fs::read(path).context("open the file")?);
+            if text.to_lowercase().contains("<table") {
+                return grid_from_html(&text).context("Couldn't find a table in that file.");
+            }
+            if text.lines().take(5).any(|l| l.contains(',') || l.contains('\t') || l.contains(';')) {
+                return grid_from_text(&text);
+            }
+            anyhow::bail!("Couldn't open the spreadsheet: {}", e);
+        }
+    };
     let names: Vec<String> = wb.sheet_names().to_vec();
     if names.is_empty() {
         anyhow::bail!("That spreadsheet has no sheets in it.");
@@ -315,32 +488,50 @@ fn synthetic_header(with_cat_brand: bool) -> Vec<String> {
 
 // ── Column detection ────────────────────────────────────────────────────────
 
-/// Find the header row. Real manifests open with a title, a blank line, or a legend,
-/// so row 1 is only a guess — score the first 25 rows on how many manifest-ish
-/// column names they hold and take the best one.
+/// Find the header row. Real manifests open with a title, a blank line, a legend or a
+/// block of load details, so row 1 is only a guess: score the first 200 rows on the column
+/// names they hold, whole words only, and on how many product rows run on under them. A
+/// row with a description column, or with two other known column names, can be the
+/// header, even when its size columns are numbers ("Style, Description, 6, 7, 8, 9").
 pub(crate) fn find_header_row(rows: &[Vec<String>]) -> Option<usize> {
+    let words = |c: &str| -> Vec<String> {
+        c.to_lowercase().split(|ch: char| !ch.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.to_string()).collect()
+    };
     let mut best: Option<(usize, usize)> = None;
-    for (i, row) in rows.iter().take(25).enumerate() {
-        let cells: Vec<String> = row.iter().map(|c| c.trim().to_lowercase()).collect();
-        let nonempty = cells.iter().filter(|c| !c.is_empty()).count();
+    let key = |r: &Vec<String>| r.iter().map(|c| c.trim().to_lowercase()).collect::<Vec<_>>();
+    for (i, row) in rows.iter().take(200).enumerate() {
+        let cells: Vec<Vec<String>> = row.iter().map(|c| words(c)).collect();
+        let nonempty = row.iter().filter(|c| !c.trim().is_empty()).count();
         if nonempty < 2 {
             continue;
         }
-        // Header cells are labels, not data — a mostly-numeric row is a data row.
-        let numeric = cells.iter().filter(|c| !c.is_empty() && parse_money(c).is_some()).count();
-        if numeric * 2 > nonempty {
+        let has = |kws: &[&str]| cells.iter().any(|ws| ws.iter().any(|w| kws.contains(&w.as_str())));
+        let desc = has(&["description", "desc", "title", "name", "product", "model", "style", "article", "details", "merchandise"])
+            || row.iter().any(|c| c.trim().eq_ignore_ascii_case("item"));
+        let mut known = 0;
+        if has(&["qty", "quantity", "quan", "units", "pcs", "pieces", "count", "pairs", "qoh"]) { known += 1; }
+        if has(&["price", "retail", "value", "cost", "msrp", "srp", "rrp", "ext", "amount"]) { known += 1; }
+        if has(&["category", "categories", "department", "dept", "class"]) { known += 1; }
+        if has(&["brand", "manufacturer", "mfg", "mfr", "make", "vendor"]) { known += 1; }
+        if has(&["upc", "sku", "asin", "ean"]) { known += 1; }
+        // Header cells are labels, not data: a mostly-numeric row is a data row unless it
+        // also names its columns (a size-run header).
+        let numeric = row.iter().filter(|c| !c.trim().is_empty() && parse_money(c).is_some()).count();
+        if numeric * 2 > nonempty && !(desc && known >= 1) {
             continue;
         }
-        let has = |kws: &[&str]| cells.iter().any(|c| kws.iter().any(|k| c.contains(k)));
-        if !has(&["desc", "item", "name", "product", "title"]) {
+        if !desc && known < 2 {
             continue;
         }
-        let mut score = 1;
-        if has(&["qty", "quant", "pcs", "pieces", "count", "unit"]) { score += 1; }
-        if has(&["price", "retail", "value", "cost", "msrp", "srp"]) { score += 1; }
-        if has(&["categ", "department", "dept", "class", "segment"]) { score += 1; }
-        if has(&["brand", "manufacturer", "mfg", "make", "vendor"]) { score += 1; }
-        if best.map_or(true, |(_, b)| score > b) {
+        let run = rows[i + 1..].iter().take(20).take_while(|r| r.iter().filter(|c| !c.trim().is_empty()).count() >= 2).count();
+        let score = if desc { 4 } else { 0 } + known * 2 + run.min(10);
+        // A tie goes to the later row (a block of load details sits above the header, never
+        // below it), except a repeat of the same header further down a multi-page export.
+        let better = match best {
+            None => true,
+            Some((bi, b)) => score > b || (score == b && key(&rows[bi]) != key(row)),
+        };
+        if better {
             best = Some((i, score));
         }
     }
@@ -369,43 +560,9 @@ pub(crate) fn find_col(headers: &[String], candidates: &[&str], exclude: &[Optio
     None
 }
 
-/// The keyword guess behind a category when the manifest has no category column.
-/// An ORDERED list, first match wins: it used to be a `HashMap`, whose iteration order
-/// changes between runs, so a title matching two keywords ("boot" and "tool") could
-/// land in a different category each time the same file was read (R-379).
-const CATEGORY_KEYWORDS: &[(&str, &str)] = &[
-        ("shoe", "Shoes"), ("sneaker", "Shoes"), ("boot", "Shoes"), ("sandal", "Shoes"),
-        ("tv", "Electronics"), ("monitor", "Electronics"), ("laptop", "Electronics"),
-        ("phone", "Electronics"), ("tablet", "Electronics"), ("camera", "Electronics"),
-        ("speaker", "Electronics"), ("headphone", "Electronics"), ("charger", "Electronics"),
-        ("shirt", "Clothing"), ("pants", "Clothing"), ("jacket", "Clothing"),
-        ("dress", "Clothing"), ("sweater", "Clothing"), ("hoodie", "Clothing"),
-        ("jean", "Clothing"), ("coat", "Clothing"), ("sock", "Clothing"),
-        ("sofa", "Furniture"), ("chair", "Furniture"), ("table", "Furniture"),
-        ("desk", "Furniture"), ("bed", "Furniture"), ("shelf", "Furniture"),
-        ("toy", "Toys"), ("game", "Toys"), ("puzzle", "Toys"), ("doll", "Toys"),
-        ("bag", "Accessories"), ("wallet", "Accessories"), ("watch", "Accessories"),
-        ("jewelry", "Accessories"), ("belt", "Accessories"), ("hat", "Accessories"),
-        ("kitchen", "Home & Kitchen"), ("cookware", "Home & Kitchen"), ("bakeware", "Home & Kitchen"),
-        ("towel", "Home & Kitchen"), ("bath", "Home & Kitchen"), ("decor", "Home & Kitchen"),
-        ("tool", "Tools & Hardware"), ("drill", "Tools & Hardware"), ("wrench", "Tools & Hardware"),
-        ("hammer", "Tools & Hardware"), ("screwdriver", "Tools & Hardware"),
-        ("beauty", "Health & Beauty"), ("cosmetic", "Health & Beauty"), ("skincare", "Health & Beauty"),
-        ("makeup", "Health & Beauty"), ("shampoo", "Health & Beauty"),
-        ("book", "Books & Media"), ("dvd", "Books & Media"), ("cd", "Books & Media"),
-        ("pallet", "General Merchandise"), ("lot", "General Merchandise"),
-        ("misc", "General Merchandise"), ("assorted", "General Merchandise"),
-        ("mixed", "General Merchandise"), ("general", "General Merchandise"),
-];
-
-/// The generic category for a lowercased description, or "Uncategorized".
-pub(crate) fn guess_category(desc_lower: &str) -> &'static str {
-    CATEGORY_KEYWORDS
-        .iter()
-        .find(|(kw, _)| desc_lower.contains(kw))
-        .map(|(_, cat)| *cat)
-        .unwrap_or("Uncategorized")
-}
+/// The category a title reads as when the sheet gives none: `manifest_category.rs`, shared
+/// byte for byte with the server (R-396).
+pub(crate) use crate::manifest_category::guess_category;
 
 // ── Analysis (shared by every format) ───────────────────────────────────────
 
@@ -822,6 +979,84 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
     Ok(ManifestAnalysis {
         categories, brands, categories_from_manifest, suggested_bid, total_retail,
         overall_margin_pct, total_items, total_quantity, skipped_rows, formula, detection,
+        uncategorized_lines: 0, uncategorized_retail: 0.0, categories_guessed: 0, brands_from_titles: false,
+        unpriced_lines: 0, skipped_note: None,
+    })
+}
+
+/// The analyzer's breakdown of a spreadsheet or CSV, from the split's own reading of it
+/// (R-396): the same columns, the same lines, brands read from titles, categories filled
+/// line by line. Before this the two screens read one file two ways and disagreed on the
+/// price column, the line count, the units and the brands.
+pub(crate) fn from_breakdown(b: crate::manifest_split::Breakdown, overall_margin_pct: f64) -> Result<ManifestAnalysis> {
+    let mut cat_data: HashMap<String, ManifestGroup> = HashMap::new();
+    let mut brand_data: HashMap<String, ManifestGroup> = HashMap::new();
+    let (mut total_quantity, mut total_retail) = (0.0f64, 0.0f64);
+    let (mut uncategorized_lines, mut uncategorized_retail, mut unpriced_lines) = (0usize, 0.0f64, 0usize);
+    let any_brand = b.lines.iter().any(|l| l.brand.is_some());
+    for l in &b.lines {
+        let (ck, cn) = l.category.clone().unwrap_or_else(|| (String::new(), "Uncategorized".into()));
+        if l.category.is_none() {
+            uncategorized_lines += 1;
+            uncategorized_retail += l.retail;
+        }
+        let e = cat_data.entry(ck).or_insert_with(|| ManifestGroup { name: cn, items: 0, quantity: 0.0, total_retail: 0.0 });
+        e.items += 1;
+        e.quantity += l.qty;
+        e.total_retail += l.retail;
+        if any_brand {
+            let (bk, bn) = l.brand.clone().unwrap_or_else(|| (String::new(), "Unbranded".into()));
+            let e = brand_data.entry(bk).or_insert_with(|| ManifestGroup { name: bn, items: 0, quantity: 0.0, total_retail: 0.0 });
+            e.items += 1;
+            e.quantity += l.qty;
+            e.total_retail += l.retail;
+        }
+        if l.retail <= 0.0 {
+            unpriced_lines += 1;
+        }
+        total_quantity += l.qty;
+        total_retail += l.retail;
+    }
+    let sort_desc = |mut v: Vec<ManifestGroup>| -> Vec<ManifestGroup> {
+        v.sort_by(|a, b| b.total_retail.partial_cmp(&a.total_retail).unwrap_or(std::cmp::Ordering::Equal));
+        v
+    };
+    let suggested_bid = (total_retail * overall_margin_pct / 100.0 * 0.85 * 100.0).round() / 100.0;
+    let margin_source = if overall_margin_pct == 30.0 { "(default, no completed deals yet)" } else { "" };
+    let formula = format!("Total retail ${:.0} × {:.0}% margin {} × 0.85 buffer = suggested bid ${:.0}",
+        total_retail, overall_margin_pct, margin_source, suggested_bid);
+    let total_items = b.lines.len();
+    let categories_guessed = total_items - b.from_sheet - uncategorized_lines;
+    let note = if b.notes.is_empty() { None } else { Some(b.notes.join(" ")) };
+    Ok(ManifestAnalysis {
+        categories: sort_desc(cat_data.into_values().collect()),
+        brands: sort_desc(brand_data.into_values().collect()),
+        categories_from_manifest: b.category_col.is_some() && b.from_sheet * 2 >= total_items,
+        suggested_bid,
+        total_retail,
+        overall_margin_pct,
+        total_items,
+        total_quantity,
+        skipped_rows: 0,
+        formula,
+        detection: ManifestDetection {
+            format: b.format,
+            sheet: b.sheet,
+            header_row: b.header_row,
+            description_col: b.description_col,
+            quantity_col: b.quantity_col,
+            price_col: b.price_col,
+            category_col: b.category_col,
+            brand_col: b.brand_col,
+            price_is_extended: b.price_is_extended,
+            note,
+        },
+        uncategorized_lines,
+        uncategorized_retail,
+        categories_guessed,
+        brands_from_titles: b.brands_read > 0,
+        unpriced_lines,
+        skipped_note: b.left_out,
     })
 }
 
@@ -937,11 +1172,32 @@ async fn analyze_tabular(grid: Grid, force_ai: bool) -> Result<ManifestAnalysis>
 /// PDF. `force_ai` re-reads the file through Claude when the heuristics got it wrong.
 pub async fn analyze(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
     match extension(path).as_str() {
-        "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" => analyze_tabular(grid_from_excel(path)?, force_ai).await,
         "pdf" => analyze_pdf(path, force_ai).await,
-        // csv / tsv / txt / tab / dat / no extension — all delimited text.
-        _ => analyze_tabular(grid_from_delimited(path)?, force_ai).await,
+        // Excel, CSV, TSV, text: read the way the split reads it (R-396).
+        _ => analyze_sheet(path, force_ai).await,
     }
+}
+
+/// A spreadsheet or CSV: the split's own reading of it, so the breakdown and the split
+/// agree on every line (R-396). Claude only when asked, or when that reading fails.
+async fn analyze_sheet(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
+    let grid = || match extension(path).as_str() {
+        "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" => grid_from_excel(path),
+        _ => grid_from_delimited(path),
+    };
+    if force_ai {
+        return analyze_tabular(grid()?, true).await;
+    }
+    let err = match crate::manifest_split::breakdown(path).and_then(|b| from_breakdown(b, avg_completed_margin())) {
+        Ok(a) => return Ok(a),
+        Err(e) => e,
+    };
+    let g = grid()?;
+    let flat: String = g.rows.iter().map(|r| r.join("\t")).collect::<Vec<_>>().join("\n");
+    let label = format!("{} (AI)", g.format);
+    analyze_via_ai(&flat, &label, g.sheet.clone())
+        .await
+        .map_err(|ai| anyhow::anyhow!("{} The AI fallback couldn't read it either: {}", err, ai))
 }
 
 #[cfg(test)]
@@ -1197,5 +1453,50 @@ Ninja Blender BN701 3 99.00 297.00\n";
         assert!((a.total_retail - 1256.0).abs() < 0.01, "retail={}", a.total_retail);
         assert_eq!(a.brands.len(), 2);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// R-396: money as suppliers write it.
+    #[test]
+    fn money_is_read_the_way_suppliers_write_it() {
+        assert_eq!(parse_money("$1,234.50"), Some(1234.5));
+        assert_eq!(parse_money("130,50"), Some(130.5));
+        assert_eq!(parse_money("1.234,50"), Some(1234.5));
+        assert_eq!(parse_money("1,234"), Some(1234.0));
+        assert_eq!(parse_money("USD 130.00"), Some(130.0));
+        assert_eq!(parse_money("130.00 USD"), Some(130.0));
+        assert_eq!(parse_money("US$20"), Some(20.0));
+        assert_eq!(parse_money("12.99*"), Some(12.99));
+        assert_eq!(parse_money("(12.00)"), Some(-12.0));
+        assert_eq!(parse_money("$-"), None);
+        assert_eq!(parse_money("B08N5"), None);
+    }
+
+    /// A total row is a row of summary words and numbers; a product that starts with
+    /// "Total" or says "Discontinued" is not one.
+    #[test]
+    fn total_rows_are_told_from_products_by_their_words() {
+        for t in ["TOTAL", "Totals:", "Grand Total", "Sub-Total", "Pallet 3 Total", "TTL", "Total Pallets = 25", "Page 2 of 5",
+            "Continued on next page", "Load 4471 Manifest Page 2", "Sum of Retail"] {
+            assert!(is_summary_line(&t.to_lowercase()), "{t}");
+        }
+        for t in ["Total Gym Fitness System XLS", "Totally Awesome Slime Kit", "Nike Air Force 1 Discontinued Colorway",
+            "Composition Notebook 200 Page", "Total 90 III Black/White", "Count of Monte Cristo Book", "Adidas Manifest Tote"] {
+            assert!(!is_summary_line(&t.to_lowercase()), "{t}");
+        }
+    }
+
+    #[test]
+    fn the_delimiter_is_counted_outside_quotes() {
+        let csv = "Description,Qty,Retail\n\"Nike | Dri-FIT | Game | Shorts Black M\",2,35\n\"Nike | Club | Tee\",1,30\n";
+        assert_eq!(sniff_delimiter(csv), b',');
+        assert_eq!(sniff_delimiter("Description;Qty;Retail\nNike Air Max 90;2;130,00\n"), b';');
+    }
+
+    #[test]
+    fn windows_and_utf16_text_is_decoded() {
+        // "Levi’s" as Excel's Windows-1252 CSV writes it.
+        assert_eq!(decode_text(&[b'L', b'e', b'v', b'i', 0x92, b's']), "Levi’s");
+        let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain("Qty\t2".encode_utf16().flat_map(|u| u.to_le_bytes())).collect();
+        assert_eq!(decode_text(&utf16), "Qty\t2");
     }
 }

@@ -53,6 +53,9 @@ pub struct SheetImages {
     pub default_col_px: f64,
     /// Pictures the package points at but this could not follow to a file.
     pub unresolved: usize,
+    /// Rows and columns hidden on the sheet (filtered out, or hidden by hand), 0-based.
+    pub hidden_rows: std::collections::HashSet<u32>,
+    pub hidden_cols: std::collections::HashSet<u32>,
     /// false when the file is not an Open XML package at all (.xls, .ods, .xlsb, CSV).
     pub readable: bool,
 }
@@ -68,6 +71,8 @@ impl Default for SheetImages {
             default_row_pt: 15.0,
             default_col_px: 64.0,
             unresolved: 0,
+            hidden_rows: Default::default(),
+            hidden_cols: Default::default(),
             readable: false,
         }
     }
@@ -239,6 +244,11 @@ fn read_sheet(xml: &str, out: &mut SheetImages) -> SheetXml {
                     let min: u32 = attr(&e, b"min").and_then(|v| v.parse().ok()).unwrap_or(0);
                     let max: u32 = attr(&e, b"max").and_then(|v| v.parse().ok()).unwrap_or(0);
                     let w: Option<f64> = attr(&e, b"width").and_then(|v| v.parse().ok());
+                    if attr(&e, b"hidden").map_or(false, |v| v == "1" || v == "true") && min >= 1 && max >= min {
+                        for c in min..=max.min(min + 512) {
+                            out.hidden_cols.insert(c - 1);
+                        }
+                    }
                     if let Some(w) = w {
                         if min >= 1 && max >= min {
                             // A `col` spanning to 16384 is "the rest of the sheet"; only the
@@ -252,6 +262,11 @@ fn read_sheet(xml: &str, out: &mut SheetImages) -> SheetXml {
                 b"row" => {
                     let rn: Option<u32> = attr(&e, b"r").and_then(|v| v.parse().ok());
                     let ht: Option<f64> = attr(&e, b"ht").and_then(|v| v.parse().ok());
+                    if let Some(rn) = rn.filter(|r| *r >= 1) {
+                        if attr(&e, b"hidden").map_or(false, |v| v == "1" || v == "true") {
+                            out.hidden_rows.insert(rn - 1);
+                        }
+                    }
                     if let (Some(rn), Some(ht)) = (rn, ht) {
                         if rn >= 1 {
                             out.row_heights.insert(rn - 1, ht);
@@ -742,6 +757,36 @@ pub fn read(path: &str, sheet: &str) -> SheetImages {
         let rels = relationships(&mut zip, &names, &sheet_path);
         if let Some((drawing, false)) = rels.get(&rid) {
             read_drawing(&mut zip, &names, &drawing.clone(), &mut out);
+        }
+    }
+    out
+}
+
+/// The sheets a workbook hides (`state="hidden"` or `"veryHidden"`), by name. Empty for
+/// anything that is not an Open XML package.
+pub fn hidden_sheets(path: &str) -> Vec<String> {
+    let Ok(file) = std::fs::File::open(path) else { return Vec::new() };
+    let Ok(mut zip) = zip::ZipArchive::new(file) else { return Vec::new() };
+    let names: HashMap<String, String> = zip.file_names().map(|n| (n.to_lowercase(), n.to_string())).collect();
+    let workbook = relationships(&mut zip, &names, "")
+        .into_values()
+        .map(|(t, _)| t)
+        .find(|t| t.to_lowercase().ends_with("workbook.xml"))
+        .unwrap_or_else(|| "xl/workbook.xml".to_string());
+    let Some(xml) = part(&mut zip, &names, &workbook) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut r = Reader::from_str(&xml);
+    loop {
+        match r.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.local_name().as_ref() == b"sheet" => {
+                if attr(&e, b"state").map_or(false, |s| s == "hidden" || s == "veryHidden") {
+                    if let Some(n) = attr(&e, b"name") {
+                        out.push(n);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
         }
     }
     out

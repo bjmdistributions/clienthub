@@ -21,6 +21,7 @@ mod lot_store;
 mod manifest;
 mod manifest_images;
 mod manifest_split;
+mod manifest_category;
 mod oauth_flow;
 mod plaid;
 mod client_statement;

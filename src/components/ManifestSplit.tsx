@@ -158,7 +158,8 @@ export default function ManifestSplit({ path, onNavigate }: { path: string; onNa
         total_cost: x.cost ?? 0,
         asking_price: x.price ?? 0,
         price_type: "total",
-        category: splitBy === "category" ? x.name : undefined,
+        // The split's own category, never a name typed over it, and nothing for Mixed.
+        category: splitBy === "category" ? x.category ?? undefined : undefined,
         // Public-safe summary, the same shape the single-lot handoff sends.
         manifest: { units: Math.round(x.units) || x.lines, lines: x.lines, categories: x.categories },
         manifest_file: x.file,
@@ -278,7 +279,8 @@ export default function ManifestSplit({ path, onNavigate }: { path: string; onNa
           <tbody>
             {plan.splits.map((s) => {
               const open = openKey === s.key;
-              const others = plan.splits.filter((o) => o.key !== s.key && !(edits.combine || {})[o.key]);
+              // A split left out is no place to combine into: its lines would go with it.
+              const others = plan.splits.filter((o) => o.key !== s.key && !o.skipped && !(edits.combine || {})[o.key]);
               return [
                 <tr key={s.key} className={`border-t border-line align-top ${s.skipped ? "opacity-50" : ""}`}>
                   <td className="px-2.5 py-2 min-w-[180px]">
@@ -397,8 +399,9 @@ export default function ManifestSplit({ path, onNavigate }: { path: string; onNa
 
       <div className="mt-4 pt-4 border-t border-line flex flex-wrap items-center justify-between gap-3">
         <p className={`text-[12px] ${plan.reconciles ? "text-muted" : "text-danger-ink"}`}>
-          {live.length} manifest{live.length === 1 ? "" : "s"} from {plan.totals.lines.toLocaleString()} lines, {units(plan.totals.units)} units
-          and {fmtAmount(plan.totals.retail)} retail{plan.totals.price != null ? `, priced at ${fmtAmount(plan.totals.price)}` : ""}.
+          {live.length} manifest{live.length === 1 ? "" : "s"} from {plan.totals.kept_lines.toLocaleString()} lines, {units(plan.totals.kept_units)} units
+          and {fmtAmount(plan.totals.kept_retail)} retail{plan.totals.price != null ? `, priced at ${fmtAmount(plan.totals.price)}` : ""}.
+          {plan.totals.kept_lines < plan.totals.lines ? ` ${(plan.totals.lines - plan.totals.kept_lines).toLocaleString()} lines (${fmtAmount(plan.totals.retail - plan.totals.kept_retail)} retail) are in manifests left out.` : ""}
           {plan.reconciles ? " Every line is in exactly one, and they add back up to the whole." : " They do not add back up to the whole, so nothing can be written."}
         </p>
         <div className="flex items-center gap-2">

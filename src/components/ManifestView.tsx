@@ -70,8 +70,9 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
     const summary = {
       units: Math.round(manifest.total_quantity) || manifest.total_items || 0,
       lines: manifest.total_items || 0,
+      // "Uncategorized" says nothing to a buyer, so it stays off the storefront.
       categories: (manifest.categories || [])
-        .filter((c) => c && c.name)
+        .filter((c) => c && c.name && c.name !== "Uncategorized")
         .map((c) => ({ name: c.name, quantity: Math.round(c.quantity || 0) })),
     };
     const detail = {
@@ -186,14 +187,29 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
           <p className="text-[12px] text-muted mb-3">
             <span className="tabular-nums font-medium text-ink-2">{Math.round(manifest.total_quantity || 0).toLocaleString()}</span> units across{" "}
             <span className="tabular-nums font-medium text-ink-2">{manifest.total_items.toLocaleString()}</span> product line{manifest.total_items !== 1 ? "s" : ""}
-            {manifest.skipped_rows > 0 ? ` · ${manifest.skipped_rows.toLocaleString()} skipped (no price)` : ""}.
+            {manifest.unpriced_lines > 0 ? `, ${manifest.unpriced_lines.toLocaleString()} with no retail value` : ""}
+            {!manifest.skipped_note && manifest.skipped_rows > 0 ? `, ${manifest.skipped_rows.toLocaleString()} rows left out` : ""}.
+            {manifest.skipped_note ? ` ${manifest.skipped_note}` : ""}
           </p>
           <p className="text-[11px] text-muted mb-4 bg-warning-bg border border-warning px-3 py-2 rounded-lg">{manifest.formula}</p>
 
           <div className="flex items-center justify-between mb-1.5">
             <p className="text-[12px] font-semibold text-ink-2">By category</p>
-            <span className="text-[10px] text-muted">{manifest.categories_from_manifest ? "from manifest" : "estimated, no category column found"}</span>
+            <span className="text-[11px] text-muted">
+              {manifest.categories_from_manifest
+                ? manifest.categories_guessed > 0 ? `from manifest, ${manifest.categories_guessed.toLocaleString()} read from titles` : "from manifest"
+                : "read from the titles"}
+            </span>
           </div>
+          {/* Say how much of it is guesswork before anything is split or sent on. */}
+          {manifest.uncategorized_lines > 0 && (() => {
+            const share = manifest.total_retail > 0 ? manifest.uncategorized_retail / manifest.total_retail : manifest.uncategorized_lines / Math.max(1, manifest.total_items);
+            return (
+              <p className={`text-[11.5px] mb-2 px-3 py-2 rounded-lg ${share > 0.1 ? "text-warning-ink bg-warning-bg border border-warning" : "text-muted bg-surface-2"}`}>
+                {manifest.uncategorized_lines.toLocaleString()} of {manifest.total_items.toLocaleString()} lines ({Math.round(share * 100)}% of retail) could not be placed in a category, so they are Uncategorized.
+              </p>
+            );
+          })()}
           <div className="overflow-x-auto">
             <table className="w-full text-[12.5px] mb-5">
               <thead className="bg-surface-2">
@@ -219,7 +235,7 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
 
           {manifest.brands.length > 0 && (
             <>
-              <p className="text-[12px] font-semibold text-ink-2 mb-1.5">By brand <span className="text-[10px] font-normal text-muted">from manifest</span></p>
+              <p className="text-[12px] font-semibold text-ink-2 mb-1.5">By brand <span className="text-[11px] font-normal text-muted">{manifest.brands_from_titles ? (manifest.detection.brand_col ? "from manifest, the rest read from titles" : "read from the titles") : "from manifest"}</span></p>
               <div className="overflow-x-auto">
                 <table className="w-full text-[12.5px] mb-5">
                   <thead className="bg-surface-2">
