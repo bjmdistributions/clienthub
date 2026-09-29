@@ -1572,4 +1572,25 @@ mod tests {
             ("Mystery item 8841", UNCATEGORIZED),
         ]);
     }
+
+    /// About 2,200 invented titles, each with the category a person gives it (R-396): shoes
+    /// and apparel in every supplier's style, and general merchandise full of the traps the
+    /// old substring list fell into. None is from a real manifest. A change to the lists must
+    /// keep this at 95% or better; the misses it prints are the place to start.
+    #[test]
+    fn a_labelled_corpus_reads_at_ninety_five_percent() {
+        let (mut n, mut ok, mut misses) = (0usize, 0usize, Vec::new());
+        for line in include_str!("manifest_category_titles.tsv").lines() {
+            let Some((want, title)) = line.split_once('\t') else { continue };
+            n += 1;
+            let got = guess_category(title);
+            if got == want {
+                ok += 1;
+            } else if misses.len() < 60 {
+                misses.push(format!("{title:?}: want {want}, got {got}"));
+            }
+        }
+        assert!(n > 2000, "{n}");
+        assert!(ok * 100 >= n * 95, "{ok} of {n} right\n{}", misses.join("\n"));
+    }
 }
