@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
-  Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, BankPersonCandidate, ReconciliationMissingDeal,
+  Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, ShippingSplit, BankPersonCandidate, ReconciliationMissingDeal,
   TakeoverSuggestion, TieOutRow,
 } from "../lib/api";
 import StatusPill from "./StatusPill";
@@ -361,15 +361,9 @@ const fmtTime = (s?: string | null) => {
 // list — so a suggestion can't land on a duplicate deal_flow row the deal view hides.
 type DealChoice = { deal: DealFlow; reason: string; candidate?: BankSuggestCandidate };
 
-// R-400: one carrier charge that covers several deals' loads. The server adds it beside a
-// transaction's candidates (only when shipping suggestions were asked for), and confirming
-// it links each part as a shipping payment. api.ts types the candidate role without
-// "shipping", so the role is read as a plain string here.
-type ShippingSplitPart = {
-  deal_flow_id: string; invoice_number: string; client_name: string; amount: number;
-  booking_id: string; booking_code: string; carrier: string;
-};
-type ShippingSplit = { total: number; parts: ShippingSplitPart[] };
+// R-400: one carrier charge that covers several deals' loads (`ShippingSplit`, from api.ts).
+// The server adds it beside a transaction's candidates (only when shipping suggestions were
+// asked for), and confirming it links each part as a shipping payment.
 const candRole = (c?: BankSuggestCandidate): string => c?.role ?? "";
 const tieWord = (role: string, direction: string) =>
   role === "shipping" ? "a shipping payment"
@@ -1139,7 +1133,7 @@ export default function FinancialsView() {
       const sp = new Map<string, ShippingSplit>();
       for (const row of r.suggestions || []) {
         if (row.candidates.length) m.set(row.txn_id, row.candidates);
-        const split = (row as { shipping_split?: ShippingSplit | null }).shipping_split;
+        const split = row.shipping_split;
         if (split && split.parts?.length > 1) sp.set(row.txn_id, split);
         // Additive on the server (R-156/W1-b): a server older than deploy-41 sends
         // no counterparty_candidates and this stays empty, which costs the picker

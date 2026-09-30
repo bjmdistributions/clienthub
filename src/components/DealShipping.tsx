@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Plus, Send, Truck, X } from "lucide-react";
-import { api, type DealFlow, type FreightBooking, type FreightPrefill } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { Check, Plus, Send, Truck, X } from "lucide-react";
+import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type SupplierPayment } from "../lib/api";
+import { fmtAmount, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
 import StatusPill from "./StatusPill";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
@@ -20,6 +20,7 @@ const inp =
   "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 const day = (v?: string | null) => (v || "").trim();
+const fmtSigned = (n: number) => `${n < -0.005 ? "-" : ""}${fmtAmount(Math.abs(n))}`;
 
 function Row({ label, value, sub }: { label: string; value: ReactNode; sub?: string }) {
   return (
@@ -134,12 +135,95 @@ function SendSheet({ flow, onClose, onSent }: { flow: DealFlow; onClose: () => v
   );
 }
 
+// ── Typed freight (R-401) ─────────────────────────────────────────────────
+// A freight line typed on the deal is shipping, so it lives here and not among the supplier
+// costs. It can be edited or removed, and it has no "paid" toggle: a supplier or a carrier is
+// paid outside the deal, and the bank link is what ties the money to it.
+function TypedFreightRow({ flow, p, struck, locked, onChanged }: {
+  flow: DealFlow; p: SupplierPayment; struck: boolean; locked: boolean; onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(p.supplier_name);
+  const [amt, setAmt] = useState(String(p.amount));
+  const [busy, setBusy] = useState(false);
+
+  // A completed deal keeps its recorded figures in step with a changed cost line.
+  const settle = async () => {
+    if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch { /* the save already went through */ } }
+    onChanged();
+  };
+  const save = async () => {
+    const amount = parseAmount(amt);
+    if (!name.trim()) { toast("Name who this freight went to", "error"); return; }
+    if (!(amount > 0)) { toast("Add the amount for this freight", "error"); return; }
+    setBusy(true);
+    try {
+      await api.updateSupplierPayment(flow.id, p.id, {
+        supplier_name: name.trim(), supplier_id: p.supplier_id ?? null, amount,
+        quantity: 1, unit_price: amount, method: p.method ?? null, notes: p.notes ?? null,
+        category: "freight", supplier_billed: p.supplier_billed,
+      });
+      setEditing(false);
+      await settle();
+    } catch (e) { toast(String(e), "error"); }
+    setBusy(false);
+  };
+  const remove = async () => {
+    if (!confirm(`Remove ${fmtAmount(p.amount)} of freight for ${p.supplier_name || "this line"}? It stops counting as this deal's shipping cost.`)) return;
+    setBusy(true);
+    try { await api.removeSupplierPayment(flow.id, p.id); await settle(); }
+    catch (e) { toast(String(e), "error"); }
+    setBusy(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="space-y-2 py-1">
+        <input className={inp} aria-label="Paid to" placeholder="Who this went to" value={name} onChange={(e) => setName(e.target.value)} />
+        <NumberInput className={inp} aria-label="Amount" placeholder="0.00" value={amt} onValue={(_n, raw) => setAmt(raw)} />
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={save} disabled={busy}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40">
+            <Check size={12} strokeWidth={2.5} /> Save
+          </button>
+          <button type="button" onClick={() => { setEditing(false); setName(p.supplier_name); setAmt(String(p.amount)); }}
+            className="px-3 h-8 rounded-lg text-[12px] text-ink-2 hover:bg-surface-3">Cancel</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-start justify-between gap-3 text-[12.5px]">
+      <div className="min-w-0">
+        <div className={`truncate ${struck || p.kept ? "text-faint line-through" : "text-ink-2"}`}>{p.supplier_name || "Freight"}</div>
+        {p.kept && <div className="text-[11px] text-muted">Kept: didn't pay, not counted</div>}
+        {!locked && (
+          <div className="flex items-center gap-2.5 mt-0.5">
+            <button type="button" onClick={() => setEditing(true)} disabled={busy} className="text-[11px] text-muted hover:text-ink-2 disabled:opacity-40">Edit</button>
+            <button type="button" onClick={remove} disabled={busy} className="text-[11px] text-muted hover:text-danger-ink disabled:opacity-40">Remove</button>
+          </div>
+        )}
+      </div>
+      <span className={`tabular-nums flex-shrink-0 ${struck || p.kept ? "text-faint line-through" : "text-ink-2"}`}>{fmtAmount(p.amount)}</span>
+    </div>
+  );
+}
+
+const PAY_RULE_WORD: Record<string, string> = {
+  share: "share of the shipping profit",
+  loss_cover: "covering a load that lost money",
+  loss_share: "share of the loss",
+};
+
 // ── The step ──────────────────────────────────────────────────────────────
-export default function DealShipping({ flow, onReload, locked }: { flow: DealFlow; onReload: () => void; locked: boolean }) {
+export default function DealShipping({ flow, onReload, locked, onAdvance }: { flow: DealFlow; onReload: () => void; locked: boolean; onAdvance?: () => void }) {
   const [bookings, setBookings] = useState<FreightBooking[]>([]);
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
   const [open, setOpen] = useState<FreightBooking | null>(null);
+  // R-401: what the invoice charged for shipping, and the logistics pay that comes of it.
+  const [charged, setCharged] = useState<{ amount: number; source: "lines" | "field" | "none" }>({ amount: 0, source: "none" });
+  const [pay, setPay] = useState<DealLogisticsPay | null>(null);
 
   const loadBookings = useCallback(async () => {
     try { setBookings(await api.listFreightBookings(flow.id)); }
@@ -149,12 +233,27 @@ export default function DealShipping({ flow, onReload, locked }: { flow: DealFlo
   useEffect(() => { loadBookings(); }, [loadBookings, flow.updated_at, flow.logistics_bookings, flow.logistics_paid]);
   useNetsyncApplied(loadBookings);
 
+  useEffect(() => {
+    let dead = false;
+    api.getInvoice(flow.invoice_id)
+      .then((inv) => { if (!dead) setCharged(shippingChargedOf(inv.line_items_json, inv.shipping_charged)); })
+      .catch(() => {});
+    return () => { dead = true; };
+  }, [flow.invoice_id]);
+  // The pay line is worked out on the desktop by the same rule the server uses, so it moves as
+  // soon as a booking or a bank link does.
+  useEffect(() => {
+    let dead = false;
+    api.getDealLogisticsPay(flow.id).then((r) => { if (!dead) setPay(r); }).catch(() => { if (!dead) setPay(null); });
+    return () => { dead = true; };
+  }, [flow.id, flow.updated_at, flow.logistics_paid, flow.logistics_quoted, flow.logistics_bookings, flow.shipping_linked]);
+
   const refresh = () => { loadBookings(); onReload(); };
 
   const live = bookings.filter((b) => b.status !== "cancelled");
   const cancelled = bookings.filter((b) => b.status === "cancelled");
-  const typed = (flow.supplier_payments || []).filter((p) => p.category === "freight" && !p.kept);
-  const typedTotal = typed.reduce((s, p) => s + (p.amount || 0), 0);
+  const typed = (flow.supplier_payments || []).filter((p) => p.category === "freight");
+  const typedTotal = typed.filter((p) => !p.kept).reduce((s, p) => s + (p.amount || 0), 0);
   const mode = !!flow.shipping_mode;
   const paid = flow.logistics_paid ?? 0;
   const linked = flow.shipping_linked ?? 0;
@@ -241,8 +340,12 @@ export default function DealShipping({ flow, onReload, locked }: { flow: DealFlo
 
           {ready && live.length > 0 && <div className="space-y-2">{live.map(card)}</div>}
 
-          {(mode || paid > 0 || linked > 0 || quoted > 0) && (
+          {(mode || paid > 0 || linked > 0 || quoted > 0 || charged.amount > 0.005) && (
             <div className="rounded-xl bg-surface border border-line px-4 py-3 space-y-1.5">
+              {charged.amount > 0.005 && (
+                <Row label="Charged to the customer" value={fmtAmount(pay?.charged ?? charged.amount)}
+                  sub={(pay?.charged_source ?? charged.source) === "lines" ? "From the invoice's shipping line" : "From the invoice's shipping charge"} />
+              )}
               <Row label="Shipping paid" value={fmtAmount(paid)} />
               {linked > 0.005 && (
                 <Row
@@ -252,27 +355,16 @@ export default function DealShipping({ flow, onReload, locked }: { flow: DealFlo
                 />
               )}
               {quoted > 0.005 && <Row label="Quoted, not paid yet" value={fmtAmount(quoted)} />}
-              {complete && flow.shipping_cost != null && <Row label="Recorded on the completed deal" value={fmtAmount(flow.shipping_cost)} />}
-            </div>
-          )}
-
-          {typed.length > 0 && (
-            <div className="rounded-xl bg-surface border border-line px-4 py-3 space-y-1.5">
-              <div className="text-[12px] font-medium text-ink-2">
-                {mode ? "Typed freight (replaced by the logistics booking)" : "Typed on the deal"}
-              </div>
-              {typed.map((p) => (
-                <div key={p.id} className={`flex items-baseline justify-between gap-3 text-[12.5px] ${mode ? "text-faint line-through" : "text-ink-2"}`}>
-                  <span className="truncate min-w-0">{p.supplier_name || "Freight"}</span>
-                  <span className="tabular-nums flex-shrink-0">{fmtAmount(p.amount)}</span>
-                </div>
-              ))}
-              {!mode && (
-                <div className="flex items-baseline justify-between gap-3 text-[12.5px] pt-1.5 border-t border-line">
-                  <span className="text-muted">Counts as the shipping cost</span>
-                  <span className="text-ink font-medium tabular-nums">{fmtAmount(typedTotal)}</span>
-                </div>
+              {charged.amount > 0.005 && (mode || linked > 0.005 || typedTotal > 0.005) && (
+                <Row label="Shipping profit" value={fmtSigned(pay ? pay.surplus : charged.amount - shippingEstimateOf(flow))} />
               )}
+              {pay && (
+                pay.pay == null
+                  ? <Row label="Logistics pay" value="Waiting on the freight amount" />
+                  : <Row label="Logistics pay" value={fmtAmount(pay.pay)}
+                      sub={`${PAY_RULE_WORD[pay.rule] ?? pay.rule}${pay.due_date ? `, due ${fmtDay(pay.due_date)}` : ""}`} />
+              )}
+              {complete && flow.shipping_cost != null && <Row label="Recorded on the completed deal" value={fmtAmount(flow.shipping_cost)} />}
             </div>
           )}
 
@@ -283,6 +375,31 @@ export default function DealShipping({ flow, onReload, locked }: { flow: DealFlo
             </div>
           )}
         </>
+      )}
+
+      {/* Typed freight stays reachable even when the deal ships direct. */}
+      {typed.length > 0 && (
+        <div className="rounded-xl bg-surface border border-line px-4 py-3 space-y-1.5">
+          <div className="text-[12px] font-medium text-ink-2">
+            {mode ? "Typed freight (replaced by the logistics booking)" : "Typed on the deal"}
+          </div>
+          {typed.map((p) => <TypedFreightRow key={p.id} flow={flow} p={p} struck={mode} locked={locked} onChanged={refresh} />)}
+          {!mode && (
+            <div className="flex items-baseline justify-between gap-3 text-[12.5px] pt-1.5 border-t border-line">
+              <span className="text-muted">Counts as the shipping cost</span>
+              <span className="text-ink font-medium tabular-nums">{fmtAmount(typedTotal)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {onAdvance && (
+        <div className="flex items-center justify-end pt-1">
+          <button type="button" onClick={onAdvance}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
+            Continue to profit <Check size={14} strokeWidth={2.5} />
+          </button>
+        </div>
       )}
 
       {sending && (

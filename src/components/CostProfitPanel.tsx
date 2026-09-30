@@ -1,5 +1,6 @@
 import { DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
 import { fmtAmount, projectedCostOf, shippingEstimateOf } from "../lib/format";
+import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
 
 /**
  * Cost & Profit display for the invoice detail drawer (via InvoiceCostSection), reading
@@ -46,6 +47,8 @@ export default function CostProfitPanel({
   // Completed deals show the breakdown captured at completion; older deals
   // (no stored breakdown) fall back to re-deriving from the current config.
   const alloc  = dealPayoutSplit(flow, recipients);
+  // R-401: the logistics pay comes off the top before the split, like a rep's cut.
+  const logiPay = useDealLogisticsPay(flow.id, [flow.updated_at, flow.total_cost, flow.shipping_cost]);
 
   return (
     <div className="space-y-3">
@@ -77,12 +80,13 @@ export default function CostProfitPanel({
       </div>
 
       {/* Profit split preview — config-driven; hidden until payouts are set up */}
-      {isComplete && profit > 0 && alloc.length > 0 && (
+      {isComplete && profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending) && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3">
           <div className="text-[12.5px] font-medium text-muted mb-2">
             Profit Split
           </div>
           <div className="flex flex-wrap gap-x-6 gap-y-2">
+            <LogisticsPayCell pay={logiPay} />
             {alloc.map((item, i) => (
               <div key={i}>
                 <div className="text-[11px] text-muted">{item.name}</div>

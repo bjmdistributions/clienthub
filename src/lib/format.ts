@@ -77,6 +77,34 @@ export function supplierSideLegs<T extends { category?: string | null }>(legs: T
   return goods.length ? goods : all;
 }
 
+/** R-401: whether an invoice line is shipping rather than an item (R-255). Shipping is money
+ *  charged to the customer that is never paid to the supplier, so the add-supplier grid leaves
+ *  these lines out. A blank description counts too: it names nothing to buy. Mirrors
+ *  `is_shipping_line` in commands.rs and the phone's `isShippingLine`, word for word. */
+export function isShippingLine(description: string | null | undefined): boolean {
+  const d = String(description ?? "").trim().toLowerCase();
+  if (!d) return true;
+  return d === "shipping" || d === "freight" || d === "shipping & handling" || d === "shipping and handling"
+    || d === "delivery" || d.startsWith("shipping") || d.startsWith("freight");
+}
+
+/** R-401: what an invoice charged the customer for shipping: the sum of its shipping lines
+ *  (a line's stored amount, or quantity times rate when that is 0), else the invoice's own
+ *  shipping charge, else nothing. Mirrors `charged_of` in freight.rs. */
+export function shippingChargedOf(
+  lineItemsJson: string | null | undefined, shippingCharged: number | null | undefined,
+): { amount: number; source: "lines" | "field" | "none" } {
+  let items: { description?: string; qty?: number; rate?: number; amount?: number }[] = [];
+  try { const v = JSON.parse(lineItemsJson || "[]"); if (Array.isArray(v)) items = v; } catch { /* a malformed blob is an empty invoice */ }
+  const fromLines = items
+    .filter((l) => String(l?.description ?? "").trim() !== "" && isShippingLine(l.description))
+    .reduce((s, l) => s + (safeNum(l.amount) !== 0 ? safeNum(l.amount) : safeNum(l.qty) * safeNum(l.rate)), 0);
+  if (fromLines > 0.005) return { amount: Math.round(fromLines * 100) / 100, source: "lines" };
+  const field = safeNum(shippingCharged);
+  if (field > 0.005) return { amount: Math.round(field * 100) / 100, source: "field" };
+  return { amount: 0, source: "none" };
+}
+
 /** Today as YYYY-MM-DD in LOCAL time (R-159). toISOString() is UTC — from
  *  6/7pm Central it is already tomorrow, so evening defaults landed entries
  *  on the wrong day (and, at month-end, in the wrong month). */

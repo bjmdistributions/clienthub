@@ -8,14 +8,22 @@
 // __r400-fixture is invented, and the derived money (projected cost, shipping estimate) was
 // worked out with the same formulas the desktop uses, so the screen can be checked by hand.
 //
-// Query: ?view=logistics|deals|financials  &as=dad|admin  &names=0|1  &addr=0|1  &dark=1
-//        &open=INV-6001  &section=Shipping|Link financials|Profit|Review & complete
+// R-401 adds the logistics pay to it: the Brief block and "ready to close" list, the Settings
+// screen (the Logistics pay section under Splits and the tracker under Team, payouts), his "Your
+// pay" card (as=dad), and INV-6008, a deal whose invoice has an item line and a Shipping line.
+//
+// Query: ?view=logistics|deals|financials|brief|settings  &as=dad|admin  &names=0|1  &addr=0|1  &dark=1
+//        &open=INV-6001  &section=Supplier & cost|Link financials|Shipping|Profit|Review & complete
+//        &tab=splits|payouts (settings: which Settings screen to open)
 import { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import LogisticsView from "./components/LogisticsView";
 import DealFlowView from "./components/DealFlowView";
 import FinancialsView from "./components/FinancialsView";
+import BriefView from "./components/BriefView";
+import SettingsView from "./components/SettingsView";
 import { ToastHost } from "./components/Toast";
+import { payRoute } from "./__r400-fixture/pay";
 import deals from "./__r400-fixture/deals.json";
 import invoices from "./__r400-fixture/invoices.json";
 import bookingFixture from "./__r400-fixture/bookings.json";
@@ -23,6 +31,8 @@ import bank from "./__r400-fixture/bank.json";
 import "./index.css";
 
 const q = new URLSearchParams(location.search);
+// A confirm sheet would block the page in a headless run, so the harness answers yes.
+window.confirm = () => true;
 const clone = (x: any) => JSON.parse(JSON.stringify(x));
 if (q.get("dark") === "1") document.documentElement.classList.add("dark");
 
@@ -74,7 +84,26 @@ const handlers: Record<string, (a: any) => any> = {
   cleanup_ghost_deal_flows: () => 0,
   deal_reconciliation: ({ dealFlowId }: any) => clone((bank.recon as any)[dealFlowId] ?? (bank.recon as any).d2),
   deal_allocations: ({ dealFlowId }: any) => clone((bank.allocations as any)[dealFlowId] ?? []),
-  deal_flow_payout: () => ({ refund_owed: 0, refunded: 0, shortage: null }),
+  deal_flow_payout: ({ dealFlowId }: any) => ({
+    refund_owed: 0, refunded: 0, shortage: null,
+    logistics_pay: dealFlowId === "d8" ? 150 : 0, logistics_pay_pending: dealFlowId === "d6",
+  }),
+  // R-401: the pay line for one deal. INV-6008 is the worked one (charged 500, paid 350, pays 150).
+  get_deal_logistics_pay: ({ dealFlowId }: any) => dealFlowId === "d8"
+    ? { charged: 500, charged_source: "lines", freight: 350, freight_source: "paid", surplus: 150, pay: 150, rule: "share", pending: false,
+        earned_on: "2026-09-21", due_date: "2026-10-02", booking_codes: ["L-8B1D4E"], payee_name: "Ines Okafor" }
+    : null,
+  search_suppliers: () => [],
+  add_supplier_payment: () => "sp_new",
+  update_supplier_payment: () => null,
+  remove_supplier_payment: () => null,
+  recalc_deal_from_bank: () => null,
+  due_followups: () => [],
+  get_receivables_aging: () => ({ summary: {}, by_client: [], items: [] }),
+  generate_weekly_brief: () => ({
+    week_start: "2026-09-28", week_end: "2026-10-04", new_clients_this_week: 3, interactions_this_week: 11,
+    net_profit_this_week: 4200, payout_totals: [],
+  }),
   set_deal_link_na: () => null,
   // Freight bookings: the local read the deal pages use
   list_freight_bookings: ({ dealFlowId }: any) => {
@@ -83,6 +112,8 @@ const handlers: Record<string, (a: any) => any> = {
   },
   // Logistics screen
   logistics_request: ({ method, path, body }: any) => {
+    const paid = payRoute(method, path, body, state.who === "dad" ? "payee" : "owner", state.names);
+    if (paid !== undefined) return paid;
     const [p, qs = ""] = path.split("?");
     if (method === "GET" && p === "/api/logistics/bookings") {
       const rows = qs.includes("include_done=1") ? [...LIVE, ...DONE] : LIVE;
@@ -105,7 +136,18 @@ const handlers: Record<string, (a: any) => any> = {
   allocate_bank_txn: () => null,
   set_bank_txn_review: () => null,
   list_bank_allocations_for_txn: () => [],
-  list_staff: () => [],
+  list_staff: () => [
+    { id: "u1", email: "owner@example.test", display_name: "Owner", role_id: "role_admin", role_name: "Admin", status: "active", commission_pct: 0, hide_pay_cuts: false },
+    { id: "u2", email: "ines@example.test", display_name: "Ines Okafor", role_id: "role_logistics", role_name: "Logistics", status: "active", commission_pct: 0, hide_pay_cuts: false },
+    { id: "u3", email: "sam@example.test", display_name: "Sam Rivera", role_id: "role_sales", role_name: "Sales", status: "active", commission_pct: 10, hide_pay_cuts: false },
+  ],
+  list_roles: () => ({ modules: [], roles: [
+    { id: "role_admin", name: "Admin", permissions: ["*"], is_system: true },
+    { id: "role_logistics", name: "Logistics", permissions: ["logistics:view", "logistics:edit"], is_system: true },
+    { id: "role_sales", name: "Sales", permissions: ["deal_flow:view"], is_system: false },
+  ] }),
+  get_payout_split: () => [{ name: "Business", pct: 60, is_business: true, kind: "business" }, { name: "Partner one", pct: 40, is_business: false, kind: "person" }],
+  list_rep_payouts: () => ({ enabled: true, payouts: [{ rep_id: "u3", name: "Sam Rivera", deals: 4, refunded_deals: 0, owed: 1240 }] }),
   plaid_list_items: () => [],
   plaid_config: () => ({ has_keys: false, last_sync: null, env: "sandbox" }),
   suggest_reconciliation_missing: () => ({ deals: [], source: "server", checked: 0, truncated: false }),
@@ -130,8 +172,8 @@ const meFor = (who: Who, names: boolean, addr: boolean): any => who === "dad"
       permissions: ["logistics:view", "logistics:edit", ...(names ? ["logistics:view_names"] : []), ...(addr ? ["logistics:view_addresses"] : [])] }
   : { id: "u1", email: "owner@example.test", display_name: "Owner", role_id: "role_admin", role_name: "Admin", is_admin: true, permissions: ["*"] };
 
-type View = "logistics" | "deals" | "financials";
-const VIEWS: [View, string][] = [["logistics", "Logistics"], ["deals", "Deal Flow"], ["financials", "Financials"]];
+type View = "logistics" | "deals" | "financials" | "brief" | "settings";
+const VIEWS: [View, string][] = [["logistics", "Logistics"], ["deals", "Deal Flow"], ["financials", "Financials"], ["brief", "Brief"], ["settings", "Settings"]];
 
 // Opens a card and a step the way a person would (by clicking), so a URL reproduces a screen.
 function useAutoOpen(view: View) {
@@ -155,6 +197,24 @@ function useAutoOpen(view: View) {
   }, [view]);
 }
 
+// Clicks through Settings the way a person would: the Splits tab, or Team and then Payouts.
+function useOpenSettings(view: View) {
+  useEffect(() => {
+    if (view !== "settings") return;
+    const tab = q.get("tab") === "payouts" ? "payouts" : "splits";
+    let tries = 0, stage = 0;
+    const t = window.setInterval(() => {
+      tries++;
+      const btns = Array.from(document.querySelectorAll("button"));
+      const find = (w: string) => btns.find((b) => b.textContent?.trim().startsWith(w));
+      if (stage === 0) { const b = find(tab === "payouts" ? "Team" : "Splits"); if (b) { (b as HTMLElement).click(); stage = tab === "payouts" ? 1 : 2; } }
+      else if (stage === 1) { const b = btns.find((x) => x.textContent?.trim().toLowerCase() === "payouts"); if (b) { (b as HTMLElement).click(); stage = 2; } }
+      if (stage === 2 || tries > 60) window.clearInterval(t);
+    }, 150);
+    return () => window.clearInterval(t);
+  }, [view]);
+}
+
 function Harness() {
   const [view, setView] = useState<View>((q.get("view") as View) || "logistics");
   const [who, setWho] = useState<Who>(state.who);
@@ -162,6 +222,7 @@ function Harness() {
   const [addr, setAddr] = useState(state.addr);
   state.who = who; state.names = names; state.addr = addr;
   useAutoOpen(view);
+  useOpenSettings(view);
   const tab = "block w-full text-left text-[13px] px-2.5 h-8 rounded-lg";
   return (
     <div className="flex h-screen bg-bg">
@@ -187,6 +248,8 @@ function Harness() {
           {view === "logistics" && <LogisticsView key={`${who}${names}${addr}`} me={meFor(who, names, addr)} />}
           {view === "deals" && (who === "admin" ? <DealFlowView /> : <p className="text-[13px] text-muted">A Logistics account has no Deal Flow screen.</p>)}
           {view === "financials" && (who === "admin" ? <FinancialsView /> : <p className="text-[13px] text-muted">A Logistics account has no Financials screen.</p>)}
+          {view === "brief" && (who === "admin" ? <BriefView currentUser={{ role: "admin", name: "Owner" }} /> : <p className="text-[13px] text-muted">A Logistics account has no Brief.</p>)}
+          {view === "settings" && (who === "admin" ? <SettingsView me={meFor("admin", true, true)} /> : <p className="text-[13px] text-muted">A Logistics account sees only its own settings.</p>)}
         </div>
       </main>
       <ToastHost />

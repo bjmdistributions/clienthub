@@ -11,9 +11,8 @@ import StatusPill from "./StatusPill";
  * invoice.
  *
  * There is exactly one place a deal's cost may live: `deal_flows.supplier_payments`. It
- * carries the supplier the money is owed to, whether that leg has gone out, and whether
- * the bill was kept rather than paid — which is what feeds payables, the payout split and
- * `total_supplier_cost`. A free-text cost typed against the invoice has none of that, and
+ * carries the supplier the money is owed to and whether the bill was kept rather than paid,
+ * which is what feeds payables, the payout split and `total_supplier_cost`. A free-text cost typed against the invoice has none of that, and
  * writing one to `invoices.total_cost/profit/margin` puts it in direct conflict with the
  * deal-flow pipeline, which owns those three columns and rewrites them on complete and
  * uncomplete. That is why the only cost editor on this screen is this one.
@@ -192,13 +191,6 @@ export default function InvoiceCostSection({
                 {replaced(p) && <div className="text-[10.5px] text-muted">Replaced by the logistics booking, not counted</div>}
                 {!locked && (
                   <div className="flex items-center gap-2.5 mt-0.5">
-                    {!p.kept && (
-                      <button disabled={saving}
-                        onClick={() => act(() => p.paid ? api.unmarkSupplierPaymentPaid(flow.id, p.id) : api.markSupplierPaymentPaid(flow.id, p.id))}
-                        className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
-                        {p.paid ? "Undo (not paid yet)" : "Mark paid"}
-                      </button>
-                    )}
                     {!p.paid && (
                       <button disabled={saving}
                         onClick={() => {

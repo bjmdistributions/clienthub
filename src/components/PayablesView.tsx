@@ -20,6 +20,14 @@ function openDeal(searchTerm: string) {
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
 }
 
+// R-401: a shipping payable is a booked truck nobody has typed the carrier's charge for yet.
+// There is nothing to mark paid here, so its row opens the deal on the Shipping step, where the
+// person doing logistics types the amount paid.
+function openDealShipping(invoiceNumber: string) {
+  try { localStorage.setItem("dealflow_open_section", JSON.stringify({ invoice: invoiceNumber, section: "shipping" })); } catch { /* ignore */ }
+  openDeal(invoiceNumber);
+}
+
 // Pay priority: big money owed longest floats to the top.
 function chaseSort(items: APItem[]): APItem[] {
   return [...items].sort(
@@ -159,6 +167,8 @@ export default function PayablesView() {
   }
 
   const openCount = items.length;
+  const shippingItems = chaseSort(items.filter((i) => i.kind === "shipping"));
+  const payItems = items.filter((i) => i.kind !== "shipping");
 
   return (
     <div className="p-6 space-y-4 max-w-[1100px]">
@@ -225,8 +235,10 @@ export default function PayablesView() {
         items.length === 0 ? (
           <EmptyState label="Nothing to pay right now. Every cost is settled." />
         ) : (
+          <>
+          {payItems.length > 0 && (
           <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
-            {chaseSort(items).map((it, i) => {
+            {chaseSort(payItems).map((it, i) => {
               const key = itemKey(it, i);
               const meta = bucketMeta(it.bucket);
               const drillTerm = it.invoice_number || it.client_name || "";
@@ -274,6 +286,44 @@ export default function PayablesView() {
               );
             })}
           </div>
+          )}
+          {shippingItems.length > 0 && (
+            <div className="bg-surface border border-line rounded-xl overflow-hidden">
+              <div className="px-5 py-3 border-b border-line-2 flex items-center gap-2">
+                <h3 className="text-[13px] font-semibold text-ink">Shipping owed to carriers</h3>
+                <StatusPill tone="neutral">{shippingItems.length}</StatusPill>
+              </div>
+              <div className="divide-y divide-line-2">
+                {shippingItems.map((it, i) => {
+                  const meta = bucketMeta(it.bucket);
+                  const drillTerm = it.invoice_number || it.client_name || "";
+                  const dealLabel = it.client_name
+                    ? (it.invoice_number ? `${it.client_name} · #${it.invoice_number}` : it.client_name)
+                    : (it.invoice_number ? `#${it.invoice_number}` : "Unlinked cost");
+                  return (
+                    <div key={`${it.booking_id ?? it.deal_flow_id}-${i}`} className={`px-5 py-3 flex items-center gap-3 hover:bg-surface-2/40 transition-colors ${it.committed ? "" : "opacity-60"}`}>
+                      <span className="w-1.5 h-9 rounded-full flex-shrink-0" style={{ background: meta?.color || "var(--c-line-3)" }} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[13px] font-semibold text-ink truncate">{it.payee || "Shipping"}</span>
+                          <span className="text-[11.5px] text-muted flex-shrink-0">Quoted, not paid yet</span>
+                        </div>
+                        <div className="text-[11px] text-muted truncate mt-0.5">for {dealLabel}</div>
+                      </div>
+                      <span className="text-[14px] font-bold text-ink tabular-nums flex-shrink-0">{fmtAmount(it.amount)}</span>
+                      {!!it.deal_flow_id && !!drillTerm && (
+                        <button onClick={() => openDealShipping(drillTerm)}
+                          className="border border-line text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-lg text-[11.5px] font-medium transition-colors inline-flex items-center gap-1 flex-shrink-0">
+                          Open shipping <ArrowUpRight size={11} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          </>
         )
       ) : (
         <ByPayee payees={derived.byPayee} />

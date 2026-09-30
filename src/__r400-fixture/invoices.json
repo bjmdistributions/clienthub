@@ -194,5 +194,33 @@
     "delivery_date": null,
     "pdf_path": null,
     "sent_at": null
+  },
+  {
+    "id": "i8",
+    "client_id": "c1",
+    "number": "INV-6008",
+    "issue_date": "2026-09-01",
+    "due_date": "2026-09-15",
+    "subtotal": 12500,
+    "tax": 0,
+    "total": 12500,
+    "line_items_json": "[{\"description\": \"Electronics returns, 6 pallets\", \"qty\": 6, \"rate\": 2000, \"amount\": 12000}, {\"description\": \"Shipping\", \"qty\": 1, \"rate\": 500, \"amount\": 500}]",
+    "status": "paid",
+    "is_complete": false,
+    "voided": false,
+    "deal_flow_id": "d8",
+    "deal_flow_stage": "payment_received",
+    "notes": "",
+    "cost_items_json": null,
+    "total_cost": null,
+    "profit": null,
+    "margin": null,
+    "carrier": null,
+    "tracking_number": null,
+    "shipping_charged": null,
+    "pickup_date": null,
+    "delivery_date": null,
+    "pdf_path": null,
+    "sent_at": null
   }
 ]

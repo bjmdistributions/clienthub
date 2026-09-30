@@ -3,6 +3,7 @@ import { ChevronRight, Search, Truck } from "lucide-react";
 import { api, type FreightBooking, type Me } from "../lib/api";
 import { isLogisticsOnly } from "../lib/permissions";
 import StatusPill from "./StatusPill";
+import { YourPayCard } from "./LogisticsPay";
 import LogisticsBookingForm, {
   AmountNeededPill, FreightStatusPill, fmtDay, needsAmount, placeLabel, useNetsyncApplied,
 } from "./LogisticsBookingForm";
@@ -187,6 +188,9 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
           />
         </div>
       </div>
+
+      {/* R-401: his own pay, only when he is the one being paid. Nothing about what a customer was charged. */}
+      <YourPayCard />
 
       {error && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning-bg px-4 py-3 text-[12.5px] text-warning-ink" role="alert">

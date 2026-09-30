@@ -148,8 +148,7 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
     if (busy) return;
     setBusy(true);
     try {
-      // api.ts types the manual-line role without "shipping" (the server accepts it).
-      await api.addManualDealLine(flow.id, role as "supplier_payment", amount, date, who, note);
+      await api.addManualDealLine(flow.id, role, amount, date, who, note);
       setManualLeg(null);
       await load();
       onChange?.();

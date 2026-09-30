@@ -55,7 +55,8 @@
         "invoice_number": "INV-6001",
         "client_name": "Lakeside Discount Co",
         "stage": "payment_received"
-      }
+      },
+      "booked_at": "2026-09-21"
     },
     {
       "status": "requested",
@@ -112,7 +113,8 @@
         "invoice_number": "INV-6001",
         "client_name": "Lakeside Discount Co",
         "stage": "payment_received"
-      }
+      },
+      "booked_at": ""
     },
     {
       "status": "delivered",
@@ -175,7 +177,8 @@
         "invoice_number": "INV-6003",
         "client_name": "Marlow Traders",
         "stage": "supplier_paid"
-      }
+      },
+      "booked_at": "2026-09-21"
     },
     {
       "status": "delivered",
@@ -232,7 +235,8 @@
         "invoice_number": "INV-6005",
         "client_name": "Harbor Row Liquidators",
         "stage": "complete"
-      }
+      },
+      "booked_at": "2026-09-21"
     },
     {
       "status": "picked_up",
@@ -289,7 +293,8 @@
         "invoice_number": "INV-6006",
         "client_name": "Cobble Lane Outlet",
         "stage": "payment_received"
-      }
+      },
+      "booked_at": "2026-09-21"
     },
     {
       "status": "delivered",
@@ -346,7 +351,66 @@
         "invoice_number": "INV-6007",
         "client_name": "Pinehurst Liquidators",
         "stage": "payment_received"
-      }
+      },
+      "booked_at": "2026-09-21"
+    },
+    {
+      "status": "booked",
+      "request_note": "Dock closes at 3. Call the office before you come.",
+      "pickup_name": "Northgate Wholesale",
+      "pickup_address": "418 Alder Way, Fairmont, OH 43201",
+      "pickup_date": "2026-10-02",
+      "pickup_window": "",
+      "pickup_contact": "",
+      "pickup_phone": "",
+      "pickup_notes": "",
+      "delivery_name": "Lakeside Discount Co",
+      "delivery_address": "77 Quay Road, Marlow, PA 15201",
+      "delivery_date": "2026-10-06",
+      "delivery_window": "",
+      "delivery_contact": "",
+      "delivery_phone": "",
+      "delivery_notes": "",
+      "delivered_at": "",
+      "carrier": "Bluefield Lines",
+      "broker": "",
+      "service": "",
+      "equipment": "",
+      "bol": "BF80023",
+      "pro": "",
+      "pickup_number": "",
+      "reference": "",
+      "tracking_url": "",
+      "driver_name": "",
+      "driver_phone": "",
+      "truck_number": "",
+      "trailer_number": "",
+      "pallets": "8",
+      "pieces": "",
+      "weight_lbs": "",
+      "freight_class": "",
+      "dimensions": "",
+      "commodity": "",
+      "accessorials": "",
+      "quoted_cost": 350,
+      "paid_amount": 350,
+      "paid_at": "2026-09-27",
+      "paid_method": "ACH",
+      "paid_note": "",
+      "notes": "",
+      "created_by_name": "Sam Rivera",
+      "updated_by_name": "Ines Okafor",
+      "created_at": "2026-09-20T10:00:00Z",
+      "updated_at": "2026-09-25T10:00:00Z",
+      "tracking": null,
+      "id": "fb_8b1d4e0000",
+      "deal": {
+        "id": "d8",
+        "invoice_number": "INV-6008",
+        "client_name": "Lakeside Discount Co",
+        "stage": "payment_received"
+      },
+      "booked_at": "2026-09-21"
     }
   ],
   "done": [
@@ -405,7 +469,8 @@
         "invoice_number": "INV-6002",
         "client_name": "Cedar Row Resale",
         "stage": "invoiced"
-      }
+      },
+      "booked_at": ""
     }
   ]
 }

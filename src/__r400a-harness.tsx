@@ -4,11 +4,18 @@
 // Renders the REAL LogisticsView (as the Logistics account and as the owner) and the REAL
 // DealShipping step inside the app's shell geometry (216px sidebar, p-7), with the Tauri
 // bridge stubbed. Every place, carrier, number and person below is invented.
+//
+// R-401 adds the logistics pay: his "Your pay" card on the Logistics screen (as=dad), the deal's
+// Shipping step with its pay lines and typed freight (view=deal, &pay=share|loss|waiting|off),
+// the settings form (view=settings) and the tracker (view=tracker).
+// Query: ?as=dad|jack  &names=0|1  &addr=0|1  &dark=1  &view=logistics|deal|settings|tracker
 import ReactDOM from "react-dom/client";
 import LogisticsView from "./components/LogisticsView";
 import DealShipping from "./components/DealShipping";
+import { LogisticsPaySettingsForm, LogisticsPayTrackerPanel } from "./components/LogisticsPay";
 import { ToastHost } from "./components/Toast";
 import { localDay } from "./lib/format";
+import { payRoute } from "./__r400-fixture/pay";
 import "./index.css";
 
 const q = new URLSearchParams(location.search);
@@ -20,8 +27,11 @@ if (q.get("dark") === "1") document.documentElement.classList.add("dark");
 const ahead = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return localDay(d); };
 const back = (n: number) => ahead(-n);
 
+// A confirm sheet would block the page in a headless run, so the harness answers yes.
+window.confirm = () => true;
+
 const base = {
-  status: "requested", request_note: "",
+  status: "requested", booked_at: "", request_note: "",
   pickup_name: "", pickup_address: "", pickup_date: "", pickup_window: "", pickup_contact: "", pickup_phone: "", pickup_notes: "",
   delivery_name: "", delivery_address: "", delivery_date: "", delivery_window: "", delivery_contact: "", delivery_phone: "", delivery_notes: "",
   delivered_at: "", carrier: "", broker: "", service: "", equipment: "", bol: "", pro: "", pickup_number: "", reference: "", tracking_url: "",
@@ -76,14 +86,47 @@ const FLOW: any = {
   ships_direct: false, pickup_date: null, expected_delivery_date: null, pickup_date_prev: null, expected_delivery_date_prev: null,
   supplier_payments: [
     { id: "sp1", supplier_name: "Northgate Wholesale", amount: 6_000, paid: true, category: "supplier" },
-    { id: "sp2", supplier_name: "Freight to Marlow", amount: 500, paid: false, category: "freight" },
+    { id: "sp2", supplier_name: "Freight to Marlow", amount: 500, paid: false, category: "freight", kept: false },
   ],
   shipping_cost: null, logistics_bookings: 3, logistics_unpaid: 2, logistics_paid: 800, logistics_quoted: 700, logistics_stage: "requested",
   shipping_linked: 810, freight_typed: 500, shipping_mode: true, shipping_estimate: 1_500, projected_cost: 7_500,
 };
 
+// The deal's pay line, as `get_deal_logistics_pay` gives it, for the four cases the step words.
+const PAY = q.get("pay") ?? "share";
+const payLine = (): any => {
+  const b = { charged: 1_200, charged_source: "lines", freight: 810, freight_source: "bank", earned_on: back(4), due_date: ahead(3), booking_codes: ["L-7F3K2A", "L-A91C3D"], payee_name: "Ines Okafor", pending: false };
+  if (PAY === "off") return null;
+  if (PAY === "waiting") return { ...b, freight: 0, surplus: 1_200, pay: null, rule: "pending", pending: true };
+  if (PAY === "loss") return { ...b, charged: 600, surplus: -210, pay: 81, rule: "loss_cover" };
+  return { ...b, surplus: 390, pay: 390, rule: "share" };
+};
+const INVOICE = {
+  id: "i1", number: "INV-5001", total: 25_200, subtotal: 25_200, shipping_charged: null,
+  line_items_json: JSON.stringify([
+    { description: "Mixed apparel pallets", qty: 8, rate: 3_000, amount: 24_000 },
+    { description: "Shipping", qty: 1, rate: 1_200, amount: 1_200 },
+  ]),
+};
+
 const handlers: Record<string, (a: any) => any> = {
+  get_invoice: () => clone(INVOICE),
+  get_deal_logistics_pay: () => payLine(),
+  update_supplier_payment: () => null,
+  remove_supplier_payment: () => null,
+  list_staff: () => [
+    { id: "u1", email: "owner@example.test", display_name: "Owner", role_id: "role_admin", role_name: "Admin", status: "active", commission_pct: 0, hide_pay_cuts: false },
+    { id: "u2", email: "ines@example.test", display_name: "Ines Okafor", role_id: "role_logistics", role_name: "Logistics", status: "active", commission_pct: 0, hide_pay_cuts: false },
+    { id: "u3", email: "sam@example.test", display_name: "Sam Rivera", role_id: "role_sales", role_name: "Sales", status: "active", commission_pct: 10, hide_pay_cuts: false },
+  ],
+  list_roles: () => ({ modules: [], roles: [
+    { id: "role_admin", name: "Admin", permissions: ["*"], is_system: true },
+    { id: "role_logistics", name: "Logistics", permissions: ["logistics:view", "logistics:edit"], is_system: true },
+    { id: "role_sales", name: "Sales", permissions: ["deal_flow:view"], is_system: false },
+  ] }),
   logistics_request: ({ method, path, body }: any) => {
+    const paid = payRoute(method, path, body, AS === "dad" ? "payee" : "owner", NAMES);
+    if (paid !== undefined) return paid;
     const [p, qs = ""] = path.split("?");
     const bookings = () => (qs.includes("include_done=1") ? [...BOOKINGS, ...DONE] : live());
     if (method === "GET" && p === "/api/logistics/bookings") return { bookings: bookings().map(shape) };
@@ -135,16 +178,18 @@ const me: any = AS === "dad"
   : { id: "u1", email: "owner@example.test", display_name: "Owner", role_id: "role_admin", role_name: "Admin", is_admin: true, permissions: ["*"] };
 
 function Harness() {
-  const view = q.get("view") === "deal" ? "deal" : "logistics";
+  const v = q.get("view");
+  const view = v === "deal" || v === "settings" || v === "tracker" ? v : "logistics";
   return (
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
       <aside className="w-[216px] flex-shrink-0" style={{ background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)" }} />
       <main className="flex-1 overflow-auto">
         <div className="p-7">
           <div className="max-w-[1280px] mx-auto">
-            {view === "logistics"
-              ? <LogisticsView me={me} />
-              : <div className="border border-line rounded-xl bg-surface-2 px-5 py-4 max-w-[900px]"><DealShipping flow={FLOW} onReload={() => {}} locked={false} /></div>}
+            {view === "logistics" && <LogisticsView me={me} />}
+            {view === "deal" && <div className="border border-line rounded-xl bg-surface-2 px-5 py-4 max-w-[900px]"><DealShipping flow={FLOW} onReload={() => {}} locked={false} onAdvance={() => {}} /></div>}
+            {view === "settings" && <div className="bg-surface border border-line rounded-2xl p-6 max-w-2xl"><LogisticsPaySettingsForm /></div>}
+            {view === "tracker" && <div className="bg-surface border border-line rounded-2xl p-6 max-w-3xl"><LogisticsPayTrackerPanel /></div>}
           </div>
         </div>
       </main>

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, WeeklyBrief, DealFlow, ReceivablesAging, ARItem, Client, Invoice } from "../lib/api";
+import { api, WeeklyBrief, DealFlow, ReceivablesAging, ARItem, Client, Invoice, type LogisticsPayTracker } from "../lib/api";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
+import { LogisticsPayBriefBlock } from "./LogisticsPay";
 import {
   RefreshCw, Printer, ArrowRight, CheckCircle2, CalendarClock, Clock,
   Banknote, FileText, Truck, AlertTriangle, Users, Receipt, PackageCheck,
@@ -53,6 +54,14 @@ const openDeal = (invoiceNumber: string) => {
 
 type Scope = "today" | "week";
 
+/** The pickup/delivery gate on completing a deal (R-154): held while the delivery date, or the
+ *  pickup date when there is none, is still ahead. A deal that ships direct has no gate. */
+const heldByShipping = (f: DealFlow, today: string): boolean => {
+  if (f.ships_direct) return false;
+  const date = day(f.expected_delivery_date) || day(f.pickup_date);
+  return !!date && date > today;
+};
+
 /** One thing that happened in the window, whatever produced it. */
 type Happening = {
   key: string;
@@ -75,6 +84,8 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
   const [invoices, setInvoices]   = useState<Invoice[]>([]);
   const [ar, setAr]               = useState<ReceivablesAging | null>(null);
   const [followups, setFollowups] = useState<Client[]>([]);
+  // R-401: the logistics pay, for an owner only. Anyone the server will not show it to gets nothing.
+  const [logiPay, setLogiPay]     = useState<LogisticsPayTracker | null>(null);
   const [loading, setLoading]     = useState(true);
   const [scope, setScope]         = useState<Scope>("today");
 
@@ -96,6 +107,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
       api.listDealFlows().then(setFlows).catch(() => {});
       api.listInvoices().then(setInvoices).catch(() => {});
       api.getReceivablesAging().then(setAr).catch(() => setAr(null));
+      api.logistics.pay.tracker().then(setLogiPay).catch(() => setLogiPay(null));
     }
     api.dueFollowups().then(setFollowups).catch(() => {});
     setLoading(false);
@@ -167,11 +179,13 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
     [ar],
   );
   const overdueValue = overdue.reduce((s, i) => s + i.amount, 0);
-  const awaitingSupplier = useMemo(
-    () => flows.filter((f) => f.stage === "payment_received" && f.supplier_owed > 0),
-    [flows],
+  // R-401: a deal is ready to close once the buyer has paid. Nothing tracks the supplier being
+  // paid any more, so the stage that used to mean "ready" is no longer reached by a button. A
+  // deal whose pickup or delivery is still ahead is held by the shipping gate, so it waits.
+  const readyToClose = useMemo(
+    () => flows.filter((f) => (f.stage === "payment_received" || f.stage === "supplier_paid") && !heldByShipping(f, today)),
+    [flows, today],
   );
-  const readyToClose = useMemo(() => flows.filter((f) => f.stage === "supplier_paid"), [flows]);
 
   // ── What is at risk ───────────────────────────────────────────────────────
   const aged = useMemo(() => (ar?.items ?? []).filter((i) => i.days_overdue > 30), [ar]);
@@ -183,8 +197,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
     [flows, today],
   );
 
-  const needsNothing = overdue.length === 0 && followups.length === 0
-    && awaitingSupplier.length === 0 && readyToClose.length === 0;
+  const needsNothing = overdue.length === 0 && followups.length === 0 && readyToClose.length === 0;
   const riskNothing = aged.length === 0 && speculative.length === 0 && slipping.length === 0;
 
   const scopeWord = scope === "today" ? "today" : "this week";
@@ -319,21 +332,11 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                   />
                 )}
 
-                {awaitingSupplier.length > 0 && (
-                  <ActionRow
-                    tone="neutral" icon={<Banknote size={14} />}
-                    title={`${awaitingSupplier.length} deal${awaitingSupplier.length !== 1 ? "s" : ""} waiting on a supplier payment`}
-                    sub="Paid by the buyer, supplier still owed"
-                    amount={fmtAmount(awaitingSupplier.reduce((s, f) => s + f.supplier_owed, 0))}
-                    onClick={() => goTab("dealflow")}
-                  />
-                )}
-
                 {readyToClose.length > 0 && (
                   <ActionRow
                     tone="success" icon={<PackageCheck size={14} />}
                     title={`${readyToClose.length} deal${readyToClose.length !== 1 ? "s" : ""} ready to close out`}
-                    sub="Supplier paid: mark them complete to book the profit"
+                    sub="The buyer has paid: complete them to book the profit"
                     onClick={() => goTab("dealflow")}
                   />
                 )}
@@ -377,6 +380,9 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                 </div>
               )}
             </div>
+
+            {/* R-401: what the logistics person is owed, when, and what is waiting on an amount */}
+            {logiPay && <LogisticsPayBriefBlock t={logiPay} from={weekStart} onOpen={() => goTab("settings")} />}
 
             {/* People and activity — brief-window figures, labelled with that window */}
             {brief && (

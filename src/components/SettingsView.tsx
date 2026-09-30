@@ -73,6 +73,7 @@ import {
   Facebook,
   Globe,
   Split,
+  Truck,
   Database,
   Users,
   SlidersHorizontal,
@@ -107,6 +108,7 @@ import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
 import NumberInput from "./NumberInput";
+import { LogisticsPaySettingsForm, LogisticsPayTrackerPanel } from "./LogisticsPay";
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
 import CrossDock from "./CrossDock";
@@ -367,12 +369,14 @@ const SETTINGS_INDEX: IndexRow[] = [
   // card is not on the page when the result is clicked.
   { tab: "import", label: "Import from Google Contacts", kw: "gmail contacts address book" },
   { tab: "splits", card: "Sales reps", label: "Rep pay", kw: "commission profit percent gross percent fixed dollar pay type" },
+  { tab: "splits", card: "Logistics pay", label: "Logistics pay", kw: "shipping profit share freight surplus loss pay date weekly biweekly monthly zelle" },
   { tab: "splits", card: "Profit split", label: "Profit split", kw: "owners business partners share percentage" },
   { tab: "team", card: "people", label: "People", kw: "users staff roster deactivate member" },
   { tab: "team", card: "roles", label: "Roles & permissions", kw: "permissions admin sales viewer per-role access add role" },
   { tab: "team", card: "approvals", label: "Client approvals", kw: "require approval add delete pending queue" },
   { tab: "team", card: "invites", label: "Invites", kw: "invite link join workspace resend" },
   { tab: "team", card: "payouts", label: "Rep payouts", kw: "payout schedule period anchor custom days enable" },
+  { tab: "team", card: "payouts", label: "Logistics pay tracker", kw: "record payment undo due now pay date freight waiting" },
   { tab: "team", card: "people", label: "Share my connections", kw: "org shared credentials" },
   // Help
   { tab: "feedback", label: "Send feedback", kw: "bug report feature request contact support" },
@@ -5128,7 +5132,11 @@ function SplitsTab() {
         )}
       </SettingCard>
 
-      <SettingCard icon={Split} title="Profit split" purpose="Whatever's left after the rep's cut is divided by these recipients: people, the business, investment set-asides, anything. Saves when the total is exactly 100%."
+      <SettingCard icon={Truck} title="Logistics pay" purpose="A share of the shipping profit for the person doing logistics, taken off the top with the rep's cut before the split.">
+        <LogisticsPaySettingsForm />
+      </SettingCard>
+
+      <SettingCard icon={Split} title="Profit split" purpose="Whatever's left after the rep's cut and the logistics pay is divided by these recipients: people, the business, investment set-asides, anything. Saves when the total is exactly 100%."
         aside={
           <span className={`text-[12.5px] font-medium tabular-nums ${
             !valid ? "text-warning-ink" : saveState === "error" ? "text-danger-ink" : saveState === "saved" ? "text-success-ink" : "text-muted"
@@ -5372,6 +5380,7 @@ function PayoutsPanel() {
 
   const payouts: any[] = (data && data.payouts) || [];
   return (
+    <div className="space-y-4">
     <SettingCard icon={Receipt} title="Rep payouts" purpose="What each rep is owed for completed deals in the period.">
       <div className="space-y-4">
         {data && !data.enabled && (
@@ -5429,6 +5438,10 @@ function PayoutsPanel() {
         {err && <div className="text-[12px] text-danger-ink flex items-center gap-1.5"><AlertCircle size={13} /> {err}</div>}
       </div>
     </SettingCard>
+    <SettingCard icon={Truck} title="Logistics pay tracker" purpose="What the person doing logistics is owed, on which pay date, and for which loads.">
+      <LogisticsPayTrackerPanel />
+    </SettingCard>
+    </div>
   );
 }
 

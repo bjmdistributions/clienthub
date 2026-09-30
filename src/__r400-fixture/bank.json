@@ -343,6 +343,26 @@
       "payment_received_paired": false,
       "supplier_paid_paired": false,
       "fully_reconciled": false
+    },
+    "d8": {
+      "expected_profit": 5150,
+      "actual_profit": 12500,
+      "gross_revenue": 0,
+      "total_cost": 0,
+      "pieces": {
+        "buyer_paired": 12500,
+        "supplier_paired": 0,
+        "fee_paired": 0,
+        "refund_total": 0,
+        "refund_in": 0,
+        "shipping_paired": 0,
+        "shipping_target": 350,
+        "shipping_paid_paired": false
+      },
+      "shipping_paid_paired": false,
+      "payment_received_paired": true,
+      "supplier_paid_paired": false,
+      "fully_reconciled": false
     }
   }
 }

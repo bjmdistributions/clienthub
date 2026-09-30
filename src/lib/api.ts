@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { localDay } from "./format";
 import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
 import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, PalletSpec, WarehousePallet } from "./palletFit";
 
@@ -2824,7 +2825,7 @@ export interface TxnRule {
 export interface BankSuggestCandidate {
   txn_id: string;
   deal_id: string;
-  role: "buyer_payment" | "supplier_payment";
+  role: "buyer_payment" | "supplier_payment" | "shipping";
   client_name: string;
   client_id: string;
   supplier_name: string | null;
@@ -2995,6 +2996,14 @@ function showPackingRequest<T>(method: string, path: string, body?: unknown): Pr
   return invoke<T>("show_packing_request", { method, path, body: body ?? null });
 }
 
+/** R-400: one carrier charge that covers several deals' loads; confirming it links each part
+ *  as a shipping payment. */
+export interface ShippingSplitPart {
+  deal_flow_id: string; invoice_number: string; client_name: string; amount: number;
+  booking_id: string; booking_code: string; carrier: string;
+}
+export interface ShippingSplit { total: number; parts: ShippingSplitPart[] }
+
 // ===== Logistics (R-400) =====
 // A freight booking is one truck. The server owns the rows (Logistics-only accounts read and
 // write them through `logistics_request`, which only reaches /api/logistics/*); a desktop that
@@ -3012,6 +3021,9 @@ export interface FreightBooking {
   /** "L-" and six characters of the id. What a person quotes on the phone. */
   code: string;
   status: FreightStatus;
+  /** R-401: the day freight was first confirmed booked. Set once, never moved or cleared.
+   *  Empty until then. The logistics pay is earned on this day. */
+  booked_at: string;
   request_note: string;
   pickup_name: string; pickup_address: string; pickup_date: string; pickup_window: string;
   pickup_contact: string; pickup_phone: string; pickup_notes: string;
@@ -3037,7 +3049,7 @@ export interface FreightBooking {
 }
 /** The fields a person can write. Only the ones present are saved. */
 export type FreightBookingPatch = Partial<Omit<FreightBooking,
-  "id" | "code" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |
+  "id" | "code" | "booked_at" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |
   "can_see_names" | "can_see_addresses" | "can_see_deal" | "tracking" | "deal"
 >> & { today?: string };
 export interface FreightPrefill {
@@ -3046,6 +3058,114 @@ export interface FreightPrefill {
   delivery_name: string;
   delivery_address: string;
   pickup_options: { name: string; address: string }[];
+}
+
+// ===== Logistics pay (R-401) =====
+// The person doing logistics earns a share of the shipping profit (what the customer was charged
+// for shipping, less what the carrier was paid). The rule is one org setting the server owns,
+// and every figure below is worked out on the server, so a screen only ever prints them.
+export type LogisticsPayFrequency = "weekly" | "biweekly" | "monthly";
+export interface LogisticsPaySettings {
+  enabled: boolean;
+  payee_id: string;
+  payee_name: string;
+  /** Percent of the shipping profit, 0 to 100. */
+  share_pct: number;
+  /** When on, a load that breaks even or loses money still pays `loss_pay_pct` of its freight. */
+  cover_losses: boolean;
+  loss_pay_pct: number;
+  frequency: LogisticsPayFrequency;
+  /** 0 = Monday ... 6 = Sunday. */
+  pay_weekday: number;
+  /** Every-two-weeks only: one real pay date. */
+  anchor_date: string;
+  /** Monthly only, 1 to 28. */
+  pay_day_of_month: number;
+  method: string;
+  details: string;
+  updated_at?: string;
+  updated_by_name?: string;
+}
+export type LogisticsPayRule = "share" | "loss_cover" | "loss_share" | "pending";
+export interface LogisticsPayTrackerLine {
+  deal_flow_id: string;
+  invoice_number: string;
+  client_name: string;
+  booking_codes: string[];
+  earned_on: string;
+  due_date: string;
+  charged: number;
+  charged_source: "lines" | "field" | "none";
+  freight: number;
+  freight_source: "bank" | "paid" | "quote" | "mixed";
+  surplus: number;
+  rule: LogisticsPayRule;
+  /** null = waiting on the freight amount. */
+  pay: number | null;
+  paid: number;
+  owed: number;
+  pending: boolean;
+}
+export interface LogisticsPayDate {
+  pay_date: string;
+  period_start: string;
+  period_end: string;
+  total: number;
+  carried_in: number;
+  status: "paid" | "due" | "upcoming";
+  payout_id: string | null;
+}
+export interface LogisticsPayout {
+  id: string;
+  payee_id: string;
+  payee_name: string;
+  pay_date: string;
+  period_start: string;
+  period_end: string;
+  amount: number;
+  lines_json: string;
+  method: string;
+  reference: string;
+  note: string;
+  paid_at: string;
+  created_by_name: string;
+  created_at: string;
+}
+export interface LogisticsPayTracker {
+  settings: LogisticsPaySettings;
+  today: string;
+  next_pay_date: string;
+  next_total: number;
+  due_now_total: number;
+  lines: LogisticsPayTrackerLine[];
+  dates: LogisticsPayDate[];
+  payouts: LogisticsPayout[];
+}
+/** His own view: his pay only, never what the customer was charged. */
+export interface LogisticsPayMine {
+  enabled: boolean;
+  next_pay_date?: string;
+  next_total?: number;
+  due_now_total?: number;
+  method?: string;
+  dates?: { pay_date: string; total: number; status: "paid" | "due" | "upcoming"; paid_at: string }[];
+  loads?: { code: string; pickup_name: string; delivery_name: string; earned_on: string; due_date: string; amount: number; status: "earned" | "pending" | "paid" }[];
+}
+/** One deal's pay line, off `get_deal_logistics_pay`. null when the rule is off, the deal is
+ *  archived or voided, or no live booking is confirmed booked yet. */
+export interface DealLogisticsPay {
+  charged: number;
+  charged_source: "lines" | "field" | "none";
+  freight: number;
+  freight_source: "bank" | "paid" | "quote" | "mixed";
+  surplus: number;
+  pay: number | null;
+  rule: LogisticsPayRule;
+  pending: boolean;
+  earned_on: string;
+  due_date: string;
+  booking_codes: string[];
+  payee_name: string;
 }
 
 // The Logistics screen rides one Tauri command too. It refuses any path outside /api/logistics
@@ -3376,14 +3496,37 @@ export const api = {
       logisticsRequest<FreightPrefill>("GET", `/api/logistics/prefill/${encodeURIComponent(dealFlowId)}`),
     /** "Send to logistics": needs deal edit access. Names and addresses left out are prefilled. */
     create: (dealFlowId: string, fields: FreightBookingPatch) =>
-      logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { deal_flow_id: dealFlowId, ...fields }),
+      logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { today: localDay(), deal_flow_id: dealFlowId, ...fields }),
     /** "Add another truck": the deal, the places and the note carry over, nothing else. */
-    copy: (copyFrom: string) => logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { copy_from: copyFrom }),
+    copy: (copyFrom: string) => logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { copy_from: copyFrom, today: localDay() }),
     update: (id: string, patch: FreightBookingPatch) =>
-      logisticsRequest<FreightBooking>("PATCH", `/api/logistics/bookings/${encodeURIComponent(id)}`, patch),
+      logisticsRequest<FreightBooking>("PATCH", `/api/logistics/bookings/${encodeURIComponent(id)}`, { today: localDay(), ...patch }),
     /** Archives it (deal edit access only). Logistics cancels with status "cancelled" instead. */
     remove: (id: string) => logisticsRequest<unknown>("DELETE", `/api/logistics/bookings/${encodeURIComponent(id)}`),
+    /** R-401: the logistics pay. Every logistics write (these and the bookings above) carries the
+     *  local day, since the server's own clock is UTC and the evening is already tomorrow there. */
+    pay: {
+      /** Everything for the owner. The payee himself gets only the schedule and method. */
+      settings: () => logisticsRequest<Partial<LogisticsPaySettings>>("GET", "/api/logistics/pay/settings"),
+      // The server stamps who saved it and when, so those two are not sent back.
+      saveSettings: (s: LogisticsPaySettings) => {
+        const body: Record<string, unknown> = { ...s, today: localDay() };
+        delete body.updated_at; delete body.updated_by_name;
+        return logisticsRequest<LogisticsPaySettings>("PUT", "/api/logistics/pay/settings", body);
+      },
+      tracker: () => logisticsRequest<LogisticsPayTracker>("GET", `/api/logistics/pay/tracker?today=${localDay()}`),
+      mine: () => logisticsRequest<LogisticsPayMine>("GET", `/api/logistics/pay/mine?today=${localDay()}`),
+      /** The amount is never typed: the server adds up what is due on or before that date. */
+      record: (payDate: string, opts: { method: string; reference?: string; note?: string }) =>
+        logisticsRequest<LogisticsPayout>("POST", "/api/logistics/pay/payouts", {
+          pay_date: payDate, method: opts.method, reference: opts.reference ?? "", note: opts.note ?? "", today: localDay(),
+        }),
+      /** Undo: archives the payout, and what it covered is owed again. */
+      undo: (id: string) => logisticsRequest<unknown>("DELETE", `/api/logistics/pay/payouts/${encodeURIComponent(id)}`),
+    },
   },
+  /** R-401: one deal's logistics pay line (charged, freight, surplus, pay), or null. */
+  getDealLogisticsPay: (dealFlowId: string) => invoke<DealLogisticsPay | null>("get_deal_logistics_pay", { dealFlowId }),
   /** The local read Jack's deal pages use: every non-archived booking, cancelled ones included. */
   listFreightBookings: (dealFlowId?: string) =>
     invoke<FreightBooking[]>("list_freight_bookings", { dealFlowId: dealFlowId ?? null }),
@@ -3864,7 +4007,7 @@ export const api = {
     invoke<string>("add_cash_transaction", { amount, direction, postedAt, counterparty: counterparty ?? null, note: note ?? null }),
   // A money line on a deal that never hit the bank statement (cash on the side, an
   // offset). Books a manual_cash transaction and allocates it to the leg in one go.
-  addManualDealLine: (dealFlowId: string, role: "buyer_payment" | "supplier_payment" | "fee" | "refund_in", amount: number, postedAt?: string, counterparty?: string, note?: string) =>
+  addManualDealLine: (dealFlowId: string, role: "buyer_payment" | "supplier_payment" | "shipping" | "fee" | "refund_in", amount: number, postedAt?: string, counterparty?: string, note?: string) =>
     invoke<string>("add_manual_deal_line", { dealFlowId, role, amount, postedAt: postedAt ?? null, counterparty: counterparty ?? null, note: note ?? null }),
   dealReconciliation: (dealFlowId: string) =>
     invoke<DealReconciliation>("deal_reconciliation", { dealFlowId }),
@@ -3921,6 +4064,8 @@ export const api = {
         candidates: BankSuggestCandidate[];
         counterparty?: BankPersonCandidate | null;
         counterparty_candidates?: BankPersonCandidate[];
+        /** R-400: one carrier charge that covers several deals' loads. Null or absent when none. */
+        shipping_split?: ShippingSplit | null;
       }[];
       source?: "server" | "local";
       scanned?: number;

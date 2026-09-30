@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
+import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
 import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 import {
@@ -230,6 +231,8 @@ function DealBreakdown({
   // Completed deals show the breakdown captured at completion; older deals
   // (no stored breakdown) fall back to re-deriving from the current config.
   const alloc = dealPayoutSplit(flow, recipients);
+  // R-401: the logistics pay comes off the top before the split, like a rep's cut.
+  const logiPay = useDealLogisticsPay(flow.id, [flow.updated_at, flow.total_cost, flow.shipping_cost]);
   const payments = flow.supplier_payments || [];
   const margin   = pct(flow.net_profit, flow.gross_revenue);
 
@@ -337,12 +340,13 @@ function DealBreakdown({
       )}
 
       {/* Profit split — config-driven; hidden until payouts are set up */}
-      {flow.net_profit > 0 && alloc.length > 0 && (
+      {flow.net_profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending) && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3">
           <p className="text-[12.5px] font-medium text-muted mb-3">
             Profit Split
           </p>
           <div className="flex flex-wrap gap-4 text-center">
+            <LogisticsPayCell pay={logiPay} big />
             {alloc.map((item, i) => (
               <div key={i} className="flex-1 min-w-[90px]">
                 <div className="text-[12px] text-muted truncate">{item.name}</div>

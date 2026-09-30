@@ -81,6 +81,16 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
         </div>
       )}
 
+      {/* R-401: the logistics pay comes off the top beside the rep's cut */}
+      {(Number(payout.logistics_pay) > 0.005 || payout.logistics_pay_pending) && (
+        <div className="flex items-center justify-between gap-3 text-[12px]">
+          <span className="text-muted">Logistics pay</span>
+          <span className="tabular-nums font-semibold text-ink">
+            {payout.logistics_pay_pending ? "Waiting on the freight amount" : fmtAmount(Number(payout.logistics_pay))}
+          </span>
+        </div>
+      )}
+
       {/* Unmatched rep — the client's rep isn't an employee in the system */}
       {enabled && unmatched && (
         <div className="flex items-start gap-2 bg-warning-bg border border-warning rounded-lg px-3 py-2">
