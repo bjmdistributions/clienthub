@@ -2230,4 +2230,17 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_warehouse_pallets_invoice ON warehouse_pallets(invoice_id);
         "#,
     ),
+    (
+        105,
+        // R-402: the one category and the one brand Jack gives a closed deal, read by Analytics'
+        // Revenue by category and Revenue by brand. Empty means not set, and the deal is guessed
+        // (deal_label.rs). Ordinary synced deal_flows columns, mirrored in clienthub-api
+        // schema.sql and its sync.rs ALTER list, which must be deployed first. 104 is R-400's,
+        // which agreed to renumber to 106 because this ships first. Never put a semicolon
+        // inside a comment here, the runner splits on it.
+        r#"
+        ALTER TABLE deal_flows ADD COLUMN category TEXT DEFAULT '';
+        ALTER TABLE deal_flows ADD COLUMN brand TEXT DEFAULT '';
+        "#,
+    ),
 ];

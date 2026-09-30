@@ -22,6 +22,7 @@ mod manifest;
 mod manifest_images;
 mod manifest_split;
 mod manifest_category;
+mod deal_label;
 mod oauth_flow;
 mod plaid;
 mod client_statement;
@@ -1013,6 +1014,9 @@ fn main() {
             get_payables_aging,
             get_analytics_range,
             analytics_reconciliation,
+            analytics_labels,
+            list_deal_labels,
+            set_deal_labels,
             list_deals_for_supplier,
             // CSV import
             csv_preview,

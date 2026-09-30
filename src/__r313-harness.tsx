@@ -313,9 +313,53 @@ const DAYS = Array.from({ length: 16 }, (_, i) => ({
     case "get_receivables_aging": return null;
     case "get_payables_aging": return null;
     case "get_dashboard_prefs": return { true_net: false };
+    // R-402: invented category and brand rows, and an invented labelling list.
+    case "analytics_labels": return LABELS;
+    case "list_deal_labels": return DEAL_LABELS;
+    case "set_deal_labels": return 1;
     default:
       return /_info$|_config$|_status$|_summary$|_prefs$/.test(cmd) ? {} : [];
   }
+};
+
+// R-402: every name and figure here is invented.
+const LABELS = {
+  deals: 48, revenue: 412_600, profit: 58_340,
+  categories: [
+    { name: "Shoes", deals: 14, revenue: 168_200, profit: 21_900, guessed: 5 },
+    { name: "Clothing", deals: 11, revenue: 96_400, profit: 17_250, guessed: 3 },
+    { name: "Home & Kitchen", deals: 7, revenue: 52_100, profit: 6_480, guessed: 0 },
+    { name: "Uncategorized", deals: 6, revenue: 38_900, profit: 4_210, guessed: 6 },
+    { name: "Electronics", deals: 5, revenue: 31_700, profit: -1_850, guessed: 1 },
+    { name: "Toys", deals: 3, revenue: 17_800, profit: 7_650, guessed: 2 },
+    { name: "Beauty", deals: 2, revenue: 7_500, profit: 2_700, guessed: 0 },
+  ],
+  brands: [
+    { name: "Nike", deals: 12, revenue: 151_300, profit: 22_400, guessed: 4 },
+    { name: "No brand", deals: 13, revenue: 88_900, profit: 9_950, guessed: 13 },
+    { name: "Adidas", deals: 6, revenue: 61_200, profit: 8_100, guessed: 2 },
+    { name: "Carhartt", deals: 5, revenue: 44_800, profit: 9_300, guessed: 1 },
+    { name: "Crocs", deals: 4, revenue: 27_600, profit: 3_950, guessed: 0 },
+    { name: "Ninja", deals: 3, revenue: 20_100, profit: -900, guessed: 1 },
+    { name: "Stanley", deals: 3, revenue: 12_400, profit: 3_120, guessed: 0 },
+    { name: "Lego", deals: 2, revenue: 6_300, profit: 2_420, guessed: 2 },
+  ],
+  uncategorized: 6, categories_guessed: 11, unbranded: 13, brands_guessed: 10,
+};
+const DEAL_LABELS = {
+  categories: ["Beauty", "Clothing", "Electronics", "Home & Kitchen", "Shoes", "Toys"],
+  brands: ["Adidas", "Carhartt", "Crocs", "Lego", "Nike", "Ninja", "Stanley"],
+  deals: [
+    ["INV-0301", "2026-09-28", ["Nike Air Force 1 size run", "Nike Dunk Low"], "Shoes", "reader", "Read from \"Nike Air Force 1 size run\"", "Nike", "reader", "Named in \"Nike Air Force 1 size run\""],
+    ["INV-0300", "2026-09-26", ["Pallet 14"], "Uncategorized", "", "", "No brand", "", ""],
+    ["INV-0299", "2026-09-24", ["Carhartt WIP hoodies"], "Clothing", "you", "", "Carhartt", "you", ""],
+    ["INV-0298", "2026-09-22", ["Zorvex 4400 lot B"], "Electronics", "learned", "\"zorvex\" was on 3 of your Electronics deals", "No brand", "", ""],
+    ["INV-0297", "2026-09-19", ["Load for Delmar"], "Shoes", "buyer", "The buyer buys only Shoes", "No brand", "", ""],
+    ["INV-0296", "2026-09-17", ["Ninja air fryers", "Ninja blenders", "Ninja creami"], "Home & Kitchen", "you", "", "Ninja", "reader", "Named in \"Ninja air fryers\""],
+  ].map(([number, day, products, category, category_from, category_why, brand, brand_from, brand_why], i) => ({
+    id: `d${i}`, number, day, buyer: `Invented Client ${i + 1}`, revenue: 8_000 + i * 1_450, profit: i === 3 ? -620 : 900 + i * 210,
+    products, category, category_from, category_why, brand, brand_from, brand_why,
+  })),
 };
 
 // Invented tier spread so the Client mix donut has something to draw.
