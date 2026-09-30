@@ -2230,4 +2230,48 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_warehouse_pallets_invoice ON warehouse_pallets(invoice_id);
         "#,
     ),
+    (
+        104,
+        // R-400: freight bookings, one per truck (a deal can have several), written by the
+        // Logistics screen on the server and read here. A live booking is archived = 0 and not
+        // cancelled. paid_amount NULL means not paid yet, a number (0 included) is the exact amount
+        // the carrier was paid, and it is the deal's shipping leg. Also deal_flows.shipping_cost,
+        // the shipping leg as recorded at the last completion or resync (NULL on every deal
+        // recorded before R-400). Synced (sync.rs ALLOWED_TABLES, netsync SNAPSHOT_TABLES), and
+        // mirrored in clienthub-api schema.sql plus its sync.rs ALTER list, which must be
+        // deployed first. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        CREATE TABLE IF NOT EXISTS freight_bookings (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            deal_flow_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'requested',
+            request_note TEXT DEFAULT '',
+            pickup_name TEXT DEFAULT '', pickup_address TEXT DEFAULT '',
+            pickup_date TEXT DEFAULT '', pickup_window TEXT DEFAULT '',
+            pickup_contact TEXT DEFAULT '', pickup_phone TEXT DEFAULT '', pickup_notes TEXT DEFAULT '',
+            delivery_name TEXT DEFAULT '', delivery_address TEXT DEFAULT '',
+            delivery_date TEXT DEFAULT '', delivery_window TEXT DEFAULT '',
+            delivery_contact TEXT DEFAULT '', delivery_phone TEXT DEFAULT '', delivery_notes TEXT DEFAULT '',
+            delivered_at TEXT DEFAULT '',
+            carrier TEXT DEFAULT '', broker TEXT DEFAULT '', service TEXT DEFAULT '', equipment TEXT DEFAULT '',
+            bol TEXT DEFAULT '', pro TEXT DEFAULT '', pickup_number TEXT DEFAULT '', reference TEXT DEFAULT '', tracking_url TEXT DEFAULT '',
+            driver_name TEXT DEFAULT '', driver_phone TEXT DEFAULT '', truck_number TEXT DEFAULT '', trailer_number TEXT DEFAULT '',
+            pallets TEXT DEFAULT '', pieces TEXT DEFAULT '', weight_lbs TEXT DEFAULT '', freight_class TEXT DEFAULT '',
+            dimensions TEXT DEFAULT '', commodity TEXT DEFAULT '', accessorials TEXT DEFAULT '',
+            quoted_cost REAL,
+            paid_amount REAL,
+            paid_at TEXT DEFAULT '', paid_method TEXT DEFAULT '', paid_note TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            created_by TEXT DEFAULT '', created_by_name TEXT DEFAULT '',
+            updated_by TEXT DEFAULT '', updated_by_name TEXT DEFAULT '',
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_freight_bookings_deal ON freight_bookings(deal_flow_id);
+        CREATE INDEX IF NOT EXISTS idx_freight_bookings_org ON freight_bookings(org_id);
+        ALTER TABLE deal_flows ADD COLUMN shipping_cost REAL;
+        "#,
+    ),
 ];

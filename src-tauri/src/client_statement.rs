@@ -750,7 +750,7 @@ pub fn build_statement_bytes(
 
     // ----- Deals -----
     for deal in &data.deals {
-        draw_deal(&doc, &mut pen, deal, opts, tpl, &font, &font_bold);
+        draw_deal(&doc, &mut pen, deal, opts, tpl, &font, &font_bold, generated_on);
     }
 
     if data.deals.is_empty() {
@@ -843,6 +843,13 @@ fn room(doc: &PdfDocumentReference, pen: &mut Pen, needed: f32) -> PdfLayerRefer
     pen.layers.last().unwrap().clone()
 }
 
+/// R-400: a pickup date in the future is a pickup that is scheduled, not one that happened. The
+/// Logistics screen fills the date in when the truck is booked, so it is usually ahead of today.
+fn pickup_word(pickup_date: &str, today: &str) -> &'static str {
+    if pickup_date.trim().get(..10).map_or(false, |d| d > today) { "Pickup scheduled" } else { "Picked up" }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_deal(
     doc: &PdfDocumentReference,
     pen: &mut Pen,
@@ -851,6 +858,7 @@ fn draw_deal(
     tpl: &InvoiceTemplate,
     font: &IndirectFontRef,
     font_bold: &IndirectFontRef,
+    today: &str,
 ) {
     // Header + at least one line of content stay together.
     let l = room(doc, pen, 24.0);
@@ -879,7 +887,7 @@ fn draw_deal(
             bits.push(format!("Due {}", deal.due_date));
         }
         if !deal.pickup_date.trim().is_empty() {
-            bits.push(format!("Picked up {}", deal.pickup_date));
+            bits.push(format!("{} {}", pickup_word(&deal.pickup_date, today), deal.pickup_date));
         }
         if !deal.delivery_date.trim().is_empty() {
             bits.push(format!("Delivery {}", deal.delivery_date));
@@ -1133,6 +1141,15 @@ pub async fn save_statement_client_fills(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pickup_date_ahead_of_today_reads_as_scheduled() {
+        assert_eq!(pickup_word("2026-10-02", "2026-09-30"), "Pickup scheduled");
+        assert_eq!(pickup_word("2026-09-30", "2026-09-30"), "Picked up", "today is not ahead of today");
+        assert_eq!(pickup_word("2026-09-01", "2026-09-30"), "Picked up");
+        assert_eq!(pickup_word("2026-10-02T00:00:00Z", "2026-09-30"), "Pickup scheduled");
+        assert_eq!(pickup_word("", "2026-09-30"), "Picked up");
+    }
 
     fn deal(total: f64, paid: f64, refunded: f64) -> StatementDeal {
         StatementDeal {

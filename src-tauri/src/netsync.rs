@@ -28,8 +28,9 @@ const POLL_SECS: u64 = 20;
 /// What `auto_heal_if_behind` currently covers. Bump ONLY when the heal check
 /// widens (e.g. new tables in `key_tables`), so devices gated off under a narrower
 /// check get one more pass — without re-healing the fleet on every release.
-/// "3" = the generation that added the financial tables.
-const HEAL_GENERATION: &str = "3";
+/// "3" = the generation that added the financial tables. "4" adds `freight_bookings` (R-400), so a
+/// device that updates after bookings already exist restores them from the server's snapshot.
+const HEAL_GENERATION: &str = "4";
 
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
 /// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`
@@ -63,6 +64,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "warehouse_layouts",
     // The pallets of each order (R-348).
     "warehouse_pallets",
+    // Freight bookings (R-400): the Logistics screen's rows, one per truck.
+    "freight_bookings",
 ];
 
 pub fn ensure_tables() -> Result<()> {
@@ -180,6 +183,55 @@ pub(crate) async fn refresh_token(base: &str, token: &str) -> Result<String> {
     state_set("netsync_token", &new_token);
     tracing::info!("netsync: session token refreshed");
     Ok(new_token)
+}
+
+/// R-400: device_state key set when the account that last connected here only sees the Logistics
+/// screen. It outlives the sign-in on purpose: with no one signed in a device counts as the
+/// owner's (no staff session = privileged), and without this mark the sync loop would start pulling
+/// the workspace the moment the Logistics person signed out.
+const LOGISTICS_ONLY_KEY: &str = "netsync_logistics_only";
+
+/// R-400: whether this device is in Logistics-only mode: the marked device, or one whose signed-in
+/// account is a Logistics-only one. It never pulls or pushes the workspace, and the sync loop
+/// skips it. Lifted by `connect` for any other account.
+pub fn logistics_only_device() -> bool {
+    state_get(LOGISTICS_ONLY_KEY).is_some() || crate::employees::session_is_logistics_only()
+}
+
+/// R-400: one call to the server as the signed-in account, with the stored token. Refreshes the
+/// token once when it is refused. Returns the HTTP status and the JSON body (`Null` for an empty
+/// or non-JSON one) so each caller decides what a status means; only a connection that could not
+/// be made at all is an error. `path` starts with `/api/`; the base is the stored server URL.
+pub async fn server_request(method: &str, path: &str, body: Option<serde_json::Value>) -> Result<(u16, serde_json::Value)> {
+    let cfg = config().context("Sign in to your workspace first.")?;
+    let base = cfg.url.trim_end_matches('/').to_string();
+    let method = reqwest::Method::from_bytes(method.trim().to_ascii_uppercase().as_bytes()).context("unknown method")?;
+    let mut token = cfg.token;
+    let mut refreshed = false;
+    loop {
+        let mut req = http().request(method.clone(), format!("{}{}", base, path)).bearer_auth(&token);
+        if let Some(b) = &body {
+            req = req.json(b);
+        }
+        let resp = req.send().await.context("request failed")?;
+        let status = resp.status().as_u16();
+        if status == 401 && !refreshed {
+            refreshed = true;
+            match refresh_token(&base, &token).await {
+                Ok(t) => {
+                    token = t;
+                    continue;
+                }
+                Err(e) => tracing::warn!("netsync request: token refresh failed: {}", e),
+            }
+        }
+        if status == 401 {
+            note_auth_lost();
+        }
+        let text = resp.text().await.unwrap_or_default();
+        let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        return Ok((status, value));
+    }
 }
 
 /// How long after the last server-confirmed pull/push this device still counts as
@@ -356,6 +408,10 @@ struct PushResp {
 /// silently and permanently dropped those events from the only device that had them.
 /// Anything unnamed stays queued and retries on the next pass.
 pub async fn push_pending() -> Result<usize> {
+    // R-400: a Logistics-only device never pushes the workspace (the server would refuse it too).
+    if logistics_only_device() {
+        return Ok(0);
+    }
     let cfg = match config() {
         Some(c) => c,
         None => return Ok(0),
@@ -549,6 +605,10 @@ struct PullResp {
 /// Pull the org's events after our stored cursor and apply them locally, paging
 /// until caught up. Idempotent — re-applying a seen event is a no-op.
 pub async fn pull_apply() -> Result<usize> {
+    // R-400: a Logistics-only device never pulls the workspace: it holds no deals and no money.
+    if logistics_only_device() {
+        return Ok(0);
+    }
     let cfg = match config() {
         Some(c) => c,
         None => return Ok(0),
@@ -567,6 +627,9 @@ pub async fn pull_apply() -> Result<usize> {
         }
         state_set("netsync_rewind_pending", "");
     }
+    // R-400: booking events that landed this pass. When the pass ends, however it ends, completed
+    // deals whose books a booking moved are checked, and a delivery is announced (see freight.rs).
+    let mut freight = crate::freight::PullHook::default();
     let mut applied = 0;
     // Cursor of the first page in which an event FAILED to apply this pass. We keep
     // paging (so a later event — e.g. a not-yet-seen parent row — still gets applied),
@@ -617,6 +680,7 @@ pub async fn pull_apply() -> Result<usize> {
                 page_failed = true;
             } else {
                 applied += 1;
+                freight.note(ev);
             }
         }
         if page_failed && earliest_failure.is_none() {
@@ -698,6 +762,10 @@ pub fn spawn_loop(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(POLL_SECS));
         let mut ticks: u32 = 0;
+        // R-400: the snapshot heal otherwise runs only at sign-in, which a device that updates
+        // while already signed in never does again. Once per launch, gated by HEAL_GENERATION, so it
+        // costs nothing unless this build widened what heal covers (it did: freight_bookings).
+        let mut heal_checked = false;
         loop {
             interval.tick().await;
             // Runs on the first tick (an immediate baseline at startup) and every
@@ -708,7 +776,7 @@ pub fn spawn_loop(app: tauri::AppHandle) {
                 run_invariant_checks();
             }
             ticks = ticks.wrapping_add(1);
-            if !is_enabled() {
+            if !is_enabled() || logistics_only_device() {
                 continue;
             }
             if let Err(e) = push_pending().await {
@@ -738,6 +806,10 @@ pub fn spawn_loop(app: tauri::AppHandle) {
                 Ok(_) => {}
                 Err(e) => tracing::warn!("netsync pull: {}", e),
             }
+            if !heal_checked {
+                heal_checked = true;
+                auto_heal_if_behind().await;
+            }
             // Push org-shared config AFTER pull, so the down-path has applied any sibling
             // admin's change to our local settings first and we never push a staler value.
             // Hash-gated, so it only hits the network when the config actually changed.
@@ -765,7 +837,7 @@ pub fn spawn_loop(app: tauri::AppHandle) {
 /// other devices see the resolution without waiting for the next poll tick. No-op
 /// when no server connection is configured.
 pub fn push_now() {
-    if !is_enabled() {
+    if !is_enabled() || logistics_only_device() {
         return;
     }
     tauri::async_runtime::spawn(async {
@@ -848,6 +920,16 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<ServerIde
     // without another round-trip.
     state_set("netsync_email", &identity.email);
     state_set("netsync_org", &identity.org_id);
+    // R-400: an account that only sees the Logistics screen stores the connection (the screen
+    // reads over it) and stops there: no bootstrap pull, no heal, no team secrets. Nothing of the
+    // workspace ever reaches this device.
+    if crate::employees::is_logistics_only(&identity.permissions) {
+        state_set(LOGISTICS_ONLY_KEY, "1");
+        return Ok(identity);
+    }
+    // Any other account lifts the mark, so a workspace owner signing in on a device a Logistics
+    // person used gets the workspace back.
+    state_del(LOGISTICS_ONLY_KEY);
     // Only reset the cursor on the very first connect (full bootstrap). On a
     // re-login (token refresh) keep the cursor so we pull incrementally rather
     // than re-downloading the whole org history every sign-in.
@@ -1078,6 +1160,9 @@ pub async fn netsync_repair_hard() -> Result<serde_json::Value, String> {
 /// best-effort: a bad row is logged and skipped, never aborting the restore. Returns
 /// `{ table: rows_applied, ... }`.
 pub async fn restore_snapshot() -> Result<serde_json::Value> {
+    if logistics_only_device() {
+        anyhow::bail!("This account uses the Logistics screen and does not sync the workspace.");
+    }
     let cfg = config().context("Sign in to your workspace first, then run Restore.")?;
     let base = cfg.url.trim_end_matches('/');
     // Flush locally-queued changes to the server BEFORE mirroring its snapshot, so the
@@ -1352,7 +1437,7 @@ async fn auto_heal_if_behind() {
     let key_tables = [
         "clients", "invoices", "deals", "deal_flows", "payments",
         "bank_txn", "bank_allocation", "deal_receipts", "cash_purchase",
-        "business_expense", "reserve_entry", "loan",
+        "business_expense", "reserve_entry", "loan", "freight_bookings",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -2519,5 +2604,43 @@ mod lot_sync_tests {
         // two orders of magnitude past what this spine was built for.
         assert!(!SNAPSHOT_TABLES.contains(&"lot_stack"));
         assert!(!crate::sync::is_synced_table("lot_stack"));
+    }
+}
+
+// R-400: freight bookings replicate, and a Logistics-only device never syncs the workspace.
+#[cfg(test)]
+mod r400_sync_tests {
+    use super::*;
+
+    /// The desktop's snapshot list mirrors the server's, the table is in the apply list (or its
+    /// events would be dead-lettered), and a device that updates after bookings exist heals: the
+    /// table is in the compared key tables and the heal generation was bumped past the one that
+    /// did not know it.
+    #[test]
+    fn freight_bookings_replicate_and_an_updated_device_restores_them() {
+        assert!(SNAPSHOT_TABLES.contains(&"freight_bookings"), "a repaired device would never see the bookings");
+        assert!(crate::sync::is_synced_table("freight_bookings"), "its events would be dead-lettered");
+        assert_ne!(HEAL_GENERATION, "3", "devices healed under generation 3 must get one more pass");
+    }
+
+    #[tokio::test]
+    async fn a_logistics_only_device_never_pushes_or_pulls_the_workspace() {
+        let _db = crate::db::init_test_store();
+        state_set("netsync_url", "http://127.0.0.1:9");
+        state_set("netsync_token", "not-a-real-token");
+        // A device that has a connection and is not marked would try the network and fail.
+        assert!(!logistics_only_device());
+        assert!(pull_apply().await.is_err(), "an ordinary device reaches for the server");
+        // Marked: nothing leaves and nothing comes in, and it says so without a request.
+        state_set(LOGISTICS_ONLY_KEY, "1");
+        assert!(logistics_only_device());
+        assert_eq!(pull_apply().await.unwrap(), 0);
+        assert_eq!(push_pending().await.unwrap(), 0);
+        let restored = restore_snapshot().await.unwrap_err().to_string();
+        assert!(restored.contains("Logistics screen"), "{restored}");
+        state_del(LOGISTICS_ONLY_KEY);
+        state_del("netsync_url");
+        state_del("netsync_token");
+        assert!(!logistics_only_device());
     }
 }

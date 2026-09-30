@@ -18,8 +18,10 @@ const ORG_ID: &str = "org_default";
 // (materialized on login and via sync). Jack's existing org_default row already
 // stores his real name and is NOT changed (the seed is INSERT OR IGNORE).
 const ORG_NAME: &str = "";
-pub const MODULES: [&str; 10] = [
+pub const MODULES: [&str; 11] = [
     "clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "financials", "settings", "admin",
+    // R-400: the freight bookings a logistics person keeps for the business.
+    "logistics",
 ];
 
 fn now_rfc3339() -> String { chrono::Utc::now().to_rfc3339() }
@@ -42,6 +44,9 @@ fn seed_roles() -> Vec<(&'static str, &'static str, Vec<String>)> {
         ("role_viewer", "Viewer", viewer),
         ("role_accountant", "Accountant", vec!["financials:view".to_string(), "financials:export".to_string(), "financials:edit".to_string()]),
         ("role_accountant_view", "Accountant (view only)", vec!["financials:view".to_string(), "financials:export".to_string()]),
+        // R-400: whoever books the trucks sees the Logistics screen and nothing else. The two
+        // view_ switches are the owner's: names and addresses can be turned off per role.
+        ("role_logistics", "Logistics", ["logistics:view", "logistics:edit", "logistics:view_names", "logistics:view_addresses"].map(String::from).to_vec()),
     ]
 }
 
@@ -313,7 +318,14 @@ pub fn local_is_superadmin() -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn employee_logout() -> Result<(), String> { set_current_staff(None) }
+pub fn employee_logout() -> Result<(), String> {
+    // R-400: a Logistics-only account signing out takes the server session with it, so the Logistics
+    // screen cannot keep reaching the server as that person.
+    if session_is_logistics_only() {
+        crate::netsync::disconnect();
+    }
+    set_current_staff(None)
+}
 
 #[tauri::command]
 pub fn employee_bootstrap(display_name: String, email: String, password: String) -> Result<Me, String> {
@@ -533,24 +545,31 @@ pub fn active_workspace() -> Value {
 
 // ──────────────────────── Team management (admin) ────────────────────────
 
+/// `pickers` is for the screens that choose a person to pay or assign (rep pickers, payout
+/// recipients): R-400 leaves Logistics-only accounts out of those. The Team screen leaves it off
+/// and still lists them, or the owner could not suspend or re-role the person who books trucks.
 #[tauri::command]
-pub fn list_staff() -> Result<Vec<Value>, String> {
+pub fn list_staff(pickers: Option<bool>) -> Result<Vec<Value>, String> {
     require_admin()?;
+    let leave_out_logistics = pickers.unwrap_or(false);
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT s.id, s.email, s.display_name, s.role_id, r.name, s.status, s.commission_pct, s.hide_pay_cuts,
-                COALESCE(s.avatar,''), COALESCE(s.title,''), COALESCE(s.phone,''), s.created_at, COALESCE(s.pay_type,'profit_pct')
+                COALESCE(s.avatar,''), COALESCE(s.title,''), COALESCE(s.phone,''), s.created_at, COALESCE(s.pay_type,'profit_pct'),
+                COALESCE(r.permissions_json,'[]')
          FROM staff_accounts s LEFT JOIN roles r ON r.id=s.role_id WHERE s.org_id=?1 ORDER BY s.created_at",
     ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([ORG_ID], |r| Ok(json!({
+    let rows = stmt.query_map([ORG_ID], |r| {
+        let perms: Vec<String> = serde_json::from_str(&r.get::<_,String>(13)?).unwrap_or_default();
+        Ok((is_logistics_only(&perms), json!({
         "id": r.get::<_,String>(0)?, "email": r.get::<_,String>(1)?, "display_name": r.get::<_,String>(2)?,
         "role_id": r.get::<_,String>(3)?, "role_name": r.get::<_,Option<String>>(4)?, "status": r.get::<_,String>(5)?,
         "commission_pct": r.get::<_,f64>(6)?, "hide_pay_cuts": r.get::<_,i64>(7)? != 0,
         "avatar": r.get::<_,String>(8)?, "title": r.get::<_,String>(9)?,
         "phone": r.get::<_,String>(10)?, "created_at": r.get::<_,Option<String>>(11)?,
         "pay_type": r.get::<_,String>(12)?,
-    }))).map_err(|e| e.to_string())?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    })))}).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).filter(|(logistics, _)| !(leave_out_logistics && *logistics)).map(|(_, v)| v).collect())
 }
 
 #[tauri::command]
@@ -619,8 +638,27 @@ pub fn list_roles() -> Result<Value, String> {
 
 /// Granular per-role visibility flags that don't fit the module×action grid:
 /// see exact client spend, see suppliers, see deal-flow dollar figures.
-pub const EXTRA_PERMS: [&str; 3] =
-    ["clients:view_revenue", "suppliers:view", "deal_flow:view_numbers"];
+pub const EXTRA_PERMS: [&str; 5] = [
+    "clients:view_revenue", "suppliers:view", "deal_flow:view_numbers",
+    // R-400: pickup and delivery names and addresses on the Logistics screen.
+    "logistics:view_names", "logistics:view_addresses",
+];
+
+/// R-400: a session that reaches the Logistics screen and nothing else. Its permission list is
+/// not empty, holds no `*` and no `admin:manage`, and every entry starts with `logistics:`.
+/// The same rule as clienthub-api `employees::is_logistics_only`.
+pub fn is_logistics_only(perms: &[String]) -> bool {
+    !perms.is_empty() && perms.iter().all(|p| p.starts_with("logistics:"))
+}
+
+/// R-400: whether the account signed in on this device is a Logistics-only one. Such a device
+/// never pulls or pushes the workspace: it shows the Logistics screen, read over the server.
+pub fn session_is_logistics_only() -> bool {
+    current_staff_id()
+        .and_then(|id| load_me(&id))
+        .map(|m| is_logistics_only(&m.permissions))
+        .unwrap_or(false)
+}
 
 fn is_valid_perm(p: &str) -> bool {
     if p == "admin:manage" { return true; }
@@ -651,7 +689,27 @@ pub fn create_role(name: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn update_role(id: String, permissions: Vec<String>) -> Result<(), String> {
+pub async fn update_role(id: String, permissions: Vec<String>) -> Result<(), String> {
+    let clean = update_role_local(&id, permissions)?;
+    // R-400: roles are not in the server's PUSHABLE list, so a role edit made only here can miss
+    // the server that enforces what the phone and the website may see (the two Logistics name and
+    // address switches, above all). Tell it directly, as the admin, best effort: the local write
+    // above already stands, and the server catches up on the next edit if this device is offline.
+    // This editor renders every extra permission, so the whole list is the truth (`extras_managed`).
+    if crate::netsync::config().is_some() && !session_is_logistics_only() {
+        let body = json!({ "permissions": clean, "extras_managed": true });
+        match crate::netsync::server_request("PATCH", &format!("/api/admin/roles/{id}"), Some(body)).await {
+            Ok((status, _)) if (200..300).contains(&status) => {}
+            Ok((status, v)) => tracing::warn!("update_role: the server answered {} for role {}: {}", status, id, v),
+            Err(e) => tracing::warn!("update_role: could not reach the server for role {}: {}", id, e),
+        }
+    }
+    Ok(())
+}
+
+/// The local half of `update_role`: check the caller, drop anything that is not a permission,
+/// write the role and queue its sync event. Returns the list that was stored.
+fn update_role_local(id: &str, permissions: Vec<String>) -> Result<Vec<String>, String> {
     require_admin()?;
     if id == "role_admin" { return Err("The Admin role always has full access.".into()); }
     let clean: Vec<String> = permissions.into_iter().filter(|p| is_valid_perm(p)).collect();
@@ -662,8 +720,8 @@ pub fn update_role(id: String, permissions: Vec<String>) -> Result<(), String> {
     }
     let mut cols = Map::new();
     cols.insert("permissions_json".into(), json!(json_str));
-    sync_upsert("roles", &id, cols);
-    Ok(())
+    sync_upsert("roles", id, cols);
+    Ok(clean)
 }
 
 #[tauri::command]
@@ -763,4 +821,56 @@ fn reopen_invite_local(token: String) -> Result<Value, String> {
     cols.insert("used_at".into(), Value::Null);
     sync_upsert("invites", &token, cols);
     Ok(json!({"token": token, "expires_at": new_exp}))
+}
+
+// R-400: the Logistics role. The rules here are the twins of clienthub-api employees.rs.
+#[cfg(test)]
+mod r400_role_tests {
+    use super::*;
+
+    fn s(list: &[&str]) -> Vec<String> { list.iter().map(|p| p.to_string()).collect() }
+
+    #[test]
+    fn a_logistics_only_session_holds_logistics_permissions_and_nothing_else() {
+        assert!(is_logistics_only(&s(&["logistics:view", "logistics:edit", "logistics:view_names", "logistics:view_addresses"])));
+        assert!(is_logistics_only(&s(&["logistics:view"])));
+        assert!(!is_logistics_only(&[]), "no permissions at all is not a logistics session");
+        assert!(!is_logistics_only(&s(&["*"])));
+        assert!(!is_logistics_only(&s(&["admin:manage"])));
+        assert!(!is_logistics_only(&s(&["logistics:view", "admin:manage"])));
+        assert!(!is_logistics_only(&s(&["logistics:view", "deal_flow:view"])));
+        assert!(!is_logistics_only(&s(&["logistics:view", "*"])));
+        assert!(!is_logistics_only(&s(&["financials:view"])), "the accountant is not one");
+    }
+
+    #[test]
+    fn the_new_permissions_are_valid_and_nothing_near_them_is() {
+        for p in ["logistics:view", "logistics:edit", "logistics:export", "logistics:view_names", "logistics:view_addresses",
+                  "clients:view_revenue", "suppliers:view", "deal_flow:view_numbers"] {
+            assert!(is_valid_perm(p), "{p} must survive a role save");
+        }
+        for p in ["logistics:delete", "logistics:view_costs", "logistics", "logistic:view", "logistics:", ":view", ""] {
+            assert!(!is_valid_perm(p), "{p} must be dropped");
+        }
+        assert_eq!(EXTRA_PERMS.len(), 5);
+        assert_eq!(MODULES.len(), 11);
+        assert!(MODULES.contains(&"logistics"));
+    }
+
+    #[test]
+    fn the_built_in_logistics_role_is_seeded_with_exactly_its_four_permissions() {
+        let roles = seed_roles();
+        let (id, name, perms) = roles.iter().find(|(id, _, _)| *id == "role_logistics").expect("role_logistics is seeded");
+        assert_eq!((*id, *name), ("role_logistics", "Logistics"));
+        assert_eq!(perms, &s(&["logistics:view", "logistics:edit", "logistics:view_names", "logistics:view_addresses"]));
+        assert!(is_logistics_only(perms));
+        assert!(perms.iter().all(|p| is_valid_perm(p)));
+        // The other system roles are as they were, and the module joins Manager and Viewer.
+        assert_eq!(roles.len(), 7);
+        let manager = &roles.iter().find(|(id, _, _)| *id == "role_manager").unwrap().2;
+        assert!(manager.contains(&"logistics:view".to_string()) && manager.contains(&"logistics:edit".to_string()));
+        assert!(!manager.iter().any(|p| p.starts_with("logistics:view_")), "the two switches are not module actions");
+        let accountant = &roles.iter().find(|(id, _, _)| *id == "role_accountant").unwrap().2;
+        assert!(!accountant.iter().any(|p| p.starts_with("logistics:")));
+    }
 }

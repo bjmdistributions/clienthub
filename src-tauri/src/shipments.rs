@@ -406,6 +406,35 @@ fn deal_for_refs(conn: &rusqlite::Connection, refs: &[(String, String)]) -> Opti
     })
 }
 
+/// R-400: a BOL or PRO as the Logistics screen and Priority1 spell it differently: the letters and
+/// digits, uppercased. The same rule as clienthub-api routes/logistics.rs `norm_ref`.
+pub fn norm_ref(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_uppercase()
+}
+
+/// R-400: the deal a live freight booking puts a shipment on. A booking (archived = 0, not
+/// cancelled) whose normalised BOL or PRO equals any of `refs` names its deal, so a Priority1 email
+/// about a truck the Logistics person booked lands on the right deal without anyone pasting the
+/// number. The most recently booked wins when two share a number. Empty numbers never match.
+fn deal_for_booking(conn: &rusqlite::Connection, refs: &[&String]) -> Option<String> {
+    let mine: Vec<String> = refs.iter().map(|r| norm_ref(r)).filter(|r| !r.is_empty()).collect();
+    if mine.is_empty() {
+        return None;
+    }
+    let mut stmt = conn.prepare(
+        "SELECT deal_flow_id, COALESCE(bol,''), COALESCE(pro,'') FROM freight_bookings
+         WHERE archived = 0 AND status != 'cancelled' AND COALESCE(deal_flow_id,'') <> ''
+           AND (COALESCE(bol,'') <> '' OR COALESCE(pro,'') <> '')
+         ORDER BY created_at DESC",
+    ).ok()?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).ok()?;
+    let found = rows.filter_map(|r| r.ok()).find_map(|(deal, bol, pro)| {
+        let (bol, pro) = (norm_ref(&bol), norm_ref(&pro));
+        mine.iter().any(|m| (!bol.is_empty() && *m == bol) || (!pro.is_empty() && *m == pro)).then_some(deal)
+    });
+    found
+}
+
 fn write_cols(conn: &rusqlite::Connection, id: &str, cols: &Map<String, Value>, create: bool) -> Result<(), String> {
     if create {
         let keys: Vec<&String> = cols.keys().collect();
@@ -529,6 +558,57 @@ fn announce_delivered(shipment_id: &str) {
         .show();
     let _ = app.emit("shipment-delivered", json!({ "id": s.id, "deal_flow_id": s.deal_flow_id, "label": label }));
     tracing::info!("priority1: shipment {} delivered, deal {} can be completed", s.id, s.deal_flow_id);
+}
+
+/// R-400: the same announcement for a freight booking the Logistics screen has marked delivered
+/// (the row arrived by sync). Same rules as `announce_delivered`: only a deal still open, an OS
+/// notification plus the `shipment-delivered` event the open window turns into a green toast, and
+/// best-effort. Once per booking, remembered in `device_state`, so a re-pulled or re-saved booking
+/// does not announce again. Nothing is said for a deal already completed.
+pub fn announce_booking_delivered(booking_id: &str) {
+    let Some(app) = APP.get() else { return };
+    let Ok(conn) = pool().get() else { return };
+    let key = format!("freight_delivered_announced_{booking_id}");
+    if conn.query_row("SELECT 1 FROM device_state WHERE key=?1", [&key], |_| Ok(())).is_ok() {
+        return;
+    }
+    let Ok((deal, status)) = conn.query_row(
+        "SELECT COALESCE(deal_flow_id,''), COALESCE(status,'') FROM freight_bookings WHERE id=?1 AND archived=0",
+        [booking_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    ) else { return };
+    if status != "delivered" || deal.is_empty() {
+        return;
+    }
+    let Ok((stage, client, number)) = conn.query_row(
+        "SELECT df.stage, COALESCE(c.name,''), COALESCE(i.number,'')
+           FROM deal_flows df
+           JOIN invoices i ON i.id = df.invoice_id
+           LEFT JOIN clients c ON c.id = i.client_id
+          WHERE df.id = ?1",
+        [&deal],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+    ) else { return };
+    if stage == "complete" {
+        return;
+    }
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO device_state (key, value) VALUES (?1, ?2)",
+        rusqlite::params![key, Utc::now().to_rfc3339()],
+    );
+    let mut parts: Vec<String> = Vec::new();
+    if !client.is_empty() { parts.push(client); }
+    if !number.is_empty() { parts.push(number); }
+    if parts.is_empty() { parts.push(crate::freight::booking_code(booking_id)); }
+    let label = parts.join(" · ");
+
+    use tauri::Emitter;
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder()
+        .title("Delivered")
+        .body(format!("{label} · ready to mark the deal complete"))
+        .show();
+    let _ = app.emit("shipment-delivered", json!({ "id": booking_id, "deal_flow_id": deal, "label": label }));
+    tracing::info!("logistics: booking {} delivered, deal {} can be completed", booking_id, deal);
 }
 
 /// "BOL 60115779865 · PRO 687651776", or the shipment number when it has neither.
@@ -697,7 +777,7 @@ fn apply_inner(p: &Parsed, message_id: Option<&str>, email_date: Option<&str>) -
             let id = id_for(&crate::employees::session_org_id(), &key);
             let s = Shipment {
                 id: id.clone(),
-                deal_flow_id: deal_for_refs(&conn, &p.refs).unwrap_or_default(),
+                deal_flow_id: deal_for_refs(&conn, &p.refs).or_else(|| deal_for_booking(&conn, &[&p.bol, &p.pro])).unwrap_or_default(),
                 broker: "Priority1".into(),
                 shipment_number: p.shipment_number.clone(), bol: p.bol.clone(), pro: p.pro.clone(),
                 pickup_number: p.pickup_number.clone(), refs_json,
@@ -745,7 +825,9 @@ fn apply_inner(p: &Parsed, message_id: Option<&str>, email_date: Option<&str>) -
                 cols.insert("last_update_at".into(), Value::String(at.clone()));
             }
             if s.deal_flow_id.is_empty() {
-                if let Some(df) = deal_for_refs(&conn, &p.refs) { cols.insert("deal_flow_id".into(), Value::String(df)); }
+                // R-400: a Logistics booking that carries this BOL or PRO is the deal it belongs to.
+                let refs = [&s.bol, &s.pro, &p.bol, &p.pro];
+                if let Some(df) = deal_for_refs(&conn, &p.refs).or_else(|| deal_for_booking(&conn, &refs)) { cols.insert("deal_flow_id".into(), Value::String(df)); }
             }
             // R-318: this update, and no other, is the one that landed the shipment.
             let became_delivered = s.stage != "delivered"
@@ -1157,5 +1239,51 @@ Update Date: {when}");
         assert_eq!(stage_of("Delayed - weather"), "exception");
         assert_eq!(stage_of("Dispatched"), "booked");
         assert_eq!(id_for("org_default", "601-157 79865"), "shp-org_default-60115779865");
+    }
+
+    /// R-400: a Priority1 email about a truck the Logistics person booked lands on that deal
+    /// without anyone pasting the number, whether the email creates the shipment or updates one
+    /// that was waiting unattached. A cancelled or archived booking names no deal.
+    #[test]
+    fn an_email_whose_bol_matches_a_live_booking_attaches_to_its_deal() {
+        let _db = crate::db::init_test_store();
+        let deal_of = |shipment: &str| -> String {
+            pool().get().unwrap().query_row("SELECT COALESCE(deal_flow_id,'') FROM shipments WHERE id=?1", [shipment], |r| r.get(0)).unwrap()
+        };
+        {
+            let conn = pool().get().unwrap();
+            conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r400sh', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+            for tag in ["a", "b", "c", "d"] {
+                conn.execute(&format!("INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+                                       VALUES ('inv-r400sh-{tag}', 'c-r400sh', 'INV-R400SH-{tag}', '2026-09-01', '2026-09-30', '[]', 1000, 1000, '2026-09-01')"), []).unwrap();
+                conn.execute(&format!("INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at) VALUES ('df-r400sh-{tag}', 'inv-r400sh-{tag}', 'invoiced', '2026-09-01', '2026-09-01')"), []).unwrap();
+            }
+            // The spelling differs (dashes and spaces): the numbers still match.
+            conn.execute("INSERT INTO freight_bookings (id, deal_flow_id, status, bol, created_at, updated_at) VALUES ('fb_r400sha', 'df-r400sh-a', 'booked', '4455-66', '2026-09-02', '2026-09-02')", []).unwrap();
+            conn.execute("INSERT INTO freight_bookings (id, deal_flow_id, status, bol, created_at, updated_at) VALUES ('fb_r400shb', 'df-r400sh-b', 'cancelled', '5566-77', '2026-09-02', '2026-09-02')", []).unwrap();
+            conn.execute("INSERT INTO freight_bookings (id, deal_flow_id, status, bol, archived, created_at, updated_at) VALUES ('fb_r400shc', 'df-r400sh-c', 'booked', '6677-88', 1, '2026-09-02', '2026-09-02')", []).unwrap();
+        }
+        let email = |bol: &str, when: &str, status: &str| {
+            let text = format!("Update on Shipment #{bol}\nCarrier: Sample Freight (SMPL)\nStatus: {status}\nBOL: {bol}\nUpdate Date: {when}");
+            parse(&format!("Tracking Update for Shipment {bol}"), &text, None).unwrap()
+        };
+
+        // The email creates the shipment: it goes onto the booked deal.
+        apply(&email("445566", "9/9/2026 2:00 PM", "Booked"), Some("<r400-a@priority1.com>"), None).unwrap();
+        assert_eq!(deal_of("shp-org_default-445566"), "df-r400sh-a");
+
+        // A cancelled booking and an archived one name no deal.
+        apply(&email("556677", "9/9/2026 2:00 PM", "Booked"), Some("<r400-b@priority1.com>"), None).unwrap();
+        apply(&email("667788", "9/9/2026 2:00 PM", "Booked"), Some("<r400-c@priority1.com>"), None).unwrap();
+        assert_eq!(deal_of("shp-org_default-556677"), "");
+        assert_eq!(deal_of("shp-org_default-667788"), "");
+
+        // The shipment was waiting unattached and the booking is made afterwards: the next email
+        // for it attaches it.
+        apply(&email("778899", "9/9/2026 2:00 PM", "Booked"), Some("<r400-d1@priority1.com>"), None).unwrap();
+        assert_eq!(deal_of("shp-org_default-778899"), "");
+        pool().get().unwrap().execute("INSERT INTO freight_bookings (id, deal_flow_id, status, pro, created_at, updated_at) VALUES ('fb_r400shd', 'df-r400sh-d', 'requested', '77 88 99', '2026-09-03', '2026-09-03')", []).unwrap();
+        apply(&email("778899", "9/10/2026 8:00 AM", "In transit"), Some("<r400-d2@priority1.com>"), None).unwrap();
+        assert_eq!(deal_of("shp-org_default-778899"), "df-r400sh-d", "a PRO typed on the booking matches too");
     }
 }

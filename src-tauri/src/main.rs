@@ -36,6 +36,7 @@ mod sync_crypto;
 mod secret_store;
 mod show_packing;
 mod shipments;
+mod freight;
 mod warehouse;
 mod warehouse_core;
 mod pallet_fit;
@@ -1168,6 +1169,9 @@ fn main() {
             shipments::dismiss_shipment,
             shipments::suggest_shipment_deals,
             shipments::scan_priority1_mail,
+            // Logistics (R-400)
+            freight::logistics_request,
+            freight::list_freight_bookings,
             // Warehouse stock + truckload packer (R-326)
             warehouse::list_warehouse_items,
             warehouse::save_warehouse_item,

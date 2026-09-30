@@ -1727,6 +1727,7 @@ fn ledger_role_label(role: &str) -> &str {
     match role {
         "buyer_payment" => "payment from the buyer",
         "supplier_payment" => "payment to the supplier",
+        "shipping" => "payment to the carrier",
         "refund_out" => "refund back to the buyer",
         "refund_in" => "money back from the supplier",
         "fee" => "fee",
@@ -4691,6 +4692,123 @@ pub struct SupplierPaymentInput {
     pub split: Option<PartnerSplit>,
 }
 
+/// R-400: a deal's shipping facts as SQL columns, over the deal alias `df`. One text, used by
+/// `DF_JOIN` (every DealFlow read) and by `ship_facts` (the money code), so the derived fields on
+/// the screen and the figures behind a completion can never be worked out two ways. A live
+/// booking is `archived = 0` and not cancelled. `freight_typed` is not here: it is summed from
+/// the parsed cost lines in Rust. The clienthub-api twin (routes/deal_flows.rs DF_JOIN) is kept
+/// identical in meaning.
+macro_rules! ship_facts_cols {
+    () => {
+        concat!(
+            "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled') AS logistics_bookings, ",
+            "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled' AND fb.paid_amount IS NULL) AS logistics_unpaid, ",
+            "(SELECT COALESCE(SUM(fb.paid_amount),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled' AND fb.paid_amount IS NOT NULL) AS logistics_paid, ",
+            "(SELECT COALESCE(SUM(fb.quoted_cost),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled' AND fb.paid_amount IS NULL AND fb.quoted_cost IS NOT NULL) AS logistics_quoted, ",
+            "(SELECT COALESCE(MIN(CASE fb.status WHEN 'requested' THEN 1 WHEN 'booked' THEN 2 WHEN 'picked_up' THEN 3 WHEN 'delivered' THEN 4 ELSE 5 END),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled') AS logistics_stage_rank, ",
+            "(SELECT COALESCE(SUM(sa.amount),0) FROM bank_allocation sa WHERE sa.deal_flow_id=df.id AND sa.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn sbt WHERE sbt.id=sa.bank_txn_id)) AS shipping_linked, ",
+            "(SELECT COUNT(*) FROM bank_allocation sa WHERE sa.deal_flow_id=df.id AND sa.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn sbt WHERE sbt.id=sa.bank_txn_id)) AS shipping_link_count"
+        )
+    };
+}
+
+/// R-400: the same test as `shipping_mode` (a live booking, or a `shipping` bank link) as a SQL
+/// predicate over the deal alias `df`, for the queries that add up a whole book at once.
+macro_rules! ship_mode_sql {
+    () => {
+        "(EXISTS (SELECT 1 FROM freight_bookings mb WHERE mb.deal_flow_id=df.id AND mb.archived=0 AND mb.status!='cancelled') OR EXISTS (SELECT 1 FROM bank_allocation ma WHERE ma.deal_flow_id=df.id AND ma.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn mbt WHERE mbt.id=ma.bank_txn_id)))"
+    };
+}
+
+/// R-400: what a deal's shipping looks like, worked out once. The shipping leg is its own cost:
+/// the amount the carrier was paid (or, when a `shipping` bank link exists, that link), never a
+/// typed freight line once the deal ships through Logistics.
+///   mode      = a live booking or a shipping link exists (freight lines are replaced)
+///   leg       = link if any, else amount paid on the bookings, else 0 (the recorded cost)
+///   estimate  = what an open deal is expected to spend on shipping (paid or linked, plus the
+///               quotes not paid yet), or the typed freight lines when it does not use Logistics
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShipFacts {
+    pub bookings: i64,
+    pub unpaid: i64,
+    pub paid: f64,
+    pub quoted: f64,
+    pub stage_rank: i64,
+    pub linked: f64,
+    pub has_link: bool,
+    pub freight_typed: f64,
+}
+
+impl ShipFacts {
+    pub fn mode(&self) -> bool { self.bookings > 0 || self.has_link }
+    pub fn leg(&self) -> f64 {
+        if self.has_link { self.linked } else if self.mode() { self.paid } else { 0.0 }
+    }
+    pub fn estimate(&self) -> f64 {
+        if self.mode() {
+            (if self.has_link { self.linked } else { self.paid }) + self.quoted
+        } else {
+            self.freight_typed
+        }
+    }
+    pub fn stage(&self) -> &'static str {
+        match self.stage_rank { 1 => "requested", 2 => "booked", 3 => "picked_up", 4 => "delivered", _ => "" }
+    }
+    /// What an open deal is expected to cost: the entered lines with the typed freight taken out
+    /// and the shipping estimate put in (equal to `total_supplier_cost` without Logistics).
+    pub fn projected_cost(&self, total_supplier_cost: f64) -> f64 {
+        r2(total_supplier_cost - self.freight_typed + self.estimate())
+    }
+    /// The freight typed on the deal only counts toward the goods figure when it is not replaced.
+    pub fn typed_freight_dropped(&self) -> f64 {
+        if self.mode() { self.freight_typed } else { 0.0 }
+    }
+}
+
+/// R-400: typed freight, the sum of the non-kept cost lines whose category is `freight`.
+pub fn freight_typed_of(payments: &[SupplierPayment]) -> f64 {
+    r2(payments.iter().filter(|p| !p.kept && p.category.as_deref() == Some("freight")).map(|p| p.amount).sum())
+}
+
+/// R-400: read the `ship_facts_cols!` columns off a row (by name, tolerant of a missing one).
+fn ship_facts_from_row(r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipFacts {
+    ShipFacts {
+        bookings: r.get("logistics_bookings").unwrap_or(0),
+        unpaid: r.get("logistics_unpaid").unwrap_or(0),
+        paid: r2(r.get::<_, f64>("logistics_paid").unwrap_or(0.0)),
+        quoted: r2(r.get::<_, f64>("logistics_quoted").unwrap_or(0.0)),
+        stage_rank: r.get("logistics_stage_rank").unwrap_or(0),
+        linked: r2(r.get::<_, f64>("shipping_linked").unwrap_or(0.0)),
+        has_link: r.get::<_, i64>("shipping_link_count").unwrap_or(0) > 0,
+        freight_typed: freight_typed_of(payments),
+    }
+}
+
+/// R-400: the shipping facts for one deal, straight from the database.
+fn ship_facts(conn: &rusqlite::Connection, deal_flow_id: &str) -> ShipFacts {
+    conn.query_row(
+        concat!("SELECT COALESCE(df.supplier_payments_json,'[]') AS sp_json, ", ship_facts_cols!(), " FROM deal_flows df WHERE df.id=?1"),
+        [deal_flow_id],
+        |r| {
+            let sp: String = r.get("sp_json")?;
+            let payments: Vec<SupplierPayment> = serde_json::from_str(&sp).unwrap_or_default();
+            Ok(ship_facts_from_row(r, &payments))
+        },
+    ).unwrap_or_default()
+}
+
+/// R-400: the supplier leg is settled when every NON-freight line is paid or kept (the freight
+/// belongs to the shipping leg, which settles on its own). A deal with only freight lines is
+/// judged on those, so a deal whose whole cost is freight can still reach `supplier_paid`.
+pub fn supplier_side_settled(payments: &[SupplierPayment]) -> bool {
+    let goods: Vec<&SupplierPayment> = payments.iter().filter(|p| p.category.as_deref() != Some("freight")).collect();
+    if goods.is_empty() {
+        payments.iter().all(|p| p.paid || p.kept)
+    } else {
+        goods.iter().all(|p| p.paid || p.kept)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DealFlow {
     pub id: String,
@@ -4749,6 +4867,35 @@ pub struct DealFlow {
     pub pickup_date_prev: Option<String>,
     #[serde(default)]
     pub expected_delivery_date_prev: Option<String>,
+    /// R-400: the shipping leg as recorded at the last completion or resync. NULL on every deal
+    /// recorded before R-400 (migration 104). Never read as "no shipping": see `ShipFacts`.
+    #[serde(default)]
+    pub shipping_cost: Option<f64>,
+    /// R-400: derived from the live freight bookings (`ship_facts_cols!`), never stored.
+    #[serde(default)]
+    pub logistics_bookings: i64,
+    #[serde(default)]
+    pub logistics_unpaid: i64,
+    #[serde(default)]
+    pub logistics_paid: f64,
+    #[serde(default)]
+    pub logistics_quoted: f64,
+    /// Least advanced status among the live bookings (requested, booked, picked_up, delivered),
+    /// or "" when there are none.
+    #[serde(default)]
+    pub logistics_stage: String,
+    #[serde(default)]
+    pub shipping_linked: f64,
+    #[serde(default)]
+    pub freight_typed: f64,
+    #[serde(default)]
+    pub shipping_mode: bool,
+    #[serde(default)]
+    pub shipping_estimate: f64,
+    /// `total_supplier_cost - freight_typed + shipping_estimate`: what an open deal is expected
+    /// to cost. Equal to `total_supplier_cost` for every deal that does not use Logistics.
+    #[serde(default)]
+    pub projected_cost: f64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -4772,6 +4919,8 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
     let own_costs_total: f64 = supplier_payments.iter()
         .filter(|p| !p.kept && !p.owed_to_supplier())
         .map(|p| p.amount).sum();
+    let facts = ship_facts_from_row(r, &supplier_payments);
+    let total_supplier_cost: f64 = r.get("total_supplier_cost")?;
     Ok(DealFlow {
         id: r.get("id")?,
         name: r.get("name").ok(),
@@ -4786,7 +4935,7 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         supplier_owed,
         own_costs_unpaid,
         own_costs_total,
-        total_supplier_cost: r.get("total_supplier_cost")?,
+        total_supplier_cost,
         completed_at: r.get("completed_at")?,
         gross_revenue: r.get("gross_revenue")?,
         total_cost: r.get("total_cost")?,
@@ -4811,10 +4960,21 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         ships_direct: r.get::<_, Option<i64>>("ships_direct").unwrap_or(None).unwrap_or(0) != 0,
         pickup_date_prev: r.get("pickup_date_prev").unwrap_or(None),
         expected_delivery_date_prev: r.get("expected_delivery_date_prev").unwrap_or(None),
+        shipping_cost: r.get("shipping_cost").unwrap_or(None),
+        logistics_bookings: facts.bookings,
+        logistics_unpaid: facts.unpaid,
+        logistics_paid: facts.paid,
+        logistics_quoted: facts.quoted,
+        logistics_stage: facts.stage().to_string(),
+        shipping_linked: facts.linked,
+        freight_typed: facts.freight_typed,
+        shipping_mode: facts.mode(),
+        shipping_estimate: r2(facts.estimate()),
+        projected_cost: facts.projected_cost(total_supplier_cost),
     })
 }
 
-const DF_JOIN: &str = "SELECT df.*, i.number as invoice_number, i.client_id, i.total as invoice_total, c.name as client_name FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id LEFT JOIN clients c ON i.client_id=c.id";
+const DF_JOIN: &str = concat!("SELECT df.*, i.number as invoice_number, i.client_id, i.total as invoice_total, c.name as client_name, ", ship_facts_cols!(), " FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id LEFT JOIN clients c ON i.client_id=c.id");
 
 fn sync_invoice_stage(invoice_id: &str, stage: &str) -> Result<(), String> {
     let mut inv_cols = Map::new();
@@ -4886,65 +5046,20 @@ pub async fn set_supplier_payment_kept(id: String, payment_id: String, kept: boo
     Ok(())
 }
 
-fn recalc_completed_deal_flow(id: &str, gross: f64, payments: &[SupplierPayment]) -> Result<(), String> {
-    let split = read_profit_split()?;
-    // "kept" supplier payments aren't a real cost — exclude from the recalc.
-    let total_cost: f64 = payments.iter().filter(|p| !p.kept).map(|p| p.amount).sum();
-    let net = gross - total_cost;
-    let is_loss = net < 0.0;
-
-    // Read the STORED metadata so we honor the payout decision made at completion.
-    // A deal completed 100%-to-business (payout_included=false) must NOT be silently
-    // re-split to partners just because a supplier payment was edited/deleted. We also
-    // preserve shipping_status and any other keys already on the metadata.
-    let mut meta_obj: Map<String, Value> = {
+/// A cost line was edited on a COMPLETED deal. The recorded figures are worked out by the same
+/// function every other completed-deal write uses (`recompute_completed_deal`), with the typed
+/// lines as the goods figure, so bank links still win, the shipping leg is kept, and the invoice
+/// snapshot moves with the deal. (R-400: this used to write `total_cost = total_supplier_cost`,
+/// which threw away any bank-verified cost and every shipping amount, and never touched the
+/// invoice.) `write_sp` has already stored the edited lines and `total_supplier_cost`.
+fn recalc_completed_deal_flow(id: &str, _gross: f64, payments: &[SupplierPayment]) -> Result<(), String> {
+    let typed: f64 = payments.iter().filter(|p| !p.kept).map(|p| p.amount).sum();
+    let goods = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT metadata FROM deal_flows WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0))
-            .ok().flatten()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default()
+        let facts = ship_facts(&conn, id);
+        typed - facts.typed_freight_dropped()
     };
-    let include_payout = meta_obj.get("payout_included").and_then(|v| v.as_bool()).unwrap_or(false);
-
-    // Mirror complete_deal_flow's branch: split by pct only when payout is included,
-    // otherwise everything goes to the business.
-    let (jack, ben, business) = if include_payout {
-        ( (net * (split.jack_pct / 100.0) * 100.0).round() / 100.0,
-          (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0,
-          (net * (split.business_pct / 100.0) * 100.0).round() / 100.0 )
-    } else {
-        (0.0, 0.0, net)
-    };
-
-    // Preserve existing metadata (payout_included, shipping_status, ...) and only
-    // refresh is_loss — do NOT overwrite the whole object with just {is_loss}.
-    meta_obj.insert("is_loss".into(), Value::Bool(is_loss));
-    // Recompute the per-deal recipients breakdown against the new net, reusing
-    // the shares captured at completion (the split the deal was agreed under);
-    // deals completed before breakdowns existed pick up the current config.
-    let shares = shares_from_breakdown(&meta_obj).unwrap_or_else(read_profit_split_shares_raw);
-    meta_obj.insert("payout_recipients".into(), Value::Array(build_payout_breakdown(&shares, net, include_payout)));
-    let meta_json = serde_json::to_string(&Value::Object(meta_obj)).map_err(|e| e.to_string())?;
-    let now = Utc::now().to_rfc3339();
-
-    let mut cols = Map::new();
-    cols.insert("total_supplier_cost".into(), json!(total_cost));
-    cols.insert("total_cost".into(), json!(total_cost));
-    cols.insert("net_profit".into(), json!(net));
-    cols.insert("profit_jack".into(), json!(jack));
-    cols.insert("profit_ben".into(), json!(ben));
-    cols.insert("profit_business".into(), json!(business));
-    cols.insert("metadata".into(), Value::String(meta_json.clone()));
-    cols.insert("updated_at".into(), Value::String(now.clone()));
-    sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
-
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE deal_flows SET total_supplier_cost=?1, total_cost=?1, net_profit=?2, profit_jack=?3, profit_ben=?4, profit_business=?5, metadata=?6, updated_at=?7 WHERE id=?8",
-        rusqlite::params![total_cost, net, jack, ben, business, meta_json, now, id],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    recompute_completed_deal(id, Some(goods))
 }
 
 fn create_deal_flow_internal(invoice_id: String, notes: Option<String>, name: Option<String>) -> Result<String, String> {
@@ -5159,6 +5274,7 @@ fn clear_completion(df: &DealFlow, id: &str, now: &str) -> Result<(), String> {
     cols.insert("profit_jack".into(), json!(0));
     cols.insert("profit_ben".into(), json!(0));
     cols.insert("profit_business".into(), json!(0));
+    cols.insert("shipping_cost".into(), Value::Null); // R-400: the recorded shipping leg goes with the other recorded figures
     if let Some(ref m) = meta_json { cols.insert("metadata".into(), Value::String(m.clone())); }
     cols.insert("updated_at".into(), Value::String(now.to_string()));
     sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
@@ -5166,7 +5282,7 @@ fn clear_completion(df: &DealFlow, id: &str, now: &str) -> Result<(), String> {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE deal_flows SET completed_at=NULL, gross_revenue=0, net_profit=0, total_cost=0, \
-             profit_jack=0, profit_ben=0, profit_business=0, metadata=COALESCE(?3, metadata), updated_at=?1 WHERE id=?2",
+             profit_jack=0, profit_ben=0, profit_business=0, shipping_cost=NULL, metadata=COALESCE(?3, metadata), updated_at=?1 WHERE id=?2",
             rusqlite::params![now, id, meta_json],
         ).map_err(|e| e.to_string())?;
     }
@@ -5358,7 +5474,7 @@ pub async fn remove_supplier_payment(id: String, payment_id: String) -> Result<(
 
     write_sp(&id, &payments, &df.invoice_id)?;
 
-    if df.stage == "supplier_paid" && payments.iter().any(|p| !p.paid) {
+    if df.stage == "supplier_paid" && !supplier_side_settled(&payments) {
         let now = Utc::now().to_rfc3339();
         let mut cols = Map::new();
         cols.insert("stage".into(), Value::String("payment_received".into()));
@@ -5391,9 +5507,11 @@ pub async fn mark_supplier_payment_paid(id: String, payment_id: String) -> Resul
     // deal carrying a kept bill stuck one step short of complete, and disagrees with
     // the server's predicate (clienthub-api/src/routes/deal_flows.rs `all_settled`),
     // so the same deal showed a different stage on desktop and on mobile.
+    // R-400: only the NON-freight lines count. Shipping is its own leg and settles on its own
+    // (`supplier_side_settled`), so an unpaid carrier no longer holds the supplier stage back.
     // No auto-advance at 'invoiced' — marking a leg paid there is just bookkeeping
     // ahead of the buyer payment; the stage still moves only once payment is received.
-    let all_settled = payments.iter().all(|p| p.paid || p.kept);
+    let all_settled = supplier_side_settled(&payments);
     if df.stage != "invoiced" && all_settled && !payments.is_empty() {
         let now = Utc::now().to_rfc3339();
         let mut cols = Map::new();
@@ -5498,17 +5616,20 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     // still 0 at 'invoiced', and would record the deal as $0 revenue and a loss.
     let invoiced_payment: Option<(f64, String)> = if df.stage == "invoiced" {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let buyer_bank_total = deal_bank_actuals(&conn, &id, 0.0, 0.0).0;
+        let buyer_bank_total = deal_bank_actuals(&conn, &id, 0.0, 0.0, 0.0).gross;
         let amount = if buyer_bank_total > 0.005 { buyer_bank_total } else { df.invoice_total };
         Some((amount, now.clone()))
     } else {
         None
     };
     let manual_gross = invoiced_payment.as_ref().map(|(a, _)| *a).unwrap_or(df.payment_received_amount);
-    let (gross, total_cost, net) = {
+    // R-400: the goods figure leaves out typed freight once the deal ships through Logistics (the
+    // booking replaces it), and the shipping leg is added on top of it.
+    let (gross, total_cost, net, shipping_leg, shipping_mode) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let (g, c, n, _) = deal_bank_actuals(&conn, &id, manual_gross, df.total_supplier_cost);
-        (g, c, n)
+        let goods = df.total_supplier_cost - ship_facts(&conn, &id).typed_freight_dropped();
+        let a = deal_bank_actuals(&conn, &id, manual_gross, goods, goods);
+        (a.gross, a.cost, a.net, a.shipping_leg, a.shipping_mode)
     };
     let is_loss = net < 0.0;
     let (jack, ben, business) = if include_payout {
@@ -5555,6 +5676,10 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     cols.insert("profit_ben".into(), json!(ben));
     cols.insert("profit_business".into(), json!(business));
     cols.insert("metadata".into(), Value::String(meta_json.clone()));
+    // R-400: the shipping leg as recorded. Left NULL on a deal that does not use Logistics, so a
+    // booking that arrives after completion can tell "recorded with typed freight" from "recorded
+    // with a shipping amount" (see `recompute_completed_deal`).
+    if shipping_mode { cols.insert("shipping_cost".into(), json!(shipping_leg)); }
     if let Some((amount, received_at)) = &invoiced_payment {
         cols.insert("payment_received_amount".into(), json!(amount));
         cols.insert("payment_received_at".into(), Value::String(received_at.clone()));
@@ -5565,6 +5690,9 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
 
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
+        if shipping_mode {
+            conn.execute("UPDATE deal_flows SET shipping_cost=?1 WHERE id=?2", rusqlite::params![shipping_leg, id]).map_err(|e| e.to_string())?;
+        }
         if let Some((amount, received_at)) = &invoiced_payment {
             conn.execute(
                 "UPDATE deal_flows SET stage='complete', completed_at=?1, gross_revenue=?2, total_cost=?3, net_profit=?4, profit_jack=?5, profit_ben=?6, profit_business=?7, metadata=?8, payment_received_amount=?9, payment_received_at=?10, deposit_amount=0, updated_at=?1 WHERE id=?11",
@@ -5630,6 +5758,43 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     Ok(json!({ "profit": net, "is_loss": is_loss, "warning": warning }))
 }
 
+/// R-400: what a deal's recorded figures come to. `shipping_leg` and `shipping_mode` ride along so
+/// the caller can store the leg (deal_flows.shipping_cost) without asking the database twice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DealActuals {
+    pub gross: f64,
+    pub cost: f64,
+    pub net: f64,
+    pub any_link: bool,
+    pub shipping_leg: f64,
+    pub shipping_mode: bool,
+}
+
+/// R-400: the recorded cost of a deal, worked out from its legs. Goods and shipping are separate:
+///   goods    = with a supplier or fee bank link, `(supplier link, else entered_goods) + fee -
+///              refund_in`, never below 0. With none, `recorded_goods` (so a vanished link keeps
+///              what is on the books).
+///   total    = goods + shipping_leg. The shipping leg sits OUTSIDE the clamp: a refund cannot
+///              cancel money paid to a carrier.
+/// Pure, so the twin in clienthub-api can be tested against the same numbers.
+pub fn recorded_cost(
+    has_cost_link: bool, has_supplier_link: bool, supplier: f64, fee: f64, refund_in: f64,
+    entered_goods: f64, recorded_goods: f64, shipping_leg: f64,
+) -> f64 {
+    let goods = if has_cost_link {
+        // The supplier leg falls back to the entered cost when only a fee is linked.
+        // Previously `has_cost_link` (true for a fee alone) made the whole cost equal
+        // `fee`, so tying a single $25 wire fee to a deal REPLACED a $37,955 supplier
+        // cost with $25 — and that inflated profit was then persisted and used for
+        // partner payouts, rep cuts, the tax reserve and free cash.
+        let supplier_leg = if has_supplier_link { supplier } else { entered_goods };
+        (supplier_leg + fee - refund_in).max(0.0)
+    } else {
+        recorded_goods
+    };
+    goods + shipping_leg
+}
+
 /// Bank-precedence actuals for a deal. When a money leg has ANY linked bank
 /// transaction, that leg's real bank total is the truth and wins over the
 /// manually-entered figure; a leg with no bank link falls back to what was
@@ -5639,10 +5804,18 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
 /// accounted for separately (the refunds table + the analytics refund
 /// subtraction), so `net` here is deliberately PRE-refund (revenue − cost),
 /// matching the stored net_profit contract every report already relies on.
-/// Returns (revenue, cost, net, has_any_bank_link).
+///
+/// R-400: the goods leg takes TWO figures, because the callers know different things.
+/// `entered_goods` is what the deal's cost lines say the goods cost (typed freight already
+/// taken out when the deal ships through Logistics) and stands in for the supplier leg when a
+/// fee or refund link exists without a supplier link. `recorded_goods` is used only when the
+/// deal has no supplier or fee link at all: at completion it is the same figure, on a resync it
+/// is what the books already hold, so a vanished link never zeroes a completed deal.
+/// The shipping leg is added on top, from the shipping link if there is one, else the amount
+/// paid on the live bookings (see `ShipFacts::leg`).
 fn deal_bank_actuals(
-    conn: &rusqlite::Connection, deal_flow_id: &str, manual_gross: f64, manual_cost: f64,
-) -> (f64, f64, f64, bool) {
+    conn: &rusqlite::Connection, deal_flow_id: &str, manual_gross: f64, entered_goods: f64, recorded_goods: f64,
+) -> DealActuals {
     // Only ever count an allocation whose bank transaction still exists. A deleted /
     // re-imported statement can leave allocation rows pointing at a gone txn; those
     // dead rows must never inflate a deal's numbers (they were doubling actuals).
@@ -5668,20 +5841,14 @@ fn deal_bank_actuals(
     let has_cost_link = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role IN ('supplier_payment','fee') AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
     let any_link      = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
 
-    let r2 = |x: f64| (x * 100.0).round() / 100.0;
+    let facts = ship_facts(conn, deal_flow_id);
+    let shipping_leg = facts.leg();
     let rev  = if has_rev_link  { buyer } else { manual_gross };
-    // The supplier leg falls back to the entered cost when only a fee is linked.
-    // Previously `has_cost_link` (true for a fee alone) made the whole cost equal
-    // `fee`, so tying a single $25 wire fee to a deal REPLACED a $37,955 supplier
-    // cost with $25 — and that inflated profit was then persisted and used for
-    // partner payouts, rep cuts, the tax reserve and free cash.
-    let cost = if has_cost_link {
-        let supplier_leg = if has_supplier_link { supplier } else { manual_cost };
-        (supplier_leg + fee - refund_in).max(0.0)
-    } else {
-        manual_cost
-    };
-    (r2(rev), r2(cost), r2(rev - cost), any_link)
+    let cost = recorded_cost(has_cost_link, has_supplier_link, supplier, fee, refund_in, entered_goods, recorded_goods, shipping_leg);
+    DealActuals {
+        gross: r2(rev), cost: r2(cost), net: r2(rev - cost), any_link,
+        shipping_leg: r2(shipping_leg), shipping_mode: facts.mode(),
+    }
 }
 
 /// Snapshot of the bank transactions currently linked to a deal — a plain copy
@@ -5740,31 +5907,83 @@ fn buyer_bank_paid_date(conn: &rusqlite::Connection, deal_flow_id: &str) -> Opti
 /// erase or reset it. A live link refines the number; a missing one preserves it.
 /// The linked transactions are also snapshotted into metadata for the record.
 fn resync_completed_deal(id: &str) -> Result<(), String> {
+    recompute_completed_deal(id, None)
+}
+
+/// R-400: the goods figure a completed deal's books already hold: the recorded cost with the
+/// shipping leg taken back out. A deal recorded before R-400 (`shipping_cost` NULL) that now ships
+/// through Logistics had its typed freight inside the recorded cost, so that comes out too, or the
+/// carrier would be counted twice.
+pub fn recorded_goods_of(total_cost: f64, shipping_cost: Option<f64>, facts: &ShipFacts) -> f64 {
+    total_cost - shipping_cost.unwrap_or(0.0)
+        - if facts.mode() && shipping_cost.is_none() { facts.freight_typed } else { 0.0 }
+}
+
+/// What a completed deal's recorded figures come to now, the bank snapshot to store beside them and
+/// the closing date the buyer's bank payment gives (if any). Read-only: `recompute_completed_deal`
+/// writes what this returns and `resync_completed_deal_if_changed` compares it with the books.
+fn completed_actuals(df: &DealFlow, typed_goods: Option<f64>) -> Result<(DealActuals, Value, Option<String>), String> {
+    let id = df.id.as_str();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let facts = ship_facts(&conn, id);
+    let entered_goods = typed_goods.unwrap_or(df.total_supplier_cost - facts.typed_freight_dropped());
+    // Fallback = already-recorded gross/goods (the completion snapshot), so a
+    // vanished bank link keeps what's on the books instead of zeroing it.
+    let recorded_goods = typed_goods.unwrap_or_else(|| recorded_goods_of(df.total_cost, df.shipping_cost, &facts));
+    let a = deal_bank_actuals(&conn, id, df.gross_revenue, entered_goods, recorded_goods);
+    // The deal closed the day the BUYER's money landed — not the day it was keyed in,
+    // and not (as this used to read) the day the SUPPLIER was paid. Only a real bank
+    // date rewrites a deal already on the books; one with no buyer payment linked keeps
+    // the date it has, and corrects itself the moment that payment is linked.
+    let closed = buyer_bank_paid_date(&conn, id).or_else(|| {
+        if df.completed_at.as_deref().unwrap_or("").is_empty() {
+            df.payment_received_at.clone().filter(|s| !s.is_empty())
+        } else { None }
+    });
+    Ok((a, bank_snapshot_value(&conn, id), closed))
+}
+
+/// R-400: after a pull, a completed deal is re-derived only when its recorded cost, profit or
+/// shipping leg differ from what the books say by more than half a cent, so a desktop that
+/// computes what the server already stored writes nothing and queues nothing. Returns whether it
+/// wrote.
+pub fn resync_completed_deal_if_changed(id: &str) -> Result<bool, String> {
+    let df = read_df(id)?;
+    if df.stage != "complete" { return Ok(false); }
+    let (a, _, _) = completed_actuals(&df, None)?;
+    let store_shipping = a.shipping_mode || df.shipping_cost.is_some();
+    let shipping_differs = store_shipping && df.shipping_cost.map_or(true, |s| (s - a.shipping_leg).abs() > 0.005);
+    if (df.total_cost - a.cost).abs() <= 0.005 && (df.net_profit - a.net).abs() <= 0.005 && !shipping_differs {
+        return Ok(false);
+    }
+    recompute_completed_deal(id, None)?;
+    Ok(true)
+}
+
+/// The one writer of a completed deal's recorded figures after completion (bank links changing, a
+/// booking's amount paid changing, a cost line being edited). `typed_goods` is `Some` only when a
+/// cost line was edited: the typed lines are then both the entered and the recorded goods figure.
+/// It refreshes `metadata.payout_recipients` as complete does, since shipping now routinely
+/// arrives after completion and the Profit Split panel reads that snapshot.
+fn recompute_completed_deal(id: &str, typed_goods: Option<f64>) -> Result<(), String> {
     let df = read_df(id)?;
     if df.stage != "complete" { return Ok(()); }
 
-    let (gross, total_cost, net, _has_bank, snapshot, closed_date) = {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        // Fallback = already-recorded gross/cost (the completion snapshot), so a
-        // vanished bank link keeps what's on the books instead of zeroing it.
-        let (g, c, n, hb) = deal_bank_actuals(&conn, id, df.gross_revenue, df.total_cost);
-        // The deal closed the day the BUYER's money landed — not the day it was keyed in,
-        // and not (as this used to read) the day the SUPPLIER was paid. Only a real bank
-        // date rewrites a deal already on the books; one with no buyer payment linked keeps
-        // the date it has, and corrects itself the moment that payment is linked.
-        let closed = buyer_bank_paid_date(&conn, id).or_else(|| {
-            if df.completed_at.as_deref().unwrap_or("").is_empty() {
-                df.payment_received_at.clone().filter(|s| !s.is_empty())
-            } else { None }
-        });
-        (g, c, n, hb, bank_snapshot_value(&conn, id), closed)
-    };
+    let (a, snapshot, closed_date) = completed_actuals(&df, typed_goods)?;
+    let (gross, total_cost, net) = (a.gross, a.cost, a.net);
+    // A deal with no bookings, no shipping link and no recorded shipping leg stays NULL.
+    let store_shipping = a.shipping_mode || df.shipping_cost.is_some();
 
     let split = read_profit_split()?;
     let mut meta_map = serde_json::from_str::<Value>(df.metadata.as_deref().unwrap_or("{}"))
         .ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
     let include_payout = meta_map.get("payout_included").and_then(|v| v.as_bool()).unwrap_or(false);
     meta_map.insert("bank_snapshot".into(), snapshot);
+    meta_map.insert("is_loss".into(), Value::Bool(net < 0.0));
+    // The per-deal recipients breakdown against the new net, on the shares captured at
+    // completion (the split the deal was agreed under), as the cost-edit path always did.
+    let shares = shares_from_breakdown(&meta_map).unwrap_or_else(read_profit_split_shares_raw);
+    meta_map.insert("payout_recipients".into(), Value::Array(build_payout_breakdown(&shares, net, include_payout)));
     let meta_json = serde_json::to_string(&Value::Object(meta_map)).unwrap_or_else(|_| "{}".into());
 
     let (jack, ben, business) = if include_payout {
@@ -5783,6 +6002,7 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
     cols.insert("profit_ben".into(), json!(ben));
     cols.insert("profit_business".into(), json!(business));
     cols.insert("metadata".into(), json!(meta_json));
+    if store_shipping { cols.insert("shipping_cost".into(), json!(a.shipping_leg)); }
     cols.insert("updated_at".into(), json!(now.clone()));
     if let Some(d) = &closed_date { cols.insert("completed_at".into(), json!(d)); }
     sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
@@ -5798,6 +6018,9 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
         "UPDATE deal_flows SET gross_revenue=?1, total_cost=?2, net_profit=?3, profit_jack=?4, profit_ben=?5, profit_business=?6, metadata=?7, updated_at=?8 WHERE id=?9",
         rusqlite::params![gross, total_cost, net, jack, ben, business, meta_json, now, id],
     ).map_err(|e| e.to_string())?;
+    if store_shipping {
+        conn.execute("UPDATE deal_flows SET shipping_cost=?1 WHERE id=?2", rusqlite::params![a.shipping_leg, id]).map_err(|e| e.to_string())?;
+    }
     if let Some(d) = &closed_date {
         conn.execute("UPDATE deal_flows SET completed_at=?1 WHERE id=?2", rusqlite::params![d, id]).ok();
     }
@@ -5815,12 +6038,13 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
 pub async fn recalc_deal_from_bank(id: String) -> Result<Value, String> {
     resync_completed_deal(&id)?;
     let df = read_df(&id)?;
-    let (gross, cost, net, has_bank) = {
+    let a = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        deal_bank_actuals(&conn, &id, df.payment_received_amount, df.total_supplier_cost)
+        let goods = df.total_supplier_cost - ship_facts(&conn, &id).typed_freight_dropped();
+        deal_bank_actuals(&conn, &id, df.payment_received_amount, goods, goods)
     };
     crate::netsync::push_now();
-    Ok(json!({ "gross_revenue": gross, "supplier_cost": cost, "net_profit": net, "from_bank": has_bank }))
+    Ok(json!({ "gross_revenue": a.gross, "supplier_cost": a.cost, "net_profit": a.net, "from_bank": a.any_link }))
 }
 
 #[tauri::command]
@@ -6814,8 +7038,13 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
 #[tauri::command]
 pub fn list_deal_reps() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, display_name FROM staff_accounts WHERE status='active' ORDER BY display_name").map_err(|e| e.to_string())?;
-    let reps: Vec<Value> = stmt.query_map([], |r| Ok(json!({ "id": r.get::<_, String>(0)?, "display_name": r.get::<_, String>(1)? }))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect();
+    // R-400: an account that only sees the Logistics screen is not a rep to assign a deal to.
+    let mut stmt = conn.prepare("SELECT s.id, s.display_name, COALESCE(r.permissions_json,'[]') FROM staff_accounts s LEFT JOIN roles r ON r.id=s.role_id WHERE s.status='active' ORDER BY s.display_name").map_err(|e| e.to_string())?;
+    let reps: Vec<Value> = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+        .map_err(|e| e.to_string())?.filter_map(|x| x.ok())
+        .filter(|(_, _, perms)| !crate::employees::is_logistics_only(&serde_json::from_str::<Vec<String>>(perms).unwrap_or_default()))
+        .map(|(id, name, _)| json!({ "id": id, "display_name": name }))
+        .collect();
     Ok(reps)
 }
 
@@ -6886,9 +7115,11 @@ pub async fn list_rep_payouts(start: Option<String>, end: Option<String>) -> Res
     let mut staff: std::collections::HashMap<String, (String, f64, String)> = std::collections::HashMap::new(); // id -> (name, pct, pay_type)
     let mut by_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();               // display_name -> id
     {
-        let mut s = conn.prepare("SELECT id, display_name, COALESCE(commission_pct,0), COALESCE(pay_type,'profit_pct') FROM staff_accounts WHERE status='active' AND COALESCE(hide_pay_cuts,0)=0").map_err(|e| e.to_string())?;
-        let rows = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?))).map_err(|e| e.to_string())?;
-        for (id, name, pct, pt) in rows.flatten() {
+        // R-400: a Logistics-only account earns no rep cut, so it is not listed here either.
+        let mut s = conn.prepare("SELECT s.id, s.display_name, COALESCE(s.commission_pct,0), COALESCE(s.pay_type,'profit_pct'), COALESCE(r.permissions_json,'[]') FROM staff_accounts s LEFT JOIN roles r ON r.id=s.role_id WHERE s.status='active' AND COALESCE(s.hide_pay_cuts,0)=0").map_err(|e| e.to_string())?;
+        let rows = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))).map_err(|e| e.to_string())?;
+        for (id, name, pct, pt, perms) in rows.flatten() {
+            if crate::employees::is_logistics_only(&serde_json::from_str::<Vec<String>>(&perms).unwrap_or_default()) { continue; }
             by_name.insert(name.clone(), id.clone());
             staff.insert(id, (name, pct, pt));
         }
@@ -12426,15 +12657,20 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         }
     }
 
+    // R-400: on a deal that ships through Logistics the booking replaces the typed freight lines,
+    // so those lines leave this list and one row per live unpaid booking with a quote takes their
+    // place (payee = broker, else carrier, else "Shipping"; the quote is the amount). The rows
+    // are own costs, marked `kind: "shipping"` and carrying `booking_id`.
     let mut stmt = conn.prepare(
-        "SELECT json_extract(sp.value,'$.supplier_name') AS payee, \
+        concat!("SELECT json_extract(sp.value,'$.supplier_name') AS payee, \
                 CAST(json_extract(sp.value,'$.amount') AS REAL) AS amount, \
                 COALESCE(NULLIF(df.payment_received_at,''), df.created_at) AS anchor, \
                 df.id AS deal_flow_id, df.invoice_id AS invoice_id, \
                 i.number AS invoice_number, i.client_id AS client_id, c.name AS client_name, \
                 json_extract(sp.value,'$.id') AS payment_id, df.stage AS df_stage, \
                 json_extract(sp.value,'$.category') AS category, \
-                COALESCE(json_extract(sp.value,'$.supplier_billed'),0) AS supplier_billed \
+                COALESCE(json_extract(sp.value,'$.supplier_billed'),0) AS supplier_billed, \
+                NULL AS booking_id \
          FROM deal_flows df \
          JOIN json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
@@ -12442,7 +12678,24 @@ pub async fn get_payables_aging() -> Result<Value, String> {
          WHERE df.stage != 'complete' AND COALESCE(df.archived,0)=0 \
            AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
            AND COALESCE(json_extract(sp.value,'$.paid'),0)=0 \
-           AND json_extract(sp.value,'$.supplier_name') IS NOT NULL",
+           AND json_extract(sp.value,'$.supplier_name') IS NOT NULL \
+           AND NOT (COALESCE(json_extract(sp.value,'$.category'),'')='freight' AND ", ship_mode_sql!(), ") \
+         UNION ALL \
+         SELECT COALESCE(NULLIF(fb.broker,''), NULLIF(fb.carrier,''), 'Shipping') AS payee, \
+                CAST(fb.quoted_cost AS REAL) AS amount, \
+                COALESCE(NULLIF(df.payment_received_at,''), df.created_at) AS anchor, \
+                df.id AS deal_flow_id, df.invoice_id AS invoice_id, \
+                i.number AS invoice_number, i.client_id AS client_id, c.name AS client_name, \
+                NULL AS payment_id, df.stage AS df_stage, 'freight' AS category, 0 AS supplier_billed, \
+                fb.id AS booking_id \
+         FROM freight_bookings fb \
+         JOIN deal_flows df ON df.id = fb.deal_flow_id \
+         LEFT JOIN invoices i ON i.id = df.invoice_id \
+         LEFT JOIN clients c ON c.id = i.client_id \
+         WHERE fb.archived=0 AND fb.status!='cancelled' AND fb.paid_amount IS NULL \
+           AND COALESCE(fb.quoted_cost,0) > 0 \
+           AND df.stage != 'complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0"),
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| Ok((
         r.get::<_, Option<String>>(0)?.unwrap_or_default(),
@@ -12457,6 +12710,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         r.get::<_, Option<String>>(9)?.unwrap_or_default(),
         r.get::<_, Option<String>>(10)?,
         r.get::<_, i64>(11)?,
+        r.get::<_, Option<String>>(12)?,
     ))).map_err(|e| e.to_string())?;
 
     let today = Utc::now().date_naive();
@@ -12468,7 +12722,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
     let mut tot = [0f64; 4];
     let mut committed_total = 0f64; // dashboard hero: only committed deals count
     let mut count = 0i64;
-    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id, df_stage, category, supplier_billed) in rows.filter_map(|x| x.ok()) {
+    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id, df_stage, category, supplier_billed, booking_id) in rows.filter_map(|x| x.ok()) {
         if committed_stages.contains(&df_stage.as_str()) { committed_total += amount; }
         let days = chrono::NaiveDate::parse_from_str(anchor.get(0..10).unwrap_or(""), "%Y-%m-%d")
             .map(|d| (today - d).num_days())
@@ -12488,7 +12742,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
             &payee, own_cost,
             deal_supplier_names.get(&deal_flow_id).unwrap_or(&empty_set),
         );
-        items.push(json!({
+        let mut item = json!({
             "deal_flow_id": deal_flow_id, "invoice_id": invoice_id, "invoice_number": invoice_number,
             "payment_id": payment_id,
             "payee": payee, "amount": amount, "client_id": client_id, "client_name": client_name,
@@ -12499,7 +12753,13 @@ pub async fn get_payables_aging() -> Result<Value, String> {
             "committed": committed_stages.contains(&df_stage.as_str()),
             "deal_flow_stage": df_stage,
             "own_cost": own_cost,
-        }));
+        });
+        // R-400: a row for a booking's quote, not a cost line: it has no payment to mark paid.
+        if let (Some(bid), Some(o)) = (booking_id, item.as_object_mut()) {
+            o.insert("kind".into(), json!("shipping"));
+            o.insert("booking_id".into(), json!(bid));
+        }
+        items.push(item);
         let e = map.entry(payee_key).or_insert(([0.0; 4], 0, true));
         e.0[idx] += amount;
         if days > e.1 { e.1 = days; }
@@ -13359,7 +13619,7 @@ pub async fn analytics_reconciliation(start_date: String, end_date: String) -> R
         "COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id \
             AND {role_pred} AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0)");
     let money_in_sql = banked("a.role='buyer_payment'");
-    let money_out_sql = banked("a.role IN ('supplier_payment','fee')");
+    let money_out_sql = banked("a.role IN ('supplier_payment','fee','shipping')");
     let refund_in_sql = banked("a.role='refund_in'");
     let df_clients = df.replacen("JOIN invoices i ON i.id=df.invoice_id",
                                  "JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id", 1);
@@ -15751,7 +16011,7 @@ pub async fn allocate_bank_txn(
     // (supplier payables, refund liability) would book money against the wrong side.
     let role_ok = match direction.as_str() {
         "in" => matches!(role.as_str(), "buyer_payment" | "refund_in" | "adjustment"),
-        _    => matches!(role.as_str(), "supplier_payment" | "refund_out" | "fee" | "adjustment"),
+        _    => matches!(role.as_str(), "supplier_payment" | "refund_out" | "fee" | "shipping" | "adjustment"),
     };
     if !role_ok {
         return Err(format!("\"{}\" can't be applied to a money-{} transaction", role, direction));
@@ -15935,12 +16195,14 @@ pub async fn resync_all_completed_deals() -> Result<i64, String> {
 /// deal, or a leg that legitimately never happened — so it stops being flagged as
 /// needing financials. Stored in metadata and synced.
 #[tauri::command]
-pub async fn set_deal_link_na(id: String, no_buyer: bool, no_supplier: bool) -> Result<(), String> {
+pub async fn set_deal_link_na(id: String, no_buyer: bool, no_supplier: bool, no_shipping: Option<bool>) -> Result<(), String> {
     let df = read_df(&id)?;
     let mut meta = serde_json::from_str::<Value>(df.metadata.as_deref().unwrap_or("{}"))
         .ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
     meta.insert("no_buyer_link".into(), json!(no_buyer));
     meta.insert("no_supplier_link".into(), json!(no_supplier));
+    // R-400: an acknowledgement exactly like the supplier one. Left as it is when the caller does not say.
+    if let Some(v) = no_shipping { meta.insert("no_shipping_link".into(), json!(v)); }
     let meta_json = serde_json::to_string(&Value::Object(meta)).unwrap_or_else(|_| "{}".into());
     let now = Utc::now().to_rfc3339();
     let mut cols = Map::new();
@@ -16366,7 +16628,7 @@ pub async fn add_manual_deal_line(
     // to book money against the wrong side.
     let dir = match role.as_str() {
         "buyer_payment" | "refund_in" => "in",
-        "supplier_payment" | "fee"    => "out",
+        "supplier_payment" | "fee" | "shipping" => "out",
         _ => return Err(format!("\"{}\" is not a money line you can add by hand", role)),
     };
     if !(amount > 0.0) {
@@ -16432,6 +16694,8 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     // cost, so it lifts actual profit. Previously accepted + pickable but never
     // read, so a supplier refund silently vanished from the deal's actuals.
     let refund_in       = role_sum("refund_in");
+    // R-400: money paid to the carrier, its own leg.
+    let shipping_paired = role_sum("shipping");
 
     // NON-bank-linked cash refunds only — a bank-linked refund also has a
     // refund_out allocation (counted above), so counting it here too would
@@ -16455,7 +16719,9 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     // Expected profit is the PLAN — what you'd make at the entered cost (revenue −
     // supplier cost). The stored net_profit can be stale before completion (it may
     // still equal gross if cost was added later), so derive it fresh here.
-    let expected_profit = (if invoice_total > 0.01 { invoice_total } else { gross_revenue }) - total_supplier_cost;
+    // R-400: the plan uses the projected cost (typed freight replaced by the shipping estimate).
+    let facts = ship_facts(&conn, &deal_flow_id);
+    let expected_profit = (if invoice_total > 0.01 { invoice_total } else { gross_revenue }) - facts.projected_cost(total_supplier_cost);
 
     // refund_out = bank-paired refunds; refunds = cash refunds with no bank link.
     // They describe DIFFERENT money, so sum them (the old max() undercounted a deal
@@ -16463,13 +16729,22 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     // refund_status_all and financials_overview.
     let refund_total = refund_out + refunds;
     // + refund_in: a supplier reversal came back to us, reducing net supplier cost.
-    let actual_profit = buyer_paired - supplier_paired - fee_paired - refund_total + refund_in;
+    let actual_profit = buyer_paired - supplier_paired - fee_paired - shipping_paired - refund_total + refund_in;
 
     // Reconciled = paired AMOUNTS cover what's owed (within 50¢), not just "a txn exists".
     let buyer_target = if invoice_total > 0.01 { invoice_total } else { gross_revenue };
     let payment_received_paired = if buyer_target > 0.01 { buyer_paired >= buyer_target - 0.5 } else { buyer_paired > 0.01 };
-    let supplier_paid_paired    = if total_supplier_cost > 0.01 { supplier_paired >= total_supplier_cost - 0.5 } else { supplier_paired > 0.01 };
-    let fully_reconciled = payment_received_paired && supplier_paid_paired;
+    // R-400: the supplier leg is the goods, so typed freight is not part of its target. The
+    // shipping leg has its own: the amount paid on the bookings, or the typed freight when the
+    // deal does not use Logistics.
+    let supplier_target         = total_supplier_cost - facts.freight_typed;
+    let supplier_paid_paired    = if supplier_target > 0.01 { supplier_paired >= supplier_target - 0.5 } else { supplier_paired > 0.01 };
+    let shipping_target         = if facts.mode() { facts.paid } else { facts.freight_typed };
+    let shipping_paid_paired    = shipping_target > 0.005 && shipping_paired >= shipping_target - 0.5;
+    // Only a deal that ships through Logistics and has an amount paid must have its carrier
+    // payment linked before it counts as reconciled.
+    let shipping_required       = facts.mode() && facts.paid > 0.005;
+    let fully_reconciled = payment_received_paired && supplier_paid_paired && (!shipping_required || shipping_paid_paired);
 
     Ok(json!({
         "expected_profit":  r2(expected_profit),
@@ -16480,11 +16755,15 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
             "buyer_paired":    r2(buyer_paired),
             "supplier_paired": r2(supplier_paired),
             "fee_paired":      r2(fee_paired),
+            "shipping_paired": r2(shipping_paired),
+            "shipping_target": r2(shipping_target),
+            "shipping_paid_paired": shipping_paid_paired,
             "refund_total":    r2(refund_total),
             "refund_in":       r2(refund_in),
         },
         "payment_received_paired": payment_received_paired,
         "supplier_paid_paired":    supplier_paid_paired,
+        "shipping_paid_paired":    shipping_paid_paired,
         "fully_reconciled":        fully_reconciled,
     }))
 }
@@ -16495,17 +16774,19 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
 pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT df.id, COALESCE(i.total,0), COALESCE(df.total_supplier_cost,0), COALESCE(df.gross_revenue,0),
+        concat!("SELECT df.id, COALESCE(i.total,0), COALESCE(df.total_supplier_cost,0), COALESCE(df.gross_revenue,0),
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='buyer_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0),
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='supplier_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0),
                 EXISTS (SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=df.id AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),
-                COALESCE(df.metadata,'')
+                COALESCE(df.metadata,''),
+                COALESCE(df.supplier_payments_json,'[]') AS sp_json, ",
+        ship_facts_cols!(), "
          FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id
          -- EVERY live deal, not just completed ones. The deal-flow list draws its
          -- progress dots from this, and restricting it to stage=complete meant an
          -- active deal read as nothing-done until the card was opened and fetched
          -- its own reconciliation.
-         WHERE COALESCE(df.archived,0)=0",
+         WHERE COALESCE(df.archived,0)=0"),
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
         let id: String = r.get(0)?;
@@ -16516,14 +16797,25 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         let supplier_paired: f64 = r.get(5)?;
         let has_financials: bool = r.get(6)?;
         let metadata: String = r.get(7)?;
+        let payments: Vec<SupplierPayment> = serde_json::from_str(&r.get::<_, String>("sp_json")?).unwrap_or_default();
+        let facts = ship_facts_from_row(r, &payments);
         // "no bank records expected" acknowledgement — a completed deal the user has
-        // marked as having no buyer / no supplier money to link (cash-only, etc.).
+        // marked as having no buyer / no supplier / no shipping money to link (cash-only, etc.).
         let meta: Value = serde_json::from_str(&metadata).unwrap_or(Value::Null);
         let no_buyer    = meta.get("no_buyer_link").and_then(|v| v.as_bool()).unwrap_or(false);
         let no_supplier = meta.get("no_supplier_link").and_then(|v| v.as_bool()).unwrap_or(false);
+        let no_shipping = meta.get("no_shipping_link").and_then(|v| v.as_bool()).unwrap_or(false);
         let buyer_target = if invoice_total > 0.01 { invoice_total } else { gross_revenue };
+        // R-400: the supplier leg is the goods, so typed freight is not part of its target.
+        let supplier_target = supplier_cost - facts.freight_typed;
         let pr = if buyer_target > 0.01 { buyer_paired >= buyer_target - 0.5 } else { buyer_paired > 0.01 };
-        let sp = if supplier_cost > 0.01 { supplier_paired >= supplier_cost - 0.5 } else { supplier_paired > 0.01 };
+        let sp = if supplier_target > 0.01 { supplier_paired >= supplier_target - 0.5 } else { supplier_paired > 0.01 };
+        // The shipping leg counts only for a deal that ships through Logistics and has an amount
+        // paid: the carrier's payment must be linked before the deal reads as reconciled.
+        let shipping_required = facts.mode() && facts.paid > 0.005;
+        let shipping_target = if facts.mode() { facts.paid } else { facts.freight_typed };
+        let shipping_paired = facts.linked;
+        let shp = shipping_target > 0.005 && shipping_paired >= shipping_target - 0.5;
         let acknowledged = no_buyer && no_supplier;
         // Per-leg "potentially missing payment link": the leg has money expected but no
         // linked bank transaction AND hasn't been marked "no record". Lets the completed
@@ -16532,20 +16824,24 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         let buyer_linked    = buyer_paired > 0.01;
         let supplier_linked = supplier_paired > 0.01;
         let buyer_missing    = !buyer_linked    && !no_buyer    && buyer_target  > 0.01;
-        let supplier_missing = !supplier_linked && !no_supplier && supplier_cost > 0.01;
-        let needs_review = buyer_missing || supplier_missing;
+        let supplier_missing = !supplier_linked && !no_supplier && supplier_target > 0.01;
+        let shipping_missing = shipping_required && !(shipping_paired > 0.01) && !no_shipping;
+        let needs_review = buyer_missing || supplier_missing || shipping_missing;
         Ok(json!({
             "deal_flow_id": id,
             "payment_received_paired": pr,
             "supplier_paid_paired": sp,
-            "fully_reconciled": pr && sp,
+            "shipping_paid_paired": shp,
+            "fully_reconciled": pr && sp && (!shipping_required || shp),
             "has_payment": buyer_paired > 0.01,
             "has_financials": has_financials,
             "no_buyer_link": no_buyer,
             "no_supplier_link": no_supplier,
+            "no_shipping_link": no_shipping,
             "needs_financials": !has_financials && !acknowledged,
             "buyer_missing": buyer_missing,
             "supplier_missing": supplier_missing,
+            "shipping_missing": shipping_missing,
             "needs_review": needs_review,
         }))
     }).map_err(|e| e.to_string())?;
@@ -18904,19 +19200,31 @@ pub async fn financials_overview() -> Result<Value, String> {
     // the deal isn't complete (never ours — ring-fenced). Netted per deal against any
     // supplier-payment the user has already allocated from the bank feed (actuals),
     // clamped at 0 so an over-allocation on one deal can't erase another's payable.
+    //
+    // R-400: on a deal that ships through Logistics the booking replaces its typed freight lines,
+    // so those lines leave the goods part and the quotes of its live unpaid bookings (less any
+    // carrier payment already linked from the bank) come in as a second part, clamped on its own.
     let supplier_payables: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(MAX(0,
+        concat!("SELECT COALESCE(SUM(MAX(0,
             (SELECT COALESCE(SUM(CAST(json_extract(sp.value,'$.amount') AS REAL)),0)
                FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp
-              WHERE COALESCE(json_extract(sp.value,'$.paid'),0) != 1)
+              WHERE COALESCE(json_extract(sp.value,'$.paid'),0) != 1
+                AND NOT (COALESCE(json_extract(sp.value,'$.category'),'')='freight' AND ", ship_mode_sql!(), "))
             - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
                  WHERE a.deal_flow_id=df.id AND a.role='supplier_payment'
                    AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
-         )),0)
+         ) + CASE WHEN ", ship_mode_sql!(), " THEN MAX(0,
+            (SELECT COALESCE(SUM(fb.quoted_cost),0) FROM freight_bookings fb
+              WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled'
+                AND fb.paid_amount IS NULL AND fb.quoted_cost IS NOT NULL)
+            - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
+                 WHERE a.deal_flow_id=df.id AND a.role='shipping'
+                   AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
+         ) ELSE 0 END),0)
          FROM deal_flows df
          WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
            AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id
-                           AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1))",
+                           AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1))"),
         [], |r| r.get(0)).unwrap_or(0.0);
 
     // Refund liability (we owe buyers back): per deal, refund_owed minus refunds
@@ -24805,5 +25113,388 @@ mod lot_match_tests {
         assert_eq!(lot_unit_price(1500.0, "total", 0.0), None);
         assert_eq!(lot_unit_price(1500.0, "total", 100.0), Some(15.0));
         assert_eq!(lot_unit_price(15.0, "per_unit", 100.0), Some(15.0));
+    }
+}
+
+// R-400: the shipping leg. The money twins: clienthub-api routes/deal_flows.rs carries the same
+// cases with the same numbers (revenue 10,000 unless stated). Real database, real completion.
+#[cfg(test)]
+mod r400_shipping_tests {
+    use super::*;
+
+    fn line(id: &str, category: &str, amount: f64, paid: bool) -> Value {
+        json!({
+            "id": id, "supplier_name": "Sample supplier", "supplier_id": null, "amount": amount,
+            "original_amount": null, "price_changed": false, "quantity": null, "unit_price": null,
+            "method": null, "notes": null, "paid": paid, "paid_at": null, "category": category,
+            "kept": false, "supplier_billed": false
+        })
+    }
+
+    /// A deal with the given cost lines, the buyer's 10,000 received, ready to complete.
+    fn deal(tag: &str, lines: Vec<Value>, stage: &str) -> String {
+        let id = format!("df-r400-{tag}");
+        let total: f64 = lines.iter().map(|l| l["amount"].as_f64().unwrap()).sum();
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r400', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r400', ?2, '2026-09-01', '2026-09-30', '[]', 10000, 10000, '2026-09-01')",
+            rusqlite::params![format!("inv-r400-{tag}"), format!("INV-R400-{tag}")],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount)
+             VALUES (?1, ?2, ?3, '2026-09-01', '2026-09-01', ?4, ?5, 10000)",
+            rusqlite::params![id, format!("inv-r400-{tag}"), stage, Value::Array(lines).to_string(), total],
+        ).unwrap();
+        id
+    }
+
+    fn booking(deal_id: &str, n: &str, status: &str, paid: Option<f64>, quoted: Option<f64>, archived: i64) {
+        let conn = pool().get().unwrap();
+        conn.execute(
+            "INSERT INTO freight_bookings (id, deal_flow_id, status, paid_amount, quoted_cost, archived, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, '2026-09-02', '2026-09-02')",
+            rusqlite::params![format!("fb_{deal_id}_{n}"), deal_id, status, paid, quoted, archived],
+        ).unwrap();
+    }
+
+    fn set_paid(deal_id: &str, n: &str, paid: f64) {
+        pool().get().unwrap().execute(
+            "UPDATE freight_bookings SET paid_amount=?1 WHERE id=?2", rusqlite::params![paid, format!("fb_{deal_id}_{n}")],
+        ).unwrap();
+    }
+
+    fn link(deal_id: &str, role: &str, amount: f64) {
+        let conn = pool().get().unwrap();
+        let dir = if role == "buyer_payment" || role == "refund_in" { "in" } else { "out" };
+        let txn = format!("txn_{deal_id}_{role}");
+        conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, '2026-09-10', ?2, ?3)", rusqlite::params![txn, amount, dir]).unwrap();
+        conn.execute(
+            "INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![format!("al_{deal_id}_{role}"), txn, deal_id, amount, role],
+        ).unwrap();
+    }
+
+    /// (total_cost, net_profit, shipping_cost, invoice total_cost)
+    fn books(deal_id: &str) -> (f64, f64, Option<f64>, Option<f64>) {
+        let conn = pool().get().unwrap();
+        conn.query_row(
+            "SELECT df.total_cost, df.net_profit, df.shipping_cost, i.total_cost FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id WHERE df.id=?1",
+            [deal_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap()
+    }
+
+    async fn complete(id: &str) {
+        complete_deal_flow(id.to_string(), None, None, None, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn case_1_no_shipping_anything_is_the_legacy_result_and_shipping_cost_stays_null() {
+        let _db = crate::db::init_test_store();
+        let id = deal("c1", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        complete(&id).await;
+        assert_eq!(books(&id), (6500.0, 3500.0, None, Some(6500.0)));
+        resync_completed_deal(&id).unwrap();
+        assert_eq!(books(&id), (6500.0, 3500.0, None, Some(6500.0)), "a resync of a legacy deal leaves shipping_cost NULL");
+    }
+
+    #[tokio::test]
+    async fn case_2_a_supplier_link_still_drops_typed_freight_when_there_is_no_logistics() {
+        let _db = crate::db::init_test_store();
+        let id = deal("c2", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        link(&id, "supplier_payment", 6000.0);
+        complete(&id).await;
+        assert_eq!(books(&id).0, 6000.0);
+        assert_eq!(books(&id).2, None);
+    }
+
+    #[tokio::test]
+    async fn case_3_a_paid_booking_replaces_the_typed_freight() {
+        let _db = crate::db::init_test_store();
+        let id = deal("c3", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(800.0), None, 0);
+        complete(&id).await;
+        let b = books(&id);
+        assert_eq!((b.0, b.1, b.2), (6800.0, 3200.0, Some(800.0)));
+        assert_eq!(b.3, Some(6800.0), "the invoice snapshot carries the same cost");
+    }
+
+    #[tokio::test]
+    async fn case_4_the_supplier_link_and_the_booking_are_separate_legs() {
+        let _db = crate::db::init_test_store();
+        let id = deal("c4", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(800.0), None, 0);
+        link(&id, "supplier_payment", 5900.0);
+        complete(&id).await;
+        assert_eq!(books(&id).0, 6700.0);
+    }
+
+    #[tokio::test]
+    async fn case_5_a_shipping_bank_link_wins_over_the_amount_typed() {
+        let _db = crate::db::init_test_store();
+        let id = deal("c5", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(800.0), None, 0);
+        link(&id, "shipping", 810.0);
+        complete(&id).await;
+        let b = books(&id);
+        assert_eq!((b.0, b.2), (6810.0, Some(810.0)));
+    }
+
+    #[tokio::test]
+    async fn case_6_cancelled_and_archived_bookings_do_not_count() {
+        let _db = crate::db::init_test_store();
+        let id = deal("c6", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(300.0), None, 0);
+        booking(&id, "2", "delivered", Some(450.0), None, 0);
+        booking(&id, "3", "cancelled", Some(999.0), None, 0);
+        booking(&id, "4", "delivered", Some(777.0), None, 1);
+        complete(&id).await;
+        let b = books(&id);
+        assert_eq!((b.0, b.2), (6750.0, Some(750.0)));
+    }
+
+    #[tokio::test]
+    async fn case_7_a_booking_that_arrives_after_completion_takes_the_typed_freight_out() {
+        let _db = crate::db::init_test_store();
+        let id = deal("c7", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        complete(&id).await;
+        assert_eq!(books(&id).0, 6500.0);
+        booking(&id, "1", "delivered", Some(800.0), None, 0);
+        resync_completed_deal(&id).unwrap();
+        let b = books(&id);
+        assert_eq!((b.0, b.1, b.2, b.3), (6800.0, 3200.0, Some(800.0), Some(6800.0)));
+    }
+
+    #[tokio::test]
+    async fn case_8_a_changed_amount_paid_moves_the_cost_by_exactly_the_difference() {
+        let _db = crate::db::init_test_store();
+        let id = deal("c8", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(800.0), None, 0);
+        complete(&id).await;
+        assert_eq!(books(&id).0, 6800.0);
+        set_paid(&id, "1", 900.0);
+        resync_completed_deal(&id).unwrap();
+        let b = books(&id);
+        assert_eq!((b.0, b.2), (6900.0, Some(900.0)));
+        resync_completed_deal(&id).unwrap();
+        assert_eq!(books(&id).0, 6900.0, "and a second resync changes nothing");
+    }
+
+    #[tokio::test]
+    async fn case_9_the_supplier_stage_ignores_the_freight_lines() {
+        let _db = crate::db::init_test_store();
+        let stage = |id: &str| -> String { pool().get().unwrap().query_row("SELECT stage FROM deal_flows WHERE id=?1", [id], |r| r.get(0)).unwrap() };
+
+        let a = deal("c9a", vec![line("s", "supplier", 6000.0, false), line("f", "freight", 500.0, false)], "payment_received");
+        mark_supplier_payment_paid(a.clone(), "s".into()).await.unwrap();
+        assert_eq!(stage(&a), "supplier_paid", "goods paid, freight unpaid: reached");
+
+        let b = deal("c9b", vec![line("s", "supplier", 6000.0, false), line("f", "freight", 500.0, false)], "payment_received");
+        mark_supplier_payment_paid(b.clone(), "f".into()).await.unwrap();
+        assert_eq!(stage(&b), "payment_received", "goods unpaid, freight paid: not reached");
+
+        let c = deal("c9c", vec![line("f1", "freight", 300.0, false), line("f2", "freight", 200.0, false)], "payment_received");
+        mark_supplier_payment_paid(c.clone(), "f1".into()).await.unwrap();
+        assert_eq!(stage(&c), "payment_received");
+        mark_supplier_payment_paid(c.clone(), "f2".into()).await.unwrap();
+        assert_eq!(stage(&c), "supplier_paid", "only freight lines, all paid: reached");
+
+        // The step back on removing a line uses the same test.
+        let d = deal("c9d", vec![line("s", "supplier", 6000.0, true), line("f", "freight", 500.0, false), line("s2", "supplier", 100.0, false)], "supplier_paid");
+        remove_supplier_payment(d.clone(), "s2".into()).await.unwrap();
+        assert_eq!(stage(&d), "supplier_paid", "the unpaid freight line does not send it back");
+
+        let pl = |cat: &str, paid: bool, kept: bool| { let mut l = line("x", cat, 1.0, paid); l["kept"] = json!(kept); serde_json::from_value::<SupplierPayment>(l).unwrap() };
+        assert!(supplier_side_settled(&[pl("supplier", true, false), pl("freight", false, false)]));
+        assert!(!supplier_side_settled(&[pl("supplier", false, false), pl("freight", true, false)]));
+        assert!(supplier_side_settled(&[pl("supplier", false, true), pl("freight", false, false)]), "a kept goods line counts as settled");
+        assert!(supplier_side_settled(&[]));
+    }
+
+    #[tokio::test]
+    async fn case_10_the_derived_fields_project_the_open_deal() {
+        let _db = crate::db::init_test_store();
+        // Case 1: typed freight, no logistics. The projection equals what was entered.
+        let a = deal("c10a", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "invoiced");
+        let d = read_df(&a).unwrap();
+        assert_eq!((d.shipping_mode, d.freight_typed, d.shipping_estimate, d.projected_cost, d.logistics_bookings), (false, 500.0, 500.0, 6500.0, 0));
+        assert_eq!(d.total_supplier_cost, 6500.0, "total_supplier_cost keeps its meaning");
+        // Case 3: a paid booking replaces the typed freight.
+        let b = deal("c10b", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "invoiced");
+        booking(&b, "1", "booked", Some(800.0), None, 0);
+        let d = read_df(&b).unwrap();
+        assert_eq!((d.shipping_mode, d.logistics_paid, d.logistics_unpaid, d.shipping_estimate, d.projected_cost), (true, 800.0, 0, 800.0, 6800.0));
+        assert_eq!(d.logistics_stage, "booked");
+        // A booking with only a quote: 6,000 + 700.
+        let c = deal("c10c", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "invoiced");
+        booking(&c, "1", "requested", None, Some(700.0), 0);
+        booking(&c, "2", "picked_up", None, None, 0);
+        let d = read_df(&c).unwrap();
+        assert_eq!((d.logistics_bookings, d.logistics_unpaid, d.logistics_quoted, d.shipping_estimate, d.projected_cost), (2, 2, 700.0, 700.0, 6700.0));
+        assert_eq!(d.logistics_stage, "requested", "the least advanced live booking names the stage");
+        assert_eq!(d.shipping_cost, None);
+    }
+
+    #[tokio::test]
+    async fn case_11_a_fee_link_without_a_supplier_link_no_longer_compounds_on_resync() {
+        let _db = crate::db::init_test_store();
+        let id = deal("c11", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        link(&id, "fee", 25.0);
+        complete(&id).await;
+        assert_eq!(books(&id).0, 6025.0);
+        resync_completed_deal(&id).unwrap();
+        assert_eq!(books(&id).0, 6025.0, "it used to grow by the fee on every resync");
+        resync_completed_deal(&id).unwrap();
+        assert_eq!(books(&id).0, 6025.0);
+    }
+
+    #[test]
+    fn the_shipping_leg_sits_outside_the_clamp_and_the_pure_function_matches_the_cases() {
+        // A refund larger than the goods leaves the goods at 0, never below, and the carrier is
+        // still counted in full.
+        assert_eq!(recorded_cost(true, true, 100.0, 0.0, 500.0, 0.0, 0.0, 800.0), 800.0);
+        // No link at all: the recorded goods figure stands.
+        assert_eq!(recorded_cost(false, false, 0.0, 0.0, 0.0, 6000.0, 6100.0, 0.0), 6100.0);
+        // A fee link alone: the entered goods stand in for the supplier leg.
+        assert_eq!(recorded_cost(true, false, 0.0, 25.0, 0.0, 6000.0, 6025.0, 0.0), 6025.0);
+        let facts = ShipFacts { bookings: 1, paid: 800.0, freight_typed: 500.0, ..Default::default() };
+        assert_eq!(recorded_goods_of(6500.0, None, &facts), 6000.0, "legacy record + logistics: the typed freight comes out");
+        assert_eq!(recorded_goods_of(6800.0, Some(800.0), &facts), 6000.0);
+        assert_eq!(recorded_goods_of(6500.0, None, &ShipFacts { freight_typed: 500.0, ..Default::default() }), 6500.0, "no logistics: unchanged");
+    }
+
+    #[tokio::test]
+    async fn a_cost_line_edited_on_a_completed_deal_keeps_the_bank_truth_and_the_shipping_leg() {
+        let _db = crate::db::init_test_store();
+        let id = deal("edit", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(800.0), None, 0);
+        complete(&id).await;
+        assert_eq!(books(&id).0, 6800.0);
+        let input = SupplierPaymentInput {
+            supplier_name: "Sample supplier".into(), supplier_id: None, amount: 6100.0, quantity: None, unit_price: None,
+            method: None, notes: None, category: Some("supplier".into()), supplier_billed: false, split: None,
+        };
+        update_supplier_payment(id.clone(), "a".into(), input).await.unwrap();
+        let b = books(&id);
+        assert_eq!((b.0, b.2, b.3), (6900.0, Some(800.0), Some(6900.0)), "the shipping leg stays and the invoice snapshot moves");
+        // With a supplier bank link the typed edit does not override the bank (it used to).
+        let linked = deal("edit2", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        link(&linked, "supplier_payment", 5900.0);
+        complete(&linked).await;
+        let input = SupplierPaymentInput {
+            supplier_name: "Sample supplier".into(), supplier_id: None, amount: 6200.0, quantity: None, unit_price: None,
+            method: None, notes: None, category: Some("supplier".into()), supplier_billed: false, split: None,
+        };
+        update_supplier_payment(linked.clone(), "a".into(), input).await.unwrap();
+        assert_eq!(books(&linked).0, 5900.0);
+    }
+
+    #[tokio::test]
+    async fn resync_refreshes_the_payout_recipients_snapshot() {
+        let _db = crate::db::init_test_store();
+        let id = deal("payout", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        pool().get().unwrap().execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('profit_split_json', '[{\"name\":\"Partner A\",\"pct\":60,\"is_business\":false,\"kind\":\"person\"},{\"name\":\"Business\",\"pct\":40,\"is_business\":true,\"kind\":\"business\"}]')", [],
+        ).unwrap();
+        complete_deal_flow(id.clone(), None, None, Some(true), None).await.unwrap();
+        let amounts = |id: &str| -> Vec<f64> {
+            let meta: String = pool().get().unwrap().query_row("SELECT metadata FROM deal_flows WHERE id=?1", [id], |r| r.get(0)).unwrap();
+            let v: Value = serde_json::from_str(&meta).unwrap();
+            v["payout_recipients"].as_array().unwrap().iter().map(|p| p["amount"].as_f64().unwrap()).collect()
+        };
+        assert_eq!(amounts(&id), vec![2400.0, 1600.0]);
+        booking(&id, "1", "delivered", Some(1000.0), None, 0);
+        resync_completed_deal(&id).unwrap();
+        assert_eq!(amounts(&id), vec![1800.0, 1200.0], "net went from 4,000 to 3,000 and the panel's snapshot followed");
+        pool().get().unwrap().execute("DELETE FROM settings WHERE key='profit_split_json'", []).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconciliation_treats_shipping_as_its_own_leg() {
+        let _db = crate::db::init_test_store();
+        let id = deal("recon", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(800.0), None, 0);
+        link(&id, "buyer_payment", 10000.0);
+        link(&id, "supplier_payment", 6000.0);
+        let status = |id: &str| -> Value { futures::executor::block_on(reconciliation_status_all()).unwrap().into_iter().find(|v| v["deal_flow_id"] == id).unwrap() };
+
+        // The goods leg is paired on its own (the typed freight is not part of its target) and
+        // the carrier payment is what is still missing.
+        let s = status(&id);
+        assert_eq!((s["supplier_paid_paired"].as_bool(), s["shipping_missing"].as_bool(), s["fully_reconciled"].as_bool()), (Some(true), Some(true), Some(false)));
+        assert_eq!(s["needs_review"], json!(true));
+        let r = deal_reconciliation(id.clone()).await.unwrap();
+        assert_eq!(r["pieces"]["shipping_target"], json!(800.0));
+        assert_eq!(r["expected_profit"], json!(3200.0), "the plan is revenue less the projected cost");
+        assert_eq!(r["fully_reconciled"], json!(false));
+
+        // Acknowledged: not missing.
+        set_deal_link_na(id.clone(), false, false, Some(true)).await.unwrap();
+        assert_eq!(status(&id)["shipping_missing"], json!(false));
+        set_deal_link_na(id.clone(), false, false, Some(false)).await.unwrap();
+
+        // Linked: paired, reconciled, and the actual profit subtracts the carrier.
+        link(&id, "shipping", 800.0);
+        let s = status(&id);
+        assert_eq!((s["shipping_paid_paired"].as_bool(), s["shipping_missing"].as_bool(), s["fully_reconciled"].as_bool()), (Some(true), Some(false), Some(true)));
+        let r = deal_reconciliation(id.clone()).await.unwrap();
+        assert_eq!(r["actual_profit"], json!(3200.0));
+        assert_eq!(r["fully_reconciled"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn payables_swap_the_typed_freight_for_the_booking_quote() {
+        let _db = crate::db::init_test_store();
+        let id = deal("pay", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "payment_received");
+        let mine = |v: &Value| -> Vec<Value> { v["items"].as_array().unwrap().iter().filter(|i| i["deal_flow_id"] == id).cloned().collect() };
+
+        let before = mine(&get_payables_aging().await.unwrap());
+        assert_eq!(before.len(), 2, "no logistics: the freight line is a payable");
+
+        booking(&id, "1", "booked", None, Some(700.0), 0);
+        booking(&id, "2", "booked", None, None, 0);
+        let after = mine(&get_payables_aging().await.unwrap());
+        assert_eq!(after.len(), 2, "the goods line and one quoted booking, the typed freight and the unquoted booking gone");
+        let ship = after.iter().find(|i| i["kind"] == "shipping").expect("a shipping row");
+        assert_eq!((ship["amount"].as_f64(), ship["own_cost"].as_bool(), ship["payee"].as_str()), (Some(700.0), Some(true), Some("Shipping")));
+        assert!(ship["booking_id"].as_str().unwrap().starts_with("fb_"));
+
+        // Paid: nothing left to owe the carrier.
+        set_paid(&id, "1", 700.0);
+        let paid = mine(&get_payables_aging().await.unwrap());
+        assert_eq!(paid.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_shipping_role_is_money_out_only() {
+        let _db = crate::db::init_test_store();
+        let id = deal("role", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        {
+            let conn = pool().get().unwrap();
+            conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES ('txn_role_out', '2026-09-10', 800, 'out')", []).unwrap();
+            conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES ('txn_role_in', '2026-09-10', 800, 'in')", []).unwrap();
+        }
+        allocate_bank_txn("txn_role_out".into(), id.clone(), 800.0, "shipping".into(), String::new(), None).await.expect("money out accepts shipping");
+        let refused = allocate_bank_txn("txn_role_in".into(), id.clone(), 800.0, "shipping".into(), String::new(), None).await;
+        assert!(refused.is_err(), "money in refuses shipping");
+        assert_eq!(ledger_role_label("shipping"), "payment to the carrier");
+        assert!(add_manual_deal_line(id.clone(), "shipping".into(), 50.0, Some("2026-09-11".into()), None, None).await.is_ok(), "a hand-entered carrier payment is money out");
+    }
+
+    #[tokio::test]
+    async fn free_cash_counts_the_booking_quote_instead_of_the_typed_freight() {
+        let _db = crate::db::init_test_store();
+        let owed = || async { financials_overview().await.unwrap()["supplier_payables"].as_f64().unwrap() };
+        let base = owed().await;
+        let id = deal("cash", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "payment_received");
+        assert_eq!(owed().await - base, 6500.0, "no logistics: the freight line is owed like the goods");
+        booking(&id, "1", "booked", None, Some(700.0), 0);
+        assert_eq!(owed().await - base, 6700.0, "the quote replaces the typed freight");
+        // A carrier payment already linked from the bank comes off the quote, never below zero.
+        link(&id, "shipping", 200.0);
+        assert_eq!(owed().await - base, 6500.0);
+        set_paid(&id, "1", 700.0);
+        assert_eq!(owed().await - base, 6000.0, "paid: only the goods are still owed");
     }
 }
