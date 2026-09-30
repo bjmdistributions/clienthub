@@ -55,8 +55,8 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
 
   return (
     <div className="bg-surface border border-line rounded-xl px-4 py-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="text-[12.5px] font-medium text-muted">Store Credit</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[12.5px] font-medium text-muted">Store credit</div>
         <div className={`text-[18px] font-bold tabular-nums ${balance > 0 ? "text-success-ink" : "text-ink"}`}>{fmtAmount(balance)}</div>
       </div>
       <button onClick={() => setOpen((o) => !o)} className="text-[12px] text-muted hover:text-ink-2 underline underline-offset-2">
@@ -64,21 +64,24 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
       </button>
       {open && (
         <div className="space-y-2 border-t border-line pt-2">
-          <div className="flex items-center gap-2">
+          {/* R-414: a pair sits side by side while the card has room and wraps to one per
+              line when it does not. Inputs and selects never shrink below their intrinsic
+              width on their own, which is what pushed them out of the card. */}
+          <div className="flex flex-wrap items-center gap-2">
             <input type="text" inputMode="decimal" value={amt} onChange={(e) => setAmt(e.target.value)} placeholder="Amount"
-              className="bg-surface-2 border border-line rounded-lg h-8 px-2 flex-1 text-[12px] text-ink tabular-nums" />
+              className="bg-surface-2 border border-line rounded-lg h-8 px-2 grow basis-36 min-w-0 text-[12px] text-ink tabular-nums" />
             <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)"
-              className="bg-surface-2 border border-line rounded-lg h-8 px-2 flex-1 text-[12px] text-ink" />
+              className="bg-surface-2 border border-line rounded-lg h-8 px-2 grow basis-36 min-w-0 text-[12px] text-ink" />
           </div>
           {deals.length > 0 && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <select value={fromDeal} onChange={(e) => setFromDeal(e.target.value)}
-                className="bg-surface-2 border border-line rounded-lg h-8 px-2 flex-1 text-[12px] text-ink-2">
+                className="bg-surface-2 border border-line rounded-lg h-8 px-2 grow basis-36 min-w-0 text-[12px] text-ink-2">
                 <option value="">From deal (optional)</option>
                 {deals.map((d) => <option key={d.id} value={d.id}>{dealLabel(d)}</option>)}
               </select>
               <select value={appliedDeal} onChange={(e) => setAppliedDeal(e.target.value)}
-                className="bg-surface-2 border border-line rounded-lg h-8 px-2 flex-1 text-[12px] text-ink-2">
+                className="bg-surface-2 border border-line rounded-lg h-8 px-2 grow basis-36 min-w-0 text-[12px] text-ink-2">
                 <option value="">Applied to deal (optional)</option>
                 {deals.map((d) => <option key={d.id} value={d.id}>{dealLabel(d)}</option>)}
               </select>
@@ -103,7 +106,7 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
                     {e.applied_deal_flow_id && dealNo(e.applied_deal_flow_id) ? ` · applied to #${dealNo(e.applied_deal_flow_id)}` : ""}
                     {e.note ? ` · ${e.note}` : ""}
                   </span>
-                  <span className={`tabular-nums ${e.amount < 0 ? "text-danger-ink" : "text-success-ink"}`}>{e.amount < 0 ? "−" : "+"}{fmtAmount(Math.abs(e.amount))}</span>
+                  <span className={`tabular-nums whitespace-nowrap ${e.amount < 0 ? "text-danger-ink" : "text-success-ink"}`}>{e.amount < 0 ? "−" : "+"}{fmtAmount(Math.abs(e.amount))}</span>
                 </div>
               ))}
             </div>

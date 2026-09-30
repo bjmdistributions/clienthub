@@ -698,6 +698,21 @@ html.matte .rail-spine { background: rgba(255,255,255,0.18); }
   .nl-cols .nl-pane { width: 100% !important; flex: 1 1 auto !important; }
 }
 
+/* Client screen (R-414): give a split pane the columns a full window of the same pane
+   width gets. Full screen, lg: starts at an ~808px pane (1024 minus the 216px sidebar)
+   and xl: at ~1064px, so undo each below those widths. */
+@container (max-width: 1063px) {
+  .cd-xl2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+}
+@container (max-width: 807px) {
+  .cd-lg1 { grid-template-columns: minmax(0, 1fr) !important; }
+  .cd-lg2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  /* The actions column beside the name leaves the name a few characters; put it
+     underneath as one wrapping row. */
+  .cd-head { flex-direction: column; }
+  .cd-head > .cd-actions { flex-direction: row; flex-wrap: wrap; align-items: center; }
+}
+
 /* ════════════════════════════════════════════════════════════
    DARK MODE — Tailwind utility overrides
    ════════════════════════════════════════════════════════════ */
