@@ -126,9 +126,15 @@ const STILL = { isAnimationActive: false } as const;
 // loss, revenue, a categorical slot); only the fill changes. Lines stay solid: a line is
 // read by its edge. HTML bars use `glassBar` / `glassSeg`; SVG bars use `<GlassFill>` in
 // the chart's <defs> and fill with `url(#id)`.
+// A colour that is already translucent keeps its own strength: the alphas multiply. The
+// Month comparisons legend draws its three earlier months as ink at 20/32/44%, and before
+// R-410 this replaced that alpha, so all three swatches came out as one solid square.
 function withAlpha(c: string, a: number): string {
-  const m = c.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/);
-  if (m) return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${a})`;
+  const m = c.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?/);
+  if (m) {
+    const own = m[4] === undefined ? 1 : m[4].endsWith("%") ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
+    return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${+(own * a).toFixed(3)})`;
+  }
   const h = c.match(/^#([0-9a-f]{6})$/i);
   if (h) {
     const n = parseInt(h[1], 16);

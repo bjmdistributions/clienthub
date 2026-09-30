@@ -9,16 +9,20 @@ import { toast } from "./Toast";
 // stored on the deal (deal_flows.category / .brand) and teaches the guesses for every deal
 // he has not set (src-tauri/src/deal_label.rs), so the list is re-read after each save and
 // other rows can change their guess while he works. The phone has the same screen
-// (clienthub-api/www/app.js, openDealLabels).
+// (clienthub-api/www/app.js, anOpenLabels).
 
 type Filter = "look" | "uncategorized" | "unbranded" | "all";
 const FILTERS: { id: Filter; label: string }[] = [
-  { id: "look", label: "Not confirmed" },
+  { id: "look", label: "Needs a look" },
   { id: "uncategorized", label: "Uncategorized" },
   { id: "unbranded", label: "No brand" },
   { id: "all", label: "All" },
 ];
 const GUESSED = (f: LabelFrom) => f === "learned" || f === "reader" || f === "buyer";
+// R-410: a deal needs a look while its category is not one you set, or its brand is a guess
+// waiting for you. A brand nobody could read ("Nothing to go on yet") does not keep a deal
+// here forever; it lives under No brand. Before this the list could never reach zero.
+const needsLook = (d: DealLabel) => d.category_from !== "you" || GUESSED(d.brand_from);
 const PAGE = 60;
 
 export interface LabelFocus { kind: "category" | "brand"; name: string }
@@ -34,7 +38,6 @@ export default function DealLabelsModal({ focus, onClose }: {
   const [only, setOnly] = useState<LabelFocus | null>(focus);
   const [q, setQ] = useState("");
   const [shown, setShown] = useState(PAGE);
-  const [busy, setBusy] = useState(false);
   const [changed, setChanged] = useState(false);
 
   const load = () => api.listDealLabels().then(setData).catch((e) => toast(String(e), "error"));
@@ -50,7 +53,7 @@ export default function DealLabelsModal({ focus, onClose }: {
     const needle = q.trim().toLowerCase();
     return all.filter((d) => {
       if (only && (only.kind === "category" ? d.category : d.brand) !== only.name) return false;
-      if (filter === "look" && d.category_from === "you" && d.brand_from === "you") return false;
+      if (filter === "look" && !needsLook(d)) return false;
       if (filter === "uncategorized" && d.category_from !== "") return false;
       if (filter === "unbranded" && d.brand_from !== "") return false;
       if (!needle) return true;
@@ -58,34 +61,40 @@ export default function DealLabelsModal({ focus, onClose }: {
     });
   }, [data, filter, only, q]);
 
-  const guesses: DealLabelInput[] = useMemo(() => rows.flatMap((d) => {
+  // Only the rows on screen: the button says "shown", and a guess nobody has seen must not
+  // become a label that then teaches every other deal (R-410).
+  const guesses: DealLabelInput[] = useMemo(() => rows.slice(0, shown).flatMap((d) => {
     const it: DealLabelInput = { id: d.id };
     if (GUESSED(d.category_from)) it.category = d.category;
     if (GUESSED(d.brand_from)) it.brand = d.brand;
     return it.category !== undefined || it.brand !== undefined ? [it] : [];
-  }), [rows]);
+  }), [rows, shown]);
 
-  // A ref, not the state: Enter saves and disables the box, and the blur that follows must
-  // not save the same value a second time before the re-render lands.
-  const busyRef = useRef(false);
-  const save = async (items: DealLabelInput[], note?: string) => {
-    if (items.length === 0 || busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
-    try {
-      await api.setDealLabels(items);
-      setChanged(true);
-      await load();
-      if (note) toast(note);
-    } catch (e) {
-      toast(String(e), "error");
-    }
-    busyRef.current = false;
-    setBusy(false);
+  // Saves run one after another, and the boxes stay live while they do (R-410): disabling
+  // them dropped keyboard focus after every save, so type-and-Enter needed the mouse. `then`
+  // runs once the list has been re-read, which is how Enter moves on to the next deal.
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const [saving, setSaving] = useState(0);
+  const busy = saving > 0;
+  const save = (items: DealLabelInput[], note?: string, then?: () => void) => {
+    if (items.length === 0) return;
+    setSaving((n) => n + 1);
+    queue.current = queue.current.then(async () => {
+      try {
+        await api.setDealLabels(items);
+        setChanged(true);
+        await load();
+        if (note) toast(note);
+        if (then) setTimeout(then, 0);
+      } catch (e) {
+        toast(String(e), "error");
+      }
+      setSaving((n) => n - 1);
+    });
   };
 
   const count = (f: Filter) => (data?.deals ?? []).filter((d) =>
-    f === "look" ? !(d.category_from === "you" && d.brand_from === "you")
+    f === "look" ? needsLook(d)
     : f === "uncategorized" ? d.category_from === ""
     : f === "unbranded" ? d.brand_from === ""
     : true).length;
@@ -150,16 +159,16 @@ export default function DealLabelsModal({ focus, onClose }: {
             <div className="px-6 py-16 text-center text-[13px] text-muted">Reading your deals</div>
           ) : rows.length === 0 ? (
             <div className="px-6 py-16 text-center text-[13px] text-muted">
-              {filter === "look" ? "Every deal here has a category and a brand you confirmed." : "No deals match."}
+              {filter === "look" ? "Nothing needs a look. Every deal has a category you set and no brand guess waiting." : "No deals match."}
             </div>
           ) : (
             <div className="divide-y divide-line-2">
               <div className="grid grid-cols-[minmax(0,1fr)_220px_200px] gap-4 px-6 py-2 sticky top-0 z-[1] bg-surface-2/80 backdrop-blur-sm text-[11px] font-medium text-muted">
                 <div>Deal</div><div>Category</div><div>Brand</div>
               </div>
-              {rows.slice(0, shown).map((d) => (
-                <Row key={d.id} d={d} busy={busy}
-                  onSave={(it, note) => save([{ id: d.id, ...it }], note)} />
+              {rows.slice(0, shown).map((d, i, list) => (
+                <Row key={d.id} d={d} next={list[i + 1]?.id ?? null}
+                  onSave={(it, note, then) => save([{ id: d.id, ...it }], note, then)} />
               ))}
               {rows.length > shown && (
                 <div className="px-6 py-3">
@@ -176,8 +185,15 @@ export default function DealLabelsModal({ focus, onClose }: {
   );
 }
 
-function Row({ d, busy, onSave }: {
-  d: DealLabel; busy: boolean; onSave: (it: Omit<DealLabelInput, "id">, note?: string) => void;
+// Enter in a box moves to the same box on the next deal once the save has landed.
+const focusBox = (deal: string | null, kind: string) => {
+  if (!deal) return;
+  document.querySelector<HTMLInputElement>(`input[data-deal="${CSS.escape(deal)}"][data-kind="${kind}"]`)?.focus();
+};
+
+function Row({ d, next, onSave }: {
+  d: DealLabel; next: string | null;
+  onSave: (it: Omit<DealLabelInput, "id">, note?: string, then?: () => void) => void;
 }) {
   const day = d.day ? parseLocalDay(d.day).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
   return (
@@ -195,42 +211,51 @@ function Row({ d, busy, onSave }: {
           {fmtAmount(d.revenue)} revenue · {d.profit < 0 ? "−" + fmtAmount(Math.abs(d.profit)) : fmtAmount(d.profit)} profit
         </div>
       </div>
-      <LabelField value={d.category} from={d.category_from} why={d.category_why} list="r402-categories"
-        empty="Uncategorized" busy={busy} onSave={(v, note) => onSave({ category: v }, note)} />
-      <LabelField value={d.brand} from={d.brand_from} why={d.brand_why} list="r402-brands"
-        empty="No brand" busy={busy} onSave={(v, note) => onSave({ brand: v }, note)} />
+      <LabelField deal={d.id} kind="category" value={d.category} from={d.category_from} why={d.category_why}
+        list="r402-categories" empty="Uncategorized" onNext={() => focusBox(next, "category")}
+        onSave={(v, note, advance) => onSave({ category: v }, note, advance ? () => focusBox(next, "category") : undefined)} />
+      <LabelField deal={d.id} kind="brand" value={d.brand} from={d.brand_from} why={d.brand_why}
+        list="r402-brands" empty="No brand" onNext={() => focusBox(next, "brand")}
+        onSave={(v, note, advance) => onSave({ brand: v }, note, advance ? () => focusBox(next, "brand") : undefined)} />
     </div>
   );
 }
 
 // One label. A guess sits in the box ready to accept (the tick, or Enter); typing another
 // name and pressing Enter or leaving the box sets that instead. Leaving an unchanged guess
-// does NOT accept it, so tabbing through the list changes nothing.
-function LabelField({ value, from, why, list, empty, busy, onSave }: {
-  value: string; from: LabelFrom; why: string; list: string; empty: string; busy: boolean;
-  onSave: (v: string, note?: string) => void;
+// does NOT accept it, so tabbing through the list changes nothing. Enter also moves to the
+// same box on the next deal.
+function LabelField({ deal, kind, value, from, why, list, empty, onSave, onNext }: {
+  deal: string; kind: "category" | "brand"; value: string; from: LabelFrom; why: string; list: string; empty: string;
+  onSave: (v: string, note?: string, advance?: boolean) => void;
+  onNext: () => void;
 }) {
   const current = from === "" ? "" : value;
   const [draft, setDraft] = useState(current);
-  useEffect(() => { setDraft(current); }, [current]);
+  // What this box last sent: Enter saves, and the blur that follows must not send it again
+  // before the re-read lands.
+  const sent = useRef<string | null>(null);
+  useEffect(() => { setDraft(current); sent.current = null; }, [current]);
   const guessed = GUESSED(from);
   const commit = (accept: boolean) => {
     const v = draft.trim();
     if (!v) { setDraft(current); return; }
-    if (v === current && !(accept && guessed)) return;
-    onSave(v);
+    if (v === sent.current) return;
+    if (v === current && !(accept && guessed)) { if (accept) onNext(); return; }
+    sent.current = v;
+    onSave(v, undefined, accept);
   };
   return (
     <div className="min-w-0">
       <div className="flex items-center gap-1.5">
-        <input value={draft} list={list} placeholder={empty} disabled={busy}
+        <input value={draft} list={list} placeholder={empty} data-deal={deal} data-kind={kind}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit(true); } }}
           onBlur={() => commit(false)}
           className={`w-full min-w-0 ring-1 bg-surface h-8 px-2.5 rounded-lg text-[12.5px] focus:outline-none focus:ring-2 focus:ring-accent/40 ${
             guessed && draft === current ? "ring-line/70 text-muted" : "ring-line text-ink"}`} />
         {guessed && (
-          <button disabled={busy} onClick={() => onSave(value)} title="Accept this guess" aria-label="Accept this guess"
+          <button onClick={() => onSave(value)} title="Accept this guess" aria-label="Accept this guess"
             className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg ring-1 ring-line text-success-ink hover:bg-success-bg disabled:opacity-40 transition-colors">
             <Check size={14} />
           </button>
@@ -240,7 +265,7 @@ function LabelField({ value, from, why, list, empty, busy, onSave }: {
         {from === "you" ? (
           <>
             <span className="text-[11px] text-faint">Set by you</span>
-            <button disabled={busy} onClick={() => onSave("", "Cleared. It will be guessed again.")}
+            <button onClick={() => onSave("", "Cleared. It will be guessed again.")}
               className="text-[11px] text-muted hover:text-ink-2 hover:underline">Clear</button>
           </>
         ) : guessed ? (

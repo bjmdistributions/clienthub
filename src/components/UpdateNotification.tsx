@@ -4,8 +4,25 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { Download, X, Check } from "lucide-react";
 import { api } from "../lib/api";
 
+// R-409: one update check per launch, shared by every mount. This banner used to be
+// remounted on every tab click, and each mount hid it and ran check() again two seconds
+// later, so it popped back in and pushed the page down each time ("the top bar flashes
+// repeatedly"). A remount now renders the answer it already has, at once.
+let checking: Promise<any> | null = null;
+let known: any = null;
+function checkOnce(): Promise<any> {
+  if (!checking) {
+    checking = new Promise((r) => setTimeout(r, 2000))
+      .then(() => check())
+      .then((u) => { known = u ?? null; return known; })
+      .catch((e: any) => { console.warn("Update check failed:", e?.message ?? e); return null; });
+  }
+  return checking;
+}
+const offered = (u: any) => (u && localStorage.getItem("clienthub_update_dismissed") !== u.version ? u : null);
+
 export default function UpdateNotification() {
-  const [update, setUpdate] = useState<any>(null);
+  const [update, setUpdate] = useState<any>(() => offered(known));
   const [dismissed, setDismissed] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -13,16 +30,9 @@ export default function UpdateNotification() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const timer = setTimeout(async () => {
-      try {
-        const u = await check();
-        if (u) {
-          const saved = localStorage.getItem("clienthub_update_dismissed");
-          if (saved !== u.version) setUpdate(u);
-        }
-      } catch (e: any) { console.warn("Update check failed:", e?.message ?? e); }
-    }, 2000);
-    return () => clearTimeout(timer);
+    let live = true;
+    checkOnce().then((u) => { if (live) setUpdate(offered(u)); });
+    return () => { live = false; };
   }, []);
 
   if (!update || dismissed) return null;

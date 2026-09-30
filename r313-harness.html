@@ -16,6 +16,10 @@
       have to be looked at; only one of them is the interesting one.
     -->
     <script>
+      // `?noio`: the preview pane can report itself hidden, and then IntersectionObserver
+      // never fires, so nothing below the fold (every <Defer>) ever mounts. Without an IO,
+      // Defer mounts at once.
+      if (location.search.includes("noio")) delete window.IntersectionObserver;
       window.__TAURI_INTERNALS__ = {
         invoke: (cmd, args) => Promise.resolve(window.__FIXTURE ? window.__FIXTURE(cmd, args) : null),
         transformCallback: (cb) => { window.__cb = cb; return 1; },

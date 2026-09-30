@@ -1589,8 +1589,9 @@ export default function App() {
           </div>
         ) : (
           <div className={tab === "globe" ? "h-full overflow-hidden" : "h-full overflow-auto page-atmosphere"} style={{ background: paneBg(tab) }}>
+            {/* Outside the keyed page, as in split view: a tab click must not remount it (R-409). */}
+            {tab !== "globe" && <UpdateNotification />}
             <div key={pageKey} className="page-enter h-full">
-              {tab !== "globe" && <UpdateNotification />}
               {paneContent(tab)}
             </div>
           </div>
