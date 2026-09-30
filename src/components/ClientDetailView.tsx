@@ -781,7 +781,7 @@ export function PartyLinkPanel({
           <Banknote size={14} className="text-muted" /> {copy.theirSide}
         </div>
         <p className="text-[11px] text-faint mt-0.5">Money from them. This is revenue.</p>
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
+        <div className="cd-lg2 grid grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
           <StatTile label="Paid us" value={fmtAmount(theirSide.revenue)} tone="success" />
           <StatTile label="Still open" value={fmtAmount(theirSide.open)} tone={theirSide.open > 0 ? "warning" : "muted"} />
           <StatTile label="Invoices" value={String(theirSide.invoices)} tone="ink" />
@@ -795,7 +795,7 @@ export function PartyLinkPanel({
           <Truck size={14} className="text-muted" /> {copy.ourSide}
         </div>
         <p className="text-[11px] text-faint mt-0.5">Money to them. This is cost, and it is never subtracted from the figures above.</p>
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
+        <div className="cd-lg2 grid grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
           <StatTile label="We paid them" value={fmtAmount(ourSide.cost)} tone="ink" />
           <StatTile label="Deals supplied" value={String(ourSide.deals)} tone="ink" />
           <StatTile label="Last supplied" value={ourSide.last ? whenLabel(ourSide.last) : "–"} tone="muted" />
@@ -1272,7 +1272,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
 
       {/* ── Identity, money, next action ─────────────────── */}
       <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
-        <div className="flex items-start justify-between gap-4">
+        <div className="cd-head flex items-start justify-between gap-4">
           <div className="flex items-start gap-4 min-w-0">
             <div className="w-14 h-14 rounded-2xl bg-accent/10 text-accent-hover flex items-center justify-center text-[18px] font-bold flex-shrink-0">{initials}</div>
             <div className="min-w-0">
@@ -1297,7 +1297,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           </div>
 
           {/* Flag switches — clear on/off */}
-          <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+          <div className="cd-actions flex flex-col items-end gap-1.5 flex-shrink-0">
             {/* Edit / Delete — restored after the profile redesign. Delete is a
                 deliberate two-step (type-the-name) confirm to prevent data loss. */}
             <div className="flex items-center gap-1.5 mb-0.5">
@@ -1375,7 +1375,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
 
         {/* Money first. Profit leads — it is the figure Jack has said repeatedly
             is the one that matters. */}
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mt-5">
+        <div className="cd-xl2 grid grid-cols-2 xl:grid-cols-4 gap-3 mt-5">
           <StatTile
             label="Profit"
             value={flows.length === 0 ? "–" : fmtAmount(clientProfit)}
@@ -1428,7 +1428,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         <div className="flex items-center gap-2 mb-4 text-[13px] font-semibold text-ink">
           <Target size={14} className="text-muted" />Details and settings
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="cd-xl2 cd-lg1 grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
           <MetadataCard title="Contact info" icon={<User size={14} />}>
             {client.metadata?.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
             {address && <MetaRow label="Address" value={address} />}
@@ -1466,7 +1466,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           )}
         </div>
 
-        <div className="mt-4 pt-4 border-t border-line-2 grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <div className="cd-lg1 mt-4 pt-4 border-t border-line-2 grid grid-cols-1 lg:grid-cols-3 gap-3">
           <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} />
           <StatTile label="Paid" value={fmtAmount(paid)} tone="success" />
           <StatTile label="Invoices sent" value={String(sentCount)} tone="ink" />
