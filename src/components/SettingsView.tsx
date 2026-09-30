@@ -40,7 +40,7 @@ import {
 import StatusPill from "./StatusPill";
 import { buildNewsletterBody } from "../lib/newsletter";
 import { fmtAmount, parseAmount, parseCount } from "../lib/format";
-import { isAdmin } from "../lib/permissions";
+import { isAdmin, isLogisticsOnly } from "../lib/permissions";
 import {
   Save,
   Eye,
@@ -431,7 +431,9 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
   // Everyone can open Settings, but only admins see org-sensitive sections;
   // viewers/sales get Appearance (per-device) + their own Account.
   const admin = isAdmin(me);
-  const NON_ADMIN_SECTIONS: SettingsTab[] = ["account", "appearance", "feedback"];
+  // R-400: a Logistics-only account gets its own profile and how the app looks, and nothing
+  // else. Feedback is left out because it reads the workspace this account never holds.
+  const NON_ADMIN_SECTIONS: SettingsTab[] = isLogisticsOnly(me) ? ["account", "appearance"] : ["account", "appearance", "feedback"];
   const groups = admin
     ? SETTINGS_GROUPS
     : SETTINGS_GROUPS
@@ -1449,7 +1451,7 @@ function SendingCard() {
     api.getEmailUseOrgDefault().then(setUseOrg).catch(() => {});
     api.employeeMe().then((m) => {
       setMe(m);
-      if (isAdmin(m)) api.listStaff().then((rows) => setStaff(rows.filter((r) => r.status === "active"))).catch(() => {});
+      if (isAdmin(m)) api.listStaff(true).then((rows) => setStaff(rows.filter((r) => r.status === "active"))).catch(() => {});
     }).catch(() => {});
     refreshGoogleStatus();
   }, []);
@@ -5043,7 +5045,7 @@ function SplitsTab() {
   // sync. Without this a controlled number input coerces empty→0 and can't clear.
   const [pctText, setPctText] = useState<Record<number, string>>({});
 
-  const reloadStaff = () => api.listStaff().then((s) => setStaff(s.filter((x) => x.status === "active"))).catch(() => {});
+  const reloadStaff = () => api.listStaff(true).then((s) => setStaff(s.filter((x) => x.status === "active"))).catch(() => {});
   useEffect(() => {
     // Older saves have no kind — derive it for display; nothing is written back until the user edits.
     api.getPayoutSplit().then((list) => setShares(list.map((s) => ({
@@ -5306,15 +5308,18 @@ const MODULE_LABELS: Record<string, string> = {
   clients: "Clients", inventory: "Inventory", deal_flow: "Deals & pay (financial)",
   quotes: "Quotes", email: "Email", manifests: "Manifests",
   analytics: "Analytics & reports", financials: "Financials (books, bank & free cash)",
-  settings: "Settings",
+  settings: "Settings", logistics: "Logistics",
 };
-const MATRIX_MODULES = ["clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "financials", "settings"];
+const MATRIX_MODULES = ["clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "financials", "settings", "logistics"];
 const ACTIONS = ["view", "edit", "export"] as const;
 // Sensitive per-role visibility flags (separate from the module×action grid).
 const VIS_TOGGLES: [string, string, string][] = [
   ["clients:view_revenue", "See exact client spend", "Off: rep sees tier rank only, not dollar amounts"],
   ["suppliers:view", "See suppliers", "Off: the Suppliers area is hidden"],
   ["deal_flow:view_numbers", "See deal-flow dollar amounts", "Off: deals stay visible, money is hidden"],
+  // R-400: what the Logistics screen shows of the two ends of a shipment. Each is its own switch.
+  ["logistics:view_names", "See pickup and delivery names", "Off: the two names are hidden on the Logistics screen"],
+  ["logistics:view_addresses", "See pickup and delivery addresses", "Off: the two addresses are hidden on the Logistics screen"],
 ];
 
 function TeamTab() {

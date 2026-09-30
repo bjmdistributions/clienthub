@@ -14,6 +14,8 @@ import RefundWorkspace from "./RefundWorkspace";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import StatusPill from "./StatusPill";
 import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges, useDeliveredDeals } from "./FreightTracking";
+import DealShipping from "./DealShipping";
+import { useNetsyncApplied } from "./LogisticsBookingForm";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -205,6 +207,10 @@ export default function DealFlowView() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  // R-400: the person doing logistics changes bookings, dates and amounts from another
+  // device. Sync applies them here, and the deal figures they move (cost, profit, the
+  // shipping pill) must show without a restart. Debounced: a burst is one reload.
+  useNetsyncApplied(load);
   // R-279: a Priority1 update can move a deal's pickup or delivery date.
   useShipmentChanges(load);
   // R-318: the deals Priority1 says have landed.
@@ -702,6 +708,7 @@ function invoiceStatusPill(status: string | undefined): { label: string; cls: st
 // through `uncomplete_deal_flow` as before.
 const SECTIONS = [
   { key: "supplier", label: "Supplier & cost" },
+  { key: "shipping", label: "Shipping" },
   { key: "link",     label: "Link financials" },
   { key: "profit",   label: "Profit" },
   { key: "complete", label: "Review & complete" },
@@ -758,6 +765,9 @@ function DealFlowCard({
     // out is a payment question, answered by the payment pill on the card — holding
     // this dot for it left it empty on every deal whose supplier was not yet paid.
     supplier: supplierDone,
+    // R-400: a truck sent to logistics, a shipping payment linked, freight typed on the
+    // deal, or the answer "it ships direct". Any of them is an answered question.
+    shipping: !!flow.ships_direct || (flow.logistics_bookings ?? 0) > 0 || (flow.shipping_linked ?? 0) > 0.005 || (flow.freight_typed ?? 0) > 0.005,
     // The link dot fills only when there's nothing left to link — every money leg
     // that's owed is either paired to the bank or explicitly marked "no record"
     // (reconStatus.needs_review === false). Being complete is NOT enough on its own:
@@ -1065,6 +1075,7 @@ function DealFlowCard({
           <div className="border-t border-line bg-surface-2 px-5 py-4">
             <div key={animKey} className="df-anim">
               {section === "supplier" && <SectionSupplier flow={flow} onReload={onReload} onAdvance={() => advance("supplier")} locked={locked} />}
+              {section === "shipping" && <DealShipping flow={flow} onReload={onReload} locked={locked} />}
               {section === "link"     && <SectionLink     flow={flow} onReload={onReload} onAdvance={() => advance("link")} />}
               {section === "profit"   && <SectionProfit   flow={flow} onAdvance={() => advance("profit")} />}
               {section === "complete" && <PanelComplete   flow={flow} onReload={onReload} />}

@@ -45,6 +45,7 @@ import {
   Search,
   MoreHorizontal,
   Pin,
+  Truck,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -83,9 +84,10 @@ import AutomationLogView from "./components/AutomationLogView";
 import OnboardingWizard from "./components/OnboardingWizard";
 import GettingStarted from "./components/GettingStarted";
 import AuthView from "./components/AuthView";
+import LogisticsView from "./components/LogisticsView";
 import { useAppStore } from "./lib/store";
 import { api, isUnavailable, Me } from "./lib/api";
-import { can, canViewTab, isAdmin } from "./lib/permissions";
+import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly } from "./lib/permissions";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
 // never opens them. Globe is the expensive one — it is the only importer of
@@ -128,7 +130,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "logistics" | "platform" | "datasafety" | "settings";
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -426,6 +428,10 @@ export default function App() {
   const [entitlements, setEntitlements] = useState<Record<string, boolean>>({});
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
+  // R-400: an account that holds only Logistics permissions gets the Logistics screen and
+  // nothing else. This device never holds the workspace for it (the sign-in skips the sync),
+  // so every screen and every background read of workspace data below is skipped, not just hidden.
+  const logisticsOnly = isLogisticsOnly(me);
   // R-224 gap: the navigate-tab listener needs the current visible() gate, but it's
   // registered once (see the [] effect below) while visible() is a fresh function
   // every render - a ref kept in sync near visible's own declaration is the bridge.
@@ -438,21 +444,21 @@ export default function App() {
   const [signOutArm, setSignOutArm] = useState<boolean>(false);
   // First-run getting-started tour (after setup + sign-in), and a replay hook.
   useEffect(() => {
-    if (onboarded === true && me) {
+    if (onboarded === true && me && !logisticsOnly) {
       try { if (localStorage.getItem("ec_welcome_desktop_v1") !== "1") setShowTour(true); } catch { /* ignore */ }
     }
-  }, [onboarded, me]);
+  }, [onboarded, me, logisticsOnly]);
   useEffect(() => {
     const replay = () => setShowTour(true);
     window.addEventListener("replay-tour", replay);
     return () => window.removeEventListener("replay-tour", replay);
   }, []);
   useEffect(() => {
-    if (me) {
+    if (me && !logisticsOnly) {
       api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); setEntitlements(p.entitlements || {}); }).catch(() => { setSuperadmin(false); setPlan(null); setEntitlements({}); });
       api.localIsSuperadmin().then(setLocalSuper).catch(() => setLocalSuper(false));
     }
-  }, [me]);
+  }, [me, logisticsOnly]);
 
   // Poll the notification queue for the bell badge. This MUST match exactly what
   // the Notifications view shows when opened: pending customers awaiting review
@@ -506,11 +512,24 @@ export default function App() {
   // account returns onboarded=true, so the wizard never pops on reinstall.
   useEffect(() => {
     if (!me) { setOnboarded(null); return; }
+    // R-400: a Logistics-only account never sets up a workspace, so the wizard is not for it.
+    if (logisticsOnly) { setOnboarded(true); return; }
     api.getOnboardingStatus().then(setOnboarded).catch(() => setOnboarded(true));
-  }, [me]);
+  }, [me, logisticsOnly]);
+
+  // R-400: the screen this account lands on, whatever tab the last person left stored. Set
+  // without persisting, so the last tab on this device is not overwritten for the next sign-in.
+  // Anything else is already refused by visible(), so nothing renders in the one frame before this runs.
+  useEffect(() => {
+    if (logisticsOnly && tab !== "logistics" && tab !== "settings") { setTabState("logistics"); setPageKey((k) => k + 1); }
+    if (logisticsOnly && splitTab) setSplit(null);
+  }, [logisticsOnly, tab, splitTab]);
 
   const signOut = async () => {
     try { await api.employeeLogout(); } catch {}
+    // R-400: the next person to sign in on this device starts on the Dashboard, not on the
+    // Logistics screen the last account was held to.
+    if (logisticsOnly) setTabState("dashboard");
     setMe(null);
   };
 
@@ -619,14 +638,14 @@ export default function App() {
   // netsync-applied is a Tauri event, so it needs listen() and NOT addEventListener;
   // a window listener for it compiles, runs, and is never called.
   useEffect(() => {
-    if (!me) { setDraftCount(0); return; }
+    if (!me || logisticsOnly) { setDraftCount(0); return; }
     const read = () => api.listDrafts("pending").then((d) => setDraftCount(d.length)).catch(() => {});
     read();
     let unlisten: (() => void) | undefined;
     listen("netsync-applied", () => read()).then((u) => { unlisten = u; }).catch(() => {});
     const id = setInterval(read, 60000);
     return () => { clearInterval(id); unlisten?.(); };
-  }, [me]);
+  }, [me, logisticsOnly]);
 
   // R-318: a Priority1 delivery announces itself wherever you are in the app, not only on
   // Deal Flow, because it is the moment that deal becomes completable. The green row on
@@ -719,7 +738,9 @@ export default function App() {
       { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
     ] },
     { id: "manifest", label: "Manifest analyzer", icon: ClipboardList },
-    { id: "dealflow", label: "Deal Flow", icon: GitBranch },
+    { id: "dealflow", label: "Deal Flow", icon: GitBranch, children: [
+      { id: "logistics", label: "Logistics", icon: Truck },
+    ] },
     { id: "invoices", label: "Invoice", icon: FileText, children: [
       { id: "completed",  label: "Completed",  icon: Briefcase },
       { id: "receivables", label: "Receivables", icon: Wallet },
@@ -747,7 +768,11 @@ export default function App() {
 
   // Same per-id gating as before (parents, children, and utility items alike).
   const visible = (id: Tab): boolean =>
-    id === "platform" ? (superadmin || localSuper)
+    // R-400: a Logistics-only account sees its own screen and Settings (appearance and
+    // profile only, see SettingsView). Everyone else sees Logistics when they may see deals.
+    logisticsOnly ? (id === "logistics" || id === "settings")
+    : id === "logistics" ? canViewLogistics(me)
+    : id === "platform" ? (superadmin || localSuper)
     : id === "datasafety" ? (superadmin || localSuper) // secret integrity console
 
     : id === "archive" ? isAdmin(me)              // admin-only, like the money views
@@ -1051,6 +1076,7 @@ export default function App() {
             {t === "releaseletter" && <ReleaseLetterView />}
             {t === "clientreceipt" && <ClientStatementView />}
             {t === "dealflow"   && <DealFlowView />}
+            {t === "logistics"  && <LogisticsView me={me} />}
             {t === "suppliers"  && <SuppliersView />}
             {t === "inventory"  && <InventoryView />}
             {t === "warehouse"  && <WarehouseView />}
@@ -1133,7 +1159,7 @@ export default function App() {
         </button>
 
         {/* Split-view toggle */}
-        <button
+        {!logisticsOnly && <button
           onClick={toggleSplit}
           title={splitTab ? "Close split view" : "Open split view (two tabs side by side)"}
           className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
@@ -1142,7 +1168,7 @@ export default function App() {
           onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = splitTab ? "var(--accent-400)" : "#7A7A90"; }}
         >
           <Columns2 size={13} strokeWidth={2} />
-        </button>
+        </button>}
     </>
   );
 
@@ -1189,8 +1215,8 @@ export default function App() {
 
           {navCollapsed ? (
             <>
-              {railAction("__search", "Search", Search, () => { setFlyout(null); setPaletteOpen(true); })}
-              <div className="h-[11px] mx-1 flex items-center" aria-hidden><div className="w-full" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }} /></div>
+              {!logisticsOnly && railAction("__search", "Search", Search, () => { setFlyout(null); setPaletteOpen(true); })}
+              {!logisticsOnly && <div className="h-[11px] mx-1 flex items-center" aria-hidden><div className="w-full" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }} /></div>}
 
               {/* Standing on a screen whose parent this role cannot see. */}
               {railPlan.orphan && railRow(railPlan.orphan, railCount(railPlan.orphan, false))}
@@ -1268,7 +1294,7 @@ export default function App() {
                   ? <Wifi size={12} className="text-success-ink" />
                   : <WifiOff size={12} className="text-danger-ink" />}
               </span>
-              <button
+              {!logisticsOnly && <button
                 onClick={handleSync}
                 disabled={syncing}
                 title={`Sync · ${lastSync ? new Date(lastSync).toLocaleTimeString() : "never"}`}
@@ -1278,7 +1304,7 @@ export default function App() {
                 onMouseLeave={e => (e.currentTarget.style.background = "")}
               >
                 <RefreshCw size={12} className={syncing ? "animate-spin" : ""} />
-              </button>
+              </button>}
               <button
                 onClick={(e) => openFlyout("__account", e)}
                 title={me?.display_name || "Account"}
@@ -1314,7 +1340,7 @@ export default function App() {
             </div>
           ) : (
             <div className="space-y-1">
-              <div className="flex items-center justify-between px-1.5 py-0.5">
+              {!logisticsOnly && <div className="flex items-center justify-between px-1.5 py-0.5">
                 <span className="flex items-center gap-2 text-[11px]" style={{ color: "#4A4A5A" }}>
                   {aiOnline
                     ? <Wifi size={11} className="text-success-ink" />
@@ -1324,8 +1350,8 @@ export default function App() {
                 <span className={`text-[11px] font-medium ${aiOnline ? "text-success-ink" : "text-danger-ink"}`}>
                   {aiOnline ? "online" : "offline"}
                 </span>
-              </div>
-              <button
+              </div>}
+              {!logisticsOnly && <button
                 onClick={handleSync}
                 disabled={syncing}
                 className="w-full flex items-center justify-between px-1.5 py-1.5 rounded-md text-[11px] transition-colors disabled:opacity-50"
@@ -1340,7 +1366,7 @@ export default function App() {
                 <span className="tabular-nums">
                   {lastSync ? new Date(lastSync).toLocaleTimeString() : "–"}
                 </span>
-              </button>
+              </button>}
 
               {/* Signed-in user, then the two session controls: collapse the rail and sign
                   out. Feedback used to hold the left slot; it has a Settings section of
@@ -1452,10 +1478,10 @@ export default function App() {
                     {dark ? <Sun size={14} strokeWidth={1.7} /> : <Moon size={14} strokeWidth={1.7} />}
                     <span>{dark ? "Light mode" : "Dark mode"}</span>
                   </button>
-                  <button onClick={() => { toggleSplit(); setFlyout(null); }} className={RAIL_MENU_ROW}>
+                  {!logisticsOnly && <button onClick={() => { toggleSplit(); setFlyout(null); }} className={RAIL_MENU_ROW}>
                     <Columns2 size={14} strokeWidth={1.7} />
                     <span>{splitTab ? "Close split view" : "Split view"}</span>
-                  </button>
+                  </button>}
                   {/* Two-step here too, in the one row the menu has room for: the first
                       click relabels it, the second signs out. */}
                   <button
@@ -1563,8 +1589,8 @@ export default function App() {
       </main>
 
       {showTour && <GettingStarted onDone={() => setShowTour(false)} />}
-      {quickLogOpen && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}
-      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
+      {quickLogOpen && !logisticsOnly && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}
+      {paletteOpen && !logisticsOnly && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
       {sharePanelIds && (
         <WhatsAppSharePanel

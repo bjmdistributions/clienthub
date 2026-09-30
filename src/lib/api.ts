@@ -778,6 +778,11 @@ export interface APItem {
   /** R-315: not owed to the supplier — Jack's own cost (freight/wire/other he pays
    *  himself, not billed by the supplier). */
   own_cost?: boolean;
+  /** R-400: 'shipping' for a live unpaid freight booking with a quote. It has no supplier
+   *  payment behind it, so nothing here can mark it paid: the amount paid is typed on the
+   *  booking. Every other item carries no kind. */
+  kind?: "shipping";
+  booking_id?: string;
 }
 export interface PayablesAging {
   summary: PayablesSummary;
@@ -1097,6 +1102,26 @@ export interface DealFlow {
   /** What a reschedule replaced, so a slipped date does not rewrite history. */
   pickup_date_prev?: string | null;
   expected_delivery_date_prev?: string | null;
+  /** R-400: the shipping leg as recorded at the last completion or resync. null on every deal
+   *  recorded before logistics, which is not the same as none: never read null as zero. */
+  shipping_cost?: number | null;
+  /** R-400, derived from the live freight bookings and the bank links. Read them tolerantly:
+   *  an older response has none of them. */
+  logistics_bookings?: number;
+  logistics_unpaid?: number;
+  logistics_paid?: number;
+  logistics_quoted?: number;
+  /** Least advanced status among the live bookings, '' when there are none. */
+  logistics_stage?: "" | "requested" | "booked" | "picked_up" | "delivered";
+  shipping_linked?: number;
+  freight_typed?: number;
+  /** True once the deal has a booking or a bank payment linked as shipping: the booking
+   *  then replaces the typed freight lines. */
+  shipping_mode?: boolean;
+  shipping_estimate?: number;
+  /** total_supplier_cost - freight_typed + shipping_estimate. What an open deal is expected
+   *  to cost. Equal to total_supplier_cost for a deal that does not use logistics. */
+  projected_cost?: number;
 }
 
 /** R-277: one Priority1 shipment, built from its tracking emails. `deal_flow_id` empty =
@@ -2648,9 +2673,14 @@ export interface DealReconciliation {
     fee_paired: number;
     refund_total: number;
     refund_in: number;
+    /** R-400: bank money linked as shipping, the leg's target, and whether it is met. */
+    shipping_paired?: number;
+    shipping_target?: number;
+    shipping_paid_paired?: boolean;
   };
   payment_received_paired: boolean;
   supplier_paid_paired: boolean;
+  shipping_paid_paired?: boolean;
   fully_reconciled: boolean;
 }
 export interface MoneyConfig {
@@ -2965,6 +2995,65 @@ function showPackingRequest<T>(method: string, path: string, body?: unknown): Pr
   return invoke<T>("show_packing_request", { method, path, body: body ?? null });
 }
 
+// ===== Logistics (R-400) =====
+// A freight booking is one truck. The server owns the rows (Logistics-only accounts read and
+// write them through `logistics_request`, which only reaches /api/logistics/*); a desktop that
+// holds the workspace also has them synced locally, which is what `list_freight_bookings` reads.
+export type FreightStatus = "requested" | "booked" | "picked_up" | "delivered" | "cancelled";
+export interface FreightTracking {
+  stage: string;
+  status: string;
+  carrier: string;
+  last_location: string;
+  last_update_at: string;
+}
+export interface FreightBooking {
+  id: string;
+  /** "L-" and six characters of the id. What a person quotes on the phone. */
+  code: string;
+  status: FreightStatus;
+  request_note: string;
+  pickup_name: string; pickup_address: string; pickup_date: string; pickup_window: string;
+  pickup_contact: string; pickup_phone: string; pickup_notes: string;
+  delivery_name: string; delivery_address: string; delivery_date: string; delivery_window: string;
+  delivery_contact: string; delivery_phone: string; delivery_notes: string; delivered_at: string;
+  carrier: string; broker: string; service: string; equipment: string;
+  bol: string; pro: string; pickup_number: string; reference: string; tracking_url: string;
+  driver_name: string; driver_phone: string; truck_number: string; trailer_number: string;
+  pallets: string; pieces: string; weight_lbs: string; freight_class: string;
+  dimensions: string; commodity: string; accessorials: string;
+  quoted_cost: number | null;
+  /** null = not paid yet. A number, zero included, is the exact amount the carrier charged. */
+  paid_amount: number | null;
+  paid_at: string; paid_method: string; paid_note: string; notes: string;
+  created_by_name: string; updated_by_name: string; created_at: string; updated_at: string;
+  /** Redacted values come back empty, never dropped: these say why a field is empty. */
+  can_see_names: boolean;
+  can_see_addresses: boolean;
+  can_see_deal: boolean;
+  tracking: FreightTracking | null;
+  /** Only for someone who may see deals. There is no deal_flow_id key for anyone else. */
+  deal: { id: string; invoice_number: string; client_name: string; stage: string } | null;
+}
+/** The fields a person can write. Only the ones present are saved. */
+export type FreightBookingPatch = Partial<Omit<FreightBooking,
+  "id" | "code" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |
+  "can_see_names" | "can_see_addresses" | "can_see_deal" | "tracking" | "deal"
+>> & { today?: string };
+export interface FreightPrefill {
+  pickup_name: string;
+  pickup_address: string;
+  delivery_name: string;
+  delivery_address: string;
+  pickup_options: { name: string; address: string }[];
+}
+
+// The Logistics screen rides one Tauri command too. It refuses any path outside /api/logistics
+// and rejects with the server's own sentence, which is written to be shown as it is.
+function logisticsRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return invoke<T>("logistics_request", { method, path, body: body ?? null });
+}
+
 // ===== API =====
 export const api = {
   // Clients
@@ -3211,8 +3300,8 @@ export const api = {
   recalcDealFromBank: (id: string) => invoke<any>("recalc_deal_from_bank", { id }),
   cleanupOrphanAllocations: () => invoke<number>("cleanup_orphan_allocations"),
   resyncAllCompletedDeals: () => invoke<number>("resync_all_completed_deals"),
-  setDealLinkNa: (id: string, noBuyer: boolean, noSupplier: boolean) =>
-    invoke<void>("set_deal_link_na", { id, noBuyer, noSupplier }),
+  setDealLinkNa: (id: string, noBuyer: boolean, noSupplier: boolean, noShipping?: boolean) =>
+    invoke<void>("set_deal_link_na", { id, noBuyer, noSupplier, noShipping }),
   setRefundDone: (id: string, done: boolean) => invoke<void>("set_refund_done", { id, done }),
   setDealPayoutIncluded: (id: string, included: boolean) => invoke<void>("set_deal_payout_included", { id, included }),
   updateDealCompletedAt: (id: string, date: string) =>
@@ -3272,8 +3361,37 @@ export const api = {
   // for a website-created account on a fresh device). See employees::login.
   login: (email: string, password: string) =>
     invoke<Me>("login", { email, password }),
+  // Logistics (R-400)
+  logistics: {
+    /** `includeDone` also returns delivered-and-paid and cancelled bookings. `dealFlowId` is
+     *  honoured only for someone who may see deals. */
+    list: (opts?: { includeDone?: boolean; dealFlowId?: string }) => {
+      const q: string[] = [];
+      if (opts?.includeDone) q.push("include_done=1");
+      if (opts?.dealFlowId) q.push(`deal_flow_id=${encodeURIComponent(opts.dealFlowId)}`);
+      return logisticsRequest<{ bookings: FreightBooking[] }>("GET", `/api/logistics/bookings${q.length ? `?${q.join("&")}` : ""}`);
+    },
+    get: (id: string) => logisticsRequest<FreightBooking>("GET", `/api/logistics/bookings/${encodeURIComponent(id)}`),
+    prefill: (dealFlowId: string) =>
+      logisticsRequest<FreightPrefill>("GET", `/api/logistics/prefill/${encodeURIComponent(dealFlowId)}`),
+    /** "Send to logistics": needs deal edit access. Names and addresses left out are prefilled. */
+    create: (dealFlowId: string, fields: FreightBookingPatch) =>
+      logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { deal_flow_id: dealFlowId, ...fields }),
+    /** "Add another truck": the deal, the places and the note carry over, nothing else. */
+    copy: (copyFrom: string) => logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { copy_from: copyFrom }),
+    update: (id: string, patch: FreightBookingPatch) =>
+      logisticsRequest<FreightBooking>("PATCH", `/api/logistics/bookings/${encodeURIComponent(id)}`, patch),
+    /** Archives it (deal edit access only). Logistics cancels with status "cancelled" instead. */
+    remove: (id: string) => logisticsRequest<unknown>("DELETE", `/api/logistics/bookings/${encodeURIComponent(id)}`),
+  },
+  /** The local read Jack's deal pages use: every non-archived booking, cancelled ones included. */
+  listFreightBookings: (dealFlowId?: string) =>
+    invoke<FreightBooking[]>("list_freight_bookings", { dealFlowId: dealFlowId ?? null }),
+
   // Team management (admin only)
-  listStaff: () => invoke<StaffMember[]>("list_staff"),
+  /** `pickers` leaves logistics-only accounts out (a person picker is for people who get
+   *  deals, emails or payouts). The Team screen calls it bare so it can still manage them. */
+  listStaff: (pickers?: boolean) => invoke<StaffMember[]>("list_staff", pickers ? { pickers: true } : {}),
   updateStaff: (id: string, fields: Partial<{ roleId: string; status: string; commissionPct: number; hidePayCuts: boolean; payType: string }>) =>
     invoke<void>("update_staff", { id, ...fields }),
 
@@ -3751,7 +3869,7 @@ export const api = {
   dealReconciliation: (dealFlowId: string) =>
     invoke<DealReconciliation>("deal_reconciliation", { dealFlowId }),
   reconciliationStatusAll: () =>
-    invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean }[]>("reconciliation_status_all"),
+    invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_paid_paired?: boolean; no_shipping_link?: boolean; shipping_missing?: boolean }[]>("reconciliation_status_all"),
   refundStatusAll: () =>
     invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number; done: boolean }[]>("refund_status_all"),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
