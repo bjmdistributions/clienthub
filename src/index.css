@@ -575,6 +575,11 @@ input, select, textarea { transition: border-color 0.14s ease, box-shadow 0.18s 
    styles. Default = Ecliptr orange (in :root). Dark variants brighten
    for the matte-black theme. Semantic + data-viz colours never change. */
 
+/* Orange (the default, so no data-accent) takes white text on its fill in dark mode too,
+   as it does in light (R-406). Scoped to orange: the other dark accents are pastel and keep
+   html.dark's near-black. Mono still wins - its block below has equal specificity, later. */
+html.dark:not([data-accent]) { --c-on-accent: 255 255 255; }
+
 /* Blue — the pre-orange default, kept as an explicit option. */
 html[data-accent="blue"] { --c-accent:37 99 235; --c-accent-hover:29 78 216;
   --color-primary:#2563EB; --color-primary-hover:#1D4ED8; --color-primary-light:#EFF6FF; --color-primary-glow:rgba(37,99,235,.18);

@@ -505,7 +505,7 @@ export default function ClientsView() {
           { label: "Total Clients",    value: summaryStats.total,                      color: "text-ink" },
           { label: "Active Customers", value: summaryStats.active,                     color: "text-success-ink" },
           { label: "Hot Leads",        value: summaryStats.hotLeads,                   color: "text-danger-ink" },
-          { label: "Total Revenue",    value: fmtAmount(summaryStats.revenue),          color: "text-accent" },
+          { label: "Total Revenue",    value: fmtAmount(summaryStats.revenue),          color: "text-ink" },
         ].map((s) => (
           <div key={s.label} className="bg-surface border border-line rounded-xl px-4 py-3.5">
             <p className="text-[12.5px] font-medium text-muted mb-1">{s.label}</p>

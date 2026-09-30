@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "clienthub"
-version = "0.16.110"
+version = "0.16.111"
 dependencies = [
  "anyhow",
  "async-trait",

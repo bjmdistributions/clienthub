@@ -28,11 +28,18 @@ interface StatusPillProps {
   title?: string;
 }
 
+// Computed classes rarely carry a border colour (invoice/quote status helpers are bg + text
+// only), and a bare `border` then falls back to Tailwind's gray-200 - a white box around the
+// pill in dark mode (R-405). So those get a transparent border. Only when they name none:
+// `border-transparent` is emitted AFTER the theme colours and would erase leadStatusColor's.
 export default function StatusPill({ children, tone = "neutral", className, title }: StatusPillProps) {
+  const cls = className
+    ? (className.includes("border-") ? className : `border-transparent ${className}`)
+    : TONES[tone];
   return (
     <span
       title={title}
-      className={`inline-flex items-center whitespace-nowrap flex-shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${className ?? TONES[tone]}`}
+      className={`inline-flex items-center whitespace-nowrap flex-shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${cls}`}
     >
       {children}
     </span>
