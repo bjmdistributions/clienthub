@@ -597,8 +597,11 @@ export default function App() {
       if (!btn || !nav || !nav.contains(btn)) { setIndicatorStyle((s) => ({ ...s, opacity: 0 })); return; }
       const navRect = nav.getBoundingClientRect();
       const btnRect = btn.getBoundingClientRect();
+      // The indicator is absolute INSIDE the scrolling nav, so it scrolls with the rows;
+      // the rects are viewport-relative, so add back how far the nav is scrolled or the
+      // bar lands that many pixels above the row (Analytics showing on Brief).
       setIndicatorStyle({
-        top: btnRect.top - navRect.top + btnRect.height / 2 - 10,
+        top: btnRect.top - navRect.top + nav.scrollTop + btnRect.height / 2 - 10,
         opacity: 1,
       });
     };

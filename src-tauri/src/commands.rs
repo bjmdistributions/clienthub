@@ -13719,6 +13719,176 @@ pub async fn analytics_reconciliation(start_date: String, end_date: String) -> R
     }))
 }
 
+// ═══ R-402: one category and one brand per closed deal ═══════════════════════════════
+// Analytics' Revenue by category / Revenue by brand and the screen that labels them. The
+// deals are the KPI band's own population (the `get_analytics_range` WHERE, survivors
+// only, refunds off the profit), so the rows of either card add back to the band's revenue
+// and net profit exactly. The server's `routes/deal_labels.rs` is the twin for the phone.
+
+struct LabelledDeal {
+    id: String,
+    day: String,
+    number: String,
+    buyer: String,
+    revenue: f64,
+    profit: f64,
+    products: Vec<String>,
+    label: crate::deal_label::Label,
+}
+
+/// Every closed deal, all time, oldest first (the order `label_all` learns in), labelled.
+/// Learning always reads every deal Jack labelled, whatever range the screen shows.
+fn labelled_deals(conn: &rusqlite::Connection) -> Result<Vec<LabelledDeal>, String> {
+    let sql = format!(
+        "SELECT df.id, COALESCE(date(df.completed_at),''), COALESCE(i.number,''), COALESCE(c.name,''), \
+                COALESCE(i.line_items_json,'[]'), COALESCE(df.name,''), COALESCE(df.gross_revenue,0), {np}, \
+                COALESCE(df.category,''), COALESCE(df.brand,''), \
+                COALESCE(CASE WHEN json_valid(c.metadata) THEN CAST(json_extract(c.metadata,'$.category') AS TEXT) END,'') \
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id LEFT JOIN clients c ON c.id=i.client_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
+         ORDER BY df.completed_at, df.id",
+        np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, String, String, String, String, f64, f64, String, String, String)> = stmt
+        .query_map([], |r| Ok((
+            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
+            r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?,
+        )))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut deals = Vec::with_capacity(rows.len());
+    let mut input = Vec::with_capacity(rows.len());
+    for (id, day, number, buyer, items, name, revenue, profit, category, brand, buyer_categories) in rows {
+        let mut products: Vec<String> = brief_products(&items).into_iter().map(|p| p.name).collect();
+        let name = name.trim();
+        if !name.is_empty() && !products.iter().any(|p| p.eq_ignore_ascii_case(name)) {
+            products.push(name.to_string());
+        }
+        input.push(crate::deal_label::Deal { lines: products.clone(), buyer_categories, category, brand });
+        deals.push((id, day, number, buyer, revenue, profit, products));
+    }
+    let labels = crate::deal_label::label_all(&input);
+    Ok(deals.into_iter().zip(labels).map(|((id, day, number, buyer, revenue, profit, products), label)| LabelledDeal {
+        id, day, number, buyer, revenue, profit, products, label,
+    }).collect())
+}
+
+/// Rows of one card: `(name, deals, revenue, profit, guessed)`, biggest revenue first. A deal
+/// counts in exactly one row.
+fn label_rows<'a>(deals: impl Iterator<Item = &'a LabelledDeal>, pick: impl Fn(&LabelledDeal) -> (&str, &str)) -> Vec<Value> {
+    let mut rows: Vec<(String, i64, f64, f64, i64)> = Vec::new();
+    for d in deals {
+        let (name, from) = pick(d);
+        let i = match rows.iter().position(|r| r.0 == name) {
+            Some(i) => i,
+            None => { rows.push((name.to_string(), 0, 0.0, 0.0, 0)); rows.len() - 1 }
+        };
+        rows[i].1 += 1;
+        rows[i].2 += d.revenue;
+        rows[i].3 += d.profit;
+        if from != "you" { rows[i].4 += 1; }
+    }
+    rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    rows.into_iter().map(|(name, deals, revenue, profit, guessed)| json!({
+        "name": name, "deals": deals, "revenue": to_cents(revenue), "profit": to_cents(profit), "guessed": guessed,
+    })).collect()
+}
+
+/// Revenue and profit by category and by brand for closed deals in `[start_date, end_date]`
+/// (inclusive, '' unbounded), the same range and population as `get_analytics_range`.
+#[tauri::command]
+pub async fn analytics_labels(start_date: String, end_date: String) -> Result<Value, String> {
+    let all = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        labelled_deals(&conn)?
+    };
+    let inside: Vec<&LabelledDeal> = all.iter()
+        .filter(|d| (start_date.is_empty() || d.day.as_str() >= start_date.as_str())
+            && (end_date.is_empty() || d.day.as_str() <= end_date.as_str()))
+        .collect();
+    let count = |f: &dyn Fn(&LabelledDeal) -> bool| inside.iter().filter(|d| f(d)).count();
+    Ok(json!({
+        "deals": inside.len(),
+        "revenue": to_cents(inside.iter().map(|d| d.revenue).sum()),
+        "profit": to_cents(inside.iter().map(|d| d.profit).sum()),
+        "categories": label_rows(inside.iter().copied(), |d| (d.label.category.as_str(), d.label.category_from)),
+        "brands": label_rows(inside.iter().copied(), |d| (d.label.brand.as_str(), d.label.brand_from)),
+        "uncategorized": count(&|d| d.label.category_from.is_empty()),
+        "categories_guessed": count(&|d| !d.label.category_from.is_empty() && d.label.category_from != "you"),
+        "unbranded": count(&|d| d.label.brand_from.is_empty()),
+        "brands_guessed": count(&|d| !d.label.brand_from.is_empty() && d.label.brand_from != "you"),
+    }))
+}
+
+/// Every closed deal with its category and brand (set or guessed, and why), newest first,
+/// plus the names already in use, for the labelling screen.
+#[tauri::command]
+pub async fn list_deal_labels() -> Result<Value, String> {
+    let (all, org_categories) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let all = labelled_deals(&conn)?;
+        let mut stmt = conn.prepare("SELECT label FROM categories ORDER BY sort_order").map_err(|e| e.to_string())?;
+        let org: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok()).collect();
+        (all, org)
+    };
+    let mut categories: Vec<String> = Vec::new();
+    let mut brands: Vec<String> = Vec::new();
+    for d in &all {
+        if !d.label.category_from.is_empty() && !categories.contains(&d.label.category) { categories.push(d.label.category.clone()); }
+        if !d.label.brand_from.is_empty() && !brands.contains(&d.label.brand) { brands.push(d.label.brand.clone()); }
+    }
+    for c in org_categories {
+        let key = crate::manifest_split::category_group_key(&c);
+        if !c.trim().is_empty() && !categories.iter().any(|x| crate::manifest_split::category_group_key(x) == key) {
+            categories.push(c);
+        }
+    }
+    categories.sort_by_key(|c| c.to_lowercase());
+    brands.sort_by_key(|b| b.to_lowercase());
+    let deals: Vec<Value> = all.iter().rev().map(|d| json!({
+        "id": d.id, "day": d.day, "number": d.number, "buyer": d.buyer,
+        "revenue": to_cents(d.revenue), "profit": to_cents(d.profit), "products": d.products,
+        "category": d.label.category, "category_from": d.label.category_from, "category_why": d.label.category_why,
+        "brand": d.label.brand, "brand_from": d.label.brand_from, "brand_why": d.label.brand_why,
+    })).collect();
+    Ok(json!({ "deals": deals, "categories": categories, "brands": brands }))
+}
+
+#[derive(Deserialize)]
+pub struct DealLabelInput {
+    pub id: String,
+    /// None leaves it as it is; "" clears it, so the deal is guessed again.
+    pub category: Option<String>,
+    pub brand: Option<String>,
+}
+
+/// Set the category and/or brand on one or more deals. Each row is its own synced upsert
+/// of just the columns that changed.
+#[tauri::command]
+pub async fn set_deal_labels(items: Vec<DealLabelInput>) -> Result<usize, String> {
+    let mut done = 0usize;
+    for it in items {
+        let mut cols = Map::new();
+        if let Some(c) = &it.category { cols.insert("category".into(), json!(c.trim())); }
+        if let Some(b) = &it.brand { cols.insert("brand".into(), json!(b.trim())); }
+        if cols.is_empty() { continue; }
+        let changed = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE deal_flows SET category=COALESCE(?1, category), brand=COALESCE(?2, brand) WHERE id=?3",
+                rusqlite::params![it.category.as_deref().map(str::trim), it.brand.as_deref().map(str::trim), it.id],
+            ).map_err(|e| e.to_string())?
+        };
+        if changed == 0 { continue; }
+        sync::record_upsert("deal_flows", &it.id, cols).map_err(|e| e.to_string())?;
+        done += 1;
+    }
+    Ok(done)
+}
+
 #[cfg(test)]
 mod analytics_refund_profit_tests {
     use super::DF_EFF_PROFIT_SQL;

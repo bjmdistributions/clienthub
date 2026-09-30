@@ -1582,6 +1582,31 @@ pub(crate) fn brand_group_name(spellings: &HashMap<String, usize>) -> String {
     brand_display(spellings, &known)
 }
 
+/// R-402: the brand each title names, read the way the split reads a line with no brand
+/// column, from the known brands, aliases and model names only (a brand guessed from a first
+/// word needs a whole sheet to count). One dictionary for all the titles. Used by
+/// `deal_label.rs` on a deal's invoice lines.
+pub(crate) fn brands_in_titles(titles: &[String]) -> Vec<Option<String>> {
+    let lines: Vec<Line> = titles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| Line {
+            row: i,
+            desc: t.clone(),
+            alt: String::new(),
+            qty: 1.0,
+            retail: 0.0,
+            sheet: None,
+            category: String::new(),
+            brand_raw: String::new(),
+            photo: false,
+        })
+        .collect();
+    let all: Vec<usize> = (0..lines.len()).collect();
+    let mut found = brands_from_titles(&lines, &all, false);
+    (0..lines.len()).map(|i| found.remove(&i)).collect()
+}
+
 /// Synonyms a category key folds to: "Footwear" and "Shoes" are one category, as are
 /// "Apparel", "Clothes" and "Clothing".
 const CATEGORY_SYNONYMS: &[(&str, &str)] = &[("footwear", "shoe"), ("sneaker", "shoe"), ("apparel", "clothing"),

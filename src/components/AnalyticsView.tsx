@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api, AnalyticsRange, AnalyticsMonth, AnalyticsReconciliation, ReconRow, AnalyticsPace,
-  DashboardStats, FinancialsOverview, BuyerTier, Client,
+  DashboardStats, FinancialsOverview, BuyerTier, Client, AnalyticsLabels, LabelRow,
 } from "../lib/api";
 import { regionRollup, toRows } from "./globe/places";
 import { fmtAmount, fmtCompactCurrency, localDay, parseLocalDay } from "../lib/format";
@@ -14,6 +14,7 @@ import {
 import TierBadge from "./TierBadge";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
+import DealLabelsModal, { LabelFocus } from "./DealLabelsModal";
 
 // ─── Theme-aware chart palette (R-319: Apple system colours) ──────
 // Every colour on this screen is read through a CSS token, so light, dark and the two
@@ -118,6 +119,39 @@ function usePalette() {
 // doing that at once is most of what "slow and laggy" was. Data is drawn, not performed.
 const STILL = { isAnimationActive: false } as const;
 
+// ─── R-403: translucent gradient fills ───────────────────────────
+// Jack, 2026-09-30: "the solid color look stale. the liquid glass transparent gradient
+// looks really clean as shown on margin distribution." So a bar is its hue as a gradient
+// from faint to strong, never a flat slab. The hue still means what it meant (profit,
+// loss, revenue, a categorical slot); only the fill changes. Lines stay solid: a line is
+// read by its edge. HTML bars use `glassBar` / `glassSeg`; SVG bars use `<GlassFill>` in
+// the chart's <defs> and fill with `url(#id)`.
+function withAlpha(c: string, a: number): string {
+  const m = c.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/);
+  if (m) return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${a})`;
+  const h = c.match(/^#([0-9a-f]{6})$/i);
+  if (h) {
+    const n = parseInt(h[1], 16);
+    return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+  }
+  return c;
+}
+/** A bar that grows to the right: faint where it starts, strong where it ends. */
+const glassBar = (c: string) => `linear-gradient(90deg, ${withAlpha(c, 0.3)}, ${withAlpha(c, 0.9)})`;
+/** A segment or a swatch: strong at the top, softer below, like light through glass. */
+const glassSeg = (c: string) => `linear-gradient(180deg, ${withAlpha(c, 0.92)}, ${withAlpha(c, 0.5)})`;
+/** An SVG gradient for a column (strong at its top) or a horizontal bar (strong at its end). */
+/** `down` is a column that hangs below zero (a loss month): strong at its bottom tip. */
+function GlassFill({ id, color, horizontal, down }: { id: string; color: string; horizontal?: boolean; down?: boolean }) {
+  const [from, to] = horizontal || down ? [0.35, 0.92] : [0.92, 0.32];
+  return (
+    <linearGradient id={id} x1="0" y1="0" x2={horizontal ? "1" : "0"} y2={horizontal ? "0" : "1"}>
+      <stop offset="0%" stopColor={color} stopOpacity={from} />
+      <stop offset="100%" stopColor={color} stopOpacity={to} />
+    </linearGradient>
+  );
+}
+
 // ─── Deferred mount ───────────────────────────────────────────────
 // A panel below the fold still costs a ResponsiveContainer, its ResizeObserver and a
 // recharts layout pass before anyone has scrolled to it. This mounts its children the
@@ -206,6 +240,12 @@ export default function AnalyticsView() {
   // The reconciliation table can run to hundreds of rows. It renders the first 25 until
   // asked for the rest, which is the difference between one layout pass and hundreds.
   const [reconAll, setReconAll] = useState(false);
+  // R-402: revenue and profit by category and by brand, and the screen that labels deals.
+  // Loaded on its own, like the reconciliation: a failure here never blanks the page.
+  const [labels, setLabels] = useState<AnalyticsLabels | null>(null);
+  const [catMetric, setCatMetric] = useState<"revenue" | "profit">("revenue");
+  const [brandMetric, setBrandMetric] = useState<"revenue" | "profit">("revenue");
+  const [labelling, setLabelling] = useState<{ focus: LabelFocus | null } | null>(null);
 
   // The KPI count-ups are gone (R-319). Four of them re-rendered this entire view on
   // every animation frame — and this view owns thirteen charts, so each frame was
@@ -217,6 +257,7 @@ export default function AnalyticsView() {
     // Reconciliation is its own read and is allowed to fail on its own: it must never
     // be the reason the rest of the screen shows nothing.
     api.analyticsReconciliation(start, end).then(setRecon).catch(() => setRecon(null));
+    api.analyticsLabels(start, end).then(setLabels).catch(() => setLabels(null));
     setTimeout(() => setBars(true), 120);
   };
 
@@ -250,6 +291,7 @@ export default function AnalyticsView() {
       api.financialsOverview().then(setMoney).catch(() => {});
       api.listClientsFiltered({}).then(setClients).catch(() => setClients(null));
       api.analyticsReconciliation(startDate, endDate).then(setRecon).catch(() => setRecon(null));
+      api.analyticsLabels(startDate, endDate).then(setLabels).catch(() => setLabels(null));
     } catch {}
     setLoading(false);
   };
@@ -359,7 +401,6 @@ export default function AnalyticsView() {
   }, {} as Record<string, number>);
   const totalCl  = tiers.length;
   const totalSV  = stats.invoice_status_breakdown.reduce((s, x) => s + x.total, 0);
-  const cats     = stats.category_breakdown.filter((c) => c.client_count > 0 && c.revenue > 0);
 
   const overheadTotal = range.total_shipping + range.total_fees;
   const rn = range.repeat_new;
@@ -376,6 +417,7 @@ export default function AnalyticsView() {
   // `analytics-stage` is the wash the glass samples: without something behind it, a
   // translucent panel over a flat page is just a tint.
   return (
+    <>
     <div className="space-y-5 analytics-stage">
 
       {/* Header */}
@@ -571,6 +613,11 @@ export default function AnalyticsView() {
             <ResponsiveContainer width="100%" height={300}>
               <ComposedChart data={trend} barCategoryGap="34%" barGap={3}
                 margin={{ top: 4, right: 4, left: -12, bottom: 0 }}>
+                <defs>
+                  <GlassFill id="an-g-rev" color={revenueClr} />
+                  <GlassFill id="an-g-profit" color={P.MARK.profit} />
+                  <GlassFill id="an-g-loss" color={P.MARK.loss} down />
+                </defs>
                 <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
                 <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
                 <YAxis tick={AX} axisLine={false} tickLine={false}
@@ -581,12 +628,12 @@ export default function AnalyticsView() {
                     forecast on its head. What it will finish at is on the pace panel. */}
                 <Bar dataKey="revenue" name="Revenue" radius={[5, 5, 0, 0]} maxBarSize={38} {...STILL}>
                   {trend.map((m, i) => (
-                    <Cell key={i} fill={revenueClr} fillOpacity={m.projected ? 0.42 : 1} />
+                    <Cell key={i} fill="url(#an-g-rev)" fillOpacity={m.projected ? 0.42 : 1} />
                   ))}
                 </Bar>
                 <Bar dataKey="profit" name="Profit" radius={[5, 5, 0, 0]} maxBarSize={38} {...STILL}>
                   {trend.map((m, i) => (
-                    <Cell key={i} fill={m.profit >= 0 ? P.MARK.profit : P.MARK.loss}
+                    <Cell key={i} fill={m.profit >= 0 ? "url(#an-g-profit)" : "url(#an-g-loss)"}
                       fillOpacity={m.projected ? 0.42 : 1} />
                   ))}
                 </Bar>
@@ -810,13 +857,17 @@ export default function AnalyticsView() {
               {trend.length > 0 ? (
                 <ResponsiveContainer width="100%" height={170}>
                   <BarChart data={trend} margin={{ top: 4, right: 4, left: -12, bottom: 0 }} barCategoryGap="34%">
+                    <defs>
+                      <GlassFill id="an-g-ship" color={P.cat[0]} />
+                      <GlassFill id="an-g-fees" color={P.cat[1]} />
+                    </defs>
                     <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
                     <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
                     <YAxis tick={AX} axisLine={false} tickLine={false} width={54}
                       tickFormatter={(v: number) => fmtCompactCurrency(v)} />
                     <Tooltip {...TT} formatter={(v: any, n: any) => [signed(Number(v)), n]} />
-                    <Bar dataKey="shipping" name="Shipping" stackId="oh" fill={P.cat[0]} maxBarSize={34} {...STILL} />
-                    <Bar dataKey="fees" name="Fees" stackId="oh" fill={P.cat[1]} maxBarSize={34} radius={[5, 5, 0, 0]} {...STILL} />
+                    <Bar dataKey="shipping" name="Shipping" stackId="oh" fill="url(#an-g-ship)" maxBarSize={34} {...STILL} />
+                    <Bar dataKey="fees" name="Fees" stackId="oh" fill="url(#an-g-fees)" maxBarSize={34} radius={[5, 5, 0, 0]} {...STILL} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : <Blank h={170} text="No overhead recorded in this range" />}
@@ -892,7 +943,7 @@ export default function AnalyticsView() {
               <div className="mt-4 space-y-2">
                 {range.top_revenue_clients.map((c, i) => (
                   <div key={c.name} className="flex items-center gap-2.5 min-w-0">
-                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: P.cat[i] }} />
+                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: glassSeg(P.cat[i]) }} />
                     <span className="text-[12.5px] text-ink truncate flex-1 min-w-0">{c.name}</span>
                     <span className="text-[11px] text-muted tabular-nums flex-shrink-0 w-11 text-right">
                       {c.pct.toFixed(1)}%
@@ -963,7 +1014,17 @@ export default function AnalyticsView() {
       </Defer>
 
       <Defer h={360}>
-      {/* ── Supplier spend + category revenue ──────────────────── */}
+      {/* ── R-402: what sells, by category and by brand ─────────── */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <LabelCard kind="category" labels={labels} metric={catMetric} setMetric={setCatMetric}
+          rangeLabel={rangeLabel} bars={bars} P={P} onOpen={(focus) => setLabelling({ focus })} />
+        <LabelCard kind="brand" labels={labels} metric={brandMetric} setMetric={setBrandMetric}
+          rangeLabel={rangeLabel} bars={bars} P={P} onOpen={(focus) => setLabelling({ focus })} />
+      </div>
+      </Defer>
+
+      <Defer h={360}>
+      {/* ── Supplier spend + where the profit is (by state or country) ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <Card title="Where the money goes"
           sub={`${range.supplier_concentration.supplier_count} supplier${range.supplier_concentration.supplier_count !== 1 ? "s" : ""} paid in ${rangeLabel}`}>
@@ -980,7 +1041,7 @@ export default function AnalyticsView() {
               <div className="mt-4 space-y-2">
                 {range.top_suppliers_range.map((s, i) => (
                   <div key={s.name} className="flex items-center gap-2.5 min-w-0">
-                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: P.cat[i] }} />
+                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: glassSeg(P.cat[i]) }} />
                     <span className="text-[12.5px] text-ink truncate flex-1 min-w-0">{s.name}</span>
                     <span className="text-[11px] text-muted tabular-nums flex-shrink-0">
                       {s.deal_count} deal{s.deal_count !== 1 ? "s" : ""}
@@ -995,86 +1056,50 @@ export default function AnalyticsView() {
           ) : <Blank h={230} text="No supplier payments in this range" />}
         </Card>
 
-        <Card title="Revenue by category" sub="Client category · all time">
-          {cats.length > 0 ? (
-            <div className="space-y-3.5 max-h-[300px] overflow-y-auto pr-1">
-              {(() => {
-                const maxCat = Math.max(...cats.map((c) => c.revenue), 1);
-                return cats.map((c, i) => (
-                  <div key={c.category} className="min-w-0">
-                    <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
-                      <span className="text-[12px] font-medium text-ink-2 truncate min-w-0">{c.category}</span>
-                      <div className="flex items-center gap-2.5 flex-shrink-0">
-                        <span className="text-[11px] text-muted tabular-nums">
-                          {c.client_count} client{c.client_count !== 1 ? "s" : ""}
-                        </span>
-                        <span className="text-[12px] font-semibold text-ink tabular-nums">{fmtAmount(c.revenue)}</span>
+        {regions && (
+        <Card title="Where the profit is"
+          sub={`Client profit by state, or by country outside the US · all time${regions.unplaced ? ` · ${regions.unplaced} client${regions.unplaced !== 1 ? "s" : ""} with no state or country` : ""}`}>
+          {regions.list.length > 0 ? (
+            <>
+              <div className="space-y-3.5">
+                {(() => {
+                  const top = Math.max(1, ...regions.list.map((r) => Math.abs(r.profit)));
+                  return regions.list.slice(0, 10).map((r, i) => (
+                    <div key={r.region} className="min-w-0">
+                      <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
+                        <span className="text-[12px] font-medium text-ink-2 truncate min-w-0">{r.label}</span>
+                        <div className="flex items-center gap-2.5 flex-shrink-0">
+                          <span className="text-[11px] text-muted tabular-nums">
+                            {r.count} client{r.count !== 1 ? "s" : ""}
+                          </span>
+                          <span className="text-[12px] font-semibold tabular-nums" style={{ color: r.profit < 0 ? CLR.rose : undefined }}>
+                            {fmtAmount(r.profit)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full transition-all duration-700 ease-out"
+                          style={{
+                            width: bars ? `${(Math.abs(r.profit) / top) * 100}%` : "0%",
+                            background: glassBar(r.profit < 0 ? CLR.rose : i < P.cat.length ? P.cat[i] : P.neutral),
+                            transitionDelay: `${i * 55}ms`,
+                          }} />
                       </div>
                     </div>
-                    <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all duration-700 ease-out"
-                        style={{
-                          width: bars ? `${(c.revenue / maxCat) * 100}%` : "0%",
-                          // Never cycle the categorical slots: past the sixth, a row
-                          // is "other" and wears the neutral ink instead of a repeat hue.
-                          backgroundColor: i < P.cat.length ? P.cat[i] : P.neutral,
-                          transitionDelay: `${i * 55}ms`,
-                        }} />
-                    </div>
-                  </div>
-                ));
-              })()}
-            </div>
-          ) : <Blank h={230} text="No category revenue yet" />}
+                  ));
+                })()}
+              </div>
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "globe" }))}
+                className="mt-5 text-[12px] font-medium text-accent hover:underline">
+                See them on the globe
+              </button>
+            </>
+          ) : <Blank h={160} text="No client has a state or country yet" />}
         </Card>
+        )}
       </div>
       </Defer>
-
-      {regions && (
-      <Defer h={300}>
-      {/* ── Where the profit is (by state or country) ─────────── */}
-      <Card title="Where the profit is"
-        sub={`Client profit by state, or by country outside the US · all time${regions.unplaced ? ` · ${regions.unplaced} client${regions.unplaced !== 1 ? "s" : ""} with no state or country` : ""}`}>
-        {regions.list.length > 0 ? (
-          <>
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-8 gap-y-3.5">
-              {(() => {
-                const top = Math.max(1, ...regions.list.map((r) => Math.abs(r.profit)));
-                return regions.list.slice(0, 10).map((r, i) => (
-                  <div key={r.region} className="min-w-0">
-                    <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
-                      <span className="text-[12px] font-medium text-ink-2 truncate min-w-0">{r.label}</span>
-                      <div className="flex items-center gap-2.5 flex-shrink-0">
-                        <span className="text-[11px] text-muted tabular-nums">
-                          {r.count} client{r.count !== 1 ? "s" : ""}
-                        </span>
-                        <span className="text-[12px] font-semibold tabular-nums" style={{ color: r.profit < 0 ? CLR.rose : undefined }}>
-                          {fmtAmount(r.profit)}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all duration-700 ease-out"
-                        style={{
-                          width: bars ? `${(Math.abs(r.profit) / top) * 100}%` : "0%",
-                          backgroundColor: r.profit < 0 ? CLR.rose : i < P.cat.length ? P.cat[i] : P.neutral,
-                          transitionDelay: `${i * 55}ms`,
-                        }} />
-                    </div>
-                  </div>
-                ));
-              })()}
-            </div>
-            <button
-              onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "globe" }))}
-              className="mt-5 text-[12px] font-medium text-accent hover:underline">
-              See them on the globe
-            </button>
-          </>
-        ) : <Blank h={160} text="No client has a state or country yet" />}
-      </Card>
-      </Defer>
-      )}
 
       <Defer h={280}>
       {/* ── What went wrong + standouts ────────────────────────── */}
@@ -1140,12 +1165,15 @@ export default function AnalyticsView() {
               <div className="min-w-0">
                 <ResponsiveContainer width="100%" height={180}>
                   <PieChart>
+                    <defs>
+                      {Object.entries(TIER_CLR).map(([t, c]) => <GlassFill key={t} id={`an-g-tier-${t}`} color={c} />)}
+                    </defs>
                     <Pie
                       data={TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => ({ name: TIER_NAME[t], value: tierMap[t] }))}
                       dataKey="value" nameKey="name" cx="50%" cy="50%"
                       innerRadius={48} outerRadius={78} paddingAngle={2} stroke="none" {...STILL}>
                       {TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => (
-                        <Cell key={t} fill={TIER_CLR[t]} />
+                        <Cell key={t} fill={`url(#an-g-tier-${t})`} />
                       ))}
                     </Pie>
                     <Tooltip {...TT} formatter={(v: any, n: any) => [`${v} client${v !== 1 ? "s" : ""}`, n]} />
@@ -1183,7 +1211,7 @@ export default function AnalyticsView() {
                   <div key={s.status} className="min-w-0">
                     <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: clr }} />
+                        <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: glassSeg(clr) }} />
                         <span className="text-[12px] text-ink-2 capitalize truncate">{s.status.replace("_", " ")}</span>
                         <StatusPill>{s.count}</StatusPill>
                       </div>
@@ -1193,7 +1221,7 @@ export default function AnalyticsView() {
                     </div>
                     <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
                       <div className="h-full rounded-full transition-all duration-700 ease-out"
-                        style={{ width: bars ? `${pct}%` : "0%", backgroundColor: clr, transitionDelay: `${i * 75}ms` }} />
+                        style={{ width: bars ? `${pct}%` : "0%", background: glassBar(clr), transitionDelay: `${i * 75}ms` }} />
                     </div>
                   </div>
                 );
@@ -1362,6 +1390,14 @@ export default function AnalyticsView() {
       </Defer>
 
     </div>
+    {/* Outside the stage: `isolation: isolate` there would trap the modal's z-index. */}
+    {labelling && (
+      <DealLabelsModal focus={labelling.focus} onClose={(changed) => {
+        setLabelling(null);
+        if (changed) api.analyticsLabels(startDate, endDate).then(setLabels).catch(() => {});
+      }} />
+    )}
+    </>
   );
 }
 
@@ -1373,6 +1409,109 @@ export default function AnalyticsView() {
 // behind a chart's plotting area or a dense table — blur under data costs legibility and
 // costs paint time, and paint time is half of what "slow and laggy" was. Panels that
 // hold charts or tables stay on the solid surface token.
+// ─── R-402: what sells, by category or by brand ──────────────────
+// One row per category (or brand). Every closed deal in the range counts in exactly one row,
+// so the rows add back to the KPI band's revenue and net profit. The toggle changes what the
+// rows are measured and sorted by, never which rows exist. A row keeps its colour when the
+// toggle flips (slots follow revenue rank); a loss wears the loss hue; Uncategorized and
+// No brand are not categories and wear the neutral ink. Any row opens the labelling screen
+// on its own deals.
+function LabelCard({ kind, labels, metric, setMetric, rangeLabel, bars, P, onOpen }: {
+  kind: "category" | "brand";
+  labels: AnalyticsLabels | null;
+  metric: "revenue" | "profit";
+  setMetric: (m: "revenue" | "profit") => void;
+  rangeLabel: string;
+  bars: boolean;
+  P: ReturnType<typeof usePalette>;
+  onOpen: (focus: LabelFocus | null) => void;
+}) {
+  const noun = kind === "category" ? "category" : "brand";
+  const none = kind === "category" ? "Uncategorized" : "No brand";
+  const rows: LabelRow[] = labels ? (kind === "category" ? labels.categories : labels.brands) : [];
+  const slotOf = new Map<string, number>();
+  rows.filter((r) => r.name !== none).forEach((r, i) => slotOf.set(r.name, i));
+  const sorted = [...rows].sort((a, b) => (b[metric] - a[metric]) || a.name.localeCompare(b.name));
+  const top = Math.max(1, ...sorted.map((r) => Math.abs(r[metric])));
+  const missing = labels ? (kind === "category" ? labels.uncategorized : labels.unbranded) : 0;
+  const guessed = labels ? (kind === "category" ? labels.categories_guessed : labels.brands_guessed) : 0;
+  const n = labels?.deals ?? 0;
+  return (
+    <Card
+      title={`${metric === "revenue" ? "Revenue" : "Profit"} by ${noun}`}
+      sub={labels ? `${n} closed deal${n !== 1 ? "s" : ""} in ${rangeLabel}, one ${noun} each` : `Closed deals in ${rangeLabel}`}
+      right={
+        <div className="flex items-center gap-1 bg-surface-2 rounded-lg p-0.5">
+          {(["revenue", "profit"] as const).map((m) => (
+            <button key={m} onClick={() => setMetric(m)}
+              className={`px-2.5 h-6 rounded-md text-[11.5px] font-medium capitalize transition-colors ${
+                metric === m ? "bg-surface text-ink ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
+              {m}
+            </button>
+          ))}
+        </div>
+      }
+    >
+      {sorted.length > 0 ? (
+        <>
+          <div className="space-y-0.5 max-h-[344px] overflow-y-auto -mx-2 px-0.5">
+            {sorted.map((r, i) => {
+              const isNone = r.name === none;
+              const slot = slotOf.get(r.name) ?? 99;
+              const value = r[metric];
+              const clr = value < 0 ? P.MARK.loss : isNone || slot >= P.cat.length ? P.neutral : P.cat[slot];
+              const margin = r.revenue > 0 ? (r.profit / r.revenue) * 100 : null;
+              return (
+                <button key={r.name} onClick={() => onOpen({ kind, name: r.name })}
+                  title={`Open the ${r.deals} deal${r.deals !== 1 ? "s" : ""} in ${r.name}`}
+                  className="block w-full text-left rounded-lg px-2 py-1.5 hover:bg-surface-2 transition-colors duration-[130ms] min-w-0">
+                  <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
+                    <span className={`text-[12px] font-medium truncate min-w-0 ${isNone ? "text-muted" : "text-ink-2"}`}>{r.name}</span>
+                    <div className="flex items-center gap-2.5 flex-shrink-0">
+                      {r.guessed > 0 && !isNone && (
+                        <span className="text-[11px] text-faint tabular-nums">{r.guessed} guessed</span>
+                      )}
+                      <span className="text-[11px] text-muted tabular-nums">
+                        {r.deals} deal{r.deals !== 1 ? "s" : ""}
+                      </span>
+                      {metric === "profit" && (
+                        <span className="text-[11px] text-muted tabular-nums whitespace-nowrap w-[84px] text-right">
+                          {margin === null ? "" : `${margin.toFixed(1)}% margin`}
+                        </span>
+                      )}
+                      <span className="text-[12px] font-semibold tabular-nums w-[92px] text-right"
+                        style={{ color: metric === "profit" ? (value < 0 ? P.CLR.rose : P.CLR.emerald) : "rgb(var(--c-ink))" }}>
+                        {signed(value)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-700 ease-out"
+                      style={{
+                        width: bars ? `${(Math.abs(value) / top) * 100}%` : "0%",
+                        background: glassBar(clr),
+                        transitionDelay: `${Math.min(i, 12) * 45}ms`,
+                      }} />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <p className="text-[11.5px] text-muted min-w-0">
+              {missing > 0 ? `${missing} deal${missing !== 1 ? "s" : ""} with no ${noun} yet` : `Every deal has a ${noun}`}
+              {guessed > 0 ? `, ${guessed} guessed and not confirmed` : ""}.
+            </p>
+            <button onClick={() => onOpen(null)} className="text-[12px] font-medium text-accent hover:underline flex-shrink-0">
+              Identify {kind === "category" ? "categories" : "brands"}
+            </button>
+          </div>
+        </>
+      ) : <Blank h={230} text={labels ? "No closed deals in this range" : "Reading your deals"} />}
+    </Card>
+  );
+}
+
 function Card({ title, sub, right, children, glass }: {
   title: string; sub?: string; right?: React.ReactNode; children: React.ReactNode; glass?: boolean;
 }) {
@@ -1415,7 +1554,7 @@ function Stat({ label, value, hint, color, swatch, size = "sm" }: {
   return (
     <div className="min-w-0">
       <div className="flex items-center gap-2 min-w-0">
-        {swatch && <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: swatch }} />}
+        {swatch && <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: glassSeg(swatch) }} />}
         <span className="text-[12.5px] font-medium text-muted truncate">{label}</span>
       </div>
       <div className={`${size === "md" ? "text-[20px]" : "text-[18px]"} font-bold tabular-nums mt-1.5 leading-none truncate`}
@@ -1461,7 +1600,7 @@ function ShareBar({ parts, total, otherColor, animate }: {
           title={`${s.name} · ${((s.value / total) * 100).toFixed(1)}%`}
           style={{
             width: animate ? `${(s.value / total) * 100}%` : "0%",
-            backgroundColor: s.color,
+            background: glassSeg(s.color),
             transitionDelay: `${i * 70}ms`,
           }} />
       ))}
@@ -1610,7 +1749,7 @@ function Legend({ color, label, dashed, onClick, active }: {
       <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
         style={dashed
           ? { border: `1.5px dashed ${color}` }
-          : { backgroundColor: color }} />
+          : { background: glassSeg(color) }} />
       <span className={`text-[11px] whitespace-nowrap ${active ? "text-ink font-medium" : "text-muted"}`}>{label}</span>
     </>
   );

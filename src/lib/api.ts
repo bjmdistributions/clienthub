@@ -1846,6 +1846,61 @@ export interface ReconDeal {
   flags: string[];
 }
 
+// R-402: one category and one brand per closed deal. `*_from` says where a label came
+// from: "you" (set on the deal), "learned" (words on deals you labelled), "reader" (the
+// manifest reader on the product lines), "buyer" (the buyer's only category), "" (nothing).
+export type LabelFrom = "you" | "learned" | "reader" | "buyer" | "";
+
+export interface LabelRow {
+  name: string;
+  deals: number;
+  revenue: number;
+  profit: number;
+  /** Deals in this row whose label is a guess, not set by you. */
+  guessed: number;
+}
+
+export interface AnalyticsLabels {
+  deals: number;
+  revenue: number;
+  profit: number;
+  categories: LabelRow[];
+  brands: LabelRow[];
+  uncategorized: number;
+  categories_guessed: number;
+  unbranded: number;
+  brands_guessed: number;
+}
+
+export interface DealLabel {
+  id: string;
+  day: string;
+  number: string;
+  buyer: string;
+  revenue: number;
+  profit: number;
+  products: string[];
+  category: string;
+  category_from: LabelFrom;
+  category_why: string;
+  brand: string;
+  brand_from: LabelFrom;
+  brand_why: string;
+}
+
+export interface DealLabelList {
+  deals: DealLabel[];
+  categories: string[];
+  brands: string[];
+}
+
+/** `undefined` leaves a field as it is; "" clears it so the deal is guessed again. */
+export interface DealLabelInput {
+  id: string;
+  category?: string;
+  brand?: string;
+}
+
 export interface AnalyticsReconciliation {
   bridge: ReconRow[];
   /** Largest absolute drift across the bridge's subtotals, in cents. */
@@ -3902,6 +3957,10 @@ export const api = {
   getAnalyticsRange: (startDate: string, endDate: string) => invoke<AnalyticsRange>("get_analytics_range", { startDate, endDate }),
   analyticsReconciliation: (startDate: string, endDate: string) =>
     invoke<AnalyticsReconciliation>("analytics_reconciliation", { startDate, endDate }),
+  analyticsLabels: (startDate: string, endDate: string) =>
+    invoke<AnalyticsLabels>("analytics_labels", { startDate, endDate }),
+  listDealLabels: () => invoke<DealLabelList>("list_deal_labels"),
+  setDealLabels: (items: DealLabelInput[]) => invoke<number>("set_deal_labels", { items }),
   getDashboardPrefs: () => invoke<{ true_net: boolean }>("get_dashboard_prefs"),
   setDashboardPrefs: (trueNet: boolean) => invoke<void>("set_dashboard_prefs", { trueNet }),
   getDealsForSupplier: (supplierId: string) => invoke<any[]>("list_deals_for_supplier", { supplierId }),
