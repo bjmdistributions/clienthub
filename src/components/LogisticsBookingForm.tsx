@@ -493,10 +493,13 @@ export default function LogisticsBookingForm({
         <div className="border-t border-line bg-surface px-6 py-3 flex-shrink-0 space-y-2">
           {error && <div className="text-[12px] text-danger-ink" role="alert">{error}</div>}
           <div className="flex items-center gap-2 flex-wrap">
+            {/* While the team fills the freight in, the team adds the trucks (the logistics person could not fill a new one). */}
+            {!freightLocked && (
             <button type="button" onClick={addTruck}
               className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors">
               <Plus size={13} /> Add another truck
             </button>
+            )}
             {full && (
               <>
                 <button type="button" onClick={openDeal}

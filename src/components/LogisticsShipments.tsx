@@ -44,6 +44,8 @@ function Trucks({ d }: { d: ShipmentDeal }) {
 }
 
 function Surplus({ d }: { d: ShipmentDeal }) {
+  // A deal whose trucks were all cancelled waits on nothing.
+  if (d.trucks.length > 0 && d.trucks.every((t) => t.status === "cancelled")) return <span className="text-[12px] text-muted">Cancelled</span>;
   if (d.surplus == null) return <span className="text-[12px] text-muted">Waiting on the amount paid</span>;
   return <span className={`tabular-nums font-semibold ${d.surplus < -0.005 ? "text-danger-ink" : "text-ink"}`}>{signed(d.surplus)}</span>;
 }

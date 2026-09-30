@@ -405,7 +405,10 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
               )}
               {quoted > 0.005 && <Row label="Quoted, not paid yet" value={fmtAmount(quoted)} />}
               {charged.amount > 0.005 && (mode || linked > 0.005 || typedTotal > 0.005) && (
-                <Row label="Shipping profit" value={fmtSigned(pay ? pay.surplus : charged.amount - shippingEstimateOf(flow))} />
+                // The surplus is known only once every live truck has its amount paid (R-415), as on the phone.
+                (pay ? !pay.pending : (flow.logistics_unpaid ?? 0) === 0)
+                  ? <Row label="Shipping profit" value={fmtSigned(pay ? pay.surplus : charged.amount - shippingEstimateOf(flow))} />
+                  : <Row label="Shipping profit" value="Waiting on the amount paid" />
               )}
               {pay && (
                 pay.rule === "tracked"
