@@ -296,6 +296,19 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
                 {fmtAmount(flow.total_supplier_cost)}
               </span>
             </div>
+            {/* R-400: shipping is its own leg of the recorded cost */}
+            <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
+              <span className="text-[11px] text-muted font-medium">Shipping</span>
+              <span className="text-[12px] font-bold text-ink tabular-nums">
+                {fmtAmount(flow.shipping_cost ?? 0)}
+              </span>
+            </div>
+            <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
+              <span className="text-[11px] text-muted font-medium">Total cost recorded</span>
+              <span className="text-[12px] font-bold text-ink tabular-nums">
+                {fmtAmount(flow.total_cost)}
+              </span>
+            </div>
           </div>
         </div>
       )}

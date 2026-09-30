@@ -15,6 +15,9 @@ import { toast } from "./Toast";
 // ── shared store ─────────────────────────────────────────────────────────────
 let cache: Shipment[] = [];
 let signature = "";
+// R-400: deals with a live freight booking marked delivered by whoever does the logistics.
+let bookingDelivered: ReadonlySet<string> = new Set();
+let bookingSig = "";
 let listening = false;
 const subs = new Set<() => void>();
 // R-279: Priority1 can move a deal's dates, so a screen showing those dates re-reads when
@@ -41,16 +44,33 @@ export function useShipmentChanges(onChange: () => void) {
   }, [onChange]);
 }
 
+/** R-400: the local read of the freight bookings, reduced to the deals that have a live
+ *  delivered one. Cancelled rows are not live. A failure keeps what was there. */
+export async function refreshBookingDeliveries() {
+  try {
+    const rows = await api.listFreightBookings();
+    const ids = rows.filter((b) => b.status === "delivered" && b.deal?.id).map((b) => b.deal!.id).sort();
+    const sig = ids.join("|");
+    if (sig === bookingSig) return;
+    bookingSig = sig;
+    bookingDelivered = new Set(ids);
+    subs.forEach((f) => f());
+  } catch { /* the table arrives with the migration; an older DB just shows nothing */ }
+}
+
+function refreshAll() { refreshShipments(); refreshBookingDeliveries(); }
+
 function subscribe(f: () => void) {
   subs.add(f);
   if (!listening) {
     listening = true;
-    refreshShipments();
-    // A new Priority1 email or a link made on the phone lands through sync.
-    listen("netsync-applied", () => refreshShipments()).catch(() => {});
+    refreshAll();
+    // A new Priority1 email or a link made on the phone lands through sync, and so does a
+    // booking the logistics person marks delivered.
+    listen("netsync-applied", () => refreshAll()).catch(() => {});
     // R-318: the delivery that just announced itself must be on screen behind the toast.
-    listen("shipment-delivered", () => refreshShipments()).catch(() => {});
-    window.setInterval(refreshShipments, 60_000);
+    listen("shipment-delivered", () => refreshAll()).catch(() => {});
+    window.setInterval(refreshAll, 60_000);
   }
   return () => { subs.delete(f); };
 }
@@ -66,7 +86,11 @@ export function useShipments(): Shipment[] {
  */
 export function useDeliveredDeals(): Set<string> {
   const all = useShipments();
-  return new Set(all.filter((s) => s.stage === "delivered" && s.deal_flow_id).map((s) => s.deal_flow_id));
+  const booked = useSyncExternalStore(subscribe, () => bookingDelivered);
+  return new Set([
+    ...all.filter((s) => s.stage === "delivered" && s.deal_flow_id).map((s) => s.deal_flow_id),
+    ...booked,
+  ]);
 }
 
 // ── presentation ─────────────────────────────────────────────────────────────

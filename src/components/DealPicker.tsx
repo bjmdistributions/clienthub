@@ -71,17 +71,30 @@ export const openBalance = (d: DealFlow, fromServer?: number): number => {
 };
 
 /** What this deal still owes its suppliers — the figure that decides whether a
- *  money-OUT payment fits, where the buyer's balance says nothing at all. */
+ *  money-OUT payment fits, where the buyer's balance says nothing at all. R-400: typed
+ *  freight is the shipping leg, so it is not counted here. */
 const legsOwed = (d: DealFlow): number =>
   (d.supplier_payments || [])
-    .filter((l) => !l.paid && !l.kept && l.amount > 0)
+    .filter((l) => !l.paid && !l.kept && l.amount > 0 && l.category !== "freight")
     .reduce((s, l) => s + l.amount, 0);
+
+/** R-400: what this deal still owes the carrier that no bank payment is linked to yet. The
+ *  target is what the carrier was paid (the bookings) once the deal uses logistics, else the
+ *  freight typed on it. */
+const shippingOwed = (d: DealFlow): number =>
+  Math.max(0, (d.shipping_mode ? (d.logistics_paid ?? 0) : (d.freight_typed ?? 0)) - (d.shipping_linked ?? 0));
 
 /** The money figure to put on a row, and what it means. A picker that shows the
  *  buyer's balance while you are booking a payment TO a supplier is showing the
  *  wrong side of the deal. */
-const rowMoney = (d: DealFlow, direction: "in" | "out" | undefined, serverOutstanding?: number) => {
+const rowMoney = (d: DealFlow, direction: "in" | "out" | undefined, serverOutstanding?: number, role?: string) => {
   const total = d.invoice_total || 0;
+  if (direction === "out" && role === "shipping") {
+    const owed = shippingOwed(d);
+    return owed > 0.005
+      ? { value: owed, label: "shipping owed", fits: true }
+      : { value: total, label: "shipping settled", fits: false };
+  }
   if (direction === "out") {
     const owed = legsOwed(d);
     return owed > 0.005
@@ -292,7 +305,7 @@ export default function DealPicker({
 
   const row = (r: Row, idx: number, dim?: boolean) => {
     const { d, cand } = r;
-    const money = rowMoney(d, direction, cand?.outstanding);
+    const money = rowMoney(d, direction, cand?.outstanding, role);
     const isActive = d.stage !== "complete";
     const exact = txnAmount > 0 && money.fits && Math.abs(money.value - txnAmount) < 0.5;
     return (

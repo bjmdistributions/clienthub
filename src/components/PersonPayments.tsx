@@ -46,6 +46,7 @@ type Row = CounterpartyPaymentRow & {
 const ROLE_LABELS: Record<string, string> = {
   buyer_payment: "Payment from the buyer",
   supplier_payment: "Payment to the supplier",
+  shipping: "Payment to the carrier",
   refund_out: "Refund back to the buyer",
   refund_in: "Money back from the supplier",
   fee: "Fee",
@@ -66,7 +67,8 @@ const roleLabel = (v: string) => ROLE_LABELS[v] ?? v;
  *  every refund on this screen: five of them, $52,890, sit under it on Kameron
  *  Alvarado's profile today. The group keeps them — they ARE booked to the deal —
  *  and the caption states the two claims separately instead of one vague one. */
-const IN_DEAL_FIGURES = new Set(["buyer_payment", "supplier_payment", "fee", "refund_in"]);
+// R-400: a shipping payment is the deal's shipping leg of cost, so it is built in too.
+const IN_DEAL_FIGURES = new Set(["buyer_payment", "supplier_payment", "shipping", "fee", "refund_in"]);
 
 // ── Payment method (W1-f) ───────────────────────────────────────────────────
 // MUST stay identical to BANK_METHODS in commands.rs and METHODS in

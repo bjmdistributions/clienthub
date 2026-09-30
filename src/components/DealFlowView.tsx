@@ -7,7 +7,7 @@ import {
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit,
 } from "../lib/api";
-import { fmtAmount, primarySupplierLabel, owedToSupplier, localDay, parseLocalDay, parseAmount } from "../lib/format";
+import { fmtAmount, primarySupplierLabel, owedToSupplier, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, supplierSideLegs } from "../lib/format";
 import { toast } from "./Toast";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
@@ -15,7 +15,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import StatusPill from "./StatusPill";
 import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges, useDeliveredDeals } from "./FreightTracking";
 import DealShipping from "./DealShipping";
-import { useNetsyncApplied } from "./LogisticsBookingForm";
+import { useNetsyncApplied, FreightStatusPill, AmountNeededPill } from "./LogisticsBookingForm";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -117,8 +117,11 @@ function nextDate(f: DealFlow): string {
 type PaymentFlags = { payment_received_paired?: boolean; supplier_paid_paired?: boolean };
 
 function paymentState(f: DealFlow, recon?: PaymentFlags) {
-  const legs    = f.supplier_payments || [];
-  const hasCost = legs.length > 0;
+  const allLegs = f.supplier_payments || [];
+  const hasCost = allLegs.length > 0;
+  // R-400: typed freight belongs to the shipping leg, which has its own pill, so only the
+  // other lines decide whether the supplier is paid (all lines when freight is all there is).
+  const legs    = supplierSideLegs(allLegs);
   const buyerIn = si(f.stage) >= si("payment_received") || !!recon?.payment_received_paired;
   // A kept leg was never paid and is not a cost, so a deal whose legs are all kept (or
   // all $0) has nothing left to send.
@@ -146,7 +149,7 @@ export default function DealFlowView() {
   const [search,       setSearch]       = useState("");
   const [drawerOpen,   setDrawerOpen]   = useState(false);
   const [syncing,      setSyncing]      = useState(false);
-  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean }>>({});
+  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean }>>({});
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number; done: boolean }>>({});
   // Open by default — this is the answer to "what is live right now", not an
@@ -317,8 +320,11 @@ export default function DealFlowView() {
     f.stage !== "complete" && !isFullyRefunded(f) && !isPartlyRefunded(f) && isInvoiceActive(f));
   const pricedDeals  = openDeals.filter((f) => (f.supplier_payments || []).length > 0);
   const pendingRev   = pricedDeals.reduce((s, f) => s + f.invoice_total - (refundMap[f.id]?.refunded ?? 0), 0);
-  const pendingCost  = pricedDeals.reduce((s, f) => s + f.total_supplier_cost, 0);
-  const pendingProfit = pendingRev - pendingCost;
+  // R-400: shipping is its own figure, and the cost beside it leaves it out, so the two add
+  // up to what the cards subtract (`projected_cost`).
+  const pendingShip  = pricedDeals.reduce((s, f) => s + shippingEstimateOf(f), 0);
+  const pendingCost  = pricedDeals.reduce((s, f) => s + projectedCostOf(f), 0) - pendingShip;
+  const pendingProfit = pendingRev - pendingCost - pendingShip;
   const unpricedCount = openDeals.length - pricedDeals.length;
 
   // Refunds section: every deal that went back whole, open ones first (most still owed
@@ -466,6 +472,7 @@ export default function DealFlowView() {
           <div className="flex items-center gap-6">
             <Stat label="Revenue" value={fmtAmount(pendingRev)} />
             <Stat label="Supplier cost" value={fmtAmount(pendingCost)} />
+            <Stat label="Shipping" value={fmtAmount(pendingShip)} />
           </div>
         </div>
       )}
@@ -500,7 +507,7 @@ export default function DealFlowView() {
               {arrived.length === 1 ? "Delivered: ready to complete" : `${arrived.length} delivered: ready to complete`}
             </span>
             <span className="text-[11.5px] text-success-ink/75 min-w-0">
-              Priority1 says the freight landed. Open the deal and run Review &amp; complete.
+              The freight landed. Open the deal and run Review &amp; complete.
             </span>
           </div>
           <div className="border-t border-success/25 bg-surface p-4 space-y-4">
@@ -684,6 +691,15 @@ function Stat({ label, value, clr = "text-ink" }: { label: string; value: string
 }
 
 // ─── Deal flow card ───────────────────────────────────────────────────────
+/** R-400: where the deal's trucks are. The least advanced live booking names the stage; once
+ *  every truck is at least picked up and one has no amount paid yet, the word is the ask. */
+function ShippingPill({ flow }: { flow: DealFlow }) {
+  const stage = flow.logistics_stage || "";
+  const ask = (flow.logistics_unpaid ?? 0) > 0 && (stage === "picked_up" || stage === "delivered");
+  if (ask) return <AmountNeededPill />;
+  return stage ? <FreightStatusPill status={stage} /> : null;
+}
+
 function invoiceStatusPill(status: string | undefined): { label: string; cls: string } {
   const s = (status ?? "").toLowerCase();
   if (s === "draft")           return { label: "Draft",   cls: "bg-surface-3 text-muted" };
@@ -718,7 +734,7 @@ const sIdx = (k: SectionKey) => SECTIONS.findIndex((s) => s.key === k);
 
 function DealFlowCard({
   flow, onReload, zebra, refund, reconStatus,
-}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean } }) {
+}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean } }) {
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   // Two independent questions, and collapsing them is what made a properly booked
   // partial refund read as a full one (same ladder as mobile's `refundBadgeHTML`):
@@ -821,7 +837,7 @@ function DealFlowCard({
     api.dealReconciliation(flow.id)
       .then((r) => {
         const p = r?.pieces;
-        setReconLinked(!!p && ((p.buyer_paired || 0) + (p.supplier_paired || 0) + (p.fee_paired || 0) + (p.refund_total || 0) + (p.refund_in || 0) > 0.005));
+        setReconLinked(!!p && ((p.buyer_paired || 0) + (p.supplier_paired || 0) + (p.fee_paired || 0) + (p.shipping_paired || 0) + (p.refund_total || 0) + (p.refund_in || 0) > 0.005));
       })
       .catch(() => {});
   }, [flow.id, isOpen, flow.stage]);
@@ -891,11 +907,11 @@ function DealFlowCard({
               );
             })()}
             {!isComplete && (() => {
-              const raw  = flow.invoice_total - flow.total_supplier_cost;
+              const raw  = flow.invoice_total - projectedCostOf(flow);
               const proj = raw - refundPaid;
               return (
                 <span className={`flex items-baseline gap-1.5 text-[11px] font-semibold tabular-nums ${proj >= 0 ? "text-success-ink" : "text-danger-ink"}`}
-                  title="Projected profit: revenue minus supplier costs entered so far, minus anything refunded">
+                  title="Projected profit: revenue minus supplier and shipping costs entered so far, minus anything refunded">
                   {refundPaid > 0.005 && (
                     <span className="text-[10px] font-medium text-muted line-through decoration-danger-ink decoration-[1.5px]">{fmtAmount(raw)}</span>
                   )}
@@ -930,6 +946,8 @@ function DealFlowCard({
               {pay.label}
             </span>
           )}
+          {/* R-400: the shipping leg has its own pill, so it never doubles the payment labels */}
+          {(flow.logistics_bookings ?? 0) > 0 && <ShippingPill flow={flow} />}
           {!isComplete && <ShipChip flow={flow} />}
           <FreightChip dealFlowId={flow.id} />
           {/* Completed deals: date + which payment link (if any) is potentially missing */}
@@ -941,9 +959,10 @@ function DealFlowCard({
           {isComplete && reconStatus?.needs_review && (
             <span className="inline-flex items-center gap-1 text-[11.5px] font-medium px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink flex-shrink-0">
               <AlertTriangle size={10} />
-              {reconStatus.buyer_missing && reconStatus.supplier_missing ? "Missing links"
+              {[reconStatus.buyer_missing, reconStatus.supplier_missing, !!reconStatus.shipping_missing].filter(Boolean).length > 1 ? "Missing links"
                 : reconStatus.buyer_missing ? "Missing buyer payment"
-                : "Missing supplier payment"}
+                : reconStatus.supplier_missing ? "Missing supplier payment"
+                : "Missing shipping payment"}
             </span>
           )}
           {isComplete && reconStatus && !reconStatus.needs_review && reconStatus.fully_reconciled && (
@@ -1269,6 +1288,8 @@ function SectionNav({ current, done, flash, onGo, refundLabel, refundTone }: {
           <div key={s.key} className="flex items-center flex-shrink-0">
             <button
               onClick={() => onGo(s.key)}
+              title={s.label}
+              aria-label={s.label}
               className={`flex items-center gap-2 h-9 px-3 rounded-lg text-[12px] font-semibold transition-all ${
                 isCur ? "bg-accent/10 text-accent ring-1 ring-accent/25" : isDone ? "text-ink-2 hover:bg-surface-3" : "text-muted hover:bg-surface-3"
               }`}
@@ -1278,7 +1299,9 @@ function SectionNav({ current, done, flash, onGo, refundLabel, refundTone }: {
               }`}>
                 {isDone ? <Check size={13} strokeWidth={2.6} /> : i + 1}
               </span>
-              <span className="hidden sm:block whitespace-nowrap">{s.label}</span>
+              {/* R-400: six steps no longer fit a card beside a 216px sidebar below 1280px, so the
+                  steps that are not open keep their number and lose the word until there is room. */}
+              <span className={`${isCur ? "hidden sm:block" : "hidden xl:block"} whitespace-nowrap`}>{s.label}</span>
             </button>
             {i < SECTIONS.length - 1 && (
               <div className={`w-4 h-[2px] mx-0.5 rounded-full flex-shrink-0 ${isDone ? "bg-accent/50" : "bg-surface-3"}`} />
@@ -1403,7 +1426,10 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   // A kept leg was never paid, so it is not a cost — same rule as
   // `total_supplier_cost`, and now visible here because the kept toggle lives on
   // these rows (R-132).
-  const totalCost        = existingPayments.filter((p) => !p.kept).reduce((s, p) => s + p.amount, 0);
+  // R-400: freight is the shipping leg, so it is listed apart and left out of this total.
+  const goodsLines       = existingPayments.filter((p) => p.category !== "freight");
+  const freightLines     = existingPayments.filter((p) => p.category === "freight");
+  const totalCost        = goodsLines.filter((p) => !p.kept).reduce((s, p) => s + p.amount, 0);
   // R-315: "Mark supplier paid" is money that could get wired to the supplier by
   // mistake, so it only ever touches lines actually owed to the supplier — a
   // freight/wire/other line Jack pays himself never gets swept into it.
@@ -1538,6 +1564,50 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
     setSaving(false);
   };
 
+  // One cost line. Shared by the supplier lines and the typed-freight group below them.
+  const renderLine = (p: SupplierPayment) => (
+      <div key={p.id} className="flex items-center gap-3 px-3 py-2.5 bg-surface border border-line rounded-lg">
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-medium text-ink truncate flex items-center gap-1.5">
+            {p.supplier_name}
+            {p.category && p.category !== "supplier" && (
+              <StatusPill tone="accent">{catLabel(p.category)}</StatusPill>
+            )}
+          </div>
+          {p.split ? (
+            <div className="text-[11px] text-muted tabular-nums">
+              {p.split.share_pct}% of {fmtAmount(Math.max(0, p.split.sale_unit_price - p.split.basis_unit_cost))} a unit
+              on {p.split.units.toLocaleString()} units, split taken on {fmtAmount(p.split.basis_unit_cost)}
+            </div>
+          ) : p.quantity != null && p.unit_price != null ? (
+            <div className="text-[11px] text-muted tabular-nums">{p.quantity} × {fmtAmount(p.unit_price)}</div>
+          ) : null}
+          {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
+          {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept: didn't pay, not counted as a cost</div>}
+          {!locked && (
+            <div className="flex items-center gap-2.5 mt-0.5">
+              {!p.kept && (
+                <button onClick={() => togglePaid(p.id, !p.paid)} disabled={saving}
+                  className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
+                  {p.paid ? "Undo, not paid yet" : "Mark paid"}
+                </button>
+              )}
+              {!p.paid && (
+                <button onClick={() => toggleKept(p.id, !p.kept)} disabled={saving}
+                  className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
+                  {p.kept ? "Undo (I did pay this)" : "Didn't pay, keep it"}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        <div className={`text-[13px] font-semibold tabular-nums ${p.kept ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
+        {!locked && (
+          <button onClick={() => removePayment(p.id)} className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>
+        )}
+      </div>
+  );
+
   return (
     <div className="space-y-4">
       <div>
@@ -1564,48 +1634,17 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
       {/* Existing cost lines — each carries its own settled state */}
       {existingPayments.length > 0 && (
         <div className="space-y-1.5">
-          {existingPayments.map((p) => (
-            <div key={p.id} className="flex items-center gap-3 px-3 py-2.5 bg-surface border border-line rounded-lg">
-              <div className="flex-1 min-w-0">
-                <div className="text-[13px] font-medium text-ink truncate flex items-center gap-1.5">
-                  {p.supplier_name}
-                  {p.category && p.category !== "supplier" && (
-                    <StatusPill tone="accent">{catLabel(p.category)}</StatusPill>
-                  )}
-                </div>
-                {p.split ? (
-                  <div className="text-[11px] text-muted tabular-nums">
-                    {p.split.share_pct}% of {fmtAmount(Math.max(0, p.split.sale_unit_price - p.split.basis_unit_cost))} a unit
-                    on {p.split.units.toLocaleString()} units, split taken on {fmtAmount(p.split.basis_unit_cost)}
-                  </div>
-                ) : p.quantity != null && p.unit_price != null ? (
-                  <div className="text-[11px] text-muted tabular-nums">{p.quantity} × {fmtAmount(p.unit_price)}</div>
-                ) : null}
-                {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
-                {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept: didn't pay, not counted as a cost</div>}
-                {!locked && (
-                  <div className="flex items-center gap-2.5 mt-0.5">
-                    {!p.kept && (
-                      <button onClick={() => togglePaid(p.id, !p.paid)} disabled={saving}
-                        className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
-                        {p.paid ? "Undo, not paid yet" : "Mark paid"}
-                      </button>
-                    )}
-                    {!p.paid && (
-                      <button onClick={() => toggleKept(p.id, !p.kept)} disabled={saving}
-                        className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
-                        {p.kept ? "Undo (I did pay this)" : "Didn't pay, keep it"}
-                      </button>
-                    )}
-                  </div>
-                )}
+          {goodsLines.map(renderLine)}
+          {freightLines.length > 0 && (
+            <div className="pt-1.5 space-y-1.5">
+              {/* R-400: typed freight is the shipping leg, not a supplier cost. It stays
+                  editable here (paid, kept, remove) and is named for what it is. */}
+              <div className="text-[11.5px] text-muted px-1">
+                {flow.shipping_mode ? "Typed freight (replaced by the logistics booking)" : "Typed freight (counts as shipping)"}
               </div>
-              <div className={`text-[13px] font-semibold tabular-nums ${p.kept ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
-              {!locked && (
-                <button onClick={() => removePayment(p.id)} className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>
-              )}
+              {freightLines.map(renderLine)}
             </div>
-          ))}
+          )}
           <div className="flex justify-end gap-2 text-[11px] text-muted pr-1">
             <span>Total cost</span>
             <span className="font-semibold text-ink tabular-nums w-24 text-right">{fmtAmount(totalCost)}</span>
@@ -1859,16 +1898,17 @@ function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: 
   const meta = (() => { try { return JSON.parse((flow as any).metadata || "{}"); } catch { return {}; } })();
   const [noBuyer,    setNoBuyer]    = useState<boolean>(!!meta.no_buyer_link);
   const [noSupplier, setNoSupplier] = useState<boolean>(!!meta.no_supplier_link);
-  const saveNa = async (nb: boolean, ns: boolean) => {
-    setNoBuyer(nb); setNoSupplier(ns);
-    try { await api.setDealLinkNa(flow.id, nb, ns); onReload(); } catch (e: any) { toast(String(e), "error"); }
+  const [noShipping, setNoShipping] = useState<boolean>(!!meta.no_shipping_link);
+  const saveNa = async (nb: boolean, ns: boolean, nsh: boolean = noShipping) => {
+    setNoBuyer(nb); setNoSupplier(ns); setNoShipping(nsh);
+    try { await api.setDealLinkNa(flow.id, nb, ns, nsh); onReload(); } catch (e: any) { toast(String(e), "error"); }
   };
   return (
     <div className="space-y-4">
       <div>
         <div className="text-[14px] font-semibold text-ink">Link financials</div>
         <div className="text-[12px] text-muted mt-0.5">
-          Pair the real bank transactions to this deal: buyer payment, supplier payment, wire fees, refunds.
+          Pair the real bank transactions to this deal: buyer payment, supplier payment, shipping payment, wire fees, refunds.
           Anything you link here (or from Bank statements) is what the recorded profit is built from.
         </div>
       </div>
@@ -1880,13 +1920,17 @@ function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: 
       <div className="rounded-lg border border-line bg-surface px-3 py-2.5">
         <div className="text-[12px] font-medium text-muted mb-2">No bank record for a leg? Mark it so this deal isn't flagged.</div>
         <div className="flex flex-wrap gap-2">
-          <button onClick={() => saveNa(!noBuyer, noSupplier)}
+          <button onClick={() => saveNa(!noBuyer, noSupplier, noShipping)}
             className={`inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${noBuyer ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
             {noBuyer ? <Check size={12} /> : <X size={12} />} No buyer payment to link
           </button>
-          <button onClick={() => saveNa(noBuyer, !noSupplier)}
+          <button onClick={() => saveNa(noBuyer, !noSupplier, noShipping)}
             className={`inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${noSupplier ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
             {noSupplier ? <Check size={12} /> : <X size={12} />} No supplier payment to link
+          </button>
+          <button onClick={() => saveNa(noBuyer, noSupplier, !noShipping)}
+            className={`inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${noShipping ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
+            {noShipping ? <Check size={12} /> : <X size={12} />} No bank link for shipping
           </button>
         </div>
       </div>
@@ -1936,10 +1980,15 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
   useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id]);
 
   const p = recon?.pieces;
-  const anyLinked = !!p && ((p.buyer_paired || 0) + (p.supplier_paired || 0) + (p.fee_paired || 0) + (p.refund_total || 0) + (p.refund_in || 0) > 0.005);
+  const anyLinked = !!p && ((p.buyer_paired || 0) + (p.supplier_paired || 0) + (p.fee_paired || 0) + (p.shipping_paired || 0) + (p.refund_total || 0) + (p.refund_in || 0) > 0.005);
   const actual   = recon?.actual_profit ?? 0;
-  const expected = recon?.expected_profit ?? (flow.invoice_total - flow.total_supplier_cost);
+  const expected = recon?.expected_profit ?? (flow.invoice_total - projectedCostOf(flow));
   const variance = actual - expected;
+  // R-400: the cost behind "expected", split the way the deal keeps it. A completed deal
+  // reads what was recorded (total cost less its shipping leg); an open one reads the estimate.
+  const isDone   = flow.stage === "complete";
+  const costShip = isDone ? (flow.shipping_cost ?? 0) : shippingEstimateOf(flow);
+  const costGoods = isDone ? flow.total_cost - costShip : projectedCostOf(flow) - costShip;
 
   return (
     <div className="space-y-4">
@@ -1970,11 +2019,18 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
         </div>
       </div>
 
+      <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
+        <div className="text-[12px] font-medium text-muted mb-1">{isDone ? "Recorded cost" : "Expected cost"}</div>
+        <Row label="Supplier and other costs" value={fmtAmount(costGoods)} clr="text-ink-2" />
+        <Row label="Shipping" value={fmtAmount(costShip)} clr="text-ink-2" />
+      </div>
+
       {anyLinked && p && (
         <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
           <div className="text-[12px] font-medium text-muted mb-1">From linked transactions</div>
           <Row label="Payments received" value={`+${fmtAmount(p.buyer_paired)}`} clr="text-success-ink" />
           <Row label="Paid to supplier" value={`−${fmtAmount(p.supplier_paired)}`} clr="text-danger-ink" />
+          {(p.shipping_paired ?? 0) > 0.005 && <Row label="Paid to carrier" value={`−${fmtAmount(p.shipping_paired ?? 0)}`} clr="text-danger-ink" />}
           {p.fee_paired > 0.005 && <Row label="Wire fees" value={`−${fmtAmount(p.fee_paired)}`} clr="text-danger-ink" />}
           {p.refund_total > 0.005 && <Row label="Refunds paid" value={`−${fmtAmount(p.refund_total)}`} clr="text-danger-ink" />}
           {p.refund_in > 0.005 && <Row label="Supplier refund received" value={`+${fmtAmount(p.refund_in)}`} clr="text-success-ink" />}
@@ -2054,14 +2110,24 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const pc = recon?.pieces;
   const buyerBank = pc?.buyer_paired ?? 0;
   const costBank  = (pc?.supplier_paired ?? 0) + (pc?.fee_paired ?? 0);
+  const shipBank  = pc?.shipping_paired ?? 0;
   const revFromBank  = buyerBank > 0.005;
-  const costFromBank = costBank > 0.005;
+  const costFromBank = costBank > 0.005 || shipBank > 0.005;
   // Nothing recorded as received yet (a deal still at `invoiced`) previews the invoice
   // total — the same figure completion falls back to when no buyer payment is linked.
   const recRev  = isComplete ? flow.gross_revenue
     : revFromBank ? buyerBank
     : flow.payment_received_amount > 0.005 ? flow.payment_received_amount : flow.invoice_total;
-  const recCost = isComplete ? flow.total_cost    : (costFromBank ? costBank : flow.total_supplier_cost);
+  // R-400: the cost is two legs. Shipping is the bank link when there is one, else what the
+  // logistics person typed as paid (a typed freight line stays inside the supplier leg until
+  // a booking replaces it), and it sits outside the goods figure exactly as completion records it.
+  const recShip = isComplete ? (flow.shipping_cost ?? 0)
+    : shipBank > 0.005 ? shipBank
+    : flow.shipping_mode ? (flow.logistics_paid ?? 0) : 0;
+  const recGoods = isComplete ? flow.total_cost - recShip
+    : costBank > 0.005 ? costBank
+    : flow.total_supplier_cost - (flow.shipping_mode ? (flow.freight_typed ?? 0) : 0);
+  const recCost = recGoods + recShip;
   const recNet  = isComplete ? flow.net_profit    : recRev - recCost;
   const bankBacked = isComplete ? true : (revFromBank || costFromBank);
   const refundTotal = pc?.refund_total ?? 0;
@@ -2153,6 +2219,16 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           <RecCell label="Cost"    value={fmtAmount(recCost)} sub={isComplete ? undefined : (costFromBank ? "from bank" : "entered")} />
           <RecCell label={recNet >= 0 ? "Profit" : "Loss"} value={fmtAmount(recNet)} sub={`${recRev > 0 ? ((recNet / recRev) * 100).toFixed(1) : "0.0"}% margin`} clr={recNet >= 0 ? "text-success-ink" : "text-danger-ink"} big />
         </div>
+        <div className="mt-3 space-y-1 text-[12px]">
+          <Row label="Supplier and other costs" value={fmtAmount(recGoods)} clr="text-ink-2" />
+          <Row label="Shipping" value={fmtAmount(recShip)} clr="text-ink-2" />
+        </div>
+        {(flow.logistics_unpaid ?? 0) > 0 && (
+          <div className="mt-2.5 flex items-start gap-1.5 text-[11.5px] text-warning-ink">
+            <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+            <span>Shipping has not been paid yet. Profit updates by itself when the amount paid is entered.</span>
+          </div>
+        )}
         {refundTotal > 0.005 && (
           <div className="mt-2.5 text-[11px] text-muted">Refunds of {fmtAmount(refundTotal)} are tracked separately and reduce profit in reports.</div>
         )}
@@ -2362,7 +2438,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
 
 const roleLabel = (r: string) =>
   r === "buyer_payment" ? "Payment in" : r === "supplier_payment" ? "Paid to supplier" :
-  r === "fee" ? "Wire fee" : r === "refund_out" ? "Refund out" : r === "refund_in" ? "Supplier refund" : r;
+  r === "fee" ? "Wire fee" : r === "shipping" ? "Paid to carrier" : r === "refund_out" ? "Refund out" : r === "refund_in" ? "Supplier refund" : r;
 
 function RecCell({ label, value, sub, clr = "text-ink", big }: { label: string; value: string; sub?: string; clr?: string; big?: boolean }) {
   return (

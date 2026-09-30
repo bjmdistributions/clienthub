@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow } from "../lib/api";
 import { parseLineItems, queryTokens, matchesAllTokens, matchingItems, describeItem, isNoiseItem } from "../lib/itemSearch";
-import { fmtAmount, localDay } from "../lib/format";
+import { fmtAmount, localDay, projectedCostOf } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { FileDown, Send, Plus, X, Check, Trash2, ExternalLink, Edit2, FileText, RotateCcw, CreditCard, Download, XCircle, Search, MoreVertical, type LucideIcon } from "lucide-react";
 import RecurringView from "./RecurringView";
@@ -116,7 +116,7 @@ export default function InvoicesView() {
     for (const f of flows) {
       const prev = fm[f.invoice_id];
       if (prev && (stageIdx[prev.stage] ?? 0) >= (stageIdx[f.stage] ?? 0)) continue;   // the furthest-along deal wins
-      fm[f.invoice_id] = { id: f.id, stage: f.stage, cost: f.total_supplier_cost ?? 0, net: f.net_profit ?? 0 };
+      fm[f.invoice_id] = { id: f.id, stage: f.stage, cost: projectedCostOf(f), net: f.net_profit ?? 0 };
     }
     setFlowMap(fm);
     setRefundMap(Object.fromEntries(refundList.map((r) => [r.deal_flow_id, r])));

@@ -1,5 +1,5 @@
 import { DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, projectedCostOf, shippingEstimateOf } from "../lib/format";
 
 /**
  * Cost & Profit display for the invoice detail drawer (via InvoiceCostSection), reading
@@ -37,7 +37,10 @@ export default function CostProfitPanel({
   const gross  = isComplete
     ? flow.gross_revenue
     : (flow.payment_received_amount > 0 ? flow.payment_received_amount : (fallbackRevenue ?? 0));
-  const cost   = isComplete ? flow.total_cost    : flow.total_supplier_cost;
+  // R-400: an open deal's cost is what it is expected to cost (shipping included), and the
+  // shipping part is named under it. A completed deal reads what was recorded.
+  const cost   = isComplete ? flow.total_cost    : projectedCostOf(flow);
+  const ship   = isComplete ? (flow.shipping_cost ?? 0) : shippingEstimateOf(flow);
   const profit = gross - cost;
   const margin = gross > 0 ? (profit / gross) * 100 : 0;
   // Completed deals show the breakdown captured at completion; older deals
@@ -50,7 +53,7 @@ export default function CostProfitPanel({
       <div className="grid grid-cols-2 gap-2">
         {[
           { label: "Revenue", value: fmtAmount(gross), clr: "text-ink" },
-          { label: "Costs",   value: fmtAmount(cost),  clr: "text-ink" },
+          { label: "Costs",   value: fmtAmount(cost),  clr: "text-ink", sub: `Shipping ${fmtAmount(ship)}` },
           {
             label: profit >= 0 ? "Profit" : "Loss",
             value: fmtAmount(profit),
@@ -68,6 +71,7 @@ export default function CostProfitPanel({
                 so an unusually long value steps the type down instead of spilling. Two
                 columns fit eight figures at 16px; the steps cover the rest. */}
             <div className={`${moneySize(item.value)} font-bold tabular-nums mt-0.5 ${item.clr}`}>{item.value}</div>
+            {"sub" in item && item.sub && <div className="text-[11px] text-muted tabular-nums mt-0.5">{item.sub}</div>}
           </div>
         ))}
       </div>

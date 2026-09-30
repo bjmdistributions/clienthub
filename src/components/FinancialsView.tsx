@@ -330,6 +330,7 @@ function CategoryOptions({ includeUncat = true }: { includeUncat?: boolean }) {
 const ROLES: { value: string; label: string; hint?: string }[] = [
   { value: "buyer_payment",    label: "Payment from the buyer",       hint: "Money the customer paid you for this deal" },
   { value: "supplier_payment", label: "Payment to the supplier",      hint: "What the goods cost you: counts as cost of the deal" },
+  { value: "shipping",         label: "Payment to the carrier",       hint: "What shipping cost you: counts as the deal's shipping, apart from the supplier" },
   { value: "refund_out",       label: "Refund back to the buyer",     hint: "Money returned to your customer does not change the deal's cost" },
   { value: "refund_in",        label: "Money back from the supplier", hint: "A supplier reversal lowers what this deal cost you" },
   { value: "adjustment",       label: "Adjustment" },
@@ -359,6 +360,22 @@ const fmtTime = (s?: string | null) => {
 // What the row offers as a one-tap tie. Pass survivorDeals(deals) — never the raw
 // list — so a suggestion can't land on a duplicate deal_flow row the deal view hides.
 type DealChoice = { deal: DealFlow; reason: string; candidate?: BankSuggestCandidate };
+
+// R-400: one carrier charge that covers several deals' loads. The server adds it beside a
+// transaction's candidates (only when shipping suggestions were asked for), and confirming
+// it links each part as a shipping payment. api.ts types the candidate role without
+// "shipping", so the role is read as a plain string here.
+type ShippingSplitPart = {
+  deal_flow_id: string; invoice_number: string; client_name: string; amount: number;
+  booking_id: string; booking_code: string; carrier: string;
+};
+type ShippingSplit = { total: number; parts: ShippingSplitPart[] };
+const candRole = (c?: BankSuggestCandidate): string => c?.role ?? "";
+const tieWord = (role: string, direction: string) =>
+  role === "shipping" ? "a shipping payment"
+  : role === "supplier_payment" ? "a supplier payment"
+  : role === "buyer_payment" ? "a buyer payment"
+  : direction === "out" ? "a supplier payment" : "a buyer payment";
 
 // Below this gap between the top two candidates the answer is a toss-up.
 const AMBIGUOUS_GAP = 20;
@@ -401,6 +418,7 @@ const localChoices = (t: BankTxn, pool: DealFlow[]): DealChoice[] => {
     if (t.direction === "out") {
       for (const leg of d.supplier_payments || []) {
         if (leg.paid || leg.kept || !(leg.amount > 0)) continue;
+        if (leg.category === "freight") continue; // R-400: freight is the shipping leg, not a supplier payment
         let score = 0;
         if (cp.length > 2 && (leg.supplier_name || "").toLowerCase().includes(cp)) score += 100;
         if (t.amount && Math.abs(leg.amount - t.amount) < 0.5) score += 60;
@@ -500,9 +518,30 @@ const loanLabel = (l: Loan) => (l.name?.trim() || l.lender?.trim() || "Loan");
 
 // R-295: the short name of what the money is on a deal, for the linked chip.
 const LINK_ROLE: Record<string, string> = {
-  buyer_payment: "Buyer payment", supplier_payment: "Supplier payment",
+  buyer_payment: "Buyer payment", supplier_payment: "Supplier payment", shipping: "Shipping payment",
   refund_out: "Refund to buyer", refund_in: "Supplier refund", adjustment: "Adjustment",
 };
+
+// R-400: the one-tap confirm for a carrier charge that covers several loads. The parts are in
+// the tooltip, and the confirm lists them again before anything is linked.
+function ShippingSplitChip({ t, split, busy, onConfirm }: {
+  t: BankTxn; split: ShippingSplit; busy: boolean; onConfirm: (t: BankTxn, s: ShippingSplit) => void;
+}) {
+  const title = split.parts
+    .map((p) => `${p.invoice_number ? "#" + p.invoice_number : "Deal"} ${p.client_name || ""} ${fmtAmount(p.amount)}${p.carrier ? " · " + p.carrier : ""}`)
+    .join("\n");
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onConfirm(t, split); }}
+      disabled={busy}
+      title={title}
+      className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors whitespace-nowrap flex-shrink-0"
+    >
+      {busy ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
+      Split across {split.parts.length} loads as shipping
+    </button>
+  );
+}
 
 // R-295 — once money is linked to a deal the row says WHICH deal, as a finished state:
 // a check, the invoice and buyer, and what the money is on it. Part-linked money shows
@@ -591,7 +630,7 @@ const loanTagLabel = (direction: string) => (direction === "in" ? "Loan received
 // allocate_bank_txn — money-in can't be a supplier payment, etc.).
 const rolesFor = (direction: string) =>
   direction === "out"
-    ? ROLES.filter((r) => ["supplier_payment", "refund_out"].includes(r.value))
+    ? ROLES.filter((r) => ["supplier_payment", "shipping", "refund_out"].includes(r.value))
     : ROLES.filter((r) => ["buyer_payment", "refund_in"].includes(r.value));
 
 // ── Payment method (R-157) ──────────────────────────────────────────────────
@@ -1045,6 +1084,9 @@ export default function FinancialsView() {
   // Server-scored smart links (R-150) — txn id → ranked candidate deals. Empty
   // when the server is unreachable; the local matcher stays as the fallback.
   const [serverSugg, setServerSugg] = useState<Map<string, BankSuggestCandidate[]>>(new Map());
+  // R-400: txn id → one carrier charge that covers several loads, and the txn being split now.
+  const [shippingSplits, setShippingSplits] = useState<Map<string, ShippingSplit>>(new Map());
+  const [splitBusy, setSplitBusy] = useState<string | null>(null);
   // R-289: posted rows that can take over a booked copy the bank retracted or hasn't posted.
   const [takeovers, setTakeovers] = useState<Map<string, TakeoverSuggestion[]>>(new Map());
   const [takingOver, setTakingOver] = useState<string | null>(null);
@@ -1094,14 +1136,18 @@ export default function FinancialsView() {
       const r = await api.suggestBankTxnLinks();
       const m = new Map<string, BankSuggestCandidate[]>();
       const p = new Map<string, BankPersonCandidate[]>();
+      const sp = new Map<string, ShippingSplit>();
       for (const row of r.suggestions || []) {
         if (row.candidates.length) m.set(row.txn_id, row.candidates);
+        const split = (row as { shipping_split?: ShippingSplit | null }).shipping_split;
+        if (split && split.parts?.length > 1) sp.set(row.txn_id, split);
         // Additive on the server (R-156/W1-b): a server older than deploy-41 sends
         // no counterparty_candidates and this stays empty, which costs the picker
         // its shortcut and nothing else.
         if (row.counterparty_candidates?.length) p.set(row.txn_id, row.counterparty_candidates);
       }
       setServerSugg(m);
+      setShippingSplits(sp);
       setPersonSugg(p);
       // R-204: how much of the ledger the sweep actually looked at. Without it,
       // a transaction older than the newest N reads identically to one the
@@ -1896,11 +1942,12 @@ export default function FinancialsView() {
     if (!(t.unallocated > 0.0001)) { toast("Nothing left to tie on this transaction", "error"); return; }
     setTyingId(t.id);
     try {
-      const r = candidate?.role ?? (t.direction === "out" ? "supplier_payment" : "buyer_payment");
+      const r: string = candidate?.role ?? (t.direction === "out" ? "supplier_payment" : "buyer_payment");
       // A supplier leg is one cut of a deal: tie at most that leg's amount so a
       // multi-leg wire leaves its remainder allocatable elsewhere. Buyer ties keep
       // the full remainder (the pre-existing behaviour, over-invoice confirm aside).
-      const amt = r === "supplier_payment" && candidate && candidate.leg_amount > 0
+      // A shipping leg is capped the same way (R-400).
+      const amt = (r === "supplier_payment" || r === "shipping") && candidate && candidate.leg_amount > 0
         ? Math.min(t.unallocated, candidate.leg_amount)
         : t.unallocated;
       const note = r === "supplier_payment" && candidate?.supplier_name ? candidate.supplier_name : "";
@@ -1908,7 +1955,9 @@ export default function FinancialsView() {
       // R-150 phase 4: stamp the supplier/client identity on the txn so profiles
       // show payment history even for money never tied to a deal. Best-effort —
       // a failed tag must never undo or hide a successful allocation.
-      const cpid = r === "supplier_payment" ? candidate?.supplier_id : candidate?.client_id;
+      // A carrier is neither the deal's client nor its supplier, so a shipping tie never files
+      // the payment under anyone (R-400).
+      const cpid = r === "shipping" ? undefined : r === "supplier_payment" ? candidate?.supplier_id : candidate?.client_id;
       if (cpid) {
         // Since R-175 the tag is exclusive - it decides which profile shows this
         // payment at all - so a swallowed failure leaves it on the wrong one.
@@ -1924,7 +1973,7 @@ export default function FinancialsView() {
       let booked = false;
       if (fullyTied && !t.reviewed) {
         try {
-          await api.setBankTxnReview(t.id, { reviewed: true });
+          await api.setBankTxnReview(t.id, r === "shipping" && !t.category ? { reviewed: true, category: "shipping" } : { reviewed: true });
           booked = true;
         } catch {
           // The money is tied either way; only the review flag is missing, and
@@ -1940,6 +1989,40 @@ export default function FinancialsView() {
       await refreshRows([t.id]);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setTyingId(null); }
+  };
+
+  // R-400: a split shows only while it still describes the whole free amount of the row.
+  const splitFor = (t: BankTxn): ShippingSplit | null => {
+    const s = shippingSplits.get(t.id);
+    return s && t.unallocated > 0.0001 && Math.abs(s.total - t.unallocated) < 0.5 ? s : null;
+  };
+
+  // Confirming a split links each part to its deal as a shipping payment (allow_split, since
+  // each takes only its slice), then books the row the way a confirmed single suggestion is
+  // booked: reviewed, and categorised as shipping when it had no category.
+  const confirmShippingSplit = async (t: BankTxn, split: ShippingSplit) => {
+    if (splitBusy || tyingId) return;
+    if (!(t.unallocated > 0.0001)) { toast("Nothing left to tie on this transaction", "error"); return; }
+    const lines = split.parts.map((p) =>
+      `${p.invoice_number ? "#" + p.invoice_number : "Deal"} ${p.client_name || ""}: ${fmtAmount(p.amount)}`).join("\n");
+    if (!confirm(`Link ${fmtAmount(split.total)} as shipping across ${split.parts.length} deals?\n\n${lines}`)) return;
+    setSplitBusy(t.id);
+    try {
+      for (const p of split.parts) {
+        await api.allocateBankTxn(t.id, p.deal_flow_id, p.amount, "shipping", p.carrier || "", true);
+      }
+      let booked = false;
+      if (!t.reviewed) {
+        try {
+          await api.setBankTxnReview(t.id, t.category ? { reviewed: true } : { reviewed: true, category: "shipping" });
+          booked = true;
+        } catch {
+          toast("Tied, but the row is still waiting to be booked", "error");
+        }
+      }
+      toast(`Linked ${fmtAmount(split.total)} across ${split.parts.length} deals as shipping${booked || t.reviewed ? " and booked it" : ""}`);
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setSplitBusy(null); await refreshRows([t.id]); }
   };
 
   // ── R-150 phase 5: missing links on completed deals ─────────────────────────
@@ -3224,13 +3307,14 @@ export default function FinancialsView() {
                               key={c.deal.id}
                               onClick={(e) => { e.stopPropagation(); tieMatch(t, c.deal, c.candidate); }}
                               disabled={tyingId === t.id}
-                              title={`Tie to ${dealLabel(c.deal)} as ${c.candidate?.role === "supplier_payment" ? "a supplier payment" : c.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"}: ${c.reason}`}
+                              title={`Tie to ${dealLabel(c.deal)} as ${tieWord(candRole(c.candidate), t.direction)}: ${c.reason}`}
                               className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0 max-w-[280px]"
                             >
                               {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
                               <span className="truncate">
                                 {matchLabel(c.deal)}
                                 {c.candidate?.supplier_name ? ` · ${c.candidate.supplier_name}` : ""}
+                                {candRole(c.candidate) === "shipping" ? " · shipping" : ""}
                               </span>
                               <span className="text-muted font-normal truncate hidden xl:inline">· {c.reason}</span>
                             </button>
@@ -3243,6 +3327,19 @@ export default function FinancialsView() {
                               {offer.more} more
                             </button>
                           )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+
+                  {/* R-400: one carrier charge that covers several loads */}
+                  {splitFor(t) && (
+                    <tr className={`border-b border-line-2 ${selected.has(t.id) ? "bg-surface-2" : ""}`}>
+                      <td colSpan={3} />
+                      <td colSpan={6} className="pb-3 pr-3 align-top">
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <span className="text-[11.5px] text-muted flex-shrink-0">Looks like one carrier charge for several loads</span>
+                          <ShippingSplitChip t={t} split={splitFor(t)!} busy={splitBusy === t.id} onConfirm={confirmShippingSplit} />
                         </div>
                       </td>
                     </tr>
@@ -5013,7 +5110,7 @@ export default function FinancialsView() {
                                     key={c.deal.id}
                                     onClick={() => tieMatch(t, c.deal, c.candidate)}
                                     disabled={tyingId === t.id}
-                                    title={`Tie to ${dealLabel(c.deal)} as ${c.candidate?.role === "supplier_payment" ? "a supplier payment" : c.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"}: ${c.reason}`}
+                                    title={`Tie to ${dealLabel(c.deal)} as ${tieWord(candRole(c.candidate), t.direction)}: ${c.reason}`}
                                     className={`inline-flex items-center gap-1.5 px-2.5 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors whitespace-nowrap ${
                                       offer.choices.length > 1 ? "h-7" : "h-8"
                                     }`}
@@ -5023,6 +5120,7 @@ export default function FinancialsView() {
                                       {offer.choices.length > 1 ? "" : "Tie to "}
                                       {matchLabel(c.deal)}
                                       {c.candidate?.supplier_name ? ` · ${c.candidate.supplier_name}` : ""}
+                                      {candRole(c.candidate) === "shipping" ? " · shipping" : ""}
                                     </span>
                                   </button>
                                 ))}
@@ -5046,6 +5144,11 @@ export default function FinancialsView() {
                               >
                                 <Link2 size={11} /> Link deal
                               </button>
+                            )}
+                            {!isLoan && splitFor(t) && (
+                              <span className="block mt-1">
+                                <ShippingSplitChip t={t} split={splitFor(t)!} busy={splitBusy === t.id} onConfirm={confirmShippingSplit} />
+                              </span>
                             )}
                           </span>
                           {/* Book — labeled, always visible, never hover-only. */}

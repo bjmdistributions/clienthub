@@ -55,6 +55,28 @@ export function owedToSupplier(
   return p.category == null || p.category === "supplier" || !!p.supplier_billed;
 }
 
+/** R-400: what an OPEN deal is expected to cost. `projected_cost` swaps the typed freight
+ *  lines for the shipping leg (bookings, or the bank link) and equals `total_supplier_cost`
+ *  for a deal that does not use logistics. An older row without the field falls back. */
+export function projectedCostOf(f: { projected_cost?: number | null; total_supplier_cost?: number | null }): number {
+  return safeNum(f.projected_cost ?? f.total_supplier_cost);
+}
+
+/** R-400: the shipping part of `projectedCostOf` (0 for a deal that types no freight and
+ *  uses no logistics). */
+export function shippingEstimateOf(f: { shipping_estimate?: number | null }): number {
+  return safeNum(f.shipping_estimate);
+}
+
+/** R-400: the lines that make up the SUPPLIER leg. Freight lines belong to the shipping
+ *  leg, which settles on its own. A deal with only freight lines is judged on those.
+ *  Mirrors `supplier_side_settled` in commands.rs. */
+export function supplierSideLegs<T extends { category?: string | null }>(legs: T[] | null | undefined): T[] {
+  const all = legs || [];
+  const goods = all.filter((p) => p.category !== "freight");
+  return goods.length ? goods : all;
+}
+
 /** Today as YYYY-MM-DD in LOCAL time (R-159). toISOString() is UTC — from
  *  6/7pm Central it is already tomorrow, so evening defaults landed entries
  *  on the wrong day (and, at month-end, in the wrong month). */

@@ -1,0 +1,348 @@
+{
+  "txns": [
+    {
+      "id": "t1",
+      "posted_at": "2026-09-26",
+      "amount": 800,
+      "direction": "out",
+      "description": "RIDGEWAY FREIGHT PMT 48211",
+      "rail": "ach",
+      "confirmed_method": "",
+      "category": "",
+      "counterparty_name": "Ridgeway Freight",
+      "counterparty_type": "",
+      "counterparty_id": "",
+      "wire_ref": "",
+      "reviewed": false,
+      "account_id": "Operating ··0000",
+      "allocated": 0,
+      "alloc_count": 0,
+      "unallocated": 800,
+      "note": "",
+      "links": []
+    },
+    {
+      "id": "t2",
+      "posted_at": "2026-09-30",
+      "amount": 750,
+      "direction": "out",
+      "description": "SUMMIT LOAD DESK ACH",
+      "rail": "ach",
+      "confirmed_method": "",
+      "category": "shipping",
+      "counterparty_name": "Summit Load Desk",
+      "counterparty_type": "",
+      "counterparty_id": "",
+      "wire_ref": "",
+      "reviewed": false,
+      "account_id": "Operating ··0000",
+      "allocated": 0,
+      "alloc_count": 0,
+      "unallocated": 750,
+      "note": "",
+      "links": []
+    },
+    {
+      "id": "t3",
+      "posted_at": "2026-09-27",
+      "amount": 2140.55,
+      "direction": "out",
+      "description": "OFFICE SUPPLY CO",
+      "rail": "ach",
+      "confirmed_method": "",
+      "category": "",
+      "counterparty_name": "Office Supply Co",
+      "counterparty_type": "",
+      "counterparty_id": "",
+      "wire_ref": "",
+      "reviewed": false,
+      "account_id": "Operating ··0000",
+      "allocated": 0,
+      "alloc_count": 0,
+      "unallocated": 2140.55,
+      "note": "",
+      "links": []
+    }
+  ],
+  "suggestions": [
+    {
+      "txn_id": "t1",
+      "candidates": [
+        {
+          "txn_id": "t1",
+          "deal_id": "d1",
+          "role": "shipping",
+          "client_name": "Lakeside Discount Co",
+          "client_id": "c1",
+          "supplier_name": null,
+          "supplier_id": null,
+          "invoice_number": "INV-6001",
+          "invoice_total": 24000,
+          "leg_amount": 800,
+          "score": 140,
+          "tier": "certain",
+          "reason": "carrier name and exact amount match",
+          "stage": "payment_received",
+          "active": true,
+          "settled": false
+        }
+      ],
+      "shipping_split": null
+    },
+    {
+      "txn_id": "t2",
+      "candidates": [],
+      "shipping_split": {
+        "total": 750,
+        "parts": [
+          {
+            "deal_flow_id": "d6",
+            "invoice_number": "INV-6006",
+            "client_name": "Cobble Lane Outlet",
+            "amount": 450,
+            "booking_id": "fb_e42a1d0000",
+            "booking_code": "L-E42A1D",
+            "carrier": "Ridgeway Freight"
+          },
+          {
+            "deal_flow_id": "d7",
+            "invoice_number": "INV-6007",
+            "client_name": "Pinehurst Liquidators",
+            "amount": 300,
+            "booking_id": "fb_f53b2e0000",
+            "booking_code": "L-F53B2E",
+            "carrier": "Ridgeway Freight"
+          }
+        ]
+      }
+    }
+  ],
+  "allocations": {
+    "d1": [
+      {
+        "id": "a1",
+        "bank_txn_id": "tb1",
+        "amount": 24000,
+        "role": "buyer_payment",
+        "note": "",
+        "posted_at": "2026-09-18",
+        "direction": "in",
+        "counterparty_name": "Lakeside Discount Co",
+        "description": "WIRE IN",
+        "wire_ref": "",
+        "rail": "ach",
+        "txn_amount": 24000,
+        "source_format": "",
+        "txn_note": ""
+      },
+      {
+        "id": "a2",
+        "bank_txn_id": "tb2",
+        "amount": 6000,
+        "role": "supplier_payment",
+        "note": "",
+        "posted_at": "2026-09-19",
+        "direction": "out",
+        "counterparty_name": "Northgate Wholesale",
+        "description": "WIRE OUT",
+        "wire_ref": "",
+        "rail": "ach",
+        "txn_amount": 6000,
+        "source_format": "",
+        "txn_note": ""
+      }
+    ],
+    "d5": [
+      {
+        "id": "a3",
+        "bank_txn_id": "tb3",
+        "amount": 16000,
+        "role": "buyer_payment",
+        "note": "",
+        "posted_at": "2026-09-10",
+        "direction": "in",
+        "counterparty_name": "Harbor Row Liquidators",
+        "description": "WIRE IN",
+        "wire_ref": "",
+        "rail": "ach",
+        "txn_amount": 16000,
+        "source_format": "",
+        "txn_note": ""
+      },
+      {
+        "id": "a4",
+        "bank_txn_id": "tb4",
+        "amount": 11800,
+        "role": "supplier_payment",
+        "note": "",
+        "posted_at": "2026-09-11",
+        "direction": "out",
+        "counterparty_name": "Harborline Supply",
+        "description": "WIRE OUT",
+        "wire_ref": "",
+        "rail": "ach",
+        "txn_amount": 11800,
+        "source_format": "",
+        "txn_note": ""
+      },
+      {
+        "id": "a5",
+        "bank_txn_id": "tb5",
+        "amount": 810,
+        "role": "shipping",
+        "note": "",
+        "posted_at": "2026-09-12",
+        "direction": "out",
+        "counterparty_name": "Bluefield Lines",
+        "description": "BLUEFIELD LINES ACH",
+        "wire_ref": "",
+        "rail": "ach",
+        "txn_amount": 810,
+        "source_format": "",
+        "txn_note": ""
+      }
+    ]
+  },
+  "recon": {
+    "d1": {
+      "expected_profit": 16500,
+      "actual_profit": 18000,
+      "gross_revenue": 0,
+      "total_cost": 0,
+      "pieces": {
+        "buyer_paired": 24000,
+        "supplier_paired": 6000,
+        "fee_paired": 0,
+        "refund_total": 0,
+        "refund_in": 0,
+        "shipping_paired": 0,
+        "shipping_target": 800,
+        "shipping_paid_paired": false
+      },
+      "shipping_paid_paired": false,
+      "payment_received_paired": true,
+      "supplier_paid_paired": true,
+      "fully_reconciled": false
+    },
+    "d2": {
+      "expected_profit": 5500,
+      "actual_profit": 0,
+      "gross_revenue": 0,
+      "total_cost": 0,
+      "pieces": {
+        "buyer_paired": 0,
+        "supplier_paired": 0,
+        "fee_paired": 0,
+        "refund_total": 0,
+        "refund_in": 0,
+        "shipping_paired": 0,
+        "shipping_target": 0,
+        "shipping_paid_paired": false
+      },
+      "shipping_paid_paired": false,
+      "payment_received_paired": false,
+      "supplier_paid_paired": false,
+      "fully_reconciled": false
+    },
+    "d3": {
+      "expected_profit": 7050,
+      "actual_profit": 0,
+      "gross_revenue": 0,
+      "total_cost": 0,
+      "pieces": {
+        "buyer_paired": 0,
+        "supplier_paired": 0,
+        "fee_paired": 0,
+        "refund_total": 0,
+        "refund_in": 0,
+        "shipping_paired": 0,
+        "shipping_target": 0,
+        "shipping_paid_paired": false
+      },
+      "shipping_paid_paired": false,
+      "payment_received_paired": false,
+      "supplier_paid_paired": false,
+      "fully_reconciled": false
+    },
+    "d4": {
+      "expected_profit": 4000,
+      "actual_profit": 0,
+      "gross_revenue": 0,
+      "total_cost": 0,
+      "pieces": {
+        "buyer_paired": 0,
+        "supplier_paired": 0,
+        "fee_paired": 0,
+        "refund_total": 0,
+        "refund_in": 0,
+        "shipping_paired": 0,
+        "shipping_target": 400,
+        "shipping_paid_paired": false
+      },
+      "shipping_paid_paired": false,
+      "payment_received_paired": false,
+      "supplier_paid_paired": false,
+      "fully_reconciled": false
+    },
+    "d5": {
+      "expected_profit": 3390,
+      "actual_profit": 3390,
+      "gross_revenue": 0,
+      "total_cost": 0,
+      "pieces": {
+        "buyer_paired": 16000,
+        "supplier_paired": 11800,
+        "fee_paired": 0,
+        "refund_total": 0,
+        "refund_in": 0,
+        "shipping_paired": 810,
+        "shipping_target": 800,
+        "shipping_paid_paired": true
+      },
+      "shipping_paid_paired": true,
+      "payment_received_paired": true,
+      "supplier_paid_paired": true,
+      "fully_reconciled": true
+    },
+    "d6": {
+      "expected_profit": 2750,
+      "actual_profit": 0,
+      "gross_revenue": 0,
+      "total_cost": 0,
+      "pieces": {
+        "buyer_paired": 0,
+        "supplier_paired": 0,
+        "fee_paired": 0,
+        "refund_total": 0,
+        "refund_in": 0,
+        "shipping_paired": 0,
+        "shipping_target": 450,
+        "shipping_paid_paired": false
+      },
+      "shipping_paid_paired": false,
+      "payment_received_paired": false,
+      "supplier_paid_paired": false,
+      "fully_reconciled": false
+    },
+    "d7": {
+      "expected_profit": 2200,
+      "actual_profit": 0,
+      "gross_revenue": 0,
+      "total_cost": 0,
+      "pieces": {
+        "buyer_paired": 0,
+        "supplier_paired": 0,
+        "fee_paired": 0,
+        "refund_total": 0,
+        "refund_in": 0,
+        "shipping_paired": 0,
+        "shipping_target": 300,
+        "shipping_paid_paired": false
+      },
+      "shipping_paid_paired": false,
+      "payment_received_paired": false,
+      "supplier_paid_paired": false,
+      "fully_reconciled": false
+    }
+  }
+}

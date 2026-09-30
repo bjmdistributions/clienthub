@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { X, Plus } from "lucide-react";
 import { api, DealFlow, Supplier, PayoutShare } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, shippingEstimateOf } from "../lib/format";
 import { toast } from "./Toast";
 import CostProfitPanel from "./CostProfitPanel";
 import StatusPill from "./StatusPill";
@@ -86,9 +86,12 @@ export default function InvoiceCostSection({
   const locked     = isComplete && !unlocked;
   // A kept bill was never paid, so it is not a cost — the same exclusion
   // `total_supplier_cost` makes. Counting it here would contradict the profit above it.
+  // R-400: once the deal uses logistics, a booking replaces its typed freight lines, so they
+  // stay on the list but are left out of the total, and the shipping figure sits under it.
+  const replaced   = (p: { category?: string | null }) => !!flow.shipping_mode && p.category === "freight";
   const totalCost  = useMemo(
-    () => payments.filter((p) => !p.kept).reduce((s, p) => s + p.amount, 0),
-    [payments],
+    () => payments.filter((p) => !p.kept && !(flow.shipping_mode && p.category === "freight")).reduce((s, p) => s + p.amount, 0),
+    [payments, flow.shipping_mode],
   );
 
   const resetForm = () => {
@@ -156,7 +159,7 @@ export default function InvoiceCostSection({
           )}
           {(shippingCharged ?? 0) > 0 && (
             <div className="text-[11px] text-muted mt-2 max-w-[320px]">
-              Shipping charged to the customer: {fmtAmount(shippingCharged!)}. A cost you pay yourself goes in as Freight, not to the supplier.
+              Shipping charged to the customer: {fmtAmount(shippingCharged!)}. A shipping cost you pay yourself goes in as Freight and counts as the deal's shipping, not as money owed to the supplier.
             </div>
           )}
         </div>
@@ -186,6 +189,7 @@ export default function InvoiceCostSection({
                 )}
                 {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
                 {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept: didn't pay, not counted as a cost</div>}
+                {replaced(p) && <div className="text-[10.5px] text-muted">Replaced by the logistics booking, not counted</div>}
                 {!locked && (
                   <div className="flex items-center gap-2.5 mt-0.5">
                     {!p.kept && (
@@ -209,7 +213,7 @@ export default function InvoiceCostSection({
                   </div>
                 )}
               </div>
-              <div className={`text-[13px] font-semibold tabular-nums ${p.kept ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
+              <div className={`text-[13px] font-semibold tabular-nums ${p.kept || replaced(p) ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
               {!locked && (
                 <button title="Remove this cost line" disabled={saving}
                   onClick={() => { if (confirm("Remove this cost line?")) act(() => api.removeSupplierPayment(flow.id, p.id)); }}
@@ -221,6 +225,12 @@ export default function InvoiceCostSection({
             <span>Total cost</span>
             <span className="font-semibold text-ink tabular-nums w-24 text-right">{fmtAmount(totalCost)}</span>
           </div>
+          {flow.shipping_mode && (
+            <div className="flex justify-end gap-2 text-[11px] text-muted pr-1">
+              <span>Shipping</span>
+              <span className="font-semibold text-ink tabular-nums w-24 text-right">{fmtAmount(isComplete ? (flow.shipping_cost ?? 0) : shippingEstimateOf(flow))}</span>
+            </div>
+          )}
         </div>
       )}
 

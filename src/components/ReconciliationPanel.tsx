@@ -23,7 +23,7 @@ const fmtShortDate = (s?: string | null) => {
 };
 
 type Leg = {
-  role: "buyer_payment" | "supplier_payment" | "fee" | "refund_in";
+  role: "buyer_payment" | "supplier_payment" | "shipping" | "fee" | "refund_in";
   direction: "in" | "out";
   label: string;
   target: number; // expected amount, drives the "match" hint
@@ -49,6 +49,7 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
   const byRole = (role: string) => allocs.filter((a) => a.role === role);
   const buyer = byRole("buyer_payment");
   const supplier = byRole("supplier_payment");
+  const shipping = byRole("shipping");
   const fees = byRole("fee");
   const feeSum = fees.reduce((s, f) => s + f.amount, 0);
   // Money BACK from a supplier (a short-shipped or lost load, a price correction).
@@ -58,10 +59,16 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
 
   const buyerSum = buyer.reduce((s, a) => s + a.amount, 0);
   const supplierSum = supplier.reduce((s, a) => s + a.amount, 0);
+  const shippingSum = shipping.reduce((s, a) => s + a.amount, 0);
+  // R-400: typed freight is the shipping leg, so the supplier target leaves it out, and the
+  // shipping target is what the carrier was paid (the bookings), else the typed freight.
+  const supplierTarget = Math.max(0, flow.total_supplier_cost - (flow.freight_typed ?? 0));
+  const shippingTarget = recon?.pieces?.shipping_target ?? (flow.shipping_mode ? (flow.logistics_paid ?? 0) : (flow.freight_typed ?? 0));
   const buyerComplete = flow.invoice_total > 0 ? buyerSum >= flow.invoice_total - 0.5 : buyer.length > 0;
-  const supplierComplete = flow.total_supplier_cost > 0 ? supplierSum >= flow.total_supplier_cost - 0.5 : supplier.length > 0;
-  const fullyReconciled = recon?.fully_reconciled ?? (buyerComplete && supplierComplete);
-  const anyPaired = buyer.length > 0 || supplier.length > 0 || fees.length > 0 || refundIn.length > 0;
+  const supplierComplete = supplierTarget > 0 ? supplierSum >= supplierTarget - 0.5 : supplier.length > 0;
+  const shippingComplete = shippingTarget > 0.005 ? shippingSum >= shippingTarget - 0.5 : true;
+  const fullyReconciled = recon?.fully_reconciled ?? (buyerComplete && supplierComplete && shippingComplete);
+  const anyPaired = buyer.length > 0 || supplier.length > 0 || shipping.length > 0 || fees.length > 0 || refundIn.length > 0;
 
   const expected = recon?.expected_profit ?? flow.net_profit;
   const actual = recon?.actual_profit ?? 0;
@@ -141,7 +148,8 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
     if (busy) return;
     setBusy(true);
     try {
-      await api.addManualDealLine(flow.id, role, amount, date, who, note);
+      // api.ts types the manual-line role without "shipping" (the server accepts it).
+      await api.addManualDealLine(flow.id, role as "supplier_payment", amount, date, who, note);
       setManualLeg(null);
       await load();
       onChange?.();
@@ -163,7 +171,7 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
         ) : (
           <span className="flex items-center gap-1.5 text-[11px] text-muted">
             <AlertTriangle size={12} className="text-warning-ink" />
-            {!buyerComplete && !supplierComplete ? "Not yet reconciled" : !buyerComplete ? "Buyer payment incomplete" : "Supplier payment incomplete"}
+            {!buyerComplete && !supplierComplete ? "Not yet reconciled" : !buyerComplete ? "Buyer payment incomplete" : !supplierComplete ? "Supplier payment incomplete" : "Shipping payment incomplete"}
           </span>
         )}
       </div>
@@ -190,7 +198,7 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
         {/* Supplier payment (money-out) */}
         <LegBlock
           title="Supplier payment"
-          leg={{ role: "supplier_payment", direction: "out", label: "Supplier payment", target: flow.total_supplier_cost }}
+          leg={{ role: "supplier_payment", direction: "out", label: "Supplier payment", target: supplierTarget }}
           rows={supplier}
           picker={picker}
           busy={busy}
@@ -201,6 +209,26 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           pairLabel="Pair supplier payment"
           manualOpen={manualLeg === "supplier_payment"}
           onOpenManual={() => { setManualLeg("supplier_payment"); closePicker(); }}
+          onCloseManual={() => setManualLeg(null)}
+          onAddManual={addManual}
+        />
+
+        {/* Shipping payment (money-out): what the carrier was paid, separate from the supplier.
+            A deal that ships nothing has no target and stays quiet. */}
+        <LegBlock
+          title="Shipping payment"
+          leg={{ role: "shipping", direction: "out", label: "Shipping payment", target: shippingTarget }}
+          rows={shipping}
+          picker={picker}
+          busy={busy}
+          flow={flow}
+          onOpen={openPicker}
+          onClose={closePicker}
+          onUnpair={unpair}
+          pairLabel="Pair shipping payment"
+          quietWhenEmpty
+          manualOpen={manualLeg === "shipping"}
+          onOpenManual={() => { setManualLeg("shipping"); closePicker(); }}
           onCloseManual={() => setManualLeg(null)}
           onAddManual={addManual}
         />
@@ -314,6 +342,12 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
                 <span className="text-ink-2">Paid to supplier</span>
                 <span className="tabular-nums text-danger-ink">−{fmtAmount(recon.pieces.supplier_paired)}</span>
               </div>
+              {(recon.pieces.shipping_paired ?? 0) > 0.005 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-ink-2">Paid to carrier</span>
+                  <span className="tabular-nums text-danger-ink">−{fmtAmount(recon.pieces.shipping_paired ?? 0)}</span>
+                </div>
+              )}
               {recon.pieces.fee_paired > 0.005 && (
                 <div className="flex items-center justify-between">
                   <span className="text-ink-2">Wire fees</span>
@@ -382,7 +416,7 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
 // ── One money leg: title, paired rows or empty state, inline picker ──
 function LegBlock({
   title, leg, rows, picker, busy, flow, onOpen, onClose, onUnpair, pairLabel,
-  manualOpen, onOpenManual, onCloseManual, onAddManual,
+  manualOpen, onOpenManual, onCloseManual, onAddManual, quietWhenEmpty,
 }: {
   title: string;
   leg: Leg;
@@ -398,6 +432,8 @@ function LegBlock({
   onOpenManual: () => void;
   onCloseManual: () => void;
   onAddManual: (role: Leg["role"], amount: number, date: string, who: string, note: string) => void;
+  /** A leg with nothing expected and nothing paired shows no warning (the shipping leg on a deal that ships nothing). */
+  quietWhenEmpty?: boolean;
 }) {
   const paired = rows.length > 0;
   const sum = rows.reduce((s, a) => s + a.amount, 0);
@@ -407,15 +443,17 @@ function LegBlock({
   // bigger than the invoice — but it moves recorded profit, so it is never silent.
   const over = paired && leg.target > 0 && sum > leg.target + 0.5;
   const open = picker?.role === leg.role;
+  const quiet = !!quietWhenEmpty && !paired && !(leg.target > 0.005);
   return (
     <div className="px-4 py-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          {complete
+          {quiet ? null : complete
             ? <CheckCircle2 size={14} className="text-success-ink flex-shrink-0" />
             : <AlertTriangle size={14} className="text-warning-ink flex-shrink-0" />}
           <span className="text-[13px] font-medium text-ink truncate">{title}</span>
-          {!paired && <span className="text-[11px] text-warning-ink">Not paired</span>}
+          {quiet && <span className="text-[11px] text-muted">Nothing to pair yet</span>}
+          {!paired && !quiet && <span className="text-[11px] text-warning-ink">Not paired</span>}
           {partial && leg.target > 0 && (
             <span className="text-[11px] text-warning-ink tabular-nums">
               Partially paired · {fmtAmount(sum)} of {fmtAmount(leg.target)}
@@ -908,7 +946,7 @@ function OverpayConfirm({ info, busy, onCancel, onConfirm }: {
           </div>
           <div className="text-[12.5px] text-ink-2 leading-relaxed">
             {fmtAmount(amt)} is <span className="font-semibold tabular-nums">{fmtAmount(surplus)}</span> more than this deal's{" "}
-            {leg.role === "buyer_payment" ? "invoice" : "expected supplier cost"} of {fmtAmount(leg.target)}
+            {leg.role === "buyer_payment" ? "invoice" : leg.role === "shipping" ? "expected shipping cost" : "expected supplier cost"} of {fmtAmount(leg.target)}
             {expects < leg.target - 0.005 && <> ({fmtAmount(expects)} still unpaired)</>}.
           </div>
           <div className="text-[12.5px] text-ink-2 leading-relaxed mt-2">
@@ -942,7 +980,8 @@ function OverpayConfirm({ info, busy, onCancel, onConfirm }: {
 function matches(t: BankTxn, leg: Leg, flow: DealFlow): boolean {
   const cp = (t.counterparty_name || "").trim().toLowerCase();
   const name = (flow.client_name || "").toLowerCase();
-  const byName = cp.length > 2 && name.length > 0 && (name.includes(cp) || cp.includes(name));
+  // A carrier is never the buyer, so a name match means nothing on the shipping leg.
+  const byName = leg.role !== "shipping" && cp.length > 2 && name.length > 0 && (name.includes(cp) || cp.includes(name));
   const byAmount = !!leg.target && Math.abs(leg.target - t.unallocated) < 0.5;
   return byName || byAmount;
 }
