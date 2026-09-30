@@ -2231,7 +2231,7 @@ const MIGRATIONS: &[(u32, &str)] = &[
         "#,
     ),
     (
-        104,
+        106,
         // R-400: freight bookings, one per truck (a deal can have several), written by the
         // Logistics screen on the server and read here. A live booking is archived = 0 and not
         // cancelled. paid_amount NULL means not paid yet, a number (0 included) is the exact amount
@@ -2239,13 +2239,17 @@ const MIGRATIONS: &[(u32, &str)] = &[
         // the shipping leg as recorded at the last completion or resync (NULL on every deal
         // recorded before R-400). Synced (sync.rs ALLOWED_TABLES, netsync SNAPSHOT_TABLES), and
         // mirrored in clienthub-api schema.sql plus its sync.rs ALTER list, which must be
-        // deployed first. Never put a semicolon inside a comment here, the runner splits on it.
+        // deployed first. booked_at is the day the freight was first confirmed booked, set once
+        // by the server and never cleared. logistics_payouts (R-401) is the logistics payee's pay
+        // record, server-authored like freight_bookings. This is 106 because R-402 owns 105.
+        // Never put a semicolon inside a comment here, the runner splits on it.
         r#"
         CREATE TABLE IF NOT EXISTS freight_bookings (
             id TEXT PRIMARY KEY,
             org_id TEXT NOT NULL DEFAULT 'org_default',
             deal_flow_id TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'requested',
+            booked_at TEXT DEFAULT '',
             request_note TEXT DEFAULT '',
             pickup_name TEXT DEFAULT '', pickup_address TEXT DEFAULT '',
             pickup_date TEXT DEFAULT '', pickup_window TEXT DEFAULT '',
@@ -2272,6 +2276,23 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_freight_bookings_deal ON freight_bookings(deal_flow_id);
         CREATE INDEX IF NOT EXISTS idx_freight_bookings_org ON freight_bookings(org_id);
         ALTER TABLE deal_flows ADD COLUMN shipping_cost REAL;
+        CREATE TABLE IF NOT EXISTS logistics_payouts (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            payee_id TEXT NOT NULL DEFAULT '',
+            payee_name TEXT DEFAULT '',
+            pay_date TEXT NOT NULL DEFAULT '',
+            period_start TEXT DEFAULT '', period_end TEXT DEFAULT '',
+            amount REAL NOT NULL DEFAULT 0,
+            lines_json TEXT DEFAULT '[]',
+            method TEXT DEFAULT '', reference TEXT DEFAULT '', note TEXT DEFAULT '',
+            paid_at TEXT DEFAULT '',
+            created_by TEXT DEFAULT '', created_by_name TEXT DEFAULT '',
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_logistics_payouts_org ON logistics_payouts(org_id);
         "#,
     ),
 ];

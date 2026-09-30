@@ -29,7 +29,8 @@ const POLL_SECS: u64 = 20;
 /// widens (e.g. new tables in `key_tables`), so devices gated off under a narrower
 /// check get one more pass — without re-healing the fleet on every release.
 /// "3" = the generation that added the financial tables. "4" adds `freight_bookings` (R-400), so a
-/// device that updates after bookings already exist restores them from the server's snapshot.
+/// device that updates after bookings already exist restores them from the server's snapshot
+/// (`logistics_payouts`, R-401, rides the same pass: neither shipped under generation 3).
 const HEAL_GENERATION: &str = "4";
 
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
@@ -66,6 +67,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "warehouse_pallets",
     // Freight bookings (R-400): the Logistics screen's rows, one per truck.
     "freight_bookings",
+    // The logistics payee's pay record (R-401), server-authored like the bookings.
+    "logistics_payouts",
 ];
 
 pub fn ensure_tables() -> Result<()> {
@@ -1437,7 +1440,7 @@ async fn auto_heal_if_behind() {
     let key_tables = [
         "clients", "invoices", "deals", "deal_flows", "payments",
         "bank_txn", "bank_allocation", "deal_receipts", "cash_purchase",
-        "business_expense", "reserve_entry", "loan", "freight_bookings",
+        "business_expense", "reserve_entry", "loan", "freight_bookings", "logistics_payouts",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -2620,6 +2623,8 @@ mod r400_sync_tests {
     fn freight_bookings_replicate_and_an_updated_device_restores_them() {
         assert!(SNAPSHOT_TABLES.contains(&"freight_bookings"), "a repaired device would never see the bookings");
         assert!(crate::sync::is_synced_table("freight_bookings"), "its events would be dead-lettered");
+        assert!(SNAPSHOT_TABLES.contains(&"logistics_payouts"), "a repaired device would never see the pay record");
+        assert!(crate::sync::is_synced_table("logistics_payouts"), "its events would be dead-lettered");
         assert_ne!(HEAL_GENERATION, "3", "devices healed under generation 3 must get one more pass");
     }
 

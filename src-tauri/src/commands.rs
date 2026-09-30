@@ -4785,7 +4785,7 @@ fn ship_facts_from_row(r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipF
 }
 
 /// R-400: the shipping facts for one deal, straight from the database.
-fn ship_facts(conn: &rusqlite::Connection, deal_flow_id: &str) -> ShipFacts {
+pub(crate) fn ship_facts(conn: &rusqlite::Connection, deal_flow_id: &str) -> ShipFacts {
     conn.query_row(
         concat!("SELECT COALESCE(df.supplier_payments_json,'[]') AS sp_json, ", ship_facts_cols!(), " FROM deal_flows df WHERE df.id=?1"),
         [deal_flow_id],
@@ -4868,7 +4868,7 @@ pub struct DealFlow {
     #[serde(default)]
     pub expected_delivery_date_prev: Option<String>,
     /// R-400: the shipping leg as recorded at the last completion or resync. NULL on every deal
-    /// recorded before R-400 (migration 104). Never read as "no shipping": see `ShipFacts`.
+    /// recorded before R-400 (migration 106). Never read as "no shipping": see `ShipFacts`.
     #[serde(default)]
     pub shipping_cost: Option<f64>,
     /// R-400: derived from the live freight bookings (`ship_facts_cols!`), never stored.
@@ -5645,7 +5645,12 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     // Persist the N-way recipients breakdown alongside the legacy 3-way columns.
     // This is the authoritative per-deal split going forward; the jack/ben
     // columns above remain only so already-shipped readers keep working.
-    let breakdown = build_payout_breakdown(&read_profit_split_shares_raw(), net, include_payout);
+    // R-401: the logistics pay comes off the top before the owner split, like a rep's cut.
+    let logistics_pay = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        crate::freight::logistics_pay_amount(&conn, &id)
+    };
+    let breakdown = build_payout_breakdown(&read_profit_split_shares_raw(), crate::freight::owner_remainder(net, 0.0, logistics_pay), include_payout);
     // Snapshot the linked bank transactions onto the deal so the record (and the
     // profit) survives even if the bank statements are later deleted / re-imported.
     let bank_snapshot = {
@@ -5983,7 +5988,12 @@ fn recompute_completed_deal(id: &str, typed_goods: Option<f64>) -> Result<(), St
     // The per-deal recipients breakdown against the new net, on the shares captured at
     // completion (the split the deal was agreed under), as the cost-edit path always did.
     let shares = shares_from_breakdown(&meta_map).unwrap_or_else(read_profit_split_shares_raw);
-    meta_map.insert("payout_recipients".into(), Value::Array(build_payout_breakdown(&shares, net, include_payout)));
+    // R-401: the logistics pay comes off the top before the owner split, like a rep's cut.
+    let logistics_pay = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        crate::freight::logistics_pay_amount(&conn, id)
+    };
+    meta_map.insert("payout_recipients".into(), Value::Array(build_payout_breakdown(&shares, crate::freight::owner_remainder(net, 0.0, logistics_pay), include_payout)));
     let meta_json = serde_json::to_string(&Value::Object(meta_map)).unwrap_or_else(|_| "{}".into());
 
     let (jack, ben, business) = if include_payout {
@@ -6999,7 +7009,11 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
     let eff_gross = gross - refunded;
     let has_cut = enabled && rep_id.is_some() && hide == 0;
     let cut = if !has_cut { 0.0 } else if keep != 0 { rep_cut(&pay_type, pct, gross, net) } else { rep_cut_after_refund(&pay_type, pct, eff_gross, eff_net) };
-    let remaining = eff_net - cut;
+    // R-401: the logistics pay is a cut off the top too, before the owner split. Pending (the
+    // freight amount is not known yet) counts as 0.
+    let logistics_line = crate::freight::deal_pay(&conn, &deal_flow_id, &crate::freight::read_pay_settings());
+    let logistics_pay = logistics_line.as_ref().and_then(|l| l.pay).unwrap_or(0.0);
+    let remaining = crate::freight::owner_remainder(eff_net, cut, logistics_pay);
     // Split the remaining net across the shares captured at completion
     // (metadata.payout_recipients) so the deal keeps the split it was agreed
     // under; deals completed before breakdowns existed use the current config.
@@ -7022,6 +7036,8 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
         "rep_unmatched": rep_unmatched,
         "unmatched_rep_name": unmatched_name,
         "rep_cut": if has_cut { r2(cut) } else { 0.0 },
+        "logistics_pay": r2(logistics_pay),
+        "logistics_pay_pending": logistics_line.as_ref().map_or(false, |l| l.pending),
         "remaining_profit": r2(remaining),
         // Honor the deal's payout decision: when payout_included is false the deal
         // was completed 100%-to-business (allocate_payout's net_excl rule); only
@@ -14510,7 +14526,7 @@ pub struct WeeklyBrief {
 /// (R-255) — dropped from the brief's per-deal product list. Extends the same
 /// judgment call `line_items_match` (:1904) already makes for search: freight is
 /// not something the buyer "bought".
-fn is_shipping_line(description: &str) -> bool {
+pub(crate) fn is_shipping_line(description: &str) -> bool {
     let d = description.trim().to_lowercase();
     if d.is_empty() { return true; }
     matches!(d.as_str(), "shipping" | "freight" | "shipping & handling" | "shipping and handling" | "delivery")
@@ -19644,7 +19660,7 @@ async fn fetch_bank_suggest(path: &str) -> Value {
 /// booking still flows through allocate_bank_txn locally.
 #[tauri::command]
 pub async fn suggest_bank_txn_links() -> Result<Value, String> {
-    Ok(fetch_bank_suggest("/api/bank/suggestions/bulk?limit=120&refunds=1").await)
+    Ok(fetch_bank_suggest("/api/bank/suggestions/bulk?limit=120&refunds=1&shipping=1").await)
 }
 
 /// R-150 phase 5 — completed deals whose payments were never bank-linked,
@@ -25496,5 +25512,137 @@ mod r400_shipping_tests {
         assert_eq!(owed().await - base, 6500.0);
         set_paid(&id, "1", 700.0);
         assert_eq!(owed().await - base, 6000.0, "paid: only the goods are still owed");
+    }
+}
+
+/// R-401: the logistics pay comes off the top before the owner split, wherever the rep's cut does.
+#[cfg(test)]
+mod r401_pay_tests {
+    use super::*;
+
+    const RULE: &str = r#"{"enabled":true,"payee_id":"st-pay","payee_name":"Sample payee","share_pct":100,"cover_losses":true,"loss_pay_pct":10,"frequency":"weekly","pay_weekday":4}"#;
+    const SPLIT: &str = r#"[{"name":"Partner A","pct":60,"is_business":false,"kind":"person"},{"name":"Business","pct":40,"is_business":true,"kind":"business"}]"#;
+
+    fn put(key: &str, value: &str) {
+        pool().get().unwrap().execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)", rusqlite::params![key, value]).unwrap();
+    }
+    fn clear() {
+        pool().get().unwrap().execute("DELETE FROM settings WHERE key IN ('logistics_pay','profit_split_json','rep_payouts_enabled')", []).unwrap();
+    }
+
+    /// A deal whose cost is one 6,000 supplier line, the buyer's 10,000 received, and an invoice
+    /// carrying a 500 shipping line.
+    fn deal(tag: &str) -> String {
+        let id = format!("df-r401-{tag}");
+        let line = json!({
+            "id": "a", "supplier_name": "Sample supplier", "supplier_id": null, "amount": 6000.0,
+            "original_amount": null, "price_changed": false, "quantity": null, "unit_price": null,
+            "method": null, "notes": null, "paid": true, "paid_at": null, "category": "supplier",
+            "kept": false, "supplier_billed": false
+        });
+        let items = json!([
+            {"description": "Pallets of mixed goods", "qty": 1, "rate": 9500, "amount": 9500},
+            {"description": "Shipping", "qty": 1, "rate": 500, "amount": 500}
+        ]).to_string();
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r401', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r401', ?2, '2026-09-01', '2026-09-30', ?3, 10000, 10000, '2026-09-01')",
+            rusqlite::params![format!("inv-r401-{tag}"), format!("INV-R401-{tag}"), items],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount)
+             VALUES (?1, ?2, 'supplier_paid', '2026-09-01', '2026-09-01', ?3, 6000, 10000)",
+            rusqlite::params![id, format!("inv-r401-{tag}"), Value::Array(vec![line]).to_string()],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO freight_bookings (id, deal_flow_id, status, booked_at, paid_amount, created_at, updated_at)
+             VALUES (?1, ?2, 'delivered', '2026-10-01', 350, '2026-09-02', '2026-09-02')",
+            rusqlite::params![format!("fb_{id}"), id],
+        ).unwrap();
+        id
+    }
+
+    fn amounts(id: &str) -> Vec<f64> {
+        let meta: String = pool().get().unwrap().query_row("SELECT metadata FROM deal_flows WHERE id=?1", [id], |r| r.get(0)).unwrap();
+        let v: Value = serde_json::from_str(&meta).unwrap();
+        v["payout_recipients"].as_array().unwrap().iter().map(|p| p["amount"].as_f64().unwrap()).collect()
+    }
+
+    #[tokio::test]
+    async fn the_recipients_snapshot_is_split_after_the_logistics_pay_and_follows_a_resync() {
+        let _db = crate::db::init_test_store();
+        put("profit_split_json", SPLIT);
+        put("logistics_pay", RULE);
+        let id = deal("snap");
+        complete_deal_flow(id.clone(), None, None, Some(true), None).await.unwrap();
+        // Net is 10,000 - 6,000 - 350 = 3,650. Charged 500, paid 350: the logistics pay is 150,
+        // so 3,500 is split 60/40. net_profit itself is unchanged.
+        let net: f64 = pool().get().unwrap().query_row("SELECT net_profit FROM deal_flows WHERE id=?1", [&id], |r| r.get(0)).unwrap();
+        assert_eq!(net, 3650.0);
+        assert_eq!(amounts(&id), vec![2100.0, 1400.0]);
+        // The carrier's amount is corrected to 300: pay 200, net 3,700, the split still 3,500.
+        pool().get().unwrap().execute("UPDATE freight_bookings SET paid_amount=300 WHERE id=?1", [format!("fb_{id}")]).unwrap();
+        resync_completed_deal(&id).unwrap();
+        assert_eq!(amounts(&id), vec![2100.0, 1400.0]);
+        // Rule off: the whole net is split, as before R-401.
+        put("logistics_pay", r#"{"enabled":false}"#);
+        resync_completed_deal(&id).unwrap();
+        assert_eq!(amounts(&id), vec![2220.0, 1480.0]);
+        clear();
+    }
+
+    #[tokio::test]
+    async fn deal_flow_payout_takes_the_rep_and_the_logistics_pay_off_the_top() {
+        let _db = crate::db::init_test_store();
+        put("profit_split_json", SPLIT);
+        put("logistics_pay", RULE);
+        put("rep_payouts_enabled", "1");
+        crate::employees::ensure_rbac().unwrap();
+        let id = deal("payout");
+        {
+            let conn = pool().get().unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO staff_accounts (id, org_id, email, display_name, role_id, status, commission_pct, pay_type, hide_pay_cuts)
+                 VALUES ('st-r401', 'org_default', 'rep@example.test', 'Sample rep', 'role_viewer', 'active', 10, 'profit_pct', 0)", [],
+            ).unwrap();
+            conn.execute("INSERT OR REPLACE INTO deal_reps (deal_flow_id, lead_rep_id) VALUES (?1, 'st-r401')", [&id]).unwrap();
+        }
+        complete_deal_flow(id.clone(), None, None, Some(true), None).await.unwrap();
+        let p = deal_flow_payout(id.clone()).await.unwrap();
+        // Net 3,650: the rep's 10% is 365 and the logistics pay is 150, so 3,135 is left to split.
+        assert_eq!(p["rep_cut"], json!(365.0));
+        assert_eq!(p["logistics_pay"], json!(150.0));
+        assert_eq!(p["logistics_pay_pending"], json!(false));
+        assert_eq!(p["remaining_profit"], json!(3135.0));
+        let split: f64 = p["splits"].as_array().unwrap().iter().map(|s| s["amount"].as_f64().unwrap()).sum();
+        assert!((split - 3135.0).abs() < 0.02);
+        assert_eq!(p["net_profit"], json!(3650.0), "the net itself is not reduced");
+
+        // A truck with no amount yet counts as 0 and says it is waiting.
+        pool().get().unwrap().execute("UPDATE freight_bookings SET paid_amount=NULL WHERE id=?1", [format!("fb_{id}")]).unwrap();
+        let p = deal_flow_payout(id.clone()).await.unwrap();
+        assert_eq!((p["logistics_pay"].clone(), p["logistics_pay_pending"].clone()), (json!(0.0), json!(true)));
+
+        // Off: no logistics pay and the remaining profit is what it was before R-401.
+        put("logistics_pay", r#"{"enabled":false}"#);
+        let p = deal_flow_payout(id.clone()).await.unwrap();
+        assert_eq!((p["logistics_pay"].clone(), p["remaining_profit"].clone()), (json!(0.0), json!(3285.0)));
+        clear();
+        pool().get().unwrap().execute("DELETE FROM deal_reps WHERE deal_flow_id=?1", [&id]).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_deal_page_reads_its_line_through_one_command() {
+        let _db = crate::db::init_test_store();
+        put("logistics_pay", RULE);
+        let id = deal("cmd");
+        let v = crate::freight::get_deal_logistics_pay(id.clone()).await.unwrap();
+        assert_eq!((v["charged"].as_f64(), v["freight"].as_f64(), v["pay"].as_f64()), (Some(500.0), Some(350.0), Some(150.0)));
+        assert_eq!(v["payee_name"], json!("Sample payee"));
+        put("logistics_pay", r#"{"enabled":false}"#);
+        assert_eq!(crate::freight::get_deal_logistics_pay(id).await.unwrap(), Value::Null);
+        clear();
     }
 }
