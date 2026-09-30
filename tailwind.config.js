@@ -11,6 +11,15 @@ export default {
       // Calm, consistent motion: 130ms ease-out everywhere by default.
       transitionDuration: { DEFAULT: '130ms' },
       transitionTimingFunction: { DEFAULT: 'cubic-bezier(0, 0, 0.2, 1)' },
+      // Accent FILLS (buttons, chips) may be deeper than accent text: dark mode brightens
+      // the accent so text reads on black, but white button text needs a deeper fill
+      // (R-406). Unset --c-accent-fill = same as the accent, so light mode is unchanged.
+      backgroundColor: {
+        accent: {
+          DEFAULT: 'rgb(var(--c-accent-fill, var(--c-accent)) / <alpha-value>)',
+          hover:   'rgb(var(--c-accent-fill-hover, var(--c-accent-hover)) / <alpha-value>)',
+        },
+      },
       colors: {
         // Semantic brand palette — adapts to html.dark via CSS variables.
         surface:     'rgb(var(--c-surface) / <alpha-value>)',

@@ -575,23 +575,25 @@ input, select, textarea { transition: border-color 0.14s ease, box-shadow 0.18s 
    styles. Default = Ecliptr orange (in :root). Dark variants brighten
    for the matte-black theme. Semantic + data-viz colours never change. */
 
-/* Orange (the default, so no data-accent) takes white text on its fill in dark mode too,
-   as it does in light (R-406). Scoped to orange: the other dark accents are pastel and keep
-   html.dark's near-black. Mono still wins - its block below has equal specificity, later. */
-html.dark:not([data-accent]) { --c-on-accent: 255 255 255; }
+/* Dark-mode buttons: white text on the light theme's deeper fill (R-406). The dark accent
+   itself stays bright, because it is also text and borders on black; only bg-accent reads
+   --c-accent-fill (tailwind.config.js). Orange is the default, so no data-accent. Eclipse
+   already had white on a deep enough fill; amber keeps dark text in both themes by design.
+   Mono resets all of this - its blocks below come later at equal or higher specificity. */
+html.dark:not([data-accent]) { --c-on-accent: 255 255 255; --c-accent-fill: 255 101 32; --c-accent-fill-hover: 240 87 15; }
 
 /* Blue — the pre-orange default, kept as an explicit option. */
 html[data-accent="blue"] { --c-accent:37 99 235; --c-accent-hover:29 78 216;
   --color-primary:#2563EB; --color-primary-hover:#1D4ED8; --color-primary-light:#EFF6FF; --color-primary-glow:rgba(37,99,235,.18);
   --accent-50:#EFF6FF; --accent-100:#DBEAFE; --accent-400:#60A5FA; --accent-500:#3B82F6; --accent-600:#2563EB; --accent-700:#1D4ED8;
   --accent-glow:rgba(37,99,235,.38); --accent-tint:rgba(37,99,235,.16); --shadow-indigo:0 4px 20px rgba(37,99,235,.22),0 1px 4px rgba(37,99,235,.12); }
-html.dark[data-accent="blue"] { --c-accent:96 165 250; --c-accent-hover:147 197 253; }
+html.dark[data-accent="blue"] { --c-accent:96 165 250; --c-accent-hover:147 197 253; --c-on-accent:255 255 255; --c-accent-fill:37 99 235; --c-accent-fill-hover:29 78 216; }
 
 html[data-accent="emerald"] { --c-accent:5 150 105; --c-accent-hover:4 120 87;
   --color-primary:#059669; --color-primary-hover:#047857; --color-primary-light:#ECFDF5; --color-primary-glow:rgba(5,150,105,.18);
   --accent-50:#ECFDF5; --accent-100:#D1FAE5; --accent-400:#34D399; --accent-500:#10B981; --accent-600:#059669; --accent-700:#047857;
   --accent-glow:rgba(5,150,105,.38); --accent-tint:rgba(5,150,105,.16); --shadow-indigo:0 4px 20px rgba(5,150,105,.22),0 1px 4px rgba(5,150,105,.12); }
-html.dark[data-accent="emerald"] { --c-accent:16 185 129; --c-accent-hover:52 211 153; }
+html.dark[data-accent="emerald"] { --c-accent:16 185 129; --c-accent-hover:52 211 153; --c-on-accent:255 255 255; --c-accent-fill:5 150 105; --c-accent-fill-hover:4 120 87; }
 
 /* Eclipse — the flagship Ecliptr accent (deep indigo-violet, white text in both themes). */
 html[data-accent="eclipse"] { --c-accent:79 70 229; --c-accent-hover:67 56 202; --c-on-accent:255 255 255;
@@ -604,13 +606,13 @@ html[data-accent="violet"] { --c-accent:124 58 237; --c-accent-hover:109 40 217;
   --color-primary:#7C3AED; --color-primary-hover:#6D28D9; --color-primary-light:#F5F3FF; --color-primary-glow:rgba(124,58,237,.18);
   --accent-50:#F5F3FF; --accent-100:#EDE9FE; --accent-400:#A78BFA; --accent-500:#8B5CF6; --accent-600:#7C3AED; --accent-700:#6D28D9;
   --accent-glow:rgba(124,58,237,.38); --accent-tint:rgba(124,58,237,.16); --shadow-indigo:0 4px 20px rgba(124,58,237,.22),0 1px 4px rgba(124,58,237,.12); }
-html.dark[data-accent="violet"] { --c-accent:167 139 250; --c-accent-hover:196 181 253; }
+html.dark[data-accent="violet"] { --c-accent:167 139 250; --c-accent-hover:196 181 253; --c-on-accent:255 255 255; --c-accent-fill:124 58 237; --c-accent-fill-hover:109 40 217; }
 
 html[data-accent="teal"] { --c-accent:13 148 136; --c-accent-hover:15 118 110;
   --color-primary:#0D9488; --color-primary-hover:#0F766E; --color-primary-light:#ECFDFB; --color-primary-glow:rgba(13,148,136,.18);
   --accent-50:#ECFDFB; --accent-100:#CCFBF1; --accent-400:#2DD4BF; --accent-500:#14B8A6; --accent-600:#0D9488; --accent-700:#0F766E;
   --accent-glow:rgba(13,148,136,.38); --accent-tint:rgba(13,148,136,.16); --shadow-indigo:0 4px 20px rgba(13,148,136,.22),0 1px 4px rgba(13,148,136,.12); }
-html.dark[data-accent="teal"] { --c-accent:45 212 191; --c-accent-hover:94 234 212; }
+html.dark[data-accent="teal"] { --c-accent:45 212 191; --c-accent-hover:94 234 212; --c-on-accent:255 255 255; --c-accent-fill:13 148 136; --c-accent-fill-hover:15 118 110; }
 
 html[data-accent="amber"] { --c-accent:217 119 6; --c-accent-hover:180 83 9; --c-on-accent:17 17 19;
   --color-primary:#D97706; --color-primary-hover:#B45309; --color-primary-light:#FFFBEB; --color-primary-glow:rgba(217,119,6,.18);
@@ -622,7 +624,7 @@ html[data-accent="rose"] { --c-accent:225 29 72; --c-accent-hover:190 18 60;
   --color-primary:#E11D48; --color-primary-hover:#BE123C; --color-primary-light:#FFF1F2; --color-primary-glow:rgba(225,29,72,.18);
   --accent-50:#FFF1F2; --accent-100:#FFE4E6; --accent-400:#FB7185; --accent-500:#F43F5E; --accent-600:#E11D48; --accent-700:#BE123C;
   --accent-glow:rgba(225,29,72,.38); --accent-tint:rgba(225,29,72,.16); --shadow-indigo:0 4px 20px rgba(225,29,72,.22),0 1px 4px rgba(225,29,72,.12); }
-html.dark[data-accent="rose"] { --c-accent:251 113 133; --c-accent-hover:253 164 175; }
+html.dark[data-accent="rose"] { --c-accent:251 113 133; --c-accent-hover:253 164 175; --c-on-accent:255 255 255; --c-accent-fill:225 29 72; --c-accent-fill-hover:190 18 60; }
 
 html[data-accent="slate"] { --c-accent:51 65 85; --c-accent-hover:30 41 59;
   --color-primary:#334155; --color-primary-hover:#1E293B; --color-primary-light:#F1F5F9; --color-primary-glow:rgba(51,65,85,.18);
@@ -637,6 +639,7 @@ html.dark[data-accent="slate"] { --c-accent:203 213 225; --c-accent-hover:226 23
    near-black accent on white. ── */
 html.matte.dark, html.matte.dark[data-accent] {
   --c-accent: 232 232 236; --c-accent-hover: 200 200 206; --c-on-accent: 17 17 19;
+  --c-accent-fill: initial; --c-accent-fill-hover: initial; /* back to the accent itself */
   --accent-50:#161618; --accent-100:#202024; --accent-400:#8A8A92; --accent-500:#C8C8CE; --accent-600:#E8E8EC; --accent-700:#F4F4F6;
   --accent-glow:rgba(255,255,255,.10); --accent-tint:rgba(255,255,255,.07);
   --color-primary:#E8E8EC; --color-primary-hover:#C8C8CE; --color-primary-light:#202024; --color-primary-glow:rgba(255,255,255,.10);
