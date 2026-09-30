@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronRight, Search, Truck } from "lucide-react";
 import { api, type FreightBooking, type Me } from "../lib/api";
-import { isLogisticsOnly } from "../lib/permissions";
+import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import StatusPill from "./StatusPill";
+import LogisticsShipments from "./LogisticsShipments";
 import { YourPayCard } from "./LogisticsPay";
 import LogisticsBookingForm, {
   AmountNeededPill, FreightStatusPill, fmtDay, needsAmount, placeLabel, useNetsyncApplied,
@@ -98,6 +99,10 @@ function GroupCard({ title, count, children }: { title: string; count: number; c
 
 export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   const logisticsOnly = isLogisticsOnly(me);
+  // R-415: every shipment, for the business. The server reads it for an admin, or for someone who
+  // sees deals and their dollar figures; a Logistics-only account never does.
+  const canShipments = !logisticsOnly && (isAdmin(me) || (can(me, "deal_flow:view") && can(me, "deal_flow:view_numbers")));
+  const [view, setView] = useState<"bookings" | "shipments">("bookings");
   const [rows, setRows] = useState<FreightBooking[] | null>(null);
   const [doneRows, setDoneRows] = useState<FreightBooking[] | null>(null);
   const [doneOpen, setDoneOpen] = useState(false);
@@ -176,18 +181,32 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
           <p className="text-[13px] text-muted mt-0.5">
             {logisticsOnly
               ? "Each truck to book, and the amount paid once the carrier is paid."
+              : view === "shipments" ? "Every deal with a truck sent to logistics: what was charged, what the carrier was paid, what is left."
               : "Every truck sent to logistics, and where each one stands."}
           </p>
         </div>
-        <div className="relative w-full max-w-[280px] min-w-[200px]">
+        {view === "bookings" && <div className="relative w-full max-w-[280px] min-w-[200px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
           <input
             value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search code, place, carrier, BOL or PRO"
             aria-label="Search bookings"
             className="w-full border border-line pl-8 pr-3 h-9 rounded-lg text-[13px] bg-surface text-ink placeholder-muted focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
           />
-        </div>
+        </div>}
       </div>
+
+      {canShipments && (
+        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-surface-2 border border-line" role="group" aria-label="Logistics view">
+          {([["bookings", "Bookings"], ["shipments", "All shipments"]] as const).map(([k, label]) => (
+            <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)}
+              className={`h-8 px-3.5 rounded-md text-[12.5px] whitespace-nowrap transition-colors ${view === k ? "bg-surface text-ink font-medium shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {view === "shipments" && canShipments ? <LogisticsShipments /> : (<>
 
       {/* R-401: his own pay, only when he is the one being paid. Nothing about what a customer was charged. */}
       <YourPayCard />
@@ -245,6 +264,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
           onChanged={() => { load(); if (doneOpen) loadDone(); }}
         />
       )}
+      </>)}
     </div>
   );
 }

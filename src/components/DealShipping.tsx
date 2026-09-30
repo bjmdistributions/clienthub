@@ -6,7 +6,7 @@ import StatusPill from "./StatusPill";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
 import LogisticsBookingForm, {
-  AmountNeededPill, FreightStatusPill, fmtDay, needsAmount, useNetsyncApplied,
+  AccessorialsField, AmountNeededPill, FreightStatusPill, fmtDay, needsAmount, useNetsyncApplied,
 } from "./LogisticsBookingForm";
 
 // R-400: the deal's Shipping step. Freight is its own leg of the deal, separate from what is
@@ -34,15 +34,24 @@ function Row({ label, value, sub }: { label: string; value: ReactNode; sub?: str
 // ── Send to logistics ─────────────────────────────────────────────────────
 // A sheet prefilled from the deal: the buyer is where it goes, the supplier on the cost lines
 // is where it comes from (one pick when several are owed). Everything can be changed before it
-// is sent, and the person doing logistics can fill in the rest.
-function SendSheet({ flow, onClose, onSent }: { flow: DealFlow; onClose: () => void; onSent: () => void }) {
+// is sent. R-415: while the team fills in the freight (the default), the pallets, weight and
+// dimensions are filled in here, and the person doing logistics only books the truck.
+function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: number | null; onClose: () => void; onSent: () => void }) {
   const [pre, setPre] = useState<FreightPrefill | null>(null);
   const [err, setErr] = useState("");
   const [pickup, setPickup] = useState({ name: "", address: "" });
   const [delivery, setDelivery] = useState({ name: "", address: "" });
-  const [pallets, setPallets] = useState("");
+  const [freight, setFreight] = useState({ pallets: "", pieces: "", weight_lbs: "", freight_class: "", dimensions: "", commodity: "", accessorials: "" });
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  // Until the setting is read, the default (on) holds.
+  const [byTeam, setByTeam] = useState(true);
+  const setF = (patch: Partial<typeof freight>) => setFreight((f) => ({ ...f, ...patch }));
+  useEffect(() => {
+    let dead = false;
+    api.logistics.settings.get().then((s) => { if (!dead) setByTeam(s.freight_by_team !== false); }).catch(() => {});
+    return () => { dead = true; };
+  }, []);
 
   useEffect(() => {
     let dead = false;
@@ -57,13 +66,18 @@ function SendSheet({ flow, onClose, onSent }: { flow: DealFlow; onClose: () => v
     return () => { dead = true; };
   }, [flow.id]);
 
+  const missing = byTeam && !(freight.pallets.trim() && freight.weight_lbs.trim() && freight.dimensions.trim());
   const send = async () => {
+    if (missing) { setErr("Fill in the pallets, weight and dimensions before sending to logistics."); return; }
     setBusy(true); setErr("");
     try {
       await api.logistics.create(flow.id, {
         pickup_name: pickup.name, pickup_address: pickup.address,
         delivery_name: delivery.name, delivery_address: delivery.address,
-        pallets: pallets.trim(), request_note: note.trim(),
+        pallets: freight.pallets.trim(), pieces: freight.pieces.trim(), weight_lbs: freight.weight_lbs.trim(),
+        freight_class: freight.freight_class.trim(), dimensions: freight.dimensions.trim(),
+        commodity: freight.commodity.trim(), accessorials: freight.accessorials.trim(),
+        request_note: note.trim(),
       });
       toast("Sent to logistics");
       onSent();
@@ -83,7 +97,7 @@ function SendSheet({ flow, onClose, onSent }: { flow: DealFlow; onClose: () => v
           <div className="min-w-0">
             <h2 className="text-[16px] font-semibold text-ink">Send to logistics</h2>
             <p className="text-[12px] text-muted mt-0.5">
-              {flow.invoice_number ? `${flow.invoice_number}. ` : ""}Logistics books the truck and fills in the rest.
+              {flow.invoice_number ? `${flow.invoice_number}. ` : ""}{byTeam ? "Fill in the freight, then logistics books the truck." : "Logistics books the truck and fills in the rest."}
             </p>
           </div>
           <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
@@ -91,6 +105,13 @@ function SendSheet({ flow, onClose, onSent }: { flow: DealFlow; onClose: () => v
         <div className="px-5 py-4 space-y-4 overflow-y-auto">
           {pre === null ? <div className="text-[12.5px] text-muted">Loading...</div> : (
             <>
+              {billed != null && (
+                <div className={`rounded-lg border px-3 py-2 text-[13px] ${billed > 0.005 ? "bg-surface-2 border-line" : "bg-warning-bg border-warning/30 text-warning-ink"}`}>
+                  {billed > 0.005
+                    ? <><span className="text-muted">Charged to the customer for shipping</span>{" "}<span className="font-semibold text-ink tabular-nums">{fmtAmount(billed)}</span></>
+                    : "The invoice has no shipping line."}
+                </div>
+              )}
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Pickup</div>
                 {options.length > 1 && (
@@ -109,9 +130,35 @@ function SendSheet({ flow, onClose, onSent }: { flow: DealFlow; onClose: () => v
                 <input className={inp} placeholder="Name" value={delivery.name} onChange={(e) => setDelivery({ ...delivery, name: e.target.value })} />
                 <input className={inp} placeholder="Address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
               </div>
-              <div>
-                <label className="block text-[12px] font-medium text-ink-2 mb-1">Pallets</label>
-                <NumberInput integer className={inp} value={pallets} placeholder="How many" onValue={(_n, raw) => setPallets(raw)} />
+              <div className="space-y-2">
+                <div className="text-[12px] font-medium text-ink-2">Freight</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="min-w-0">
+                    <label className="block text-[12px] text-muted mb-1">Pallets{byTeam ? " (required)" : ""}</label>
+                    <NumberInput integer className={inp} value={freight.pallets} placeholder="How many" onValue={(_n, raw) => setF({ pallets: raw })} />
+                  </div>
+                  <div className="min-w-0">
+                    <label className="block text-[12px] text-muted mb-1">Pieces</label>
+                    <NumberInput integer className={inp} value={freight.pieces} onValue={(_n, raw) => setF({ pieces: raw })} />
+                  </div>
+                  <div className="min-w-0">
+                    <label className="block text-[12px] text-muted mb-1">Weight in lbs{byTeam ? " (required)" : ""}</label>
+                    <NumberInput className={inp} value={freight.weight_lbs} onValue={(_n, raw) => setF({ weight_lbs: raw })} />
+                  </div>
+                  <div className="min-w-0">
+                    <label className="block text-[12px] text-muted mb-1">Freight class</label>
+                    <input className={inp} value={freight.freight_class} onChange={(e) => setF({ freight_class: e.target.value })} />
+                  </div>
+                  <div className="min-w-0">
+                    <label className="block text-[12px] text-muted mb-1">Dimensions{byTeam ? " (required)" : ""}</label>
+                    <input className={inp} placeholder="48 x 40 x 60 in" value={freight.dimensions} onChange={(e) => setF({ dimensions: e.target.value })} />
+                  </div>
+                  <div className="min-w-0">
+                    <label className="block text-[12px] text-muted mb-1">What it is</label>
+                    <input className={inp} value={freight.commodity} onChange={(e) => setF({ commodity: e.target.value })} />
+                  </div>
+                </div>
+                <AccessorialsField value={freight.accessorials} onChange={(v) => setF({ accessorials: v })} />
               </div>
               <div>
                 <label className="block text-[12px] font-medium text-ink-2 mb-1">Note for logistics</label>
@@ -121,8 +168,9 @@ function SendSheet({ flow, onClose, onSent }: { flow: DealFlow; onClose: () => v
               </div>
             </>
           )}
-          {err && <div className="text-[12px] text-danger-ink" role="alert">{err}</div>}
         </div>
+        {/* Outside the scrolling body, so a refusal is never hidden below the fields. */}
+        {err && <div className="px-5 py-2 text-[12px] text-danger-ink border-t border-line" role="alert">{err}</div>}
         <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
           <button onClick={onClose} className="px-4 h-9 rounded-lg text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
           <button onClick={send} disabled={busy || pre === null}
@@ -223,6 +271,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
   const [open, setOpen] = useState<FreightBooking | null>(null);
   // R-401: what the invoice charged for shipping, and the logistics pay that comes of it.
   const [charged, setCharged] = useState<{ amount: number; source: "lines" | "field" | "none" }>({ amount: 0, source: "none" });
+  const [chargedReady, setChargedReady] = useState(false);
   const [pay, setPay] = useState<DealLogisticsPay | null>(null);
 
   const loadBookings = useCallback(async () => {
@@ -236,7 +285,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
   useEffect(() => {
     let dead = false;
     api.getInvoice(flow.invoice_id)
-      .then((inv) => { if (!dead) setCharged(shippingChargedOf(inv.line_items_json, inv.shipping_charged)); })
+      .then((inv) => { if (!dead) { setCharged(shippingChargedOf(inv.line_items_json, inv.shipping_charged)); setChargedReady(true); } })
       .catch(() => {});
     return () => { dead = true; };
   }, [flow.invoice_id]);
@@ -283,7 +332,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
       (b.delivered_at || b.delivery_date) && `${b.delivered_at ? "Delivered" : "Delivery"} ${fmtDay(b.delivered_at || b.delivery_date)}`,
     ].filter(Boolean).join(", ");
     const money = [
-      b.paid_amount != null && `Amount paid ${fmtAmount(b.paid_amount)}${b.paid_at ? ` on ${fmtDay(b.paid_at)}` : ""}`,
+      b.paid_amount != null && `Amount paid ${fmtAmount(b.paid_amount)}${b.paid_at ? ` on ${fmtDay(b.paid_at)}` : ""}${b.paid_method ? ` with ${b.paid_method}` : ""}`,
       b.paid_amount == null && b.quoted_cost != null && `Quote ${fmtAmount(b.quoted_cost)}`,
     ].filter(Boolean).join(", ");
     return (
@@ -343,7 +392,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
           {(mode || paid > 0 || linked > 0 || quoted > 0 || charged.amount > 0.005) && (
             <div className="rounded-xl bg-surface border border-line px-4 py-3 space-y-1.5">
               {charged.amount > 0.005 && (
-                <Row label="Charged to the customer" value={fmtAmount(pay?.charged ?? charged.amount)}
+                <Row label="Charged to the customer for shipping" value={fmtAmount(pay?.charged ?? charged.amount)}
                   sub={(pay?.charged_source ?? charged.source) === "lines" ? "From the invoice's shipping line" : "From the invoice's shipping charge"} />
               )}
               <Row label="Shipping paid" value={fmtAmount(paid)} />
@@ -359,8 +408,10 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
                 <Row label="Shipping profit" value={fmtSigned(pay ? pay.surplus : charged.amount - shippingEstimateOf(flow))} />
               )}
               {pay && (
-                pay.pay == null
-                  ? <Row label="Logistics pay" value="Waiting on the freight amount" />
+                pay.rule === "tracked"
+                  ? <Row label="Logistics pay" value="Tracked, not paid" sub="The surplus shows in the Brief" />
+                : pay.pay == null
+                  ? <Row label="Logistics pay" value="Waiting on the amount paid" />
                   : <Row label="Logistics pay" value={fmtAmount(pay.pay)}
                       sub={`${PAY_RULE_WORD[pay.rule] ?? pay.rule}${pay.due_date ? `, due ${fmtDay(pay.due_date)}` : ""}`} />
               )}
@@ -403,7 +454,8 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
       )}
 
       {sending && (
-        <SendSheet flow={flow} onClose={() => setSending(false)} onSent={() => { setSending(false); refresh(); }} />
+        <SendSheet flow={flow} billed={chargedReady ? ((flow.shipping_billed ?? 0) > 0 ? (flow.shipping_billed as number) : charged.amount) : null}
+          onClose={() => setSending(false)} onSent={() => { setSending(false); refresh(); }} />
       )}
       {open && (
         <LogisticsBookingForm

@@ -15,6 +15,9 @@
 // Query: ?view=logistics|deals|financials|brief|settings  &as=dad|admin  &names=0|1  &addr=0|1  &dark=1
 //        &open=INV-6001  &section=Supplier & cost|Link financials|Shipping|Profit|Review & complete
 //        &tab=splits|payouts (settings: which Settings screen to open)
+// R-415: &mode=pay|track|off (the logistics pay choice) and &byteam=0|1 (who fills in the freight). The
+// booking objects carry shipping_billed, trucks_on_deal and freight_by_team; the Brief block, the Settings
+// cards and the tracker follow the mode.
 import { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import LogisticsView from "./components/LogisticsView";
@@ -23,7 +26,7 @@ import FinancialsView from "./components/FinancialsView";
 import BriefView from "./components/BriefView";
 import SettingsView from "./components/SettingsView";
 import { ToastHost } from "./components/Toast";
-import { payRoute } from "./__r400-fixture/pay";
+import { payRoute, r415, r415Route, settings as paySettings } from "./__r400-fixture/pay";
 import deals from "./__r400-fixture/deals.json";
 import invoices from "./__r400-fixture/invoices.json";
 import bookingFixture from "./__r400-fixture/bookings.json";
@@ -35,6 +38,9 @@ const q = new URLSearchParams(location.search);
 window.confirm = () => true;
 const clone = (x: any) => JSON.parse(JSON.stringify(x));
 if (q.get("dark") === "1") document.documentElement.classList.add("dark");
+r415.byTeam = q.get("byteam") !== "0";
+if (q.get("mode") === "track") paySettings.surplus_mode = "track";
+if (q.get("mode") === "off") paySettings.enabled = false;
 
 type Who = "dad" | "admin";
 const state = {
@@ -48,10 +54,17 @@ const DONE: any[] = clone(bookingFixture.done);
 
 // A booking the way the server shapes it for the caller: the Logistics account sees names and
 // addresses only when its two switches are on, and never the deal.
+// What each deal was charged for shipping (the server works it out), and how many live trucks it has.
+const CHARGED: Record<string, number> = { d1: 800, d2: 650, d3: 500, d6: 300, d7: 400, d8: 500, d9: 620 };
+const r415Fields = (b: any) => ({
+  shipping_billed: CHARGED[b.deal?.id] ?? 0,
+  trucks_on_deal: [...LIVE, ...DONE].filter((x) => x.deal?.id === b.deal?.id && x.status !== "cancelled").length,
+  freight_by_team: r415.byTeam,
+});
 const shape = (b: any) => {
   const dad = state.who === "dad";
   const o = {
-    ...clone(b), code: "L-" + b.id.slice(3, 9).toUpperCase(),
+    ...clone(b), ...r415Fields(b), code: "L-" + b.id.slice(3, 9).toUpperCase(),
     can_see_names: !dad || state.names, can_see_addresses: !dad || state.addr, can_see_deal: !dad,
   };
   if (!o.can_see_names) { o.pickup_name = ""; o.delivery_name = ""; }
@@ -107,13 +120,15 @@ const handlers: Record<string, (a: any) => any> = {
   set_deal_link_na: () => null,
   // Freight bookings: the local read the deal pages use
   list_freight_bookings: ({ dealFlowId }: any) => {
-    const all = [...LIVE, ...DONE].map((b) => ({ ...clone(b), code: "L-" + b.id.slice(3, 9).toUpperCase(), can_see_names: true, can_see_addresses: true, can_see_deal: true }));
+    const all = [...LIVE, ...DONE].map((b) => ({ ...clone(b), ...r415Fields(b), code: "L-" + b.id.slice(3, 9).toUpperCase(), can_see_names: true, can_see_addresses: true, can_see_deal: true }));
     return dealFlowId ? all.filter((b) => b.deal?.id === dealFlowId) : all;
   },
   // Logistics screen
   logistics_request: ({ method, path, body }: any) => {
     const paid = payRoute(method, path, body, state.who === "dad" ? "payee" : "owner", state.names);
     if (paid !== undefined) return paid;
+    const r415r = r415Route(method, path, body, state.who === "dad" ? "payee" : "owner");
+    if (r415r !== undefined) return r415r;
     const [p, qs = ""] = path.split("?");
     if (method === "GET" && p === "/api/logistics/bookings") {
       const rows = qs.includes("include_done=1") ? [...LIVE, ...DONE] : LIVE;

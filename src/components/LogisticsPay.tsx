@@ -31,7 +31,7 @@ const FREQUENCIES: { value: LogisticsPaySettings["frequency"]; label: string }[]
 ];
 
 const DEFAULTS: LogisticsPaySettings = {
-  enabled: false, payee_id: "", payee_name: "", share_pct: 100, cover_losses: true, loss_pay_pct: 0,
+  enabled: false, surplus_mode: "pay", payee_id: "", payee_name: "", share_pct: 100, cover_losses: true, loss_pay_pct: 0,
   frequency: "weekly", pay_weekday: 4, anchor_date: "", pay_day_of_month: 1, method: "", details: "",
 };
 
@@ -40,6 +40,7 @@ const RULE_WORD: Record<string, string> = {
   loss_cover: "Loss covered",
   loss_share: "Share of the loss",
   pending: "Waiting on the amount",
+  tracked: "Tracked, not paid",
 };
 const SOURCE_WORD: Record<string, string> = { bank: "from the bank", paid: "paid", quote: "quoted", mixed: "paid and quoted" };
 
@@ -122,6 +123,50 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 type Person = { id: string; name: string; logisticsOnly: boolean };
 
+/** R-415: one choice for what the shipping surplus does. */
+const SURPLUS_CHOICES: { mode: "off" | "pay" | "track"; title: string; hint: string }[] = [
+  { mode: "off", title: "Off", hint: "Logistics earns nothing from the shipping surplus and the Brief has no shipping block." },
+  { mode: "pay", title: "Pay the surplus", hint: "Logistics earns a share of the shipping profit: what the customer was charged for shipping, less what the carrier was paid. Counted once the freight is confirmed booked." },
+  { mode: "track", title: "Track the surplus in the Brief only", hint: "The Brief and the tracker show the surplus on each load. Nothing is paid and nothing comes off the profit split. A load already paid keeps what it was paid." },
+];
+
+/** R-415: who fills in the freight before a deal is sent to logistics. An admin's setting, saved the moment it is switched. */
+export function LogisticsFreightSetting() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try { setOn((await api.logistics.settings.get()).freight_by_team !== false); setErr(""); }
+    catch (e) { setErr(String(e)); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const flip = async () => {
+    if (on === null) return;
+    const next = !on;
+    setBusy(true); setErr("");
+    try { const saved = await api.logistics.settings.save({ freight_by_team: next }); setOn(saved.freight_by_team !== false); toast("Saved"); }
+    catch (e) { setErr(String(e)); }
+    setBusy(false);
+  };
+  if (on === null) {
+    return err
+      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
+      : <div className="text-[12.5px] text-muted">Loading...</div>;
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-[13px] font-medium text-ink">We fill in the freight details before sending to logistics</div>
+          <div className="text-[12px] text-muted mt-0.5">Pallets, weight, dimensions and accessorials. Off: the logistics person fills them in.</div>
+        </div>
+        <Switch on={on} onClick={flip} disabled={busy} label="We fill in the freight details before sending to logistics" />
+      </div>
+      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+    </div>
+  );
+}
+
 export function LogisticsPaySettingsForm() {
   const [s, setS] = useState<LogisticsPaySettings | null>(null);
   const [people, setPeople] = useState<Person[]>([]);
@@ -152,8 +197,9 @@ export function LogisticsPaySettingsForm() {
 
   const save = async () => {
     if (!s) return;
-    if (s.enabled && !s.payee_id) { setErr("Choose who gets the logistics pay."); return; }
-    if (s.frequency === "biweekly" && !s.anchor_date) { setErr("Pick the first pay date for every two weeks."); return; }
+    const paying = s.enabled && s.surplus_mode !== "track";
+    if (paying && !s.payee_id) { setErr("Choose who gets the logistics pay."); return; }
+    if (paying && s.frequency === "biweekly" && !s.anchor_date) { setErr("Pick the first pay date for every two weeks."); return; }
     setBusy(true); setErr("");
     try {
       const saved = await api.logistics.pay.saveSettings(s);
@@ -164,6 +210,9 @@ export function LogisticsPaySettingsForm() {
     setBusy(false);
   };
 
+  const mode: "off" | "pay" | "track" = !s ? "off" : !s.enabled ? "off" : s.surplus_mode === "track" ? "track" : "pay";
+  const setMode = (m: "off" | "pay" | "track") =>
+    set(m === "off" ? { enabled: false } : { enabled: true, surplus_mode: m });
   const payee = useMemo(() => s && (people.find((p) => p.id === s.payee_id)?.name || s.payee_name), [s, people]);
   const example = useMemo(() => {
     if (!s) return [];
@@ -181,16 +230,27 @@ export function LogisticsPaySettingsForm() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-[13px] font-medium text-ink">Pay logistics from the shipping profit</div>
-          <div className="text-[12px] text-muted mt-0.5">Shipping charged to the customer, less what the carrier was paid. Counted once the freight is confirmed booked.</div>
-        </div>
-        <Switch on={s.enabled} onClick={() => set({ enabled: !s.enabled })} label="Pay logistics from the shipping profit" />
+      <div role="radiogroup" aria-label="What to do with the shipping surplus" className="space-y-2">
+        {SURPLUS_CHOICES.map((c) => {
+          const on = mode === c.mode;
+          return (
+            <button key={c.mode} type="button" role="radio" aria-checked={on} onClick={() => setMode(c.mode)}
+              className={`w-full text-left flex items-start gap-3 rounded-xl border px-4 py-3 transition-colors ${on ? "border-accent bg-accent/5" : "border-line hover:bg-surface-2/60"}`}>
+              <span className={`mt-0.5 w-4 h-4 rounded-full border flex-shrink-0 flex items-center justify-center ${on ? "border-accent" : "border-line-3"}`} aria-hidden>
+                {on && <span className="w-2 h-2 rounded-full bg-accent" />}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium text-ink">{c.title}</span>
+                <span className="block text-[12px] text-muted mt-0.5">{c.hint}</span>
+              </span>
+            </button>
+          );
+        })}
       </div>
 
-      <div className="text-[11.5px] text-muted -mt-2">Changes apply to loads that have not been paid yet.</div>
+      {mode !== "off" && <div className="text-[11.5px] text-muted -mt-2">Changes apply to loads that have not been paid yet.</div>}
 
+      {mode === "pay" && (<>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Who gets it">
           <select className={inp} value={s.payee_id} onChange={(e) => {
@@ -273,6 +333,7 @@ export function LogisticsPaySettingsForm() {
         {example.map((l) => <div key={l} className="text-[13px] text-ink tabular-nums">{l}</div>)}
         {!s.cover_losses && <div className="text-[11.5px] text-muted pt-1">A negative amount comes off the next pay date.</div>}
       </div>
+      </>)}
 
       {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
       <div className="flex items-center gap-3">
@@ -325,6 +386,62 @@ function LoadRow({ l }: { l: LogisticsPayTrackerLine }) {
   );
 }
 
+/** The surplus of the loads whose freight is known. The server sends `totals`; an older one does not. */
+function trackedTotals(t: LogisticsPayTracker) {
+  if (t.totals) return t.totals;
+  const known = t.lines.filter((l) => !l.pending && !l.dropped);
+  const sum = (f: (l: LogisticsPayTrackerLine) => number) => known.reduce((n, l) => n + f(l), 0);
+  return { charged: sum((l) => l.charged), freight: sum((l) => l.freight), surplus: sum((l) => l.surplus), loads: t.lines.length, pending_loads: t.lines.filter((l) => l.pending).length };
+}
+
+/** R-415: one load while the surplus is only tracked: what was charged, what the carrier was paid,
+ *  what is left. No pay, no pay date. */
+function TrackedRow({ l }: { l: LogisticsPayTrackerLine }) {
+  return (
+    <div className="py-2.5 text-[12.5px] min-w-0">
+      <div className="flex items-baseline justify-between gap-3 min-w-0">
+        <div className="min-w-0">
+          <div className="text-ink font-medium truncate">{l.invoice_number}{l.client_name ? ` for ${l.client_name}` : ""}</div>
+          <div className="text-[11px] text-muted truncate">{l.booking_codes.join(", ")} · earned {fmtDay(l.earned_on)}</div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          {l.pending
+            ? <div className="text-[12px] text-muted">Waiting on the amount paid</div>
+            : <div className={`tabular-nums font-semibold ${l.surplus < 0 ? "text-danger-ink" : "text-ink"}`}>{signed(l.surplus)}</div>}
+        </div>
+      </div>
+      <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+        <span>Charged {fmtAmount(l.charged)}</span>
+        {!l.pending && <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>}
+        {l.paid > 0.005 && <span className="text-muted">Paid earlier {fmtAmount(l.paid)}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** R-415: the tracker while the surplus is only tracked: the loads with their charged, freight and
+ *  surplus and a total. No pay dates, no Record payment. */
+function TrackedPanel({ t }: { t: LogisticsPayTracker }) {
+  const tot = trackedTotals(t);
+  const loads = t.lines.filter((l) => !l.dropped).sort((a, b) => b.earned_on.localeCompare(a.earned_on));
+  return (
+    <div className="space-y-4">
+      <div className="min-w-0">
+        <div className="text-[12px] font-medium text-muted">Shipping surplus, tracked</div>
+        <div className="flex items-baseline gap-3 flex-wrap mt-1">
+          <span className={`text-[24px] font-bold tabular-nums leading-none ${tot.surplus < 0 ? "text-danger-ink" : "text-ink"}`}>{signed(tot.surplus)}</span>
+          <span className="text-[13px] text-ink-2">on {tot.loads - tot.pending_loads} load{tot.loads - tot.pending_loads !== 1 ? "s" : ""}</span>
+          {tot.pending_loads > 0 && <StatusPill tone="neutral">{tot.pending_loads} waiting on the amount paid</StatusPill>}
+        </div>
+        <div className="text-[11.5px] text-muted mt-1.5 tabular-nums">Charged {fmtAmount(tot.charged)}, paid to carriers {fmtAmount(tot.freight)}</div>
+      </div>
+      {loads.length === 0
+        ? <div className="text-[12.5px] text-muted py-3 text-center border border-line rounded-xl">Nothing tracked yet. A load counts once its amount paid is entered.</div>
+        : <section className="border border-line rounded-xl px-4 divide-y divide-line">{loads.map((l) => <TrackedRow key={l.deal_flow_id} l={l} />)}</section>}
+    </div>
+  );
+}
+
 const STATUS_TONE: Record<LogisticsPayDate["status"], "success" | "warning" | "neutral"> = { paid: "success", due: "warning", upcoming: "neutral" };
 const STATUS_WORD: Record<LogisticsPayDate["status"], string> = { paid: "Paid", due: "Due", upcoming: "Coming up" };
 
@@ -371,6 +488,7 @@ export function LogisticsPayTrackerPanel() {
   if (!t.settings.enabled) {
     return <div className="text-[12.5px] text-muted">Logistics pay is off. Turn it on under <strong>Splits</strong>.</div>;
   }
+  if (t.mode === "track" || t.settings.surplus_mode === "track") return <TrackedPanel t={t} />;
 
   const payouts = new Map(t.payouts.map((p) => [p.id, p]));
   const pending = t.lines.filter((l) => l.pending);
@@ -455,7 +573,7 @@ export function LogisticsPayTrackerPanel() {
             {pending.map((l) => (
               <div key={l.deal_flow_id} className="px-4 py-2.5 flex items-baseline justify-between gap-3 text-[12.5px]">
                 <span className="min-w-0 truncate text-ink-2">{l.invoice_number}{l.client_name ? ` for ${l.client_name}` : ""} · {l.booking_codes.join(", ")}</span>
-                <span className="text-muted flex-shrink-0">Earned {fmtDay(l.earned_on)}, not counted yet</span>
+                <span className="text-muted flex-shrink-0">Charged {fmtAmount(l.charged)}, not counted until the amount paid is entered</span>
               </div>
             ))}
           </div>
@@ -476,15 +594,37 @@ export function LogisticsPayBriefBlock({ t, from, onOpen }: { t: LogisticsPayTra
   const week = t.lines.filter((l) => !l.dropped && l.earned_on >= from && l.earned_on < end);
   const earned = week.reduce((s, l) => s + (l.pay ?? 0), 0);
   const waiting = t.lines.filter((l) => l.pending).length;
+  // R-415: what the week's loads were charged, what the carriers were paid, and the difference
+  // (only loads whose freight is known).
+  const known = week.filter((l) => !l.pending);
+  const billed = known.reduce((s, l) => s + l.charged, 0);
+  const carriers = known.reduce((s, l) => s + l.freight, 0);
+  const surplus = known.reduce((s, l) => s + l.surplus, 0);
+  const tracking = t.mode === "track" || t.settings.surplus_mode === "track";
+  const figure = (value: number, label: string) => (
+    <div className="px-5 py-4 min-w-0">
+      <div className={`text-[22px] font-bold leading-none tabular-nums ${value < -0.005 ? "text-danger-ink" : "text-ink"}`}>{signed(value)}</div>
+      <div className="text-[11px] text-muted mt-1 leading-tight">{label}</div>
+    </div>
+  );
   return (
     <div className="bg-surface border border-line rounded-2xl overflow-hidden">
       <div className="px-5 py-3.5 border-b border-line-2 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink tracking-tight">Logistics pay</h3>
-          <p className="text-[11px] text-muted mt-0.5 truncate">{t.settings.payee_name || "Logistics"} · {describeSchedule(t.settings, fmtDay)}</p>
+          <h3 className="text-[13px] font-semibold text-ink tracking-tight">{tracking ? "Logistics" : "Logistics pay"}</h3>
+          <p className="text-[11px] text-muted mt-0.5 truncate">
+            {tracking ? "Tracked, not paid" : `${t.settings.payee_name || "Logistics"} · ${describeSchedule(t.settings, fmtDay)}`}
+          </p>
         </div>
-        {t.due_now_total > 0.005 && <StatusPill tone="warning">Due now {fmtAmount(t.due_now_total)}</StatusPill>}
+        {!tracking && t.due_now_total > 0.005 && <StatusPill tone="warning">Due now {fmtAmount(t.due_now_total)}</StatusPill>}
       </div>
+      {tracking ? (
+        <div className="grid grid-cols-3 divide-x divide-line-2">
+          {figure(billed, "charged this week")}
+          {figure(carriers, "paid to carriers")}
+          {figure(surplus, `surplus on ${known.length} load${known.length !== 1 ? "s" : ""}`)}
+        </div>
+      ) : (
       <div className="grid grid-cols-2 divide-x divide-line-2">
         <div className="px-5 py-4 min-w-0">
           <div className="text-[22px] font-bold text-ink leading-none tabular-nums">{fmtAmount(t.next_total)}</div>
@@ -494,6 +634,12 @@ export function LogisticsPayBriefBlock({ t, from, onOpen }: { t: LogisticsPayTra
           <div className="text-[22px] font-bold text-ink leading-none tabular-nums">{fmtAmount(earned)}</div>
           <div className="text-[11px] text-muted mt-1 leading-tight">earned this week on {week.length} load{week.length !== 1 ? "s" : ""}</div>
         </div>
+      </div>
+      )}
+      <div className="border-t border-line-2 px-5 py-2.5 text-[12px] text-ink-2 tabular-nums">
+        {tracking
+          ? `Shipping surplus ${signed(surplus)} this week (tracked, not paid)`
+          : `Shipping surplus ${signed(surplus)} this week, paid to ${t.settings.payee_name || "logistics"}`}
       </div>
       <div className="border-t border-line-2 px-5 py-3 flex items-center justify-between gap-3">
         <span className="text-[12px] text-ink-2">

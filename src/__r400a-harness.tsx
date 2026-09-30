@@ -8,14 +8,21 @@
 // R-401 adds the logistics pay: his "Your pay" card on the Logistics screen (as=dad), the deal's
 // Shipping step with its pay lines and typed freight (view=deal, &pay=share|loss|waiting|off),
 // the settings form (view=settings) and the tracker (view=tracker).
-// Query: ?as=dad|jack  &names=0|1  &addr=0|1  &dark=1  &view=logistics|deal|settings|tracker
+//
+// R-415 adds: the Freight section and required fields on the Send sheet (view=deal&send=1, &byteam=0 turns
+// the setting off), the read-only Freight and the charged line on a booking (&open=L-A91C3D, as=dad),
+// the Logistics settings card and the Off / Pay / Track choice (view=settings, &mode=track|off), the tracker
+// in track mode (view=tracker&mode=track) and All shipments (view=logistics&ship=1, owner only).
+// Query: ?as=dad|jack  &names=0|1  &addr=0|1  &dark=1  &view=logistics|deal|settings|tracker|freight
+//        &byteam=0|1  &mode=pay|track|off  &ship=1  &send=1  &open=<booking code>
+import { useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import LogisticsView from "./components/LogisticsView";
 import DealShipping from "./components/DealShipping";
-import { LogisticsPaySettingsForm, LogisticsPayTrackerPanel } from "./components/LogisticsPay";
+import { LogisticsFreightSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel } from "./components/LogisticsPay";
 import { ToastHost } from "./components/Toast";
 import { localDay } from "./lib/format";
-import { payRoute } from "./__r400-fixture/pay";
+import { payRoute, r415, r415Route, settings as paySettings } from "./__r400-fixture/pay";
 import "./index.css";
 
 const q = new URLSearchParams(location.search);
@@ -23,6 +30,9 @@ const AS = q.get("as") === "dad" ? "dad" : "jack";
 const NAMES = q.get("names") !== "0";
 const ADDR = q.get("addr") !== "0";
 if (q.get("dark") === "1") document.documentElement.classList.add("dark");
+r415.byTeam = q.get("byteam") !== "0";
+if (q.get("mode") === "track") paySettings.surplus_mode = "track";
+if (q.get("mode") === "off") paySettings.enabled = false;
 
 const ahead = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return localDay(d); };
 const back = (n: number) => ahead(-n);
@@ -49,6 +59,7 @@ const D2 = { name: "Tidewater Surplus", address: "9 Kiln Street, Ashby, VA 23301
 const BOOKINGS: any[] = [
   { ...base, id: "fb_7f3k2a0000", status: "requested", request_note: "Dock closes at 3. Call the office before you come.",
     pickup_name: P1.name, pickup_address: P1.address, delivery_name: D1.name, delivery_address: D1.address, pallets: "12",
+    weight_lbs: "9400", pieces: "96", freight_class: "70", dimensions: "48 x 40 x 60 in", commodity: "Mixed apparel", accessorials: "Liftgate at delivery, Appointment, Dock has a low door",
     deal: { id: "df1", invoice_number: "INV-5001", client_name: "Lakeside Discount Co", stage: "payment_received" } },
   { ...base, id: "fb_a91c3d0000", status: "booked", carrier: "Ridgeway Freight", broker: "Summit Load Desk", bol: "RW48211", pickup_date: ahead(1), delivery_date: ahead(4),
     pickup_name: P1.name, pickup_address: P1.address, delivery_name: D2.name, delivery_address: D2.address, quoted_cost: 700, pallets: "8",
@@ -66,8 +77,15 @@ const DONE: any[] = [
     updated_at: `${back(9)}T10:00:00Z`, deal: { id: "df3", invoice_number: "INV-4990", client_name: "Marlow Traders", stage: "invoiced" } },
 ];
 
+// What each deal was charged for shipping, and how many live trucks it has (the server works both out).
+const CHARGED: Record<string, number> = { df1: 1_200, df2: 950, df3: 0 };
+const r415Fields = (b: any) => ({
+  shipping_billed: CHARGED[b.deal?.id] ?? 0,
+  trucks_on_deal: BOOKINGS.filter((x) => x.deal?.id === b.deal?.id && x.status !== "cancelled").length,
+  freight_by_team: r415.byTeam,
+});
 const shape = (b: any) => {
-  const o = { ...b, code: "L-" + b.id.slice(3, 9).toUpperCase(), can_see_names: AS === "jack" || NAMES, can_see_addresses: AS === "jack" || ADDR, can_see_deal: AS === "jack" };
+  const o = { ...b, ...r415Fields(b), code: "L-" + b.id.slice(3, 9).toUpperCase(), can_see_names: AS === "jack" || NAMES, can_see_addresses: AS === "jack" || ADDR, can_see_deal: AS === "jack" };
   if (!o.can_see_names) { o.pickup_name = ""; o.delivery_name = ""; }
   if (!o.can_see_addresses) { o.pickup_address = ""; o.delivery_address = ""; }
   if (AS === "dad") o.deal = null;
@@ -90,6 +108,7 @@ const FLOW: any = {
   ],
   shipping_cost: null, logistics_bookings: 3, logistics_unpaid: 2, logistics_paid: 800, logistics_quoted: 700, logistics_stage: "requested",
   shipping_linked: 810, freight_typed: 500, shipping_mode: true, shipping_estimate: 1_500, projected_cost: 7_500,
+  shipping_billed: 1_200, shipping_billed_source: "lines",
 };
 
 // The deal's pay line, as `get_deal_logistics_pay` gives it, for the four cases the step words.
@@ -127,6 +146,8 @@ const handlers: Record<string, (a: any) => any> = {
   logistics_request: ({ method, path, body }: any) => {
     const paid = payRoute(method, path, body, AS === "dad" ? "payee" : "owner", NAMES);
     if (paid !== undefined) return paid;
+    const r415r = r415Route(method, path, body, AS === "dad" ? "payee" : "owner");
+    if (r415r !== undefined) return r415r;
     const [p, qs = ""] = path.split("?");
     const bookings = () => (qs.includes("include_done=1") ? [...BOOKINGS, ...DONE] : live());
     if (method === "GET" && p === "/api/logistics/bookings") return { bookings: bookings().map(shape) };
@@ -134,16 +155,22 @@ const handlers: Record<string, (a: any) => any> = {
     if (method === "PATCH" && m) {
       const b = [...BOOKINGS, ...DONE].find((x) => x.id === m[1]);
       if (!b) return Promise.reject("That booking was not found.");
-      for (const [k, v] of Object.entries(body || {})) if (k !== "today") b[k] = v;
+      // While our side fills in the freight, the Logistics account's change to it is ignored, like the server does.
+      const FREIGHT = ["pallets", "pieces", "weight_lbs", "freight_class", "dimensions", "commodity", "accessorials"];
+      for (const [k, v] of Object.entries(body || {})) if (k !== "today" && !(AS === "dad" && r415.byTeam && FREIGHT.includes(k))) b[k] = v;
       b.updated_by_name = "Ines Okafor"; b.updated_at = `${localDay()}T12:00:00Z`;
       return shape(b);
     }
     if (method === "POST" && p === "/api/logistics/bookings") {
+      if (!body?.copy_from && r415.byTeam && !["pallets", "weight_lbs", "dimensions"].every((k) => String(body?.[k] ?? "").trim())) {
+        return Promise.reject("Fill in the pallets, weight and dimensions before sending to logistics.");
+      }
       const from = body?.copy_from ? BOOKINGS.find((x) => x.id === body.copy_from) : null;
       const nb = { ...base, id: "fb_" + Math.random().toString(16).slice(2, 8).padEnd(32, "0"), status: "requested", deal: from?.deal ?? BOOKINGS[0].deal,
         pickup_name: from?.pickup_name ?? body?.pickup_name ?? "", pickup_address: from?.pickup_address ?? body?.pickup_address ?? "",
         delivery_name: from?.delivery_name ?? body?.delivery_name ?? "", delivery_address: from?.delivery_address ?? body?.delivery_address ?? "",
-        request_note: from?.request_note ?? body?.request_note ?? "", pallets: body?.pallets ?? "" };
+        request_note: from?.request_note ?? body?.request_note ?? "", pallets: body?.pallets ?? "", pieces: body?.pieces ?? "", weight_lbs: body?.weight_lbs ?? "",
+        freight_class: body?.freight_class ?? "", dimensions: body?.dimensions ?? "", commodity: body?.commodity ?? "", accessorials: body?.accessorials ?? "" };
       BOOKINGS.push(nb);
       return shape(nb);
     }
@@ -154,7 +181,7 @@ const handlers: Record<string, (a: any) => any> = {
     return Promise.reject("That request is not allowed here.");
   },
   list_freight_bookings: () => [...BOOKINGS, ...DONE].map((b) => clone({
-    ...b, code: "L-" + b.id.slice(3, 9).toUpperCase(), can_see_names: true, can_see_addresses: true, can_see_deal: true,
+    ...b, ...r415Fields(b), code: "L-" + b.id.slice(3, 9).toUpperCase(), can_see_names: true, can_see_addresses: true, can_see_deal: true,
   })),
 };
 
@@ -177,9 +204,29 @@ const me: any = AS === "dad"
       permissions: ["logistics:view", "logistics:edit", ...(NAMES ? ["logistics:view_names"] : []), ...(ADDR ? ["logistics:view_addresses"] : [])] }
   : { id: "u1", email: "owner@example.test", display_name: "Owner", role_id: "role_admin", role_name: "Admin", is_admin: true, permissions: ["*"] };
 
+// Clicks through the screens the way a person would, so a URL reproduces a sheet or a list.
+function useAutoClick() {
+  useEffect(() => {
+    const steps: string[] = [];
+    if (q.get("ship") === "1") steps.push("All shipments");
+    if (q.get("send") === "1") steps.push("Send to logistics");
+    const code = q.get("open");
+    if (code) steps.push(code);
+    let i = 0, tries = 0;
+    const t = window.setInterval(() => {
+      tries++;
+      if (i >= steps.length || tries > 80) { window.clearInterval(t); return; }
+      const hit = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes(steps[i]) && !b.getAttribute("aria-label")?.startsWith("Close"));
+      if (hit) { (hit as HTMLElement).click(); i++; }
+    }, 200);
+    return () => window.clearInterval(t);
+  }, []);
+}
+
 function Harness() {
   const v = q.get("view");
-  const view = v === "deal" || v === "settings" || v === "tracker" ? v : "logistics";
+  const view = v === "deal" || v === "settings" || v === "tracker" || v === "freight" ? v : "logistics";
+  useAutoClick();
   return (
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
       <aside className="w-[216px] flex-shrink-0" style={{ background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)" }} />
@@ -189,6 +236,7 @@ function Harness() {
             {view === "logistics" && <LogisticsView me={me} />}
             {view === "deal" && <div className="border border-line rounded-xl bg-surface-2 px-5 py-4 max-w-[900px]"><DealShipping flow={FLOW} onReload={() => {}} locked={false} onAdvance={() => {}} /></div>}
             {view === "settings" && <div className="bg-surface border border-line rounded-2xl p-6 max-w-2xl"><LogisticsPaySettingsForm /></div>}
+            {view === "freight" && <div className="bg-surface border border-line rounded-2xl p-6 max-w-2xl"><LogisticsFreightSetting /></div>}
             {view === "tracker" && <div className="bg-surface border border-line rounded-2xl p-6 max-w-3xl"><LogisticsPayTrackerPanel /></div>}
           </div>
         </div>

@@ -1120,6 +1120,10 @@ export interface DealFlow {
    *  then replaces the typed freight lines. */
   shipping_mode?: boolean;
   shipping_estimate?: number;
+  /** R-415: what the customer was charged for shipping (the invoice's shipping lines, else its
+   *  shipping charge), and where that figure came from. Zero without the dollar switch. */
+  shipping_billed?: number;
+  shipping_billed_source?: "lines" | "field" | "none";
   /** total_supplier_cost - freight_typed + shipping_estimate. What an open deal is expected
    *  to cost. Equal to total_supplier_cost for a deal that does not use logistics. */
   projected_cost?: number;
@@ -3101,6 +3105,13 @@ export interface FreightBooking {
   /** false when the server withheld quoted_cost / paid_amount (a deal viewer without the dollar
    *  switch): null then means hidden, not unpaid. Absent (the local copy) means visible. */
   can_see_money?: boolean;
+  /** R-415: what the customer was charged for shipping on this booking's deal. null = hidden
+   *  from a deal viewer without the dollar switch. Absent on an older server. */
+  shipping_billed?: number | null;
+  /** Live trucks on the same deal: more than one means the charge covers all of them. */
+  trucks_on_deal?: number;
+  /** While on, our side fills in the freight and the logistics person only reads it. */
+  freight_by_team?: boolean;
   tracking: FreightTracking | null;
   /** Only for someone who may see deals. There is no deal_flow_id key for anyone else. */
   deal: { id: string; invoice_number: string; client_name: string; stage: string } | null;
@@ -3108,8 +3119,32 @@ export interface FreightBooking {
 /** The fields a person can write. Only the ones present are saved. */
 export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "id" | "code" | "booked_at" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |
-  "can_see_names" | "can_see_addresses" | "can_see_deal" | "can_see_money" | "tracking" | "deal"
+  "can_see_names" | "can_see_addresses" | "can_see_deal" | "can_see_money" | "tracking" | "deal" |
+  "shipping_billed" | "trucks_on_deal" | "freight_by_team"
 >> & { today?: string };
+/** R-415: the one Logistics setting. */
+export interface LogisticsSettings { freight_by_team: boolean }
+/** R-415: one truck as the All shipments list shows it. */
+export interface ShipmentTruck {
+  id: string; code: string; status: FreightStatus; carrier: string; broker: string; bol: string; pro: string;
+  pickup_date: string; delivery_date: string; delivered_at: string;
+  paid_amount: number | null; paid_at: string; paid_method: string; booked_at: string; updated_by_name: string;
+}
+/** R-415: one deal with at least one booking. `surplus` is null while a live truck is unpaid. */
+export interface ShipmentDeal {
+  deal_flow_id: string; invoice_number: string; client_name: string; stage: string;
+  billed: number; billed_source: "lines" | "field" | "none";
+  paid: number; linked: number; freight: number; surplus: number | null;
+  pay: number | null; rule: string; earned_on: string;
+  trucks: ShipmentTruck[];
+}
+export interface ShipmentTotals {
+  deals: number; trucks: number; billed: number; paid: number; surplus: number; pay: number;
+  /** Deals with a live truck still waiting on its amount paid. */
+  waiting?: number;
+  mode?: "off" | "pay" | "track";
+}
+export interface Shipments { deals: ShipmentDeal[]; totals: ShipmentTotals }
 export interface FreightPrefill {
   pickup_name: string;
   pickup_address: string;
@@ -3123,8 +3158,11 @@ export interface FreightPrefill {
 // for shipping, less what the carrier was paid). The rule is one org setting the server owns,
 // and every figure below is worked out on the server, so a screen only ever prints them.
 export type LogisticsPayFrequency = "weekly" | "biweekly" | "monthly";
+export type LogisticsSurplusMode = "pay" | "track";
 export interface LogisticsPaySettings {
   enabled: boolean;
+  /** R-415: pay the surplus to the payee, or only track it in the Brief. Read anything else as pay. */
+  surplus_mode: LogisticsSurplusMode;
   payee_id: string;
   payee_name: string;
   /** Percent of the shipping profit, 0 to 100. */
@@ -3144,7 +3182,7 @@ export interface LogisticsPaySettings {
   updated_at?: string;
   updated_by_name?: string;
 }
-export type LogisticsPayRule = "share" | "loss_cover" | "loss_share" | "pending";
+export type LogisticsPayRule = "share" | "loss_cover" | "loss_share" | "pending" | "tracked";
 export interface LogisticsPayTrackerLine {
   deal_flow_id: string;
   invoice_number: string;
@@ -3191,8 +3229,15 @@ export interface LogisticsPayout {
   created_by_name: string;
   created_at: string;
 }
+/** R-415: what the loads add up to. Only a load whose freight is known counts toward the three sums. */
+export interface LogisticsPayTotals {
+  charged: number; freight: number; surplus: number; loads: number; pending_loads: number;
+}
 export interface LogisticsPayTracker {
   settings: LogisticsPaySettings;
+  /** R-415: absent on an older server, which only pays. */
+  mode?: "off" | "pay" | "track";
+  totals?: LogisticsPayTotals;
   today: string;
   next_pay_date: string;
   next_total: number;
@@ -3563,6 +3608,19 @@ export const api = {
       logisticsRequest<FreightBooking>("PATCH", `/api/logistics/bookings/${encodeURIComponent(id)}`, { today: localDay(), ...patch }),
     /** Archives it (deal edit access only). Logistics cancels with status "cancelled" instead. */
     remove: (id: string) => logisticsRequest<unknown>("DELETE", `/api/logistics/bookings/${encodeURIComponent(id)}`),
+    /** R-415: who fills in the freight. Anyone the Logistics routes let in reads it; saving is an admin's. */
+    settings: {
+      get: () => logisticsRequest<LogisticsSettings>("GET", "/api/logistics/settings"),
+      save: (s: LogisticsSettings) => logisticsRequest<LogisticsSettings>("PUT", "/api/logistics/settings", s),
+    },
+    /** R-415: every deal with a booking, with what was charged, paid and left over. An admin, or a
+     *  deal viewer with the dollar switch. `from` and `to` are days (YYYY-MM-DD), both optional. */
+    shipments: (range?: { from?: string; to?: string }) => {
+      const q: string[] = [];
+      if (range?.from) q.push(`from=${range.from}`);
+      if (range?.to) q.push(`to=${range.to}`);
+      return logisticsRequest<Shipments>("GET", `/api/logistics/shipments${q.length ? `?${q.join("&")}` : ""}`);
+    },
     /** R-401: the logistics pay. Every logistics write (these and the bookings above) carries the
      *  local day, since the server's own clock is UTC and the evening is already tomorrow there. */
     pay: {

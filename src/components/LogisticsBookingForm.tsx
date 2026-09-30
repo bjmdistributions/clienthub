@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { X, Plus, Trash2, ExternalLink, Lock } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api, type FreightBooking, type FreightBookingPatch, type FreightStatus } from "../lib/api";
-import { localDay, parseLocalDay } from "../lib/format";
+import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import StatusPill from "./StatusPill";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
@@ -96,6 +96,44 @@ const ACCESSORIALS = [
   "Inside delivery", "Limited access", "Hazmat",
 ];
 
+const splitList = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
+
+/** R-415: the accessorials as toggle chips for the usual ones and free text for the rest. One
+ *  comma-separated string in and out, the way the booking stores it. Shared with the Send sheet. */
+export function AccessorialsField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const chosen = splitList(value);
+  const known = ACCESSORIALS.filter((x) => chosen.includes(x));
+  const others = chosen.filter((c) => !ACCESSORIALS.includes(c));
+  // The box keeps what is typed, so a comma is not eaten before the next word arrives.
+  const [text, setText] = useState(others.join(", "));
+  useEffect(() => {
+    setText((t) => (splitList(t).join(", ") === others.join(", ") ? t : others.join(", ")));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  const emit = (k: string[], other: string) => onChange([...k, ...splitList(other)].join(", "));
+  const toggle = (a: string) =>
+    emit(known.includes(a) ? known.filter((x) => x !== a) : ACCESSORIALS.filter((x) => known.includes(x) || x === a), text);
+  return (
+    <div>
+      <div className="text-[12px] font-medium text-muted mb-1.5">Accessorials</div>
+      <div className="flex flex-wrap gap-1.5">
+        {ACCESSORIALS.map((a) => {
+          const on = chosen.includes(a);
+          return (
+            <button key={a} type="button" aria-pressed={on} onClick={() => toggle(a)}
+              className={`h-8 px-2.5 rounded-lg border text-[12px] whitespace-nowrap transition-colors ${
+                on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-muted hover:text-ink-2 hover:bg-surface-2"}`}>
+              {a}
+            </button>
+          );
+        })}
+      </div>
+      <input className={`${inp} mt-2`} placeholder="Anything else, separated by commas" value={text}
+        onChange={(e) => { setText(e.target.value); emit(known, e.target.value); }} />
+    </div>
+  );
+}
+
 /** Every text column a person can write. Names and addresses are deliberately absent: they
  *  are read-only here, so a redacted empty string can never be written back over the real one. */
 const TEXT_KEYS = [
@@ -107,14 +145,14 @@ const TEXT_KEYS = [
   "paid_at", "paid_method", "paid_note", "notes",
 ] as const;
 type TextKey = typeof TEXT_KEYS[number];
-type Draft = Record<TextKey, string> & { status: FreightStatus; quote: string; paid: string };
+type Draft = Record<TextKey, string> & { status: FreightStatus; paid: string };
 
 const moneyText = (n: number | null | undefined) => (n == null ? "" : String(n));
 
 function toDraft(b: FreightBooking): Draft {
   const d: Record<string, string> = {};
   for (const k of TEXT_KEYS) d[k] = (b[k] ?? "") as string;
-  return { ...(d as Record<TextKey, string>), status: b.status, quote: moneyText(b.quoted_cost), paid: moneyText(b.paid_amount) };
+  return { ...(d as Record<TextKey, string>), status: b.status, paid: moneyText(b.paid_amount) };
 }
 
 /** null = fine, a string = the sentence to show. Empty means "no figure", which is allowed. */
@@ -207,15 +245,15 @@ export default function LogisticsBookingForm({
     });
   };
 
-  const quoteErr = moneyProblem(draft.quote, "The quote");
   const paidErr = moneyProblem(draft.paid, "The amount paid");
+  // R-415: our side fills in the freight, so the logistics person only reads it.
+  const freightLocked = !full && booking.freight_by_team === true;
 
   const save = async () => {
-    if (quoteErr || paidErr) { setError(quoteErr || paidErr || ""); return; }
+    if (paidErr) { setError(paidErr); return; }
     const patch: Record<string, unknown> = {};
     for (const k of TEXT_KEYS) if (draft[k] !== base[k]) patch[k] = draft[k];
     if (draft.status !== base.status) patch.status = draft.status;
-    if (draft.quote !== base.quote) patch.quoted_cost = moneyValue(draft.quote);
     if (draft.paid !== base.paid) patch.paid_amount = moneyValue(draft.paid);
     if (Object.keys(patch).length === 0) return;
     setSaving(true); setError("");
@@ -255,16 +293,6 @@ export default function LogisticsBookingForm({
     }
     window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
     onClose();
-  };
-
-  // Accessorials are toggle chips for the usual ones and free text for the rest.
-  const chosen = draft.accessorials.split(",").map((s) => s.trim()).filter(Boolean);
-  const others = chosen.filter((c) => !ACCESSORIALS.includes(c));
-  const setAcc = (known: string[], other: string) =>
-    set("accessorials", [...known, ...other.split(",").map((s) => s.trim()).filter(Boolean)].join(", "));
-  const toggleAcc = (a: string) => {
-    const known = ACCESSORIALS.filter((x) => chosen.includes(x));
-    setAcc(known.includes(a) ? known.filter((x) => x !== a) : ACCESSORIALS.filter((x) => known.includes(x) || x === a), others.join(", "));
   };
 
   const t = (k: TextKey, label: string, opts?: { type?: string; hint?: string; wide?: boolean; placeholder?: string }) => (
@@ -384,41 +412,54 @@ export default function LogisticsBookingForm({
           </Section>
 
           <Section title="Freight">
-            <div className="grid grid-cols-2 gap-3">
-              {t("pallets", "Pallets")}
-              {t("pieces", "Pieces")}
-              {t("weight_lbs", "Weight in lbs")}
-              {t("freight_class", "Freight class")}
-              {t("dimensions", "Dimensions", { placeholder: "48 x 40 x 60 in" })}
-              {t("commodity", "What it is")}
-            </div>
-            <div>
-              <div className="text-[12px] font-medium text-muted mb-1.5">Accessorials</div>
-              <div className="flex flex-wrap gap-1.5">
-                {ACCESSORIALS.map((a) => {
-                  const on = chosen.includes(a);
-                  return (
-                    <button key={a} type="button" aria-pressed={on} onClick={() => toggleAcc(a)}
-                      className={`h-8 px-2.5 rounded-lg border text-[12px] whitespace-nowrap transition-colors ${
-                        on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-muted hover:text-ink-2 hover:bg-surface-2"}`}>
-                      {a}
-                    </button>
-                  );
-                })}
-              </div>
-              <input className={`${inp} mt-2`} placeholder="Anything else, separated by commas" value={others.join(", ")}
-                onChange={(e) => setAcc(ACCESSORIALS.filter((x) => chosen.includes(x)), e.target.value)} />
-            </div>
+            {freightLocked ? (
+              <>
+                <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Filled in by your team</p>
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px]">
+                  {([
+                    ["Pallets", draft.pallets], ["Pieces", draft.pieces], ["Weight in lbs", draft.weight_lbs],
+                    ["Freight class", draft.freight_class], ["Dimensions", draft.dimensions], ["What it is", draft.commodity],
+                  ] as const).map(([label, v]) => (
+                    <div key={label} className="min-w-0">
+                      <dt className="text-[11.5px] text-muted">{label}</dt>
+                      <dd className="text-ink break-words">{v.trim() || "-"}</dd>
+                    </div>
+                  ))}
+                  <div className="col-span-2 min-w-0">
+                    <dt className="text-[11.5px] text-muted">Accessorials</dt>
+                    <dd className="text-ink break-words">{draft.accessorials.trim() || "-"}</dd>
+                  </div>
+                </dl>
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  {t("pallets", "Pallets")}
+                  {t("pieces", "Pieces")}
+                  {t("weight_lbs", "Weight in lbs")}
+                  {t("freight_class", "Freight class")}
+                  {t("dimensions", "Dimensions", { placeholder: "48 x 40 x 60 in" })}
+                  {t("commodity", "What it is")}
+                </div>
+                <AccessorialsField value={draft.accessorials} onChange={(v) => set("accessorials", v)} />
+              </>
+            )}
           </Section>
 
           <Section title="Cost">
+            {booking.shipping_billed != null && (
+              <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[13px]">
+                <span className="text-muted">Charged to the customer for shipping:</span>{" "}
+                <span className="font-semibold text-ink tabular-nums">{fmtAmount(booking.shipping_billed)}</span>
+                {(booking.trucks_on_deal ?? 0) > 1 && (
+                  <div className="text-[11.5px] text-muted mt-0.5">for the {booking.trucks_on_deal} trucks on this shipment</div>
+                )}
+              </div>
+            )}
             {booking.can_see_money === false ? (
               <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Shipping amounts are hidden by your permissions.</p>
             ) : (
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Quote" hint={quoteErr ?? undefined}>
-                <NumberInput className={inp} value={draft.quote} placeholder="0.00" onValue={(_n, raw) => set("quote", raw)} />
-              </Field>
               <Field label="Amount paid" hint={paidErr ?? "The exact amount the carrier charged. Type it once the carrier is paid."}>
                 <NumberInput className={inp} value={draft.paid} placeholder="0.00" onValue={(_n, raw) => set("paid", raw)} />
               </Field>
