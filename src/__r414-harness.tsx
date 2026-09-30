@@ -7,12 +7,29 @@
 // it really lives in. Every figure is invented.
 //
 // ?mode=full (default) | split   &nav=216 (default) | 96   &ratio=0.5 (split only)
+// &screen=client (default) | any key of SCREENS below (R-417: every screen in a split pane;
+// unknown list_* calls answer [], so the other screens render their empty layouts)
 import ReactDOM from "react-dom/client";
 import ClientDetailView from "./components/ClientDetailView";
+import DashboardView from "./components/DashboardView";
+import InvoicesView from "./components/InvoicesView";
+import InventoryView from "./components/InventoryView";
+import SuppliersView from "./components/SuppliersView";
+import AnalyticsView from "./components/AnalyticsView";
+import FinancialsView from "./components/FinancialsView";
+import DealFlowView from "./components/DealFlowView";
+import TiersView from "./components/TiersView";
+import ReceivablesView from "./components/ReceivablesView";
+import PayablesView from "./components/PayablesView";
+import BriefView from "./components/BriefView";
+import ClientsView from "./components/ClientsView";
+import QuotesView from "./components/QuotesView";
+import SettingsView from "./components/SettingsView";
 import "./index.css";
 
 const q = new URLSearchParams(location.search);
 const mode = q.get("mode") || "full";
+const screen = q.get("screen") || "client";
 const nav = Number(q.get("nav") || 216);
 const ratio = Number(q.get("ratio") || 0.5);
 
@@ -88,16 +105,38 @@ const EMPTY_OK = new Set([
     case "get_party_link": throw new Error("not supported in this fixture");
     case "get_company_info": return { name: "Example Co", address: "", email: "", phone: null, tax_id: null };
     default:
-      if (EMPTY_OK.has(cmd)) return [];
+      // An empty list is the answer most screens survive: it has a length and a map, and a
+      // missing field reads as undefined instead of throwing on null.
+      if (EMPTY_OK.has(cmd) || screen !== "client") return [];
       return null;
   }
+};
+
+const ME = { id: "u1", display_name: "Test Owner", email: "owner@example.com", is_admin: true, permissions: [] };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const SCREENS: Record<string, () => any> = {
+  client: () => <ClientDetailView clientId="c1" onBack={() => {}} />,
+  dashboard: () => <DashboardView onNavigate={() => {}} me={ME as never} />,
+  invoices: () => <InvoicesView />,
+  inventory: () => <InventoryView />,
+  suppliers: () => <SuppliersView />,
+  analytics: () => <AnalyticsView />,
+  financials: () => <FinancialsView />,
+  dealflow: () => <DealFlowView />,
+  tiers: () => <TiersView />,
+  receivables: () => <ReceivablesView />,
+  payables: () => <PayablesView />,
+  brief: () => <BriefView currentUser={{ name: "Test Owner", role: "owner" }} />,
+  clients: () => <ClientsView />,
+  quotes: () => <QuotesView onNavigate={() => {}} />,
+  settings: () => <SettingsView me={ME as never} />,
 };
 
 // The same column paneContent() wraps every screen in.
 const Column = () => (
   <div className="p-7">
     <div className="max-w-[1280px] mx-auto">
-      <ClientDetailView clientId="c1" onBack={() => {}} />
+      {(SCREENS[screen] || SCREENS.client)()}
     </div>
   </div>
 );
