@@ -5930,7 +5930,9 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
 /// and comes back in. A recorded leg of 0 is not told apart from none: a resync that finds the deal
 /// out of shipping mode clears the leg, so no deal keeps a 0 that would add the freight twice.
 pub fn recorded_goods_of(total_cost: f64, shipping_cost: Option<f64>, facts: &ShipFacts) -> f64 {
-    let back = if !facts.mode() && shipping_cost.map_or(false, |s| s.abs() > 0.005) { facts.freight_typed } else { 0.0 };
+    // Recorded while the deal used logistics (even at a $0 leg), the goods left the typed freight
+    // out; once the booking is gone that freight is the shipping again. Same rule as the server.
+    let back = if !facts.mode() && shipping_cost.is_some() { facts.freight_typed } else { 0.0 };
     total_cost - shipping_cost.unwrap_or(0.0)
         - if facts.mode() && shipping_cost.is_none() { facts.freight_typed } else { 0.0 }
         + back
@@ -25702,6 +25704,7 @@ mod r400_shipping_tests {
         let typed = ShipFacts { freight_typed: 500.0, ..Default::default() };
         assert_eq!(recorded_goods_of(6800.0, Some(800.0), &typed), 6500.0);
         assert_eq!(recorded_goods_of(6500.0, None, &typed), 6500.0, "never recorded with a leg: unchanged");
+        assert_eq!(recorded_goods_of(6000.0, Some(0.0), &typed), 6500.0, "recorded at a $0 leg under logistics: the freight comes back, as on the server");
     }
 
     /// The shipping leg must be paired for a legacy deal with typed freight too.
