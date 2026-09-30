@@ -3098,6 +3098,9 @@ export interface FreightBooking {
   can_see_names: boolean;
   can_see_addresses: boolean;
   can_see_deal: boolean;
+  /** false when the server withheld quoted_cost / paid_amount (a deal viewer without the dollar
+   *  switch): null then means hidden, not unpaid. Absent (the local copy) means visible. */
+  can_see_money?: boolean;
   tracking: FreightTracking | null;
   /** Only for someone who may see deals. There is no deal_flow_id key for anyone else. */
   deal: { id: string; invoice_number: string; client_name: string; stage: string } | null;
@@ -3105,7 +3108,7 @@ export interface FreightBooking {
 /** The fields a person can write. Only the ones present are saved. */
 export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "id" | "code" | "booked_at" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |
-  "can_see_names" | "can_see_addresses" | "can_see_deal" | "tracking" | "deal"
+  "can_see_names" | "can_see_addresses" | "can_see_deal" | "can_see_money" | "tracking" | "deal"
 >> & { today?: string };
 export interface FreightPrefill {
   pickup_name: string;

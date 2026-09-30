@@ -28,9 +28,10 @@ export function FreightStatusPill({ status }: { status: string }) {
   return <StatusPill tone={STATUS_TONE[s] ?? "neutral"}>{STATUS_WORD[s] ?? status}</StatusPill>;
 }
 
-/** Picked up or delivered and nobody has typed what the carrier charged yet. */
-export const needsAmount = (b: Pick<FreightBooking, "status" | "paid_amount">) =>
-  (b.status === "picked_up" || b.status === "delivered") && b.paid_amount == null;
+/** Picked up or delivered and nobody has typed what the carrier charged yet. An amount the
+ *  server withheld (can_see_money false) is hidden, not missing. */
+export const needsAmount = (b: Pick<FreightBooking, "status" | "paid_amount" | "can_see_money">) =>
+  b.can_see_money !== false && (b.status === "picked_up" || b.status === "delivered") && b.paid_amount == null;
 
 export function AmountNeededPill() {
   return <StatusPill tone="warning">Amount paid needed</StatusPill>;
@@ -411,6 +412,9 @@ export default function LogisticsBookingForm({
           </Section>
 
           <Section title="Cost">
+            {booking.can_see_money === false ? (
+              <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Shipping amounts are hidden by your permissions.</p>
+            ) : (
             <div className="grid grid-cols-2 gap-3">
               <Field label="Quote" hint={quoteErr ?? undefined}>
                 <NumberInput className={inp} value={draft.quote} placeholder="0.00" onValue={(_n, raw) => set("quote", raw)} />
@@ -422,6 +426,7 @@ export default function LogisticsBookingForm({
               {t("paid_method", "Paid with", { placeholder: "Card, ACH, check" })}
               {t("paid_note", "Note", { wide: true })}
             </div>
+            )}
           </Section>
 
           <Section title="Notes">

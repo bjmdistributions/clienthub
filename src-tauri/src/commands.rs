@@ -16969,7 +16969,11 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
         .and_then(|m| serde_json::from_str::<Value>(&m).ok())
         .and_then(|v| v.get("no_shipping_link").and_then(|x| x.as_bool())).unwrap_or(false);
     let shipping_required       = shipping_target > 0.005 && !no_shipping_link;
-    let fully_reconciled = payment_received_paired && supplier_paid_paired && (!shipping_required || shipping_paid_paired);
+    // A deal that does not use Logistics keeps its old reconciliation: typed freight paid inside
+    // the supplier wire (or linked as shipping) settles it. Same rule as the server.
+    let shipping_ok = !shipping_required || shipping_paid_paired
+        || (!facts.mode() && supplier_paired + shipping_paired >= supplier_target + facts.freight_typed - 0.5);
+    let fully_reconciled = payment_received_paired && supplier_paid_paired && shipping_ok;
 
     Ok(json!({
         "expected_profit":  r2(expected_profit),
@@ -17051,14 +17055,18 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         let supplier_linked = supplier_paired > 0.01;
         let buyer_missing    = !buyer_linked    && !no_buyer    && buyer_target  > 0.01;
         let supplier_missing = !supplier_linked && !no_supplier && supplier_target > 0.01;
-        let shipping_missing = shipping_required && !(shipping_paired > 0.01) && !no_shipping;
+        // Only a deal that uses Logistics is flagged for a missing shipping link; one that does
+        // not keeps the needs-review it always had. Same rule as the server.
+        let shipping_missing = facts.mode() && shipping_required && !(shipping_paired > 0.01) && !no_shipping;
+        let shipping_ok = !shipping_required || shp
+            || (!facts.mode() && supplier_paired + shipping_paired >= supplier_target + facts.freight_typed - 0.5);
         let needs_review = buyer_missing || supplier_missing || shipping_missing;
         Ok(json!({
             "deal_flow_id": id,
             "payment_received_paired": pr,
             "supplier_paid_paired": sp,
             "shipping_paid_paired": shp,
-            "fully_reconciled": pr && sp && (!shipping_required || shp),
+            "fully_reconciled": pr && sp && shipping_ok,
             "has_payment": buyer_paired > 0.01,
             "has_financials": has_financials,
             "no_buyer_link": no_buyer,
@@ -25707,16 +25715,18 @@ mod r400_shipping_tests {
         assert_eq!(recorded_goods_of(6000.0, Some(0.0), &typed), 6500.0, "recorded at a $0 leg under logistics: the freight comes back, as on the server");
     }
 
-    /// The shipping leg must be paired for a legacy deal with typed freight too.
+    /// A deal that never used Logistics reconciles as it did before R-400 (the server twin's test
+    /// has the same cases): freight paid inside the supplier wire is settled, a short wire is not
+    /// fully reconciled, and neither lands in needs-review for shipping.
     #[tokio::test]
-    async fn typed_freight_with_no_shipping_link_keeps_a_deal_in_review() {
+    async fn a_deal_without_logistics_reconciles_as_it_did_before() {
         let _db = crate::db::init_test_store();
         let id = deal("d6", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
         link(&id, "buyer_payment", 10000.0);
         link(&id, "supplier_payment", 6000.0);
         let status = |id: &str| -> Value { futures::executor::block_on(reconciliation_status_all()).unwrap().into_iter().find(|v| v["deal_flow_id"] == id).unwrap() };
         let s = status(&id);
-        assert_eq!((s["fully_reconciled"].as_bool(), s["shipping_missing"].as_bool(), s["needs_review"].as_bool()), (Some(false), Some(true), Some(true)));
+        assert_eq!((s["fully_reconciled"].as_bool(), s["shipping_missing"].as_bool(), s["needs_review"].as_bool()), (Some(false), Some(false), Some(false)));
         assert_eq!(deal_reconciliation(id.clone()).await.unwrap()["fully_reconciled"], json!(false));
         // Acknowledged: nothing to link.
         set_deal_link_na(id.clone(), false, false, Some(true)).await.unwrap();
@@ -25726,6 +25736,14 @@ mod r400_shipping_tests {
         link(&id, "shipping", 500.0);
         assert_eq!((status(&id)["shipping_missing"].as_bool(), status(&id)["fully_reconciled"].as_bool()), (Some(false), Some(true)));
         assert_eq!(deal_reconciliation(id.clone()).await.unwrap()["fully_reconciled"], json!(true));
+
+        // The common legacy case: one supplier wire of 6,500 carried the freight.
+        let w = deal("d7", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        link(&w, "buyer_payment", 10000.0);
+        link(&w, "supplier_payment", 6500.0);
+        let s = status(&w);
+        assert_eq!((s["fully_reconciled"].as_bool(), s["shipping_missing"].as_bool(), s["needs_review"].as_bool()), (Some(true), Some(false), Some(false)));
+        assert_eq!(deal_reconciliation(w.clone()).await.unwrap()["fully_reconciled"], json!(true));
     }
 
     #[tokio::test]

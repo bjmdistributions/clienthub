@@ -418,6 +418,11 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
     if !s.enabled {
         return None;
     }
+    // A load already covered by a recorded payment keeps the rule it was paid under (the rule on
+    // its latest covering payment line); a rule change applies only to loads not paid yet. Same
+    // as the server's rules_by_deal / settings_for.
+    let effective = rule_for_deal(conn, deal_flow_id, s);
+    let s = &effective;
     let (archived, voided, items, field): (i64, i64, String, f64) = conn.query_row(
         "SELECT COALESCE(df.archived,0), MAX(COALESCE(i.voided,0), COALESCE(i.archived,0)), COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0)
          FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id WHERE df.id=?1",
@@ -444,6 +449,42 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
         earned_on, due_date,
         booking_codes: live.iter().map(|(id, _, _)| booking_code(id)).collect(),
     })
+}
+
+/// The settings one deal's pay is worked under: the current rule, unless a non-archived payment
+/// to this payee already covered the deal, in which case the rule stored on the latest covering
+/// line (by pay date, then when it was recorded). A latest line without a stored rule (recorded
+/// before rules were stored) means the current rule.
+pub fn rule_for_deal(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings) -> PaySettings {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(lines_json,'[]') FROM logistics_payouts
+         WHERE COALESCE(archived,0)=0 AND COALESCE(payee_id,'')=?1 ORDER BY pay_date, created_at",
+    ) else { return s.clone() };
+    let rows: Vec<String> = match stmt.query_map([&s.payee_id], |r| r.get::<_, String>(0)) {
+        Ok(it) => it.filter_map(|r| r.ok()).collect(),
+        Err(_) => return s.clone(),
+    };
+    let mut rule: Option<(f64, bool, f64)> = None;
+    for text in rows {
+        let lines: Vec<Value> = serde_json::from_str(&text).unwrap_or_default();
+        for l in lines.iter().filter(|l| l.get("deal_flow_id").and_then(|x| x.as_str()) == Some(deal_flow_id)) {
+            if l.get("amount").and_then(|x| x.as_f64()).is_none() {
+                continue;
+            }
+            rule = match (
+                l.get("share_pct").and_then(|x| x.as_f64()),
+                l.get("cover_losses").and_then(|x| x.as_bool()),
+                l.get("loss_pay_pct").and_then(|x| x.as_f64()),
+            ) {
+                (Some(a), Some(b), Some(c)) => Some((a, b, c)),
+                _ => None,
+            };
+        }
+    }
+    match rule {
+        Some((share_pct, cover_losses, loss_pay_pct)) => PaySettings { share_pct, cover_losses, loss_pay_pct, ..s.clone() },
+        None => s.clone(),
+    }
 }
 
 /// The cut a completed deal's owner split is taken after: `Some(amount)` while the rule is on (0
@@ -895,6 +936,28 @@ mod pay_tests {
 
     fn read(deal: &str, s: &PaySettings) -> Option<DealPay> {
         deal_pay(&pool().get().unwrap(), deal, s)
+    }
+
+    #[test]
+    fn a_rule_change_does_not_reprice_a_paid_load() {
+        let _db = crate::db::init_test_store();
+        let paid = seed("rulepaid", &lines("Shipping", 1.0, 500.0), 0.0);
+        book(&paid, "1", "booked", "2026-10-01", Some(350.0), None);
+        let open = seed("ruleopen", &lines("Shipping", 1.0, 500.0), 0.0);
+        book(&open, "1", "booked", "2026-10-01", Some(350.0), None);
+        assert_eq!(read(&paid, &on()).unwrap().pay, Some(150.0));
+        // Paid under share 100 (the rule rides on the payment line, as the server records it).
+        pool().get().unwrap().execute(
+            "INSERT INTO logistics_payouts (id, payee_id, pay_date, amount, lines_json, created_at, updated_at)
+             VALUES ('lp_rule', '', '2026-10-02', 150, ?1, '2026-10-02', '2026-10-02')",
+            [json!([{ "deal_flow_id": paid, "amount": 150.0, "share_pct": 100.0, "cover_losses": true, "loss_pay_pct": 10.0 }]).to_string()],
+        ).unwrap();
+        let half = rule(50.0, true, 10.0);
+        assert_eq!(read(&paid, &half).unwrap().pay, Some(150.0), "the paid load keeps its rule");
+        assert_eq!(read(&open, &half).unwrap().pay, Some(75.0), "an unpaid load takes the new one");
+        // A line recorded without a rule uses the current one; an archived payment is ignored.
+        pool().get().unwrap().execute("UPDATE logistics_payouts SET archived=1 WHERE id='lp_rule'", []).unwrap();
+        assert_eq!(read(&paid, &half).unwrap().pay, Some(75.0));
     }
 
     #[test]
