@@ -88,18 +88,21 @@ export function isShippingLine(description: string | null | undefined): boolean 
     || d === "delivery" || d.startsWith("shipping") || d.startsWith("freight");
 }
 
-/** R-401: what an invoice charged the customer for shipping: the sum of its shipping lines
- *  (a line's stored amount, or quantity times rate when that is 0), else the invoice's own
- *  shipping charge, else nothing. Mirrors `charged_of` in freight.rs. */
+/** R-401: what an invoice charged the customer for shipping: the sum of the stored amount of its
+ *  shipping lines (the figure the invoice itself adds up, so a line stored at 0 charged nothing;
+ *  only a line with no amount at all is quantity times rate). Any shipping line at all, even one
+ *  that sums to 0, settles it; with none, the invoice's own shipping charge when above zero, else
+ *  nothing. Mirrors `charged_of` in freight.rs and the server's `charged_for`. */
 export function shippingChargedOf(
   lineItemsJson: string | null | undefined, shippingCharged: number | null | undefined,
 ): { amount: number; source: "lines" | "field" | "none" } {
   let items: { description?: string; qty?: number; rate?: number; amount?: number }[] = [];
   try { const v = JSON.parse(lineItemsJson || "[]"); if (Array.isArray(v)) items = v; } catch { /* a malformed blob is an empty invoice */ }
-  const fromLines = items
-    .filter((l) => String(l?.description ?? "").trim() !== "" && isShippingLine(l.description))
-    .reduce((s, l) => s + (safeNum(l.amount) !== 0 ? safeNum(l.amount) : safeNum(l.qty) * safeNum(l.rate)), 0);
-  if (fromLines > 0.005) return { amount: Math.round(fromLines * 100) / 100, source: "lines" };
+  const shipping = items.filter((l) => String(l?.description ?? "").trim() !== "" && isShippingLine(l.description));
+  if (shipping.length > 0) {
+    const fromLines = shipping.reduce((s, l) => s + (l.amount === undefined || l.amount === null ? safeNum(l.qty) * safeNum(l.rate) : safeNum(l.amount)), 0);
+    return { amount: Math.round(fromLines * 100) / 100, source: "lines" };
+  }
   const field = safeNum(shippingCharged);
   if (field > 0.005) return { amount: Math.round(field * 100) / 100, source: "field" };
   return { amount: 0, source: "none" };

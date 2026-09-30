@@ -7,7 +7,7 @@ import {
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit,
 } from "../lib/api";
-import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, isShippingLine } from "../lib/format";
+import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, isShippingLine, owedToSupplier } from "../lib/format";
 import { toast } from "./Toast";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
@@ -1432,6 +1432,10 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   // the Shipping section, so they are left out of this list and this total.
   const goodsLines       = existingPayments.filter((p) => p.category !== "freight");
   const totalCost        = goodsLines.filter((p) => !p.kept).reduce((s, p) => s + p.amount, 0);
+  // The header's own-cost figures come from the lines shown here: typed freight is on the Shipping step.
+  const ownCosts         = goodsLines.filter((p) => !p.kept && !owedToSupplier(p));
+  const ownCostsTotal    = ownCosts.reduce((s, p) => s + p.amount, 0);
+  const ownCostsUnpaid   = ownCosts.filter((p) => !p.paid).reduce((s, p) => s + p.amount, 0);
 
   const pickSupplier = (s: Supplier) => { setSelSupplier(s); setSuppName(s.name); setSuppResults([]); };
 
@@ -1589,10 +1593,10 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
               <div className="text-[11px] text-muted">Owed to supplier</div>
               <div className="text-[15px] font-semibold text-ink tabular-nums">{fmtAmount(flow.supplier_owed)}</div>
             </div>
-            {flow.own_costs_total > 0.005 && (
+            {ownCostsTotal > 0.005 && (
               <div>
                 <div className="text-[11px] text-muted">Your own costs</div>
-                <div className="text-[13px] font-medium text-ink-2 tabular-nums">{fmtAmount(flow.own_costs_unpaid)}</div>
+                <div className="text-[13px] font-medium text-ink-2 tabular-nums">{fmtAmount(ownCostsUnpaid)}</div>
               </div>
             )}
           </div>

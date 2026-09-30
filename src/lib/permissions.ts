@@ -78,13 +78,18 @@ export function canViewLogistics(me: Perms | null | undefined): boolean {
   return can(me, "logistics:view") || can(me, "deal_flow:view");
 }
 
-/** R-400: a session that holds only `logistics:` permissions (no wildcard, no admin). Such a
- *  session gets the Logistics screen and nothing else. Same rule as the server's
- *  `employees::is_logistics_only`. Takes the permission list, or anything carrying one. */
+/** The three older switches a role editor can add to any role. They open no screen. */
+const OLDER_SWITCHES = ["clients:view_revenue", "suppliers:view", "deal_flow:view_numbers"];
+
+/** R-400: a session that holds at least one `logistics:` permission and nothing else but the
+ *  three older switches (no wildcard, no admin). Such a session gets the Logistics screen and
+ *  nothing else. Same rule as the server's `employees::is_logistics_only`. Takes the permission
+ *  list, or anything carrying one. */
 export function isLogisticsOnly(perms: string[] | Perms | null | undefined): boolean {
   const list = Array.isArray(perms) ? perms : perms?.permissions;
   if (!list || list.length === 0) return false;
-  return list.every((p) => typeof p === "string" && p.startsWith("logistics:"));
+  const ok = (p: unknown): boolean => typeof p === "string" && (p.startsWith("logistics:") || OLDER_SWITCHES.includes(p));
+  return list.some((p) => typeof p === "string" && p.startsWith("logistics:")) && list.every(ok);
 }
 
 export function isAdmin(me: Perms | null | undefined): boolean {

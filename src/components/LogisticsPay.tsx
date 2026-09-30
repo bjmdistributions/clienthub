@@ -4,7 +4,7 @@ import {
   api, type LogisticsPayDate, type LogisticsPayMine, type LogisticsPaySettings, type LogisticsPayTracker,
   type LogisticsPayTrackerLine,
 } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { isLogisticsOnly } from "../lib/permissions";
 import { describeSchedule, logisticsPayFor, WEEKDAYS } from "../lib/logisticsPay";
 import NumberInput from "./NumberInput";
@@ -189,6 +189,8 @@ export function LogisticsPaySettingsForm() {
         <Switch on={s.enabled} onClick={() => set({ enabled: !s.enabled })} label="Pay logistics from the shipping profit" />
       </div>
 
+      <div className="text-[11.5px] text-muted -mt-2">Changes apply to loads that have not been paid yet.</div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Who gets it">
           <select className={inp} value={s.payee_id} onChange={(e) => {
@@ -289,6 +291,18 @@ export function LogisticsPaySettingsForm() {
 // ─── Tracker: what is owed, on which date, for which loads ────────────────
 
 function LoadRow({ l }: { l: LogisticsPayTrackerLine }) {
+  // A load that was paid and then lost its booking or its invoice is money taken back.
+  if (l.dropped) {
+    return (
+      <div className="py-2.5 text-[12.5px] min-w-0 flex items-baseline justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-ink font-medium truncate">{l.invoice_number}{l.client_name ? ` for ${l.client_name}` : ""}</div>
+          <div className="text-[11px] text-muted truncate">{l.booking_codes.length > 0 ? `${l.booking_codes.join(", ")} · ` : ""}Taken back: booking cancelled or invoice voided</div>
+        </div>
+        <div className="tabular-nums text-ink font-semibold flex-shrink-0">{signed(l.owed)}</div>
+      </div>
+    );
+  }
   // Two lines, so it reads at any width: who and what it pays, then how the pay was worked out.
   return (
     <div className="py-2.5 text-[12.5px] min-w-0">
@@ -333,6 +347,7 @@ export function LogisticsPayTrackerPanel() {
   const record = async (d: LogisticsPayDate) => {
     if (!t) return;
     const payee = t.settings.payee_name || "logistics";
+    // The date's total already holds what was carried in from an earlier one.
     if (!confirm(`Record ${fmtAmount(d.total)} paid to ${payee} for ${fmtDay(d.pay_date)}${method ? ` by ${method}` : ""}? The amount is what the loads below add up to.`)) return;
     setBusy(d.pay_date);
     try { await api.logistics.pay.record(d.pay_date, { method: method || "Other" }); toast("Payment recorded"); await load(); }
@@ -360,6 +375,8 @@ export function LogisticsPayTrackerPanel() {
   const payouts = new Map(t.payouts.map((p) => [p.id, p]));
   const pending = t.lines.filter((l) => l.pending);
   const dates = t.dates.filter((d) => d.status !== "upcoming" || Math.abs(d.total) > 0.005 || d.pay_date === t.next_pay_date);
+  // Payment is recorded oldest first: only the earliest date still unpaid takes the button.
+  const earliestUnpaid = t.dates.filter((d) => d.status !== "paid" && d.total > 0.005).map((d) => d.pay_date).sort()[0] ?? "";
 
   return (
     <div className="space-y-4">
@@ -407,7 +424,7 @@ export function LogisticsPayTrackerPanel() {
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-[15px] font-bold tabular-nums text-ink">{fmtAmount(d.total)}</span>
-                {d.status === "due" && d.total > 0.005 && (
+                {d.status === "due" && d.total > 0.005 && d.pay_date === earliestUnpaid && (
                   <button type="button" onClick={() => record(d)} disabled={busy === d.pay_date}
                     className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12.5px] font-medium disabled:opacity-40 transition-colors whitespace-nowrap">
                     Record payment
@@ -453,7 +470,10 @@ export function LogisticsPayTrackerPanel() {
 /** `from` is the Monday the brief's week began, as YYYY-MM-DD. */
 export function LogisticsPayBriefBlock({ t, from, onOpen }: { t: LogisticsPayTracker; from: string; onOpen: () => void }) {
   if (!t.settings.enabled) return null;
-  const week = t.lines.filter((l) => !l.pending && l.earned_on >= from && l.earned_on <= t.today);
+  // The brief's week, as the server counts it: loads earned from the Monday up to, not including,
+  // the next one. A load still waiting on its freight amount counts as a load, with nothing earned.
+  const end = (() => { const d = parseLocalDay(from); d.setDate(d.getDate() + 7); return localDay(d); })();
+  const week = t.lines.filter((l) => !l.dropped && l.earned_on >= from && l.earned_on < end);
   const earned = week.reduce((s, l) => s + (l.pay ?? 0), 0);
   const waiting = t.lines.filter((l) => l.pending).length;
   return (

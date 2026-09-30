@@ -3160,6 +3160,8 @@ export interface LogisticsPayTrackerLine {
   paid: number;
   owed: number;
   pending: boolean;
+  /** True for a load that was paid and then lost its booking or its invoice: `owed` is what is taken back. */
+  dropped?: boolean;
 }
 export interface LogisticsPayDate {
   pay_date: string;

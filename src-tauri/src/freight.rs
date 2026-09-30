@@ -28,22 +28,35 @@ pub fn booking_code(id: &str) -> String {
 /// Only the logistics routes may be reached through `logistics_request`: `/api/logistics`, alone
 /// or followed by `/` or `?`, with nothing that could climb out of it.
 fn logistics_path_ok(path: &str) -> bool {
-    if path.contains("..") || path.contains("//") || path.contains('\\') || path.contains('#') || path.chars().any(|c| c.is_control() || c == ' ') {
+    // A percent sign is refused outright: `%2e%2e` is a dot segment once the HTTP client parses
+    // the address, and no logistics route needs an encoded character.
+    if path.contains("..") || path.contains("//") || path.contains('\\') || path.contains('#') || path.contains('%') || path.chars().any(|c| c.is_control() || c == ' ') {
         return false;
     }
-    match path.strip_prefix("/api/logistics") {
+    let shaped = match path.strip_prefix("/api/logistics") {
         Some(rest) => rest.is_empty() || rest.starts_with('/') || rest.starts_with('?'),
         None => false,
-    }
+    };
+    // What the client will actually request must still be under /api/logistics.
+    shaped
+        && reqwest::Url::parse("http://server.invalid")
+            .and_then(|base| base.join(path))
+            .map(|u| u.path() == "/api/logistics" || u.path().starts_with("/api/logistics/"))
+            .unwrap_or(false)
+}
+
+/// The verbs the Logistics screens use. PUT saves the pay rule.
+fn logistics_method_ok(m: &str) -> bool {
+    matches!(m, "GET" | "POST" | "PUT" | "PATCH" | "DELETE")
 }
 
 /// One call to the server's Logistics routes as the signed-in account. `method` is GET, POST,
-/// PATCH or DELETE and `path` starts `/api/logistics`. Returns the JSON the server answered. A
+/// PUT, PATCH or DELETE and `path` starts `/api/logistics`. Returns the JSON the server answered. A
 /// refusal comes back as the server's own sentence (it is written to be shown as it is).
 #[tauri::command]
 pub async fn logistics_request(method: String, path: String, body: Option<Value>) -> Result<Value, String> {
     let m = method.trim().to_ascii_uppercase();
-    if !matches!(m.as_str(), "GET" | "POST" | "PATCH" | "DELETE") {
+    if !logistics_method_ok(&m) {
         return Err("That request is not allowed here.".into());
     }
     if !logistics_path_ok(&path) {
@@ -242,28 +255,42 @@ impl PaySettings {
 /// The org's logistics pay rule from the local settings table (the server writes it and it
 /// reaches this device through the pull). Off when it was never set.
 pub fn read_pay_settings() -> PaySettings {
-    let raw: Option<String> = pool().get().ok()
-        .and_then(|c| c.query_row("SELECT value FROM settings WHERE key='logistics_pay'", [], |r| r.get(0)).ok());
-    raw.map(|s| PaySettings::from_json(&s)).unwrap_or_default()
+    let Ok(c) = pool().get() else { return PaySettings::default() };
+    // The server stores the rule under `{org}::logistics_pay` for any org but the default one, and
+    // the row reaches this device under that same key. Try this device's org first, then the plain key.
+    let org: String = c.query_row("SELECT value FROM device_state WHERE key='netsync_org'", [], |r| r.get(0)).unwrap_or_default();
+    let read = |k: &str| -> Option<String> { c.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get(0)).ok() };
+    let scoped = if org.is_empty() || org == "org_default" { None } else { read(&format!("{org}::logistics_pay")) };
+    scoped.or_else(|| read("logistics_pay")).map(|s| PaySettings::from_json(&s)).unwrap_or_default()
 }
 
 fn cents(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
 }
 
-/// What the customer was charged for shipping, from the invoice. The sum of the line amounts
-/// whose description is non-empty and a shipping line by the R-255 rule (a line's amount is the
-/// stored amount the invoice itself adds up, or qty x rate for a line that never had it filled
-/// in). When no shipping line carries money, the invoice's `shipping_charged` field when it is
-/// above zero, else nothing. Returns the amount and where it came from: `lines`, `field`, `none`.
+/// What the customer was charged for shipping, from the invoice: the sum of the stored `amount`
+/// of every line with a non-empty description that is a shipping line by the R-255 rule. That is
+/// the figure the invoice itself adds up, so a line stored with amount 0 charged nothing; only a
+/// line with no `amount` key is qty x rate. When no such line exists at all (even one that sums to
+/// 0), the invoice's `shipping_charged` field stands in when above zero, else nothing. Returns the
+/// amount and where it came from: `lines`, `field`, `none`. The same rule as the server's.
 pub fn charged_of(line_items_json: &str, shipping_charged: f64) -> (f64, &'static str) {
-    let items: Vec<crate::invoice::LineItem> = serde_json::from_str(line_items_json).unwrap_or_default();
-    let from_lines: f64 = items.iter()
-        .filter(|l| !l.description.trim().is_empty() && crate::commands::is_shipping_line(&l.description))
-        .map(|l| if l.amount != 0.0 { l.amount } else { l.qty * l.rate })
-        .sum();
-    if from_lines > 0.005 {
-        (cents(from_lines), "lines")
+    let items: Vec<Value> = serde_json::from_str(line_items_json).unwrap_or_default();
+    let mut found = false;
+    let mut sum = 0.0;
+    for it in &items {
+        let desc = it.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        if desc.trim().is_empty() || !crate::commands::is_shipping_line(desc) {
+            continue;
+        }
+        found = true;
+        sum += match it.get("amount").and_then(|v| v.as_f64()) {
+            Some(a) => a,
+            None => it.get("qty").and_then(|v| v.as_f64()).unwrap_or(0.0) * it.get("rate").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        };
+    }
+    if found {
+        (cents(sum), "lines")
     } else if shipping_charged > 0.005 {
         (cents(shipping_charged), "field")
     } else {
@@ -392,7 +419,7 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
         return None;
     }
     let (archived, voided, items, field): (i64, i64, String, f64) = conn.query_row(
-        "SELECT COALESCE(df.archived,0), COALESCE(i.voided,0), COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0)
+        "SELECT COALESCE(df.archived,0), MAX(COALESCE(i.voided,0), COALESCE(i.archived,0)), COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0)
          FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id WHERE df.id=?1",
         [deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     ).ok()?;
@@ -419,10 +446,15 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
     })
 }
 
-/// The amount of logistics pay to take off the top of a deal's net: its pay, or 0 when the rule
-/// is off, there is no line, or the amount is not known yet.
-pub fn logistics_pay_amount(conn: &rusqlite::Connection, deal_flow_id: &str) -> f64 {
-    deal_pay(conn, deal_flow_id, &read_pay_settings()).and_then(|d| d.pay).unwrap_or(0.0)
+/// The cut a completed deal's owner split is taken after: `Some(amount)` while the rule is on (0
+/// for a deal with no line or no amount yet), `None` while it is off. Kept in
+/// `metadata.logistics_pay`, like the server's `cut_for_deal`.
+pub fn logistics_cut(conn: &rusqlite::Connection, deal_flow_id: &str) -> Option<f64> {
+    let s = read_pay_settings();
+    if !s.enabled {
+        return None;
+    }
+    Some(deal_pay(conn, deal_flow_id, &s).and_then(|d| d.pay).unwrap_or(0.0))
 }
 
 /// One deal's logistics pay line for the deal page: the figures behind it, or `null` when the
@@ -754,8 +786,11 @@ mod pay_tests {
         assert_eq!(charged_of(&lines("Ship-to deposit", 1.0, 400.0), 0.0), (0.0, "none"));
         assert_eq!(charged_of(&lines("", 1.0, 400.0), 0.0), (0.0, "none"), "an empty description is not a shipping line here");
         assert_eq!(charged_of(&lines("Ship-to deposit", 1.0, 400.0), 275.0), (275.0, "field"), "the invoice field stands in when no line is a shipping line");
-        // A line that never had its amount filled in is qty x rate, as the invoice's own unit maths does.
-        assert_eq!(charged_of(r#"[{"description":"Freight","qty":2,"rate":125,"amount":0}]"#, 0.0), (250.0, "lines"));
+        // The invoice adds up each line's stored amount, so a line stored at 0 charged 0; only a
+        // line with no amount at all is qty x rate.
+        assert_eq!(charged_of(r#"[{"description":"Freight","qty":2,"rate":125,"amount":0}]"#, 0.0), (0.0, "lines"));
+        assert_eq!(charged_of(r#"[{"description":"Shipping","qty":2,"rate":125,"amount":0}]"#, 300.0), (0.0, "lines"), "a shipping line at 0 beats the field");
+        assert_eq!(charged_of(r#"[{"description":"Freight","qty":2,"rate":125}]"#, 0.0), (250.0, "lines"));
         // Goods lines never count, whatever their size.
         let mixed = json!([{"description":"Pallet of shoes","qty":1,"rate":5000,"amount":5000},{"description":"Shipping & handling","qty":1,"rate":90,"amount":90}]).to_string();
         assert_eq!(charged_of(&mixed, 0.0), (90.0, "lines"));
@@ -763,6 +798,25 @@ mod pay_tests {
 
     fn weekly(weekday: u32) -> PaySettings {
         PaySettings { frequency: "weekly".into(), pay_weekday: weekday, ..PaySettings::default() }
+    }
+
+    #[test]
+    fn put_passes_the_method_check_and_head_and_options_do_not() {
+        for m in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+            assert!(logistics_method_ok(m), "{m}");
+        }
+        for m in ["HEAD", "OPTIONS", "TRACE", "CONNECT", ""] {
+            assert!(!logistics_method_ok(m), "{m}");
+        }
+    }
+
+    #[test]
+    fn an_encoded_dot_segment_cannot_climb_out_of_the_logistics_routes() {
+        for bad in ["/api/logistics/%2e%2e/deal-flows", "/api/logistics/%2E%2E/bank/txns", "/api/logistics/bookings%2fx", "/api/logistics/.%2e/x"] {
+            assert!(!logistics_path_ok(bad), "{bad}");
+        }
+        assert!(logistics_path_ok("/api/logistics/pay/settings"));
+        assert!(logistics_path_ok("/api/logistics/pay/tracker?today=2026-10-10"));
     }
 
     #[test]
@@ -869,6 +923,11 @@ mod pay_tests {
         pool().get().unwrap().execute("UPDATE invoices SET voided=1 WHERE id='inv-pay-void'", []).unwrap();
         assert!(read(&voided, &on()).is_none());
 
+        let inv_archived = seed("invarc", &items, 0.0);
+        book(&inv_archived, "1", "booked", "2026-10-01", Some(350.0), None);
+        pool().get().unwrap().execute("UPDATE invoices SET archived=1 WHERE id='inv-pay-invarc'", []).unwrap();
+        assert!(read(&inv_archived, &on()).is_none(), "an archived invoice drops the line, as the server does");
+
         let ok = seed("ok", &items, 0.0);
         book(&ok, "1", "delivered", "2026-10-01", Some(350.0), None);
         let d = read(&ok, &on()).unwrap();
@@ -876,6 +935,24 @@ mod pay_tests {
         assert_eq!((d.pay, d.rule, d.pending), (Some(150.0), "share", false));
         assert_eq!((d.earned_on.as_str(), d.due_date.as_str()), ("2026-10-01", "2026-10-02"));
         assert_eq!(d.booking_codes.len(), 1);
+    }
+
+    #[test]
+    fn the_rule_is_read_from_the_orgs_scoped_key_then_the_plain_one() {
+        let _db = crate::db::init_test_store();
+        let conn = pool().get().unwrap();
+        let put = |k: &str, v: &str| conn.execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [k, v]).unwrap();
+        conn.execute("DELETE FROM settings WHERE key LIKE '%logistics_pay'", []).unwrap();
+        conn.execute("INSERT INTO device_state (key, value) VALUES ('netsync_org', 'org_sample') ON CONFLICT(key) DO UPDATE SET value=excluded.value", []).unwrap();
+        put("org_sample::logistics_pay", r#"{"enabled":true,"share_pct":40}"#);
+        let s = read_pay_settings();
+        assert!(s.enabled && s.share_pct == 40.0, "a workspace other than the default reads its prefixed key");
+        conn.execute("DELETE FROM settings WHERE key='org_sample::logistics_pay'", []).unwrap();
+        put("logistics_pay", r#"{"enabled":true,"share_pct":70}"#);
+        assert_eq!(read_pay_settings().share_pct, 70.0, "the plain key still works");
+        conn.execute("DELETE FROM settings WHERE key='logistics_pay'", []).unwrap();
+        conn.execute("DELETE FROM device_state WHERE key='netsync_org'", []).unwrap();
+        assert!(!read_pay_settings().enabled);
     }
 
     #[test]

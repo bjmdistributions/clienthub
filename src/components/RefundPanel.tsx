@@ -82,11 +82,11 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
       )}
 
       {/* R-401: the logistics pay comes off the top beside the rep's cut */}
-      {(Number(payout.logistics_pay) > 0.005 || payout.logistics_pay_pending) && (
+      {(Math.abs(Number(payout.logistics_pay)) > 0.005 || payout.logistics_pay_pending) && (
         <div className="flex items-center justify-between gap-3 text-[12px]">
           <span className="text-muted">Logistics pay</span>
           <span className="tabular-nums font-semibold text-ink">
-            {payout.logistics_pay_pending ? "Waiting on the freight amount" : fmtAmount(Number(payout.logistics_pay))}
+            {payout.logistics_pay_pending ? "Waiting on the freight amount" : `${Number(payout.logistics_pay) < 0 ? "-" : ""}${fmtAmount(Math.abs(Number(payout.logistics_pay)))}`}
           </span>
         </div>
       )}

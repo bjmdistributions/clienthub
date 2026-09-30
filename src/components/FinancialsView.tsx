@@ -2002,8 +2002,19 @@ export default function FinancialsView() {
     if (!confirm(`Link ${fmtAmount(split.total)} as shipping across ${split.parts.length} deals?\n\n${lines}`)) return;
     setSplitBusy(t.id);
     try {
+      // The matcher allows the booked amounts to run up to 50 cents over the charge, so the last
+      // part is clamped to what is left on the row rather than failing half way.
+      let remaining = t.unallocated;
       for (const p of split.parts) {
-        await api.allocateBankTxn(t.id, p.deal_flow_id, p.amount, "shipping", p.carrier || "", true);
+        const amount = Math.min(p.amount, Math.round(remaining * 100) / 100);
+        if (amount < 0.005) continue;
+        await api.allocateBankTxn(t.id, p.deal_flow_id, amount, "shipping", p.carrier || "", true);
+        remaining -= amount;
+      }
+      // Parts that cover less than the row leave the rest free: not booked, and it says what is left.
+      if (remaining > 0.005) {
+        toast(`Linked ${fmtAmount(t.unallocated - remaining)} as shipping. ${fmtAmount(remaining)} of this transaction is still unlinked.`);
+        return;
       }
       let booked = false;
       if (!t.reviewed) {

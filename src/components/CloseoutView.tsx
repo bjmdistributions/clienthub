@@ -310,8 +310,11 @@ function DealBreakdown({
                       {p.quantity} × {fmtAmount(p.unit_price)}
                     </div>
                   )}
+                  {flow.shipping_mode && p.category === "freight" && (
+                    <div className="text-[10.5px] text-muted">Replaced by the logistics booking, not counted</div>
+                  )}
                 </div>
-                <div className="text-[13px] font-semibold text-ink tabular-nums">
+                <div className={`text-[13px] font-semibold tabular-nums ${flow.shipping_mode && p.category === "freight" ? "text-muted line-through" : "text-ink"}`}>
                   {fmtAmount(p.amount)}
                 </div>
               </div>
@@ -319,7 +322,8 @@ function DealBreakdown({
             <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
               <span className="text-[11px] text-muted font-medium">Total supplier cost</span>
               <span className="text-[12px] font-bold text-ink tabular-nums">
-                {fmtAmount(flow.total_supplier_cost)}
+                {/* With a recorded shipping leg, the goods are what the record holds less that leg, so the rows add up */}
+                {fmtAmount(flow.shipping_cost != null ? flow.total_cost - flow.shipping_cost : flow.total_supplier_cost)}
               </span>
             </div>
             {/* R-400: shipping is its own leg of the recorded cost */}

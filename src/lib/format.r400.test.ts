@@ -68,8 +68,12 @@ describe("shippingChargedOf", () => {
     expect(shippingChargedOf(lines({ description: "Mixed pallets", qty: 10, rate: 100, amount: 1000 },
       { description: "Shipping", qty: 1, rate: 500, amount: 500 }), 0)).toEqual({ amount: 500, source: "lines" });
   });
-  it("uses quantity times rate when a line has no stored amount", () => {
-    expect(shippingChargedOf(lines({ description: "Freight", qty: 2, rate: 200, amount: 0 }), 0)).toEqual({ amount: 400, source: "lines" });
+  it("uses quantity times rate only when a line has no stored amount at all", () => {
+    expect(shippingChargedOf(lines({ description: "Freight", qty: 2, rate: 200 }), 0)).toEqual({ amount: 400, source: "lines" });
+  });
+  it("follows the invoice: a line stored at 0 charged nothing, and beats the invoice's own field", () => {
+    expect(shippingChargedOf(lines({ description: "Shipping", qty: 2, rate: 125, amount: 0 }), 0)).toEqual({ amount: 0, source: "lines" });
+    expect(shippingChargedOf(lines({ description: "Shipping", qty: 1, rate: 500, amount: 0 }), 300)).toEqual({ amount: 0, source: "lines" });
   });
   it("counts a description that starts with shipping, but not a blank or ship-to line", () => {
     expect(shippingChargedOf(lines({ description: "Shipping to Orlando, FL", qty: 1, rate: 300, amount: 300 }), 0).amount).toBe(300);

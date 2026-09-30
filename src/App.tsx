@@ -520,9 +520,15 @@ export default function App() {
   // R-400: the screen this account lands on, whatever tab the last person left stored. Set
   // without persisting, so the last tab on this device is not overwritten for the next sign-in.
   // Anything else is already refused by visible(), so nothing renders in the one frame before this runs.
+  // It always opens on Logistics: Settings, even as the stored last tab, is allowed only once the
+  // person has opened it themselves in this session.
+  const logisticsLanded = useRef(false);
   useEffect(() => {
-    if (logisticsOnly && tab !== "logistics" && tab !== "settings") { setTabState("logistics"); setPageKey((k) => k + 1); }
-    if (logisticsOnly && splitTab) setSplit(null);
+    if (!logisticsOnly) { logisticsLanded.current = false; return; }
+    const allowed = tab === "logistics" || (tab === "settings" && logisticsLanded.current);
+    logisticsLanded.current = true;
+    if (!allowed) { setTabState("logistics"); setPageKey((k) => k + 1); }
+    if (splitTab) setSplit(null);
   }, [logisticsOnly, tab, splitTab]);
 
   const signOut = async () => {

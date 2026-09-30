@@ -5646,9 +5646,10 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     // This is the authoritative per-deal split going forward; the jack/ben
     // columns above remain only so already-shipped readers keep working.
     // R-401: the logistics pay comes off the top before the owner split, like a rep's cut.
-    let logistics_pay = {
+    let (logistics_cut, logistics_pay) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        crate::freight::logistics_pay_amount(&conn, &id)
+        let cut = crate::freight::logistics_cut(&conn, &id);
+        (cut, cut.unwrap_or(0.0))
     };
     let breakdown = build_payout_breakdown(&read_profit_split_shares_raw(), crate::freight::owner_remainder(net, 0.0, logistics_pay), include_payout);
     // Snapshot the linked bank transactions onto the deal so the record (and the
@@ -5669,6 +5670,10 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     if !gate_overrides.is_empty() {
         if let Some(o) = meta.as_object_mut() { o.insert("gate_overrides".into(), Value::Array(gate_overrides)); }
     }
+    // R-401: the logistics pay kept for the panels that show it as its own row (the server does too).
+    if let Some(p) = logistics_cut {
+        if let Some(o) = meta.as_object_mut() { o.insert("logistics_pay".into(), json!(p)); }
+    }
     let meta_json = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
 
     let mut cols = Map::new();
@@ -5681,10 +5686,12 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     cols.insert("profit_ben".into(), json!(ben));
     cols.insert("profit_business".into(), json!(business));
     cols.insert("metadata".into(), Value::String(meta_json.clone()));
-    // R-400: the shipping leg as recorded. Left NULL on a deal that does not use Logistics, so a
-    // booking that arrives after completion can tell "recorded with typed freight" from "recorded
-    // with a shipping amount" (see `recompute_completed_deal`).
-    if shipping_mode { cols.insert("shipping_cost".into(), json!(shipping_leg)); }
+    // R-400: the shipping leg as recorded. NULL on a deal that does not use Logistics (written
+    // every time, so a stale figure from an earlier completion cannot survive), so a booking that
+    // arrives after completion can tell "recorded with typed freight" from "recorded with a
+    // shipping amount" (see `recompute_completed_deal`).
+    let shipping_recorded: Option<f64> = if shipping_mode { Some(shipping_leg) } else { None };
+    cols.insert("shipping_cost".into(), json!(shipping_recorded));
     if let Some((amount, received_at)) = &invoiced_payment {
         cols.insert("payment_received_amount".into(), json!(amount));
         cols.insert("payment_received_at".into(), Value::String(received_at.clone()));
@@ -5695,9 +5702,7 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
 
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        if shipping_mode {
-            conn.execute("UPDATE deal_flows SET shipping_cost=?1 WHERE id=?2", rusqlite::params![shipping_leg, id]).map_err(|e| e.to_string())?;
-        }
+        conn.execute("UPDATE deal_flows SET shipping_cost=?1 WHERE id=?2", rusqlite::params![shipping_recorded, id]).map_err(|e| e.to_string())?;
         if let Some((amount, received_at)) = &invoiced_payment {
             conn.execute(
                 "UPDATE deal_flows SET stage='complete', completed_at=?1, gross_revenue=?2, total_cost=?3, net_profit=?4, profit_jack=?5, profit_ben=?6, profit_business=?7, metadata=?8, payment_received_amount=?9, payment_received_at=?10, deposit_amount=0, updated_at=?1 WHERE id=?11",
@@ -5919,9 +5924,16 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
 /// shipping leg taken back out. A deal recorded before R-400 (`shipping_cost` NULL) that now ships
 /// through Logistics had its typed freight inside the recorded cost, so that comes out too, or the
 /// carrier would be counted twice.
+///
+/// The inverse also holds: a deal recorded WITH a shipping leg whose booking has since gone away
+/// (cancelled or archived) is no longer in shipping mode, so its typed freight counts as cost again
+/// and comes back in. A recorded leg of 0 is not told apart from none: a resync that finds the deal
+/// out of shipping mode clears the leg, so no deal keeps a 0 that would add the freight twice.
 pub fn recorded_goods_of(total_cost: f64, shipping_cost: Option<f64>, facts: &ShipFacts) -> f64 {
+    let back = if !facts.mode() && shipping_cost.map_or(false, |s| s.abs() > 0.005) { facts.freight_typed } else { 0.0 };
     total_cost - shipping_cost.unwrap_or(0.0)
         - if facts.mode() && shipping_cost.is_none() { facts.freight_typed } else { 0.0 }
+        + back
 }
 
 /// What a completed deal's recorded figures come to now, the bank snapshot to store beside them and
@@ -5956,9 +5968,22 @@ pub fn resync_completed_deal_if_changed(id: &str) -> Result<bool, String> {
     let df = read_df(id)?;
     if df.stage != "complete" { return Ok(false); }
     let (a, _, _) = completed_actuals(&df, None)?;
-    let store_shipping = a.shipping_mode || df.shipping_cost.is_some();
-    let shipping_differs = store_shipping && df.shipping_cost.map_or(true, |s| (s - a.shipping_leg).abs() > 0.005);
-    if (df.total_cost - a.cost).abs() <= 0.005 && (df.net_profit - a.net).abs() <= 0.005 && !shipping_differs {
+    // In shipping mode the recorded leg must match the bookings; out of it the leg must be NULL.
+    let shipping_differs = if a.shipping_mode {
+        df.shipping_cost.map_or(true, |s| (s - a.shipping_leg).abs() > 0.005)
+    } else {
+        df.shipping_cost.is_some()
+    };
+    // The logistics pay the owner split was taken after: a quote or a rule change moves it with no
+    // change to the cost, so the stored cut is compared too (a missing one reads as 0).
+    let cut_differs = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let now = crate::freight::logistics_cut(&conn, id).unwrap_or(0.0);
+        let stored = serde_json::from_str::<Value>(df.metadata.as_deref().unwrap_or("{}")).ok()
+            .and_then(|v| v.get("logistics_pay").and_then(|x| x.as_f64())).unwrap_or(0.0);
+        (now - stored).abs() > 0.005
+    };
+    if (df.total_cost - a.cost).abs() <= 0.005 && (df.net_profit - a.net).abs() <= 0.005 && !shipping_differs && !cut_differs {
         return Ok(false);
     }
     recompute_completed_deal(id, None)?;
@@ -5976,8 +6001,10 @@ fn recompute_completed_deal(id: &str, typed_goods: Option<f64>) -> Result<(), St
 
     let (a, snapshot, closed_date) = completed_actuals(&df, typed_goods)?;
     let (gross, total_cost, net) = (a.gross, a.cost, a.net);
-    // A deal with no bookings, no shipping link and no recorded shipping leg stays NULL.
+    // A deal with no bookings, no shipping link and no recorded shipping leg stays NULL. One that
+    // is no longer in shipping mode (its booking went away) has its recorded leg cleared.
     let store_shipping = a.shipping_mode || df.shipping_cost.is_some();
+    let shipping_recorded: Option<f64> = if a.shipping_mode { Some(a.shipping_leg) } else { None };
 
     let split = read_profit_split()?;
     let mut meta_map = serde_json::from_str::<Value>(df.metadata.as_deref().unwrap_or("{}"))
@@ -5989,11 +6016,15 @@ fn recompute_completed_deal(id: &str, typed_goods: Option<f64>) -> Result<(), St
     // completion (the split the deal was agreed under), as the cost-edit path always did.
     let shares = shares_from_breakdown(&meta_map).unwrap_or_else(read_profit_split_shares_raw);
     // R-401: the logistics pay comes off the top before the owner split, like a rep's cut.
-    let logistics_pay = {
+    let logistics_cut = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        crate::freight::logistics_pay_amount(&conn, id)
+        crate::freight::logistics_cut(&conn, id)
     };
-    meta_map.insert("payout_recipients".into(), Value::Array(build_payout_breakdown(&shares, crate::freight::owner_remainder(net, 0.0, logistics_pay), include_payout)));
+    meta_map.insert("payout_recipients".into(), Value::Array(build_payout_breakdown(&shares, crate::freight::owner_remainder(net, 0.0, logistics_cut.unwrap_or(0.0)), include_payout)));
+    match logistics_cut {
+        Some(p) => { meta_map.insert("logistics_pay".into(), json!(p)); }
+        None => { meta_map.remove("logistics_pay"); }
+    }
     let meta_json = serde_json::to_string(&Value::Object(meta_map)).unwrap_or_else(|_| "{}".into());
 
     let (jack, ben, business) = if include_payout {
@@ -6012,7 +6043,7 @@ fn recompute_completed_deal(id: &str, typed_goods: Option<f64>) -> Result<(), St
     cols.insert("profit_ben".into(), json!(ben));
     cols.insert("profit_business".into(), json!(business));
     cols.insert("metadata".into(), json!(meta_json));
-    if store_shipping { cols.insert("shipping_cost".into(), json!(a.shipping_leg)); }
+    if store_shipping { cols.insert("shipping_cost".into(), json!(shipping_recorded)); }
     cols.insert("updated_at".into(), json!(now.clone()));
     if let Some(d) = &closed_date { cols.insert("completed_at".into(), json!(d)); }
     sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
@@ -6029,7 +6060,7 @@ fn recompute_completed_deal(id: &str, typed_goods: Option<f64>) -> Result<(), St
         rusqlite::params![gross, total_cost, net, jack, ben, business, meta_json, now, id],
     ).map_err(|e| e.to_string())?;
     if store_shipping {
-        conn.execute("UPDATE deal_flows SET shipping_cost=?1 WHERE id=?2", rusqlite::params![a.shipping_leg, id]).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET shipping_cost=?1 WHERE id=?2", rusqlite::params![shipping_recorded, id]).map_err(|e| e.to_string())?;
     }
     if let Some(d) = &closed_date {
         conn.execute("UPDATE deal_flows SET completed_at=?1 WHERE id=?2", rusqlite::params![d, id]).ok();
@@ -6071,12 +6102,14 @@ pub async fn uncomplete_deal_flow(id: String) -> Result<(), String> {
     let mut cols = Map::new();
     cols.insert("stage".into(), Value::String("supplier_paid".into()));
     cols.insert("completed_at".into(), Value::Null);
+    // R-400: the recorded shipping leg goes with the completion (the server clears it too).
+    cols.insert("shipping_cost".into(), Value::Null);
     cols.insert("updated_at".into(), Value::String(now.clone()));
     sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
 
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute("UPDATE deal_flows SET stage='supplier_paid', completed_at=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET stage='supplier_paid', completed_at=NULL, shipping_cost=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
     }
 
     sync_invoice_stage(&df.invoice_id, "supplier_paid")?;
@@ -16927,9 +16960,13 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     let supplier_paid_paired    = if supplier_target > 0.01 { supplier_paired >= supplier_target - 0.5 } else { supplier_paired > 0.01 };
     let shipping_target         = if facts.mode() { facts.paid } else { facts.freight_typed };
     let shipping_paid_paired    = shipping_target > 0.005 && shipping_paired >= shipping_target - 0.5;
-    // Only a deal that ships through Logistics and has an amount paid must have its carrier
-    // payment linked before it counts as reconciled.
-    let shipping_required       = facts.mode() && facts.paid > 0.005;
+    // The shipping leg must be paired whenever there is a shipping amount to pair (from the
+    // bookings, or the typed freight of a deal that does not use Logistics) and the deal is not
+    // marked as having no shipping record.
+    let no_shipping_link: bool = conn.query_row("SELECT COALESCE(metadata,'') FROM deal_flows WHERE id=?1", [&deal_flow_id], |r| r.get::<_, String>(0)).ok()
+        .and_then(|m| serde_json::from_str::<Value>(&m).ok())
+        .and_then(|v| v.get("no_shipping_link").and_then(|x| x.as_bool())).unwrap_or(false);
+    let shipping_required       = shipping_target > 0.005 && !no_shipping_link;
     let fully_reconciled = payment_received_paired && supplier_paid_paired && (!shipping_required || shipping_paid_paired);
 
     Ok(json!({
@@ -16996,10 +17033,11 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         let supplier_target = supplier_cost - facts.freight_typed;
         let pr = if buyer_target > 0.01 { buyer_paired >= buyer_target - 0.5 } else { buyer_paired > 0.01 };
         let sp = if supplier_target > 0.01 { supplier_paired >= supplier_target - 0.5 } else { supplier_paired > 0.01 };
-        // The shipping leg counts only for a deal that ships through Logistics and has an amount
-        // paid: the carrier's payment must be linked before the deal reads as reconciled.
-        let shipping_required = facts.mode() && facts.paid > 0.005;
+        // The shipping leg must be paired whenever there is a shipping amount to pair (the
+        // bookings', or the typed freight when the deal does not use Logistics) and the deal is
+        // not marked as having no shipping record.
         let shipping_target = if facts.mode() { facts.paid } else { facts.freight_typed };
+        let shipping_required = shipping_target > 0.005 && !no_shipping;
         let shipping_paired = facts.linked;
         let shp = shipping_target > 0.005 && shipping_paired >= shipping_target - 0.5;
         let acknowledged = no_buyer && no_supplier;
@@ -25629,6 +25667,64 @@ mod r400_shipping_tests {
         assert_eq!(r["fully_reconciled"], json!(true));
     }
 
+    /// Reopen, lose the booking, complete again: the old shipping figure must not linger on the row.
+    #[tokio::test]
+    async fn a_recompleted_deal_with_no_booking_left_records_no_shipping_leg() {
+        let _db = crate::db::init_test_store();
+        let id = deal("d7a", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(800.0), None, 0);
+        complete(&id).await;
+        assert_eq!(books(&id), (6800.0, 3200.0, Some(800.0), Some(6800.0)));
+        uncomplete_deal_flow(id.clone()).await.unwrap();
+        assert_eq!(books(&id).2, None, "reopening clears the recorded leg");
+        pool().get().unwrap().execute("UPDATE freight_bookings SET status='cancelled' WHERE id=?1", [format!("fb_{id}_1")]).unwrap();
+        complete(&id).await;
+        assert_eq!(books(&id), (6500.0, 3500.0, None, Some(6500.0)), "the typed freight counts again and no stale 800 is left");
+        resync_completed_deal(&id).unwrap();
+        assert_eq!(books(&id), (6500.0, 3500.0, None, Some(6500.0)), "a later resync no longer understates the cost");
+    }
+
+    /// A completed deal whose booking is cancelled afterwards keeps its typed freight in the cost.
+    #[tokio::test]
+    async fn a_cancelled_booking_brings_the_typed_freight_back_into_the_recorded_cost() {
+        let _db = crate::db::init_test_store();
+        let id = deal("d7b", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(800.0), None, 0);
+        complete(&id).await;
+        assert_eq!(books(&id).0, 6800.0);
+        pool().get().unwrap().execute("UPDATE freight_bookings SET status='cancelled' WHERE id=?1", [format!("fb_{id}_1")]).unwrap();
+        assert!(resync_completed_deal_if_changed(&id).unwrap(), "losing the booking is a change");
+        assert_eq!(books(&id), (6500.0, 3500.0, None, Some(6500.0)), "6,500 (goods plus typed freight), not 6,000");
+        assert!(!resync_completed_deal_if_changed(&id).unwrap());
+        resync_completed_deal(&id).unwrap();
+        assert_eq!(books(&id).0, 6500.0, "and a second resync changes nothing");
+        // The pure rule.
+        let typed = ShipFacts { freight_typed: 500.0, ..Default::default() };
+        assert_eq!(recorded_goods_of(6800.0, Some(800.0), &typed), 6500.0);
+        assert_eq!(recorded_goods_of(6500.0, None, &typed), 6500.0, "never recorded with a leg: unchanged");
+    }
+
+    /// The shipping leg must be paired for a legacy deal with typed freight too.
+    #[tokio::test]
+    async fn typed_freight_with_no_shipping_link_keeps_a_deal_in_review() {
+        let _db = crate::db::init_test_store();
+        let id = deal("d6", vec![line("a", "supplier", 6000.0, true), line("b", "freight", 500.0, true)], "supplier_paid");
+        link(&id, "buyer_payment", 10000.0);
+        link(&id, "supplier_payment", 6000.0);
+        let status = |id: &str| -> Value { futures::executor::block_on(reconciliation_status_all()).unwrap().into_iter().find(|v| v["deal_flow_id"] == id).unwrap() };
+        let s = status(&id);
+        assert_eq!((s["fully_reconciled"].as_bool(), s["shipping_missing"].as_bool(), s["needs_review"].as_bool()), (Some(false), Some(true), Some(true)));
+        assert_eq!(deal_reconciliation(id.clone()).await.unwrap()["fully_reconciled"], json!(false));
+        // Acknowledged: nothing to link.
+        set_deal_link_na(id.clone(), false, false, Some(true)).await.unwrap();
+        assert_eq!((status(&id)["shipping_missing"].as_bool(), status(&id)["fully_reconciled"].as_bool()), (Some(false), Some(true)));
+        set_deal_link_na(id.clone(), false, false, Some(false)).await.unwrap();
+        // Linked: reconciled.
+        link(&id, "shipping", 500.0);
+        assert_eq!((status(&id)["shipping_missing"].as_bool(), status(&id)["fully_reconciled"].as_bool()), (Some(false), Some(true)));
+        assert_eq!(deal_reconciliation(id.clone()).await.unwrap()["fully_reconciled"], json!(true));
+    }
+
     #[tokio::test]
     async fn payables_swap_the_typed_freight_for_the_booking_quote() {
         let _db = crate::db::init_test_store();
@@ -25760,6 +25856,26 @@ mod r401_pay_tests {
         put("logistics_pay", r#"{"enabled":false}"#);
         resync_completed_deal(&id).unwrap();
         assert_eq!(amounts(&id), vec![2220.0, 1480.0]);
+        clear();
+    }
+
+    /// A quote arrives after completion: the cost does not move but the pay does, and the owner
+    /// split the books hold follows it.
+    #[tokio::test]
+    async fn a_quote_after_completion_refreshes_the_owner_split_and_the_stored_cut() {
+        let _db = crate::db::init_test_store();
+        put("profit_split_json", SPLIT);
+        put("logistics_pay", RULE);
+        let id = deal("quote");
+        pool().get().unwrap().execute("UPDATE freight_bookings SET paid_amount=NULL, quoted_cost=NULL WHERE id=?1", [format!("fb_{id}")]).unwrap();
+        complete_deal_flow(id.clone(), None, None, Some(true), None).await.unwrap();
+        assert_eq!(amounts(&id), vec![2400.0, 1600.0], "pay pending: nothing is taken off yet");
+        pool().get().unwrap().execute("UPDATE freight_bookings SET quoted_cost=320 WHERE id=?1", [format!("fb_{id}")]).unwrap();
+        assert!(resync_completed_deal_if_changed(&id).unwrap(), "the pay moved, so the owner split is refreshed");
+        assert_eq!(amounts(&id), vec![2292.0, 1528.0]);
+        let meta: String = pool().get().unwrap().query_row("SELECT metadata FROM deal_flows WHERE id=?1", [&id], |r| r.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["logistics_pay"], json!(180.0));
+        assert!(!resync_completed_deal_if_changed(&id).unwrap(), "nothing differs now");
         clear();
     }
 

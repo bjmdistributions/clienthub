@@ -20,6 +20,14 @@ describe("isLogisticsOnly", () => {
     expect(isLogisticsOnly({} as Perms)).toBe(false);
   });
 
+  it("stays logistics-only with the three older switches a role editor can add", () => {
+    expect(isLogisticsOnly(["logistics:view", "logistics:edit", "deal_flow:view_numbers"])).toBe(true);
+    expect(isLogisticsOnly(["logistics:view", "suppliers:view", "clients:view_revenue", "deal_flow:view_numbers"])).toBe(true);
+    expect(isLogisticsOnly(["deal_flow:view_numbers"])).toBe(false);
+    expect(isLogisticsOnly(["logistics:view", "deal_flow:view_numbers", "deal_flow:view"])).toBe(false);
+    expect(isLogisticsOnly(["logistics:view", "deal_flow:view_numbers", "*"])).toBe(false);
+  });
+
   it("refuses the wildcard and the admin grant even beside logistics permissions", () => {
     expect(isLogisticsOnly(["*"])).toBe(false);
     expect(isLogisticsOnly(["logistics:view", "*"])).toBe(false);

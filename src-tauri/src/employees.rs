@@ -644,11 +644,15 @@ pub const EXTRA_PERMS: [&str; 5] = [
     "logistics:view_names", "logistics:view_addresses",
 ];
 
-/// R-400: a session that reaches the Logistics screen and nothing else. Its permission list is
-/// not empty, holds no `*` and no `admin:manage`, and every entry starts with `logistics:`.
+/// R-400: a session that reaches the Logistics screen and nothing else. It holds at least one
+/// `logistics:` permission, no `*` and no `admin:manage`, and every entry either starts with
+/// `logistics:` or is one of the three older switches (`clients:view_revenue`, `suppliers:view`,
+/// `deal_flow:view_numbers`), which a role editor can add to any role and which open no screen.
 /// The same rule as clienthub-api `employees::is_logistics_only`.
 pub fn is_logistics_only(perms: &[String]) -> bool {
-    !perms.is_empty() && perms.iter().all(|p| p.starts_with("logistics:"))
+    const OLDER_SWITCHES: [&str; 3] = ["clients:view_revenue", "suppliers:view", "deal_flow:view_numbers"];
+    perms.iter().any(|p| p.starts_with("logistics:"))
+        && perms.iter().all(|p| p.starts_with("logistics:") || OLDER_SWITCHES.contains(&p.as_str()))
 }
 
 /// R-400: whether the account signed in on this device is a Logistics-only one. Such a device
@@ -841,6 +845,13 @@ mod r400_role_tests {
         assert!(!is_logistics_only(&s(&["logistics:view", "deal_flow:view"])));
         assert!(!is_logistics_only(&s(&["logistics:view", "*"])));
         assert!(!is_logistics_only(&s(&["financials:view"])), "the accountant is not one");
+        // The three older switches a role editor can add to any role do not end the lockdown.
+        assert!(is_logistics_only(&s(&["logistics:view", "logistics:edit", "deal_flow:view_numbers"])));
+        assert!(is_logistics_only(&s(&["logistics:view", "suppliers:view", "clients:view_revenue", "deal_flow:view_numbers"])));
+        assert!(!is_logistics_only(&s(&["deal_flow:view_numbers"])), "a switch alone is not a logistics role");
+        assert!(!is_logistics_only(&s(&["logistics:view", "deal_flow:view_numbers", "*"])));
+        assert!(!is_logistics_only(&s(&["logistics:view", "deal_flow:view_numbers", "admin:manage"])));
+        assert!(!is_logistics_only(&s(&["logistics:view", "deal_flow:view_numbers", "deal_flow:view"])));
     }
 
     #[test]
