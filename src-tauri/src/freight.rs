@@ -149,7 +149,9 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
     let b: Vec<String> = TEXT_B.iter().map(|c| format!("COALESCE(fb.{c},'')")).collect();
     let sql = format!(
         "SELECT fb.id, {a}, fb.quoted_cost, fb.paid_amount, {b},
-                COALESCE(df.id,''), COALESCE(i.number,''), COALESCE(c.name,''), COALESCE(df.stage,'')
+                COALESCE(df.id,''), COALESCE(i.number,''), COALESCE(c.name,''), COALESCE(df.stage,''),
+                COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0),
+                (SELECT COUNT(*) FROM freight_bookings tb WHERE tb.deal_flow_id = fb.deal_flow_id AND tb.archived = 0 AND tb.status != 'cancelled')
          FROM freight_bookings fb
          LEFT JOIN deal_flows df ON df.id = fb.deal_flow_id
          LEFT JOIN invoices i ON i.id = df.invoice_id
@@ -161,6 +163,7 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let na = TEXT_A.len();
+    let by_team = read_freight_by_team();
     let rows = stmt.query_map([deal_flow_id.unwrap_or_default()], |r| {
         let id: String = r.get(0)?;
         let mut m = Map::new();
@@ -176,6 +179,12 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
         }
         let at = 3 + na + TEXT_B.len();
         let (deal, number, client, stage): (String, String, String, String) = (r.get(at)?, r.get(at + 1)?, r.get(at + 2)?, r.get(at + 3)?);
+        // R-415: what we charged the customer for shipping on this deal (null with no deal), how
+        // many live trucks the deal has, and whether our side fills in the freight.
+        let (items, field, trucks): (String, f64, i64) = (r.get(at + 4)?, r.get(at + 5)?, r.get(at + 6)?);
+        m.insert("shipping_billed".into(), if deal.is_empty() { Value::Null } else { json!(charged_of(&items, field).0) });
+        m.insert("trucks_on_deal".into(), json!(if deal.is_empty() { 0 } else { trucks }));
+        m.insert("freight_by_team".into(), json!(by_team));
         m.insert("can_see_names".into(), json!(true));
         m.insert("can_see_addresses".into(), json!(true));
         m.insert("can_see_deal".into(), json!(true));
@@ -218,6 +227,9 @@ pub struct PaySettings {
     pub pay_day_of_month: u32,
     pub method: String,
     pub details: String,
+    /// R-415: `pay` (the default: the surplus is paid to the payee) or `track` (the surplus is
+    /// worked out and shown in the Brief, nothing is owed). Anything else reads as `pay`.
+    pub surplus_mode: String,
 }
 
 impl Default for PaySettings {
@@ -226,6 +238,7 @@ impl Default for PaySettings {
             enabled: false, payee_id: String::new(), payee_name: String::new(), share_pct: 100.0,
             cover_losses: true, loss_pay_pct: 0.0, frequency: "weekly".into(), pay_weekday: 4,
             anchor_date: String::new(), pay_day_of_month: 1, method: String::new(), details: String::new(),
+            surplus_mode: "pay".into(),
         }
     }
 }
@@ -248,20 +261,41 @@ impl PaySettings {
         if let Some(n) = v.get("pay_day_of_month").and_then(|x| x.as_u64()) { s.pay_day_of_month = (n as u32).clamp(1, 28); }
         s.method = text("method");
         s.details = text("details");
+        if text("surplus_mode") == "track" { s.surplus_mode = "track".into(); }
         s
+    }
+
+    /// Track mode: the surplus is reported, never owed.
+    pub fn tracks(&self) -> bool {
+        self.surplus_mode == "track"
     }
 }
 
 /// The org's logistics pay rule from the local settings table (the server writes it and it
 /// reaches this device through the pull). Off when it was never set.
 pub fn read_pay_settings() -> PaySettings {
-    let Ok(c) = pool().get() else { return PaySettings::default() };
-    // The server stores the rule under `{org}::logistics_pay` for any org but the default one, and
-    // the row reaches this device under that same key. Try this device's org first, then the plain key.
+    read_org_setting("logistics_pay").map(|s| PaySettings::from_json(&s)).unwrap_or_default()
+}
+
+/// An org setting the server writes (`logistics_pay`, `logistics_settings`), as stored. The server
+/// keeps it under `{org}::{key}` for any org but the default one, and the row reaches this device
+/// under that same key. Try this device's org first, then the plain key.
+fn read_org_setting(key: &str) -> Option<String> {
+    let c = pool().get().ok()?;
     let org: String = c.query_row("SELECT value FROM device_state WHERE key='netsync_org'", [], |r| r.get(0)).unwrap_or_default();
     let read = |k: &str| -> Option<String> { c.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get(0)).ok() };
-    let scoped = if org.is_empty() || org == "org_default" { None } else { read(&format!("{org}::logistics_pay")) };
-    scoped.or_else(|| read("logistics_pay")).map(|s| PaySettings::from_json(&s)).unwrap_or_default()
+    let scoped = if org.is_empty() || org == "org_default" { None } else { read(&format!("{org}::{key}")) };
+    scoped.or_else(|| read(key))
+}
+
+/// R-415: whether our side fills in the freight details (pallets, weight, dimensions,
+/// accessorials) before a load is sent to logistics. The `logistics_settings` setting's
+/// `freight_by_team`, true when the setting was never written.
+pub fn read_freight_by_team() -> bool {
+    read_org_setting("logistics_settings")
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("freight_by_team").and_then(|x| x.as_bool()))
+        .unwrap_or(true)
 }
 
 fn cents(x: f64) -> f64 {
@@ -303,10 +337,15 @@ pub fn charged_of(line_items_json: &str, shipping_charged: f64) -> (f64, &'stati
 ///   surplus > 0                   share_pct of the surplus                  rule `share`
 ///   surplus <= 0, cover_losses    loss_pay_pct of the freight cost          rule `loss_cover`
 ///   surplus <= 0, not cover       share_pct of the surplus (zero or less)   rule `loss_share`
+/// In track mode (R-415) the pay is always 0 with rule `tracked`; a load still waiting on the
+/// amount paid stays pending.
 pub fn pay_for(s: &PaySettings, charged: f64, freight: f64, pending: bool) -> (Option<f64>, &'static str) {
     let surplus = charged - freight;
     if pending {
         return (None, "pending");
+    }
+    if s.tracks() {
+        return (Some(0.0), "tracked");
     }
     if surplus > 0.0 {
         (Some(cents(s.share_pct / 100.0 * surplus)), "share")
@@ -396,24 +435,18 @@ impl DealPay {
     }
 }
 
-/// The freight cost a deal's pay is measured against, and where it came from: the shipping
-/// estimate (linked-or-paid plus the quotes not paid yet), named `bank` (a shipping link),
-/// `paid` (the amounts paid), `quote` (quotes only) or `mixed` (paid or linked plus a quote).
+/// The freight cost a deal's pay is measured against, and where it came from: the shipping link
+/// when there is one (`bank`), else the amounts paid (`paid`). R-415: a quote no longer makes the
+/// freight known, so a load whose amount paid is missing is pending (see `deal_pay`) and is never
+/// measured against a quote or the billed figure.
 pub fn freight_of(facts: &crate::commands::ShipFacts) -> (f64, &'static str) {
-    let base = if facts.has_link { Some("bank") } else if facts.bookings - facts.unpaid > 0 { Some("paid") } else { None };
-    let quoted = facts.quoted > 0.005;
-    let source = match (base, quoted) {
-        (Some(_), true) => "mixed",
-        (Some(b), false) => b,
-        (None, true) => "quote",
-        (None, false) => "paid",
-    };
-    (cents(facts.estimate()), source)
+    if facts.has_link { (cents(facts.linked), "bank") } else { (cents(facts.paid), "paid") }
 }
 
 /// The logistics pay for one deal under the org's rule, or `None` when there is no line: the rule
 /// is off, the deal is archived or voided, or no live booking has been confirmed booked yet.
-/// A deal whose freight amount is not known yet is a line with `pay: None` (pending).
+/// A deal whose freight amount is not known yet (a live booking has no amount paid) is a line
+/// with `pay: None` (pending).
 pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings) -> Option<DealPay> {
     if !s.enabled {
         return None;
@@ -432,7 +465,7 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
         return None;
     }
     let mut stmt = conn.prepare(
-        "SELECT id, COALESCE(booked_at,''), CASE WHEN paid_amount IS NULL AND quoted_cost IS NULL THEN 1 ELSE 0 END
+        "SELECT id, COALESCE(booked_at,''), CASE WHEN paid_amount IS NULL THEN 1 ELSE 0 END
          FROM freight_bookings WHERE deal_flow_id=?1 AND archived=0 AND status!='cancelled' ORDER BY created_at, id",
     ).ok()?;
     let live: Vec<(String, String, i64)> = stmt
@@ -443,7 +476,8 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
     let (charged, charged_source) = charged_of(&items, field);
     let (freight, freight_source) = freight_of(&crate::commands::ship_facts(conn, deal_flow_id));
     let (pay, rule) = pay_for(s, charged, freight, pending);
-    let due_date = pay_date_for(&earned_on, s).map(|d| d.pay_date).unwrap_or_default();
+    // Nothing is owed in track mode, so there is no pay date either.
+    let due_date = if s.tracks() { String::new() } else { pay_date_for(&earned_on, s).map(|d| d.pay_date).unwrap_or_default() };
     Some(DealPay {
         charged, charged_source, freight, freight_source, surplus: charged - freight, pay, rule, pending,
         earned_on, due_date,
@@ -454,7 +488,8 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
 /// The settings one deal's pay is worked under: the current rule, unless a non-archived payment
 /// to this payee already covered the deal, in which case the rule stored on the latest covering
 /// line (by pay date, then when it was recorded). A latest line without a stored rule (recorded
-/// before rules were stored) means the current rule.
+/// before rules were stored) means the current rule. A stored rule means the load was paid, so it
+/// is worked in pay mode whatever the current mode: switching to track never takes money back (R-415).
 pub fn rule_for_deal(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings) -> PaySettings {
     let Ok(mut stmt) = conn.prepare(
         "SELECT COALESCE(lines_json,'[]') FROM logistics_payouts
@@ -482,7 +517,7 @@ pub fn rule_for_deal(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySet
         }
     }
     match rule {
-        Some((share_pct, cover_losses, loss_pay_pct)) => PaySettings { share_pct, cover_losses, loss_pay_pct, ..s.clone() },
+        Some((share_pct, cover_losses, loss_pay_pct)) => PaySettings { share_pct, cover_losses, loss_pay_pct, surplus_mode: "pay".into(), ..s.clone() },
         None => s.clone(),
     }
 }
@@ -508,6 +543,7 @@ pub async fn get_deal_logistics_pay(deal_flow_id: String) -> Result<Value, Strin
         Some(d) => {
             let mut v = d.to_json();
             v["payee_name"] = json!(settings.payee_name);
+            v["surplus_mode"] = json!(settings.surplus_mode);
             v
         }
         None => Value::Null,
@@ -732,6 +768,9 @@ mod tests {
         assert_eq!((b["can_see_names"].as_bool(), b["can_see_addresses"].as_bool(), b["can_see_deal"].as_bool()), (Some(true), Some(true), Some(true)));
         assert_eq!(b["deal"]["id"], json!(deal));
         assert_eq!(b["deal"]["invoice_number"], "INV-FR-read");
+        // R-415: what the customer was charged (no shipping line on this invoice), the live trucks
+        // on the deal, and whether our side fills in the freight (on when never set).
+        assert_eq!((b["shipping_billed"].as_f64(), b["trucks_on_deal"].as_i64(), b["freight_by_team"].as_bool()), (Some(0.0), Some(1), Some(true)));
         assert_eq!(b["deal"]["client_name"], "Sample buyer");
         assert!(b.get("deal_flow_id").is_none(), "the deal is inside `deal`, like the server's object");
         assert_eq!(b["tracking"]["stage"], "in_transit", "7788-1 and 77881 are the same number");
@@ -796,12 +835,19 @@ mod pay_tests {
         assert_eq!(charged_of("[]", 0.0), (0.0, "none"));
     }
 
+    /// R-415: this was "a quote not paid yet is the freight" (pay 180). A quote no longer makes the
+    /// freight known, so a load with a quote and no amount paid is pending until the amount is typed.
     #[test]
-    fn case_6_a_quote_not_paid_yet_is_the_freight() {
-        let facts = crate::commands::ShipFacts { bookings: 1, unpaid: 1, quoted: 320.0, ..Default::default() };
-        let (freight, source) = freight_of(&facts);
-        assert_eq!((freight, source), (320.0, "quote"));
-        assert_eq!(pay(&rule(100.0, true, 10.0), &lines("Shipping", 1.0, 500.0), 0.0, freight), (Some(180.0), "share"));
+    fn case_6_changed_by_r415_a_quote_with_no_amount_paid_is_pending() {
+        let _db = crate::db::init_test_store();
+        let d = seed("c6quote", &lines("Shipping", 1.0, 500.0), 0.0);
+        book(&d, "1", "booked", "2026-10-01", None, Some(320.0));
+        let line = read(&d, &on()).unwrap();
+        assert!(line.pending && line.pay.is_none() && line.rule == "pending", "a quote does not make the freight known");
+        // Once the amount paid is typed the pay follows it, whatever the quote said.
+        pool().get().unwrap().execute("UPDATE freight_bookings SET paid_amount=350 WHERE deal_flow_id=?1", [&d]).unwrap();
+        let line = read(&d, &on()).unwrap();
+        assert_eq!((line.freight, line.pay, line.pending), (350.0, Some(150.0), false));
     }
 
     #[test]
@@ -815,8 +861,9 @@ mod pay_tests {
         let (freight, source) = freight_of(&facts);
         assert_eq!((freight, source), (325.0, "paid"));
         assert_eq!(pay(&rule(100.0, true, 10.0), &lines("Freight", 1.0, 400.0), 0.0, freight), (Some(75.0), "share"));
+        // R-415: a quote is not part of the freight any more (it was 860, "mixed").
         let bank = crate::commands::ShipFacts { bookings: 1, has_link: true, linked: 810.0, quoted: 50.0, ..Default::default() };
-        assert_eq!(freight_of(&bank), (860.0, "mixed"));
+        assert_eq!(freight_of(&bank), (810.0, "bank"));
         let only_bank = crate::commands::ShipFacts { bookings: 1, has_link: true, linked: 810.0, ..Default::default() };
         assert_eq!(freight_of(&only_bank), (810.0, "bank"));
     }
@@ -890,6 +937,85 @@ mod pay_tests {
         assert_eq!(owner_remainder(1000.0, 100.0, 150.0), 750.0);
         assert_eq!(owner_remainder(1000.0, 0.0, 0.0), 1000.0);
         assert_eq!(owner_remainder(1000.0, 0.0, -50.0), 1050.0, "a shared loss adds back");
+    }
+
+    fn track() -> PaySettings {
+        PaySettings { surplus_mode: "track".into(), ..on() }
+    }
+
+    /// R-415 case 3: track mode. Charged 500, paid 350: the surplus is still 150 but the pay is 0
+    /// with rule tracked, there is no pay date, and the owner split takes no logistics cut.
+    #[test]
+    fn r415_track_mode_reports_the_surplus_and_owes_nothing() {
+        let _db = crate::db::init_test_store();
+        let d = seed("trk", &lines("Shipping", 1.0, 500.0), 0.0);
+        book(&d, "1", "delivered", "2026-10-01", Some(350.0), None);
+        let line = read(&d, &track()).unwrap();
+        assert_eq!((line.pay, line.rule, line.pending), (Some(0.0), "tracked", false));
+        assert_eq!((line.charged, line.freight, cents(line.surplus)), (500.0, 350.0, 150.0), "the surplus is still reported");
+        assert_eq!(line.due_date, "", "nothing is owed, so no pay date");
+        assert_eq!(read(&d, &on()).unwrap().pay, Some(150.0), "the same load in pay mode");
+        // The owner split takes no logistics cut: it starts from the whole net.
+        assert_eq!(owner_remainder(1000.0, 0.0, line.pay.unwrap_or(0.0)), 1000.0);
+        // Pending stays pending.
+        let p = seed("trkpend", &lines("Shipping", 1.0, 500.0), 0.0);
+        book(&p, "1", "booked", "2026-10-01", None, None);
+        let line = read(&p, &track()).unwrap();
+        assert!(line.pending && line.pay.is_none() && line.rule == "pending");
+        // Off still means no line at all, in either mode.
+        assert!(read(&d, &PaySettings { enabled: false, ..track() }).is_none());
+    }
+
+    /// R-415 case 3, second half: a load paid before the switch keeps its paid rule, so switching
+    /// to track never takes money back (no negative delta).
+    #[test]
+    fn r415_a_load_paid_before_switching_to_track_keeps_its_paid_150() {
+        let _db = crate::db::init_test_store();
+        let paid = seed("trkpaid", &lines("Shipping", 1.0, 500.0), 0.0);
+        book(&paid, "1", "delivered", "2026-10-01", Some(350.0), None);
+        let open = seed("trkopen", &lines("Shipping", 1.0, 500.0), 0.0);
+        book(&open, "1", "delivered", "2026-10-01", Some(350.0), None);
+        pool().get().unwrap().execute(
+            "INSERT INTO logistics_payouts (id, payee_id, pay_date, amount, lines_json, created_at, updated_at)
+             VALUES ('lp_trk', '', '2026-10-02', 150, ?1, '2026-10-02', '2026-10-02')",
+            [json!([{ "deal_flow_id": paid, "amount": 150.0, "share_pct": 100.0, "cover_losses": true, "loss_pay_pct": 10.0 }]).to_string()],
+        ).unwrap();
+        let kept = read(&paid, &track()).unwrap();
+        assert_eq!((kept.pay, kept.rule), (Some(150.0), "share"), "the paid load keeps the paid rule, in pay mode");
+        let new = read(&open, &track()).unwrap();
+        assert_eq!((new.pay, new.rule), (Some(0.0), "tracked"), "a load not paid yet is tracked");
+        pool().get().unwrap().execute("UPDATE logistics_payouts SET archived=1 WHERE id='lp_trk'", []).unwrap();
+    }
+
+    #[test]
+    fn r415_the_surplus_mode_reads_tolerantly_and_defaults_to_pay() {
+        assert_eq!(PaySettings::default().surplus_mode, "pay");
+        assert_eq!(PaySettings::from_json(r#"{"enabled":true}"#).surplus_mode, "pay");
+        assert_eq!(PaySettings::from_json(r#"{"enabled":true,"surplus_mode":"track"}"#).surplus_mode, "track");
+        assert_eq!(PaySettings::from_json(r#"{"surplus_mode":"sideways"}"#).surplus_mode, "pay");
+        assert!(PaySettings::from_json(r#"{"surplus_mode":"track"}"#).tracks());
+        assert_eq!(pay_for(&track(), 500.0, 350.0, false), (Some(0.0), "tracked"));
+        assert_eq!(pay_for(&track(), 500.0, 0.0, true), (None, "pending"));
+        assert_eq!(pay_for(&track(), 300.0, 350.0, false), (Some(0.0), "tracked"), "a loss is tracked too");
+    }
+
+    #[test]
+    fn r415_freight_by_team_is_read_from_the_org_setting_and_defaults_to_on() {
+        let _db = crate::db::init_test_store();
+        let conn = pool().get().unwrap();
+        let put = |k: &str, v: &str| conn.execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [k, v]).unwrap();
+        conn.execute("DELETE FROM settings WHERE key LIKE '%logistics_settings'", []).unwrap();
+        conn.execute("DELETE FROM device_state WHERE key='netsync_org'", []).unwrap();
+        assert!(read_freight_by_team(), "never written reads as on");
+        put("logistics_settings", r#"{"freight_by_team":false}"#);
+        assert!(!read_freight_by_team());
+        conn.execute("INSERT INTO device_state (key, value) VALUES ('netsync_org', 'org_sample') ON CONFLICT(key) DO UPDATE SET value=excluded.value", []).unwrap();
+        put("org_sample::logistics_settings", r#"{"freight_by_team":true}"#);
+        assert!(read_freight_by_team(), "the org's scoped key is read first");
+        put("org_sample::logistics_settings", "not json");
+        assert!(read_freight_by_team(), "a broken value reads as on");
+        conn.execute("DELETE FROM settings WHERE key LIKE '%logistics_settings'", []).unwrap();
+        conn.execute("DELETE FROM device_state WHERE key='netsync_org'", []).unwrap();
     }
 
     #[test]
@@ -1029,10 +1155,11 @@ mod pay_tests {
         assert!(d.pending && d.pay.is_none(), "one truck has neither an amount nor a quote");
         assert_eq!(d.earned_on, "2026-10-02");
 
+        // R-415: a quote alone no longer makes the amount known, so it stays pending.
         let quote = seed("quote", &items, 0.0);
         book(&quote, "1", "booked", "2026-10-02", None, Some(320.0));
         let d = read(&quote, &on()).unwrap();
-        assert_eq!((d.freight, d.freight_source, d.pay), (320.0, "quote", Some(180.0)));
+        assert_eq!((d.pending, d.pay, d.rule), (true, None, "pending"));
 
         // Two trucks, one not booked yet: the booked one sets the day.
         let two = seed("two", &lines("Freight", 1.0, 400.0), 0.0);

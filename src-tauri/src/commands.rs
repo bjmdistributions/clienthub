@@ -4712,6 +4712,15 @@ macro_rules! ship_facts_cols {
     };
 }
 
+/// R-415: the two invoice columns the billed figure (what we charged the customer for shipping)
+/// is worked out from. Needs the invoice alias `i`. A query that leaves them out reads a billed
+/// figure of 0, which only matters to the shipping estimate.
+macro_rules! ship_billed_cols {
+    () => {
+        "COALESCE(i.line_items_json,'[]') AS inv_line_items_json, COALESCE(i.shipping_charged,0) AS inv_shipping_charged"
+    };
+}
+
 /// R-400: the same test as `shipping_mode` (a live booking, or a `shipping` bank link) as a SQL
 /// predicate over the deal alias `df`, for the queries that add up a whole book at once.
 macro_rules! ship_mode_sql {
@@ -4725,8 +4734,11 @@ macro_rules! ship_mode_sql {
 /// typed freight line once the deal ships through Logistics.
 ///   mode      = a live booking or a shipping link exists (freight lines are replaced)
 ///   leg       = link if any, else amount paid on the bookings, else 0 (the recorded cost)
-///   estimate  = what an open deal is expected to spend on shipping (paid or linked, plus the
-///               quotes not paid yet), or the typed freight lines when it does not use Logistics
+///   estimate  = what an open deal is expected to spend on shipping: once every truck is paid, the
+///               paid or linked amount; while one is not, the larger of (paid or linked plus any
+///               legacy quote not paid yet) and what the customer was charged for shipping (R-415:
+///               no carrier quote is asked for, so until the carrier is paid it is what we charged).
+///               The typed freight lines when the deal does not use Logistics
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ShipFacts {
     pub bookings: i64,
@@ -4737,6 +4749,10 @@ pub struct ShipFacts {
     pub linked: f64,
     pub has_link: bool,
     pub freight_typed: f64,
+    /// R-415: what the customer was charged for shipping (`freight::charged_of` over the invoice)
+    /// and where it came from (`lines`, `field`, `none`; empty reads as `none`).
+    pub billed: f64,
+    pub billed_source: &'static str,
 }
 
 impl ShipFacts {
@@ -4746,10 +4762,14 @@ impl ShipFacts {
     }
     pub fn estimate(&self) -> f64 {
         if self.mode() {
-            (if self.has_link { self.linked } else { self.paid }) + self.quoted
+            let known = if self.has_link { self.linked } else { self.paid };
+            if self.unpaid > 0 { (known + self.quoted).max(self.billed) } else { known }
         } else {
             self.freight_typed
         }
+    }
+    pub fn billed_source(&self) -> &'static str {
+        if self.billed_source.is_empty() { "none" } else { self.billed_source }
     }
     pub fn stage(&self) -> &'static str {
         match self.stage_rank { 1 => "requested", 2 => "booked", 3 => "picked_up", 4 => "delivered", _ => "" }
@@ -4772,6 +4792,9 @@ pub fn freight_typed_of(payments: &[SupplierPayment]) -> f64 {
 
 /// R-400: read the `ship_facts_cols!` columns off a row (by name, tolerant of a missing one).
 fn ship_facts_from_row(r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipFacts {
+    let items: String = r.get("inv_line_items_json").unwrap_or_default();
+    let field: f64 = r.get("inv_shipping_charged").unwrap_or(0.0);
+    let (billed, billed_source) = crate::freight::charged_of(&items, field);
     ShipFacts {
         bookings: r.get("logistics_bookings").unwrap_or(0),
         unpaid: r.get("logistics_unpaid").unwrap_or(0),
@@ -4781,13 +4804,15 @@ fn ship_facts_from_row(r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipF
         linked: r2(r.get::<_, f64>("shipping_linked").unwrap_or(0.0)),
         has_link: r.get::<_, i64>("shipping_link_count").unwrap_or(0) > 0,
         freight_typed: freight_typed_of(payments),
+        billed,
+        billed_source,
     }
 }
 
 /// R-400: the shipping facts for one deal, straight from the database.
 pub(crate) fn ship_facts(conn: &rusqlite::Connection, deal_flow_id: &str) -> ShipFacts {
     conn.query_row(
-        concat!("SELECT COALESCE(df.supplier_payments_json,'[]') AS sp_json, ", ship_facts_cols!(), " FROM deal_flows df WHERE df.id=?1"),
+        concat!("SELECT COALESCE(df.supplier_payments_json,'[]') AS sp_json, ", ship_facts_cols!(), ", ", ship_billed_cols!(), " FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id WHERE df.id=?1"),
         [deal_flow_id],
         |r| {
             let sp: String = r.get("sp_json")?;
@@ -4896,6 +4921,12 @@ pub struct DealFlow {
     /// to cost. Equal to `total_supplier_cost` for every deal that does not use Logistics.
     #[serde(default)]
     pub projected_cost: f64,
+    /// R-415: what the customer was charged for shipping on the invoice (the R-401 `charged`
+    /// rule) and where it came from (`lines`, `field`, `none`).
+    #[serde(default)]
+    pub shipping_billed: f64,
+    #[serde(default)]
+    pub shipping_billed_source: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -4971,10 +5002,12 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         shipping_mode: facts.mode(),
         shipping_estimate: r2(facts.estimate()),
         projected_cost: facts.projected_cost(total_supplier_cost),
+        shipping_billed: facts.billed,
+        shipping_billed_source: facts.billed_source().to_string(),
     })
 }
 
-const DF_JOIN: &str = concat!("SELECT df.*, i.number as invoice_number, i.client_id, i.total as invoice_total, c.name as client_name, ", ship_facts_cols!(), " FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id LEFT JOIN clients c ON i.client_id=c.id");
+const DF_JOIN: &str = concat!("SELECT df.*, i.number as invoice_number, i.client_id, i.total as invoice_total, c.name as client_name, ", ship_facts_cols!(), ", ", ship_billed_cols!(), " FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id LEFT JOIN clients c ON i.client_id=c.id");
 
 fn sync_invoice_stage(invoice_id: &str, stage: &str) -> Result<(), String> {
     let mut inv_cols = Map::new();
@@ -25570,6 +25603,67 @@ mod r400_shipping_tests {
         assert_eq!(d.shipping_cost, None);
     }
 
+    /// R-415: put a shipping line of `amount` on the deal's invoice, as the customer was charged.
+    fn bill(deal_id: &str, amount: f64) {
+        let inv = deal_id.replacen("df-", "inv-", 1);
+        let items = json!([{"description": "Shipping", "qty": 1, "rate": amount, "amount": amount}]).to_string();
+        pool().get().unwrap().execute("UPDATE invoices SET line_items_json=?1 WHERE id=?2", rusqlite::params![items, inv]).unwrap();
+    }
+
+    /// R-415 case 1 of section 7: until the carrier is paid, the projected shipping cost is what
+    /// we charged the customer. Same numbers as the server's.
+    #[tokio::test]
+    async fn r415_case_1_the_estimate_is_what_we_charged_until_the_carrier_is_paid() {
+        let _db = crate::db::init_test_store();
+        let lines = || vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)];
+        // One unpaid booking, billed 500: the estimate is 500.
+        let a = deal("r415a", lines(), "invoiced");
+        bill(&a, 500.0);
+        booking(&a, "1", "booked", None, None, 0);
+        let d = read_df(&a).unwrap();
+        assert_eq!((d.shipping_billed, d.shipping_billed_source.as_str()), (500.0, "lines"));
+        assert_eq!((d.shipping_estimate, d.projected_cost), (500.0, 6500.0));
+        // Paid 350: the estimate is the amount paid.
+        set_paid(&a, "1", 350.0);
+        let d = read_df(&a).unwrap();
+        assert_eq!((d.shipping_estimate, d.projected_cost), (350.0, 6350.0));
+        // Two trucks, one paid 300, one unpaid, billed 800: 800.
+        let b = deal("r415b", lines(), "invoiced");
+        bill(&b, 800.0);
+        booking(&b, "1", "delivered", Some(300.0), None, 0);
+        booking(&b, "2", "booked", None, None, 0);
+        assert_eq!(read_df(&b).unwrap().shipping_estimate, 800.0);
+        // A legacy quote of 900 on the unpaid one: max(300 + 900, 800) = 1,200.
+        let c = deal("r415c", lines(), "invoiced");
+        bill(&c, 800.0);
+        booking(&c, "1", "delivered", Some(300.0), None, 0);
+        booking(&c, "2", "booked", None, Some(900.0), 0);
+        assert_eq!(read_df(&c).unwrap().shipping_estimate, 1200.0);
+        // Not in shipping mode: the typed freight, whatever was billed.
+        let e = deal("r415e", lines(), "invoiced");
+        bill(&e, 800.0);
+        let d = read_df(&e).unwrap();
+        assert_eq!((d.shipping_estimate, d.projected_cost), (500.0, 6500.0));
+        // The invoice field stands in when no line is a shipping line; nothing billed reads none.
+        let f = deal("r415f", lines(), "invoiced");
+        let d = read_df(&f).unwrap();
+        assert_eq!((d.shipping_billed, d.shipping_billed_source.as_str()), (0.0, "none"));
+        pool().get().unwrap().execute("UPDATE invoices SET shipping_charged=275 WHERE id='inv-r400-r415f'", []).unwrap();
+        let d = read_df(&f).unwrap();
+        assert_eq!((d.shipping_billed, d.shipping_billed_source.as_str()), (275.0, "field"));
+    }
+
+    #[test]
+    fn r415_the_estimate_rule_as_a_pure_function() {
+        let f = |bookings, unpaid, paid, quoted, billed| ShipFacts { bookings, unpaid, paid, quoted, billed, ..Default::default() };
+        assert_eq!(f(1, 1, 0.0, 0.0, 500.0).estimate(), 500.0);
+        assert_eq!(f(1, 0, 350.0, 0.0, 500.0).estimate(), 350.0, "paid: the amount paid, not the billed figure");
+        assert_eq!(f(2, 1, 300.0, 0.0, 800.0).estimate(), 800.0);
+        assert_eq!(f(2, 1, 300.0, 900.0, 800.0).estimate(), 1200.0);
+        let linked = ShipFacts { bookings: 1, unpaid: 1, has_link: true, linked: 810.0, billed: 500.0, ..Default::default() };
+        assert_eq!(linked.estimate(), 810.0, "a bank link counts as the known amount");
+    }
+
     #[tokio::test]
     async fn case_11_a_fee_link_without_a_supplier_link_no_longer_compounds_on_resync() {
         let _db = crate::db::init_test_store();
@@ -25880,10 +25974,11 @@ mod r401_pay_tests {
         clear();
     }
 
-    /// A quote arrives after completion: the cost does not move but the pay does, and the owner
-    /// split the books hold follows it.
+    /// R-415 (this was R-401 case 6, "a quote after completion moves the pay"): a quote no longer
+    /// makes the freight known, so it changes nothing. The amount paid does: the cost, the pay and
+    /// the owner split the books hold all follow it.
     #[tokio::test]
-    async fn a_quote_after_completion_refreshes_the_owner_split_and_the_stored_cut() {
+    async fn r415_changed_a_quote_after_completion_changes_nothing_but_the_amount_paid_refreshes_the_split() {
         let _db = crate::db::init_test_store();
         put("profit_split_json", SPLIT);
         put("logistics_pay", RULE);
@@ -25892,8 +25987,12 @@ mod r401_pay_tests {
         complete_deal_flow(id.clone(), None, None, Some(true), None).await.unwrap();
         assert_eq!(amounts(&id), vec![2400.0, 1600.0], "pay pending: nothing is taken off yet");
         pool().get().unwrap().execute("UPDATE freight_bookings SET quoted_cost=320 WHERE id=?1", [format!("fb_{id}")]).unwrap();
-        assert!(resync_completed_deal_if_changed(&id).unwrap(), "the pay moved, so the owner split is refreshed");
-        assert_eq!(amounts(&id), vec![2292.0, 1528.0]);
+        assert!(!resync_completed_deal_if_changed(&id).unwrap(), "a quote alone leaves the pay pending, so nothing moved");
+        assert_eq!(amounts(&id), vec![2400.0, 1600.0]);
+        pool().get().unwrap().execute("UPDATE freight_bookings SET paid_amount=320 WHERE id=?1", [format!("fb_{id}")]).unwrap();
+        assert!(resync_completed_deal_if_changed(&id).unwrap(), "the amount paid moved the pay, so the owner split is refreshed");
+        // Net is 10,000 - 6,000 - 320 = 3,680 and the pay is 180, so 3,500 is split 60/40.
+        assert_eq!(amounts(&id), vec![2100.0, 1400.0]);
         let meta: String = pool().get().unwrap().query_row("SELECT metadata FROM deal_flows WHERE id=?1", [&id], |r| r.get(0)).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["logistics_pay"], json!(180.0));
         assert!(!resync_completed_deal_if_changed(&id).unwrap(), "nothing differs now");
