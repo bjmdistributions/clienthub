@@ -104,7 +104,6 @@ export default function AuthView({
       {/* Animated eclipse / space background */}
       <canvas ref={starRef} className="auth-stars" />
       <div className="auth-aurora" />
-      <div className="auth-eclipse" />
 
       <div className="relative z-10 w-full max-w-[380px] px-6 animate-auth-rise">
         <div className="flex flex-col items-center text-center mb-7">
@@ -179,27 +178,16 @@ export default function AuthView({
         .animate-auth-rise { animation: authRise 0.5s cubic-bezier(0.16,1,0.3,1); }
         .auth-logo-tile {
           width: 64px; height: 64px; border-radius: 15px; display: flex; align-items: center; justify-content: center;
-          /* The mark carries its own dark tile — just float it and glow orange. */
-          box-shadow: 0 0 44px rgba(255,101,32,0.32);
+          /* The mark carries its own dark tile; float it on a neutral shadow, no tint (R-424). */
+          box-shadow: 0 18px 44px rgba(0,0,0,0.55);
           animation: logoFloat 4s ease-in-out infinite;
         }
         @keyframes logoFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
         .auth-stars { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; }
-        .auth-eclipse {
-          position: absolute; top: 38%; left: 50%; z-index: 0; pointer-events: none;
-          width: min(60vmin, 620px); height: min(60vmin, 620px); transform: translate(-50%,-50%);
-          border-radius: 50%;
-          background: radial-gradient(closest-side, transparent 56%, rgba(255,101,32,0.10) 60%, rgba(255,138,71,0.5) 64%, rgba(255,101,32,0.12) 73%, transparent 82%);
-          animation: authEclipsePulse 6.5s ease-in-out infinite;
-        }
-        @keyframes authEclipsePulse {
-          0%,100% { opacity: 0.7; transform: translate(-50%,-50%) scale(1); }
-          50% { opacity: 1; transform: translate(-50%,-50%) scale(1.04); }
-        }
         .auth-aurora {
           position: absolute; inset: -20%; z-index: 0; filter: blur(70px); opacity: 0.55;
           background:
-            radial-gradient(38% 38% at 25% 30%, rgba(255,101,32,0.50), transparent 70%),
+            radial-gradient(38% 38% at 25% 30%, rgba(255,255,255,0.12), transparent 70%),
             radial-gradient(34% 34% at 78% 28%, rgba(124,58,237,0.45), transparent 70%),
             radial-gradient(40% 40% at 60% 80%, rgba(13,148,136,0.40), transparent 70%);
           animation: auroraDrift 16s ease-in-out infinite alternate;
