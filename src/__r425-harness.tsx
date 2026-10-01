@@ -166,7 +166,7 @@ const Column = () => (
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <div className="flex h-screen bg-bg">
-    <aside style={{ width: nav, background: "#1b1b22" }} className="flex-shrink-0" />
+    <aside style={{ width: nav, background: "var(--t-s3)" }} className="flex-shrink-0" />
     <main className="flex-1 overflow-hidden">
       {mode === "split" ? (
         <div className="flex h-full">

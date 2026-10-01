@@ -229,7 +229,7 @@ function Harness() {
   useAutoClick();
   return (
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
-      <aside className="w-[216px] flex-shrink-0" style={{ background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)" }} />
+      <aside className="w-[216px] flex-shrink-0" style={{ background: "var(--t-s3)" }} />
       <main className="flex-1 overflow-auto">
         <div className="p-7">
           <div className="max-w-[1280px] mx-auto">
