@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>R-425 harness</title>
+    <!--
+      DEV ONLY. Not referenced by index.html, so `npm run build` never sees it.
+      The client screen sits behind App.tsx's auth gate, so it cannot be looked at under
+      `npm run dev`; this page stubs the Tauri bridge and renders the real component.
+      ?mode=full | split   &nav=216 | 96   &ratio=0.5
+    -->
+    <script>
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => {
+          try { return Promise.resolve(window.__FIXTURE ? window.__FIXTURE(cmd, args) : null); }
+          catch (e) { return Promise.reject(String(e)); }
+        },
+        transformCallback: (cb) => { window.__cb = cb; return 1; },
+        unregisterListener: () => {},
+        convertFileSrc: (p) => p,
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { windowLabel: "main", label: "main" },
+        },
+        plugins: {},
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/__r425-harness.tsx"></script>
+  </body>
+</html>

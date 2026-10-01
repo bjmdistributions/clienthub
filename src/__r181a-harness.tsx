@@ -1,19 +1,11 @@
 // DEV ONLY — fixture behind r181a-harness.html, throwaway for R-181a's Paid/
 // Refunded/Net columns. Nothing in the app imports this and index.html does not
 // reference the page, so it never reaches a build. Renders the REAL
-// SupplierDealsModal with a fixed `deals` prop (the same shape list_deals_for_supplier
+// SupplierDealsList (the modal until R-425) with a fixed `deals` prop (the same shape list_deals_for_supplier
 // now returns), plus a mocked get_deal_flow for the row-expand drill-in.
 import ReactDOM from "react-dom/client";
-import SupplierDealsModal from "./components/SupplierDealsModal";
+import SupplierDealsList from "./components/SupplierDealsList";
 import "./index.css";
-
-const SUPPLIER = {
-  id: "s1", name: "Acme Wholesale", contact_name: null, email: null, phone: null,
-  address: null, payment_method: null, payment_details: null, payment_terms: null,
-  typical_lead_time: null, notes: null, created_at: "2026-07-01", updated_at: "2026-07-01",
-  archived: false, total_paid: 0, deal_count: 0, last_deal_date: null, avg_deal_amount: 0,
-  total_profit: 0, total_revenue: 0,
-};
 
 // d1: no refund — Refunded reads "—", Net === Paid. d2: a $1,000 client refund on a
 // $6,000 total-supplier-payment deal where this supplier took $4,000 of it, so their
@@ -36,11 +28,8 @@ const DEALS = [
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <div className="bg-bg min-h-screen">
-    <SupplierDealsModal
-      supplier={SUPPLIER as any}
-      deals={DEALS}
-      onClose={() => {}}
-      onReload={async () => {}}
-    />
+    <div className="max-w-[1100px] mx-auto p-6">
+      <SupplierDealsList deals={DEALS} onReload={async () => {}} />
+    </div>
   </div>,
 );

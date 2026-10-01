@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, Children } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   api, Client, Interaction, Invoice, BuyerTier, CustomField, CompanyInfo,
   PaymentMethod, CounterpartyPaymentRow, DealFlow, Supplier, PartyLink, LineItem,
@@ -8,6 +8,7 @@ import { parseLineItems, describeItem } from "../lib/itemSearch";
 import ReliabilityBadge from "./ReliabilityBadge";
 import StatusPill from "./StatusPill";
 import CustomerPortalPanel from "./CustomerPortalPanel";
+import { ProfileGrid, ProfileCard, Facts, Fact, KpiBand } from "./ProfileLayout";
 import CreditPanel from "./CreditPanel";
 import PersonPayments from "./PersonPayments";
 import PersonPickerModal, { PersonRef } from "./PersonPicker";
@@ -15,10 +16,8 @@ import { toast } from "./Toast";
 import {
   ArrowLeft,
   ArrowRight,
-  Mail,
   Phone,
   Building2,
-  MapPin,
   Sparkles,
   RefreshCw,
   Plus,
@@ -44,6 +43,8 @@ import {
   Banknote,
   Truck,
   Receipt,
+  Wallet,
+  StickyNote,
 } from "lucide-react";
 
 /* ── The party profile (R-153) ───────────────────────────────────────────────
@@ -175,10 +176,17 @@ const openStatement = (clientId: string) => {
 };
 
 const openInvoices = () => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
-/** Open the list the OTHER side of a party link lives in. Role-aware because the
- *  same panel now renders on a supplier profile, where the counterpart is a client. */
-const openPartyList = (role: PartyRole) =>
+/** Open the record on the OTHER side of a party link. Role-aware because the same
+ *  panel renders on a supplier profile, where the counterpart is a client. Each list
+ *  reads its own stash on mount: Suppliers `suppliers_open_id` (R-425), Clients the
+ *  globe's `clienthub.globe.clientId`. */
+const openPartyRecord = (role: PartyRole, id: string) => {
+  try {
+    if (role === "supplier") localStorage.setItem("suppliers_open_id", id);
+    else sessionStorage.setItem("clienthub.globe.clientId", id);
+  } catch { /* ignore */ }
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: role === "supplier" ? "suppliers" : "clients" }));
+};
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -310,17 +318,17 @@ function Disclosure({ title, icon, children, defaultOpen = false }: {
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="bg-surface border border-line rounded-2xl mb-4 overflow-hidden">
+    <div className="bg-surface border border-line rounded-2xl overflow-hidden">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="w-full flex items-center gap-2 px-6 py-4 text-left text-[13px] font-semibold text-ink hover:bg-surface-2 transition-colors"
+        className="w-full flex items-center gap-2 px-5 py-4 text-left text-[13px] font-semibold text-ink hover:bg-surface-2 transition-colors"
       >
         {open ? <ChevronDown size={15} className="text-muted flex-shrink-0" /> : <ChevronRight size={15} className="text-muted flex-shrink-0" />}
         {icon}
         {title}
       </button>
-      {open && <div className="px-6 pb-6">{children}</div>}
+      {open && <div className="px-5 pb-5">{children}</div>}
     </div>
   );
 }
@@ -548,7 +556,7 @@ function DealSection({ title, icon, rows, tone, empty, defaultOpen, showStage }:
   }[tone];
 
   return (
-    <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
+    <div className="bg-surface border border-line rounded-2xl p-5">
       <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between gap-3 text-left">
         <span className="flex items-center gap-2">
           {icon}
@@ -676,7 +684,7 @@ export function PartyLinkPanel({
 
   if (!link) {
     return (
-      <div className="bg-surface border border-line rounded-2xl px-6 py-4 mb-4 flex items-center justify-between gap-4 flex-wrap">
+      <div className="bg-surface border border-line rounded-2xl px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
         <div className="min-w-0">
           <SubHeading icon={<Link2 size={15} className="text-muted" />}>{copy.linkOffer}</SubHeading>
           <p className="text-[12px] text-muted mt-1 leading-relaxed">
@@ -746,7 +754,7 @@ export function PartyLinkPanel({
   );
 
   return (
-    <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
+    <div className="bg-surface border border-line rounded-2xl p-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0">
           <SubHeading icon={<Link2 size={15} className="text-muted" />}>
@@ -757,12 +765,10 @@ export function PartyLinkPanel({
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          {/* Honest label: this opens the supplier LIST. Landing on the supplier's
-              own profile needs a handoff SuppliersView reads, and that file
-              belongs to another session — see the report. */}
-          <button onClick={() => openPartyList(copy.other)} title={`Opens the ${copy.other} list`}
+          {/* Opens the linked record itself, now that a supplier is a page too (R-425). */}
+          <button onClick={() => openPartyRecord(copy.other, link.linked_id)} title={`Opens ${link.linked_name}`}
             className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors">
-            {copy.other === "supplier" ? "Suppliers" : "Clients"} <ArrowRight size={12} />
+            Open <ArrowRight size={12} />
           </button>
           <button onClick={onOpenPicker} disabled={busy}
             className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-50 transition-colors">
@@ -1226,6 +1232,26 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   const linkedPaymentsShown = linkedPayments.filter((p) => !clientTxnIds.has(p.txn_id));
   const costToThem = linkedSupplier ? linkedSupplier.total_paid : theirDeals.reduce((s, d) => s + d.paid, 0);
 
+  // R-425: the side cards list only what is filled in, label beside value.
+  const md = client.metadata || {};
+  const businessFacts = ([
+    ["Category", client.category],
+    ["Buy category", md.primary_buy_category],
+    ["Other categories", md.other_buy_categories],
+    ["Spend per frequency", md.estimated_annual_spend],
+    ["Frequency", md.purchase_frequency],
+    ["Tax ID", md.tax_id],
+  ] as [string, unknown][]).filter(([, v]) => v != null && String(v).trim() !== "").map(([l, v]) => [l, String(v)] as [string, string]);
+  const leadFacts = ([
+    ["Source", md.lead_source],
+    ["Interest", md.interest_level],
+    ["Buyer type", md.buyer_type],
+    ["Lead ID", md.lead_id],
+    ["Rep", md.lead_representative],
+    ["Added", md.date_added],
+    ["Last contact", md.last_contact_date],
+  ] as [string, unknown][]).filter(([, v]) => v != null && String(v).trim() !== "").map(([l, v]) => [l, String(v)] as [string, string]);
+
   return (
     <div>
       {confirmDelete && (
@@ -1270,8 +1296,9 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         <ArrowLeft size={14} /> Back to Clients
       </button>
 
-      {/* ── Identity, money, next action ─────────────────── */}
-      <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
+      {/* ── Identity (R-425): the name and its actions on one line, the three flags as
+          one row under it, the money as its own band below the card. ─────────── */}
+      <div className="bg-surface border border-line rounded-2xl p-6">
         <div className="cd-head flex items-start justify-between gap-4">
           <div className="flex items-start gap-4 min-w-0">
             <div className="w-14 h-14 rounded-2xl bg-accent/10 text-accent-hover flex items-center justify-center text-[18px] font-bold flex-shrink-0">{initials}</div>
@@ -1296,86 +1323,91 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
             </div>
           </div>
 
-          {/* Flag switches — clear on/off */}
-          <div className="cd-actions flex flex-col items-end gap-1.5 flex-shrink-0">
-            {/* Edit / Delete — restored after the profile redesign. Delete is a
-                deliberate two-step (type-the-name) confirm to prevent data loss. */}
-            <div className="flex items-center gap-1.5 mb-0.5">
-              <button
-                onClick={() => setShowSendDetails(true)}
-                title="Email this contact your company + payment details so they can invoice or pay you."
-                className="inline-flex items-center gap-1.5 px-3 h-7 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
-              >
-                <Send size={13} /> Send our details
-              </button>
-              <button
-                onClick={() => openStatement(client.id)}
-                title="Build a receipt covering their deals (every payment with its date) to download or email."
-                className="inline-flex items-center gap-1.5 px-3 h-7 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
-              >
-                <Receipt size={13} /> Receipt
-              </button>
-              <button
-                onClick={() => onEdit?.(client)}
-                className="inline-flex items-center gap-1.5 px-3 h-7 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
-              >
-                <Pencil size={13} /> Edit
-              </button>
-              <button
-                onClick={() => setConfirmDelete(true)}
-                title="Delete client"
-                className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-line text-faint hover:text-danger-ink hover:border-danger hover:bg-danger-bg transition-colors"
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-            <FlagSwitch label="High-value" tone="accent"
-              on={!!(client.high_value || client.metadata?.high_value)}
-              title="A positive label for your best buyers. Purely a tag. It does not change who receives newsletters."
-              onToggle={async () => {
-                const val = await api.toggleClientHighValue(client.id);
-                setClient((c) => c ? { ...c, high_value: val, metadata: { ...(c.metadata || {}), high_value: val } } : c);
-              }} />
-            <FlagSwitch label="No bulk email" tone="neutral"
-              on={!!(client.exclusive || client.metadata?.exclusive)}
-              title="Keeps this client off mass newsletters and auto-add, for people you don't want to bulk-email."
-              onToggle={async () => {
-                try {
-                  const val = await api.toggleClientExclusive(client.id);
-                  setClient((c) => c ? { ...c, exclusive: val, metadata: { ...(c.metadata || {}), exclusive: val } } : c);
-                } catch (e: any) {
-                  // Opted-out client: turning No-bulk off alone won't resume their emails.
-                  // Offer a deliberate resubscribe that also clears their opt-out.
-                  if (String(e).includes("UNSUBSCRIBED_CONFIRM")) {
-                    const when = client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : "";
-                    if (confirm(`This client unsubscribed themselves${when}. Turning off "No bulk email" won't resume their emails unless you also resubscribe them.\n\nResubscribe ${client.name || "this client"} and resume emails?`)) {
-                      await api.resubscribeClient(client.id);
-                      setClient((c) => c ? { ...c, exclusive: false, metadata: { ...(c.metadata || {}), exclusive: false, unsubscribed: false } } : c);
-                    }
-                  } else {
-                    throw e;
-                  }
-                }
-              }} />
-            <FlagSwitch label="Blacklisted" tone="danger"
-              on={!!client.is_blacklisted}
-              title="Blacklisted clients are excluded from all sends."
-              onToggle={async () => {
-                const val = await api.toggleClientBlacklist(client.id);
-                setClient((c) => c ? { ...c, is_blacklisted: val } : c);
-              }} />
-            {client.metadata?.unsubscribed && (
-              <span className="inline-flex items-center text-[10px] font-semibold text-ink-2 bg-surface-3 border border-line px-2 py-1 rounded-lg"
-                title={`Unsubscribed via an email link${client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : ""}, kept off all sends`}>
-                Unsubscribed
-              </span>
-            )}
+          {/* Edit / Delete — restored after the profile redesign. Delete is a
+              deliberate two-step (type-the-name) confirm to prevent data loss. */}
+          <div className="cd-actions flex items-center justify-end gap-1.5 flex-wrap flex-shrink-0">
+            <button
+              onClick={() => setShowSendDetails(true)}
+              title="Email this contact your company + payment details so they can invoice or pay you."
+              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
+            >
+              <Send size={13} /> Send our details
+            </button>
+            <button
+              onClick={() => openStatement(client.id)}
+              title="Build a receipt covering their deals (every payment with its date) to download or email."
+              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
+            >
+              <Receipt size={13} /> Receipt
+            </button>
+            <button
+              onClick={() => onEdit?.(client)}
+              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
+            >
+              <Pencil size={13} /> Edit
+            </button>
+            <button
+              onClick={() => setConfirmDelete(true)}
+              title="Delete client"
+              aria-label="Delete client"
+              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-line text-faint hover:text-danger-ink hover:border-danger hover:bg-danger-bg transition-colors"
+            >
+              <Trash2 size={13} />
+            </button>
           </div>
         </div>
 
-        {/* Money first. Profit leads — it is the figure Jack has said repeatedly
-            is the one that matters. */}
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mt-5">
+        {/* Flag switches — clear on/off */}
+        <div className="flex flex-wrap items-center gap-2 mt-5 pt-4 border-t border-line-2">
+          <FlagSwitch label="High-value" tone="accent"
+            on={!!(client.high_value || client.metadata?.high_value)}
+            title="A positive label for your best buyers. Purely a tag. It does not change who receives newsletters."
+            onToggle={async () => {
+              const val = await api.toggleClientHighValue(client.id);
+              setClient((c) => c ? { ...c, high_value: val, metadata: { ...(c.metadata || {}), high_value: val } } : c);
+            }} />
+          <FlagSwitch label="No bulk email" tone="neutral"
+            on={!!(client.exclusive || client.metadata?.exclusive)}
+            title="Keeps this client off mass newsletters and auto-add, for people you don't want to bulk-email."
+            onToggle={async () => {
+              try {
+                const val = await api.toggleClientExclusive(client.id);
+                setClient((c) => c ? { ...c, exclusive: val, metadata: { ...(c.metadata || {}), exclusive: val } } : c);
+              } catch (e: any) {
+                // Opted-out client: turning No-bulk off alone won't resume their emails.
+                // Offer a deliberate resubscribe that also clears their opt-out.
+                if (String(e).includes("UNSUBSCRIBED_CONFIRM")) {
+                  const when = client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : "";
+                  if (confirm(`This client unsubscribed themselves${when}. Turning off "No bulk email" won't resume their emails unless you also resubscribe them.\n\nResubscribe ${client.name || "this client"} and resume emails?`)) {
+                    await api.resubscribeClient(client.id);
+                    setClient((c) => c ? { ...c, exclusive: false, metadata: { ...(c.metadata || {}), exclusive: false, unsubscribed: false } } : c);
+                  }
+                } else {
+                  throw e;
+                }
+              }
+            }} />
+          <FlagSwitch label="Blacklisted" tone="danger"
+            on={!!client.is_blacklisted}
+            title="Blacklisted clients are excluded from all sends."
+            onToggle={async () => {
+              const val = await api.toggleClientBlacklist(client.id);
+              setClient((c) => c ? { ...c, is_blacklisted: val } : c);
+            }} />
+          {client.metadata?.unsubscribed && (
+            <span className="inline-flex items-center text-[10px] font-semibold text-ink-2 bg-surface-3 border border-line px-2 py-1 rounded-lg"
+              title={`Unsubscribed via an email link${client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : ""}, kept off all sends`}>
+              Unsubscribed
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Money first. Profit leads — it is the figure Jack has said repeatedly
+          is the one that matters. Outstanding and Paid joined the band from the
+          old details card, so every money figure is in one row. */}
+      <div className="mt-4">
+        <KpiBand cols={6}>
           <StatTile
             label="Profit"
             value={flows.length === 0 ? "–" : fmtAmount(clientProfit)}
@@ -1395,256 +1427,217 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
             tone={openDeals.length > 0 ? "warning" : "muted"}
             hint={`${sentCount} invoice${sentCount === 1 ? "" : "s"} sent · last activity ${relTime(lastActivityRaw)}`}
           />
-        </div>
-
-        <NextActionBand actions={actions} followUp={followUp} onFollowUp={saveFollowUp} />
-
-        {/* Contact line — address included, which Jack named as must-be-glanceable. */}
-        <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-4 pt-4 border-t border-line-2">
-          {client.email ? (
-            <div className="flex items-center gap-1.5">
-              <a href={`mailto:${client.email}`} className="flex items-center gap-1.5 text-[13px] text-accent hover:text-accent-hover"><Mail size={14} /> {client.email}</a>
-              <CopyEmail email={client.email} />
-            </div>
-          ) : (
-            <span className="flex items-center gap-1.5 text-[13px] text-faint"><Mail size={14} /> No email</span>
-          )}
-          {client.phone
-            ? <span className="flex items-center gap-1.5 text-[13px] text-ink-2"><Phone size={14} /> {fmtPhone(client.phone)}</span>
-            : <span className="flex items-center gap-1.5 text-[13px] text-faint"><Phone size={14} /> No phone</span>}
-          {address
-            ? <span className="flex items-center gap-1.5 text-[13px] text-ink-2"><MapPin size={14} /> {address}</span>
-            : <span className="flex items-center gap-1.5 text-[13px] text-faint"><MapPin size={14} /> No address</span>}
-        </div>
+          <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} hint="sent, not yet paid" />
+          <StatTile label="Paid" value={fmtAmount(paid)} tone="success" hint="every paid invoice" />
+        </KpiBand>
       </div>
 
-      {/* ── Customer portal, then details and settings (R-293) ── */}
-      {/* Jack, 2026-09-14: "it shouldnt be collapsed. it should be open underneath the main
-          card for every client. this is important information." Both used to sit in a
-          closed drawer at the very bottom of the profile. */}
-      <CustomerPortalPanel card clientId={client.id} clientName={client.name} clientEmail={client.email} />
+      <NextActionBand actions={actions} followUp={followUp} onFollowUp={saveFollowUp} />
 
-      <div className="bg-surface border border-line rounded-2xl mb-4 px-6 pt-4 pb-6">
-        <div className="flex items-center gap-2 mb-4 text-[13px] font-semibold text-ink">
-          <Target size={14} className="text-muted" />Details and settings
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
-          <MetadataCard title="Contact info" icon={<User size={14} />}>
-            {client.metadata?.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
-            {address && <MetaRow label="Address" value={address} />}
-            {client.metadata?.country && <MetaRow label="Country" value={client.metadata.country} />}
-          </MetadataCard>
+      <div className="mt-4">
+        <ProfileGrid
+          main={<>
+            {/* ── The three deal sections (R-235) ──────────────── */}
+            {/* His order, his words: completed, fell through, current. Current opens
+                by default because it is the only one that needs an action today. */}
+            <DealSection
+              title="Current deals"
+              icon={<ShoppingCart size={15} className="text-muted" />}
+              rows={dealRows.current}
+              tone="accent"
+              empty="Nothing live with them right now."
+              defaultOpen
+              showStage
+            />
+            <DealSection
+              title="Deals completed"
+              icon={<CheckCircle2 size={15} className="text-muted" />}
+              rows={dealRows.completed}
+              tone="success"
+              empty="They have not closed a deal yet."
+              defaultOpen
+              showStage={false}
+            />
+            <DealSection
+              title="Deals fell through"
+              icon={<XCircle size={15} className="text-muted" />}
+              rows={dealRows.fellThrough}
+              tone="danger"
+              empty="Nothing has fallen through with them."
+              defaultOpen={false}
+              showStage={false}
+            />
 
-          <MetadataCard title="Business info" icon={<Building2 size={14} />}>
-            {client.category && <MetaRow label="Category" value={client.category} />}
-            {client.metadata?.website && <MetaRow label="Website" value={client.metadata.website} />}
-            {client.metadata?.tax_id && <MetaRow label="Tax ID" value={client.metadata.tax_id} />}
-            {client.metadata?.primary_buy_category && <MetaRow label="Buy category" value={client.metadata.primary_buy_category} />}
-            {client.metadata?.other_buy_categories && <MetaRow label="Other categories" value={client.metadata.other_buy_categories} />}
-            {client.metadata?.estimated_annual_spend && <MetaRow label="Spend per frequency" value={client.metadata.estimated_annual_spend} />}
-            {client.metadata?.purchase_frequency && <MetaRow label="Frequency" value={client.metadata.purchase_frequency} />}
-          </MetadataCard>
+            {/* ── The party link ───────────────────────────────── */}
+            {linkSupported && (
+              <PartyLinkPanel
+                role={role}
+                selfName={client.name}
+                link={link}
+                linked={linkedSupplier}
+                linkedPayments={linkedPaymentsShown}
+                theirDeals={theirDeals}
+                theirSide={{ revenue, open: outstanding, invoices: sentCount }}
+                ourSide={{ cost: costToThem, deals: theirDeals.length, last: linkedSupplier?.last_deal_date || null }}
+                position={revenue - costToThem}
+                onOpenPicker={() => setLinkPicker(true)}
+                onUnlink={clearLinkedParty}
+                onUntagLinked={untagLinkedPayment}
+                busy={linkBusy}
+              />
+            )}
 
-          <MetadataCard title="Lead info" icon={<Target size={14} />}>
-            {client.metadata?.lead_source && <MetaRow label="Source" value={client.metadata.lead_source} />}
-            {client.metadata?.interest_level && <MetaRow label="Interest" value={client.metadata.interest_level} />}
-            {client.metadata?.buyer_type && <MetaRow label="Buyer type" value={client.metadata.buyer_type} />}
-            {client.metadata?.lead_id && <MetaRow label="Lead ID" value={client.metadata.lead_id} />}
-            {client.metadata?.lead_representative && <MetaRow label="Rep" value={client.metadata.lead_representative} />}
-            {client.metadata?.date_added && <MetaRow label="Added" value={client.metadata.date_added} />}
-            {client.metadata?.last_contact_date && <MetaRow label="Last contact" value={client.metadata.last_contact_date} />}
-          </MetadataCard>
+            {/* ── Activity ─────────────────────────────────────── */}
+            {/* R-235, Jack 2026-09-03: "bank payments and activity take up too much
+                screen and dont really give me a good break down." The three deal
+                sections above are the breakdown; this is demoted to a disclosure
+                rather than deleted, because it is the only home on this screen for
+                calls, notes and email — nothing else carries them. */}
+            <Disclosure title="Activity: notes, calls and email" icon={<MessageSquare size={14} className="text-muted" />}>
+              {showNoteForm && (
+                <div className="bg-surface border border-line rounded-2xl mb-3 overflow-hidden">
+                  <NoteForm clientId={clientId} onClose={() => { setShowNoteForm(false); load(); }} />
+                </div>
+              )}
+              {showSummary && (
+                <div className="bg-surface-2 border border-line rounded-2xl px-6 py-4 mb-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <SubHeading icon={<Sparkles size={15} className="text-muted" />}>Summary of the history</SubHeading>
+                    <button onClick={() => setShowSummary(false)} className="text-muted hover:text-ink transition-colors" aria-label="Close the summary"><X size={15} /></button>
+                  </div>
+                  {summarizing
+                    ? <p className="text-[13px] text-muted mt-2 flex items-center gap-2"><RefreshCw size={12} className="animate-spin" /> Reading everything on file…</p>
+                    : <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed mt-2">{summary || "Nothing came back."}</div>}
+                </div>
+              )}
+              <ActivityStream
+                items={stream}
+                header={
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleSummarize}
+                      disabled={summarizing || interactions.length === 0}
+                      title={interactions.length === 0 ? "There is nothing on file to summarise yet" : "Summarise the history with AI"}
+                      className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-40 transition-colors"
+                    >
+                      <Sparkles size={13} /> {summary ? "Re-summarise" : "Summarise"}
+                    </button>
+                    <button
+                      onClick={() => setShowNoteForm(true)}
+                      className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors"
+                    >
+                      <Plus size={13} /> Add a note
+                    </button>
+                  </div>
+                }
+              />
+            </Disclosure>
 
-          <CreditPanel clientId={client.id} />
+            {/* ── Bank payments ────────────────────────────────── */}
+            {/* Was open by default because it shipped in v0.15.141 and Jack did not
+                know it existed. Now collapsed (R-235): the deal sections carry the
+                money story, and this was one of the two blocks eating the screen. */}
+            <Disclosure title="Bank payments" icon={<Banknote size={14} className="text-muted" />}>
+              {/* THREE groups, never merged (R-156 W1-d, R-157/F2): booked to a deal of
+                  their own, which that deal already counts; booked to somebody else's
+                  deal, which counts on that deal and not here at all; and tagged to them
+                  only, which no deal counts. The middle group is why the split is three
+                  and not two — an allocation says the money is booked, never that it is
+                  booked to them. */}
+              <PersonPayments
+                person={{ type: "client", id: clientId, name: client.name }}
+                payments={payments}
+                onUntag={untagPayment}
+                people={people}
+                onChanged={reloadPayments}
+              />
+            </Disclosure>
+          </>}
+          side={<>
+            {/* Contact, address included, which Jack named as must-be-glanceable. */}
+            <ProfileCard title="Contact" icon={<User size={14} className="text-muted" />}>
+              <Facts>
+                <Fact label="Email">
+                  {client.email ? (
+                    <span className="inline-flex items-center gap-1.5 max-w-full">
+                      <a href={`mailto:${client.email}`} className="text-accent hover:text-accent-hover truncate">{client.email}</a>
+                      <CopyEmail email={client.email} />
+                    </span>
+                  ) : <span className="text-faint">No email</span>}
+                </Fact>
+                <Fact label="Phone">{client.phone ? fmtPhone(client.phone) : <span className="text-faint">No phone</span>}</Fact>
+                <Fact label="Address">{address || <span className="text-faint">No address</span>}</Fact>
+                {client.metadata?.country && <Fact label="Country">{client.metadata.country}</Fact>}
+                {client.metadata?.job_title && <Fact label="Title">{client.metadata.job_title}</Fact>}
+                {client.metadata?.website && <Fact label="Website">{client.metadata.website}</Fact>}
+              </Facts>
+            </ProfileCard>
 
-          {customFields.length > 0 && (
-            <MetadataCard title="Custom fields" icon={<Tag size={14} />}>
-              {customFields.map(f => (
-                <MetaRow key={f.id} label={f.label} value={(client.metadata as any)?.[f.field_key] ?? ""} />
-              ))}
-            </MetadataCard>
-          )}
-        </div>
+            {/* ── Customer portal (R-293) ── */}
+            {/* Jack, 2026-09-14: "it shouldnt be collapsed. it should be open underneath the main
+                card for every client. this is important information." */}
+            <CustomerPortalPanel card clientId={client.id} clientName={client.name} clientEmail={client.email} />
 
-        <div className="mt-4 pt-4 border-t border-line-2 grid grid-cols-1 lg:grid-cols-3 gap-3">
-          <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} />
-          <StatTile label="Paid" value={fmtAmount(paid)} tone="success" />
-          <StatTile label="Invoices sent" value={String(sentCount)} tone="ink" />
-        </div>
+            <ProfileCard title="Account" icon={<Wallet size={14} className="text-muted" />}
+              right={
+                <button onClick={openInvoices} className="inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors flex-shrink-0">
+                  <FileText size={12} /> Invoices <ArrowRight size={11} />
+                </button>
+              }>
+              <CreditPanel clientId={client.id} />
+              <div className="mt-3">
+                <Facts>
+                  <Fact label="Invoices sent">{String(sentCount)}</Fact>
+                  {credit && (
+                    <Fact label="Credit limit">
+                      <input value={creditEdit} onChange={(e) => setCreditEdit(e.target.value)}
+                        onBlur={async () => { const v = parseFloat(creditEdit) || 0; await api.setClientCreditLimit(client.id, v); const c = await api.getClientCreditStatus(client.id); setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : ""); }}
+                        placeholder="none" aria-label="Credit limit"
+                        className="w-28 text-[13px] bg-surface border border-line rounded-lg px-2 py-1 text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                    </Fact>
+                  )}
+                  {credit && <Fact label="Exposure"><span className="font-semibold text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></Fact>}
+                  {credit && credit.credit_limit > 0 && (
+                    <Fact label="Available">
+                      <span className={`font-semibold tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span>
+                      {credit.over && <span className="ml-2 text-[10px] font-semibold text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>}
+                    </Fact>
+                  )}
+                </Facts>
+              </div>
+            </ProfileCard>
 
-        {credit && (
-          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 bg-surface-2 border border-line rounded-xl px-4 py-3">
-            <div className="flex items-center gap-2">
-              <span className="text-[12px] text-muted font-medium">Credit limit</span>
-              <input value={creditEdit} onChange={(e) => setCreditEdit(e.target.value)}
-                onBlur={async () => { const v = parseFloat(creditEdit) || 0; await api.setClientCreditLimit(client.id, v); const c = await api.getClientCreditStatus(client.id); setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : ""); }}
-                placeholder="none" className="w-24 text-[13px] bg-surface border border-line rounded-lg px-2 py-1 text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
-            </div>
-            <div className="text-[12px]"><span className="text-muted">Exposure: </span><span className="font-semibold text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></div>
-            {credit.credit_limit > 0 && <div className="text-[12px]"><span className="text-muted">Available: </span><span className={`font-semibold tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span></div>}
-            {credit.over && <span className="text-[10px] font-semibold text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>}
-          </div>
-        )}
+            {businessFacts.length > 0 && (
+              <ProfileCard title="Business" icon={<Building2 size={14} className="text-muted" />}>
+                <Facts>{businessFacts.map(([l, v]) => <Fact key={l} label={l}>{v}</Fact>)}</Facts>
+              </ProfileCard>
+            )}
 
-        {client.notes && (
-          <div className="mt-4 pt-4 border-t border-line-2">
-            <p className="text-[12.5px] font-medium text-muted mb-1.5">Notes</p>
-            <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed">{client.notes}</div>
-          </div>
-        )}
+            {leadFacts.length > 0 && (
+              <ProfileCard title="Lead" icon={<Target size={14} className="text-muted" />}>
+                <Facts>{leadFacts.map(([l, v]) => <Fact key={l} label={l}>{v}</Fact>)}</Facts>
+              </ProfileCard>
+            )}
 
-        <div className="mt-4 pt-4 border-t border-line-2">
-          <button onClick={openInvoices} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors">
-            <FileText size={13} /> See every invoice in Invoices <ArrowRight size={12} />
-          </button>
-        </div>
+            {customFields.length > 0 && (
+              <ProfileCard title="Custom fields" icon={<Tag size={14} className="text-muted" />}>
+                <Facts>
+                  {customFields.map(f => (
+                    <Fact key={f.id} label={f.label}>{(client.metadata as any)?.[f.field_key] ?? ""}</Fact>
+                  ))}
+                </Facts>
+              </ProfileCard>
+            )}
+
+            {client.notes && (
+              <ProfileCard title="Notes" icon={<StickyNote size={14} className="text-muted" />}>
+                <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed">{client.notes}</div>
+              </ProfileCard>
+            )}
+          </>}
+        />
       </div>
 
-      {/* ── The three deal sections (R-235) ──────────────── */}
-      {/* His order, his words: completed, fell through, current. Current opens
-          by default because it is the only one that needs an action today. */}
-      <DealSection
-        title="Current deals"
-        icon={<ShoppingCart size={15} className="text-muted" />}
-        rows={dealRows.current}
-        tone="accent"
-        empty="Nothing live with them right now."
-        defaultOpen
-        showStage
-      />
-      <DealSection
-        title="Deals completed"
-        icon={<CheckCircle2 size={15} className="text-muted" />}
-        rows={dealRows.completed}
-        tone="success"
-        empty="They have not closed a deal yet."
-        defaultOpen
-        showStage={false}
-      />
-      <DealSection
-        title="Deals fell through"
-        icon={<XCircle size={15} className="text-muted" />}
-        rows={dealRows.fellThrough}
-        tone="danger"
-        empty="Nothing has fallen through with them."
-        defaultOpen={false}
-        showStage={false}
-      />
-
-      {/* ── The party link ───────────────────────────────── */}
-      {linkSupported && (
-        <PartyLinkPanel
-          role={role}
-          selfName={client.name}
-          link={link}
-          linked={linkedSupplier}
-          linkedPayments={linkedPaymentsShown}
-          theirDeals={theirDeals}
-          theirSide={{ revenue, open: outstanding, invoices: sentCount }}
-          ourSide={{ cost: costToThem, deals: theirDeals.length, last: linkedSupplier?.last_deal_date || null }}
-          position={revenue - costToThem}
-          onOpenPicker={() => setLinkPicker(true)}
-          onUnlink={clearLinkedParty}
-          onUntagLinked={untagLinkedPayment}
-          busy={linkBusy}
-        />
-      )}
-
-      {/* ── Activity ─────────────────────────────────────── */}
-      {/* R-235, Jack 2026-09-03: "bank payments and activity take up too much
-          screen and dont really give me a good break down." The three deal
-          sections above are the breakdown; this is demoted to a disclosure
-          rather than deleted, because it is the only home on this screen for
-          calls, notes and email — nothing else carries them. */}
-      <Disclosure title="Activity: notes, calls and email" icon={<MessageSquare size={14} className="text-muted" />}>
-        {showNoteForm && (
-          <div className="bg-surface border border-line rounded-2xl mb-3 overflow-hidden">
-            <NoteForm clientId={clientId} onClose={() => { setShowNoteForm(false); load(); }} />
-          </div>
-        )}
-        {showSummary && (
-          <div className="bg-surface-2 border border-line rounded-2xl px-6 py-4 mb-3">
-            <div className="flex items-center justify-between gap-3">
-              <SubHeading icon={<Sparkles size={15} className="text-muted" />}>Summary of the history</SubHeading>
-              <button onClick={() => setShowSummary(false)} className="text-muted hover:text-ink transition-colors" aria-label="Close the summary"><X size={15} /></button>
-            </div>
-            {summarizing
-              ? <p className="text-[13px] text-muted mt-2 flex items-center gap-2"><RefreshCw size={12} className="animate-spin" /> Reading everything on file…</p>
-              : <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed mt-2">{summary || "Nothing came back."}</div>}
-          </div>
-        )}
-        <ActivityStream
-          items={stream}
-          header={
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleSummarize}
-                disabled={summarizing || interactions.length === 0}
-                title={interactions.length === 0 ? "There is nothing on file to summarise yet" : "Summarise the history with AI"}
-                className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-40 transition-colors"
-              >
-                <Sparkles size={13} /> {summary ? "Re-summarise" : "Summarise"}
-              </button>
-              <button
-                onClick={() => setShowNoteForm(true)}
-                className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors"
-              >
-                <Plus size={13} /> Add a note
-              </button>
-            </div>
-          }
-        />
-      </Disclosure>
-
-      {/* ── Bank payments ────────────────────────────────── */}
-      {/* Was open by default because it shipped in v0.15.141 and Jack did not
-          know it existed. Now collapsed (R-235): the deal sections carry the
-          money story, and this was one of the two blocks eating the screen. */}
-      <Disclosure title="Bank payments" icon={<Banknote size={14} className="text-muted" />}>
-        {/* THREE groups, never merged (R-156 W1-d, R-157/F2): booked to a deal of
-            their own, which that deal already counts; booked to somebody else's
-            deal, which counts on that deal and not here at all; and tagged to them
-            only, which no deal counts. The middle group is why the split is three
-            and not two — an allocation says the money is booked, never that it is
-            booked to them. */}
-        <PersonPayments
-          person={{ type: "client", id: clientId, name: client.name }}
-          payments={payments}
-          onUntag={untagPayment}
-          people={people}
-          onChanged={reloadPayments}
-        />
-      </Disclosure>
-
-    </div>
-  );
-}
-
-function MetadataCard({
-  title, icon, children,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  const hasContent = Children.toArray(children).length > 0;
-  if (!hasContent) return null;
-  return (
-    <div className="bg-surface-2 border border-line rounded-lg p-4">
-      <h3 className="text-[13px] font-semibold text-ink-2 flex items-center gap-2 mb-3 pb-2 border-b border-line">
-        {icon}
-        {title}
-      </h3>
-      <div className="space-y-2 text-sm">{children}</div>
-    </div>
-  );
-}
-
-function MetaRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="mt-2 first:mt-0">
-      {label && <span className="block text-[12.5px] font-medium text-muted">{label}</span>}
-      <span className="text-[13px] text-ink">{value}</span>
     </div>
   );
 }

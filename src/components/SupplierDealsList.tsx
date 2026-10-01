@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { X, ChevronRight, Loader2 } from "lucide-react";
-import { api, Supplier, DealFlow } from "../lib/api";
+import { ChevronRight, Loader2 } from "lucide-react";
+import { api, DealFlow } from "../lib/api";
 import { fmtAmount, parseLocalDay } from "../lib/format";
 import CompletedBreakdown from "./CompletedBreakdown";
 
@@ -17,17 +17,13 @@ const signedAmount = (n: number) => `${n < 0 ? "−" : ""}${fmtAmount(Math.abs(n
 const refundedShare = (d: any) =>
   d.df_total > 0 ? (Number(d.deal_refunded) || 0) * (Number(d.supplier_amount) || 0) / d.df_total : 0;
 
-// Large-screen browser for a supplier's completed deals. Launched from the
-// suppliers drawer; stacks above it (z-60) so the narrow drawer stays mounted.
-export default function SupplierDealsModal({
-  supplier,
+// A supplier's completed deals, inline on the supplier page (R-425). It was a modal
+// stacked over the old side drawer; on a full page it is just a section.
+export default function SupplierDealsList({
   deals,
-  onClose,
   onReload,
 }: {
-  supplier: Supplier;
   deals: any[];
-  onClose: () => void;
   onReload: () => Promise<void>;
 }) {
   const [expandedDealId,  setExpandedDealId]  = useState<string | null>(null);
@@ -76,31 +72,14 @@ export default function SupplierDealsModal({
   const totalMargin = totals.revenue > 0 ? (totals.profit / totals.revenue) * 100 : null;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-
-      <div className="relative w-[92vw] max-w-[1100px] max-h-[88vh] flex flex-col rounded-2xl bg-surface border border-line shadow-2xl overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-line sticky top-0 bg-surface z-10">
-          <div className="min-w-0">
-            <h3 className="text-[15px] font-semibold text-ink truncate">{supplier.name}</h3>
-            <p className="text-[12px] text-muted mt-0.5">
-              {deals.length} completed deal{deals.length !== 1 ? "s" : ""}
-            </p>
-            <p className="text-[11px] text-faint mt-0.5">
-              Revenue and profit are the whole deal's, before refunds. Paid/Refunded/Net are this supplier's own share: a refund is apportioned by their part of the deal's total supplier payments.
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg hover:bg-surface-3 text-muted hover:text-ink-2 transition-colors"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
+    <div>
+      <p className="text-[11.5px] text-faint mb-3 leading-relaxed">
+        Revenue and profit are the whole deal's, before refunds. Paid, Refunded and Net are this supplier's own share: a refund is apportioned by their part of the deal's total supplier payments.
+      </p>
+      <div className="border border-line rounded-xl overflow-x-auto">
+        <div className="min-w-[860px]">
         {/* Body */}
-        <div className="flex-1 overflow-y-auto">
+        <div>
           {deals.length === 0 ? (
             <div className="px-6 py-16 text-center text-[13px] text-muted">
               No completed deals with this supplier yet
@@ -108,7 +87,7 @@ export default function SupplierDealsModal({
           ) : (
             <div className="divide-y divide-line-2">
               {/* One header row instead of a label repeated on every figure. */}
-              <div className="flex items-center gap-4 px-6 py-2 sticky top-0 z-[1] bg-surface-2/60 backdrop-blur-sm">
+              <div className="flex items-center gap-4 px-6 py-2 bg-surface-2/60">
                 <div className="w-[13px] flex-shrink-0" />
                 <div className="flex-1 min-w-0 text-[11px] font-medium text-muted">Deal</div>
                 <div className={`${STAT_GRID} text-[11px] font-medium text-muted`}>
@@ -223,6 +202,7 @@ export default function SupplierDealsModal({
               )}
             </div>
           )}
+        </div>
         </div>
       </div>
     </div>

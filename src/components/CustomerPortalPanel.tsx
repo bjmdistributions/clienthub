@@ -93,7 +93,7 @@ export default function CustomerPortalPanel({
   const showForm = (!hasAccess && !data.invite) || inviting;
 
   return (
-    <div className={card ? "bg-surface border border-line rounded-2xl mb-4 px-6 py-4" : bare ? "" : "mt-4 pt-4 border-t border-line-2"}>
+    <div className={card ? "bg-surface border border-line rounded-2xl px-5 py-4 min-w-0" : bare ? "" : "mt-4 pt-4 border-t border-line-2"}>
       {!bare && (
         <div className="flex items-center justify-between gap-3 mb-2">
           {card

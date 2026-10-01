@@ -1,11 +1,13 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
-import { Archive, ArrowLeft, Package, Pencil, Plus, Save, Search, Trash2, Phone, Mail, MapPin, X, ChevronRight, ArrowUp, ArrowDown } from "lucide-react";
+import { Archive, ArrowLeft, Package, Pencil, Plus, Save, Search, Trash2, ArrowUp, ArrowDown, User, CreditCard, CheckCircle2, History, StickyNote, Truck } from "lucide-react";
 import { api, Client, DealFlow, Invoice, PartyLink, Supplier, SupplierInput, SupplierPriceEntry, CounterpartyPaymentRow } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
-import SupplierDealsModal from "./SupplierDealsModal";
+import SupplierDealsList from "./SupplierDealsList";
+import StatusPill from "./StatusPill";
+import { ProfileGrid, ProfileCard, Facts, Fact, KpiBand } from "./ProfileLayout";
 import PersonPayments from "./PersonPayments";
 import PersonPickerModal, { PersonRef } from "./PersonPicker";
-import { PartyLinkPanel, atMs, dedupeByInvoice } from "./ClientDetailView";
+import { PartyLinkPanel, StatTile, atMs, dedupeByInvoice } from "./ClientDetailView";
 import { toast } from "./Toast";
 
 const emptyInput: SupplierInput = {
@@ -86,7 +88,6 @@ export default function SuppliersView() {
   // actually belongs to (R-175). Loaded once; failure only costs the picker.
   const [people,        setPeople]        = useState<PersonRef[]>([]);
   const [supplierDeals, setSupplierDeals] = useState<any[]>([]);
-  const [dealsModalOpen,setDealsModalOpen]= useState(false);
   const [query,         setQuery]         = useState("");
   const [filter,        setFilter]        = useState<"all" | "active" | "archived">("active");
   const [spendRange,    setSpendRange]    = useState(0);
@@ -117,7 +118,19 @@ export default function SuppliersView() {
   const [linkBusy,      setLinkBusy]      = useState(false);
 
   const load = async () => setSuppliers(await api.listSuppliers());
-  useEffect(() => { load().catch(console.error); }, []);
+  useEffect(() => {
+    // A screen that wants a particular supplier open stashes its id and switches tab,
+    // the same handoff Invoices reads (`invoices_open_id`). Cleared on first read.
+    let handoff: string | null = null;
+    try { handoff = localStorage.getItem("suppliers_open_id"); localStorage.removeItem("suppliers_open_id"); } catch { /* ignore */ }
+    api.listSuppliers()
+      .then((rows) => {
+        setSuppliers(rows);
+        const s = handoff ? rows.find((r) => r.id === handoff) : null;
+        if (s) openSupplier(s);
+      })
+      .catch(console.error);
+  }, []);
   useEffect(() => {
     Promise.all([api.listClients(), api.listSuppliers()])
       .then(([cs, ss]) => setPeople([
@@ -147,7 +160,6 @@ export default function SuppliersView() {
     setInput(inputFrom(s));
     setEditing(false);
     setOpen(true);
-    setDealsModalOpen(false);
     setSupplierDeals([]);
     setPayments([]);
     api.getSupplierPriceHistory(s.id).then(setHistory).catch(() => setHistory([]));
@@ -264,7 +276,6 @@ export default function SuppliersView() {
     setInput(emptyInput);
     setHistory([]);
     setSupplierDeals([]);
-    setDealsModalOpen(false);
     setEditing(true);
     setOpen(true);
   };
@@ -387,6 +398,116 @@ export default function SuppliersView() {
     setSelected(fresh);
     setSupplierDeals(await api.getDealsForSupplier(fresh.id).catch(() => []));
   };
+
+  // R-425: an open supplier is a full page, like a client, not a side drawer over the list.
+  if (open) {
+    const backToProfile = editing && selected;
+    return (
+      <div>
+        <button
+          onClick={backToProfile ? () => { setInput(inputFrom(selected)); setEditing(false); } : closePanel}
+          className="flex items-center gap-1.5 text-[13px] font-medium text-muted hover:text-ink mb-5 transition-colors"
+        >
+          <ArrowLeft size={14} /> {backToProfile ? `Back to ${selected.name}` : "Back to Suppliers"}
+        </button>
+
+        {selected && !editing ? (
+          <SupplierPage
+            s={selected}
+            history={history}
+            payments={payments}
+            deals={supplierDeals}
+            onReloadDeals={reloadDeal}
+            onEdit={() => setEditing(true)}
+            onUntagPayment={untagPayment}
+            people={people}
+            onPaymentsChanged={reloadPayments}
+            partyLink={linkSupported ? (
+              <PartyLinkPanel
+                role="supplier"
+                selfName={selected.name}
+                link={link}
+                linked={linkedClient}
+                linkedPayments={linkedPaymentsShown}
+                theirDeals={theirDeals}
+                theirSide={{
+                  revenue: linkedRevenue,
+                  open: linkedOpen,
+                  invoices: linkedLive.filter((i) => ["sent", "overdue", "paid"].includes(i.status)).length,
+                }}
+                ourSide={{ cost: selected.total_paid, deals: theirDeals.length, last: selected.last_deal_date || null }}
+                position={linkedRevenue - selected.total_paid}
+                onOpenPicker={() => setLinkPicker(true)}
+                onUnlink={clearLinkedParty}
+                onUntagLinked={untagLinkedPayment}
+                busy={linkBusy}
+              />
+            ) : null}
+          />
+        ) : (
+          <div className="bg-surface border border-line rounded-2xl max-w-[880px]">
+            <div className="px-6 pt-5">
+              <h2 className="text-[18px] font-semibold text-ink tracking-tight truncate">
+                {selected ? `Editing ${selected.name}` : "New supplier"}
+              </h2>
+            </div>
+            <div className="px-6 py-5 space-y-6">
+              <Form input={input} setInput={setInput} />
+            </div>
+            <div className="sticky bottom-0 bg-surface border-t border-line px-6 py-4 flex items-center gap-2 rounded-b-2xl">
+              <button
+                onClick={save}
+                disabled={saving || !input.name.trim()}
+                className="flex-1 flex items-center justify-center gap-1.5 h-10 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              >
+                <Save size={14} /> {saving ? "Saving…" : "Save supplier"}
+              </button>
+              {selected && (
+                <>
+                  <button
+                    onClick={async () => { await api.archiveSupplier(selected.id); await load(); closePanel(); }}
+                    className="flex items-center gap-1.5 h-10 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
+                  >
+                    <Archive size={13} /> Archive
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (confirm("Permanently delete this supplier?")) {
+                        await api.deleteSupplier(selected.id);
+                        await load();
+                        closePanel();
+                      }
+                    }}
+                    title="Delete supplier"
+                    aria-label="Delete supplier"
+                    className="flex items-center gap-1.5 h-10 px-3 border border-danger text-danger-ink hover:bg-danger-bg rounded-lg text-[12px] transition-colors"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {linkPicker && selected && (
+          <PersonPickerModal
+            title={`Which client is ${selected.name}?`}
+            subtitle="Links the two records. Nothing is merged, no money moves, and what they pay us stays revenue."
+            only="client"
+            people={people}
+            candidates={[]}
+            current={link ? { type: "client", id: link.linked_id, name: link.linked_name } : null}
+            busy={linkBusy}
+            onClose={() => setLinkPicker(false)}
+            onPick={setLinkedParty}
+            onCreate={createAndLink}
+            createLabel="Add a new client"
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -554,146 +675,6 @@ export default function SuppliersView() {
         </div>
       )}
 
-      {/* Slide-in panel — profile by default, form only when editing */}
-      {open && (
-        <div className="fixed inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-black/20" onClick={closePanel} />
-          <div className="relative bg-surface w-full max-w-[min(92vw,34rem)] shadow-2xl flex flex-col overflow-y-auto">
-
-            <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-line sticky top-0 bg-surface z-10">
-              <div className="flex items-center gap-2 min-w-0">
-                {editing && selected && (
-                  <button
-                    onClick={() => { setInput(inputFrom(selected)); setEditing(false); }}
-                    className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-3 text-muted hover:text-ink-2 transition-colors flex-shrink-0"
-                    title="Back to profile"
-                  >
-                    <ArrowLeft size={16} />
-                  </button>
-                )}
-                <div className="min-w-0">
-                  <h3 className="text-[15px] font-semibold text-ink truncate">
-                    {selected ? (editing ? `Editing ${selected.name}` : selected.name) : "New supplier"}
-                  </h3>
-                  {selected?.contact_name && !editing && (
-                    <p className="text-[12px] text-muted mt-0.5 truncate">{selected.contact_name}</p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
-                {selected && !editing && (
-                  <button
-                    onClick={() => setEditing(true)}
-                    className="flex items-center gap-1.5 h-8 px-3 border border-line rounded-lg text-[12px] text-ink-2 hover:border-line-3 transition-colors"
-                  >
-                    <Pencil size={13} /> Edit
-                  </button>
-                )}
-                <button onClick={closePanel} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-3 text-muted hover:text-ink-2 transition-colors">
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 px-6 py-5 space-y-5">
-              {selected && !editing ? (
-                <Profile
-                  s={selected}
-                  history={history}
-                  payments={payments}
-                  dealCount={supplierDeals.length}
-                  onOpenDeals={() => setDealsModalOpen(true)}
-                  onUntagPayment={untagPayment}
-                  people={people}
-                  onPaymentsChanged={reloadPayments}
-                  partyLink={linkSupported ? (
-                    <PartyLinkPanel
-                      role="supplier"
-                      selfName={selected.name}
-                      link={link}
-                      linked={linkedClient}
-                      linkedPayments={linkedPaymentsShown}
-                      theirDeals={theirDeals}
-                      theirSide={{
-                        revenue: linkedRevenue,
-                        open: linkedOpen,
-                        invoices: linkedLive.filter((i) => ["sent", "overdue", "paid"].includes(i.status)).length,
-                      }}
-                      ourSide={{ cost: selected.total_paid, deals: theirDeals.length, last: selected.last_deal_date || null }}
-                      position={linkedRevenue - selected.total_paid}
-                      onOpenPicker={() => setLinkPicker(true)}
-                      onUnlink={clearLinkedParty}
-                      onUntagLinked={untagLinkedPayment}
-                      busy={linkBusy}
-                    />
-                  ) : null}
-                />
-              ) : (
-                <Form input={input} setInput={setInput} />
-              )}
-            </div>
-
-            {(editing || !selected) && (
-              <div className="sticky bottom-0 bg-surface border-t border-line px-6 py-4 flex items-center gap-2">
-                <button
-                  onClick={save}
-                  disabled={saving || !input.name.trim()}
-                  className="flex-1 flex items-center justify-center gap-1.5 h-10 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
-                >
-                  <Save size={14} /> {saving ? "Saving…" : "Save supplier"}
-                </button>
-                {selected && (
-                  <>
-                    <button
-                      onClick={async () => { await api.archiveSupplier(selected.id); await load(); closePanel(); }}
-                      className="flex items-center gap-1.5 h-10 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
-                    >
-                      <Archive size={13} /> Archive
-                    </button>
-                    <button
-                      onClick={async () => {
-                        if (confirm("Permanently delete this supplier?")) {
-                          await api.deleteSupplier(selected.id);
-                          await load();
-                          closePanel();
-                        }
-                      }}
-                      className="flex items-center gap-1.5 h-10 px-3 border border-danger text-danger-ink hover:bg-danger-bg rounded-lg text-[12px] transition-colors"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {linkPicker && selected && (
-        <PersonPickerModal
-          title={`Which client is ${selected.name}?`}
-          subtitle="Links the two records. Nothing is merged, no money moves, and what they pay us stays revenue."
-          only="client"
-          people={people}
-          candidates={[]}
-          current={link ? { type: "client", id: link.linked_id, name: link.linked_name } : null}
-          busy={linkBusy}
-          onClose={() => setLinkPicker(false)}
-          onPick={setLinkedParty}
-          onCreate={createAndLink}
-          createLabel="Add a new client"
-        />
-      )}
-
-      {dealsModalOpen && selected && (
-        <SupplierDealsModal
-          supplier={selected}
-          deals={supplierDeals}
-          onClose={() => setDealsModalOpen(false)}
-          onReload={reloadDeal}
-        />
-      )}
     </div>
   );
 }
@@ -717,8 +698,10 @@ function Th({ label, k, sortKey, asc, onSort, align = "right" }: {
   );
 }
 
-function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment, people, onPaymentsChanged, partyLink }: {
-  s: Supplier; history: SupplierPriceEntry[]; payments: CounterpartyPaymentRow[]; dealCount: number; onOpenDeals: () => void; onUntagPayment: (txnId: string) => void;
+function SupplierPage({ s, history, payments, deals, onReloadDeals, onEdit, onUntagPayment, people, onPaymentsChanged, partyLink }: {
+  s: Supplier; history: SupplierPriceEntry[]; payments: CounterpartyPaymentRow[];
+  deals: any[]; onReloadDeals: () => Promise<void>; onEdit: () => void;
+  onUntagPayment: (txnId: string) => void;
   people: PersonRef[]; onPaymentsChanged: () => void;
   /** The dual-role party link, rendered beside this supplier's own payments so the
    *  two sides sit together and stay visibly apart. Null when the build has no
@@ -726,124 +709,138 @@ function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment,
   partyLink?: ReactNode;
 }) {
   const m = marginOf(s);
+  const initials = s.name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
+  const terms = ([
+    ["Method", s.payment_method],
+    ["Terms", s.payment_terms],
+    ["Lead time", s.typical_lead_time],
+    ["Details", s.payment_details],
+  ] as [string, string | null | undefined][]).filter(([, v]) => v && v.trim());
   return (
     <>
-      {/* Money first */}
-      <div className="grid grid-cols-2 gap-2">
-        {[
-          { label: "Spent with them", value: s.total_paid > 0 ? fmtAmount(s.total_paid) : "–" },
-          { label: "Profit on their stock", value: s.total_profit !== 0
-              ? `${s.total_profit < 0 ? "−" : ""}${fmtAmount(Math.abs(s.total_profit))}` : "–",
-            danger: s.total_profit < 0 },
-          { label: "Margin",   value: m === null ? "–" : `${m.toFixed(1)}%` },
-          { label: "Deals",    value: String(s.deal_count) },
-          { label: "Avg deal", value: s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "–" },
-          { label: "Last deal",value: shortDate(s.last_deal_date) },
-          { label: "Last contact",
-            value: s.last_contact
-              ? `${s.last_contact_kind === "email_out" ? "Out" : "In"} · ${shortDate(s.last_contact)}`
-              : "–" },
-        ].map((st) => (
-          <div key={st.label} className="bg-surface-2 border border-line rounded-lg px-3 py-2 min-w-0">
-            <div className="text-[11.5px] text-muted truncate">{st.label}</div>
-            <div className={`text-[14px] font-bold mt-0.5 tabular-nums truncate ${st.danger ? "text-danger-ink" : "text-ink"}`}>
-              {st.value}
+      {/* Identity */}
+      <div className="bg-surface border border-line rounded-2xl p-6">
+        <div className="cd-head flex items-start justify-between gap-4">
+          <div className="flex items-start gap-4 min-w-0">
+            <div className="w-14 h-14 rounded-2xl bg-surface-3 text-ink-2 flex items-center justify-center text-[18px] font-bold flex-shrink-0">{initials}</div>
+            <div className="min-w-0">
+              <h2 className="text-[20px] font-bold text-ink truncate">{s.name}</h2>
+              <div className="flex items-center gap-x-3 gap-y-0.5 mt-1 flex-wrap text-[13px] text-muted">
+                <span className="inline-flex items-center gap-1.5"><User size={14} /> <span className={s.contact_name ? "text-ink-2 font-medium" : "text-faint"}>{s.contact_name || "No contact name"}</span></span>
+                {s.payment_method && <span className="inline-flex items-center gap-1.5"><CreditCard size={14} /> {s.payment_method}</span>}
+              </div>
+              <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+                {m !== null && (
+                  <StatusPill className={m >= 25 ? "bg-success-bg text-success-ink border-success/25" : m >= 10 ? "bg-warning-bg text-warning-ink border-warning/30" : "bg-danger-bg text-danger-ink border-danger-ink/20"}>
+                    {m.toFixed(1)}% margin
+                  </StatusPill>
+                )}
+                {s.archived && <StatusPill tone="warning">Archived</StatusPill>}
+              </div>
             </div>
           </div>
-        ))}
+          <div className="cd-actions flex items-center justify-end gap-1.5 flex-wrap flex-shrink-0">
+            <button
+              onClick={onEdit}
+              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
+            >
+              <Pencil size={13} /> Edit
+            </button>
+          </div>
+        </div>
       </div>
 
-      <button
-        onClick={onOpenDeals}
-        className="w-full flex items-center justify-between gap-2 px-3 h-10 bg-surface-2 border border-line rounded-lg text-[12.5px] font-medium text-ink-2 hover:border-line-3 transition-colors"
-      >
-        <span>View completed deals ({dealCount})</span>
-        <ChevronRight size={14} className="text-muted flex-shrink-0" />
-      </button>
+      {/* Money first, every figure in one band */}
+      <div className="mt-4">
+        <KpiBand cols={7}>
+          <StatTile label="Spent with them" value={s.total_paid > 0 ? fmtAmount(s.total_paid) : "–"} tone="ink" />
+          <StatTile label="Profit on their stock"
+            value={s.total_profit !== 0 ? `${s.total_profit < 0 ? "−" : ""}${fmtAmount(Math.abs(s.total_profit))}` : "–"}
+            tone={s.total_profit < 0 ? "danger" : s.total_profit > 0 ? "success" : "muted"} />
+          <StatTile label="Margin" value={m === null ? "–" : `${m.toFixed(1)}%`} tone={m === null ? "muted" : "ink"} />
+          <StatTile label="Deals" value={String(s.deal_count)} tone="ink" />
+          <StatTile label="Avg deal" value={s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "–"} tone="ink" />
+          <StatTile label="Last deal" value={shortDate(s.last_deal_date)} tone="muted" />
+          <StatTile label="Last contact" tone="muted"
+            value={s.last_contact ? `${s.last_contact_kind === "email_out" ? "Out" : "In"} · ${shortDate(s.last_contact)}` : "–"} />
+        </KpiBand>
+      </div>
 
-      {/* Bank payments this supplier touches — tagged rows plus supplier legs on
-          deals. THREE groups, never merged (R-156 W1-d, R-157/F2): booked to a deal
-          that names them, which that deal already counts; booked to a deal that
-          does not, which counts on that deal and not here at all; and tagged to
-          them only, which no deal counts. The middle group is why the split is
-          three and not two — one $279,500 supplier wire in this ledger is split
-          across deals belonging to four different clients. */}
-      <PersonPayments
-        person={{ type: "supplier", id: s.id, name: s.name }}
-        payments={payments}
-        onUntag={onUntagPayment}
-        people={people}
-        onChanged={onPaymentsChanged}
-      />
+      {/* The deals, full width: their columns need the room */}
+      <div className="mt-4">
+        <ProfileCard title="Completed deals" icon={<CheckCircle2 size={15} className="text-muted" />}
+          right={<span className="text-[12px] text-muted tabular-nums flex-shrink-0">{deals.length} deal{deals.length === 1 ? "" : "s"}</span>}>
+          <SupplierDealsList deals={deals} onReload={onReloadDeals} />
+        </ProfileCard>
+      </div>
 
-      {partyLink}
+      <div className="mt-4">
+        <ProfileGrid
+          main={<>
+            {/* Bank payments this supplier touches — tagged rows plus supplier legs on
+                deals. THREE groups, never merged (R-156 W1-d, R-157/F2): booked to a deal
+                that names them, which that deal already counts; booked to a deal that
+                does not, which counts on that deal and not here at all; and tagged to
+                them only, which no deal counts. The middle group is why the split is
+                three and not two — one $279,500 supplier wire in this ledger is split
+                across deals belonging to four different clients. */}
+            {/* PersonPayments carries its own "Bank payments" heading, so the card adds none. */}
+            <section className="bg-surface border border-line rounded-2xl p-5 min-w-0">
+              <PersonPayments
+                person={{ type: "supplier", id: s.id, name: s.name }}
+                payments={payments}
+                onUntag={onUntagPayment}
+                people={people}
+                onChanged={onPaymentsChanged}
+              />
+            </section>
 
-      {/* Contact */}
-      {(s.phone || s.email || s.address) && (
-        <div className="space-y-2">
-          <p className="text-[12.5px] font-medium text-muted">Contact</p>
-          <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
-            {s.phone && <Row icon={<Phone size={12} />} value={fmtPhone(s.phone)} href={`tel:${s.phone}`} />}
-            {s.email && <Row icon={<Mail size={12} />} value={s.email} href={`mailto:${s.email}`} />}
-            {s.address && <Row icon={<MapPin size={12} />} value={s.address} />}
-          </div>
-        </div>
-      )}
+            {partyLink}
 
-      {/* Terms */}
-      {(s.payment_method || s.payment_terms || s.typical_lead_time || s.payment_details) && (
-        <div className="space-y-2">
-          <p className="text-[12.5px] font-medium text-muted">Payment and logistics</p>
-          <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
-            {s.payment_method    && <Row label="Method"    value={s.payment_method} />}
-            {s.payment_terms     && <Row label="Terms"     value={s.payment_terms} />}
-            {s.typical_lead_time && <Row label="Lead time" value={s.typical_lead_time} />}
-            {s.payment_details   && <Row label="Details"   value={s.payment_details} />}
-          </div>
-        </div>
-      )}
-
-      {s.notes && (
-        <div className="space-y-2">
-          <p className="text-[12.5px] font-medium text-muted">Notes</p>
-          <p className="text-[12.5px] text-ink-2 whitespace-pre-wrap bg-surface-2 border border-line rounded-lg px-3 py-2.5">{s.notes}</p>
-        </div>
-      )}
-
-      {history.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-[12.5px] font-medium text-muted">Price history</p>
-          <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
-            {history.map((h) => (
-              <div key={h.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
-                <div className="min-w-0">
-                  <div className="text-[12px] text-ink-2 truncate">{h.item_description}</div>
-                  <div className="text-[11px] text-muted tabular-nums">
-                    {shortDate(h.recorded_at)}{h.quantity ? ` · Qty ${h.quantity}` : ""}
-                  </div>
+            {history.length > 0 && (
+              <ProfileCard title="Price history" icon={<History size={14} className="text-muted" />}>
+                <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
+                  {history.map((h) => (
+                    <div key={h.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                      <div className="min-w-0">
+                        <div className="text-[12.5px] text-ink-2 truncate">{h.item_description}</div>
+                        <div className="text-[11px] text-muted tabular-nums">
+                          {shortDate(h.recorded_at)}{h.quantity ? ` · Qty ${h.quantity}` : ""}
+                        </div>
+                      </div>
+                      <div className="text-[12.5px] font-medium text-ink tabular-nums flex-shrink-0">{fmtAmount(h.price)}</div>
+                    </div>
+                  ))}
                 </div>
-                <div className="text-[12px] font-medium text-ink tabular-nums flex-shrink-0">{fmtAmount(h.price)}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+              </ProfileCard>
+            )}
+          </>}
+          side={<>
+            <ProfileCard title="Contact" icon={<User size={14} className="text-muted" />}>
+              <Facts>
+                <Fact label="Name">{s.contact_name || <span className="text-faint">None on file</span>}</Fact>
+                <Fact label="Phone">{s.phone ? <a href={`tel:${s.phone}`} className="text-accent hover:text-accent-hover">{fmtPhone(s.phone)}</a> : <span className="text-faint">No phone</span>}</Fact>
+                <Fact label="Email">{s.email ? <a href={`mailto:${s.email}`} className="text-accent hover:text-accent-hover break-all">{s.email}</a> : <span className="text-faint">No email</span>}</Fact>
+                <Fact label="Address">{s.address || <span className="text-faint">No address</span>}</Fact>
+              </Facts>
+            </ProfileCard>
+
+            <ProfileCard title="Payment and logistics" icon={<Truck size={14} className="text-muted" />}>
+              {terms.length > 0
+                ? <Facts>{terms.map(([l, v]) => <Fact key={l} label={l}>{v}</Fact>)}</Facts>
+                : <p className="text-[12.5px] text-muted">No terms on file. <button onClick={onEdit} className="text-accent hover:text-accent-hover font-medium">Add them</button></p>}
+            </ProfileCard>
+
+            {s.notes && (
+              <ProfileCard title="Notes" icon={<StickyNote size={14} className="text-muted" />}>
+                <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed">{s.notes}</div>
+              </ProfileCard>
+            )}
+          </>}
+        />
+      </div>
     </>
   );
-}
-
-function Row({ icon, label, value, href }: { icon?: React.ReactNode; label?: string; value: string; href?: string }) {
-  const body = (
-    <div className="flex items-start justify-between gap-3 px-3 py-2.5">
-      <span className="flex items-center gap-1.5 text-[11.5px] text-muted flex-shrink-0">
-        {icon}{label}
-      </span>
-      <span className={`text-[12.5px] text-right whitespace-pre-wrap break-words min-w-0 ${href ? "text-accent" : "text-ink-2"}`}>
-        {value}
-      </span>
-    </div>
-  );
-  return href ? <a href={href} className="block hover:bg-surface-2 transition-colors">{body}</a> : body;
 }
 
 function Form({ input, setInput }: { input: SupplierInput; setInput: (i: SupplierInput) => void }) {
