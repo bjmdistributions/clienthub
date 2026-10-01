@@ -361,7 +361,16 @@ export default function App() {
   // Mono (monochrome) — orthogonal to light/dark. It strips the accent and goes
   // grayscale; combined with dark it's the pure-black look, with light it's the
   // clean white/black look. Persisted independently of `dark` (no forced dark).
-  const [matte, setMatte] = useState(() => localStorage.getItem("clienthub_matte") === "1");
+  const [matte, setMatte] = useState(() => {
+    // R-423: Mono is the default since the E logo. Every device switches once (the old
+    // key cannot tell "never chose" from "chose off", since it is written on each launch);
+    // after that the toggle sticks.
+    if (localStorage.getItem("clienthub_mono_default") !== "1") {
+      localStorage.setItem("clienthub_mono_default", "1");
+      localStorage.setItem("clienthub_matte", "1");
+    }
+    return localStorage.getItem("clienthub_matte") === "1";
+  });
   useEffect(() => {
     const html = document.documentElement;
     html.classList.add("theme-transitioning");
