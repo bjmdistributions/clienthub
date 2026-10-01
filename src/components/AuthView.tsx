@@ -156,10 +156,10 @@ export default function AuthView({
           <button
             onClick={submit}
             disabled={busy}
-            className="w-full h-11 rounded-xl text-[14px] font-semibold text-white transition-all duration-150 disabled:opacity-60 hover:-translate-y-px flex items-center justify-center gap-2"
-            style={{ background: "linear-gradient(135deg, #FFAF4A, #FF6520 55%, #E83A00)", boxShadow: "0 8px 24px rgba(255,101,32,0.35)" }}
+            className="w-full h-11 rounded-xl text-[14px] font-semibold text-[#0A0A0B] transition-all duration-150 disabled:opacity-60 hover:-translate-y-px flex items-center justify-center gap-2"
+            style={{ background: "#F4F2EF", boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}
           >
-            {busy && <span className="w-3.5 h-3.5 rounded-full border-2 border-white/40 border-t-white animate-spin" />}
+            {busy && <span className="w-3.5 h-3.5 rounded-full border-2 border-black/25 border-t-black animate-spin" />}
             {restoring ? "Restoring your account…" : busy ? "Signing in…" : "Sign in"}
           </button>
         </div>
