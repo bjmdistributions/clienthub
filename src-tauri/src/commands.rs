@@ -4783,6 +4783,39 @@ impl ShipFacts {
     pub fn typed_freight_dropped(&self) -> f64 {
         if self.mode() { self.freight_typed } else { 0.0 }
     }
+    /// R-418: what is still owed to the carriers: the estimate less what is already known (paid, or
+    /// linked from the bank), so while a truck is unpaid the larger of its open quotes and what the
+    /// buyer was charged less what is known. 0 once every truck is paid, or without Logistics. The
+    /// floor Payables and Free cash use, the same as the projection's. Twin of the server's `owed`.
+    pub fn shipping_owed(&self) -> f64 {
+        if !self.mode() || self.unpaid == 0 { return 0.0; }
+        let known = if self.has_link { self.linked } else { self.paid };
+        r2((self.estimate() - known).max(0.0))
+    }
+}
+
+/// R-418: the payable of each unpaid truck, in the order given, adding up to `owed`: a truck with a
+/// quote owes its quote and the rest is split evenly over the trucks without one (over every unpaid
+/// truck when all have one). The split's rounding goes on the last truck without a quote, so a typed
+/// quote stays exact. Twin of the server's `shipping_owed_rows`.
+pub fn shipping_owed_rows(owed: f64, quotes: &[Option<f64>]) -> Vec<f64> {
+    if quotes.is_empty() { return Vec::new(); }
+    let quote = |q: &Option<f64>| q.filter(|v| *v > 0.005);
+    let quoted: f64 = quotes.iter().filter_map(quote).sum();
+    let total = r2(owed.max(quoted));
+    let rest = (total - quoted).max(0.0);
+    let bare = quotes.iter().filter(|q| quote(q).is_none()).count();
+    let mut out: Vec<f64> = if bare > 0 {
+        let each = rest / bare as f64;
+        quotes.iter().map(|q| r2(quote(q).unwrap_or(each))).collect()
+    } else {
+        let each = rest / quotes.len() as f64;
+        quotes.iter().map(|q| r2(quote(q).unwrap_or(0.0) + each)).collect()
+    };
+    let drift = r2(total - out.iter().sum::<f64>());
+    let at = quotes.iter().rposition(|q| quote(q).is_none()).unwrap_or(out.len() - 1);
+    out[at] = r2(out[at] + drift);
+    out
 }
 
 /// R-400: typed freight, the sum of the non-kept cost lines whose category is `freight`.
@@ -12766,7 +12799,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
            AND NOT (COALESCE(json_extract(sp.value,'$.category'),'')='freight' AND ", ship_mode_sql!(), ") \
          UNION ALL \
          SELECT COALESCE(NULLIF(fb.broker,''), NULLIF(fb.carrier,''), 'Shipping') AS payee, \
-                CAST(fb.quoted_cost AS REAL) AS amount, \
+                fb.quoted_cost AS amount, \
                 COALESCE(NULLIF(df.payment_received_at,''), df.created_at) AS anchor, \
                 df.id AS deal_flow_id, df.invoice_id AS invoice_id, \
                 i.number AS invoice_number, i.client_id AS client_id, c.name AS client_name, \
@@ -12777,13 +12810,12 @@ pub async fn get_payables_aging() -> Result<Value, String> {
          LEFT JOIN invoices i ON i.id = df.invoice_id \
          LEFT JOIN clients c ON c.id = i.client_id \
          WHERE fb.archived=0 AND fb.status!='cancelled' AND fb.paid_amount IS NULL \
-           AND COALESCE(fb.quoted_cost,0) > 0 \
            AND df.stage != 'complete' AND COALESCE(df.archived,0)=0 \
            AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0"),
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| Ok((
         r.get::<_, Option<String>>(0)?.unwrap_or_default(),
-        r.get::<_, f64>(1)?,
+        r.get::<_, Option<f64>>(1)?,
         r.get::<_, Option<String>>(2)?.unwrap_or_default(),
         r.get::<_, String>(3)?,
         r.get::<_, Option<String>>(4)?,
@@ -12806,7 +12838,25 @@ pub async fn get_payables_aging() -> Result<Value, String> {
     let mut tot = [0f64; 4];
     let mut committed_total = 0f64; // dashboard hero: only committed deals count
     let mut count = 0i64;
-    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id, df_stage, category, supplier_billed, booking_id) in rows.filter_map(|x| x.ok()) {
+    // R-418: each unpaid truck carries its share of what its deal still owes the carriers (the
+    // projection's floor: what the buyer was charged, less what is paid or linked), so a truck with
+    // no quote is a payable too. A truck whose share is nothing is left out.
+    let rows: Vec<_> = rows.filter_map(|x| x.ok()).collect();
+    let mut amounts: Vec<f64> = rows.iter().map(|r| r.1.unwrap_or(0.0)).collect();
+    {
+        let mut by_deal: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
+        for (i, r) in rows.iter().enumerate() {
+            if r.12.is_some() { by_deal.entry(r.3.clone()).or_default().push(i); }
+        }
+        for (deal, idxs) in by_deal {
+            let quotes: Vec<Option<f64>> = idxs.iter().map(|&i| rows[i].1).collect();
+            let shares = shipping_owed_rows(ship_facts(&conn, &deal).shipping_owed(), &quotes);
+            for (&i, a) in idxs.iter().zip(shares) { amounts[i] = a; }
+        }
+    }
+    for (k, (payee, _typed, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id, df_stage, category, supplier_billed, booking_id)) in rows.into_iter().enumerate() {
+        let amount = amounts[k];
+        if booking_id.is_some() && amount <= 0.005 { continue; }
         if committed_stages.contains(&df_stage.as_str()) { committed_total += amount; }
         let days = chrono::NaiveDate::parse_from_str(anchor.get(0..10).unwrap_or(""), "%Y-%m-%d")
             .map(|d| (today - d).num_days())
@@ -19480,19 +19530,25 @@ pub async fn financials_overview() -> Result<Value, String> {
             - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
                  WHERE a.deal_flow_id=df.id AND a.role='supplier_payment'
                    AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
-         ) + CASE WHEN ", ship_mode_sql!(), " THEN MAX(0,
-            (SELECT COALESCE(SUM(fb.quoted_cost),0) FROM freight_bookings fb
-              WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled'
-                AND fb.paid_amount IS NULL AND fb.quoted_cost IS NOT NULL)
-            - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
-                 WHERE a.deal_flow_id=df.id AND a.role='shipping'
-                   AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
-         ) ELSE 0 END),0)
+         )),0)
          FROM deal_flows df
          WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
            AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id
                            AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1))"),
         [], |r| r.get(0)).unwrap_or(0.0);
+    // R-418: plus what those deals still owe their carriers, the same floor as the projection (what
+    // the buyer was charged for shipping, less what is paid or linked, while a truck is unpaid).
+    let shipping_payables: f64 = {
+        let ids: Vec<String> = conn.prepare(
+            "SELECT df.id FROM deal_flows df
+             WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
+               AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id
+                               AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1))",
+        ).and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        ids.iter().map(|id| ship_facts(&conn, id).shipping_owed()).sum()
+    };
+    let supplier_payables = supplier_payables + shipping_payables;
 
     // Refund liability (we owe buyers back): per deal, refund_owed minus refunds
     // already paid AND minus refund-out actuals allocated from the bank feed, clamped
@@ -25888,11 +25944,48 @@ mod r400_shipping_tests {
         assert_eq!(owed().await - base, 6500.0, "no logistics: the freight line is owed like the goods");
         booking(&id, "1", "booked", None, Some(700.0), 0);
         assert_eq!(owed().await - base, 6700.0, "the quote replaces the typed freight");
-        // A carrier payment already linked from the bank comes off the quote, never below zero.
+        // R-418: a carrier payment already linked is known freight; the unpaid truck still owes its
+        // quote (the projection counts the two separately too: 200 + 700).
         link(&id, "shipping", 200.0);
-        assert_eq!(owed().await - base, 6500.0);
+        assert_eq!(owed().await - base, 6700.0);
         set_paid(&id, "1", 700.0);
         assert_eq!(owed().await - base, 6000.0, "paid: only the goods are still owed");
+    }
+
+    /// R-418: with no quote, an unpaid truck owes what the buyer was charged for shipping, less what
+    /// is already paid, in Payables and in Free cash, as the projection counts it.
+    #[tokio::test]
+    async fn an_unquoted_truck_owes_what_the_buyer_was_charged() {
+        let _db = crate::db::init_test_store();
+        let owed = || async { financials_overview().await.unwrap()["supplier_payables"].as_f64().unwrap() };
+        let base = owed().await;
+        let id = deal("unq", vec![line("a", "supplier", 6000.0, false)], "payment_received");
+        pool().get().unwrap().execute(
+            "UPDATE invoices SET line_items_json=?1 WHERE id='inv-r400-unq'",
+            [json!([{ "description": "Shipping", "qty": 1, "rate": 500, "amount": 500 }]).to_string()],
+        ).unwrap();
+        booking(&id, "1", "booked", None, None, 0);
+        assert_eq!(owed().await - base, 6500.0, "the goods and what the buyer was charged for shipping");
+        let mine = |v: &Value| -> Vec<Value> { v["items"].as_array().unwrap().iter().filter(|i| i["deal_flow_id"] == id).cloned().collect() };
+        let rows = mine(&get_payables_aging().await.unwrap());
+        let ship = rows.iter().find(|i| i["kind"] == "shipping").expect("a shipping row with no quote");
+        assert_eq!(ship["amount"].as_f64(), Some(500.0));
+        // Two trucks, one paid 300: the other still owes the rest of what was charged.
+        booking(&id, "2", "booked", Some(300.0), None, 0);
+        assert_eq!(owed().await - base, 6200.0);
+        set_paid(&id, "1", 180.0);
+        assert_eq!(owed().await - base, 6000.0, "every truck paid: nothing owed to carriers");
+        assert!(mine(&get_payables_aging().await.unwrap()).iter().all(|i| i.get("kind").is_none() || i["kind"] != "shipping"));
+    }
+
+    #[test]
+    fn the_owed_amount_is_split_over_the_unpaid_trucks() {
+        assert_eq!(shipping_owed_rows(800.0, &[Some(300.0), None]), vec![300.0, 500.0]);
+        assert_eq!(shipping_owed_rows(800.0, &[None, None]), vec![400.0, 400.0]);
+        assert_eq!(shipping_owed_rows(1000.0, &[Some(300.0), Some(500.0)]), vec![400.0, 600.0]);
+        assert_eq!(shipping_owed_rows(100.0, &[None, None, None]), vec![33.33, 33.33, 33.34]);
+        assert_eq!(shipping_owed_rows(0.0, &[None]), vec![0.0]);
+        assert!(shipping_owed_rows(500.0, &[]).is_empty());
     }
 }
 
