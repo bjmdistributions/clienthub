@@ -17,6 +17,10 @@ const signedAmount = (n: number) => `${n < 0 ? "−" : ""}${fmtAmount(Math.abs(n
 const refundedShare = (d: any) =>
   d.df_total > 0 ? (Number(d.deal_refunded) || 0) * (Number(d.supplier_amount) || 0) / d.df_total : 0;
 
+// R-436: a deal's revenue and profit both carry its refunds, as on every other screen.
+const dealRevenue = (d: any) => (Number(d.gross_revenue) || 0) - (Number(d.deal_refunded) || 0);
+const dealProfit  = (d: any) => (Number(d.net_profit)    || 0) - (Number(d.deal_refunded) || 0);
+
 // A supplier's completed deals, inline on the supplier page (R-425). It was a modal
 // stacked over the old side drawer; on a full page it is just a section.
 export default function SupplierDealsList({
@@ -62,8 +66,8 @@ export default function SupplierDealsList({
   // profit are the whole deal's, so the blended margin here is the deal-side one.
   const totals = deals.reduce(
     (a: { revenue: number; profit: number; paid: number; refunded: number }, d: any) => ({
-      revenue:  a.revenue  + (Number(d.gross_revenue)   || 0),
-      profit:   a.profit   + (Number(d.net_profit)      || 0),
+      revenue:  a.revenue  + dealRevenue(d),
+      profit:   a.profit   + dealProfit(d),
       paid:     a.paid     + (Number(d.supplier_amount) || 0),
       refunded: a.refunded + refundedShare(d),
     }),
@@ -74,7 +78,7 @@ export default function SupplierDealsList({
   return (
     <div>
       <p className="text-[11.5px] text-faint mb-3 leading-relaxed">
-        Revenue and profit are the whole deal's, before refunds. Paid, Refunded and Net are this supplier's own share: a refund is apportioned by their part of the deal's total supplier payments.
+        Revenue and profit are the whole deal's, after refunds. Paid, Refunded and Net are this supplier's own share: a refund is apportioned by their part of the deal's total supplier payments.
       </p>
       <div className="border border-line rounded-xl overflow-x-auto">
         <div className="min-w-[860px]">
@@ -100,9 +104,9 @@ export default function SupplierDealsList({
                 </div>
               </div>
               {deals.map((d: any) => {
-                const margin = d.gross_revenue > 0
-                  ? (d.net_profit / d.gross_revenue) * 100
-                  : null;
+                const revenue = dealRevenue(d);
+                const profit = dealProfit(d);
+                const margin = revenue > 0 ? (profit / revenue) * 100 : null;
                 const refunded = refundedShare(d);
                 const netPaid = (Number(d.supplier_amount) || 0) - refunded;
                 const open = expandedDealId === d.id;
@@ -136,10 +140,10 @@ export default function SupplierDealsList({
                         </div>
                       </div>
                       <div className={STAT_GRID}>
-                        <Stat value={fmtAmount(d.gross_revenue)} />
+                        <Stat value={fmtAmount(revenue)} />
                         <Stat
-                          value={signedAmount(d.net_profit)}
-                          clr={d.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}
+                          value={signedAmount(profit)}
+                          clr={profit >= 0 ? "text-success-ink" : "text-danger-ink"}
                         />
                         <Stat
                           value={margin === null ? "–" : `${margin.toFixed(1)}%`}

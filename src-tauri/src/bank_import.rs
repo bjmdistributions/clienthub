@@ -437,15 +437,23 @@ fn fnv1a(s: &str) -> u64 {
 }
 
 fn stable_id(account_id: &str, row: &ParsedRow) -> String {
+    stable_id_nth(account_id, row, 1)
+}
+
+/// `nth` is which occurrence of this exact row the statement is on (1 = the first). R-437:
+/// the CSV fallback fingerprint is the same for two genuinely identical same-day rows, so the
+/// second used to collide with the first and a real charge was dropped. The first occurrence
+/// keeps the key it always had, so re-importing a statement still lands on the same ids.
+fn stable_id_nth(account_id: &str, row: &ParsedRow, nth: usize) -> String {
     let key = if !row.fitid.is_empty() {
         format!("{}|{}", account_id, row.fitid)
     } else {
-        // CSV fallback fingerprint — best-effort, may collide for identical same-day rows.
-        format!(
+        let base = format!(
             "{}|{}|{:.2}|{}|{}|{}",
             account_id, row.posted_at, row.amount, row.direction,
             row.description.to_lowercase(), row.check_num
-        )
+        );
+        if nth > 1 { format!("{}|#{}", base, nth) } else { base }
     };
     format!("bt_{:016x}", fnv1a(&key))
 }
@@ -476,13 +484,18 @@ pub fn persist_rows(rows: &[ParsedRow], account_id: &str, format: &str) -> Resul
         format: format.to_string(), has_fitid,
     };
 
+    let mut seen: std::collections::HashMap<String, usize> = Default::default();
     for row in rows {
-        let id = stable_id(account_id, row);
+        let first = stable_id(account_id, row);
+        let nth = { let n = seen.entry(first).or_insert(0); *n += 1; *n };
+        let id = stable_id_nth(account_id, row, nth);
         // Immutable + deduped: if this exact txn already landed, skip (no re-emit).
         let exists: bool = conn
             .query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&id], |_| Ok(()))
             .is_ok();
-        if exists {
+        // R-437: and if it landed and was DELETED (a duplicate cleaned up by hand), it stays
+        // deleted. Writing it again cleared the delete record and put it back on every device.
+        if exists || crate::sync::is_tombstoned("bank_txn", &id) {
             summary.skipped += 1;
             continue;
         }
@@ -624,6 +637,19 @@ DAILY ENDING BALANCE\n\
         let outs = rows.iter().filter(|r| r.direction == "out").count();
         assert!(ins > 5 && outs > 5, "in={} out={}", ins, outs);
         eprintln!("PDF parsed {} rows ({} in / {} out)", rows.len(), ins, outs);
+    }
+
+    #[test]
+    fn a_second_identical_row_gets_its_own_id_and_the_first_keeps_its_old_one() {
+        let r = ParsedRow {
+            posted_at: "2026-09-01".into(), amount: 25.0, direction: "out".into(),
+            description: "Whatnot fee".into(), memo_raw: String::new(), rail: String::new(),
+            category: String::new(), counterparty_name: String::new(),
+            fitid: String::new(), wire_ref: String::new(), check_num: String::new(), balance: 0.0,
+        };
+        assert_eq!(stable_id_nth("acct", &r, 1), stable_id("acct", &r));
+        assert_ne!(stable_id_nth("acct", &r, 2), stable_id("acct", &r));
+        assert_eq!(stable_id_nth("acct", &r, 2), stable_id_nth("acct", &r, 2));
     }
 
     #[test]

@@ -1474,17 +1474,23 @@ pub async fn export_deals_csv(output_path: String) -> Result<u32, String> {
 pub async fn export_deal_flows_csv(output_path: String) -> Result<u32, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut wtr = csv::Writer::from_path(&output_path).map_err(|e| e.to_string())?;
-    wtr.write_record(["name","client","stage","gross_revenue","total_cost","net_profit","created_at"]).map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT df.name,COALESCE(c.name,''),df.stage,COALESCE(df.gross_revenue,0),COALESCE(df.total_cost,0),COALESCE(df.net_profit,0),df.created_at
-         FROM deal_flows df LEFT JOIN clients c ON c.id=df.client_id ORDER BY df.updated_at DESC"
+    // R-436: the refund on each deal, and revenue and profit after it, beside the stored
+    // figures (which are before refunds), so the file adds up the way the screens do.
+    wtr.write_record(["name","client","stage","gross_revenue","total_cost","net_profit","created_at",
+                      "refunds","revenue_after_refunds","profit_after_refunds","completed_at"]).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT df.name,COALESCE(c.name,''),df.stage,COALESCE(df.gross_revenue,0),COALESCE(df.total_cost,0),COALESCE(df.net_profit,0),df.created_at,
+                {DF_REFUNDS_SQL}, COALESCE(df.completed_at,'')
+         FROM deal_flows df LEFT JOIN clients c ON c.id=df.client_id ORDER BY df.updated_at DESC")
     ).map_err(|e| e.to_string())?;
     let mut count: u32 = 0;
     let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,f64>(4)?,r.get::<_,f64>(5)?,r.get::<_,String>(6)?))
+        Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,f64>(4)?,r.get::<_,f64>(5)?,r.get::<_,String>(6)?,
+            r.get::<_,f64>(7)?,r.get::<_,String>(8)?))
     }).map_err(|e| e.to_string())?;
     for r in rows.filter_map(|r| r.ok()) {
-        wtr.write_record(&[&r.0,&r.1,&r.2,&format!("{:.2}",r.3),&format!("{:.2}",r.4),&format!("{:.2}",r.5),&r.6]).map_err(|e| e.to_string())?;
+        wtr.write_record(&[&r.0,&r.1,&r.2,&format!("{:.2}",r.3),&format!("{:.2}",r.4),&format!("{:.2}",r.5),&r.6,
+                           &format!("{:.2}",r.7),&format!("{:.2}",r.3 - r.7),&format!("{:.2}",r.5 - r.7),&r.8]).map_err(|e| e.to_string())?;
         count += 1;
     }
     wtr.flush().map_err(|e| e.to_string())?;
@@ -2053,9 +2059,15 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     ws2.write_string_with_format(0, 2, "Cost", &bold).map_err(|e| e.to_string())?;
     ws2.write_string_with_format(0, 3, "Profit", &bold).map_err(|e| e.to_string())?;
     ws2.write_string_with_format(0, 4, "Margin %", &bold).map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT strftime('%Y-%m',issue_date) as month, COALESCE(SUM(total),0), COALESCE(SUM(total_cost),0), COALESCE(SUM(profit),0)
-         FROM invoices WHERE status='paid' AND is_complete=1 AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0 GROUP BY month ORDER BY month DESC"
+    // R-434/R-436: the deals that closed each month, by close date, revenue and profit
+    // after refunds: the same figures as the Dashboard and Analytics.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT strftime('%Y-%m', df.completed_at) as month, COALESCE(SUM({DF_NET_REVENUE_SQL}),0), \
+                COALESCE(SUM(df.total_cost),0), COALESCE(SUM({DF_EFF_PROFIT_SQL}),0) \
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {DF_SURVIVOR_SQL} \
+         GROUP BY month ORDER BY month DESC")
     ).map_err(|e| e.to_string())?;
     let month_rows: Vec<(String,f64,f64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     for (i, (m, rev, cost, profit)) in month_rows.iter().enumerate() {
@@ -2076,11 +2088,14 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     ws3.write_string_with_format(0, 3, "Total Spent", &bold).map_err(|e| e.to_string())?;
     ws3.write_string_with_format(0, 4, "Total Profit", &bold).map_err(|e| e.to_string())?;
     ws3.write_string_with_format(0, 5, "Margin %", &bold).map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT c.name, COALESCE(c.company,''), COUNT(i.id), COALESCE(SUM(i.total),0), COALESCE(SUM(i.profit),0)
-         FROM clients c JOIN invoices i ON i.client_id=c.id
-         WHERE i.status='paid' AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
-         GROUP BY c.id ORDER BY SUM(i.total) DESC LIMIT 50"
+    // R-436: closed deals per client, revenue and profit after refunds.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT c.name, COALESCE(c.company,''), COUNT(DISTINCT df.invoice_id), \
+                COALESCE(SUM({DF_NET_REVENUE_SQL}),0) AS rev, COALESCE(SUM({DF_EFF_PROFIT_SQL}),0) \
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {DF_SURVIVOR_SQL} \
+         GROUP BY c.id ORDER BY rev DESC LIMIT 50")
     ).map_err(|e| e.to_string())?;
     let client_rows: Vec<(String,String,i64,f64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     for (i, (name, co, invs, spent, profit)) in client_rows.iter().enumerate() {
@@ -2100,11 +2115,11 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     ws4.write_string_with_format(0, 0, "Stage", &bold).map_err(|e| e.to_string())?;
     ws4.write_string_with_format(0, 1, "Count", &bold).map_err(|e| e.to_string())?;
     ws4.write_string_with_format(0, 2, "Value", &bold).map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT df.stage, COUNT(DISTINCT df.invoice_id), COALESCE(SUM(df.gross_revenue),0) \
+    let mut stmt = conn.prepare(&format!(
+        "SELECT df.stage, COUNT(DISTINCT df.invoice_id), COALESCE(SUM({DF_NET_REVENUE_SQL}),0) \
          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
          WHERE COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
-         GROUP BY df.stage ORDER BY df.stage").map_err(|e| e.to_string())?;
+         GROUP BY df.stage ORDER BY df.stage")).map_err(|e| e.to_string())?;
     let pipeline_rows: Vec<(String,i64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     for (i, (stage, cnt, val)) in pipeline_rows.iter().enumerate() {
         let row = (i + 1) as u32;
@@ -6147,6 +6162,139 @@ fn recompute_completed_deal(id: &str, typed_goods: Option<f64>) -> Result<(), St
 /// Recalculate a completed deal's recorded numbers from its linked bank
 /// transactions (bank-precedence). Exposed as the "Recalculate from bank" action
 /// and called automatically whenever an allocation is added or removed.
+/// R-435: goods refunded on one deal and sold again to a different buyer on another. The
+/// cost of what was resold moves to the new deal, so the refunded deal keeps only what its
+/// buyer kept and the new deal carries its true cost. Before this the cost stayed on the
+/// refunded deal (a loss in its month) and the new deal read 100% margin in another; typing
+/// the cost onto the new deal as well counted it twice.
+///
+/// What moves, `amount` of it:
+/// - a cost line: `-amount` on the refunded deal and `+amount` on the new one, same supplier,
+///   marked paid, each naming the other invoice. Nothing is deleted; the lines are the record.
+/// - the bank links behind that cost: `supplier_payment` allocations from the refunded deal,
+///   largest first, re-pointed whole or split, so the supplier payment counts on the deal
+///   that now carries the cost and the bank total never changes.
+/// Both deals then re-derive (a completed one through `recompute_completed_deal`, bank links
+/// still winning), and each names the other in its metadata (`resold_to` / `resold_from`).
+#[tauri::command]
+pub async fn move_resold_cost(from_id: String, to_id: String, amount: f64) -> Result<Value, String> {
+    let amt = (amount * 100.0).round() / 100.0;
+    if from_id == to_id { return Err("Pick the new buyer's deal, not this one.".into()); }
+    if amt <= 0.0 { return Err("Enter the cost of what was resold.".into()); }
+    let from = read_df(&from_id)?;
+    let to = read_df(&to_id)?;
+    let goods: f64 = from.supplier_payments.iter()
+        .filter(|p| !p.kept && p.category.as_deref().unwrap_or("supplier") == "supplier")
+        .map(|p| p.amount).sum();
+    if amt > goods + 0.005 {
+        return Err(format!("This deal's goods cost {:.2}; that is the most that can move.", goods));
+    }
+    let src = from.supplier_payments.iter()
+        .find(|p| !p.kept && p.amount > 0.0 && p.category.as_deref().unwrap_or("supplier") == "supplier")
+        .ok_or("This deal has no supplier cost to move.")?
+        .clone();
+    let inv = |d: &DealFlow| d.invoice_number.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "the other deal".into());
+    let now = Utc::now().to_rfc3339();
+    let line = |amount: f64, note: String| SupplierPayment {
+        id: format!("sp_{}", uuid::Uuid::new_v4().simple()),
+        supplier_name: src.supplier_name.clone(), supplier_id: src.supplier_id.clone(),
+        amount, original_amount: None, price_changed: false, quantity: None, unit_price: None,
+        method: None, notes: Some(note), paid: true, paid_at: Some(now.clone()),
+        category: Some("supplier".into()), kept: false, supplier_billed: false, split: None,
+    };
+
+    // 1. The cost lines.
+    let mut from_lines = from.supplier_payments.clone();
+    from_lines.push(line(-amt, format!("Resold: cost moved to {}", inv(&to))));
+    write_sp(&from_id, &from_lines, &from.invoice_id)?;
+    let mut to_lines = to.supplier_payments.clone();
+    to_lines.push(line(amt, format!("Resold from {}: cost moved here", inv(&from))));
+    write_sp(&to_id, &to_lines, &to.invoice_id)?;
+
+    // 2. The bank links behind the cost.
+    let allocs: Vec<(String, String, f64, String, String, String)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut st = conn.prepare(
+            "SELECT a.id, a.bank_txn_id, a.amount, a.org_id, a.note, a.created_by FROM bank_allocation a \
+             WHERE a.deal_flow_id=?1 AND a.role='supplier_payment' \
+               AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) ORDER BY a.amount DESC, a.id"
+        ).map_err(|e| e.to_string())?;
+        let v = st.query_map([&from_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        v
+    };
+    let mut left = amt;
+    let mut moved_bank = 0.0;
+    for (aid, txn, a_amt, org, note, by) in allocs {
+        if left <= 0.005 { break; }
+        let take = ((left.min(a_amt)) * 100.0).round() / 100.0;
+        if take >= a_amt - 0.005 {
+            let mut cols = Map::new();
+            cols.insert("deal_flow_id".into(), json!(to_id));
+            cols.insert("updated_at".into(), json!(now));
+            sync::record_upsert("bank_allocation", &aid, cols).map_err(|e| e.to_string())?;
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("UPDATE bank_allocation SET deal_flow_id=?1, updated_at=?2 WHERE id=?3",
+                         rusqlite::params![to_id, now, aid]).map_err(|e| e.to_string())?;
+        } else {
+            let keep = ((a_amt - take) * 100.0).round() / 100.0;
+            let mut cols = Map::new();
+            cols.insert("amount".into(), json!(keep));
+            cols.insert("updated_at".into(), json!(now));
+            sync::record_upsert("bank_allocation", &aid, cols).map_err(|e| e.to_string())?;
+            let new_id = format!("alloc_{}", uuid::Uuid::new_v4().simple());
+            let mut nc = Map::new();
+            nc.insert("org_id".into(), json!(org));
+            nc.insert("bank_txn_id".into(), json!(txn));
+            nc.insert("deal_flow_id".into(), json!(to_id));
+            nc.insert("amount".into(), json!(take));
+            nc.insert("role".into(), json!("supplier_payment"));
+            nc.insert("note".into(), json!(if note.is_empty() { format!("Resold from {}", inv(&from)) } else { note.clone() }));
+            nc.insert("created_by".into(), json!(by));
+            nc.insert("created_at".into(), json!(now));
+            nc.insert("updated_at".into(), json!(now));
+            sync::record_upsert("bank_allocation", &new_id, nc).map_err(|e| e.to_string())?;
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("UPDATE bank_allocation SET amount=?1, updated_at=?2 WHERE id=?3",
+                         rusqlite::params![keep, now, aid]).map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO bank_allocation (id, org_id, bank_txn_id, deal_flow_id, amount, role, note, created_by, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,'supplier_payment',?6,?7,?8,?8)",
+                rusqlite::params![new_id, org, txn, to_id, take,
+                                  if note.is_empty() { format!("Resold from {}", inv(&from)) } else { note }, by, now],
+            ).map_err(|e| e.to_string())?;
+        }
+        left -= take;
+        moved_bank += take;
+    }
+
+    // 3. Each deal names the other.
+    let mark = |d: &DealFlow, key: &str, other: &DealFlow| -> Result<(), String> {
+        let mut meta = serde_json::from_str::<Value>(d.metadata.as_deref().unwrap_or("{}"))
+            .ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        let mut list = meta.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        list.push(json!({ "deal_flow_id": other.id, "invoice_number": other.invoice_number, "amount": amt, "at": now }));
+        meta.insert(key.into(), Value::Array(list));
+        let mj = Value::Object(meta).to_string();
+        let mut cols = Map::new();
+        cols.insert("metadata".into(), json!(mj));
+        sync::record_upsert("deal_flows", &d.id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET metadata=?1 WHERE id=?2", rusqlite::params![mj, d.id]).map_err(|e| e.to_string())?;
+        Ok(())
+    };
+    mark(&from, "resold_to", &to)?;
+    mark(&to, "resold_from", &from)?;
+
+    // 4. Re-derive both from the new lines (a completed deal; an open one completes later).
+    for id in [&from_id, &to_id] {
+        let df = read_df(id)?;
+        if df.stage == "complete" { recalc_completed_deal_flow(id, df.gross_revenue, &df.supplier_payments)?; }
+    }
+    crate::netsync::push_now();
+    Ok(json!({ "moved": amt, "moved_bank": r2(moved_bank) }))
+}
+
 #[tauri::command]
 pub async fn recalc_deal_from_bank(id: String) -> Result<Value, String> {
     resync_completed_deal(&id)?;
@@ -11985,6 +12133,19 @@ const DF_REFUNDS_SQL: &str =
               AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
           ) x WHERE x.dfid = df.id),0)";
 
+/// R-436 (Jack, 2026-10-02: "refunds come off revenue too"): a completed deal's revenue
+/// is what the buyer was invoiced less what was refunded, each refund counted once by the
+/// `DF_REFUNDS_SQL` rule. Every revenue figure the books report sums this, so revenue and
+/// profit (`DF_EFF_PROFIT_SQL`) both carry the refund once. `df` must be in scope.
+/// `r436_net_revenue_tests` asserts it stays `(df.gross_revenue - DF_REFUNDS_SQL)`.
+const DF_NET_REVENUE_SQL: &str =
+    "(df.gross_revenue - COALESCE((SELECT SUM(x.amt) FROM ( \
+            SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
+            UNION ALL \
+            SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out' \
+              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
+          ) x WHERE x.dfid = df.id),0))";
+
 /// One deal flow per invoice (`MIN(d2.id)`), the same survivor rule `SUPPLIER_STATS_SQL`
 /// uses: duplicate 'complete' rows would double every SUM taken over `df`. `df` must be
 /// in scope.
@@ -12158,7 +12319,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let monthly_profit: Vec<Value> = {
         let mut stmt = conn.prepare(
             &format!(
-            "SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), \
+            "SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM({DF_NET_REVENUE_SQL}),0), COALESCE(SUM(df.total_cost),0), \
                     COALESCE(SUM({np}),0)
              FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
              WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
@@ -12333,7 +12494,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     // R-434 (Jack, 2026-10-02): revenue is the deal's `gross_revenue` on the day the deal
     // closed - the same deals and dates as profit, so "This month" cannot show profit
     // with no revenue behind it. Supersedes R-202's paid-invoice revenue.
-    let rev_month_sql = month_profit_sql("COALESCE(SUM(df.gross_revenue),0)", "");
+    let rev_month_sql = month_profit_sql(&format!("COALESCE(SUM({DF_NET_REVENUE_SQL}),0)"), "");
     let rev_of = |w: &CentralWindow| -> f64 {
         conn.query_row(&rev_month_sql, rusqlite::params![&w.day_lo, &w.day_hi], |r| r.get(0)).unwrap_or(0.0)
     };
@@ -12341,7 +12502,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let revenue_prev_month = rev_of(&prev_win);
     let revenue_all_time: f64 = conn.query_row(
         &format!(
-        "SELECT COALESCE(SUM(df.gross_revenue),0)          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id          WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0            AND {one}", one = DF_SURVIVOR_SQL),
+        "SELECT COALESCE(SUM({DF_NET_REVENUE_SQL}),0)          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id          WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0            AND {one}", one = DF_SURVIVOR_SQL),
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     // Profit is refund-aware (refunds come off the deal's profit, capped at it) and
@@ -12438,7 +12599,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     // up with `profit_all_time` below on the same deal_flows/invoices join.
     let all_time_revenue: f64 = conn.query_row(
         &format!(
-        "SELECT COALESCE(SUM(df.gross_revenue),0) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+        "SELECT COALESCE(SUM({DF_NET_REVENUE_SQL}),0) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
          WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
            AND {one}", one = DF_SURVIVOR_SQL),
         [], |r| r.get(0)
@@ -12600,7 +12761,7 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
 
     // R-434: revenue on the deal's close date, the same rows as profit above.
     let revenue_sql = format!("{} GROUP BY d ORDER BY d",
-        month_profit_sql("date(df.completed_at) AS d, COALESCE(SUM(df.gross_revenue),0)", ""));
+        month_profit_sql(&format!("date(df.completed_at) AS d, COALESCE(SUM({DF_NET_REVENUE_SQL}),0)"), ""));
     let mut stmt = conn.prepare(&revenue_sql).map_err(|e| e.to_string())?;
     let revenue_by_day: std::collections::BTreeMap<String, f64> = stmt
         .query_map(rusqlite::params![&win.day_lo, &win.day_hi],
@@ -13021,7 +13182,7 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
     let p = rusqlite::params![start_date, end_date];
 
     let (total_revenue, total_cost, net_profit): (f64, f64, f64) = conn.query_row(
-        &format!("SELECT COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), COALESCE(SUM({NP}),0) {df}"),
+        &format!("SELECT COALESCE(SUM({DF_NET_REVENUE_SQL}),0), COALESCE(SUM(df.total_cost),0), COALESCE(SUM({NP}),0) {df}"),
         p, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
     ).unwrap_or((0.0, 0.0, 0.0));
     // Volume-weighted blended margin — a $100 deal at 90% can't offset a $100k deal at 5%.
@@ -13059,7 +13220,7 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
     // Monthly buckets for the bar chart (refund-aware profit)
     let monthly: Vec<Value> = {
         let mut stmt = conn.prepare(
-            &format!("SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), \
+            &format!("SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM({DF_NET_REVENUE_SQL}),0), \
                              COALESCE(SUM(df.total_cost),0), COALESCE(SUM({NP}),0), \
                              COUNT(DISTINCT df.invoice_id) {df} GROUP BY m ORDER BY m")
         ).map_err(|e| e.to_string())?;
@@ -13103,8 +13264,8 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
     // Top clients by refund-aware profit in range
     let top_clients: Vec<Value> = {
         let mut stmt = conn.prepare(
-            &format!("SELECT c.name, COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM({NP}),0), \
-                    CASE WHEN COALESCE(SUM(df.gross_revenue),0)>0 THEN (COALESCE(SUM({NP}),0)/SUM(df.gross_revenue))*100 ELSE 0 END \
+            &format!("SELECT c.name, COALESCE(SUM({DF_NET_REVENUE_SQL}),0), COALESCE(SUM({NP}),0), \
+                    CASE WHEN COALESCE(SUM({DF_NET_REVENUE_SQL}),0)>0 THEN (COALESCE(SUM({NP}),0)/SUM({DF_NET_REVENUE_SQL}))*100 ELSE 0 END \
              {DF_JOIN} GROUP BY i.client_id, c.name ORDER BY SUM({NP}) DESC LIMIT 5",
              DF_JOIN = df.replacen("JOIN invoices i ON i.id=df.invoice_id",
                                    "JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id", 1))
@@ -13134,7 +13295,7 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
     // business from five at 8% each, and the blended figures above cannot show it.
     let (concentration, top_revenue_clients): (Value, Vec<Value>) = {
         let mut stmt = conn.prepare(&format!(
-            "SELECT c.name, COALESCE(SUM(df.gross_revenue),0) AS rev, COALESCE(SUM({NP}),0) \
+            "SELECT c.name, COALESCE(SUM({DF_NET_REVENUE_SQL}),0) AS rev, COALESCE(SUM({NP}),0) \
              {df_clients} GROUP BY i.client_id, c.name HAVING rev > 0 ORDER BY rev DESC")
         ).map_err(|e| e.to_string())?;
         let rows: Vec<(String, f64, f64)> = stmt.query_map(p, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -13200,7 +13361,7 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         let mut stmt = conn.prepare(&format!(
             "SELECT CASE WHEN {is_first} THEN 1 ELSE 0 END AS first_buy, \
                     COUNT(DISTINCT i.client_id), COUNT(DISTINCT df.invoice_id), \
-                    COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM({NP}),0) \
+                    COALESCE(SUM({DF_NET_REVENUE_SQL}),0), COALESCE(SUM({NP}),0) \
              {df_clients} GROUP BY first_buy")
         ).map_err(|e| e.to_string())?;
         let mut new_side = (0_i64, 0_i64, 0.0_f64, 0.0_f64);
@@ -13222,7 +13383,7 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
     // Margin distribution + deal velocity, both off one pass over the deals in range.
     let (margin_bands, velocity): (Vec<Value>, Value) = {
         let mut stmt = conn.prepare(&format!(
-            "SELECT df.gross_revenue, {NP}, strftime('%Y-%m', df.completed_at), \
+            "SELECT {DF_NET_REVENUE_SQL}, {NP}, strftime('%Y-%m', df.completed_at), \
                     CASE WHEN COALESCE(i.issue_date,'')<>'' AND COALESCE(df.completed_at,'')<>'' \
                          THEN julianday(date(df.completed_at)) - julianday(date(i.issue_date)) END \
              {df}")
@@ -13301,7 +13462,7 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         let day_idx = today.day();
         let day_sql = format!(
             "SELECT CAST(strftime('%d', df.completed_at) AS INTEGER), \
-                    COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM({NP}),0) \
+                    COALESCE(SUM({DF_NET_REVENUE_SQL}),0), COALESCE(SUM({NP}),0) \
              FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
              WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
                AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
@@ -13385,9 +13546,9 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
 
     let margin_deal = |order: &str| -> Option<Value> {
         let sql = format!(
-            "SELECT df.id, c.name, COALESCE(NULLIF(i.number,''), c.name), df.gross_revenue, \
-                    CASE WHEN df.gross_revenue>0 THEN {NP}/df.gross_revenue*100 ELSE 0 END AS margin, {NP} \
-             {df_clients} AND df.gross_revenue > 0 ORDER BY margin {order} LIMIT 1");
+            "SELECT df.id, c.name, COALESCE(NULLIF(i.number,''), c.name), {DF_NET_REVENUE_SQL}, \
+                    CASE WHEN {DF_NET_REVENUE_SQL}>0 THEN {NP}/{DF_NET_REVENUE_SQL}*100 ELSE 0 END AS margin, {NP} \
+             {df_clients} AND {DF_NET_REVENUE_SQL} > 0 ORDER BY margin {order} LIMIT 1");
         let mut stmt = conn.prepare(&sql).ok()?;
         stmt.query_row(p, |r| Ok(json!({
             "deal_id": r.get::<_, String>(0)?, "client_name": r.get::<_, String>(1)?,
@@ -13452,7 +13613,7 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
     // have something honest to be compared against.
     let bucket = |lo: &str, hi: &str| -> (f64, f64) {
         conn.query_row(
-            &format!("SELECT COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM({NP}),0) {df}"),
+            &format!("SELECT COALESCE(SUM({DF_NET_REVENUE_SQL}),0), COALESCE(SUM({NP}),0) {df}"),
             rusqlite::params![lo, hi], |r| Ok((r.get(0)?, r.get(1)?))
         ).unwrap_or((0.0, 0.0))
     };
@@ -13552,7 +13713,7 @@ fn bridge_rows(f: BridgeFigures) -> Vec<Value> {
         "running": to_cents(running), "drift": to_cents(amount - running),
     });
     vec![
-        row("Revenue", "what buyers were invoiced on closed deals", f.revenue, "start"),
+        row("Sales", "what buyers were invoiced on closed deals, before refunds", f.revenue, "start"),
         row("Cost", "what those goods cost", -f.cost, "subtract"),
         tie("Profit before refunds", "read off each deal", f.raw_profit, f.revenue - f.cost, "subtotal"),
         row("Refunds", "each refund counted once, on these deals", -f.refunds, "subtract"),
@@ -13841,7 +14002,7 @@ struct LabelledDeal {
 fn labelled_deals(conn: &rusqlite::Connection) -> Result<Vec<LabelledDeal>, String> {
     let sql = format!(
         "SELECT df.id, COALESCE(date(df.completed_at),''), COALESCE(i.number,''), COALESCE(c.name,''), \
-                COALESCE(i.line_items_json,'[]'), COALESCE(df.name,''), COALESCE(df.gross_revenue,0), {np}, \
+                COALESCE(i.line_items_json,'[]'), COALESCE(df.name,''), COALESCE({DF_NET_REVENUE_SQL},0), {np}, \
                 COALESCE(df.category,''), COALESCE(df.brand,''), \
                 COALESCE(CASE WHEN json_valid(c.metadata) THEN CAST(json_extract(c.metadata,'$.category') AS TEXT) END,'') \
          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id LEFT JOIN clients c ON c.id=i.client_id \
@@ -14535,7 +14696,7 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         let mut stmt = conn.prepare(
             &format!(
             "SELECT i.client_id,
-                    COALESCE(AVG(CASE WHEN df.gross_revenue > 0 THEN ({np} / df.gross_revenue) * 100 END), 0)
+                    COALESCE(AVG(CASE WHEN {DF_NET_REVENUE_SQL} > 0 THEN ({np} / {DF_NET_REVENUE_SQL}) * 100 END), 0)
              FROM deal_flows df
              JOIN invoices i ON i.id = df.invoice_id
              WHERE df.stage = 'complete' AND COALESCE(df.archived,0)=0
@@ -14596,7 +14757,7 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
                     julianday(MAX(d.day)) - julianday(MIN(d.day)) AS span_days
              FROM (
                 SELECT df.invoice_id AS invoice_id,
-                       COALESCE(df.gross_revenue,0) AS rev,
+                       COALESCE({DF_NET_REVENUE_SQL},0) AS rev,
                        substr(COALESCE(NULLIF(df.completed_at,''), df.updated_at),1,10) AS day
                 FROM deal_flows df
                 WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND {one}
@@ -14925,7 +15086,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     let month_win = central_month_window(&now_date.format("%Y-%m").to_string());
     let month_bounds = " AND df.completed_at >= ?1 AND df.completed_at < ?2";
     let rev_q = |bounds: &str| -> String {
-        format!("SELECT COALESCE(SUM(df.gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{bounds}{rep_filter}")
+        format!("SELECT COALESCE(SUM({DF_NET_REVENUE_SQL}),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{bounds}{rep_filter}")
     };
     let week_bounds = " AND df.completed_at >= ?1 AND df.completed_at < ?2";
     let revenue_this_week: f64 = conn.query_row(&rev_q(week_bounds), [&week_start, &end_excl], |r| r.get(0)).unwrap_or(0.0);
@@ -14943,7 +15104,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     // Weighted, refund-aware margin (SUM(np)/SUM(revenue)) — consistent with the
     // best/worst-margin cards, unlike the old unweighted AVG(net/rev).
     let margin_q = |from: &str| -> String {
-        format!("SELECT COALESCE(SUM({np}) / NULLIF(SUM(gross_revenue),0) * 100, 0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{from}{rep_filter}")
+        format!("SELECT COALESCE(SUM({np}) / NULLIF(SUM({DF_NET_REVENUE_SQL}),0) * 100, 0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{from}{rep_filter}")
     };
     let avg_margin_this_week: f64 = conn.query_row(
         &margin_q(" AND df.completed_at >= ?1 AND df.completed_at < ?2"), [&week_start, &end_excl], |r| r.get(0)
@@ -14957,7 +15118,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     // two rolling windows. Every month with a completed deal appears.
     let monthly_breakdown: Vec<MonthStat> = {
         let sql = format!(
-            "SELECT strftime('%Y-%m', df.completed_at) AS m, COUNT(*), COALESCE(SUM(gross_revenue),0), COALESCE(SUM({np}),0) \
+            "SELECT strftime('%Y-%m', df.completed_at) AS m, COUNT(*), COALESCE(SUM({DF_NET_REVENUE_SQL}),0), COALESCE(SUM({np}),0) \
              FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{rep_filter} GROUP BY m ORDER BY m");
         conn.prepare(&sql).ok().and_then(|mut stmt| {
             stmt.query_map([], |r| {
@@ -15104,9 +15265,9 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     // which is never written, so these cards used to never render.
     let margin_deal = |order: &str| -> Option<DealHighlight> {
         let sql = format!(
-            "SELECT df.id, c.name, COALESCE(NULLIF(i.number,''), c.name), df.gross_revenue, \
-                    CASE WHEN df.gross_revenue>0 THEN \
-                      {np}/df.gross_revenue*100 \
+            "SELECT df.id, c.name, COALESCE(NULLIF(i.number,''), c.name), {DF_NET_REVENUE_SQL}, \
+                    CASE WHEN {DF_NET_REVENUE_SQL}>0 THEN \
+                      {np}/{DF_NET_REVENUE_SQL}*100 \
                     ELSE 0 END as margin \
              FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id \
              WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter} \
@@ -18176,6 +18337,43 @@ pub async fn delete_bank_txns(ids: Vec<String>) -> Result<Value, String> {
 
 // ── Plaid live bank/card feed ───────────────────────────────────────────────
 
+/// R-437: split the same-account content matches for one incoming Plaid transaction into how
+/// many this connection already delivered and the copies other connections hold. A row the
+/// bank is retracting (in `removed`, or the pending row the transaction names) counts as
+/// neither, and nor does a pending row once the transaction has posted: it is being replaced,
+/// not repeated. Own means this connection IMPORTED the row (its `pa`, and its `tid` makes its
+/// own id); a provenance stamp backfilled onto an older row does not make it own. Delivered is
+/// counted before the detail veto; a copy whose details disagree with the incoming one is not
+/// a copy. The caller skips the transaction while `copies.len()` exceeds `delivered` plus what
+/// this run already skipped against the same fingerprint.
+fn plaid_copies(
+    candidates: Vec<crate::bank_dedup::TxnRow>,
+    incoming: &crate::bank_dedup::TxnRow,
+    incoming_pending: bool,
+    pacct: &str,
+    pend: Option<&str>,
+    removed: &std::collections::HashSet<String>,
+) -> (usize, Vec<crate::bank_dedup::TxnRow>) {
+    let stamp = |c: &crate::bank_dedup::TxnRow| serde_json::from_str::<Value>(&c.raw_json).ok();
+    let retracting = |c: &crate::bank_dedup::TxnRow| -> bool {
+        removed.contains(&c.id)
+            || pend == Some(c.id.as_str())
+            || (!incoming_pending && stamp(c).and_then(|v| v.get("pnd").and_then(|p| p.as_bool())).unwrap_or(false))
+    };
+    let own = |c: &crate::bank_dedup::TxnRow| -> bool {
+        !pacct.is_empty()
+            && stamp(c).map(|v| v.get("pa").and_then(|p| p.as_str()) == Some(pacct)
+                && v.get("tid").and_then(|t| t.as_str()).map(plaid_txn_id).as_deref() == Some(c.id.as_str()))
+                .unwrap_or(false)
+    };
+    let delivered = candidates.iter().filter(|c| !retracting(c) && own(c)).count();
+    let copies = candidates.into_iter()
+        .filter(|c| !retracting(c) && !own(c))
+        .filter(|c| crate::bank_dedup::metadata_conflict(incoming, c, true).is_none())
+        .collect();
+    (delivered, copies)
+}
+
 fn plaid_txn_id(transaction_id: &str) -> String {
     let clean: String = transaction_id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     format!("btpl_{}", clean)
@@ -18406,6 +18604,16 @@ pub async fn plaid_sync() -> Result<Value, String> {
             (pk.clone(), institution.clone(), labels)
         })
         .collect();
+    // R-437: bring this device up to date BEFORE importing. The duplicate check below can only
+    // see rows that are already here; another device's own bank link imports the same
+    // transactions under its own ids, and until they are pulled this device imports them a
+    // second time. A failed pull still imports: a duplicate can be removed, a skipped payment
+    // is gone once the cursor moves.
+    if crate::netsync::is_enabled() {
+        if let Err(e) = crate::netsync::pull_apply().await {
+            tracing::warn!("plaid_sync: pull before import failed, importing anyway: {}", e);
+        }
+    }
     let known_labels: Vec<String> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut st = conn.prepare("SELECT DISTINCT account_id FROM bank_txn").map_err(|e| e.to_string())?;
@@ -18414,6 +18622,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
     };
     let mut same_account_cache: std::collections::HashMap<String, Vec<String>> = Default::default();
     let now = Utc::now().to_rfc3339();
+    // R-437: how many existing copies of one fingerprint this run has already skipped against,
+    // so two genuine identical charges with only one copy on the books import the second.
+    let mut copies_used: std::collections::HashMap<String, usize> = Default::default();
     let mut imported = 0i64;
     let mut removed = 0i64;
     let mut amended = 0i64;     // bank changed a transaction we already held
@@ -18637,8 +18848,8 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // history under NEW transaction_ids, so an id-only check re-imports it all
                     // as duplicates of already-booked rows. Skip a txn already present by its
                     // exact id, OR by its account/date/amount/direction/memo fingerprint against
-                    // a PRE-EXISTING row (imported_at < now) — the `imported_at` guard means two
-                    // genuinely-identical transactions in the SAME sync still both import.
+                    // copies another connection already put on the books (R-437, counted below,
+                    // so two genuinely identical transactions still both import).
                     if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&id], |_| Ok(())).is_ok() {
                         // Already held — a replayed page, or the twin landed on an earlier
                         // sync while the pending row was deferred. Settle BEFORE the
@@ -18656,44 +18867,41 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         already_held += 1;
                         continue;
                     }
-                    // Content match against a prior-run row → this is a duplicate, skip it. But
-                    // if that existing row predates provenance capture (empty raw_json), backfill
-                    // it now (synced) so a later cleanup can use the connection/timestamp signal.
-                    //
-                    // Two matches are NOT duplicates and must import anyway:
-                    // - the matched row is in this page's `removed` set — it is the pending
-                    //   twin the bank is retracting right now, and this txn is its posted
-                    //   replacement (skipping it here erased $43k of book transfers);
-                    // - the matched row carries the SAME Plaid account_id (`pa`) — one
-                    //   connection never serves the same transaction twice under a new id
-                    //   except pending→posted churn, so a same-connection content match is
-                    //   churn even when the retraction lands on a later page or sync. The
-                    //   fingerprint dedup exists for re-links, which always mint a new `pa`.
-                    // Examine EVERY content match, not one arbitrary row. The old query
-                    // was `LIMIT 1` with no ORDER BY, so when the ledger already held two
-                    // rows for the same real transaction (the normal state after a bank is
-                    // linked on two devices) SQLite could hand back the copy that is
-                    // neither being retracted nor from this connection — both exemptions
-                    // would miss, the posted twin would be skipped as a duplicate, and the
-                    // `removed` step would then delete the pending one. That is the
-                    // erasure this guard exists to prevent, reintroduced by the sampling.
-                    // A match qualifies as churn if ANY copy is being retracted now or
-                    // came from this same Plaid connection.
-                    // R-287: on any label that is this same account, and never against a row
+                    // R-437: content matches, judged row by row. The rule it replaced let the
+                    // transaction in whenever ANY match was being retracted or was this
+                    // connection's own, so with a bank linked on two devices the posted copy came
+                    // in a second time beside the other device's copy whenever this device still
+                    // held its own pending row (every transfer, Zelle, wire and ACH). Now:
+                    // - a row the bank is retracting (in `removed`, or the pending row this
+                    //   transaction names) is not a copy of it, and neither is any PENDING row
+                    //   when this transaction has posted: it is being replaced, not repeated;
+                    // - a row this connection imported itself (its `pa`, and its `tid` makes its
+                    //   own id) is a transaction this connection already delivered: a genuine
+                    //   identical charge, never a reason to skip;
+                    // - every other match is a copy from another connection (another device's
+                    //   link, a re-link, an older import). The transaction is skipped only while
+                    //   such copies outnumber what this connection has delivered plus what this
+                    //   run has already skipped against them.
+                    // Same-run rows are included: one from this connection counts as its own (two
+                    // identical charges in one pull both import), one from another item of the
+                    // same bank counts as a copy (one device linked twice no longer imports twice).
+                    // R-287 still applies: same account by `bank_dedup::same_account`, and a copy
                     // whose stored details disagree with what the bank sends now (merchant,
-                    // payment metadata, timestamp, memo). A disagreement imports the row — a
-                    // visible duplicate can be cleaned up; a wrongly skipped payment is gone.
+                    // payment metadata, timestamp, memo) is not a copy. A disagreement imports
+                    // the row; a visible duplicate can be cleaned up, a wrongly skipped payment
+                    // is gone.
                     let incoming = crate::bank_dedup::TxnRow { memo_raw: desc.clone(), raw_json: rawj.clone(), ..Default::default() };
+                    let incoming_pending = t.get("pending").and_then(|v| v.as_bool()).unwrap_or(false);
                     let candidates: Vec<crate::bank_dedup::TxnRow> = conn
                         .prepare(
                             "SELECT id, COALESCE(raw_json,''), COALESCE(account_id,''), COALESCE(memo_raw,''), COALESCE(check_num,''), \
                                     COALESCE(wire_ref,''), COALESCE(fitid,'') FROM bank_txn \
                               WHERE posted_at=?1 AND ABS(amount-?2)<0.005 \
-                               AND direction=?3 AND LOWER(COALESCE(description,''))=?4 AND imported_at < ?5",
+                               AND direction=?3 AND LOWER(COALESCE(description,''))=?4",
                         )
                         .and_then(|mut st| {
                             st.query_map(
-                                rusqlite::params![date, amount, direction, desc.to_lowercase(), now],
+                                rusqlite::params![date, amount, direction, desc.to_lowercase()],
                                 |r| Ok(crate::bank_dedup::TxnRow {
                                     id: r.get(0)?, raw_json: r.get(1)?, account: r.get(2)?, memo_raw: r.get(3)?,
                                     check_num: r.get(4)?, wire_ref: r.get(5)?, fitid: r.get(6)?, ..Default::default()
@@ -18705,79 +18913,56 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let candidates: Vec<crate::bank_dedup::TxnRow> = candidates.into_iter()
                         .filter(|c| same_account.contains(&c.account))
                         .collect();
-                    // Churn is judged over EVERY same-account match, before the detail veto: a
-                    // row this connection is retracting protects its posted replacement even
-                    // when the bank's details changed between pending and posted. And a row
-                    // counts as this connection's own only when this connection IMPORTED it —
-                    // its stamped `tid` produces its own id. A provenance stamp backfilled onto
-                    // an older row is not the connection sending that transaction twice.
-                    let is_churn = candidates.iter().any(|c| {
-                        removed_ids.contains(&c.id)
-                            || (!pacct.is_empty()
-                                && serde_json::from_str::<Value>(&c.raw_json).ok()
-                                    .map(|v| v.get("pa").and_then(|p| p.as_str()) == Some(pacct.as_str())
-                                        && v.get("tid").and_then(|t| t.as_str()).map(plaid_txn_id).as_deref() == Some(c.id.as_str()))
-                                    .unwrap_or(false))
-                    });
-                    let candidates: Vec<crate::bank_dedup::TxnRow> = candidates.into_iter()
-                        .filter(|c| crate::bank_dedup::metadata_conflict(&incoming, c, true).is_none())
-                        .collect();
-                    let renamed_from: Vec<String> = candidates.iter()
-                        .filter(|c| c.account != label).map(|c| c.account.clone())
-                        .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-                    let matches: Vec<(String, String, String)> = candidates.into_iter().map(|c| (c.id, c.raw_json, c.account)).collect();
-                    let matches: Vec<(String, String)> = {
+                    let (delivered, copies) = plaid_copies(candidates, &incoming, incoming_pending,
+                                                           &pacct, pend.as_deref(), &removed_ids);
+                    let copy_key = format!("{}|{}|{:.2}|{}|{}", label, date, amount, direction, desc.to_lowercase());
+                    let used = copies_used.get(&copy_key).copied().unwrap_or(0);
+                    if copies.len() > delivered + used {
+                        *copies_used.entry(copy_key).or_insert(0) += 1;
+                        let renamed_from: Vec<String> = copies.iter()
+                            .filter(|c| c.account != label).map(|c| c.account.clone())
+                            .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
                         // Backfill provenance onto ONE legacy row on this same label — never
-                        // several (the second copy of a real same-day pair would then look
-                        // like this connection's own churn), never across a rename (that would
-                        // manufacture a shared-connection proof for the cleanup).
-                        if !is_churn {
-                            if let Some((mid, _, _)) = matches.iter().find(|(_, rj, acct)| rj.is_empty() && *acct == label) {
-                                let _ = conn.execute("UPDATE bank_txn SET raw_json=?1 WHERE id=?2", rusqlite::params![rawj, mid]);
-                                let mut c = Map::new();
-                                c.insert("raw_json".into(), Value::String(rawj.clone()));
-                                let _ = sync::record_upsert("bank_txn", mid, c);
-                            }
+                        // several (the second copy of a real same-day pair would then look like
+                        // this connection's own), never across a rename (that would manufacture a
+                        // shared-connection proof for the cleanup).
+                        if let Some(c) = copies.iter().find(|c| c.raw_json.is_empty() && c.account == label) {
+                            let _ = conn.execute("UPDATE bank_txn SET raw_json=?1 WHERE id=?2", rusqlite::params![rawj, c.id]);
+                            let mut cols = Map::new();
+                            cols.insert("raw_json".into(), Value::String(rawj.clone()));
+                            let _ = sync::record_upsert("bank_txn", &c.id, cols);
                         }
-                        matches.into_iter().map(|(m, rj, _)| (m, rj)).collect()
-                    };
-                    if !matches.is_empty() {
-                        if !is_churn {
-                            // The posted transaction is already on the books under ANOTHER
-                            // id — normally the other device's Plaid connection imported it
-                            // first. This device still holds the pending row and is still
-                            // the one that will be told to retract it, and the payload in
-                            // hand names it. Only when exactly ONE surviving copy matches:
-                            // two content-identical rows mean the ledger cannot say which is
-                            // the replacement, and this book holds genuinely distinct
-                            // same-amount wires days apart.
-                            if let Some(p) = &pend {
-                                let cands: Vec<&String> = matches.iter().map(|(m, _)| m)
-                                    .filter(|m| *m != p && !removed_ids.contains(*m)).collect();
-                                if cands.len() == 1 {
-                                    match settle_pending_twin(&conn, p, cands[0], &pacct, &label, direction, &now,
-                                                              &mut amended_over_allocated, &mut touched_deals) {
-                                        Settled::Retired    => settled += 1,
-                                        Settled::Refused(w) => settle_refused.push(w),
-                                        Settled::None       => {}
-                                    }
+                        // The posted transaction is already on the books under ANOTHER id —
+                        // normally the other device's bank link imported it first. This device
+                        // still holds the pending row and is the one that will be told to retract
+                        // it, and the payload in hand names it. Only when exactly ONE copy
+                        // matches: two content-identical rows mean the ledger cannot say which is
+                        // the replacement, and this book holds genuinely distinct same-amount
+                        // wires days apart.
+                        if let Some(p) = &pend {
+                            let cands: Vec<&String> = copies.iter().map(|c| &c.id).filter(|m| *m != p).collect();
+                            if cands.len() == 1 {
+                                match settle_pending_twin(&conn, p, cands[0], &pacct, &label, direction, &now,
+                                                          &mut amended_over_allocated, &mut touched_deals) {
+                                    Settled::Retired    => settled += 1,
+                                    Settled::Refused(w) => settle_refused.push(w),
+                                    Settled::None       => {}
                                 }
                             }
-                            // The one skip in this loop that discards a transaction the
-                            // bank is actively offering. It is very probably a re-link of
-                            // history already on the books — but "probably" is exactly why
-                            // it has to be reviewable rather than silent.
-                            skipped_duplicate.push(json!({
-                                "date": date,
-                                "amount": amount,
-                                "direction": direction,
-                                "account": label,
-                                "description": desc,
-                                "matched": matches.iter().map(|(m, _)| m.clone()).collect::<Vec<_>>(),
-                                "matched_under": renamed_from,
-                            }));
-                            continue;
                         }
+                        // The one skip in this loop that discards a transaction the bank is
+                        // actively offering. It is very probably already on the books from
+                        // another connection, but "probably" is why it is reviewable, not silent.
+                        skipped_duplicate.push(json!({
+                            "date": date,
+                            "amount": amount,
+                            "direction": direction,
+                            "account": label,
+                            "description": desc,
+                            "matched": copies.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+                            "matched_under": renamed_from,
+                        }));
+                        continue;
                     }
                     // R-002/BL-22. `canonical_bank_txn_id` wired as a live dedup key — but as
                     // a DETECTION-ONLY key, never as an id this loop mints. It catches the
@@ -26208,5 +26393,207 @@ mod r434_close_date_tests {
         pay("df-e", "shipping", "2026-10-05");
         pay("df-e", "buyer_payment", "2026-10-02");
         assert_eq!(closed("df-e").as_deref(), Some("2026-10-02"));
+    }
+}
+
+#[cfg(test)]
+mod r436_net_revenue_tests {
+    use super::*;
+
+    #[test]
+    fn net_revenue_is_gross_less_the_one_refund_rule() {
+        assert_eq!(DF_NET_REVENUE_SQL, format!("(df.gross_revenue - {DF_REFUNDS_SQL})"));
+    }
+
+    /// A refund comes off revenue and profit once each, whichever way it was recorded.
+    #[test]
+    fn a_refund_comes_off_revenue_and_profit_once() {
+        let _db = crate::db::init_test_store();
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT INTO deal_flows (id, invoice_id, stage, gross_revenue, total_cost, net_profit, created_at, updated_at) \
+                      VALUES ('df-r436', 'inv-r436', 'complete', 10000, 8000, 2000, '2026-09-01', '2026-09-01')", []).unwrap();
+        // A hand-entered refund, and one booked from the bank (in both tables, counted once).
+        conn.execute("INSERT INTO refunds (id, deal_flow_id, amount, created_at, updated_at) VALUES ('rf1', 'df-r436', 1000, '2026-09-02', '2026-09-02')", []).unwrap();
+        conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES ('bt-r436', '2026-09-03', 3000, 'out')", []).unwrap();
+        conn.execute("INSERT INTO refunds (id, deal_flow_id, amount, bank_txn_id, created_at, updated_at) VALUES ('rf2', 'df-r436', 3000, 'bt-r436', '2026-09-03', '2026-09-03')", []).unwrap();
+        conn.execute("INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role) VALUES ('al-r436', 'bt-r436', 'df-r436', 3000, 'refund_out')", []).unwrap();
+        let (rev, profit): (f64, f64) = conn.query_row(
+            &format!("SELECT {DF_NET_REVENUE_SQL}, {DF_EFF_PROFIT_SQL} FROM deal_flows df WHERE df.id='df-r436'"),
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((rev, profit), (6000.0, -2000.0));
+    }
+}
+
+#[cfg(test)]
+mod r437_plaid_copy_tests {
+    use super::*;
+    use crate::bank_dedup::TxnRow;
+    use std::collections::HashSet;
+
+    /// A row a connection imported: `pa` names the connection, `tid` makes the row's id.
+    fn row(tid: &str, pa: &str, pending: bool) -> TxnRow {
+        TxnRow {
+            id: plaid_txn_id(tid),
+            raw_json: json!({"pa": pa, "tid": tid, "pnd": pending}).to_string(),
+            ..Default::default()
+        }
+    }
+    fn incoming(tid: &str, pa: &str, pending: bool) -> TxnRow {
+        TxnRow { raw_json: json!({"pa": pa, "tid": tid, "pnd": pending}).to_string(), ..Default::default() }
+    }
+    /// Would the transaction be skipped as already on the books, with nothing skipped before?
+    fn skipped(cands: Vec<TxnRow>, inc: &TxnRow, pending: bool, pa: &str, pend: Option<&str>, removed: &[&str]) -> bool {
+        let removed: HashSet<String> = removed.iter().map(|r| plaid_txn_id(r)).collect();
+        let pend = pend.map(plaid_txn_id);
+        let (delivered, copies) = plaid_copies(cands, inc, pending, pa, pend.as_deref(), &removed);
+        copies.len() > delivered
+    }
+
+    #[test]
+    fn the_posted_copy_another_device_already_imported_is_not_imported_again() {
+        // The bug: this device holds its own pending row, the other device's link already put
+        // the posted transaction on the books, and the bank now retracts the pending row.
+        let cands = vec![row("pB", "acctB", true), row("qA", "acctA", false)];
+        assert!(skipped(cands, &incoming("qB", "acctB", false), false, "acctB", Some("pB"), &["pB"]));
+        // Same without the bank naming the pending row (cards rarely do).
+        let cands = vec![row("pB", "acctB", true), row("qA", "acctA", false)];
+        assert!(skipped(cands, &incoming("qB", "acctB", false), false, "acctB", None, &[]));
+    }
+
+    #[test]
+    fn a_posted_transaction_replacing_only_its_pending_rows_imports() {
+        // Its own pending row and the other device's pending row are both being replaced.
+        let cands = vec![row("pB", "acctB", true), row("pA", "acctA", true)];
+        assert!(!skipped(cands, &incoming("qB", "acctB", false), false, "acctB", None, &[]));
+    }
+
+    #[test]
+    fn a_second_identical_charge_from_the_same_connection_imports() {
+        // This connection delivered the first earlier (in this run or before).
+        let cands = vec![row("c1", "acctB", false)];
+        assert!(!skipped(cands, &incoming("c2", "acctB", false), false, "acctB", None, &[]));
+        // The other device holds only the first of the two: one copy, one delivered.
+        let cands = vec![row("c1", "acctB", false), row("x1", "acctA", false)];
+        assert!(!skipped(cands, &incoming("c2", "acctB", false), false, "acctB", None, &[]));
+    }
+
+    #[test]
+    fn a_relink_or_a_second_link_on_one_device_does_not_import_history_twice() {
+        // Rows from an older connection (or another item of the same bank) are copies.
+        let cands = vec![row("old1", "acctOld", false)];
+        assert!(skipped(cands, &incoming("new1", "acctNew", false), false, "acctNew", None, &[]));
+        // A legacy row with no provenance at all is a copy too.
+        let legacy = TxnRow { id: "bt_legacy".into(), ..Default::default() };
+        assert!(skipped(vec![legacy], &incoming("new2", "acctNew", false), false, "acctNew", None, &[]));
+    }
+
+    #[test]
+    fn two_real_charges_with_one_copy_on_the_books_import_the_second() {
+        // The caller counts what it has already skipped against: the first incoming charge is
+        // skipped against the one copy, the second is not.
+        let removed = HashSet::new();
+        let cands = || vec![row("x1", "acctA", false)];
+        let (d, c) = plaid_copies(cands(), &incoming("c1", "acctB", false), false, "acctB", None, &removed);
+        assert!(c.len() > d + 0);
+        let (d, c) = plaid_copies(cands(), &incoming("c2", "acctB", false), false, "acctB", None, &removed);
+        assert!(!(c.len() > d + 1));
+    }
+}
+
+#[cfg(test)]
+mod r435_resold_tests {
+    use super::*;
+
+    fn deal(tag: &str, total: f64, cost_lines: Vec<Value>) -> String {
+        let id = format!("df-r435-{tag}");
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r435', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r435', ?2, '2026-09-01', '2026-09-30', '[]', ?3, ?3, '2026-09-01')",
+            rusqlite::params![format!("inv-r435-{tag}"), format!("INV-R435-{tag}"), total],
+        ).unwrap();
+        let cost: f64 = cost_lines.iter().map(|l| l["amount"].as_f64().unwrap()).sum();
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount)
+             VALUES (?1, ?2, 'supplier_paid', '2026-09-01', '2026-09-01', ?3, ?4, ?5)",
+            rusqlite::params![id, format!("inv-r435-{tag}"), Value::Array(cost_lines).to_string(), cost, total],
+        ).unwrap();
+        id
+    }
+
+    fn link(deal_id: &str, tag: &str, role: &str, amount: f64) {
+        let conn = pool().get().unwrap();
+        let dir = if role == "buyer_payment" { "in" } else { "out" };
+        let txn = format!("txn_r435_{tag}");
+        conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, '2026-09-10', ?2, ?3)", rusqlite::params![txn, amount, dir]).unwrap();
+        conn.execute("INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role) VALUES (?1, ?2, ?3, ?4, ?5)",
+                     rusqlite::params![format!("al_r435_{tag}"), txn, deal_id, amount, role]).unwrap();
+    }
+
+    /// (revenue after refunds, cost, profit after refunds)
+    fn books(id: &str) -> (f64, f64, f64) {
+        pool().get().unwrap().query_row(
+            &format!("SELECT {DF_NET_REVENUE_SQL}, df.total_cost, {DF_EFF_PROFIT_SQL} FROM deal_flows df WHERE df.id=?1"),
+            [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+    }
+
+    fn supplier_line(amount: f64) -> Value {
+        json!({"id": "sp1", "supplier_name": "Sample supplier", "supplier_id": "s1", "amount": amount,
+               "original_amount": null, "price_changed": false, "quantity": null, "unit_price": null,
+               "method": null, "notes": null, "paid": true, "paid_at": null, "category": "supplier",
+               "kept": false, "supplier_billed": false})
+    }
+
+    #[tokio::test]
+    async fn a_refunded_load_resold_to_another_buyer_moves_its_cost() {
+        let _db = crate::db::init_test_store();
+        // Bought for 8,000 (paid from the bank), sold to A for 10,000, refunded in full.
+        let a = deal("a", 10000.0, vec![supplier_line(8000.0)]);
+        link(&a, "a_in", "buyer_payment", 10000.0);
+        link(&a, "a_sup", "supplier_payment", 8000.0);
+        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        pool().get().unwrap().execute(
+            "INSERT INTO refunds (id, deal_flow_id, amount, created_at, updated_at) VALUES ('rf-r435', ?1, 10000, '2026-09-12', '2026-09-12')",
+            [&a]).unwrap();
+        // Resold to B for 9,000 with no cost of its own.
+        let b = deal("b", 9000.0, vec![]);
+        link(&b, "b_in", "buyer_payment", 9000.0);
+        complete_deal_flow(b.clone(), None, None, None, None).await.unwrap();
+        assert_eq!(books(&a), (0.0, 8000.0, -8000.0));
+        assert_eq!(books(&b), (9000.0, 0.0, 9000.0));
+
+        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+
+        // A nets to nothing; B carries the real deal; the total is unchanged.
+        assert_eq!(books(&a), (0.0, 0.0, 0.0));
+        assert_eq!(books(&b), (9000.0, 8000.0, 1000.0));
+        // The supplier payment now counts on B, and the bank row is allocated exactly once.
+        let (on_a, on_b): (f64, f64) = pool().get().unwrap().query_row(
+            "SELECT COALESCE(SUM(CASE WHEN deal_flow_id=?1 THEN amount END),0), COALESCE(SUM(CASE WHEN deal_flow_id=?2 THEN amount END),0)
+             FROM bank_allocation WHERE bank_txn_id='txn_r435_a_sup'", [&a, &b], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((on_a, on_b), (0.0, 8000.0));
+    }
+
+    #[tokio::test]
+    async fn a_partial_resale_splits_the_bank_link() {
+        let _db = crate::db::init_test_store();
+        let a = deal("pa", 10000.0, vec![supplier_line(8000.0)]);
+        link(&a, "pa_in", "buyer_payment", 10000.0);
+        link(&a, "pa_sup", "supplier_payment", 8000.0);
+        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        let b = deal("pb", 6000.0, vec![]);
+        link(&b, "pb_in", "buyer_payment", 6000.0);
+        complete_deal_flow(b.clone(), None, None, None, None).await.unwrap();
+
+        move_resold_cost(a.clone(), b.clone(), 5000.0).await.unwrap();
+
+        assert_eq!(books(&a).1, 3000.0);
+        assert_eq!(books(&b).1, 5000.0);
+        let total: f64 = pool().get().unwrap().query_row(
+            "SELECT SUM(amount) FROM bank_allocation WHERE bank_txn_id='txn_r435_pa_sup'", [], |r| r.get(0)).unwrap();
+        assert_eq!(total, 8000.0);
+        // More than the deal's goods cost cannot move.
+        assert!(move_resold_cost(a.clone(), b.clone(), 3000.01).await.is_err());
     }
 }

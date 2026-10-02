@@ -3,7 +3,7 @@ import {
   ChevronRight, Plus, X, Trash2, Search, Link2,
   CheckCircle2, AlertTriangle, ArrowDownLeft, ArrowUpRight,
 } from "lucide-react";
-import { api, DealAllocation, DealReceipt, DealShortage, RefundRow, UnallocatedTxn } from "../lib/api";
+import { api, DealAllocation, DealFlow, DealReceipt, DealShortage, RefundRow, UnallocatedTxn } from "../lib/api";
 import { fmtAmount, parseLocalDay, parseAmount } from "../lib/format";
 import { toast } from "./Toast";
 
@@ -139,6 +139,13 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
   const [shortDraft, setShortDraft] = useState<string | null>(null);
   const [supOwedDraft, setSupOwedDraft] = useState("");
   const [pickSupplierBack, setPickSupplierBack] = useState(false);
+  // R-435: the goods were sold again to a different buyer on a new invoice.
+  const [flow, setFlow] = useState<DealFlow | null>(null);
+  const [resell, setResell] = useState(false);
+  const [resellDeals, setResellDeals] = useState<DealFlow[]>([]);
+  const [resellQuery, setResellQuery] = useState("");
+  const [resellTo, setResellTo] = useState<DealFlow | null>(null);
+  const [resellAmt, setResellAmt] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -151,6 +158,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
       ]);
       setAllocs(a || []); setReceipts(rc || []); setRefunds(rf || []); setPayout(p);
       setUnalloc(un || { money_in: [], money_out: [] });
+      setFlow(await api.getDealFlow(dealFlowId).catch(() => null));
     } catch (e: any) {
       setErr(typeof e === "string" ? e : e?.message || "Failed to load refund data");
     }
@@ -251,6 +259,38 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
       setShortDraft(null); setSupOwedDraft("");
     });
   };
+  // ── Resold to another buyer (R-435) ──
+  // The goods cost still on this deal (supplier lines, less any already moved), and the
+  // moves already made, from the deal's own record.
+  const goodsLeft = (flow?.supplier_payments ?? [])
+    .filter((p) => !p.kept && (p.category || "supplier") === "supplier")
+    .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const resoldTo: { invoice_number?: string | null; amount: number }[] = (() => {
+    try { return JSON.parse(flow?.metadata || "{}").resold_to || []; } catch { return []; }
+  })();
+  const openResell = async () => {
+    setResell(true); setResellTo(null); setResellQuery("");
+    setResellAmt(goodsLeft > 0 ? goodsLeft.toFixed(2) : "");
+    const all = await api.listDealFlows().catch(() => [] as DealFlow[]);
+    setResellDeals(all.filter((d) => d.id !== dealFlowId));
+  };
+  const resellMatches = resellDeals
+    .filter((d) => {
+      const q = resellQuery.trim().toLowerCase();
+      return !q || `${d.invoice_number || ""} ${d.client_name || ""} ${d.name || ""}`.toLowerCase().includes(q);
+    })
+    .slice(0, 8);
+  const resellNum = parseAmount(resellAmt, NaN);
+  const moveResold = () => {
+    if (!resellTo) { setErr("Pick the new buyer's deal."); return; }
+    if (!isFinite(resellNum) || resellNum <= 0) { setErr("Enter the cost of what was resold."); return; }
+    run(async () => {
+      await api.moveResoldCost(dealFlowId, resellTo.id, resellNum);
+      toast(`Moved ${fmtAmount(resellNum)} of cost to ${resellTo.invoice_number || "the new deal"}`);
+      setResell(false); setResellTo(null);
+    });
+  };
+
   const linkSupplierBack = (t: UnallocatedTxn, amount: number) => run(async () => {
     await api.allocateBankTxn(t.id, dealFlowId, amount, "refund_in", "Supplier returned the short units");
     setPickSupplierBack(false);
@@ -603,6 +643,74 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
               </span>
             </div>
           )}
+
+          {/* 6 · Resold to another buyer (R-435) */}
+          {(refundOwed > 0 || totalRefunded > 0 || resoldTo.length > 0) && (<>
+            <div className="border-t border-line-2" />
+            <section>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[12.5px] font-medium text-ink-2">Resold to another buyer</span>
+                <span className="text-[11px] text-muted tabular-nums">Cost on this deal {fmtAmount(goodsLeft)}</span>
+              </div>
+              {resoldTo.map((r, i) => (
+                <div key={i} className="flex items-center gap-2 text-[12px] py-0.5">
+                  <ArrowUpRight size={13} className="text-muted flex-shrink-0" />
+                  <span className="flex-1 min-w-0 truncate text-ink">Cost moved to {r.invoice_number || "another deal"}</span>
+                  <span className="tabular-nums text-ink">{fmtAmount(r.amount)}</span>
+                </div>
+              ))}
+              <div className="text-[10.5px] text-muted mt-1">
+                Sold these goods again on a new invoice? Move their cost to that deal. This deal keeps only what its buyer kept, and the new deal carries what the goods really cost. The supplier payment moves with it.
+              </div>
+              {!resell ? (
+                goodsLeft > 0.005 && (
+                  <button onClick={openResell}
+                    className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><ArrowUpRight size={12} /> Move the cost to the new deal</button>
+                )
+              ) : (
+                <div className="space-y-2 mt-2 bg-surface-2 rounded-lg p-2.5">
+                  <div className="relative">
+                    <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-faint" />
+                    <input value={resellQuery} onChange={(e) => { setResellQuery(e.target.value); setResellTo(null); }}
+                      placeholder="Find the new deal by invoice or buyer"
+                      className="bg-surface border border-line rounded-lg h-8 pl-7 pr-2 w-full text-[12px] text-ink" />
+                  </div>
+                  {!resellTo && (
+                    <div className="max-h-48 overflow-y-auto space-y-0.5">
+                      {resellMatches.map((d) => (
+                        <button key={d.id} onClick={() => setResellTo(d)}
+                          className="w-full flex items-center gap-2 text-left text-[12px] px-2 py-1.5 rounded-md hover:bg-surface">
+                          <span className="tabular-nums text-ink-2 flex-shrink-0">{d.invoice_number || "No number"}</span>
+                          <span className="flex-1 min-w-0 truncate text-ink">{d.client_name || d.name || ""}</span>
+                          <span className="tabular-nums text-muted flex-shrink-0">{fmtAmount(d.gross_revenue || 0)}</span>
+                        </button>
+                      ))}
+                      {resellMatches.length === 0 && <div className="text-[11.5px] text-muted px-2 py-1">No deal matches.</div>}
+                    </div>
+                  )}
+                  {resellTo && (
+                    <div className="flex items-center gap-2 text-[12px] rounded-md bg-surface border border-line px-2 py-1.5">
+                      <CheckCircle2 size={13} className="text-success-ink flex-shrink-0" />
+                      <span className="flex-1 min-w-0 truncate text-ink">{resellTo.invoice_number || "No number"} · {resellTo.client_name || resellTo.name || ""}</span>
+                      <button onClick={() => setResellTo(null)} title="Pick another" className="text-faint hover:text-ink-2"><X size={13} /></button>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11.5px] text-muted flex-1">Cost of what was resold</span>
+                    <input value={resellAmt} onChange={(e) => setResellAmt(e.target.value)} inputMode="decimal" placeholder="0.00"
+                      className="bg-surface border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums text-right" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={moveResold} disabled={busy || !resellTo || !(resellNum > 0)}
+                      className="flex-1 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+                      {resellTo && resellNum > 0 ? `Move ${fmtAmount(resellNum)} to ${resellTo.invoice_number || "this deal"}` : "Move the cost"}
+                    </button>
+                    <button onClick={() => setResell(false)} className="h-8 px-3 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2">Cancel</button>
+                  </div>
+                </div>
+              )}
+            </section>
+          </>)}
 
           {err && <div className="text-[11.5px] text-danger-ink">{err}</div>}
         </div>

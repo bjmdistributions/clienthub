@@ -758,6 +758,7 @@ fn main() {
             employees::login,
             employees::switch_workspace_restart,
             employees::confirm_workspace_switch,
+            move_resold_cost,
             employees::resume_switch_login,
             employees::active_workspace,
             employees::list_staff,

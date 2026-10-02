@@ -3478,6 +3478,9 @@ export const api = {
     invoke<DealFlow | null>("get_deal_flow_by_invoice", { invoiceId }),
   getDealFlow: (id: string) => invoke<DealFlow>("get_deal_flow", { id }),
   listDealFlows: () => invoke<DealFlow[]>("list_deal_flows"),
+  // R-435: the cost of goods refunded here and sold again on another deal moves to that deal.
+  moveResoldCost: (fromId: string, toId: string, amount: number) =>
+    invoke<{ moved: number; moved_bank: number }>("move_resold_cost", { fromId, toId, amount }),
   // R-277 freight tracking (Priority1 emails)
   listShipments: () => invoke<Shipment[]>("list_shipments"),
   linkShipment: (id: string, dealFlowId: string) => invoke<void>("link_shipment", { id, dealFlowId }),

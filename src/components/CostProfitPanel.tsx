@@ -1,4 +1,5 @@
-import { DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
+import { useEffect, useState } from "react";
+import { api, DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
 import { fmtAmount, projectedCostOf, shippingEstimateOf } from "../lib/format";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
 
@@ -42,8 +43,20 @@ export default function CostProfitPanel({
   // shipping part is named under it. A completed deal reads what was recorded.
   const cost   = isComplete ? flow.total_cost    : projectedCostOf(flow);
   const ship   = isComplete ? (flow.shipping_cost ?? 0) : shippingEstimateOf(flow);
-  const profit = gross - cost;
-  const margin = gross > 0 ? (profit / gross) * 100 : 0;
+  // R-436: a completed deal's refunds come off its revenue, and so off its profit, as on
+  // every other screen (each refund once, the refund_status_all rule).
+  const [refunded, setRefunded] = useState(0);
+  useEffect(() => {
+    if (!isComplete) { setRefunded(0); return; }
+    let live = true;
+    api.refundStatusAll()
+      .then((rows) => { if (live) setRefunded(rows.find((r) => r.deal_flow_id === flow.id)?.refunded ?? 0); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [flow.id, isComplete, flow.updated_at]);
+  const revenue = gross - refunded;
+  const profit = revenue - cost;
+  const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
   // Completed deals show the breakdown captured at completion; older deals
   // (no stored breakdown) fall back to re-deriving from the current config.
   const alloc  = dealPayoutSplit(flow, recipients);
@@ -55,7 +68,7 @@ export default function CostProfitPanel({
       {/* P&L grid — two columns, always. See the LAYOUT note above. */}
       <div className="grid grid-cols-2 gap-2">
         {[
-          { label: "Revenue", value: fmtAmount(gross), clr: "text-ink" },
+          { label: "Revenue", value: fmtAmount(revenue), clr: "text-ink", sub: refunded > 0.005 ? `Refunds ${fmtAmount(refunded)}` : undefined },
           { label: "Costs",   value: fmtAmount(cost),  clr: "text-ink", sub: `Shipping ${fmtAmount(ship)}` },
           {
             label: profit >= 0 ? "Profit" : "Loss",
