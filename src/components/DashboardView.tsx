@@ -202,7 +202,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
   const openDeals         = stats?.open_deals ?? 0;
   const completedThisMonth = stats?.completed_this_month ?? 0;
 
-  // Hero money — revenue = paid invoices, profit = completed deal flows.
+  // Hero money — revenue and profit of the deals closed in the range (R-434).
   const heroRevenue = heroRange === "month" ? (stats?.revenue_mtd ?? 0) : (stats?.revenue_all_time ?? 0);
   const heroProfit  = heroRange === "month" ? (stats?.profit_mtd ?? 0)  : (stats?.profit_all_time ?? 0);
 
@@ -278,7 +278,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                   {heroRange === "month" && <DeltaChip now={heroRevenue} prev={stats?.revenue_prev_month ?? 0} />}
                 </div>
                 <div className="text-[11.5px] text-faint mt-2.5">
-                  paid invoices{heroRange === "month" ? " this month" : ", all time"}
+                  deals closed{heroRange === "month" ? " this month" : ", all time"}
                 </div>
               </div>
               <div>
@@ -290,7 +290,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                   {heroRange === "month" && <DeltaChip now={heroProfitValue} prev={heroProfitPrev} />}
                 </div>
                 <div className="text-[11.5px] text-faint mt-2.5">
-                  completed deals{heroRange === "month" ? " this month" : ", all time"}
+                  deals closed{heroRange === "month" ? " this month" : ", all time"}
                 </div>
               </div>
               <div className="min-w-0">

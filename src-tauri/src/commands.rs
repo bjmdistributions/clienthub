@@ -28,7 +28,7 @@ pub(crate) fn central_week_start() -> chrono::NaiveDate {
 ///
 /// Two boundary pairs come back because the two date columns hold different things:
 ///  * `day_lo`/`day_hi` (`YYYY-MM-DD`) for columns holding a **calendar date** —
-///    `deal_flows.completed_at` (the buyer's bank payment day) and `invoices.issue_date`.
+///    `deal_flows.completed_at` (the day the deal closed) and `invoices.issue_date`.
 ///  * `utc_lo`/`utc_hi` (those same two Central midnights, expressed in UTC) for columns
 ///    holding a real **instant** — `invoices.paid_at`.
 ///  * `tz_shift` shifts an instant to its Central wall clock, so a daily GROUP BY buckets
@@ -5656,14 +5656,13 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     let split = read_profit_split()?;
     let include_payout = payout_included.unwrap_or(false);
 
-    // Use caller-supplied date (YYYY-MM-DD) if provided; otherwise the day the buyer's
-    // payment actually landed — the deal closed when the money came in, not when it was
-    // keyed in. Only falls back to today when the deal has no payment date at all.
+    // Use caller-supplied date (YYYY-MM-DD) if provided; otherwise the day its last
+    // payment (buyer or supplier, R-434) actually landed, not when it was keyed in. Only falls back to today when the deal has no payment date at all.
     let now = match completed_date.as_deref() {
         Some(d) if !d.is_empty() => format!("{}T00:00:00Z", d),
         _ => {
             let conn = pool().get().map_err(|e| e.to_string())?;
-            buyer_bank_paid_date(&conn, &id)
+            deal_closed_bank_date(&conn, &id)
                 .or_else(|| df.payment_received_at.clone().filter(|s| !s.is_empty()))
                 // R-159: a closed date is a CENTRAL calendar day, and every month
                 // window reads this column as one. A UTC instant here would file a
@@ -5955,20 +5954,25 @@ fn bank_snapshot_value(conn: &rusqlite::Connection, deal_flow_id: &str) -> Value
     Value::Array(out)
 }
 
-/// When the BUYER's money actually landed, per the bank — the date a deal counts as
-/// closed. The LAST linked buyer payment, so a deal taken on a deposit closes when the
-/// balance arrives, not when the deposit did.
+/// The day a deal closed, per the bank: its LAST linked payment, buyer or supplier
+/// (R-434, Jack 2026-10-02: "if the payment to supplier happens first of the month but
+/// the payment from buyer was last day of previous month, the deal closed on the first
+/// of new month"). A deal taken on a deposit still closes when the balance arrives.
+/// It used to be the buyer's payment alone (R-117), and before that the supplier's.
 ///
-/// `None` when no buyer payment is linked, and callers must decide what to do with that
+/// Only once the buyer's payment is linked: until then the deal has not closed and a
+/// supplier date alone would file it early. `None` when no buyer payment is linked, and callers must decide what to do with that
 /// rather than reaching for `payment_received_at`: that column is only a date somebody
 /// typed, and it defaults to the moment the payment step was recorded. Good enough to
 /// pre-fill a form; not good enough to move a deal already on the books into a different
 /// month. (Two live deals, $20,500 each, carry a `payment_received_at` of the evening
 /// they were keyed in — using it would have shifted $41k from July into August.)
-fn buyer_bank_paid_date(conn: &rusqlite::Connection, deal_flow_id: &str) -> Option<String> {
+fn deal_closed_bank_date(conn: &rusqlite::Connection, deal_flow_id: &str) -> Option<String> {
     conn.query_row(
-        "SELECT MAX(bt.posted_at) FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id
-         WHERE a.deal_flow_id=?1 AND a.role='buyer_payment' AND COALESCE(bt.posted_at,'') != ''",
+        "SELECT CASE WHEN SUM(a.role='buyer_payment') > 0 THEN MAX(bt.posted_at) END
+         FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id
+         WHERE a.deal_flow_id=?1 AND a.role IN ('buyer_payment','supplier_payment')
+           AND COALESCE(bt.posted_at,'') != ''",
         [deal_flow_id], |r| r.get::<_, Option<String>>(0),
     ).ok().flatten()
 }
@@ -6005,7 +6009,7 @@ pub fn recorded_goods_of(total_cost: f64, shipping_cost: Option<f64>, facts: &Sh
 }
 
 /// What a completed deal's recorded figures come to now, the bank snapshot to store beside them and
-/// the closing date the buyer's bank payment gives (if any). Read-only: `recompute_completed_deal`
+/// the closing date its last bank payment gives (if any, R-434). Read-only: `recompute_completed_deal`
 /// writes what this returns and `resync_completed_deal_if_changed` compares it with the books.
 fn completed_actuals(df: &DealFlow, typed_goods: Option<f64>) -> Result<(DealActuals, Value, Option<String>), String> {
     let id = df.id.as_str();
@@ -6016,11 +6020,11 @@ fn completed_actuals(df: &DealFlow, typed_goods: Option<f64>) -> Result<(DealAct
     // vanished bank link keeps what's on the books instead of zeroing it.
     let recorded_goods = typed_goods.unwrap_or_else(|| recorded_goods_of(df.total_cost, df.shipping_cost, &facts));
     let a = deal_bank_actuals(&conn, id, df.gross_revenue, entered_goods, recorded_goods);
-    // The deal closed the day the BUYER's money landed — not the day it was keyed in,
-    // and not (as this used to read) the day the SUPPLIER was paid. Only a real bank
+    // The deal closed the day its LAST payment landed, buyer or supplier (R-434) — not
+    // the day it was keyed in. Only a real bank
     // date rewrites a deal already on the books; one with no buyer payment linked keeps
     // the date it has, and corrects itself the moment that payment is linked.
-    let closed = buyer_bank_paid_date(&conn, id).or_else(|| {
+    let closed = deal_closed_bank_date(&conn, id).or_else(|| {
         if df.completed_at.as_deref().unwrap_or("").is_empty() {
             df.payment_received_at.clone().filter(|s| !s.is_empty())
         } else { None }
@@ -11994,7 +11998,7 @@ const DF_SURVIVOR_SQL: &str =
 /// on the line are the same query with a different projection - they cannot drift apart
 /// again the way the chart's private refund rule let them.
 ///
-/// `deal_flows.completed_at` holds a calendar DATE (the buyer's bank payment day), so
+/// `deal_flows.completed_at` holds a calendar DATE (the day the deal closed), so
 /// the month is a plain half-open day window. Binds ?1 = `day_lo`, ?2 = `day_hi`.
 /// `extra` is an additional predicate (`""` for none), so a narrowing card like the
 /// loss tile stays on this population instead of hand-rolling its own.
@@ -12007,30 +12011,6 @@ fn month_profit_sql(select: &str, extra: &str) -> String {
            AND df.completed_at >= ?1 AND df.completed_at < ?2 {extra}",
         one = DF_SURVIVOR_SQL)
 }
-
-/// **The** revenue definition (R-202): PAID invoice totals, non-void, non-archived. The
-/// dashboard hero, its cumulative chart and the brief all read revenue through here, so
-/// the three cannot report different revenue for the same period. Profit has its own
-/// population (`month_profit_sql`) because a deal closes when the goods land, not when
-/// the buyer's money does — that timing difference is real, not a bug.
-///
-/// `window` is the date predicate (`INV_WINDOW_SQL`, or `""` for all time); `join` and
-/// `filters` carry the brief's per-rep restriction, which reaches the rep through the
-/// invoice's client.
-fn paid_revenue_sql(select: &str, join: &str, window: &str, filters: &str) -> String {
-    format!(
-        "SELECT {select} FROM invoices i {join} \
-         WHERE i.status='paid' AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 {window}{filters}")
-}
-
-/// Half-open Central window over `invoices` for `paid_revenue_sql`. `paid_at` is a UTC
-/// instant, so it compares against the window's UTC bounds; rows too old to carry one
-/// fall back to `issue_date`, a calendar date, against the day bounds.
-/// Binds ?1 = `day_lo`, ?2 = `day_hi`, ?3 = `utc_lo`, ?4 = `utc_hi`.
-const INV_WINDOW_SQL: &str =
-    "AND (CASE WHEN COALESCE(i.paid_at,'')<>'' \
-               THEN datetime(i.paid_at) >= datetime(?3) AND datetime(i.paid_at) < datetime(?4) \
-               ELSE i.issue_date >= ?1 AND i.issue_date < ?2 END)";
 
 /// R-313 overhead: bank-ledger `shipping`/`fee` rows netted by direction, minus whatever
 /// is already allocated to a deal (that money is inside the deal's `total_cost`/
@@ -12350,14 +12330,18 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     };
     let win = central_month_window(&this_month);
     let prev_win = central_month_window(&prev_month);
-    let rev_month_sql = paid_revenue_sql("COALESCE(SUM(i.total),0)", "", INV_WINDOW_SQL, "");
+    // R-434 (Jack, 2026-10-02): revenue is the deal's `gross_revenue` on the day the deal
+    // closed - the same deals and dates as profit, so "This month" cannot show profit
+    // with no revenue behind it. Supersedes R-202's paid-invoice revenue.
+    let rev_month_sql = month_profit_sql("COALESCE(SUM(df.gross_revenue),0)", "");
     let rev_of = |w: &CentralWindow| -> f64 {
-        conn.query_row(&rev_month_sql, rusqlite::params![&w.day_lo, &w.day_hi, &w.utc_lo, &w.utc_hi], |r| r.get(0)).unwrap_or(0.0)
+        conn.query_row(&rev_month_sql, rusqlite::params![&w.day_lo, &w.day_hi], |r| r.get(0)).unwrap_or(0.0)
     };
     let revenue_mtd = rev_of(&win);
     let revenue_prev_month = rev_of(&prev_win);
     let revenue_all_time: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0",
+        &format!(
+        "SELECT COALESCE(SUM(df.gross_revenue),0)          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id          WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0            AND {one}", one = DF_SURVIVOR_SQL),
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     // Profit is refund-aware (refunds come off the deal's profit, capped at it) and
@@ -12592,16 +12576,15 @@ pub async fn list_deals_for_supplier(supplier_id: String) -> Result<Vec<Value>, 
 
 /// Daily profit and revenue for one month, for the dashboard's cumulative chart.
 ///
-/// Both series are the hero's own queries with a per-day projection - profit through
-/// `month_profit_sql`, revenue through `month_revenue_sql` - so cumulating them to the
+/// Both series are the hero's own queries with a per-day projection - profit and (R-434)
+/// revenue both through `month_profit_sql` - so cumulating them to the
 /// end of the month lands exactly on `profit_mtd` and `revenue_mtd`. The chart used to
 /// run its own SQL for both: a stale refund rule that could not see refunds booked as
 /// `refund_out` bank allocations, no survivor dedupe, and a "revenue" taken from
 /// `deal_flows.gross_revenue` by closed date rather than from paid invoices by paid
 /// date. Those three differences are the whole reason the card and the line disagreed.
 ///
-/// Profit buckets on `completed_at`, a calendar date. Revenue buckets on `paid_at`, a
-/// UTC instant, shifted to its Central day by `win.tz_shift`.
+/// Both bucket on `completed_at`, a calendar date: the day the deal closed.
 #[tauri::command]
 pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -12615,12 +12598,12 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok()).collect();
 
-    let revenue_sql = format!("{} GROUP BY d ORDER BY d", paid_revenue_sql(
-        "CASE WHEN COALESCE(i.paid_at,'')<>'' THEN date(i.paid_at, ?5) ELSE date(i.issue_date) END AS d, COALESCE(SUM(i.total),0)",
-        "", INV_WINDOW_SQL, ""));
+    // R-434: revenue on the deal's close date, the same rows as profit above.
+    let revenue_sql = format!("{} GROUP BY d ORDER BY d",
+        month_profit_sql("date(df.completed_at) AS d, COALESCE(SUM(df.gross_revenue),0)", ""));
     let mut stmt = conn.prepare(&revenue_sql).map_err(|e| e.to_string())?;
     let revenue_by_day: std::collections::BTreeMap<String, f64> = stmt
-        .query_map(rusqlite::params![&win.day_lo, &win.day_hi, &win.utc_lo, &win.utc_hi, &win.tz_shift],
+        .query_map(rusqlite::params![&win.day_lo, &win.day_hi],
                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok()).collect();
@@ -14928,11 +14911,10 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     // brief's profit above the dashboard card for the same month.
     let np = DF_EFF_PROFIT_SQL;
 
-    // R-202, Jack's call: the brief reports the SAME revenue as the dashboard - paid
-    // invoice totals by paid date, not deal `gross_revenue` by closed date. The two used
-    // to be \$83k apart for a month by definition, on two screens showing one business.
-    // The per-rep filter still applies: a rep is a property of the invoice's CLIENT, so
-    // it reaches invoices by the same join it reached deal flows by.
+    // R-434, Jack's call 2026-10-02 (supersedes R-202's paid invoices): revenue is the
+    // deal's own `gross_revenue` on the day the deal CLOSED, the same deals and dates as
+    // profit beside it, so a month can never show profit with no revenue behind it.
+    // The per-rep filter reaches the client through the invoice, as profit's does.
     // Margins below stay on the deal population (deal profit / that deal's own revenue) -
     // they live under "Profit from deal flows" and a margin is only meaningful when its
     // numerator and denominator come from the same deals.
@@ -14942,20 +14924,14 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     // month leak into "this month".
     let month_win = central_month_window(&now_date.format("%Y-%m").to_string());
     let month_bounds = " AND df.completed_at >= ?1 AND df.completed_at < ?2";
-    let (revenue_this_week, revenue_last_week, revenue_this_month, revenue_all_time) = {
-        let join = if rep_name.is_some() { "JOIN clients c ON c.id=i.client_id" } else { "" };
-        let windowed = paid_revenue_sql("COALESCE(SUM(i.total),0)", join, INV_WINDOW_SQL, &rep_filter);
-        let of = |w: &CentralWindow| -> f64 {
-            conn.query_row(&windowed, rusqlite::params![&w.day_lo, &w.day_hi, &w.utc_lo, &w.utc_hi], |r| r.get(0)).unwrap_or(0.0)
-        };
-        let all_time: f64 = conn.query_row(
-            &paid_revenue_sql("COALESCE(SUM(i.total),0)", join, "", &rep_filter), [], |r| r.get(0)
-        ).unwrap_or(0.0);
-        (of(&central_day_window(ws_date, end_excl_date)),
-         of(&central_day_window(lws_date, ws_date)),
-         of(&month_win),
-         all_time)
+    let rev_q = |bounds: &str| -> String {
+        format!("SELECT COALESCE(SUM(df.gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{bounds}{rep_filter}")
     };
+    let week_bounds = " AND df.completed_at >= ?1 AND df.completed_at < ?2";
+    let revenue_this_week: f64 = conn.query_row(&rev_q(week_bounds), [&week_start, &end_excl], |r| r.get(0)).unwrap_or(0.0);
+    let revenue_last_week: f64 = conn.query_row(&rev_q(week_bounds), [&last_week_start, &week_start], |r| r.get(0)).unwrap_or(0.0);
+    let revenue_this_month: f64 = conn.query_row(&rev_q(month_bounds), [&month_win.day_lo, &month_win.day_hi], |r| r.get(0)).unwrap_or(0.0);
+    let revenue_all_time: f64 = conn.query_row(&rev_q(""), [], |r| r.get(0)).unwrap_or(0.0);
     let profit_this_week: f64 = conn.query_row(
         &format!("SELECT COALESCE(SUM({np}),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &end_excl], |r| r.get(0)
@@ -16475,8 +16451,52 @@ pub async fn cleanup_orphan_allocations() -> Result<i64, String> {
     Ok(rows.len() as i64)
 }
 
+/// R-434, once per workspace: re-date every completed deal to its LAST linked payment,
+/// buyer or supplier (`deal_closed_bank_date`), so deals already on the books follow the
+/// new close rule and their revenue and profit move to that month together. Only the
+/// date column is touched, only where the bank gives a different day, and the dates it
+/// replaces are written to `r434-completed-at-before.json` in the store folder first.
+pub fn redate_completed_deals_r434_once() {
+    const MARKER: &str = "r434_closed_dates_done";
+    if read_setting(MARKER).as_deref() == Some("1") { return; }
+    let changes: Vec<(String, String, String)> = {
+        let conn = match pool().get() { Ok(c) => c, Err(_) => return };
+        let rows: Vec<(String, String)> = match conn.prepare(
+            "SELECT id, COALESCE(completed_at,'') FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0",
+        ) {
+            Ok(mut stmt) => stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map(|it| it.filter_map(|r| r.ok()).collect()).unwrap_or_default(),
+            Err(e) => { tracing::warn!("r434 redate query failed: {}", e); return; }
+        };
+        rows.into_iter().filter_map(|(id, old)| {
+            let new = deal_closed_bank_date(&conn, &id)?;
+            (new.get(..10) != old.get(..10)).then(|| (id, old, new))
+        }).collect()
+    };
+    if !changes.is_empty() {
+        let before: Vec<Value> = changes.iter()
+            .map(|(id, old, new)| json!({"id": id, "completed_at_before": old, "completed_at_after": new})).collect();
+        let path = crate::db::app_data_dir().join("r434-completed-at-before.json");
+        if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&before).unwrap_or_default()) {
+            tracing::warn!("r434 redate: backup write failed, nothing changed: {}", e);
+            return;
+        }
+        for (id, _, new) in &changes {
+            let mut cols = Map::new();
+            cols.insert("completed_at".into(), json!(new));
+            if sync::record_upsert("deal_flows", id, cols).is_err() { continue; }
+            if let Ok(conn) = pool().get() {
+                let _ = conn.execute("UPDATE deal_flows SET completed_at=?1 WHERE id=?2", rusqlite::params![new, id]);
+            }
+        }
+        crate::netsync::push_now();
+    }
+    tracing::info!("r434 redate: {} completed deal(s) moved to their last payment date", changes.len());
+    let _ = write_setting(MARKER, "1");
+}
+
 /// Re-derive EVERY completed deal from its linked bank transactions — recorded
-/// numbers AND completion date (set to the supplier-payment bank date when linked).
+/// numbers AND completion date (its last linked payment, buyer or supplier, R-434).
 /// Powers "Sync completed from bank" so backlogged deals land on the date the money
 /// actually moved, not the day they were entered. Returns how many were processed.
 #[tauri::command]
@@ -26142,5 +26162,51 @@ mod r401_pay_tests {
         put("logistics_pay", r#"{"enabled":false}"#);
         assert_eq!(crate::freight::get_deal_logistics_pay(id).await.unwrap(), Value::Null);
         clear();
+    }
+}
+
+#[cfg(test)]
+mod r434_close_date_tests {
+    use super::*;
+
+    fn pay(deal_id: &str, role: &str, posted_at: &str) {
+        let conn = pool().get().unwrap();
+        let txn = format!("txn_{deal_id}_{role}_{posted_at}");
+        conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, ?2, 100, 'in')", rusqlite::params![txn, posted_at]).unwrap();
+        conn.execute(
+            "INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role) VALUES (?1, ?2, ?3, 100, ?4)",
+            rusqlite::params![format!("al_{txn}"), txn, deal_id, role],
+        ).unwrap();
+    }
+
+    fn closed(deal_id: &str) -> Option<String> {
+        deal_closed_bank_date(&pool().get().unwrap(), deal_id)
+    }
+
+    #[test]
+    fn a_deal_closes_on_its_last_payment_buyer_or_supplier() {
+        let _db = crate::db::init_test_store();
+        // Jack's case: buyer paid the last day of September, supplier the first of October.
+        pay("df-a", "buyer_payment", "2026-09-30");
+        pay("df-a", "supplier_payment", "2026-10-01");
+        assert_eq!(closed("df-a").as_deref(), Some("2026-10-01"));
+        // Supplier paid first: the buyer's payment closes it.
+        pay("df-b", "supplier_payment", "2026-09-02");
+        pay("df-b", "buyer_payment", "2026-09-20");
+        assert_eq!(closed("df-b").as_deref(), Some("2026-09-20"));
+        // A deposit and a balance: the balance.
+        pay("df-c", "buyer_payment", "2026-08-01");
+        pay("df-c", "buyer_payment", "2026-08-15");
+        assert_eq!(closed("df-c").as_deref(), Some("2026-08-15"));
+    }
+
+    #[test]
+    fn a_supplier_payment_alone_does_not_close_a_deal() {
+        let _db = crate::db::init_test_store();
+        pay("df-d", "supplier_payment", "2026-10-01");
+        assert_eq!(closed("df-d"), None);
+        pay("df-e", "shipping", "2026-10-05");
+        pay("df-e", "buyer_payment", "2026-10-02");
+        assert_eq!(closed("df-e").as_deref(), Some("2026-10-02"));
     }
 }

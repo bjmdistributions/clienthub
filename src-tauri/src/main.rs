@@ -473,6 +473,8 @@ fn main() {
             // One-time migration: promote any existing device-local email config to
             // the org-shared default so every admin inherits it. Guarded to run once.
             std::thread::spawn(|| email::migrate_email_config_to_org_once());
+            // R-434: completed deals re-dated to their last payment, buyer or supplier. Once.
+            std::thread::spawn(|| commands::redate_completed_deals_r434_once());
             // Near-real-time inbox monitoring via IMAP IDLE (one watcher per inbox,
             // OS notification on each new lead) + a long safety-net sweep. Replaces
             // the old fixed 5-minute poll.
