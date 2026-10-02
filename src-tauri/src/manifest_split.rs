@@ -3074,11 +3074,21 @@ fn build(path: &str, answers: &HashMap<String, String>, edits: &SplitEdits) -> R
 
 /// One line of the analyzer's breakdown.
 pub(crate) struct BreakdownLine {
+    /// 1-based row on the sheet, so a line can be found in the file.
+    pub(crate) row: usize,
+    pub(crate) desc: String,
     pub(crate) qty: f64,
     pub(crate) retail: f64,
+    /// The sheet's own price for the line (extended), when it has one.
+    pub(crate) sheet: Option<f64>,
     /// (key, name) of its category and brand; None for none.
     pub(crate) category: Option<(String, String)>,
     pub(crate) brand: Option<(String, String)>,
+    /// Whether the category was guessed from the title rather than read off the sheet.
+    pub(crate) guessed: bool,
+    /// The line's UPC/SKU/model and condition cells, blank when the sheet has no such column.
+    pub(crate) code: String,
+    pub(crate) condition: String,
 }
 
 /// What the Manifest analyzer shows for a spreadsheet or CSV: the split's own lines, read
@@ -3100,6 +3110,10 @@ pub(crate) struct Breakdown {
     pub(crate) brands_read: usize,
     pub(crate) left_out: Option<String>,
     pub(crate) notes: Vec<String>,
+    /// R-430: how the sheet prices itself, read the way the split reads it.
+    pub(crate) pricing: SheetPricing,
+    pub(crate) code_col: Option<String>,
+    pub(crate) condition_col: Option<String>,
 }
 
 pub(crate) fn breakdown(path: &str) -> Result<Breakdown> {
@@ -3114,6 +3128,11 @@ pub(crate) fn breakdown(path: &str) -> Result<Breakdown> {
     }
     let head = |j: Option<usize>| j.map(|j| p.t.headers[j].trim().to_string()).filter(|h| !h.is_empty());
     let from_sheet = (0..p.lines.len()).filter(|&i| p.cats[i].is_some() && !p.guessed[i]).count();
+    let find = |words: &[&str]| (0..p.t.headers.len()).find(|&j| hhas(&hwords(&p.t.headers[j]), words));
+    let code_col = find(&["upc", "sku", "asin", "ean", "item #", "item number", "model", "style"]);
+    let condition_col = find(&["condition", "grade"]);
+    let cell = |j: Option<usize>, l: &Line| j.map(|j| p.t.rows[l.row][j].text().trim().to_string()).unwrap_or_default();
+    let pricing = detect_pricing(&p.t, &p.cols, &p.lines, &p.footers);
     Ok(Breakdown {
         format: p.t.format.clone(),
         sheet: p.t.sheet.clone(),
@@ -3125,12 +3144,29 @@ pub(crate) fn breakdown(path: &str) -> Result<Breakdown> {
         category_col: head(p.cols.category),
         brand_col: head(p.cols.brand),
         lines: (0..p.lines.len())
-            .map(|i| BreakdownLine { qty: p.lines[i].qty, retail: p.lines[i].retail, category: p.cats[i].clone(), brand: p.brands[i].clone() })
+            .map(|i| {
+                let l = &p.lines[i];
+                BreakdownLine {
+                    row: p.t.abs_rows[l.row] as usize + 1,
+                    desc: l.desc.clone(),
+                    qty: l.qty,
+                    retail: l.retail,
+                    sheet: l.sheet,
+                    category: p.cats[i].clone(),
+                    brand: p.brands[i].clone(),
+                    guessed: p.guessed[i],
+                    code: cell(code_col, l),
+                    condition: cell(condition_col, l),
+                }
+            })
             .collect(),
         from_sheet,
         brands_read: p.brands_read,
         left_out: p.left_out,
         notes,
+        pricing,
+        code_col: head(code_col),
+        condition_col: head(condition_col),
     })
 }
 

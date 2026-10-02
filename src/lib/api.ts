@@ -2149,20 +2149,43 @@ export interface ManifestDetection {
   category_col: string | null;
   brand_col: string | null;
   price_is_extended: boolean;      // price already includes qty, so it wasn't multiplied
-  note: string | null;             // caveats: AI used, truncated, qty defaulted to 1
+  code_col?: string | null;        // R-430: UPC/SKU/model column
+  condition_col?: string | null;   // R-430: condition/grade column
+  note: string | null;             // caveats: what the reader noticed, qty defaulted to 1
+}
+
+/** R-430: one product line as read. Retail and sheet_price are extended (x units). */
+export interface ManifestLine {
+  row: number;            // 1-based sheet row; 0 when the file has no rows (a PDF)
+  title: string;
+  qty: number;
+  retail: number;
+  sheet_price: number | null;
+  category: string;
+  brand: string | null;
+  guessed: boolean;       // category read from the title, not the sheet
+  code: string;
+  condition: string;
+}
+
+/** How the sheet prices itself. pct = a % of retail, unit = a price per unit, line = per line. */
+export interface ManifestSheetPricing {
+  kind: "pct" | "unit" | "line" | "none";
+  pct: number | null;
+  unit: number | null;
+  evidence: string;
+  total: number | null;
 }
 
 export interface ManifestAnalysis {
   categories: ManifestGroup[];        // by the manifest's category column, else keyword guess
   brands: ManifestGroup[];            // by the manifest's brand column; empty if none
   categories_from_manifest: boolean;  // false = fell back to keyword guess
-  suggested_bid: number;
   total_retail: number;
-  overall_margin_pct: number;
+  overall_margin_pct: number;   // completed deals' average margin: a hint only
   total_items: number;      // number of product line rows analyzed
   total_quantity: number;   // sum of the quantity column — the real unit count
   skipped_rows: number;
-  formula: string;
   detection: ManifestDetection;
   // R-396: how much of the breakdown is guesswork, and what was left out and why.
   uncategorized_lines: number;
@@ -2171,6 +2194,8 @@ export interface ManifestAnalysis {
   brands_from_titles: boolean;
   unpriced_lines: number;
   skipped_note: string | null;
+  lines: ManifestLine[];
+  sheet_pricing: ManifestSheetPricing | null;   // null for a PDF
 }
 
 // ── Manifest split (R-379) ──────────────────────────────────────────────────
@@ -4457,8 +4482,8 @@ export const api = {
 
   // Manifest
   // forceAi re-reads a PDF through Claude when the text-layer heuristic got it wrong.
-  analyzeManifest: (path: string, forceAi?: boolean) =>
-    invoke<ManifestAnalysis>("analyze_manifest", { path, forceAi: forceAi ?? false }),
+  analyzeManifest: (path: string) =>
+    invoke<ManifestAnalysis>("analyze_manifest", { path }),
   manifestSplitPlan: (path: string, answers: Record<string, string>, edits: SplitEdits) =>
     invoke<SplitPlan>("manifest_split_plan", { path, answers, edits }),
   manifestSplitLines: (path: string, answers: Record<string, string>, edits: SplitEdits, key: string) =>

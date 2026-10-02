@@ -11772,9 +11772,8 @@ pub async fn list_portal_links(client_id: Option<String>) -> Result<Vec<PortalLi
 #[tauri::command]
 pub async fn analyze_manifest(
     path: String,
-    force_ai: Option<bool>,
 ) -> Result<crate::manifest::ManifestAnalysis, String> {
-    crate::manifest::analyze(&path, force_ai.unwrap_or(false))
+    crate::manifest::analyze(&path)
         .await
         .map_err(|e| e.to_string())
 }

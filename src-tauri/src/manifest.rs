@@ -15,7 +15,7 @@ pub struct ManifestGroup {
 /// format is worthless if a mis-detected price column is wrong in silence.
 #[derive(Debug, Serialize)]
 pub struct ManifestDetection {
-    /// "csv" | "tsv" | "xlsx" | "pdf" — with " (AI)" appended when Claude read it.
+    /// "csv" | "tsv" | "xlsx" | "pdf".
     pub format: String,
     /// Spreadsheet tab the rows were read from.
     pub sheet: Option<String>,
@@ -32,8 +32,12 @@ pub struct ManifestDetection {
     /// true when the price column holds an already-extended amount, so it was NOT
     /// multiplied by the quantity again.
     pub price_is_extended: bool,
-    /// Honest caveats: AI extraction used, document longer than the chunk ceiling,
-    /// PDF text layer read heuristically.
+    /// R-430: the UPC/SKU/model and condition columns, when the sheet has them.
+    #[serde(default)]
+    pub code_col: Option<String>,
+    #[serde(default)]
+    pub condition_col: Option<String>,
+    /// Honest caveats: PDF text layer read heuristically, what the reader noticed.
     pub note: Option<String>,
 }
 
@@ -48,15 +52,14 @@ pub struct ManifestAnalysis {
     /// true when `categories` came from a category column ON the manifest; false
     /// when it fell back to the keyword guess.
     pub categories_from_manifest: bool,
-    pub suggested_bid: f64,
     pub total_retail: f64,
+    /// Average margin of completed deals: shown only as a hint beside Jack's own target.
     pub overall_margin_pct: f64,
     /// Number of manifest LINE ROWS analyzed (one per product line).
     pub total_items: usize,
     /// Sum of the quantity column across all rows — the real unit count.
     pub total_quantity: f64,
     pub skipped_rows: usize,
-    pub formula: String,
     pub detection: ManifestDetection,
     /// R-396: lines no category could be found for, and their retail, so the screen can
     /// say how much of the breakdown is guesswork.
@@ -77,6 +80,29 @@ pub struct ManifestAnalysis {
     /// "N skipped (no price)" that was wrong for every reason but one.
     #[serde(default)]
     pub skipped_note: Option<String>,
+    /// R-430: every line as read, so the screen can show what is actually in the load.
+    #[serde(default)]
+    pub lines: Vec<ManifestLine>,
+    /// How the sheet prices itself (a % of retail, a price per unit, a price per line).
+    /// None for a PDF.
+    #[serde(default)]
+    pub sheet_pricing: Option<crate::manifest_split::SheetPricing>,
+}
+
+/// One product line as read (R-430). Retail and the sheet's price are extended (x units).
+#[derive(Debug, Serialize)]
+pub struct ManifestLine {
+    pub row: usize,
+    pub title: String,
+    pub qty: f64,
+    pub retail: f64,
+    pub sheet_price: Option<f64>,
+    pub category: String,
+    pub brand: Option<String>,
+    /// The category was guessed from the title, not read off the sheet.
+    pub guessed: bool,
+    pub code: String,
+    pub condition: String,
 }
 
 /// A manifest reduced to plain string cells, whatever it arrived as. CSV, TSV,
@@ -838,8 +864,9 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
     let mut total_quantity = 0.0f64;
     let mut total_retail = 0.0f64;
     let mut skipped_rows = 0usize;
+    let mut lines: Vec<ManifestLine> = Vec::new();
 
-    for record in grid.rows.iter().skip(header_idx + 1) {
+    for (ri, record) in grid.rows.iter().enumerate().skip(header_idx + 1) {
         let cell = |i: usize| record.get(i).map(|s| s.trim()).unwrap_or("");
 
         let desc_raw = cell(desc_idx);
@@ -877,6 +904,18 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
             guess_category(&desc).to_string()
         };
         let cat_key = crate::manifest_split::category_group_key(&cat);
+        lines.push(ManifestLine {
+            row: if grid.header_in_file { ri + 1 } else { 0 },
+            title: desc_raw.to_string(),
+            qty,
+            retail,
+            sheet_price: None,
+            category: cat.clone(),
+            brand: brand_idx.map(|i| cell(i).to_string()).filter(|b| crate::manifest_split::brand_group_key(b).is_some()),
+            guessed: category_idx.is_none(),
+            code: String::new(),
+            condition: String::new(),
+        });
         *cat_names.entry(cat_key.clone()).or_default().entry(cat.clone()).or_insert(0) += 1;
         let entry = cat_data
             .entry(cat_key)
@@ -917,8 +956,6 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         );
     }
 
-    let suggested_bid = (total_retail * overall_margin_pct / 100.0 * 0.85 * 100.0).round() / 100.0;
-
     let sort_desc = |mut v: Vec<ManifestGroup>| -> Vec<ManifestGroup> {
         v.sort_by(|a, b| b.total_retail.partial_cmp(&a.total_retail).unwrap_or(std::cmp::Ordering::Equal));
         v
@@ -935,10 +972,6 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
     }
     let categories = sort_desc(cat_data.into_values().collect());
     let brands = sort_desc(brand_data.into_values().collect());
-
-    let margin_source = if overall_margin_pct == 30.0 { "(default, no completed deals yet)" } else { "" };
-    let formula = format!("Total retail ${:.0} × {:.0}% margin {} × 0.85 buffer = suggested bid ${:.0}",
-        total_retail, overall_margin_pct, margin_source, suggested_bid);
 
     // The read-out reports names, not indexes, so a wrong guess is visible.
     let label = |i: Option<usize>| -> Option<String> {
@@ -973,14 +1006,16 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         category_col: label(category_idx),
         brand_col: label(brand_idx),
         price_is_extended,
+        code_col: None,
+        condition_col: None,
         note,
     };
 
     Ok(ManifestAnalysis {
-        categories, brands, categories_from_manifest, suggested_bid, total_retail,
-        overall_margin_pct, total_items, total_quantity, skipped_rows, formula, detection,
+        categories, brands, categories_from_manifest, total_retail,
+        overall_margin_pct, total_items, total_quantity, skipped_rows, detection,
         uncategorized_lines: 0, uncategorized_retail: 0.0, categories_guessed: 0, brands_from_titles: false,
-        unpriced_lines: 0, skipped_note: None,
+        unpriced_lines: 0, skipped_note: None, lines, sheet_pricing: None,
     })
 }
 
@@ -1021,24 +1056,30 @@ pub(crate) fn from_breakdown(b: crate::manifest_split::Breakdown, overall_margin
         v.sort_by(|a, b| b.total_retail.partial_cmp(&a.total_retail).unwrap_or(std::cmp::Ordering::Equal));
         v
     };
-    let suggested_bid = (total_retail * overall_margin_pct / 100.0 * 0.85 * 100.0).round() / 100.0;
-    let margin_source = if overall_margin_pct == 30.0 { "(default, no completed deals yet)" } else { "" };
-    let formula = format!("Total retail ${:.0} × {:.0}% margin {} × 0.85 buffer = suggested bid ${:.0}",
-        total_retail, overall_margin_pct, margin_source, suggested_bid);
     let total_items = b.lines.len();
+    let lines: Vec<ManifestLine> = b.lines.iter().map(|l| ManifestLine {
+        row: l.row,
+        title: l.desc.clone(),
+        qty: l.qty,
+        retail: l.retail,
+        sheet_price: l.sheet,
+        category: l.category.as_ref().map(|c| c.1.clone()).unwrap_or_else(|| "Uncategorized".into()),
+        brand: l.brand.as_ref().map(|b| b.1.clone()),
+        guessed: l.guessed,
+        code: l.code.clone(),
+        condition: l.condition.clone(),
+    }).collect();
     let categories_guessed = total_items - b.from_sheet - uncategorized_lines;
     let note = if b.notes.is_empty() { None } else { Some(b.notes.join(" ")) };
     Ok(ManifestAnalysis {
         categories: sort_desc(cat_data.into_values().collect()),
         brands: sort_desc(brand_data.into_values().collect()),
         categories_from_manifest: b.category_col.is_some() && b.from_sheet * 2 >= total_items,
-        suggested_bid,
         total_retail,
         overall_margin_pct,
         total_items,
         total_quantity,
         skipped_rows: 0,
-        formula,
         detection: ManifestDetection {
             format: b.format,
             sheet: b.sheet,
@@ -1049,6 +1090,8 @@ pub(crate) fn from_breakdown(b: crate::manifest_split::Breakdown, overall_margin
             category_col: b.category_col,
             brand_col: b.brand_col,
             price_is_extended: b.price_is_extended,
+            code_col: b.code_col,
+            condition_col: b.condition_col,
             note,
         },
         uncategorized_lines,
@@ -1056,148 +1099,56 @@ pub(crate) fn from_breakdown(b: crate::manifest_split::Breakdown, overall_margin
         categories_guessed,
         brands_from_titles: b.brands_read > 0,
         unpriced_lines,
+        lines,
+        sheet_pricing: Some(b.pricing),
         skipped_note: b.left_out,
     })
 }
 
-// ── PDF: text layer first, Claude when the layout defeats it ────────────────
+// ── PDF: the text layer, never a guess ─────────────────────────────────────
 
-async fn analyze_pdf(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
+async fn analyze_pdf(path: &str) -> Result<ManifestAnalysis> {
     let text = pdf_extract::extract_text(path).context("read the text out of that PDF")?;
 
     // A scan or a photo has no text layer. Say so — returning zero rows would look
     // like an empty manifest, and OCR is not something this path can do.
     if text.chars().filter(|c| c.is_alphanumeric()).count() < 40 {
         anyhow::bail!(
-            "This PDF has no text layer. It's a scan or a photo of a manifest, so there \
-             are no rows to read out of it. Send the spreadsheet or CSV version, or use \
-             Paste a load with the image instead."
+            "This PDF has no text layer. It's a scan or a photo of a manifest, so there              are no rows to read out of it. Send the spreadsheet or CSV version, or use              Paste a load with the image instead."
         );
     }
 
-    if !force_ai {
-        let mut rows = pdf_rows(&text);
-        if rows.len() >= 3 {
-            let mut all = vec![synthetic_header(false)];
-            all.append(&mut rows);
-            let grid = Grid {
-                rows: all,
-                format: "pdf".into(),
-                sheet: None,
-                note: Some("Read from the PDF's own text layer. Check the units and retail against the document.".into()),
-                header_in_file: false,
-            };
-            // A layout the heuristic mis-reads produces a grid that analyses fine but
-            // says very little, so fall through to the AI path rather than trusting it.
-            if let Ok(a) = analyze_grid(grid) {
-                if a.total_items >= 3 && a.total_retail > 0.0 {
-                    return Ok(a);
-                }
+    // R-430: no AI fallback. A layout the text-layer reading cannot hold is said, not
+    // handed to a model that invents lines to fill the gap.
+    let mut rows = pdf_rows(&text);
+    if rows.len() >= 3 {
+        let mut all = vec![synthetic_header(false)];
+        all.append(&mut rows);
+        let grid = Grid {
+            rows: all,
+            format: "pdf".into(),
+            sheet: None,
+            note: Some("Read from the PDF's own text layer. Check the units and retail against the document.".into()),
+            header_in_file: false,
+        };
+        if let Ok(a) = analyze_grid(grid) {
+            if a.total_items >= 3 && a.total_retail > 0.0 {
+                return Ok(a);
             }
         }
     }
-
-    analyze_via_ai(&text, "pdf (AI)", None).await
+    anyhow::bail!(
+        "Couldn't read product lines out of this PDF's layout. Ask the supplier for the          spreadsheet or CSV version: every figure on this screen comes from the file, so          nothing is filled in by guesswork."
+    )
 }
 
-/// Last resort for any format: have Claude read the raw text and return product
-/// lines. Used when a PDF's layout defeats the heuristic, and when a spreadsheet
-/// or CSV defeats both the header scan and column inference.
-async fn analyze_via_ai(text: &str, format_label: &str, sheet: Option<String>) -> Result<ManifestAnalysis> {
-    let (ai_rows, truncated) = crate::ai::extract_manifest(text)
-        .await
-        .map_err(|e| anyhow::anyhow!("Couldn't read product lines out of this document's layout. {}", e))?;
-    if ai_rows.is_empty() {
-        anyhow::bail!("Read the document's text but found no product lines in it.");
-    }
-
-    let field = |v: &serde_json::Value, k: &str| -> String {
-        match v.get(k) {
-            Some(serde_json::Value::String(s)) => s.trim().to_string(),
-            Some(serde_json::Value::Number(n)) => n.to_string(),
-            _ => String::new(),
-        }
-    };
-    let mut rows = vec![synthetic_header(true)];
-    for r in &ai_rows {
-        let desc = field(r, "description");
-        if desc.is_empty() {
-            continue;
-        }
-        let qty = field(r, "quantity");
-        rows.push(vec![
-            desc,
-            if qty.is_empty() { "1".to_string() } else { qty },
-            field(r, "price"),
-            field(r, "category"),
-            field(r, "brand"),
-        ]);
-    }
-
-    let mut note = format!("Read by AI from the document's text: {} lines. Spot-check the totals against the document.", rows.len() - 1);
-    if truncated {
-        note.push_str(" The document was longer than one pass could cover, so the tail was NOT read. Totals are incomplete.");
-    }
-    let mut a = analyze_grid(Grid {
-        rows, format: format_label.to_string(), sheet, note: Some(note), header_in_file: false,
-    })?;
-    // The AI is told to return a category only when the manifest states one, so an
-    // empty column means the manifest had none — fall back to the keyword guess.
-    if a.categories.len() == 1 && a.categories[0].name == "Uncategorized" {
-        a.categories_from_manifest = false;
-    }
-    Ok(a)
-}
-
-/// Spreadsheets and delimited text: the grid path first (header scan, then column
-/// inference), and Claude as the last resort — an unrecognizable layout gets a
-/// breakdown instead of a refusal. `force_ai` skips straight to the AI read.
-async fn analyze_tabular(grid: Grid, force_ai: bool) -> Result<ManifestAnalysis> {
-    let flat: String = grid.rows.iter().map(|r| r.join("\t")).collect::<Vec<_>>().join("\n");
-    let label = format!("{} (AI)", grid.format);
-    let sheet = grid.sheet.clone();
-    if force_ai {
-        return analyze_via_ai(&flat, &label, sheet).await;
-    }
-    let err = match analyze_grid(grid) {
-        Ok(a) => return Ok(a),
-        Err(e) => e,
-    };
-    analyze_via_ai(&flat, &label, sheet)
-        .await
-        .map_err(|ai| anyhow::anyhow!("{} The AI fallback couldn't read it either: {}", err, ai))
-}
-
-/// Analyze a manifest in whatever form it arrived: CSV, TSV, plain text, Excel, or
-/// PDF. `force_ai` re-reads the file through Claude when the heuristics got it wrong.
-pub async fn analyze(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
+/// Analyze a manifest in whatever form it arrived: CSV, TSV, plain text, Excel, or PDF.
+pub async fn analyze(path: &str) -> Result<ManifestAnalysis> {
     match extension(path).as_str() {
-        "pdf" => analyze_pdf(path, force_ai).await,
+        "pdf" => analyze_pdf(path).await,
         // Excel, CSV, TSV, text: read the way the split reads it (R-396).
-        _ => analyze_sheet(path, force_ai).await,
+        _ => crate::manifest_split::breakdown(path).and_then(|b| from_breakdown(b, avg_completed_margin())),
     }
-}
-
-/// A spreadsheet or CSV: the split's own reading of it, so the breakdown and the split
-/// agree on every line (R-396). Claude only when asked, or when that reading fails.
-async fn analyze_sheet(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
-    let grid = || match extension(path).as_str() {
-        "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" => grid_from_excel(path),
-        _ => grid_from_delimited(path),
-    };
-    if force_ai {
-        return analyze_tabular(grid()?, true).await;
-    }
-    let err = match crate::manifest_split::breakdown(path).and_then(|b| from_breakdown(b, avg_completed_margin())) {
-        Ok(a) => return Ok(a),
-        Err(e) => e,
-    };
-    let g = grid()?;
-    let flat: String = g.rows.iter().map(|r| r.join("\t")).collect::<Vec<_>>().join("\n");
-    let label = format!("{} (AI)", g.format);
-    analyze_via_ai(&flat, &label, g.sheet.clone())
-        .await
-        .map_err(|ai| anyhow::anyhow!("{} The AI fallback couldn't read it either: {}", err, ai))
 }
 
 #[cfg(test)]
