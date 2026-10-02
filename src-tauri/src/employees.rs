@@ -533,6 +533,34 @@ pub fn switch_workspace_restart(app: tauri::AppHandle) {
     app.restart();
 }
 
+/// R-433: the sign-in that switched workspaces is carried across the restart, so the
+/// account is not typed in twice. App-local encrypted store (outside every workspace
+/// store, so it survives the switch), read once, and void after two minutes.
+const K_SWITCH_LOGIN: &str = "pending_workspace_switch_login";
+const SWITCH_LOGIN_TTL_SECS: i64 = 120;
+
+#[tauri::command]
+pub fn remember_switch_login(email: String, password: String) -> Result<(), String> {
+    let v = json!({ "email": email, "password": password, "at": chrono::Utc::now().timestamp() });
+    crate::secret_store::put(K_SWITCH_LOGIN, &v.to_string()).map_err(|e| e.to_string())
+}
+
+/// Finish the sign-in remembered before the restart. None when there is nothing to
+/// finish (the normal launch), so the sign-in screen shows as usual.
+#[tauri::command]
+pub async fn resume_switch_login() -> Result<Option<Me>, String> {
+    let Some(raw) = crate::secret_store::get(K_SWITCH_LOGIN) else { return Ok(None) };
+    let _ = crate::secret_store::remove(K_SWITCH_LOGIN);
+    let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    if chrono::Utc::now().timestamp() - v["at"].as_i64().unwrap_or(0) > SWITCH_LOGIN_TTL_SECS {
+        return Ok(None);
+    }
+    let email = v["email"].as_str().unwrap_or_default().to_string();
+    let password = v["password"].as_str().unwrap_or_default().to_string();
+    if email.is_empty() || password.is_empty() { return Ok(None); }
+    login(email, password).await.map(Some)
+}
+
 /// Whether the active local store already belongs to a workspace, and which one.
 /// Lets the UI reason about workspace switches. `store_org` is empty on a brand-new
 /// store no account has claimed yet.

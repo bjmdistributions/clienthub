@@ -755,6 +755,8 @@ fn main() {
             employees::employee_login,
             employees::login,
             employees::switch_workspace_restart,
+            employees::remember_switch_login,
+            employees::resume_switch_login,
             employees::active_workspace,
             employees::list_staff,
             employees::update_staff,

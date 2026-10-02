@@ -3611,6 +3611,9 @@ export const api = {
   // for a website-created account on a fresh device). See employees::login.
   login: (email: string, password: string) =>
     invoke<Me>("login", { email, password }),
+  rememberSwitchLogin: (email: string, password: string) =>
+    invoke<void>("remember_switch_login", { email, password }),
+  resumeSwitchLogin: () => invoke<Me | null>("resume_switch_login"),
   // Logistics (R-400)
   logistics: {
     /** `includeDone` also returns delivered-and-paid and cancelled bookings. `dealFlowId` is

@@ -66,6 +66,22 @@ export default function AuthView({
     return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
   }, []);
 
+  // R-433: a workspace switch restarted the app; finish the sign-in it carried over.
+  useEffect(() => {
+    setBusy(true);
+    const restoreTimer = setTimeout(() => setRestoring(true), 900);
+    api.resumeSwitchLogin()
+      .then((me) => {
+        clearTimeout(restoreTimer);
+        if (me) onAuthed(me); else { setBusy(false); setRestoring(false); }
+      })
+      .catch((e: any) => {
+        clearTimeout(restoreTimer);
+        setError(typeof e === "string" ? e : (e?.message || "Something went wrong"));
+        setBusy(false); setRestoring(false);
+      });
+  }, []);
+
   const submit = async () => {
     if (!email.trim() || !password) return;
     setError(null);
@@ -83,6 +99,8 @@ export default function AuthView({
       // Different-workspace credentials: confirm, then wipe + restart into it.
       if (msg.startsWith(SWITCH_PREFIX)) {
         if (confirm(`These credentials belong to a different workspace. Switch to it now? Your current workspace stays intact and separate, so you can switch back anytime by signing in with its email. The app will restart.`)) {
+          // R-433: finish this sign-in after the restart instead of asking for it again.
+          await api.rememberSwitchLogin(email.trim(), password).catch(() => {});
           try { const { relaunch } = await import("@tauri-apps/plugin-process"); await relaunch(); return; }
           catch { /* fall through to reset busy state */ }
         }
