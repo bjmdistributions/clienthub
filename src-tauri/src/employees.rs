@@ -431,9 +431,10 @@ pub async fn login(email: String, password: String) -> Result<Me, String> {
 
     if let Some(store_org) = crate::db::active_store_org() {
         if !org_id.is_empty() && org_id != store_org {
-            // Different workspace than the one occupying this store → switch stores
-            // and restart. The current store's data is left completely untouched.
-            crate::db::set_active_store_for_org(&org_id).map_err(|e| e.to_string())?;
+            // Different workspace than the one occupying this store → ask first. The
+            // store pointer is written only once the user says yes
+            // (`confirm_workspace_switch`), so Cancel leaves this device as it was.
+            *PENDING_SWITCH_ORG.lock().unwrap_or_else(|e| e.into_inner()) = Some(org_id.clone());
             return Err(format!("__SWITCH_WORKSPACE__:{}", org_id));
         }
     }
@@ -539,10 +540,21 @@ pub fn switch_workspace_restart(app: tauri::AppHandle) {
 const K_SWITCH_LOGIN: &str = "pending_workspace_switch_login";
 const SWITCH_LOGIN_TTL_SECS: i64 = 120;
 
+/// The workspace the last `login` found these credentials belong to, held in memory
+/// until the user answers the switch prompt. The org comes from the server probe,
+/// never from the front-end.
+static PENDING_SWITCH_ORG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The user said yes to switching: point this device at that workspace's store and
+/// remember the sign-in for after the restart.
 #[tauri::command]
-pub fn remember_switch_login(email: String, password: String) -> Result<(), String> {
+pub fn confirm_workspace_switch(email: String, password: String) -> Result<(), String> {
+    let org_id = PENDING_SWITCH_ORG.lock().unwrap_or_else(|e| e.into_inner()).take()
+        .ok_or("Sign in again to switch workspace.")?;
+    crate::db::set_active_store_for_org(&org_id).map_err(|e| e.to_string())?;
     let v = json!({ "email": email, "password": password, "at": chrono::Utc::now().timestamp() });
-    crate::secret_store::put(K_SWITCH_LOGIN, &v.to_string()).map_err(|e| e.to_string())
+    let _ = crate::secret_store::put(K_SWITCH_LOGIN, &v.to_string());
+    Ok(())
 }
 
 /// Finish the sign-in remembered before the restart. None when there is nothing to

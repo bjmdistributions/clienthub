@@ -99,10 +99,13 @@ export default function AuthView({
       // Different-workspace credentials: confirm, then wipe + restart into it.
       if (msg.startsWith(SWITCH_PREFIX)) {
         if (confirm(`These credentials belong to a different workspace. Switch to it now? Your current workspace stays intact and separate, so you can switch back anytime by signing in with its email. The app will restart.`)) {
-          // R-433: finish this sign-in after the restart instead of asking for it again.
-          await api.rememberSwitchLogin(email.trim(), password).catch(() => {});
-          try { const { relaunch } = await import("@tauri-apps/plugin-process"); await relaunch(); return; }
-          catch { /* fall through to reset busy state */ }
+          // R-433: the switch is written only now, after Yes, and this sign-in is
+          // finished after the restart instead of being asked for again.
+          try {
+            await api.confirmWorkspaceSwitch(email.trim(), password);
+            const { relaunch } = await import("@tauri-apps/plugin-process"); await relaunch(); return;
+          }
+          catch (err: any) { setError(typeof err === "string" ? err : (err?.message || "Couldn't switch workspace")); }
         }
         setBusy(false); setRestoring(false);
         return;
