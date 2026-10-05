@@ -479,6 +479,8 @@ fn main() {
             std::thread::spawn(|| email::migrate_email_config_to_org_once());
             // R-434: completed deals re-dated to their last payment, buyer or supplier. Once.
             std::thread::spawn(|| commands::redate_completed_deals_r434_once());
+            // R-444: deals with supplier money back linked but no supplier bank link, re-derived once.
+            std::thread::spawn(|| commands::resync_supplier_back_deals_r444_once());
             // Near-real-time inbox monitoring via IMAP IDLE (one watcher per inbox,
             // OS notification on each new lead) + a long safety-net sweep. Replaces
             // the old fixed 5-minute poll.
@@ -1039,6 +1041,7 @@ fn main() {
             get_payables_aging,
             get_analytics_range,
             analytics_reconciliation,
+            analytics_refunds,
             analytics_labels,
             list_deal_labels,
             set_deal_labels,
