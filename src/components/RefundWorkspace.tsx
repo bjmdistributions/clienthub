@@ -334,6 +334,11 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
       .filter((p) => !p.kept && (p.category || "supplier") === "supplier" && !isResoldLine(p))
       .reduce((s, p) => s + (Number(p.amount) || 0), 0);
     if (theirs > 0.005 && !confirm(`${resellTo.invoice_number || "That deal"} already has ${fmtAmount(theirs)} of goods cost. If that is these same goods, adding ${fmtAmount(pickedTotal)} there counts them twice; remove that cost first. Continue anyway?`)) return;
+    // A completed deal's cost follows its bank payments once it has any, so a typed refund
+    // moved beside bank ones would not count there.
+    const picked = refunds.filter((r) => resellPicked.includes(r.id));
+    const typed = picked.filter((r) => !r.bank_txn_id).reduce((s, r) => s + r.amount, 0);
+    if (typed > 0.005 && picked.some((r) => r.bank_txn_id) && !confirm(`${fmtAmount(typed)} of what you ticked was typed, not linked to a bank payment. Once ${resellTo.invoice_number || "the new deal"} is complete its cost follows its bank payments, so that ${fmtAmount(typed)} would not count there. Link it to its bank payment first, or leave it out. Continue anyway?`)) return;
     run(async () => {
       const r = await api.moveResoldRefunds(dealFlowId, resellTo.id, resellPicked);
       toast(`${fmtAmount(r.moved)} of refunds is now the supplier cost of ${resellTo.invoice_number || "the new deal"}`
