@@ -6319,7 +6319,7 @@ fn resold_move_of_line(d: &DealFlow, line: &SupplierPayment) -> Option<(String, 
 /// what `undo_resold_cost` takes back. The refund itself (owed, payments, closed) is the
 /// buyer's money on the refunded deal and is not touched.
 #[tauri::command]
-pub async fn move_resold_cost(from_id: String, to_id: String, amount: f64) -> Result<Value, String> {
+pub async fn move_resold_cost(from_id: String, to_id: String, amount: f64, alloc_ids: Option<Vec<String>>) -> Result<Value, String> {
     let amt = r2(amount);
     if from_id == to_id { return Err("Pick the new buyer's deal, not this one.".into()); }
     if amt <= 0.0 { return Err("Enter the cost of what was resold.".into()); }
@@ -6351,6 +6351,26 @@ pub async fn move_resold_cost(from_id: String, to_id: String, amount: f64) -> Re
         v
     };
     let linked: f64 = allocs.iter().map(|a| a.2).sum();
+    // R-443: which supplier payments paid for the goods that moved is the user's to say (it used
+    // to take the largest first, and took the wrong one). The bank-paid part of the move goes
+    // with the payments ticked, in the order ticked; a caller that names none (build 6) keeps
+    // the largest-first rule.
+    let bank_part = r2((amt - (goods - linked).max(0.0)).max(0.0));
+    let allocs = match &alloc_ids {
+        None => allocs,
+        Some(ids) => {
+            let mut chosen: Vec<(String, String, f64, String, String, String)> = Vec::new();
+            for id in ids {
+                let a = allocs.iter().find(|a| &a.0 == id).ok_or("That supplier payment is not linked to this deal.")?;
+                if !chosen.iter().any(|c| c.0 == a.0) { chosen.push(a.clone()); }
+            }
+            let ticked: f64 = chosen.iter().map(|a| a.2).sum();
+            if bank_part > 0.005 && ticked < bank_part - 0.005 {
+                return Err(format!("{:.2} of this cost was paid from the bank. Tick the supplier payments that paid for these goods, adding up to at least that.", bank_part));
+            }
+            chosen
+        }
+    };
     let flagged_paid: f64 = from.supplier_payments.iter().filter(|p| is_goods(p) && p.paid).map(|p| p.amount).sum();
     let unpaid_goods = r2((goods - flagged_paid.max(linked)).max(0.0));
     let x_unpaid = r2(amt.min(unpaid_goods));
@@ -6687,6 +6707,7 @@ fn live_resold_kind(d: &DealFlow, refunds: bool) -> Option<String> {
 
 /// R-442: shown when the ticked refunds row shares its bank payment with another refund on the
 /// deal and no link of that payment matches its amount (identical on the server).
+#[cfg(test)]
 const SHARED_REFUND_LINK: &str =
     "That refund shares its bank payment with another refund on this deal. Unlink it and link it again on its own, then try again.";
 
@@ -6694,6 +6715,7 @@ const SHARED_REFUND_LINK: &str =
 /// paid from the bank with `bank_txn_id`) or a bare `refund_out` allocation booked from Financials.
 const REFUND_ROW_COLS: &str = "id, org_id, deal_flow_id, client_id, amount, method, source, source_supplier_ref, keep_rep_cut, reason, refunded_at, created_by, created_at, updated_at, bank_txn_id";
 
+#[cfg(test)]
 fn refund_row_json(conn: &rusqlite::Connection, id: &str) -> Option<Value> {
     conn.query_row(&format!("SELECT {REFUND_ROW_COLS} FROM refunds WHERE id=?1"), [id], |r| Ok(json!({
         "id": r.get::<_, String>(0)?, "org_id": r.get::<_, Option<String>>(1)?, "deal_flow_id": r.get::<_, String>(2)?,
@@ -6705,6 +6727,12 @@ fn refund_row_json(conn: &rusqlite::Connection, id: &str) -> Option<Value> {
     }))).ok()
 }
 
+/// R-443: RETIRED from every screen. A refund cancels the first sale; it is not the price of the
+/// goods, so making it the new deal's cost put the first sale's markup back as profit in its
+/// month and the same amount as extra cost in the new deal's (the totals agreed, the months did
+/// not). The cost move, with the supplier payment the user picks, is the one way now. Kept for
+/// the tests of `undo_resold_refunds`, which still takes back a buy-back made while it shipped.
+///
 /// R-442: goods the first buyer handed back, bought back with refund payments, and sold again on
 /// another deal. Jack: "the two refund payments i selected in the refund for the original deal
 /// now need to be the supplier payment in the new deal where i resold the items at a loss". The
@@ -6718,8 +6746,8 @@ fn refund_row_json(conn: &rusqlite::Connection, id: &str) -> Option<Value> {
 ///   the undo puts it back exactly);
 /// - the first deal's refund owed comes down by what moved (never below 0).
 /// Both deals record the move (`kind: "refunds"`), and Undo takes it back.
-#[tauri::command]
-pub async fn move_resold_refunds(from_id: String, to_id: String, refund_ids: Vec<String>) -> Result<Value, String> {
+#[cfg(test)]
+pub(crate) async fn move_resold_refunds(from_id: String, to_id: String, refund_ids: Vec<String>) -> Result<Value, String> {
     if from_id == to_id { return Err("Pick the new buyer's deal, not this one.".into()); }
     if refund_ids.is_empty() { return Err("Tick the refund payments that bought the goods back.".into()); }
     let from = read_df(&from_id)?;
@@ -27281,7 +27309,7 @@ mod r435_resold_tests {
         assert_eq!(books(&a), (0.0, 8000.0, -8000.0));
         assert_eq!(books(&b), (9000.0, 0.0, 9000.0));
 
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
 
         // A nets to nothing; B carries the real deal; the total is unchanged.
         assert_eq!(books(&a), (0.0, 0.0, 0.0));
@@ -27304,7 +27332,7 @@ mod r435_resold_tests {
         link(&b, "pb_in", "buyer_payment", 6000.0);
         complete_deal_flow(b.clone(), None, None, None, None).await.unwrap();
 
-        move_resold_cost(a.clone(), b.clone(), 5000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 5000.0, None).await.unwrap();
 
         assert_eq!(books(&a).1, 3000.0);
         assert_eq!(books(&b).1, 5000.0);
@@ -27312,7 +27340,7 @@ mod r435_resold_tests {
             "SELECT SUM(amount) FROM bank_allocation WHERE bank_txn_id='txn_r435_pa_sup'", [], |r| r.get(0)).unwrap();
         assert_eq!(total, 8000.0);
         // More than the deal's goods cost cannot move.
-        assert!(move_resold_cost(a.clone(), b.clone(), 3000.01).await.is_err());
+        assert!(move_resold_cost(a.clone(), b.clone(), 3000.01, None).await.is_err());
     }
 }
 
@@ -27383,7 +27411,7 @@ mod r438_refund_close_tests {
     async fn after_a_resold_move_the_refunded_deal_reconciles_and_its_refund_closes() {
         let _db = crate::db::init_test_store();
         let (a, b) = a_and_b("c").await;
-        let r = move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        let r = move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         assert_eq!(r["moved_bank"], json!(8000.0));
         assert_eq!(r["refund_remaining"], json!(0.0));
         // A: its supplier leg is on B now, so it reads reconciled, not "supplier incomplete".
@@ -27419,7 +27447,7 @@ mod r438_refund_close_tests {
     async fn undo_takes_the_move_back_and_keeps_the_record() {
         let _db = crate::db::init_test_store();
         let (a, b) = a_and_b("u").await;
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         assert_eq!((cost(&a), cost(&b)), (0.0, 8000.0));
         let at = at_of(&a);
         undo_resold_cost(a.clone(), b.clone(), at.clone()).await.unwrap();
@@ -27440,7 +27468,7 @@ mod r438_refund_close_tests {
     async fn a_move_made_before_r438_can_still_be_undone() {
         let _db = crate::db::init_test_store();
         let (a, b) = a_and_b("l").await;
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         // Strip what R-438 records, leaving what the first version wrote.
         for (id, key) in [(&a, "resold_to"), (&b, "resold_from")] {
             let mut m = deal_metadata(&read_df(id).unwrap());
@@ -27461,7 +27489,7 @@ mod r438_refund_close_tests {
         let _db = crate::db::init_test_store();
         let a = deal("pa", 10000.0, vec![line(8000.0, false)], "payment_received");
         let b = deal("pb", 9000.0, vec![], "payment_received");
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         assert_eq!(read_df(&a).unwrap().supplier_owed, 0.0);
         assert_eq!(read_df(&b).unwrap().supplier_owed, 8000.0);
     }
@@ -27471,7 +27499,7 @@ mod r438_refund_close_tests {
         let _db = crate::db::init_test_store();
         let a = deal("ga", 10000.0, vec![line(8000.0, true)], "supplier_paid");
         let b = deal("gb", 9000.0, vec![], "supplier_paid");
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         let pid = read_df(&b).unwrap().supplier_payments[0].id.clone();
         assert_eq!(set_supplier_payment_kept(b.clone(), pid.clone(), true).await.unwrap_err(), RESOLD_LINE_LOCKED);
         // Removing either half undoes the whole move (the App Store phone has Remove and no Undo).
@@ -27544,7 +27572,7 @@ mod r438_review_tests {
         link(&a, "ka_in", "buyer_payment", 10000.0);
         let b = deal("kb", 9000.0, vec![], "payment_received");
         link(&b, "kb_in", "buyer_payment", 9000.0);
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         complete_deal_flow(b.clone(), None, None, None, None).await.unwrap();
         assert!(has_live_resold(read_df(&b).unwrap().metadata.as_deref().unwrap(), "resold_from"));
         complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
@@ -27574,7 +27602,7 @@ mod r438_review_tests {
         link(&a, "bp_sup", "supplier_payment", 8000.0);
         complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
         let b = deal("bpb", 9000.0, vec![], "payment_received");
-        let r = move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        let r = move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         assert_eq!(r["moved_bank"], json!(8000.0));
         assert_eq!(read_df(&b).unwrap().supplier_owed, 0.0);
         assert!(payables_of(&b).await.is_empty());
@@ -27587,7 +27615,7 @@ mod r438_review_tests {
         let a = deal("mx", 10000.0, vec![line(5000.0, true, "X"), line(3000.0, false, "X")], "payment_received");
         link(&a, "mx_sup", "supplier_payment", 5000.0);
         let b = deal("mxb", 9000.0, vec![], "payment_received");
-        let r = move_resold_cost(a.clone(), b.clone(), 4000.0).await.unwrap();
+        let r = move_resold_cost(a.clone(), b.clone(), 4000.0, None).await.unwrap();
         assert_eq!(r["moved_bank"], json!(1000.0));
         assert_eq!((linked(&a), linked(&b)), (4000.0, 1000.0));
         assert_eq!(read_df(&b).unwrap().supplier_owed, 3000.0);
@@ -27601,7 +27629,7 @@ mod r438_review_tests {
         let _db = crate::db::init_test_store();
         let a = deal("pf", 10000.0, vec![line(5000.0, true, "X"), line(3000.0, false, "Y")], "payment_received");
         let b = deal("pfb", 9000.0, vec![], "payment_received");
-        move_resold_cost(a.clone(), b.clone(), 3000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 3000.0, None).await.unwrap();
         assert!(payables_of(&a).await.is_empty());
         assert_eq!(payables_of(&b).await, vec![3000.0]);
         let bl = read_df(&b).unwrap().supplier_payments;
@@ -27614,7 +27642,7 @@ mod r438_review_tests {
         let _db = crate::db::init_test_store();
         let a = deal("up", 10000.0, vec![line(8000.0, false, "X")], "payment_received");
         let b = deal("upb", 9000.0, vec![], "payment_received");
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         let pid = read_df(&b).unwrap().supplier_payments[0].id.clone();
         mark_supplier_payment_paid(b.clone(), pid).await.unwrap();
         let err = undo_resold_cost(a.clone(), b.clone(), at_of(&a)).await.unwrap_err();
@@ -27630,9 +27658,9 @@ mod r438_review_tests {
         link(&a, "ca_sup", "supplier_payment", 8000.0);
         let b = deal("cb", 9000.0, vec![], "payment_received");
         let c = deal("cc", 9500.0, vec![], "payment_received");
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        move_resold_cost(b.clone(), c.clone(), 8000.0).await.unwrap();
+        move_resold_cost(b.clone(), c.clone(), 8000.0, None).await.unwrap();
         let err = undo_resold_cost(a.clone(), b.clone(), at_of(&a)).await.unwrap_err();
         assert!(err.contains("resold again"), "{}", err);
         undo_resold_cost(b.clone(), c.clone(), at_of(&b)).await.unwrap();
@@ -27689,7 +27717,7 @@ mod r438_followup_tests {
         let a = deal("um", 10000.0, vec![line(8000.0, true)], "supplier_paid");
         link(&a, "um_in", "buyer_payment", 10000.0);
         let b = deal("umb", 9000.0, vec![], "payment_received");
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
         let before = read_df(&a).unwrap();
         let offset = before.supplier_payments.iter().find(|p| p.amount < 0.0).unwrap().id.clone();
@@ -27703,7 +27731,7 @@ mod r438_followup_tests {
         let _db = crate::db::init_test_store();
         let a = deal("sp", 10000.0, vec![line(8000.0, false)], "payment_received");
         let b = deal("spb", 9000.0, vec![], "payment_received");
-        move_resold_cost(a.clone(), b.clone(), 3000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 3000.0, None).await.unwrap();
         let src = read_df(&a).unwrap().supplier_payments.iter().find(|p| p.amount > 0.0).unwrap().id.clone();
         mark_supplier_payment_paid(a.clone(), src.clone()).await.unwrap();
         assert!(read_df(&a).unwrap().supplier_payments.iter().all(|p| p.paid));
@@ -27721,9 +27749,9 @@ mod r438_followup_tests {
         link(&a, "sa_sup", "supplier_payment", 8000.0);
         let b = deal("sb", 9000.0, vec![], "payment_received");
         let c = deal("sc", 9500.0, vec![], "payment_received");
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        move_resold_cost(b.clone(), c.clone(), 5000.0).await.unwrap();
+        move_resold_cost(b.clone(), c.clone(), 5000.0, None).await.unwrap();
         assert_eq!((linked(&b), linked(&c)), (3000.0, 5000.0));
         undo_resold_cost(b.clone(), c.clone(), at_of(&b)).await.unwrap();
         assert_eq!((linked(&b), linked(&c)), (8000.0, 0.0));
@@ -27879,11 +27907,11 @@ mod r442_bought_back_tests {
         let a = deal("k", 10000.0, vec![line(8000.0, true)], "payment_received", 10000.0);
         let al = link(&a, "k_r", "refund_out", 10000.0);
         let b = deal("kb", 9000.0, vec![], "payment_received", 0.0);
-        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         assert!(move_resold_refunds(a.clone(), b.clone(), vec![al.clone()]).await.unwrap_err().contains("costed twice"));
         undo_resold_cost(a.clone(), b.clone(), at_of(&a)).await.unwrap();
         move_resold_refunds(a.clone(), b.clone(), vec![al]).await.unwrap();
-        assert!(move_resold_cost(a.clone(), b.clone(), 1000.0).await.unwrap_err().contains("costed twice"));
+        assert!(move_resold_cost(a.clone(), b.clone(), 1000.0, None).await.unwrap_err().contains("costed twice"));
     }
 
     #[tokio::test]
@@ -27906,6 +27934,27 @@ mod r442_bought_back_tests {
         // A buy-back leaves the supplier cost where it was: nothing reads as moved away.
         let meta = read_df(&a).unwrap().metadata.unwrap();
         assert!(has_live_resold(&meta, "resold_to") && !has_live_cost_move(&meta));
+    }
+
+    /// R-443: the user says which supplier payment paid for the resold goods.
+    #[tokio::test]
+    async fn the_cost_move_takes_the_supplier_payment_ticked_not_the_largest() {
+        let _db = crate::db::init_test_store();
+        let a = deal("p", 10000.0, vec![line(6000.0, true), line(2000.0, true)], "payment_received", 10000.0);
+        let big = link(&a, "p_big", "supplier_payment", 6000.0);
+        let small = link(&a, "p_small", "supplier_payment", 2000.0);
+        let b = deal("pb", 3000.0, vec![], "payment_received", 0.0);
+        // Too little ticked for the bank-paid part: refused before anything is written.
+        assert!(move_resold_cost(a.clone(), b.clone(), 3000.0, Some(vec![small.clone()])).await.unwrap_err().contains("paid from the bank"));
+        assert!(move_resold_cost(a.clone(), b.clone(), 2000.0, Some(vec!["al_nowhere".into()])).await.unwrap_err().contains("not linked to this deal"));
+        assert!(read_df(&b).unwrap().supplier_payments.is_empty());
+        let r = move_resold_cost(a.clone(), b.clone(), 2000.0, Some(vec![small.clone()])).await.unwrap();
+        assert_eq!(r["moved_bank"].as_f64(), Some(2000.0));
+        let on = |id: &str| -> String { pool().get().unwrap().query_row("SELECT deal_flow_id FROM bank_allocation WHERE id=?1", [id], |r| r.get(0)).unwrap() };
+        assert_eq!((on(&small), on(&big)), (b.clone(), a.clone()));
+        assert_eq!((sum(&a, "supplier_payment"), sum(&b, "supplier_payment")), (6000.0, 2000.0));
+        undo_resold_cost(a.clone(), b.clone(), at_of(&a)).await.unwrap();
+        assert_eq!((on(&small), on(&big)), (a.clone(), a.clone()));
     }
 
     #[tokio::test]

@@ -2757,7 +2757,8 @@ export interface ResoldMove {
   moved_bank?: number;
   at: string;
   undone_at?: string;
-  /** R-442: "refunds" when refund payments to the first buyer became the new deal's cost (a buy-back). */
+  /** R-442: "refunds" when refund payments to the first buyer became the new deal's cost (a buy-back).
+   *  R-443 retired making new ones; one made while it shipped still shows and can be undone. */
   kind?: "refunds";
   /** R-442: the first buyer, the payee of a buy-back. */
   buyer?: string;
@@ -3514,14 +3515,12 @@ export const api = {
   getDealFlow: (id: string) => invoke<DealFlow>("get_deal_flow", { id }),
   listDealFlows: () => invoke<DealFlow[]>("list_deal_flows"),
   // R-435: the cost of goods refunded here and sold again on another deal moves to that deal.
-  moveResoldCost: (fromId: string, toId: string, amount: number) =>
-    invoke<{ moved: number; moved_bank: number; refund_remaining: number }>("move_resold_cost", { fromId, toId, amount }),
+  // R-443: `allocIds` are the supplier payments that paid for those goods, in the order ticked.
+  moveResoldCost: (fromId: string, toId: string, amount: number, allocIds?: string[]) =>
+    invoke<{ moved: number; moved_bank: number; refund_remaining: number }>("move_resold_cost", { fromId, toId, amount, allocIds: allocIds ?? null }),
   // R-438: take a resold move back (identified by the deal it went to and its `at` stamp).
   undoResoldCost: (fromId: string, toId: string, at: string) =>
     invoke<{ amount: number; links_back: number }>("undo_resold_cost", { fromId, toId, at }),
-  // R-442: the ticked refund payments to this deal's buyer become the new deal's supplier payments.
-  moveResoldRefunds: (fromId: string, toId: string, refundIds: string[]) =>
-    invoke<{ moved: number; moved_bank: number }>("move_resold_refunds", { fromId, toId, refundIds }),
   // R-277 freight tracking (Priority1 emails)
   listShipments: () => invoke<Shipment[]>("list_shipments"),
   linkShipment: (id: string, dealFlowId: string) => invoke<void>("link_shipment", { id, dealFlowId }),

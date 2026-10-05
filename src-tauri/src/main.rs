@@ -773,7 +773,6 @@ fn main() {
             employees::switch_workspace_restart,
             employees::confirm_workspace_switch,
             move_resold_cost,
-            move_resold_refunds,
             undo_resold_cost,
             employees::resume_switch_login,
             employees::active_workspace,
