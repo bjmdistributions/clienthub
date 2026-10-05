@@ -99,6 +99,7 @@ import {
   MessageSquarePlus,
   MinusCircle,
   Search,
+  Smartphone,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -112,6 +113,7 @@ import { LogisticsFreightSetting, LogisticsPaySettingsForm, LogisticsPayTrackerP
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
 import CrossDock from "./CrossDock";
+import { pushApi, type PushPrefs, type PushPrefsResponse } from "../lib/billsApi";
 
 // Opens the matching section of the website setup guide in the browser.
 function GuideLink({ section }: { section: string }) {
@@ -284,6 +286,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "account", label: "Your phone", kw: "contact number" },
   { tab: "account", label: "Replay the getting-started tour", kw: "onboarding walkthrough welcome tour" },
   { tab: "account", card: "My Plan", label: "My plan", kw: "subscription tier usage limits seats clients team members upgrade" },
+  { tab: "account", card: "Phone notifications", label: "Phone notifications", kw: "push alerts iphone bills due overdue form submissions inventory renew listings notify" },
   // Appearance
   { tab: "appearance", card: "Theme", label: "Theme", kw: "dark mode light mode colour scheme mono monochrome grayscale" },
   { tab: "appearance", card: "Accent Color", label: "Accent colour", kw: "accent color orange indigo blue emerald teal violet amber rose swatch brand colour" },
@@ -818,6 +821,7 @@ function AccountTab() {
       </div>
       </div>
       <MyPlanCard />
+      <PhoneNotificationsCard />
       <button onClick={() => window.dispatchEvent(new CustomEvent("replay-tour"))} className="text-[12px] text-muted hover:text-ink transition-colors">Replay the getting-started tour</button>
 
       {mayPlay && shown && (
@@ -878,6 +882,60 @@ function MyPlanCard() {
       </div>
       {planLabel === "free" && <p className="text-[12px] text-muted mt-4">Paid plans with higher limits are coming soon.</p>}
     </div>
+  );
+}
+
+// R-448: which phone notifications the signed-in person gets. The server keeps the choice per
+// person, so the same switches show on the phone. Only the categories this person's permissions
+// allow are listed, and nothing shows at all when the server cannot be reached (local-first, like
+// My plan above).
+const PHONE_ROWS: { key: keyof PushPrefs; label: string; hint: string }[] = [
+  { key: "bills", label: "Bills", hint: "A bill is due soon, is overdue, or has been paid." },
+  { key: "forms", label: "Form submissions", hint: "A new supplier lead, call request or storefront offer." },
+  { key: "inventory", label: "Inventory", hint: "Listings that need renewing. Off until you turn it on." },
+  { key: "logistics", label: "New logistics bookings", hint: "A booking is sent to Logistics." },
+  { key: "logistics_email", label: "Email me new bookings", hint: "The same, by email, even without the app." },
+];
+
+function PhoneNotificationsCard() {
+  const [r, setR] = useState<PushPrefsResponse | null>(null);
+  const [busy, setBusy] = useState<string>("");
+  useEffect(() => { pushApi.get().then(setR).catch(() => setR(null)); }, []);
+  if (!r) return null;
+  const rows = PHONE_ROWS.filter((row) => r.allowed[row.key]);
+  if (rows.length === 0) return null;
+  const flip = async (key: keyof PushPrefs) => {
+    const next = !r.prefs[key];
+    setBusy(key);
+    setR({ ...r, prefs: { ...r.prefs, [key]: next } });
+    try { setR(await pushApi.set({ [key]: next })); } catch (e) {
+      setR(r);
+      toast(String(e), "error");
+    } finally { setBusy(""); }
+  };
+  return (
+    <SettingCard icon={Smartphone} title="Phone notifications" purpose="Choose what Ecliptr tells you about on your iPhone, and for Logistics, by email." collapsible={false}>
+      <div className="divide-y divide-line-2">
+        {rows.map((row) => (
+          <div key={row.key} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-ink">{row.label}</div>
+              <div className="text-[11.5px] text-muted mt-0.5">{row.hint}</div>
+            </div>
+            <span className={busy === row.key ? "opacity-60 pointer-events-none" : ""}>
+              <ClauseSwitch on={!!r.prefs[row.key]} onClick={() => flip(row.key)} label={row.label} />
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11.5px] text-muted mt-4">
+        {!r.configured
+          ? "Your server is not set up to send phone notifications yet."
+          : r.devices.length === 0
+            ? "No phone is set up yet. Turn on notifications in the Ecliptr app on your iPhone."
+            : `Sent to ${r.devices.length} ${r.devices.length === 1 ? "phone" : "phones"}: ${r.devices.map((d) => d.label || d.platform).join(", ")}.`}
+      </p>
+    </SettingCard>
   );
 }
 

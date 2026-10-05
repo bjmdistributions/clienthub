@@ -1525,7 +1525,7 @@ pub async fn export_inventory_csv(status_filter: Option<String>, output_path: St
 // ai.rs). All copies move together — see architecture/financials.md "The chart
 // of accounts". Blank/unrecognised categories are deliberately NOT in this list;
 // they fall through to the "Uncategorized" bucket in export_tax_year_pnl_csv.
-const PNL_CATEGORY_GROUPS: &[(&str, &str, &str)] = &[
+pub(crate) const PNL_CATEGORY_GROUPS: &[(&str, &str, &str)] = &[
     ("receipt",             "Sale / buyer payment",            "Income"),
     ("service_income",      "Commission & service income",     "Income"),
     ("shipping_income",     "Shipping billed to a customer",   "Income"),
@@ -1596,7 +1596,7 @@ const PNL_GROUP_ORDER: &[&str] = &["Income", "Sales reductions", "Cost of goods"
 // income nor a deduction — sales tax held for the state, and the owner's own
 // personal tax. The rest of that group (business taxes, payroll taxes, licences)
 // IS a real deduction and stays in the P&L net.
-const PNL_TAX_PASSTHROUGH: &[&str] = &["estimated_tax", "sales_tax_collected", "sales_tax_remitted"];
+pub(crate) const PNL_TAX_PASSTHROUGH: &[&str] = &["estimated_tax", "sales_tax_collected", "sales_tax_remitted"];
 
 fn pnl_group_of(category: &str) -> Option<(&'static str, &'static str)> {
     PNL_CATEGORY_GROUPS.iter().find(|(v, _, _)| *v == category).map(|(_, label, group)| (*label, *group))
@@ -12855,7 +12855,7 @@ const DF_NET_REVENUE_SQL: &str =
 /// One deal flow per invoice (`MIN(d2.id)`), the same survivor rule `SUPPLIER_STATS_SQL`
 /// uses: duplicate 'complete' rows would double every SUM taken over `df`. `df` must be
 /// in scope.
-const DF_SURVIVOR_SQL: &str =
+pub(crate) const DF_SURVIVOR_SQL: &str =
     "df.id = (SELECT MIN(d2.id) FROM deal_flows d2 \
               WHERE d2.invoice_id = df.invoice_id AND d2.stage='complete' AND COALESCE(d2.archived,0)=0)";
 
@@ -20084,6 +20084,10 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // R-288 phase 3: then book what history is sure about. After the rules, so a rule that
     // auto-books wins, and after the take-overs, so a carried booking is not re-decided.
     let auto_booked = if converged { book_from_history(&now) } else { Vec::new() };
+    // R-449: link what just arrived to the bills it pays. Best effort, it never fails the sync.
+    if converged {
+        if let Err(e) = crate::bills::run_auto_links() { tracing::warn!("plaid_sync: bill payments not linked this sync: {e}"); }
+    }
     // Device-local on purpose: it says when THIS device's connections were last pulled.
     if results.iter().any(|r| r.get("status").and_then(|s| s.as_str()) == Some("ok")) {
         if let Ok(c) = pool().get() {

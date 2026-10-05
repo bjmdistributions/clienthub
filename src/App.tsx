@@ -47,6 +47,7 @@ import {
   MoreHorizontal,
   Pin,
   Truck,
+  CalendarClock,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -89,6 +90,7 @@ import AuthView from "./components/AuthView";
 import LogisticsView from "./components/LogisticsView";
 import { useAppStore } from "./lib/store";
 import { api, isUnavailable, Me } from "./lib/api";
+import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly } from "./lib/permissions";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
@@ -102,6 +104,8 @@ const GlobeView     = lazy(() => import("./components/GlobeView"));
 const AnalyticsView = lazy(() => import("./components/AnalyticsView"));
 const SettingsView  = lazy(() => import("./components/SettingsView"));
 const DashboardView = lazy(() => import("./components/DashboardView"));
+// R-449: Bills draws its Spending and True profit charts with recharts, so it stays out of the entry chunk.
+const BillsView     = lazy(() => import("./components/BillsView"));
 
 // Shown while a lazy chunk is read off local disk. It repeats the overlay the
 // globe draws over its own dark ground while it initialises, in the same place,
@@ -132,7 +136,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "logistics" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "platform" | "datasafety" | "settings";
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -449,6 +453,9 @@ export default function App() {
   const visibleRef = useRef<(id: Tab) => boolean>(() => false);
   const [orgName, setOrgName] = useState<string>("");
   const [apCount, setApCount] = useState<number>(0);
+  // R-449: overdue bills, for the Bills row's count. Same people who can open the screen.
+  const [billsOverdue, setBillsOverdue] = useState(0);
+  const billsAllowed = !!me && !logisticsOnly && (isAdmin(me) || can(me, "financials:view"));
   // Sign out is two-step: the first click arms it, the second one goes. It sits in
   // the footer next to the collapse control, one stray click from a row you press all
   // day, and a mis-click drops every unsynced local edit behind a re-auth.
@@ -638,7 +645,7 @@ export default function App() {
     // rail opening or closing - and the ResizeObserver above cannot see it: the nav
     // is flex-1, so its own box never moves when its contents do.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, navCollapsed, navH, apCount, draftCount, railPins]);
+  }, [tab, navCollapsed, navH, apCount, draftCount, billsOverdue, railPins]);
 
   useEffect(() => {
     checkAi();
@@ -666,6 +673,22 @@ export default function App() {
     const id = setInterval(read, 60000);
     return () => { clearInterval(id); unlisten?.(); };
   }, [me, logisticsOnly]);
+
+  // R-449: how many bills are overdue. Local read (no server call), refreshed every minute and
+  // whenever a bill or a link changes here or arrives from another device. Both are Tauri events,
+  // so listen() and not addEventListener.
+  useEffect(() => {
+    if (!billsAllowed) { setBillsOverdue(0); return; }
+    const read = () => billsApi.alerts().then((a) => setBillsOverdue(a.overdue_count)).catch(() => {});
+    read();
+    const un: (() => void)[] = [];
+    let dead = false;
+    for (const ev of ["bills-changed", "netsync-applied"]) {
+      listen(ev, () => read()).then((u) => { if (dead) u(); else un.push(u); }).catch(() => {});
+    }
+    const id = setInterval(read, 60000);
+    return () => { dead = true; clearInterval(id); un.forEach((u) => u()); };
+  }, [billsAllowed]);
 
   // R-318: a Priority1 delivery announces itself wherever you are in the app, not only on
   // Deal Flow, because it is the moment that deal becomes completable. The green row on
@@ -770,7 +793,9 @@ export default function App() {
       { id: "releaseletter", label: "Release letter", icon: FileCheck2 },
       { id: "clientreceipt", label: "Client receipt", icon: Receipt },
     ] },
-    { id: "financials", label: "Financials", icon: Landmark },
+    { id: "financials", label: "Financials", icon: Landmark, children: [
+      { id: "bills", label: "Bills", icon: CalendarClock },
+    ] },
     { id: "newsletter", label: "Newsletter", icon: Mail },
     { id: "brief", label: "Brief", icon: Newspaper },
     { id: "analytics", label: "Analytics", icon: BarChart3, children: [
@@ -801,6 +826,8 @@ export default function App() {
     // Books area. Admins keep access unconditionally (as before); a non-admin
     // now needs an explicit financials:view grant, which no role template hands out.
     : id === "financials" ? (isAdmin(me) || can(me, "financials:view"))
+    // R-449: bills read like the books (admins and anyone with financials:view); only admins write, and the server enforces that too.
+    : id === "bills" ? (isAdmin(me) || can(me, "financials:view"))
 
     : id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
     : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item
@@ -863,6 +890,13 @@ export default function App() {
                 {apCount > 9 ? "9+" : apCount}
               </span>
         )}
+        {item.id === "bills" && billsOverdue > 0 && (
+          navCollapsed
+            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-red-500" />
+            : <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+                {billsOverdue > 9 ? "9+" : billsOverdue}
+              </span>
+        )}
       </button>
     );
   };
@@ -879,7 +913,9 @@ export default function App() {
   const railCount = (n: NavNode, expanded: boolean): number => {
     if (n.id === "newsletter") return visible("newsletter") ? draftCount : 0;
     if (n.id === "approvals") return visible("approvals") ? apCount : 0;
+    if (n.id === "bills") return visible("bills") ? billsOverdue : 0;
     if (!expanded && n.children?.some((c) => c.id === "approvals") && visible("approvals")) return apCount;
+    if (!expanded && n.children?.some((c) => c.id === "bills") && visible("bills")) return billsOverdue;
     return 0;
   };
 
@@ -1108,12 +1144,13 @@ export default function App() {
             {t === "showpacking" && <ShowPackingView me={me} />}
             {t === "sheetcopy"  && <SheetCopyView />}
             {t === "financials" && <FinancialsView />}
+            {t === "bills"      && <BillsView me={me} />}
             {t === "completed"  && <CloseoutView />}
             {t === "analytics"  && <AnalyticsView />}
             {t === "tiers"      && <TiersView />}
             {t === "portals"    && <CustomerPortalsView me={me} />}
             {t === "automation" && <AutomationLogView />}
-            {t === "brief"      && <BriefView currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
+            {t === "brief"      && <BriefView me={me} currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
             {t === "newsletter" && <EmailView />}
             {t === "settings"   && <SettingsView me={me} />}
             {t === "platform"   && <PlatformView />}
@@ -1524,7 +1561,7 @@ export default function App() {
                 <div className="max-h-[60vh] overflow-y-auto">
                   {flatTabs.map((t) => (
                     <div key={t.id} className="relative group/allrow">
-                      {flyoutRow(t, t.id === "approvals" ? apCount : t.id === "newsletter" ? draftCount : undefined)}
+                      {flyoutRow(t, t.id === "approvals" ? apCount : t.id === "newsletter" ? draftCount : t.id === "bills" ? billsOverdue : undefined)}
                       {NAV.some((n) => n.id === t.id) && (
                         <button
                           type="button"

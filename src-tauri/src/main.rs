@@ -4,6 +4,8 @@ mod ai;
 mod bank_dedup;
 mod bank_learn;
 mod bank_import;
+mod bills;
+mod bills_core;
 mod checkups;
 mod commands;
 // R-441 company documents (admin only; stored on the server, copied locally).
@@ -483,6 +485,8 @@ fn main() {
             email::spawn_realtime_watchers(app.handle().clone());
             // R-318: so a Priority1 "Delivered" email can raise its own notification.
             shipments::set_app(app.handle().clone());
+            // R-449: so a bill change can tell the sidebar badge and the open Bills screen.
+            bills::set_app(app.handle().clone());
 
             // Periodic Google Sheets sync every 10 minutes
             commands::spawn_periodic_sheet_sync(600);
@@ -1219,6 +1223,23 @@ fn main() {
             warehouse::remove_warehouse_pallet,
             warehouse::set_order_passcode,
             warehouse::warehouse_pallet_labels,
+            // Bills (R-449)
+            bills::bills_list,
+            bills::bills_alerts,
+            bills::bills_get,
+            bills::bills_save,
+            bills::bills_archive,
+            bills::bills_detect,
+            bills::bills_ignore,
+            bills::bills_candidates,
+            bills::bills_link,
+            bills::bills_reject,
+            bills::bills_restore,
+            bills::bills_preview,
+            bills::bills_icon,
+            bills::bills_spending,
+            bills::push_prefs_get,
+            bills::push_prefs_set,
             books::list_books_changes,
             books::mark_books_changes_seen,
             customer_portal::customer_portal_list,

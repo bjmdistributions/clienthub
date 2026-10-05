@@ -31,7 +31,9 @@ const POLL_SECS: u64 = 20;
 /// "3" = the generation that added the financial tables. "4" adds `freight_bookings` (R-400), so a
 /// device that updates after bookings already exist restores them from the server's snapshot
 /// (`logistics_payouts`, R-401, rides the same pass: neither shipped under generation 3).
-const HEAL_GENERATION: &str = "4";
+/// "5" adds `bills` and `bill_payments` (R-449), so a device that updates after bills exist restores
+/// them from the server's snapshot (a device older than the bills tables dead-letters their events).
+const HEAL_GENERATION: &str = "5";
 
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
 /// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`
@@ -69,6 +71,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "freight_bookings",
     // The logistics payee's pay record (R-401), server-authored like the bookings.
     "logistics_payouts",
+    // Bills and the bank payments linked to them (R-449): authored by the desktop and the phone.
+    "bills", "bill_payments",
 ];
 
 pub fn ensure_tables() -> Result<()> {
@@ -633,6 +637,9 @@ pub async fn pull_apply() -> Result<usize> {
     // R-400: booking events that landed this pass. When the pass ends, however it ends, completed
     // deals whose books a booking moved are checked, and a delivery is announced (see freight.rs).
     let mut freight = crate::freight::PullHook::default();
+    // R-449: bills events that landed this pass. When the pass ends, the payments the other device's
+    // bills and links make possible are linked here, and the open screens are told (see bills.rs).
+    let mut bills = crate::bills::PullHook::default();
     let mut applied = 0;
     // Cursor of the first page in which an event FAILED to apply this pass. We keep
     // paging (so a later event — e.g. a not-yet-seen parent row — still gets applied),
@@ -684,6 +691,7 @@ pub async fn pull_apply() -> Result<usize> {
             } else {
                 applied += 1;
                 freight.note(ev);
+                bills.note(ev);
             }
         }
         if page_failed && earliest_failure.is_none() {
@@ -1441,6 +1449,7 @@ async fn auto_heal_if_behind() {
         "clients", "invoices", "deals", "deal_flows", "payments",
         "bank_txn", "bank_allocation", "deal_receipts", "cash_purchase",
         "business_expense", "reserve_entry", "loan", "freight_bookings", "logistics_payouts",
+        "bills", "bill_payments",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -2607,6 +2616,24 @@ mod lot_sync_tests {
         // two orders of magnitude past what this spine was built for.
         assert!(!SNAPSHOT_TABLES.contains(&"lot_stack"));
         assert!(!crate::sync::is_synced_table("lot_stack"));
+    }
+}
+
+// R-449: bills and their payment links replicate, and a device that updates after they exist heals.
+#[cfg(test)]
+mod r449_sync_tests {
+    use super::*;
+
+    /// Both tables are in the snapshot list (a repaired device would never see them otherwise) and
+    /// in the apply list (their events would be dead-lettered), and the heal generation moved past
+    /// the one that did not know them.
+    #[test]
+    fn bills_replicate_and_an_updated_device_restores_them() {
+        for t in ["bills", "bill_payments"] {
+            assert!(SNAPSHOT_TABLES.contains(&t), "{t} missing from SNAPSHOT_TABLES, a repaired device would never see it");
+            assert!(crate::sync::is_synced_table(t), "{t} missing from sync::ALLOWED_TABLES, its events would be dead-lettered");
+        }
+        assert_ne!(HEAL_GENERATION, "4", "devices healed under generation 4 must get one more pass");
     }
 }
 

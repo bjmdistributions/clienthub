@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { api, DashboardStats, Client, Invoice, ReceivablesAging, PayablesAging, Me } from "../lib/api";
 import { fmtCompactCurrency, fmtFullAmount, fmtAmount, localMonth } from "../lib/format";
+import { billsApi, type BillsAlerts } from "../lib/billsApi";
+import { alertRow } from "../lib/billsFormat";
 import {
   Users, FileText, Mail, ArrowRight, CheckCircle2, GitBranch,
   ChevronLeft, ChevronRight, Package, CalendarClock, Clock,
-  TrendingUp, TrendingDown,
+  TrendingUp, TrendingDown, Receipt,
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import PendingReviewModal from "./PendingReviewModal";
-import { can } from "../lib/permissions";
+import { can, isAdmin } from "../lib/permissions";
 import StatusPill from "./StatusPill";
 import LeadBubbles from "./LeadBubbles";
 
@@ -88,12 +90,15 @@ export default function DashboardView({ onNavigate, me }: Props) {
   // Org money (cash position, revenue, profit) is hidden from reps/viewers
   // unless they hold deal_flow:view_numbers. Admins/owners carry "*" and pass.
   const showMoney = can(me, "deal_flow:view_numbers");
+  // R-449: bills read like the books (admins and financials:view), not like deal numbers.
+  const showBills = isAdmin(me) || can(me, "financials:view");
 
   const [stats, setStats]               = useState<DashboardStats | null>(null);
   const [ar, setAr]                     = useState<ReceivablesAging | null>(null);
   const [ap, setAp]                     = useState<PayablesAging | null>(null);
   const [followups, setFollowups]       = useState<Client[]>([]);
   const [pendingApprovals, setPending]  = useState<Client[]>([]);
+  const [billAlerts, setBillAlerts]     = useState<BillsAlerts | null>(null);
   const [reviewClient, setReviewClient] = useState<Client | null>(null);
   const [recentInvoices, setRecent]     = useState<Invoice[]>([]);
   const [clients, setClients]           = useState<Client[]>([]);
@@ -112,6 +117,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
   const loadAll = () => {
     api.dueFollowups().then(setFollowups).catch(() => {});
     api.getPendingApprovals().then(setPending).catch(() => {});
+    if (showBills) billsApi.alerts().then(setBillAlerts).catch(() => setBillAlerts(null));
     // Hero counts (clients / open deals / completed this month) are non-sensitive
     // and shown to everyone, so dashboard stats load for all users.
     api.dashboardStats().then(setStats).catch(console.error);
@@ -195,7 +201,8 @@ export default function DashboardView({ onNavigate, me }: Props) {
 
   const shippingCount = stats?.incomplete_shipping ?? 0;
   const heroLoading = stats === null;
-  const todayEmpty = pendingApprovals.length === 0 && overdueCount === 0 && followups.length === 0 && shippingCount === 0;
+  const billRow = alertRow(billAlerts);
+  const todayEmpty = pendingApprovals.length === 0 && overdueCount === 0 && followups.length === 0 && shippingCount === 0 && !billRow;
 
   // New hero counts — non-sensitive, shown to everyone.
   const totalClients      = stats?.total_clients ?? stats?.clients ?? 0;
@@ -403,6 +410,19 @@ export default function DashboardView({ onNavigate, me }: Props) {
                     <div className="text-[11px] text-muted">Chase these first</div>
                   </div>
                   <span className="text-[13px] font-bold text-danger-ink tabular-nums flex-shrink-0">{fmtAmount(overdueAmt)}</span>
+                  <ArrowRight size={13} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                </button>
+              )}
+
+              {/* Bills overdue or due soon (R-449) */}
+              {billRow && (
+                <button onClick={() => onNavigate("bills")}
+                  className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors group">
+                  <span className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${billRow.tone === "danger" ? "bg-danger-bg text-danger-ink" : "bg-warning-bg text-warning-ink"}`}><Receipt size={14} /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-ink">{billRow.title}</div>
+                    <div className="text-[11px] text-muted truncate">{billRow.sub}</div>
+                  </div>
                   <ArrowRight size={13} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
                 </button>
               )}

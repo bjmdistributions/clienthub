@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, WeeklyBrief, DealFlow, ReceivablesAging, ARItem, Client, Invoice, type LogisticsPayTracker } from "../lib/api";
+import { api, WeeklyBrief, DealFlow, ReceivablesAging, ARItem, Client, Invoice, Me, type LogisticsPayTracker } from "../lib/api";
+import { billsApi, type BillsAlerts } from "../lib/billsApi";
+import { alertRow } from "../lib/billsFormat";
+import { can, isAdmin } from "../lib/permissions";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
@@ -74,10 +77,12 @@ type Happening = {
   invoiceNumber: string;
 };
 
-export default function BriefView({ currentUser }: { currentUser?: any }) {
+export default function BriefView({ currentUser, me }: { currentUser?: any; me?: Me | null }) {
   // Org-wide detail (whose invoice, which deal, how much) stays with the people
   // who already see the numbers; a rep gets the brief's own rep-filtered figures.
   const showOrg = currentUser?.role !== "sales_rep";
+  // R-449: bills read like the books, so the same people see them here.
+  const showBills = showOrg && (isAdmin(me) || can(me, "financials:view"));
 
   const [brief, setBrief]         = useState<WeeklyBrief | null>(null);
   const [flows, setFlows]         = useState<DealFlow[]>([]);
@@ -86,6 +91,8 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
   const [followups, setFollowups] = useState<Client[]>([]);
   // R-401: the logistics pay, for an owner only. Anyone the server will not show it to gets nothing.
   const [logiPay, setLogiPay]     = useState<LogisticsPayTracker | null>(null);
+  // R-449: bills that are overdue or due within three days. Null for anyone who may not see bills.
+  const [billAlerts, setBillAlerts] = useState<BillsAlerts | null>(null);
   const [loading, setLoading]     = useState(true);
   const [scope, setScope]         = useState<Scope>("today");
 
@@ -109,6 +116,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
       api.getReceivablesAging().then(setAr).catch(() => setAr(null));
       api.logistics.pay.tracker().then(setLogiPay).catch(() => setLogiPay(null));
     }
+    if (showBills) billsApi.alerts().then(setBillAlerts).catch(() => setBillAlerts(null));
     api.dueFollowups().then(setFollowups).catch(() => {});
     setLoading(false);
   };
@@ -197,7 +205,8 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
     [flows, today],
   );
 
-  const needsNothing = overdue.length === 0 && followups.length === 0 && readyToClose.length === 0;
+  const billRow = alertRow(billAlerts);
+  const needsNothing = overdue.length === 0 && followups.length === 0 && readyToClose.length === 0 && !billRow;
   const riskNothing = aged.length === 0 && speculative.length === 0 && slipping.length === 0;
 
   const scopeWord = scope === "today" ? "today" : "this week";
@@ -321,6 +330,14 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                     className="w-full flex items-center gap-2 px-5 py-2.5 text-left text-[12px] text-accent font-medium hover:bg-surface-2/40 transition-colors duration-[130ms]">
                     {overdue.length - 4} more overdue <ArrowRight size={12} className="text-faint" />
                   </button>
+                )}
+
+                {billRow && (
+                  <ActionRow
+                    tone={billRow.tone} icon={<Receipt size={14} />}
+                    title={billRow.title} sub={billRow.sub}
+                    onClick={() => goTab("bills")}
+                  />
                 )}
 
                 {followups.length > 0 && (

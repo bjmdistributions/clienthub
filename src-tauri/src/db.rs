@@ -2308,4 +2308,55 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_logistics_payouts_org ON logistics_payouts(org_id);
         "#,
     ),
+    (
+        107,
+        // R-449: Bills, the money that leaves on a schedule (rent, insurance, a car note). A bill
+        // is a schedule plus the words its payments carry in the bank (payee_match) and an amount
+        // band, amount 0 meaning it varies. bill_payments links a bill to the bank_txn that paid
+        // one of its due dates, its id is made from the bill and the bank row so two devices that
+        // link the same payment write one row. A link is never deleted, an unlinked payment is
+        // status rejected and a bill is archived, never deleted. bank_txn and bank_allocation are
+        // never touched by a bill. logo is a small data URL, at most 40000 characters. Both
+        // tables are authored by every device, so they are synced (sync.rs ALLOWED_TABLES,
+        // netsync SNAPSHOT_TABLES and key_tables) and mirrored in clienthub-api (schema.sql, its
+        // sync.rs lists), which must be deployed first. Every column has a default so a create
+        // event can never be dropped for a missing one. Never put a semicolon inside a comment
+        // here, the runner splits on it.
+        r#"
+        CREATE TABLE IF NOT EXISTS bills (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            name TEXT NOT NULL DEFAULT '',
+            payee_match TEXT NOT NULL DEFAULT '',
+            amount REAL NOT NULL DEFAULT 0,
+            tolerance_pct REAL NOT NULL DEFAULT 10,
+            cadence TEXT NOT NULL DEFAULT 'monthly',
+            anchor_date TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            method TEXT NOT NULL DEFAULT '',
+            website TEXT NOT NULL DEFAULT '',
+            logo TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_bills_org ON bills(org_id);
+        CREATE TABLE IF NOT EXISTS bill_payments (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            bill_id TEXT NOT NULL DEFAULT '',
+            bank_txn_id TEXT NOT NULL DEFAULT '',
+            period TEXT NOT NULL DEFAULT '',
+            amount REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'auto',
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_bill_payments_bill ON bill_payments(bill_id);
+        CREATE INDEX IF NOT EXISTS idx_bill_payments_txn ON bill_payments(bank_txn_id);
+        "#,
+    ),
 ];

@@ -1183,7 +1183,7 @@ mod pay_tests {
         for c in ["id", "org_id", "payee_id", "payee_name", "pay_date", "period_start", "period_end", "amount", "lines_json", "method", "reference", "note", "paid_at", "created_by", "created_by_name", "archived", "created_at", "updated_at"] {
             assert!(lp.iter().any(|x| x == c), "logistics_payouts.{c}");
         }
-        let versions: Vec<i64> = conn.prepare("SELECT version FROM schema_migrations WHERE version >= 104 ORDER BY version").unwrap()
+        let versions: Vec<i64> = conn.prepare("SELECT version FROM schema_migrations WHERE version BETWEEN 104 AND 106 ORDER BY version").unwrap()
             .query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
         assert_eq!(versions, vec![105, 106], "R-402 owns 105, R-400 and R-401 share 106, nothing sits at 104");
     }
