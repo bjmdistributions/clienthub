@@ -86,7 +86,7 @@ function h(tag, attrs, kids) {
 // pdf-lib's standard fonts only encode WinAnsi; anything else would throw at save.
 function winAnsi(s) {
   return String(s || "").replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
-    .replace(/[–—]/g, "-").replace(/[^\x20-\x7E\xA0-\xFF\n]/g, "");
+    .replace(/[\u2013\u2014]/g, "-").replace(/[^\x20-\x7E\xA0-\xFF\n]/g, "");
 }
 
 function today() {
