@@ -18,6 +18,7 @@ import {
   Moon,
   Globe,
   StickyNote,
+  FolderLock,
   Grid3X3,
   Bot,
   ChevronRight,
@@ -66,6 +67,7 @@ import BriefView from "./components/BriefView";
 import TiersView from "./components/TiersView";
 import CustomerPortalsView from "./components/CustomerPortalsView";
 import NotesView from "./components/NotesView";
+import DocumentsView from "./components/DocumentsView";
 import PlatformView from "./components/PlatformView";
 import DataSafetyView from "./components/DataSafetyView";
 import ArchiveView from "./components/ArchiveView";
@@ -130,7 +132,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "logistics" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "logistics" | "platform" | "datasafety" | "settings";
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -778,6 +780,7 @@ export default function App() {
   ];
   const UTILITY: NavKid[] = [
     { id: "notes",    label: "Notes",    icon: StickyNote },
+    { id: "documents", label: "Documents", icon: FolderLock },
     { id: "archive",  label: "Archive",  icon: ArchiveIcon },
     { id: "platform", label: "Platform", icon: Building2 },
     { id: "datasafety", label: "Data safety", icon: ShieldAlert },
@@ -794,6 +797,7 @@ export default function App() {
     : id === "datasafety" ? (superadmin || localSuper) // secret integrity console
 
     : id === "archive" ? isAdmin(me)              // admin-only, like the money views
+    : id === "documents" ? isAdmin(me)            // R-441 legal and tax papers; the server refuses non-admins too
     // Books area. Admins keep access unconditionally (as before); a non-admin
     // now needs an explicit financials:view grant, which no role template hands out.
     : id === "financials" ? (isAdmin(me) || can(me, "financials:view"))
@@ -1088,6 +1092,7 @@ export default function App() {
             {t === "clients"    && <ClientsView />}
             {t === "invoices"   && <InvoicesView />}
             {t === "archive"    && <ArchiveView />}
+            {t === "documents"  && <DocumentsView />}
             {t === "receivables" && <ReceivablesView />}
             {t === "payables"   && <PayablesView />}
             {t === "quotes"     && <QuotesView onNavigate={setTab} />}

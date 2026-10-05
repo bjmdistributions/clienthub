@@ -6,6 +6,8 @@ mod bank_learn;
 mod bank_import;
 mod checkups;
 mod commands;
+// R-441 company documents (admin only; stored on the server, copied locally).
+mod company_docs;
 mod csv_import;
 mod db;
 mod email;
@@ -541,6 +543,18 @@ fn main() {
             // Network sync (Phase 2)
             netsync::netsync_connect,
             netsync::netsync_status,
+            // R-441 company documents
+            company_docs::docs_list,
+            company_docs::docs_upload,
+            company_docs::docs_update,
+            company_docs::docs_new_version,
+            company_docs::docs_archive,
+            company_docs::docs_file,
+            company_docs::docs_save_as,
+            company_docs::docs_signature_get,
+            company_docs::docs_signature_put,
+            company_docs::docs_mirror,
+            company_docs::docs_open_folder,
             netsync::netsync_disconnect,
             netsync::netsync_sync_now,
             netsync::netsync_repair,
