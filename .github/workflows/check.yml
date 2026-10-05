@@ -211,7 +211,11 @@ jobs:
           # re-run: v0.16.82 published 19 minutes later and carries the same R-318 code,
           # so publishing .81 now would make it the newest release and point latest.json
           # — and every installed updater — at the OLDER build.
-          allow="v0.12.1 v0.12.3 v0.14.5 v0.15.84 v0.15.131 v0.16.72 v0.16.81"
+          # v0.16.132 and v0.16.133 (2026-10-05, R-443/R-444): GitHub's macOS runner never ran
+          # .132 (create-release cancelled) and "lost communication with the server" 50 minutes
+          # into .133's build; both code changes are inside v0.16.134 (R-449), which superseded
+          # them. Dead ON PURPOSE for the same reason as v0.16.81: never re-run either.
+          allow="v0.12.1 v0.12.3 v0.14.5 v0.15.84 v0.15.131 v0.16.72 v0.16.81 v0.16.132 v0.16.133"
           gh api --paginate "repos/$R/releases" --jq '.[] | select(.draft == false) | .tag_name' > published.txt
           echo "Published releases: $(wc -l < published.txt)"
           dead=""
