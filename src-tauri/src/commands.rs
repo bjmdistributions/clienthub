@@ -5595,8 +5595,11 @@ pub async fn mark_supplier_payment_paid(id: String, payment_id: String) -> Resul
     let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
     if p.amount < 0.0 && is_resold_line(p) { return Err(RESOLD_LINE_LOCKED.into()); }
     if p.paid { return Err("Payment already marked as paid".into()); }
+    let paid_now = Utc::now().to_rfc3339();
     p.paid = true;
-    p.paid_at = Some(Utc::now().to_rfc3339());
+    p.paid_at = Some(paid_now.clone());
+    let paid_name = p.supplier_name.clone();
+    if !is_resold_line(p) { cascade_resold_offsets(&df, &mut payments, &paid_name, true, &paid_now); }
 
     write_sp(&id, &payments, &df.invoice_id)?;
 
@@ -5628,6 +5631,8 @@ pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Res
     let df = read_df(&id)?;
 
     let now = Utc::now().to_rfc3339();
+    // R-438: refused before anything is written (it used to wipe a completed deal's figures first).
+    if df.supplier_payments.iter().any(|p| p.id == payment_id && p.amount < 0.0 && is_resold_line(p)) { return Err(RESOLD_LINE_LOCKED.into()); }
 
     // Cascade: if complete, wipe completion data first so the deal re-opens
     if df.stage == "complete" {
@@ -5635,10 +5640,12 @@ pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Res
     }
 
     let mut payments = df.supplier_payments.clone();
-    if payments.iter().any(|p| p.id == payment_id && p.amount < 0.0 && is_resold_line(p)) { return Err(RESOLD_LINE_LOCKED.into()); }
     let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
     p.paid = false;
     p.paid_at = None;
+    let reopened = p.supplier_name.clone();
+    let is_bill = !is_resold_line(p);
+    if is_bill { cascade_resold_offsets(&df, &mut payments, &reopened, false, &now); }
 
     write_sp(&id, &payments, &df.invoice_id)?;
 
@@ -6231,6 +6238,31 @@ fn deal_metadata(d: &DealFlow) -> Map<String, Value> {
         .ok().and_then(|v| v.as_object().cloned()).unwrap_or_default()
 }
 
+/// R-438: an unpaid resold offset (the negative half left on the refunded deal) cancels unpaid
+/// cost of its supplier that moved to another deal. When that supplier's last unpaid bill here is
+/// marked paid, the offset is settled with it (stamped now, so an undo can see the books moved on);
+/// unmarking the bill reopens the offsets settled that way (never one the move itself wrote paid,
+/// which carries the move's own stamp).
+fn cascade_resold_offsets(d: &DealFlow, payments: &mut [SupplierPayment], supplier: &str, paid: bool, now: &str) {
+    let is_goods = |p: &SupplierPayment| !p.kept && p.category.as_deref().unwrap_or("supplier") == "supplier";
+    if paid {
+        let still_owed = payments.iter().any(|p| is_goods(p) && !p.paid && p.amount > 0.0 && !is_resold_line(p) && p.supplier_name == supplier);
+        if still_owed { return; }
+        for p in payments.iter_mut().filter(|p| p.amount < 0.0 && is_resold_line(p) && !p.paid && p.supplier_name == supplier) {
+            p.paid = true;
+            p.paid_at = Some(now.to_string());
+        }
+    } else {
+        let move_ats: Vec<String> = deal_metadata(d).get("resold_to").and_then(|v| v.as_array()).cloned().unwrap_or_default()
+            .iter().filter_map(|e| e.get("at").and_then(|v| v.as_str()).map(String::from)).collect();
+        for p in payments.iter_mut().filter(|p| p.amount < 0.0 && is_resold_line(p) && p.paid && p.supplier_name == supplier) {
+            if p.paid_at.as_deref().map_or(false, |t| move_ats.iter().any(|a| a == t)) { continue; }
+            p.paid = false;
+            p.paid_at = None;
+        }
+    }
+}
+
 /// The live resold move a cost line belongs to, as `(refunded deal, new deal, at)`: by its
 /// recorded id, or for a move made before R-438 by its note and the instant it was stamped.
 fn resold_move_of_line(d: &DealFlow, line: &SupplierPayment) -> Option<(String, String, String)> {
@@ -6360,7 +6392,7 @@ pub async fn move_resold_cost(from_id: String, to_id: String, amount: f64) -> Re
             let conn = pool().get().map_err(|e| e.to_string())?;
             conn.execute("UPDATE bank_allocation SET deal_flow_id=?1, note=?2, updated_at=?3 WHERE id=?4",
                          rusqlite::params![to_id, n, now, aid]).map_err(|e| e.to_string())?;
-            moves.push(json!({ "id": aid, "amount": take, "note_before": note }));
+            moves.push(json!({ "id": aid, "amount": take, "note_before": note, "bank_txn_id": txn }));
         } else {
             let keep = r2(a_amt - take);
             let n = noted(&note);
@@ -6388,7 +6420,7 @@ pub async fn move_resold_cost(from_id: String, to_id: String, amount: f64) -> Re
                  VALUES (?1,?2,?3,?4,?5,'supplier_payment',?6,?7,?8,?8)",
                 rusqlite::params![new_id, org, txn, to_id, take, n, by, now],
             ).map_err(|e| e.to_string())?;
-            moves.push(json!({ "id": new_id, "amount": take, "split_from": aid }));
+            moves.push(json!({ "id": new_id, "amount": take, "split_from": aid, "bank_txn_id": txn }));
         }
         left = r2(left - take);
         moved_bank += take;
@@ -6484,10 +6516,12 @@ pub async fn undo_resold_cost(from_id: String, to_id: String, at: String) -> Res
 
     // The links: recorded (each still on the new deal at the amount it moved), else the supplier
     // links a pre-R-438 move wrote at its instant.
-    let recorded_allocs: Option<Vec<(String, f64, Option<String>)>> = entry.get("allocs").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| Some((
+    let recorded_allocs: Option<Vec<(String, f64, Option<String>, Option<String>, Option<String>)>> = entry.get("allocs").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| Some((
         x.get("id")?.as_str()?.to_string(),
         x.get("amount").and_then(|n| n.as_f64()).unwrap_or(0.0),
         x.get("note_before").and_then(|n| n.as_str()).map(String::from),
+        x.get("split_from").and_then(|n| n.as_str()).map(String::from),
+        x.get("bank_txn_id").and_then(|n| n.as_str()).map(String::from),
     ))).collect());
     let link_rows = |q: &str, params: &[&dyn rusqlite::ToSql]| -> Result<Vec<(String, f64)>, String> {
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -6496,14 +6530,33 @@ pub async fn undo_resold_cost(from_id: String, to_id: String, at: String) -> Res
             .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
         Ok(v)
     };
-    let links: Vec<(String, Option<String>)> = match &recorded_allocs {
+    // (link id, note to restore, the row it was split from when that row is back on the refunded deal)
+    let links: Vec<(String, Option<String>, Option<String>)> = match &recorded_allocs {
         Some(recs) => {
-            for (aid, a_amt, _) in recs {
+            let mut out = Vec::new();
+            for (aid, a_amt, note, split_from, txn) in recs {
                 let now_on = link_rows("SELECT deal_flow_id, amount FROM bank_allocation WHERE id=?1", &[aid])?;
-                match now_on.first() {
-                    Some((deal, cur)) if deal == &to_id && (cur - a_amt).abs() <= 0.01 => {}
-                    _ => return Err(format!("A supplier payment the move took to {} has been moved or changed since, so it cannot be undone automatically. Relink it by hand first.", to_inv)),
-                }
+                let id = match now_on.first() {
+                    Some((deal, cur)) if deal == &to_id && (cur - a_amt).abs() <= 0.01 => aid.clone(),
+                    _ => {
+                        // Relinked by hand since: the same bank payment, one row of the same amount.
+                        let same = match txn {
+                            Some(t) => link_rows("SELECT id, amount FROM bank_allocation WHERE deal_flow_id=?1 AND role='supplier_payment' AND bank_txn_id=?2",
+                                                 &[&to_id, t])?.into_iter().filter(|(_, a)| (a - a_amt).abs() <= 0.01).collect::<Vec<_>>(),
+                            None => Vec::new(),
+                        };
+                        match same.as_slice() {
+                            [(id, _)] => id.clone(),
+                            _ => return Err(format!("A supplier payment the move took to {} has been moved or changed since, so it cannot be undone automatically. Link that payment back to this deal by hand and remove the resold cost lines.", to_inv)),
+                        }
+                    }
+                };
+                let back_into = match split_from {
+                    Some(src) => link_rows("SELECT deal_flow_id, amount FROM bank_allocation WHERE id=?1", &[src])?
+                        .first().filter(|(deal, _)| deal == &from_id).map(|_| src.clone()),
+                    None => None,
+                };
+                out.push((id, note.clone(), back_into));
             }
             let moved_bank = entry.get("moved_bank").and_then(|v| v.as_f64());
             let recorded_sum: f64 = recs.iter().map(|r| r.1).sum();
@@ -6512,7 +6565,7 @@ pub async fn undo_resold_cost(from_id: String, to_id: String, at: String) -> Res
                     return Err("The record of this move does not add up, so it cannot be undone automatically.".into());
                 }
             }
-            recs.iter().map(|(id, _, note)| (id.clone(), note.clone())).collect()
+            out
         }
         None => {
             let found = link_rows(
@@ -6528,7 +6581,7 @@ pub async fn undo_resold_cost(from_id: String, to_id: String, at: String) -> Res
                     return Err(format!("A supplier payment on {} changed after the move, so it cannot be undone automatically. Relink it by hand first.", to_inv));
                 }
             }
-            found.into_iter().map(|(id, _)| (id, None)).collect()
+            found.into_iter().map(|(id, _)| (id, None, None)).collect()
         }
     };
     // A supplier payment linked to the new deal after the move would stay there with no cost.
@@ -6543,7 +6596,29 @@ pub async fn undo_resold_cost(from_id: String, to_id: String, at: String) -> Res
     // Everything checks out: write.
     let now = Utc::now().to_rfc3339();
     let mut links_back = 0;
-    for (aid, note_before) in &links {
+    for (aid, note_before, back_into) in &links {
+        if let Some(src) = back_into {
+            // A link the move split: its amount goes back into the row it was cut from (which is
+            // on the refunded deal again), so an earlier move that took that whole row can still
+            // be undone. The split row's money lives on in that row; nothing is lost.
+            let (amount, src_amount): (f64, f64) = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                let a: f64 = conn.query_row("SELECT amount FROM bank_allocation WHERE id=?1", [aid], |r| r.get(0)).map_err(|e| e.to_string())?;
+                let b: f64 = conn.query_row("SELECT amount FROM bank_allocation WHERE id=?1", [src], |r| r.get(0)).map_err(|e| e.to_string())?;
+                (a, b)
+            };
+            let merged = r2(src_amount + amount);
+            let mut cols = Map::new();
+            cols.insert("amount".into(), json!(merged));
+            cols.insert("updated_at".into(), json!(now));
+            sync::record_upsert("bank_allocation", src, cols).map_err(|e| e.to_string())?;
+            sync::record_delete("bank_allocation", aid).map_err(|e| e.to_string())?;
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("UPDATE bank_allocation SET amount=?1, updated_at=?2 WHERE id=?3", rusqlite::params![merged, now, src]).map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM bank_allocation WHERE id=?1", [aid]).map_err(|e| e.to_string())?;
+            links_back += 1;
+            continue;
+        }
         let mut cols = Map::new();
         cols.insert("deal_flow_id".into(), json!(from_id));
         if let Some(n) = note_before { cols.insert("note".into(), json!(n)); }
@@ -27249,5 +27324,97 @@ mod r438_review_tests {
         assert_eq!((linked(&a), linked(&b), linked(&c)), (8000.0, 0.0, 0.0));
         let goods = |id: &str| read_df(id).unwrap().supplier_payments.iter().map(|p| p.amount).sum::<f64>();
         assert_eq!((goods(&a), goods(&b), goods(&c)), (8000.0, 0.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod r438_followup_tests {
+    use super::*;
+
+    fn line(amount: f64, paid: bool) -> Value {
+        json!({"id": format!("sp_{}", uuid::Uuid::new_v4().simple()), "supplier_name": "X", "supplier_id": "X",
+               "amount": amount, "original_amount": null, "price_changed": false, "quantity": null, "unit_price": null,
+               "method": null, "notes": null, "paid": paid, "paid_at": null, "category": "supplier", "kept": false, "supplier_billed": false})
+    }
+    fn deal(tag: &str, total: f64, lines: Vec<Value>, stage: &str) -> String {
+        let id = format!("df-r438c-{tag}");
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r438c', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r438c', ?2, '2026-09-01', '2026-09-30', '[]', ?3, ?3, '2026-09-01')",
+            rusqlite::params![format!("inv-r438c-{tag}"), format!("INV-C-{tag}"), total]).unwrap();
+        let cost: f64 = lines.iter().map(|l| l["amount"].as_f64().unwrap()).sum();
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount, metadata)
+             VALUES (?1, ?2, ?3, '2026-09-01', '2026-09-01', ?4, ?5, ?6, '{}')",
+            rusqlite::params![id, format!("inv-r438c-{tag}"), stage, Value::Array(lines).to_string(), cost, total]).unwrap();
+        id
+    }
+    fn link(deal_id: &str, tag: &str, role: &str, amount: f64) {
+        let conn = pool().get().unwrap();
+        let dir = if role == "buyer_payment" { "in" } else { "out" };
+        let txn = format!("txn_r438c_{tag}");
+        conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, '2026-09-10', ?2, ?3)", rusqlite::params![txn, amount, dir]).unwrap();
+        conn.execute("INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role, note, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, '', '2026-09-10', '2026-09-10')",
+                     rusqlite::params![format!("al_r438c_{tag}"), txn, deal_id, amount, role]).unwrap();
+    }
+    fn at_of(id: &str) -> String {
+        serde_json::from_str::<Value>(read_df(id).unwrap().metadata.as_deref().unwrap()).unwrap()["resold_to"][0]["at"].as_str().unwrap().to_string()
+    }
+    fn linked(deal_id: &str) -> f64 {
+        pool().get().unwrap().query_row(
+            "SELECT COALESCE(SUM(amount),0) FROM bank_allocation WHERE deal_flow_id=?1 AND role='supplier_payment'", [deal_id], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn unmarking_a_resold_offset_is_refused_before_anything_is_written() {
+        let _db = crate::db::init_test_store();
+        let a = deal("um", 10000.0, vec![line(8000.0, true)], "supplier_paid");
+        link(&a, "um_in", "buyer_payment", 10000.0);
+        let b = deal("umb", 9000.0, vec![], "payment_received");
+        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        let before = read_df(&a).unwrap();
+        let offset = before.supplier_payments.iter().find(|p| p.amount < 0.0).unwrap().id.clone();
+        assert_eq!(unmark_supplier_payment_paid(a.clone(), offset).await.unwrap_err(), RESOLD_LINE_LOCKED);
+        let after = read_df(&a).unwrap();
+        assert_eq!((after.stage.as_str(), after.gross_revenue, after.completed_at.clone()), ("complete", before.gross_revenue, before.completed_at.clone()));
+    }
+
+    #[tokio::test]
+    async fn paying_the_source_bill_settles_its_offset_so_undo_is_refused_and_unmarking_reopens_it() {
+        let _db = crate::db::init_test_store();
+        let a = deal("sp", 10000.0, vec![line(8000.0, false)], "payment_received");
+        let b = deal("spb", 9000.0, vec![], "payment_received");
+        move_resold_cost(a.clone(), b.clone(), 3000.0).await.unwrap();
+        let src = read_df(&a).unwrap().supplier_payments.iter().find(|p| p.amount > 0.0).unwrap().id.clone();
+        mark_supplier_payment_paid(a.clone(), src.clone()).await.unwrap();
+        assert!(read_df(&a).unwrap().supplier_payments.iter().all(|p| p.paid));
+        assert!(undo_resold_cost(a.clone(), b.clone(), at_of(&a)).await.unwrap_err().contains("marked paid or unpaid"));
+        assert_eq!(read_df(&b).unwrap().supplier_owed, 3000.0);
+        unmark_supplier_payment_paid(a.clone(), src).await.unwrap();
+        assert!(read_df(&a).unwrap().supplier_payments.iter().all(|p| !p.paid));
+        undo_resold_cost(a.clone(), b.clone(), at_of(&a)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_split_chain_undoes_back_to_where_it_started() {
+        let _db = crate::db::init_test_store();
+        let a = deal("sa", 10000.0, vec![line(8000.0, true)], "payment_received");
+        link(&a, "sa_sup", "supplier_payment", 8000.0);
+        let b = deal("sb", 9000.0, vec![], "payment_received");
+        let c = deal("sc", 9500.0, vec![], "payment_received");
+        move_resold_cost(a.clone(), b.clone(), 8000.0).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        move_resold_cost(b.clone(), c.clone(), 5000.0).await.unwrap();
+        assert_eq!((linked(&b), linked(&c)), (3000.0, 5000.0));
+        undo_resold_cost(b.clone(), c.clone(), at_of(&b)).await.unwrap();
+        assert_eq!((linked(&b), linked(&c)), (8000.0, 0.0));
+        let rows: i64 = pool().get().unwrap().query_row(
+            "SELECT COUNT(*) FROM bank_allocation WHERE bank_txn_id='txn_r438c_sa_sup'", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1);
+        undo_resold_cost(a.clone(), b.clone(), at_of(&a)).await.unwrap();
+        assert_eq!((linked(&a), linked(&b), linked(&c)), (8000.0, 0.0, 0.0));
     }
 }

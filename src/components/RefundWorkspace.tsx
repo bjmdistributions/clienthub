@@ -343,7 +343,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
           <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
             <CheckCircle2 size={13} /> Refund closed
           </span>
-        ) : remaining > 0.005 ? (
+        ) : remaining > 0.01 ? (
           <span className="flex items-center gap-1.5 text-[11px] font-semibold text-danger-ink">
             <AlertTriangle size={12} /> {fmtAmount(remaining)} still to send back
           </span>
@@ -671,11 +671,11 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
 
           {/* 5 · Remaining owed */}
           {(refundOwed > 0 || totalRefunded > 0) && (
-            <div className={`flex items-center justify-between rounded-lg px-3 py-2 border ${remaining > 0 ? "bg-danger-bg border-danger" : "bg-success-bg border-success"}`}>
-              <span className={`text-[12px] font-medium ${remaining > 0 ? "text-danger-ink" : "text-success-ink"}`}>
-                {remaining > 0 ? "Still owed to customer" : "Fully refunded"}
+            <div className={`flex items-center justify-between rounded-lg px-3 py-2 border ${remaining > 0.01 ? "bg-danger-bg border-danger" : "bg-success-bg border-success"}`}>
+              <span className={`text-[12px] font-medium ${remaining > 0.01 ? "text-danger-ink" : "text-success-ink"}`}>
+                {remaining > 0.01 ? "Still owed to customer" : "Fully refunded"}
               </span>
-              <span className={`tabular-nums font-bold ${remaining > 0 ? "text-danger-ink" : "text-success-ink"}`}>
+              <span className={`tabular-nums font-bold ${remaining > 0.01 ? "text-danger-ink" : "text-success-ink"}`}>
                 {fmtAmount(remaining)}
               </span>
             </div>

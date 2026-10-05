@@ -801,7 +801,7 @@ function DealFlowCard({
     : flow.invoice_total;
   const wholeDeal = refundScope > 0.01 && refundScope + 0.01 >= dealValue;
   const settled   = refundScope > 0.01 && refundPaid + 0.01 >= refundScope;
-  const refundLeft = Math.max(refundScope - refundPaid, 0);
+  const refundLeft = Math.max(Math.round((refundScope - refundPaid) * 100) / 100, 0);
   const refundState: "full" | "full-owed" | "part" | "part-owed" | null =
     !refund ? null
     : wholeDeal ? (settled ? "full" : "full-owed")
@@ -1053,7 +1053,7 @@ function DealFlowCard({
               <span className="text-[15px] font-bold text-danger-ink">Fully refunded</span>
               <span className="ml-auto text-[12px] text-danger-ink tabular-nums">
                 {fmtAmount(refundPaid)} of {fmtAmount(refundOwed > 0.005 ? refundOwed : dealValue)} refunded
-                {refundLeft > 0.005 ? ` · ${fmtAmount(refundLeft)} still owed` : refundDone ? " · refund closed" : ""}
+                {refundLeft > 0.01 ? ` · ${fmtAmount(refundLeft)} still owed` : refundDone ? " · refund closed" : ""}
               </span>
             </div>
           )}
