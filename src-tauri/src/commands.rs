@@ -28118,31 +28118,31 @@ mod r444_analytics_refunds_tests {
     async fn refunded_deals_list_on_their_close_date_with_why_a_loss_remains() {
         let _db = crate::db::init_test_store();
         // Cancelled: refunded in full, the supplier paid back.
-        let a = done("a", 10000.0, 8000.0, "2026-09-20", 10000.0);
-        link(&a, "a_sup", "supplier_payment", 8000.0, "2026-09-12");
-        link(&a, "a_out", "refund_out", 10000.0, "2026-10-03");
-        link(&a, "a_in", "refund_in", 8000.0, "2026-10-04");
+        let a = done("a", 10000.0, 8000.0, "2031-03-20", 10000.0);
+        link(&a, "a_sup", "supplier_payment", 8000.0, "2031-03-12");
+        link(&a, "a_out", "refund_out", 10000.0, "2031-04-03");
+        link(&a, "a_in", "refund_in", 8000.0, "2031-04-04");
         recompute_completed_deal(&a, None).unwrap();
         // Still a loss: refunded in full, the supplier cost still here.
-        let b = done("b", 5000.0, 4000.0, "2026-09-25", 5000.0);
-        link(&b, "b_out", "refund_out", 5000.0, "2026-10-02");
+        let b = done("b", 5000.0, 4000.0, "2031-03-25", 5000.0);
+        link(&b, "b_out", "refund_out", 5000.0, "2031-04-02");
         // Not refunded: not listed.
-        done("c", 7000.0, 5000.0, "2026-09-26", 0.0);
-        // Closed in October: outside a September range.
-        let d = done("d", 3000.0, 2000.0, "2026-10-02", 500.0);
-        link(&d, "d_out", "refund_out", 500.0, "2026-10-04");
+        done("c", 7000.0, 5000.0, "2031-03-26", 0.0);
+        // Closed in April: outside a March range (a year no other test uses: the test store is shared).
+        let d = done("d", 3000.0, 2000.0, "2031-04-02", 500.0);
+        link(&d, "d_out", "refund_out", 500.0, "2031-04-04");
 
-        let r = analytics_refunds("2026-09-01".into(), "2026-09-30".into()).await.unwrap();
+        let r = analytics_refunds("2031-03-01".into(), "2031-03-31".into()).await.unwrap();
         let deals = r["deals"].as_array().unwrap();
         assert_eq!(deals.len(), 2);
         let by = |id: &str| deals.iter().find(|x| x["deal_flow_id"] == json!(id)).unwrap().clone();
         assert_eq!((by(&a)["status"].as_str(), by(&a)["profit"].as_f64()), (Some("cancelled"), Some(0.0)));
         assert_eq!((by(&b)["status"].as_str(), by(&b)["profit"].as_f64()), (Some("cost_here"), Some(-4000.0)));
-        assert_eq!(by(&a)["refunded_on"].as_str(), Some("2026-10-03"));
+        assert_eq!(by(&a)["refunded_on"].as_str(), Some("2031-04-03"));
         assert_eq!(r["totals"]["refunded"].as_f64(), Some(15000.0));
         assert_eq!((r["totals"]["cancelled"].as_i64(), r["totals"]["loss_deals"].as_i64()), (Some(1), Some(1)));
         // The page's other refund figure counts the same refunds on the same dates.
-        let range = get_analytics_range("2026-09-01".into(), "2026-09-30".into()).await.unwrap();
+        let range = get_analytics_range("2031-03-01".into(), "2031-03-31".into()).await.unwrap();
         assert_eq!((range["refunded_in_range"].as_f64(), range["refunded_deals"].as_i64()), (Some(15000.0), Some(2)));
     }
 }
