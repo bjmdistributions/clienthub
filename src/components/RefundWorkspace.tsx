@@ -150,6 +150,10 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
   const [resellQuery, setResellQuery] = useState("");
   const [resellTo, setResellTo] = useState<DealFlow | null>(null);
   const [resellAmt, setResellAmt] = useState("");
+  // R-442: what the goods cost the new deal: the refunds paid to this deal's buyer (a buy-back,
+  // each payment ticked) or this deal's supplier cost (the R-435 move).
+  const [resellMode, setResellMode] = useState<"refunds" | "cost">("refunds");
+  const [resellPicked, setResellPicked] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -203,7 +207,9 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
   const refundScope = Math.max(refundOwed, totalRefunded);
   const settled = refundScope > 0.005 && remaining <= 0.01;
 
-  const hasActivity = refundScope > 0.005 || refunds.length > 0;
+  // R-442: refunds that became another deal's cost leave nothing owed here; the step still shows the move.
+  const boughtBack = resoldMoves(flow, "resold_to").filter((m) => !m.undone_at && m.kind === "refunds");
+  const hasActivity = refundScope > 0.005 || refunds.length > 0 || boughtBack.length > 0;
   // As the primary view (refund mode) it's always open — no collapse.
   const open = primary ? true : (openOverride ?? hasActivity);
 
@@ -288,6 +294,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
   const openResell = async () => {
     setResell(true); setResellTo(null); setResellQuery("");
     setResellAmt(goodsLeft > 0 ? goodsLeft.toFixed(2) : "");
+    setResellMode(canRefunds ? "refunds" : "cost"); setResellPicked([]);
     const all = await api.listDealFlows().catch(() => [] as DealFlow[]);
     setResellDeals(all.filter((d) => d.id !== dealFlowId));
   };
@@ -315,8 +322,30 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
       setResell(false); setResellTo(null);
     });
   };
+  // A deal moves its supplier cost or turns its refunds into the new deal's cost, never both.
+  const costMoved = liveResoldTo.some((m) => m.kind !== "refunds");
+  const canRefunds = refunds.length > 0 && boughtBack.length === 0 && !costMoved;
+  const canCost = goodsLeft > 0.005 && boughtBack.length === 0;
+  const pickedTotal = Math.round(refunds.filter((r) => resellPicked.includes(r.id)).reduce((s, r) => s + r.amount, 0) * 100) / 100;
+  const moveRefunds = () => {
+    if (!resellTo) { setErr("Pick the new buyer's deal."); return; }
+    if (resellPicked.length === 0) { setErr("Tick the refund payments that bought the goods back."); return; }
+    const theirs = (resellTo.supplier_payments ?? [])
+      .filter((p) => !p.kept && (p.category || "supplier") === "supplier" && !isResoldLine(p))
+      .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    if (theirs > 0.005 && !confirm(`${resellTo.invoice_number || "That deal"} already has ${fmtAmount(theirs)} of goods cost. If that is these same goods, adding ${fmtAmount(pickedTotal)} there counts them twice; remove that cost first. Continue anyway?`)) return;
+    run(async () => {
+      const r = await api.moveResoldRefunds(dealFlowId, resellTo.id, resellPicked);
+      toast(`${fmtAmount(r.moved)} of refunds is now the supplier cost of ${resellTo.invoice_number || "the new deal"}`
+        + (r.moved_bank > 0.005 ? `, with ${fmtAmount(r.moved_bank)} of bank payments linked` : "") + ".");
+      setResell(false); setResellTo(null); setResellPicked([]);
+    });
+  };
   const undoResold = (m: ResoldMove) => {
-    if (!confirm(`Undo this resold move? ${fmtAmount(m.amount)} of cost comes back to this deal from ${m.invoice_number || "the other deal"}, and the supplier payment that moved with it comes back too.`)) return;
+    const ask = m.kind === "refunds"
+      ? `Undo this? The ${fmtAmount(m.amount)} becomes refunds to ${m.buyer || "the buyer"} on this deal again, with its bank payments, and comes off ${m.invoice_number || "the other deal"}'s cost.`
+      : `Undo this resold move? ${fmtAmount(m.amount)} of cost comes back to this deal from ${m.invoice_number || "the other deal"}, and the supplier payment that moved with it comes back too.`;
+    if (!confirm(ask)) return;
     run(async () => {
       await api.undoResoldCost(dealFlowId, m.deal_flow_id, m.at);
       toast("Resold move undone");
@@ -351,6 +380,8 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
           <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
             <CheckCircle2 size={13} /> Settled, ready to close
           </span>
+        ) : boughtBack.length > 0 ? (
+          <span className="text-[11px] text-muted">Bought back and resold</span>
         ) : (
           <span className="text-[11px] text-muted">Start a refund</span>
         )}
@@ -692,6 +723,14 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
               {liveResoldTo.map((m) => (
                 <div key={m.at} className="flex items-center gap-2 text-[12px] py-1">
                   <ArrowUpRight size={13} className="text-muted flex-shrink-0" />
+                  {m.kind === "refunds" ? (
+                  <span className="flex-1 min-w-0 text-ink">
+                    {fmtAmount(m.amount)} of refunds to {m.buyer || "the buyer"} became the supplier cost of{" "}
+                    <button onClick={() => m.invoice_number && openDealFlow(m.invoice_number, "supplier")}
+                      className="text-accent hover:text-accent-hover underline underline-offset-2">{m.invoice_number || "the other deal"}</button>
+                    {(m.moved_bank || 0) > 0.005 ? `, with ${fmtAmount(m.moved_bank || 0)} of bank payments` : ""}. This deal's sale stands.
+                  </span>
+                  ) : (
                   <span className="flex-1 min-w-0 text-ink">
                     {fmtAmount(m.amount)} of cost moved to{" "}
                     <button onClick={() => m.invoice_number && openDealFlow(m.invoice_number, "supplier")}
@@ -700,6 +739,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
                       : m.moved_bank > 0.005 ? `, with ${fmtAmount(m.moved_bank)} of the supplier's bank payment`
                       : ". No bank payment was linked to move"}
                   </span>
+                  )}
                   {!locked && (
                     <button onClick={() => undoResold(m)} disabled={busy}
                       className="text-[11px] text-muted hover:text-ink-2 flex-shrink-0">Undo</button>
@@ -710,22 +750,22 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
                 <div key={m.at} className="flex items-center gap-2 text-[12px] py-1">
                   <ArrowDownLeft size={13} className="text-muted flex-shrink-0" />
                   <span className="flex-1 min-w-0 text-ink">
-                    {fmtAmount(m.amount)} of cost came from{" "}
+                    {fmtAmount(m.amount)} of cost {m.kind === "refunds" ? `is the buy-back from ${m.buyer || "the buyer"} on` : "came from"}{" "}
                     <button onClick={() => m.invoice_number && openDealFlow(m.invoice_number, "refund")}
                       className="text-accent hover:text-accent-hover underline underline-offset-2">{m.invoice_number || "the refunded deal"}</button>
-                    , a refunded load sold again here. Undo it from that deal's refund step.
+                    {m.kind === "refunds" ? ", the refunds paid there. Undo it from that deal's refund step." : ", a refunded load sold again here. Undo it from that deal's refund step."}
                   </span>
                 </div>
               ))}
               {refundScope > 0.005 && (
                 <div className="text-[10.5px] text-muted mt-1">
-                  Sold these goods again on a new invoice? Move their cost to that deal. This deal keeps only what its buyer kept,
-                  and the new deal carries what the goods really cost, with the supplier payment linked to it. The buyer's refund here does not change.
+                  Sold these goods again on a new invoice? Say what they cost the new deal: the refunds you paid this buyer to take them
+                  back (those payments become the new deal's supplier payments and this sale stands), or this deal's supplier cost.
                 </div>
               )}
-              {refundScope > 0.005 && !locked && !resell && goodsLeft > 0.005 && (
+              {refundScope > 0.005 && !locked && !resell && (canCost || canRefunds) && (
                 <button onClick={openResell}
-                  className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><ArrowUpRight size={12} /> Move the cost to the new deal</button>
+                  className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><ArrowUpRight size={12} /> Resold on a new deal</button>
               )}
               {resell && !locked && (
                 <div className="space-y-2 mt-2 bg-surface-2 rounded-lg p-2.5">
@@ -755,16 +795,56 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
                       <button onClick={() => setResellTo(null)} title="Pick another" className="text-faint hover:text-ink-2"><X size={13} /></button>
                     </div>
                   )}
-                  <div className="flex items-center gap-2">
+                  <div className="text-[11.5px] font-medium text-ink-2 pt-1">What did the goods cost the new deal?</div>
+                  {canRefunds && (
+                    <label className="flex items-start gap-2 text-[12px] text-ink cursor-pointer">
+                      <input type="radio" checked={resellMode === "refunds"} onChange={() => setResellMode("refunds")} className="mt-0.5 accent-[rgb(var(--c-accent))]" />
+                      <span>What I refunded {flow?.client_name || "this buyer"}. Tick the payments that bought the goods back; they become the new deal's supplier payments.</span>
+                    </label>
+                  )}
+                  {resellMode === "refunds" && canRefunds && (
+                    <div className="pl-5 space-y-0.5">
+                      {refunds.map((r) => (
+                        <label key={r.id} className="flex items-center gap-2 text-[12px] py-1 cursor-pointer">
+                          <input type="checkbox" checked={resellPicked.includes(r.id)} className="accent-[rgb(var(--c-accent))]"
+                            onChange={(e) => setResellPicked((v) => e.target.checked ? [...v, r.id] : v.filter((x) => x !== r.id))} />
+                          <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{r.refunded_at ? fmtDate(r.refunded_at) : ""}</span>
+                          <span className="flex-1 min-w-0 truncate">
+                            {r.bank_txn_id
+                              ? <span className="inline-flex items-center gap-1 text-[10.5px] text-success-ink mr-1.5 align-middle"><Link2 size={10} /> linked</span>
+                              : <span className="text-[10.5px] text-muted mr-1.5">custom</span>}
+                            {r.reason || "Refund"}
+                          </span>
+                          <span className="tabular-nums">{fmtAmount(r.amount)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  {canCost && (
+                    <label className="flex items-start gap-2 text-[12px] text-ink cursor-pointer">
+                      <input type="radio" checked={resellMode === "cost"} onChange={() => setResellMode("cost")} className="mt-0.5 accent-[rgb(var(--c-accent))]" />
+                      <span>This deal's supplier cost. It moves to the new deal with its supplier payment, and the refund here stays.</span>
+                    </label>
+                  )}
+                  {resellMode === "cost" && canCost && (
+                  <div className="flex items-center gap-2 pl-5">
                     <span className="text-[11.5px] text-muted flex-1">Cost of what was resold</span>
                     <input value={resellAmt} onChange={(e) => setResellAmt(e.target.value)} inputMode="decimal" placeholder="0.00"
                       className="bg-surface border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums text-right" />
                   </div>
+                  )}
                   <div className="flex items-center gap-2">
+                    {resellMode === "refunds" ? (
+                    <button onClick={moveRefunds} disabled={busy || !resellTo || resellPicked.length === 0}
+                      className="flex-1 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+                      {resellTo && resellPicked.length > 0 ? `Make ${fmtAmount(pickedTotal)} the cost of ${resellTo.invoice_number || "this deal"}` : "Tick the refund payments"}
+                    </button>
+                    ) : (
                     <button onClick={moveResold} disabled={busy || !resellTo || !(resellNum > 0)}
                       className="flex-1 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
                       {resellTo && resellNum > 0 ? `Move ${fmtAmount(resellNum)} to ${resellTo.invoice_number || "this deal"}` : "Move the cost"}
                     </button>
+                    )}
                     <button onClick={() => setResell(false)} className="h-8 px-3 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2">Cancel</button>
                   </div>
                 </div>

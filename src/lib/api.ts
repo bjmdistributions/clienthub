@@ -2757,13 +2757,17 @@ export interface ResoldMove {
   moved_bank?: number;
   at: string;
   undone_at?: string;
+  /** R-442: "refunds" when refund payments to the first buyer became the new deal's cost (a buy-back). */
+  kind?: "refunds";
+  /** R-442: the first buyer, the payee of a buy-back. */
+  buyer?: string;
 }
 export function resoldMoves(flow: { metadata?: string | null } | null | undefined, key: "resold_to" | "resold_from"): ResoldMove[] {
   try { return (JSON.parse(flow?.metadata || "{}")[key] || []) as ResoldMove[]; } catch { return []; }
 }
 /** R-438: a cost line written by a resold move; one half of a pair, never edited alone. */
 export const isResoldLine = (p: { notes?: string | null }) =>
-  !!p.notes && (p.notes.startsWith("Resold: cost moved to ") || p.notes.startsWith("Resold from "));
+  !!p.notes && (p.notes.startsWith("Resold: cost moved to ") || p.notes.startsWith("Resold from ") || p.notes.startsWith("Bought back from "));
 /** R-438: open one deal in Deal Flow on one step, from anywhere (including Deal Flow itself). */
 export function openDealFlow(invoiceNumber: string, section: string = "supplier") {
   try {
@@ -3515,6 +3519,9 @@ export const api = {
   // R-438: take a resold move back (identified by the deal it went to and its `at` stamp).
   undoResoldCost: (fromId: string, toId: string, at: string) =>
     invoke<{ amount: number; links_back: number }>("undo_resold_cost", { fromId, toId, at }),
+  // R-442: the ticked refund payments to this deal's buyer become the new deal's supplier payments.
+  moveResoldRefunds: (fromId: string, toId: string, refundIds: string[]) =>
+    invoke<{ moved: number; moved_bank: number }>("move_resold_refunds", { fromId, toId, refundIds }),
   // R-277 freight tracking (Priority1 emails)
   listShipments: () => invoke<Shipment[]>("list_shipments"),
   linkShipment: (id: string, dealFlowId: string) => invoke<void>("link_shipment", { id, dealFlowId }),
