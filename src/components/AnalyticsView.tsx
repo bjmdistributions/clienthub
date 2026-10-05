@@ -198,7 +198,8 @@ function presetRange(label: string): { start: string; end: string } {
 
 // A negative figure reads "-$4,260.00" through fmtAmount, which puts the sign in the
 // wrong place. Money that can go negative on this screen wears a real minus in front.
-const signed = (n: number) => (n < 0 ? "−" + fmtAmount(Math.abs(n)) : fmtAmount(n));
+// Under half a cent is zero, so a float leftover never prints as "-0.00".
+const signed = (n: number) => (Math.abs(n) < 0.005 ? fmtAmount(0) : n < 0 ? "−" + fmtAmount(Math.abs(n)) : fmtAmount(n));
 
 // Jack, 2026-09-16: "im questioning why all dates say 26th of each month. why not just
 // say the month." The old format was { month: "short", year: "2-digit" }, so 2026
@@ -259,13 +260,24 @@ export default function AnalyticsView() {
   // every animation frame — and this view owns thirteen charts, so each frame was
   // thirteen recharts layout passes. The figures render immediately instead.
 
+  // R-444: only the latest range's refunds land, and the old list goes as a new range starts,
+  // so the card never shows one range's deals under another's heading.
+  const refundsSeq = useRef(0);
+  const loadRefunds = (start: string, end: string) => {
+    const seq = ++refundsSeq.current;
+    setRefunds(null);
+    api.analyticsRefunds(start, end)
+      .then((r) => { if (seq === refundsSeq.current) setRefunds(r); })
+      .catch(() => { if (seq === refundsSeq.current) setRefunds(null); });
+  };
+
   const loadRange = async (start: string, end: string) => {
     setBars(false);
     try { setRange(await api.getAnalyticsRange(start, end)); } catch {}
     // Reconciliation is its own read and is allowed to fail on its own: it must never
     // be the reason the rest of the screen shows nothing.
     api.analyticsReconciliation(start, end).then(setRecon).catch(() => setRecon(null));
-    api.analyticsRefunds(start, end).then(setRefunds).catch(() => setRefunds(null));
+    loadRefunds(start, end);
     api.analyticsLabels(start, end).then(setLabels).catch(() => setLabels(null));
     setTimeout(() => setBars(true), 120);
   };
@@ -300,7 +312,7 @@ export default function AnalyticsView() {
       api.financialsOverview().then(setMoney).catch(() => {});
       api.listClientsFiltered({}).then(setClients).catch(() => setClients(null));
       api.analyticsReconciliation(startDate, endDate).then(setRecon).catch(() => setRecon(null));
-      api.analyticsRefunds(startDate, endDate).then(setRefunds).catch(() => setRefunds(null));
+      loadRefunds(startDate, endDate);
       api.analyticsLabels(startDate, endDate).then(setLabels).catch(() => setLabels(null));
     } catch {}
     setLoading(false);
@@ -672,7 +684,7 @@ export default function AnalyticsView() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-5 mb-5">
             <Stat label="Refunded" value={signed(-refunds.totals.refunded)}
               color={refunds.totals.refunded > 0 ? CLR.rose : undefined}
-              hint={`${refunds.totals.deals} deal${refunds.totals.deals !== 1 ? "s" : ""}`} />
+              hint={`${refunds.totals.refunded_deals} deal${refunds.totals.refunded_deals !== 1 ? "s" : ""}`} />
             <Stat label="Cancelled out" value={String(refunds.totals.cancelled)}
               hint="The refund undid the sale" />
             <Stat label="Still a loss" value={refunds.totals.loss_deals ? signed(refunds.totals.loss_total) : "None"}
@@ -709,7 +721,7 @@ export default function AnalyticsView() {
                       <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap text-ink-2">{fmtAmount(d.sold)}</td>
                       <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap">
                         <span style={d.refunded > 0 ? { color: CLR.rose } : undefined}>{d.refunded > 0 ? signed(-d.refunded) : "–"}</span>
-                        <span className="text-[11px] text-faint ml-1.5">{d.full ? "full" : "part"}</span>
+                        {d.refunded > 0.005 && <span className="text-[11px] text-faint ml-1.5">{d.full ? "full" : "part"}</span>}
                       </td>
                       <td className="py-2.5 px-3 text-right tabular-nums font-medium whitespace-nowrap"
                         style={{ color: d.profit > 0.5 ? CLR.emerald : d.profit < -0.5 ? CLR.rose : undefined }}>{signed(d.profit)}</td>

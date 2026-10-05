@@ -5960,7 +5960,10 @@ fn deal_bank_actuals(
     // precedence means "a leg with a bank link uses its bank total", and a $25 wire
     // fee says nothing about what the goods cost.
     let has_supplier_link = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role='supplier_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
-    let has_cost_link = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role IN ('supplier_payment','fee') AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
+    // R-444: supplier money back (`refund_in`) is a cost link too, so linking it lowers the
+    // entered cost on a deal whose supplier was never paid through a linked bank row (it was
+    // ignored there, and a fully refunded deal kept reading as a loss of the whole cost).
+    let has_cost_link = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role IN ('supplier_payment','fee','refund_in') AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
     let any_link      = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
 
     let facts = ship_facts(conn, deal_flow_id);
@@ -14252,7 +14255,7 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
     // than the brief's paid-invoice revenue, so this screen adds up internally. ───────
 
     let (loss_deals, loss_total): (i64, f64) = conn.query_row(
-        &format!("SELECT COUNT(*), COALESCE(SUM({NP}),0) {df} AND {NP} < 0"), p,
+        &format!("SELECT COUNT(*), COALESCE(SUM({NP}),0) {df} AND {NP} < -0.5"), p,
         |r| Ok((r.get(0)?, r.get(1)?))
     ).unwrap_or((0, 0.0));
 
@@ -14398,7 +14401,7 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
 //    nearest line.
 
 /// Cents. A float residue of 1e-11 must never render as "does not tie".
-fn to_cents(n: f64) -> f64 { (n * 100.0).round() / 100.0 }
+fn to_cents(n: f64) -> f64 { (n * 100.0).round() / 100.0 + 0.0 } // + 0.0: never a "-0.00"
 
 /// The seven range-scoped ledger figures the bridge is built from, each read through the
 /// same constants `get_analytics_range` uses.
@@ -14491,6 +14494,16 @@ pub(crate) fn refunded_deal_status(gross: f64, refunded: f64, owed: f64, cost: f
 /// date (Jack chose this over the month it was paid). Also: what is still owed back across every
 /// deal, and supplier money in the bank linked to no deal (R-323), which is why a fully refunded
 /// deal can still read as a loss.
+/// R-444: the Central day a refund went out. A typed refund's `refunded_at` is the UTC instant
+/// it was recorded (an evening entry is the next day in UTC); a bank refund's date is already a
+/// day. The later of the two.
+fn refund_day(typed_at: &str, bank_day: &str) -> String {
+    let typed = chrono::DateTime::parse_from_rfc3339(typed_at).ok()
+        .map(|t| t.with_timezone(&chrono_tz::America::Chicago).date_naive().to_string())
+        .unwrap_or_else(|| typed_at.get(..10).unwrap_or("").to_string());
+    if typed.as_str() > bank_day { typed } else { bank_day.to_string() }
+}
+
 #[tauri::command]
 pub async fn analytics_refunds(start_date: String, end_date: String) -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -14500,13 +14513,10 @@ pub async fn analytics_refunds(start_date: String, end_date: String) -> Result<V
                 COALESCE(df.gross_revenue,0), {DF_REFUNDS_SQL}, COALESCE(df.refund_owed,0), COALESCE(df.total_cost,0), {DF_EFF_PROFIT_SQL}, \
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_in' \
                             AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0), \
-                COALESCE((SELECT MAX(x.d) FROM ( \
-                    SELECT r.deal_flow_id AS dfid, date(r.refunded_at) AS d FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
-                    UNION ALL \
-                    SELECT a.deal_flow_id, date(bt.posted_at) FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id \
-                     WHERE a.role='refund_out' \
-                  ) x WHERE x.dfid=df.id),''), \
-                COALESCE(df.metadata,'') \
+                COALESCE((SELECT MAX(r.refunded_at) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')=''),''), \
+                COALESCE((SELECT MAX(date(bt.posted_at)) FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id \
+                           WHERE a.deal_flow_id=df.id AND a.role='refund_out'),''), \
+                COALESCE(df.metadata,''), df.invoice_id \
          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id LEFT JOIN clients c ON c.id=i.client_id \
          WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
            AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
@@ -14515,19 +14525,21 @@ pub async fn analytics_refunds(start_date: String, end_date: String) -> Result<V
          ORDER BY df.completed_at DESC, df.id",
         one = DF_SURVIVOR_SQL);
     let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let raw: Vec<(String, String, String, String, f64, f64, f64, f64, f64, f64, String, String)> = st.query_map(p, |r| Ok((
-        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
+    let raw: Vec<(String, String, String, String, f64, f64, f64, f64, f64, f64, String, String, String, String)> = st.query_map(p, |r| Ok((
+        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?,
     ))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
-    let (mut refunded_total, mut cancelled, mut loss_deals, mut loss_total, mut owed_back) = (0.0, 0i64, 0i64, 0.0, 0.0);
-    let deals: Vec<Value> = raw.into_iter().map(|(id, inv, client, closed, gross, refunded, owed, cost, profit, refund_in, refunded_on, meta)| {
+    let (mut refunded_total, mut refunded_deals, mut cancelled, mut loss_deals, mut loss_total, mut owed_back) = (0.0, 0i64, 0i64, 0i64, 0.0, 0.0);
+    let deals: Vec<Value> = raw.into_iter().map(|(id, inv, client, closed, gross, refunded, owed, cost, profit, refund_in, typed_at, bank_day, meta, invoice_id)| {
         let status = refunded_deal_status(gross, refunded, owed, cost, profit, refund_in, has_live_cost_move(&meta));
+        let refunded_on = refund_day(&typed_at, &bank_day);
+        if refunded > 0.005 { refunded_deals += 1; }
         let remaining = to_cents((owed - refunded).max(0.0));
         refunded_total += refunded;
         owed_back += remaining;
         if status == "cancelled" { cancelled += 1; }
         if profit < -0.5 { loss_deals += 1; loss_total += profit; }
         json!({
-            "deal_flow_id": id, "invoice_number": inv, "client_name": client, "closed_on": closed.get(..10).unwrap_or(&closed),
+            "deal_flow_id": id, "invoice_id": invoice_id, "invoice_number": inv, "client_name": client, "closed_on": closed.get(..10).unwrap_or(&closed),
             "refunded_on": refunded_on, "sold": to_cents(gross), "refunded": to_cents(refunded),
             "full": gross > 0.005 && refunded >= gross - 0.5, "remaining": remaining, "cost": to_cents(cost),
             "supplier_back": to_cents(refund_in), "profit": to_cents(profit), "status": status,
@@ -14553,7 +14565,7 @@ pub async fn analytics_refunds(start_date: String, end_date: String) -> Result<V
     Ok(json!({
         "deals": deals,
         "totals": {
-            "deals": deal_count, "refunded": to_cents(refunded_total), "cancelled": cancelled,
+            "deals": deal_count, "refunded": to_cents(refunded_total), "refunded_deals": refunded_deals, "cancelled": cancelled,
             "loss_deals": loss_deals, "loss_total": to_cents(loss_total), "owed_back": to_cents(owed_back),
             "owed_back_all": to_cents(owed_back_all), "owed_back_deals": owed_back_deals,
         },
@@ -17464,6 +17476,41 @@ pub fn redate_completed_deals_r434_once() {
         crate::netsync::push_now();
     }
     tracing::info!("r434 redate: {} completed deal(s) moved to their last payment date", changes.len());
+    let _ = write_setting(MARKER, "1");
+}
+
+/// R-444, once per workspace: a completed deal with supplier money back linked (`refund_in`)
+/// but no supplier or fee bank link kept its whole entered cost, because `refund_in` did not
+/// count as a cost link (so a fully refunded deal read as a loss of that cost). The rule is
+/// fixed; this re-derives those deals once under it. Their recorded figures are written first to
+/// `r444-supplier-back-before.json` in the store folder, and nothing changes if that write fails.
+pub fn resync_supplier_back_deals_r444_once() {
+    const MARKER: &str = "r444_supplier_back_done";
+    if read_setting(MARKER).as_deref() == Some("1") { return; }
+    let rows: Vec<Value> = {
+        let conn = match pool().get() { Ok(c) => c, Err(_) => return };
+        let sql = "SELECT df.id, COALESCE(df.total_cost,0), COALESCE(df.net_profit,0), COALESCE(df.gross_revenue,0), COALESCE(df.completed_at,'')                    FROM deal_flows df WHERE df.stage='complete' AND COALESCE(df.archived,0)=0                      AND EXISTS (SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_in'                                    AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))                      AND NOT EXISTS (SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role IN ('supplier_payment','fee')                                    AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))";
+        let v: Vec<Value> = match conn.prepare(sql) {
+            Ok(mut stmt) => stmt.query_map([], |r| Ok(json!({
+                "id": r.get::<_, String>(0)?, "total_cost_before": r.get::<_, f64>(1)?, "net_profit_before": r.get::<_, f64>(2)?,
+                "gross_revenue_before": r.get::<_, f64>(3)?, "completed_at_before": r.get::<_, String>(4)?,
+            }))).map(|it| it.filter_map(|r| r.ok()).collect()).unwrap_or_default(),
+            Err(e) => { tracing::warn!("r444 supplier-back query failed: {}", e); return; }
+        };
+        v
+    };
+    if !rows.is_empty() {
+        let path = crate::db::app_data_dir().join("r444-supplier-back-before.json");
+        if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&rows).unwrap_or_default()) {
+            tracing::warn!("r444 supplier-back: backup write failed, nothing changed: {}", e);
+            return;
+        }
+        for r in &rows {
+            if let Some(id) = r["id"].as_str() { let _ = resync_completed_deal(id); }
+        }
+        crate::netsync::push_now();
+    }
+    tracing::info!("r444 supplier-back: {} completed deal(s) re-derived with their supplier money back", rows.len());
     let _ = write_setting(MARKER, "1");
 }
 
@@ -28102,6 +28149,30 @@ mod r444_analytics_refunds_tests {
         conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, ?2, ?3, ?4)", rusqlite::params![txn, posted, amount, dir]).unwrap();
         conn.execute("INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role, note, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, '', '2026-10-05', '2026-10-05')",
                      rusqlite::params![format!("al_r444_{tag}"), txn, deal, amount, role]).unwrap();
+    }
+
+    /// The review's case: a typed cost, no supplier bank link, refunded in full, then the
+    /// supplier's money back linked. It lowers the cost, so the deal cancels out.
+    #[tokio::test]
+    async fn supplier_money_back_clears_the_loss_without_a_supplier_bank_link() {
+        let _db = crate::db::init_test_store();
+        let e = done("e", 5000.0, 4000.0, "2031-05-10", 5000.0);
+        link(&e, "e_out", "refund_out", 5000.0, "2031-05-12");
+        recompute_completed_deal(&e, None).unwrap();
+        let r = analytics_refunds("2031-05-01".into(), "2031-05-31".into()).await.unwrap();
+        assert_eq!(r["deals"][0]["status"].as_str(), Some("cost_here"));
+        link(&e, "e_in", "refund_in", 4000.0, "2031-05-14");
+        recompute_completed_deal(&e, None).unwrap();
+        let r = analytics_refunds("2031-05-01".into(), "2031-05-31".into()).await.unwrap();
+        assert_eq!((r["deals"][0]["status"].as_str(), r["deals"][0]["profit"].as_f64()), (Some("cancelled"), Some(0.0)));
+        assert_eq!(r["deals"][0]["refunded_on"].as_str(), Some("2031-05-12"));
+    }
+
+    #[test]
+    fn a_typed_refund_is_dated_on_the_central_day() {
+        // 7:30pm Central on 3 Oct is 00:30 UTC on 4 Oct.
+        assert_eq!(refund_day("2026-10-04T00:30:00+00:00", ""), "2026-10-03");
+        assert_eq!(refund_day("2026-10-04T00:30:00+00:00", "2026-10-05"), "2026-10-05");
     }
 
     #[test]

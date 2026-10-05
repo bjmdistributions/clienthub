@@ -1925,12 +1925,13 @@ export interface AnalyticsRefundDeal {
   supplier_back: number;
   /** Profit after the refund. */
   profit: number;
+  invoice_id: string;
   status: "owed" | "cancelled" | "kept" | "cost_here" | "over";
 }
 export interface AnalyticsRefunds {
   deals: AnalyticsRefundDeal[];
   totals: {
-    deals: number; refunded: number; cancelled: number; loss_deals: number; loss_total: number;
+    deals: number; refunded: number; refunded_deals: number; cancelled: number; loss_deals: number; loss_total: number;
     owed_back: number; owed_back_all: number; owed_back_deals: number;
   };
   supplier_back_unlinked: number;
