@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api, AnalyticsRange, AnalyticsMonth, AnalyticsReconciliation, ReconRow, AnalyticsPace,
   DashboardStats, FinancialsOverview, BuyerTier, Client, AnalyticsLabels, LabelRow,
+  AnalyticsRefunds, AnalyticsRefundDeal, openDealFlow,
 } from "../lib/api";
 import { regionRollup, toRows } from "./globe/places";
 import { fmtAmount, fmtCompactCurrency, localDay, parseLocalDay } from "../lib/format";
@@ -232,6 +233,7 @@ export default function AnalyticsView() {
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
   const [range,     setRange]     = useState<AnalyticsRange | null>(null);
   const [recon,     setRecon]     = useState<AnalyticsReconciliation | null>(null);
+  const [refunds,   setRefunds]   = useState<AnalyticsRefunds | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);
   const [money,     setMoney]     = useState<FinancialsOverview | null>(null);
   const [clients,   setClients]   = useState<Client[] | null>(null);
@@ -263,6 +265,7 @@ export default function AnalyticsView() {
     // Reconciliation is its own read and is allowed to fail on its own: it must never
     // be the reason the rest of the screen shows nothing.
     api.analyticsReconciliation(start, end).then(setRecon).catch(() => setRecon(null));
+    api.analyticsRefunds(start, end).then(setRefunds).catch(() => setRefunds(null));
     api.analyticsLabels(start, end).then(setLabels).catch(() => setLabels(null));
     setTimeout(() => setBars(true), 120);
   };
@@ -297,6 +300,7 @@ export default function AnalyticsView() {
       api.financialsOverview().then(setMoney).catch(() => {});
       api.listClientsFiltered({}).then(setClients).catch(() => setClients(null));
       api.analyticsReconciliation(startDate, endDate).then(setRecon).catch(() => setRecon(null));
+      api.analyticsRefunds(startDate, endDate).then(setRefunds).catch(() => setRefunds(null));
       api.analyticsLabels(startDate, endDate).then(setLabels).catch(() => setLabels(null));
     } catch {}
     setLoading(false);
@@ -654,6 +658,76 @@ export default function AnalyticsView() {
           </>
         ) : <Blank h={300} text="Nothing closed in this range" />}
       </Card>
+
+      {/* ── Refunds (R-444) ───────────────────────────────────────
+          Jack: refunds "noticed and be able to view them", in Analytics. Every refunded
+          deal that closed in the range, what went back and when, and how it came out. A
+          refund comes off its deal on the day the deal closed (his choice), so these
+          figures tie to the revenue and profit above. A refunded deal still at a loss says
+          why: almost always the supplier's money back was never linked to it.
+      ─────────────────────────────────────────────────────────── */}
+      {refunds && (refunds.deals.length > 0 || refunds.totals.owed_back_all > 0.005 || refunds.supplier_back_unlinked > 0.005) && (
+        <Card title="Refunds"
+          sub="Every refunded deal that closed in this range. A refund comes off the deal's revenue and profit on the day the deal closed.">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-5 mb-5">
+            <Stat label="Refunded" value={signed(-refunds.totals.refunded)}
+              color={refunds.totals.refunded > 0 ? CLR.rose : undefined}
+              hint={`${refunds.totals.deals} deal${refunds.totals.deals !== 1 ? "s" : ""}`} />
+            <Stat label="Cancelled out" value={String(refunds.totals.cancelled)}
+              hint="The refund undid the sale" />
+            <Stat label="Still a loss" value={refunds.totals.loss_deals ? signed(refunds.totals.loss_total) : "None"}
+              color={refunds.totals.loss_deals ? CLR.rose : undefined}
+              hint={`${refunds.totals.loss_deals} refunded deal${refunds.totals.loss_deals !== 1 ? "s" : ""}`} />
+            <Stat label="Owed back" value={fmtAmount(refunds.totals.owed_back_all)}
+              color={refunds.totals.owed_back_all > 0.005 ? CLR.amber : undefined}
+              hint={refunds.totals.owed_back_deals ? `${refunds.totals.owed_back_deals} deal${refunds.totals.owed_back_deals !== 1 ? "s" : ""}, any date` : "Nothing to send back"} />
+          </div>
+          {refunds.deals.length > 0 ? (
+            <div className="overflow-x-auto -mx-5 px-5 max-h-[480px] overflow-y-auto">
+              <table className="w-full min-w-[860px] text-[12.5px]">
+                <thead className="sticky top-0 bg-surface z-10">
+                  <tr className="text-[11px] text-muted border-b border-line">
+                    <th className="text-left font-medium py-2 pr-3">Invoice</th>
+                    <th className="text-left font-medium py-2 px-3">Buyer</th>
+                    <th className="text-left font-medium py-2 px-3">Closed</th>
+                    <th className="text-left font-medium py-2 px-3">Refunded on</th>
+                    <th className="text-right font-medium py-2 px-3">Sold</th>
+                    <th className="text-right font-medium py-2 px-3">Refunded</th>
+                    <th className="text-right font-medium py-2 px-3">Result</th>
+                    <th className="text-left font-medium py-2 pl-3">How it came out</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {refunds.deals.map((d) => (
+                    <tr key={d.deal_flow_id} onClick={() => d.invoice_number && openDealFlow(d.invoice_number, "refund")}
+                      title="Open this deal's refund step"
+                      className="border-b border-line-2 hover:bg-surface-2 transition-colors cursor-pointer">
+                      <td className="py-2.5 pr-3 text-ink whitespace-nowrap">{d.invoice_number || "No number"}</td>
+                      <td className="py-2.5 px-3 text-ink-2 min-w-0"><div className="truncate max-w-[200px]">{d.client_name}</div></td>
+                      <td className="py-2.5 px-3 text-muted tabular-nums whitespace-nowrap">{d.closed_on}</td>
+                      <td className="py-2.5 px-3 text-muted tabular-nums whitespace-nowrap">{d.refunded_on || "–"}</td>
+                      <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap text-ink-2">{fmtAmount(d.sold)}</td>
+                      <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap">
+                        <span style={d.refunded > 0 ? { color: CLR.rose } : undefined}>{d.refunded > 0 ? signed(-d.refunded) : "–"}</span>
+                        <span className="text-[11px] text-faint ml-1.5">{d.full ? "full" : "part"}</span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right tabular-nums font-medium whitespace-nowrap"
+                        style={{ color: d.profit > 0.5 ? CLR.emerald : d.profit < -0.5 ? CLR.rose : undefined }}>{signed(d.profit)}</td>
+                      <td className="py-2.5 pl-3 min-w-[220px]"><RefundOutcome d={d} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <Blank h={80} text="No refunded deal closed in this range" />}
+          {refunds.supplier_back_unlinked > 0.005 && (
+            <p className="text-[11.5px] text-muted mt-4">
+              {fmtAmount(refunds.supplier_back_unlinked)} of supplier money back in the bank ({refunds.supplier_back_count} payment{refunds.supplier_back_count !== 1 ? "s" : ""} in this range)
+              is linked to no deal. Link it on the refunded deal's refund step, under supplier money back, and that deal's loss clears.
+            </p>
+          )}
+        </Card>
+      )}
 
       {/* ── Money in, money out (R-317) ───────────────────────────
           A statement, not a dashboard. Three blocks that have to agree with one
@@ -1769,6 +1843,22 @@ function Legend({ color, label, dashed, onClick, active }: {
       {body}
     </button>
   );
+}
+
+/** R-444: how a refunded deal came out, worded the same on the phone (`anRefundOutcome`). */
+function RefundOutcome({ d }: { d: AnalyticsRefundDeal }) {
+  if (d.status === "owed") return <StatusPill tone="warning">{`${fmtAmount(d.remaining)} still to send back`}</StatusPill>;
+  if (d.status === "cancelled") return <StatusPill tone="success">Cancelled out</StatusPill>;
+  if (d.status === "kept") return <StatusPill tone="neutral">Kept the rest</StatusPill>;
+  if (d.status === "cost_here") return (
+    <div className="min-w-0">
+      <StatusPill tone="danger">Supplier cost still here</StatusPill>
+      <div className="text-[11px] text-muted mt-1 whitespace-normal">
+        Link the supplier's money back on its refund step, or move the cost if the goods were resold.
+      </div>
+    </div>
+  );
+  return <StatusPill tone="danger">Refund more than it made</StatusPill>;
 }
 
 function Blank({ h = 160, text = "No data yet" }: { h?: number; text?: string }) {

@@ -1905,6 +1905,37 @@ export interface DealLabelInput {
   brand?: string;
 }
 
+/** R-444: `analytics_refunds`'s payload: every refunded deal that closed in the range, what
+ *  went back and when, and how it came out, on the same population as `get_analytics_range`. */
+export interface AnalyticsRefundDeal {
+  deal_flow_id: string;
+  invoice_number: string;
+  client_name: string;
+  closed_on: string;
+  /** The latest refund's date: the bank date of a linked one, the recorded date of a typed one. */
+  refunded_on: string;
+  sold: number;
+  refunded: number;
+  /** Refunded in full (within 50 cents of what it sold for). */
+  full: boolean;
+  /** Still to send back to the buyer. */
+  remaining: number;
+  cost: number;
+  /** Supplier money back linked to the deal (`refund_in`). */
+  supplier_back: number;
+  /** Profit after the refund. */
+  profit: number;
+  status: "owed" | "cancelled" | "kept" | "cost_here" | "over";
+}
+export interface AnalyticsRefunds {
+  deals: AnalyticsRefundDeal[];
+  totals: {
+    deals: number; refunded: number; cancelled: number; loss_deals: number; loss_total: number;
+    owed_back: number; owed_back_all: number; owed_back_deals: number;
+  };
+  supplier_back_unlinked: number;
+  supplier_back_count: number;
+}
 export interface AnalyticsReconciliation {
   bridge: ReconRow[];
   /** Largest absolute drift across the bridge's subtotals, in cents. */
@@ -4089,6 +4120,7 @@ export const api = {
   getReceivablesAging: () => invoke<ReceivablesAging>("get_receivables_aging"),
   getPayablesAging: () => invoke<PayablesAging>("get_payables_aging"),
   getAnalyticsRange: (startDate: string, endDate: string) => invoke<AnalyticsRange>("get_analytics_range", { startDate, endDate }),
+  analyticsRefunds: (startDate: string, endDate: string) => invoke<AnalyticsRefunds>("analytics_refunds", { startDate, endDate }),
   analyticsReconciliation: (startDate: string, endDate: string) =>
     invoke<AnalyticsReconciliation>("analytics_reconciliation", { startDate, endDate }),
   analyticsLabels: (startDate: string, endDate: string) =>

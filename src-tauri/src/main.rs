@@ -1035,6 +1035,7 @@ fn main() {
             get_payables_aging,
             get_analytics_range,
             analytics_reconciliation,
+            analytics_refunds,
             analytics_labels,
             list_deal_labels,
             set_deal_labels,

@@ -13925,13 +13925,11 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
            AND (?2='' OR voided_at IS NULL OR date(voided_at) <= ?2)",
         p, |r| r.get(0)
     ).unwrap_or(0);
+    // R-444: refunds on the deals that closed in the range, the same population and date the
+    // revenue and profit above take them off (it used to date them by when they were recorded,
+    // so the two disagreed whenever a refund landed in a later month).
     let refunded_in_range: f64 = conn.query_row(
-        "SELECT COALESCE((SELECT SUM(amount) FROM refunds WHERE COALESCE(bank_txn_id,'')='' \
-                           AND (?1='' OR date(created_at) >= ?1) AND (?2='' OR date(created_at) <= ?2)),0) \
-              + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.role='refund_out' \
-                           AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
-                           AND (?1='' OR date(a.created_at) >= ?1) AND (?2='' OR date(a.created_at) <= ?2)),0)",
-        p, |r| r.get(0)
+        &format!("SELECT COALESCE(SUM({DF_REFUNDS_SQL}),0) {df}"), p, |r| r.get(0)
     ).unwrap_or(0.0);
 
     // R-313: shipping/fee overhead over the same range, netted and de-duplicated against
@@ -14258,14 +14256,9 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         |r| Ok((r.get(0)?, r.get(1)?))
     ).unwrap_or((0, 0.0));
 
+    // R-444: the deals that closed in the range with a refund on them (see `refunded_in_range`).
     let refunded_deals: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT x.dfid) FROM ( \
-            SELECT r.deal_flow_id AS dfid, r.created_at AS at FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
-            UNION ALL \
-            SELECT a.deal_flow_id, a.created_at FROM bank_allocation a WHERE a.role='refund_out' \
-              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
-          ) x WHERE (?1='' OR date(x.at) >= ?1) AND (?2='' OR date(x.at) <= ?2)",
-        p, |r| r.get(0)
+        &format!("SELECT COUNT(*) {df} AND {DF_REFUNDS_SQL} > 0.005"), p, |r| r.get(0)
     ).unwrap_or(0);
 
     let margin_deal = |order: &str| -> Option<Value> {
@@ -14472,6 +14465,100 @@ fn non_deal_categories_sql() -> String {
         .map(|(value, _, _)| format!("'{value}'"))
         .collect();
     format!("({})", list.join(","))
+}
+
+/// R-444: what a refunded deal's result means. Every screen words the code the same way:
+/// - `owed`: money is still to go back to the buyer (`remaining` says how much);
+/// - `cancelled`: the refund undid the sale and the deal reads zero (Jack: in brokering a refund
+///   "mostly just cancels the transaction");
+/// - `kept`: part was refunded and the deal still made money;
+/// - `cost_here`: refunded in full but the supplier cost is still on the deal, with no supplier
+///   money linked back and no cost moved with resold goods, so it reads as a loss of that cost;
+/// - `over`: the refund was more than the deal made.
+pub(crate) fn refunded_deal_status(gross: f64, refunded: f64, owed: f64, cost: f64, profit: f64, refund_in: f64, cost_moved: bool) -> &'static str {
+    let remaining = ((owed - refunded).max(0.0) * 100.0).round() / 100.0;
+    let full = gross > 0.005 && refunded >= gross - 0.5;
+    if remaining > 0.01 { "owed" }
+    else if profit >= -0.5 { if full { "cancelled" } else { "kept" } }
+    else if full && cost > 0.005 && refund_in <= 0.005 && !cost_moved { "cost_here" }
+    else { "over" }
+}
+
+/// R-444 (Jack, 2026-10-05: "i want them to be noticed and be able to view them", in Analytics,
+/// not the Dashboard): every refunded deal that closed in the range, with what went back, when,
+/// and its result after the refund. Same population and refund rule as `get_analytics_range`, so
+/// the totals tie to the revenue and profit on the same page; a refund counts on its deal's close
+/// date (Jack chose this over the month it was paid). Also: what is still owed back across every
+/// deal, and supplier money in the bank linked to no deal (R-323), which is why a fully refunded
+/// deal can still read as a loss.
+#[tauri::command]
+pub async fn analytics_refunds(start_date: String, end_date: String) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let p = rusqlite::params![start_date, end_date];
+    let sql = format!(
+        "SELECT df.id, COALESCE(i.number,''), COALESCE(c.name,''), COALESCE(df.completed_at,''), \
+                COALESCE(df.gross_revenue,0), {DF_REFUNDS_SQL}, COALESCE(df.refund_owed,0), COALESCE(df.total_cost,0), {DF_EFF_PROFIT_SQL}, \
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_in' \
+                            AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0), \
+                COALESCE((SELECT MAX(x.d) FROM ( \
+                    SELECT r.deal_flow_id AS dfid, date(r.refunded_at) AS d FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
+                    UNION ALL \
+                    SELECT a.deal_flow_id, date(bt.posted_at) FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id \
+                     WHERE a.role='refund_out' \
+                  ) x WHERE x.dfid=df.id),''), \
+                COALESCE(df.metadata,'') \
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id LEFT JOIN clients c ON c.id=i.client_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
+           AND (?1='' OR date(df.completed_at) >= ?1) AND (?2='' OR date(df.completed_at) <= ?2) \
+           AND ({DF_REFUNDS_SQL} > 0.005 OR COALESCE(df.refund_owed,0) > 0.005) \
+         ORDER BY df.completed_at DESC, df.id",
+        one = DF_SURVIVOR_SQL);
+    let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let raw: Vec<(String, String, String, String, f64, f64, f64, f64, f64, f64, String, String)> = st.query_map(p, |r| Ok((
+        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
+    ))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let (mut refunded_total, mut cancelled, mut loss_deals, mut loss_total, mut owed_back) = (0.0, 0i64, 0i64, 0.0, 0.0);
+    let deals: Vec<Value> = raw.into_iter().map(|(id, inv, client, closed, gross, refunded, owed, cost, profit, refund_in, refunded_on, meta)| {
+        let status = refunded_deal_status(gross, refunded, owed, cost, profit, refund_in, has_live_cost_move(&meta));
+        let remaining = to_cents((owed - refunded).max(0.0));
+        refunded_total += refunded;
+        owed_back += remaining;
+        if status == "cancelled" { cancelled += 1; }
+        if profit < -0.5 { loss_deals += 1; loss_total += profit; }
+        json!({
+            "deal_flow_id": id, "invoice_number": inv, "client_name": client, "closed_on": closed.get(..10).unwrap_or(&closed),
+            "refunded_on": refunded_on, "sold": to_cents(gross), "refunded": to_cents(refunded),
+            "full": gross > 0.005 && refunded >= gross - 0.5, "remaining": remaining, "cost": to_cents(cost),
+            "supplier_back": to_cents(refund_in), "profit": to_cents(profit), "status": status,
+        })
+    }).collect();
+    let deal_count = deals.len() as i64;
+    let win = "(?1='' OR date(t.posted_at)>=?1) AND (?2='' OR date(t.posted_at)<=?2)";
+    let (supplier_back_count, supplier_back): (i64, f64) = conn.query_row(&format!(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN t.direction='in' THEN t.rem ELSE -t.rem END),0) FROM ( \
+           SELECT t.direction, t.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=t.id),0) AS rem \
+           FROM bank_txn t WHERE {win} AND t.category='supplier_refund') t WHERE t.rem > 0.005"),
+        p, |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0, 0.0));
+    // What is still to go back to buyers on every deal, any stage or date: the
+    // `dashboard_stats.refund_owed_remaining` rule, so the two never disagree.
+    let (owed_back_all, owed_back_deals): (f64, i64) = conn.query_row(
+        "SELECT COALESCE(SUM(MAX(owed - refunded, 0)),0), COALESCE(SUM(CASE WHEN owed - refunded > 0.01 THEN 1 ELSE 0 END),0) FROM ( \
+           SELECT COALESCE(df.refund_owed,0) AS owed, \
+                  COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')=''),0) \
+                + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out' \
+                             AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0) AS refunded \
+           FROM deal_flows df WHERE COALESCE(df.archived,0)=0 AND COALESCE(df.refund_owed,0) > 0.01)",
+        [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0.0, 0));
+    Ok(json!({
+        "deals": deals,
+        "totals": {
+            "deals": deal_count, "refunded": to_cents(refunded_total), "cancelled": cancelled,
+            "loss_deals": loss_deals, "loss_total": to_cents(loss_total), "owed_back": to_cents(owed_back),
+            "owed_back_all": to_cents(owed_back_all), "owed_back_deals": owed_back_deals,
+        },
+        "supplier_back_unlinked": to_cents(supplier_back), "supplier_back_count": supplier_back_count,
+    }))
 }
 
 /// R-317: the reconciliation section on Analytics — the bridge from revenue to true net,
@@ -27979,5 +28066,83 @@ mod r442_bought_back_tests {
         assert!(move_resold_refunds(a.clone(), b.clone(), vec![other.clone()]).await.is_err());
         assert!(move_resold_refunds(a.clone(), a.clone(), vec![other]).await.is_err());
         assert!(read_df(&b).unwrap().supplier_payments.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod r444_analytics_refunds_tests {
+    use super::*;
+
+    fn line(amount: f64) -> Value {
+        json!({"id": format!("sp_{}", uuid::Uuid::new_v4().simple()), "supplier_name": "X", "supplier_id": "X",
+               "amount": amount, "original_amount": null, "price_changed": false, "quantity": null, "unit_price": null,
+               "method": null, "notes": null, "paid": true, "paid_at": null, "category": "supplier", "kept": false, "supplier_billed": false})
+    }
+    /// A completed deal: sold `gross`, cost `cost`, closed on `closed`, refund owed `owed`.
+    fn done(tag: &str, gross: f64, cost: f64, closed: &str, owed: f64) -> String {
+        let id = format!("df-r444-{tag}");
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r444', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r444', ?2, '2026-09-01', '2026-09-30', '[]', ?3, ?3, '2026-09-01')",
+            rusqlite::params![format!("inv-r444-{tag}"), format!("INV-Q-{tag}"), gross]).unwrap();
+        let lines = if cost > 0.0 { vec![line(cost)] } else { vec![] };
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount,
+                                     gross_revenue, total_cost, net_profit, completed_at, metadata, refund_owed)
+             VALUES (?1, ?2, 'complete', '2026-09-01', '2026-09-01', ?3, ?4, ?5, ?5, ?4, ?6, ?7, '{}', ?8)",
+            rusqlite::params![id, format!("inv-r444-{tag}"), Value::Array(lines).to_string(), cost, gross, gross - cost, closed, owed]).unwrap();
+        id
+    }
+    fn link(deal: &str, tag: &str, role: &str, amount: f64, posted: &str) {
+        let conn = pool().get().unwrap();
+        let txn = format!("txn_r444_{tag}");
+        let dir = if role == "refund_in" || role == "buyer_payment" { "in" } else { "out" };
+        conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, ?2, ?3, ?4)", rusqlite::params![txn, posted, amount, dir]).unwrap();
+        conn.execute("INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role, note, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, '', '2026-10-05', '2026-10-05')",
+                     rusqlite::params![format!("al_r444_{tag}"), txn, deal, amount, role]).unwrap();
+    }
+
+    #[test]
+    fn the_status_words_each_refunded_deal() {
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 0.0, 0.0, 0.0, true), "cancelled");
+        assert_eq!(refunded_deal_status(10000.0, 1000.0, 1000.0, 8000.0, 1000.0, 0.0, false), "kept");
+        assert_eq!(refunded_deal_status(10000.0, 4000.0, 10000.0, 8000.0, -2000.0, 0.0, false), "owed");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, false), "cost_here");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, true), "over");
+        assert_eq!(refunded_deal_status(10000.0, 3000.0, 3000.0, 8000.0, -1000.0, 0.0, false), "over");
+    }
+
+    #[tokio::test]
+    async fn refunded_deals_list_on_their_close_date_with_why_a_loss_remains() {
+        let _db = crate::db::init_test_store();
+        // Cancelled: refunded in full, the supplier paid back.
+        let a = done("a", 10000.0, 8000.0, "2026-09-20", 10000.0);
+        link(&a, "a_sup", "supplier_payment", 8000.0, "2026-09-12");
+        link(&a, "a_out", "refund_out", 10000.0, "2026-10-03");
+        link(&a, "a_in", "refund_in", 8000.0, "2026-10-04");
+        recompute_completed_deal(&a, None).unwrap();
+        // Still a loss: refunded in full, the supplier cost still here.
+        let b = done("b", 5000.0, 4000.0, "2026-09-25", 5000.0);
+        link(&b, "b_out", "refund_out", 5000.0, "2026-10-02");
+        // Not refunded: not listed.
+        done("c", 7000.0, 5000.0, "2026-09-26", 0.0);
+        // Closed in October: outside a September range.
+        let d = done("d", 3000.0, 2000.0, "2026-10-02", 500.0);
+        link(&d, "d_out", "refund_out", 500.0, "2026-10-04");
+
+        let r = analytics_refunds("2026-09-01".into(), "2026-09-30".into()).await.unwrap();
+        let deals = r["deals"].as_array().unwrap();
+        assert_eq!(deals.len(), 2);
+        let by = |id: &str| deals.iter().find(|x| x["deal_flow_id"] == json!(id)).unwrap().clone();
+        assert_eq!((by(&a)["status"].as_str(), by(&a)["profit"].as_f64()), (Some("cancelled"), Some(0.0)));
+        assert_eq!((by(&b)["status"].as_str(), by(&b)["profit"].as_f64()), (Some("cost_here"), Some(-4000.0)));
+        assert_eq!(by(&a)["refunded_on"].as_str(), Some("2026-10-03"));
+        assert_eq!(r["totals"]["refunded"].as_f64(), Some(15000.0));
+        assert_eq!((r["totals"]["cancelled"].as_i64(), r["totals"]["loss_deals"].as_i64()), (Some(1), Some(1)));
+        // The page's other refund figure counts the same refunds on the same dates.
+        let range = get_analytics_range("2026-09-01".into(), "2026-09-30".into()).await.unwrap();
+        assert_eq!((range["refunded_in_range"].as_f64(), range["refunded_deals"].as_i64()), (Some(15000.0), Some(2)));
     }
 }
