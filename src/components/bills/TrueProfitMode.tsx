@@ -5,14 +5,14 @@
 import { useMemo } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { fmtAmount, fmtCompactCurrency } from "../../lib/format";
-import type { SpendingResponse } from "../../lib/billsApi";
+import type { ProfitBlock } from "../../lib/billsApi";
 import { monthLabels, monthTitle } from "../../lib/billsFormat";
 import { Card, signed, useChartColors } from "./ui";
 
 const tone = (n: number) => (n > 0.005 ? "text-success-ink" : n < -0.005 ? "text-danger-ink" : "text-ink");
 
-export default function TrueProfitMode({ resp }: { resp: SpendingResponse }) {
-  const { months, totals, shipping_in_deals } = resp.profit;
+export default function TrueProfitMode({ profit }: { profit: ProfitBlock }) {
+  const { months, totals, shipping_in_deals } = profit;
   const C = useChartColors();
   const chart = useMemo(() => {
     const labels = monthLabels(months.map((m) => m.month));

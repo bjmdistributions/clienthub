@@ -134,7 +134,7 @@ export const PERIOD_PILL: Record<PeriodState, { label: string; tone: Tone }> = {
   paid: { label: "Paid", tone: "success" },
   late: { label: "Paid late", tone: "warning" },
   missed: { label: "Missed", tone: "danger" },
-  due: { label: "Not due yet", tone: "neutral" },
+  due: { label: "Due", tone: "neutral" },
 };
 
 /** "Oct 8, in 3 days" */

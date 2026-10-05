@@ -13,8 +13,12 @@ export const btn =
 export const pri =
   "px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity inline-flex items-center gap-1.5 whitespace-nowrap";
 
-/** Money with the minus in front of the dollar sign: fmtAmount alone writes "$-12.00". */
-export const signed = (n: number) => (n < 0 ? "−" + fmtAmount(Math.abs(n)) : fmtAmount(n));
+/** Money with the minus in front of the dollar sign: fmtAmount alone writes "$-12.00". Less than
+ *  half a cent, and negative zero (what negating a zero total gives), read as plain $0.00. */
+export const signed = (n: number) => {
+  const v = Math.abs(n) < 0.005 ? 0 : n;
+  return v < 0 ? "−" + fmtAmount(Math.abs(v)) : fmtAmount(v);
+};
 
 export function Card({ title, sub, right, children, className = "" }: {
   title: string; sub?: string; right?: ReactNode; children: ReactNode; className?: string;
@@ -63,12 +67,16 @@ export function Seg<T extends string>({ value, onChange, options }: {
   );
 }
 
+/** The only logos a bill may carry (the save check's rule): a PNG or JPEG data URL. A synced row
+ *  can hold anything else, and an image address would make this window fetch it. */
+export const okLogo = (s?: string) => /^data:image\/(png|jpeg);base64,/.test(s || "");
+
 /** A bill's picture: its own logo, or its initials on a tint taken from the chart tokens so a
  *  bill keeps one colour on every screen. The tile sits on surface-2 with a ring, never a white
  *  box, so a transparent logo reads on the dark theme too. */
 export function BillLogo({ name, logo, size = 40 }: { name: string; logo?: string; size?: number }) {
   const box = { width: size, height: size };
-  if (logo) {
+  if (logo && okLogo(logo)) {
     return (
       <span style={box} className="rounded-lg bg-surface-2 ring-1 ring-line flex items-center justify-center overflow-hidden flex-shrink-0">
         <img src={logo} alt="" draggable={false} className="w-full h-full object-contain p-[3px]" />

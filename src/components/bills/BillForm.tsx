@@ -108,7 +108,7 @@ export default function BillForm({ bill, seed, onClose, onSaved }: {
     if (!d.name.trim()) return setError("Give the bill a name.");
     if (!d.anchor_date) return setError("Pick the first due date. Later dates follow from it.");
     if (!d.varies && !(amount > 0)) return setError("Enter the amount, or tick Amount varies.");
-    if (!(d.tolerance_pct >= 0 && d.tolerance_pct <= 50)) return setError("The amount band is a percentage from 0 to 50.");
+    if (!(d.tolerance_pct >= 1 && d.tolerance_pct <= 50)) return setError("The amount band is a percentage from 1 to 50.");
     const all: BillFields = {
       name: d.name.trim(),
       payee_match: (d.payee_match || d.name).trim(),

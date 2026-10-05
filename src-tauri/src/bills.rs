@@ -500,8 +500,10 @@ fn list_json(conn: &rusqlite::Connection, today: NaiveDate) -> Result<Value, Str
 
 fn alerts_json(conn: &rusqlite::Connection, today: NaiveDate) -> Result<Value, String> {
     let c = Ctx::load(conn, today)?;
-    let mut over: Vec<(String, Value)> = Vec::new();
-    let mut soon: Vec<(String, Value)> = Vec::new();
+    // By date, then by lowercase name (the server's order), so two bills due the same day list
+    // the same on the Mac and on the phone.
+    let mut over: Vec<(String, String, Value)> = Vec::new();
+    let mut soon: Vec<(String, String, Value)> = Vec::new();
     for b in c.bills.iter().filter(|b| b.status == "active") {
         let st = c.state(b);
         let item = json!({
@@ -509,17 +511,17 @@ fn alerts_json(conn: &rusqlite::Connection, today: NaiveDate) -> Result<Value, S
             "days_until": st.days_until, "overdue": st.overdue,
         });
         match st.status.as_str() {
-            "overdue" => over.push((st.overdue.first().cloned().unwrap_or_default(), item)),
-            "due_soon" => soon.push((st.next_due.clone().unwrap_or_default(), item)),
+            "overdue" => over.push((st.overdue.first().cloned().unwrap_or_default(), b.name.to_lowercase(), item)),
+            "due_soon" => soon.push((st.next_due.clone().unwrap_or_default(), b.name.to_lowercase(), item)),
             _ => {}
         }
     }
-    over.sort_by(|a, b| a.0.cmp(&b.0));
-    soon.sort_by(|a, b| a.0.cmp(&b.0));
+    over.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    soon.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
     Ok(json!({
         "overdue_count": over.len(),
         "due_soon_count": soon.len(),
-        "items": over.into_iter().chain(soon).map(|(_, v)| v).collect::<Vec<_>>(),
+        "items": over.into_iter().chain(soon).map(|(_, _, v)| v).collect::<Vec<_>>(),
     }))
 }
 
@@ -687,8 +689,8 @@ fn parse_fields(v: &Value) -> Result<Fields, String> {
         f.amount = Some(core::round2(a));
     }
     if let Some(t) = f.tolerance_pct {
-        if !t.is_finite() || !(0.0..=50.0).contains(&t) {
-            return Err("The amount band must be between 0 and 50 percent.".into());
+        if !t.is_finite() || !(1.0..=50.0).contains(&t) {
+            return Err("The amount band is a percentage from 1 to 50.".into());
         }
         f.tolerance_pct = Some(core::round2(t));
     }
@@ -735,6 +737,43 @@ fn set_number(cols: &mut Map<String, Value>, key: &str, new: Option<f64>, old: f
     }
 }
 
+/// The due date a payment posted on `posted` pays: the one whose window it falls in, else the
+/// nearest. Empty when the date does not read.
+fn period_of(bill: &core::Bill, posted: &str) -> String {
+    core::parse_day(posted)
+        .and_then(|d| core::period_for(bill, d).or_else(|| core::nearest_due(bill, d)))
+        .map(day_string)
+        .unwrap_or_default()
+}
+
+/// A bill's first due date or cadence changed, so the due dates moved: point every payment link of
+/// the bill at the due date its payment now pays. A rejected link moves too, or Undo would bring
+/// back a period that no longer exists. A link's period is the only thing `bill_state` reads to
+/// call a due date paid, so left alone they all read as missed.
+fn reperiod_links(conn: &rusqlite::Connection, bill: &BillRow) -> Result<(), String> {
+    let cb = bill.to_core();
+    let rows: Vec<(String, String, String)> = {
+        let mut stmt = db(conn.prepare(
+            "SELECT p.id, COALESCE(p.period,''), COALESCE(substr(t.posted_at,1,10),'') \
+             FROM bill_payments p JOIN bank_txn t ON t.id = p.bank_txn_id WHERE p.bill_id=?1 ORDER BY p.created_at, p.id",
+        ))?;
+        let found = db(stmt.query_map([&bill.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))))?;
+        db(found.collect::<rusqlite::Result<Vec<_>>>())?
+    };
+    let now = now_string();
+    for (pid, old, posted) in rows {
+        let period = period_of(&cb, &posted);
+        if period.is_empty() || period == old {
+            continue;
+        }
+        let mut cols = Map::new();
+        cols.insert("period".into(), json!(period));
+        cols.insert("updated_at".into(), json!(now));
+        write(conn, "bill_payments", &pid, cols, false)?;
+    }
+    Ok(())
+}
+
 /// Create (`id` None) or update a bill, then link what the bank already has for it.
 fn save(conn: &rusqlite::Connection, id: Option<&str>, fields: &Value, today: NaiveDate) -> Result<Value, String> {
     let f = parse_fields(fields)?;
@@ -772,8 +811,14 @@ fn save(conn: &rusqlite::Connection, id: Option<&str>, fields: &Value, today: Na
             set_text(&mut cols, "notes", &f.notes, &cur.notes);
             set_text(&mut cols, "status", &f.status, &cur.status);
             if !cols.is_empty() {
+                // Moving the due dates strands the periods the links carry; re-period them before
+                // the link pass below, which leaves a bank row that already pays this bill alone.
+                let moves_dues = cols.contains_key("anchor_date") || cols.contains_key("cadence");
                 cols.insert("updated_at".into(), json!(now));
                 write(conn, "bills", id, cols, false)?;
+                if moves_dues {
+                    reperiod_links(conn, &load_bill(conn, id)?)?;
+                }
             }
             id.to_string()
         }
@@ -923,23 +968,26 @@ fn link(conn: &rusqlite::Connection, bill_id: &str, bank_txn_id: &str) -> Result
     }
     let id = core::link_id(bill_id, bank_txn_id);
     let now = now_string();
-    let existing: Option<String> = db(conn.query_row("SELECT COALESCE(status,'') FROM bill_payments WHERE id=?1", [&id], |r| r.get(0)).optional())?;
+    let existing: Option<(String, String)> = db(conn
+        .query_row("SELECT COALESCE(status,''), COALESCE(period,'') FROM bill_payments WHERE id=?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional())?;
+    let period = period_of(&bill.to_core(), &posted);
     match existing {
-        Some(status) => {
+        Some((status, old_period)) => {
+            // The link may predate a change to the bill's due dates: pay the due date it pays now.
+            let mut cols = Map::new();
             if status != "confirmed" {
-                let mut cols = Map::new();
                 cols.insert("status".into(), json!("confirmed"));
+            }
+            if !period.is_empty() && period != old_period {
+                cols.insert("period".into(), json!(period));
+            }
+            if !cols.is_empty() {
                 cols.insert("updated_at".into(), json!(now));
                 write(conn, "bill_payments", &id, cols, false)?;
             }
         }
         None => {
-            let cb = bill.to_core();
-            let day = core::parse_day(&posted);
-            let period = day
-                .and_then(|d| core::period_for(&cb, d).or_else(|| core::nearest_due(&cb, d)))
-                .map(day_string)
-                .unwrap_or_default();
             let mut cols = Map::new();
             cols.insert("org_id".into(), json!(crate::employees::session_org_id()));
             cols.insert("bill_id".into(), json!(bill_id));
@@ -1116,7 +1164,30 @@ async fn spending_at(from: &str, to: &str) -> Result<Value, String> {
     let unbooked_rows: Vec<core::SpendRow> = out_rows(&conn, &from, &to, "COALESCE(t.category,'')='' AND p.id IS NULL")?;
     let unbooked_amount: f64 = unbooked_rows.iter().map(|r| r.amount).sum();
 
-    let months = core::true_profit(&range_months(&range), &rows, &from, &to);
+    let analytics_months = range_months(&range);
+    let mut months = core::true_profit(&analytics_months, &rows, &from, &to);
+    // Analytics lists only the months inside the span of its deals, but its totals count the
+    // shipping and bank fees of every month in the range. Give those outside months their own
+    // shipping and fees (and a row of their own when that is all they have), so the rows add up
+    // to the totals below.
+    let known: HashSet<&str> = analytics_months.iter().map(|m| m.month.as_str()).collect();
+    let overhead = crate::commands::bank_overhead_by_month(&conn, &from, &to);
+    for m in months.iter_mut().filter(|m| !known.contains(m.month.as_str())) {
+        let (ship, fee) = overhead.get(&m.month).copied().unwrap_or((0.0, 0.0));
+        m.shipping = ship;
+        m.fees = fee;
+        m.true_net = m.profit - ship - fee;
+        m.true_profit = core::round2(m.true_net - m.operating);
+    }
+    for (month, &(ship, fee)) in &overhead {
+        if (core::round2(ship) != 0.0 || core::round2(fee) != 0.0) && !months.iter().any(|m| &m.month == month) {
+            let true_net = -ship - fee;
+            months.push(core::ProfitMonth {
+                month: month.clone(), shipping: ship, fees: fee, true_net, true_profit: core::round2(true_net), ..Default::default()
+            });
+        }
+    }
+    months.sort_by(|a, b| a.month.cmp(&b.month));
     let operating = core::round2(months.iter().map(|m| m.operating).sum());
     // The four figures Analytics reports for the whole range, so true net here is the number on
     // Analytics. (The month list is trimmed to the trading span, the range figures are not.)
@@ -1482,7 +1553,8 @@ mod tests {
         for (f, said) in [
             (json!({ "name": "A", "anchor_date": "2031-01-01", "cadence": "daily" }), "Pick how often the bill comes due."),
             (json!({ "name": "A", "anchor_date": "2031-01-01", "amount": -1 }), "The amount must be zero or more. Use zero if it changes each time."),
-            (json!({ "name": "A", "anchor_date": "2031-01-01", "tolerance_pct": 51 }), "The amount band must be between 0 and 50 percent."),
+            (json!({ "name": "A", "anchor_date": "2031-01-01", "tolerance_pct": 51 }), "The amount band is a percentage from 1 to 50."),
+            (json!({ "name": "A", "anchor_date": "2031-01-01", "tolerance_pct": 0 }), "The amount band is a percentage from 1 to 50."),
             (json!({ "name": "A", "anchor_date": "2031-02-30" }), "Enter the first due date as a real date."),
             (json!({ "name": "A", "anchor_date": "2031-01-01", "method": "barter" }), "Pick a payment method from the list."),
         ] {
@@ -1665,6 +1737,84 @@ mod tests {
         assert_eq!(status, "confirmed");
     }
 
+    /// The first due date and the cadence are editable, and a payment link carries the due date it
+    /// pays: left alone, every new due date reads as missed and the bill goes overdue.
+    #[test]
+    fn moving_the_first_due_date_moves_the_due_date_each_payment_pays() {
+        let _db = crate::db::init_test_store();
+        let _clean = Clean::new();
+        let conn = pool().get().unwrap();
+        txn("jan", "2031-01-02", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
+        txn("feb", "2031-02-01", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
+        txn("mar", "2031-03-01", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
+        let made = save_new(&conn, rent_fields());
+        assert_eq!(made["linked"], json!(3));
+        let id = made["bill"]["id"].as_str().unwrap().to_string();
+        let (jan, feb, mar) = (core::link_id(&id, &bt("jan")), core::link_id(&id, &bt("feb")), core::link_id(&id, &bt("mar")));
+        let period = |pid: &str| -> String { conn.query_row("SELECT period FROM bill_payments WHERE id=?1", [pid], |r| r.get(0)).unwrap() };
+        let status = |pid: &str| -> String { conn.query_row("SELECT status FROM bill_payments WHERE id=?1", [pid], |r| r.get(0)).unwrap() };
+        assert_eq!((period(&jan), period(&feb), period(&mar)), ("2031-01-01".into(), "2031-02-01".into(), "2031-03-01".into()));
+        // March was unlinked by hand: its period must move too, or an Undo brings back a date that is gone.
+        set_link_status(&conn, &mar, "rejected").unwrap();
+
+        let out = save(&conn, Some(&id), &json!({ "anchor_date": "2031-01-05" }), today()).unwrap();
+        assert_eq!((period(&jan), period(&feb), period(&mar)), ("2031-01-05".into(), "2031-02-05".into(), "2031-03-05".into()));
+        assert_eq!(status(&mar), "rejected", "moving a period never changes a link's status");
+        assert_eq!(out["linked"], json!(0), "the payments stay linked, none is linked twice");
+        let state = &out["bill"]["state"];
+        assert_eq!(state["overdue"], json!([]));
+        assert_ne!(state["status"], json!("overdue"));
+        assert_eq!(state["paid_count"], json!(2));
+        // Only the period went out.
+        let cols = queued_columns("bill_payments", &jan);
+        let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, ["period", "updated_at"]);
+        assert_eq!(cols["period"], json!("2031-01-05"));
+
+        // A change that leaves the due dates alone sends nothing about the links.
+        let sent = || -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM netsync_outbound WHERE event_json LIKE '%\"table\":\"bill_payments\"%'", [], |r| r.get(0)).unwrap()
+        };
+        let before = sent();
+        save(&conn, Some(&id), &json!({ "amount": 2500.0 }), today()).unwrap();
+        assert_eq!(before, sent());
+
+        // A hand link onto a link written under the old dates (say, by another device) pays today's date.
+        conn.execute("UPDATE bill_payments SET period='2031-03-01' WHERE id=?1", [&mar]).unwrap();
+        link(&conn, &id, &bt("mar")).unwrap();
+        assert_eq!((period(&mar), status(&mar)), ("2031-03-05".into(), "confirmed".into()));
+        let cols = queued_columns("bill_payments", &mar);
+        let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, ["period", "status", "updated_at"]);
+    }
+
+    #[test]
+    fn changing_the_cadence_moves_the_due_date_each_payment_pays() {
+        let _db = crate::db::init_test_store();
+        let _clean = Clean::new();
+        let conn = pool().get().unwrap();
+        for (k, day) in [("w1", "2031-01-01"), ("w2", "2031-01-29"), ("w3", "2031-02-05"), ("w4", "2031-03-01")] {
+            txn(k, day, 100.0, "out", "ZELLE PAYMENT TO IRON GYM", "", "");
+        }
+        let weekly = json!({ "name": "Iron Gym", "payee_match": "iron gym", "amount": 100.0, "cadence": "weekly", "anchor_date": "2031-01-01" });
+        let made = save_new(&conn, weekly);
+        assert_eq!(made["linked"], json!(4));
+        let id = made["bill"]["id"].as_str().unwrap().to_string();
+
+        let out = save(&conn, Some(&id), &json!({ "cadence": "monthly" }), today()).unwrap();
+        let periods: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT p.period FROM bill_payments p JOIN bank_txn t ON t.id=p.bank_txn_id WHERE p.bill_id=?1 ORDER BY t.posted_at").unwrap();
+            stmt.query_map([&id], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(periods, ["2031-01-01", "2031-02-01", "2031-02-01", "2031-03-01"]);
+        let state = &out["bill"]["state"];
+        assert_eq!(state["overdue"], json!([]));
+        assert_eq!(state["paid_count"], json!(3));
+        assert_eq!(state["status"], json!("paid"));
+    }
+
     #[test]
     fn ignoring_a_suggestion_hides_it_and_the_ignored_row_is_never_a_bill() {
         let _db = crate::db::init_test_store();
@@ -1768,6 +1918,19 @@ mod tests {
         assert_eq!(alerts["items"][1]["name"], json!("Car note"));
         assert_eq!(alerts["items"][1]["status"], json!("due_soon"));
         assert_eq!(alerts["items"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn two_alerts_on_the_same_day_list_by_name_like_the_server() {
+        let _db = crate::db::init_test_store();
+        let _clean = Clean::new();
+        let conn = pool().get().unwrap();
+        // Zebra is created first and both are due on the 12th.
+        save_new(&conn, json!({ "name": "Zebra Rent", "payee_match": "zebra", "amount": 900.0, "anchor_date": "2031-03-12" }));
+        save_new(&conn, json!({ "name": "alpha Insurance", "payee_match": "alpha", "amount": 150.0, "anchor_date": "2031-03-12" }));
+        let alerts = alerts_json(&conn, today()).unwrap();
+        let names: Vec<&str> = alerts["items"].as_array().unwrap().iter().map(|i| i["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["alpha Insurance", "Zebra Rent"]);
     }
 
     #[test]
@@ -1904,5 +2067,43 @@ mod tests {
 
         assert_eq!(spending_at("2031-03-31", "2031-01-01").await.unwrap_err(), "The start date must come before the end date.");
         assert_eq!(spending_at("", "2031-01-01").await.unwrap_err(), "Pick a start date and an end date.");
+    }
+
+    /// Shipping and bank fees outside the span of the deals are in Analytics' totals but not in its
+    /// months. The month rows carry them, so the rows add up to the Total row.
+    #[tokio::test]
+    async fn true_profit_months_add_up_to_the_totals_with_overhead_outside_the_trading_span() {
+        let _db = crate::db::init_test_store();
+        let _clean = Clean::new();
+        seed_deal("a", "2031-02-10", 7000.0, 0.0);
+        txn("shipjan", "2031-01-08", 400.0, "out", "CARRIER", "shipping", "");
+        txn("shipfeb", "2031-02-12", 100.0, "out", "CARRIER", "shipping", "");
+        txn("feemar", "2031-03-05", 20.0, "out", "WIRE FEE", "fee", "");
+        txn("rentjan", "2031-01-01", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
+        {
+            let conn = pool().get().unwrap();
+            assert_eq!(save_new(&conn, rent_fields())["linked"], json!(1));
+        }
+        let out = spending_at("2031-01-01", "2031-03-31").await.unwrap();
+        let p = &out["profit"];
+        let months = p["months"].as_array().unwrap();
+        let totals = &p["totals"];
+        assert_eq!((totals["shipping"].clone(), totals["fees"].clone()), (json!(500.0), json!(20.0)));
+        for k in ["profit", "shipping", "fees", "true_net", "operating", "true_profit"] {
+            let sum = core::round2(months.iter().map(|m| m[k].as_f64().unwrap()).sum());
+            assert_eq!(sum, totals[k].as_f64().unwrap(), "the month rows add up to the total for {k}");
+        }
+        let month = |m: &str| months.iter().find(|x| x["month"] == json!(m)).unwrap_or_else(|| panic!("a row for {m}"));
+        // January has no deal: its shipping and its rent both land on its row.
+        let jan = month("2031-01");
+        assert_eq!(
+            (jan["shipping"].clone(), jan["true_net"].clone(), jan["operating"].clone(), jan["true_profit"].clone()),
+            (json!(400.0), json!(-400.0), json!(2400.0), json!(-2800.0))
+        );
+        // March has only a bank fee: it still gets a row.
+        let mar = month("2031-03");
+        assert_eq!((mar["fees"].clone(), mar["true_net"].clone(), mar["true_profit"].clone()), (json!(20.0), json!(-20.0), json!(-20.0)));
+        let order: Vec<&str> = months.iter().map(|m| m["month"].as_str().unwrap()).collect();
+        assert_eq!(order, ["2031-01", "2031-02", "2031-03"]);
     }
 }

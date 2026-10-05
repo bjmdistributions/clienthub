@@ -897,6 +897,13 @@ export default function App() {
                 {billsOverdue > 9 ? "9+" : billsOverdue}
               </span>
         )}
+        {/* Bills is the only child of Financials, so while that group is closed its overdue count
+            shows on the parent row (left of the chevron). Open the group and the child carries it. */}
+        {!navCollapsed && item.id === "financials" && !isGroupOpen(item as NavNode) && billsOverdue > 0 && visible("bills") && (
+          <span className="ml-auto mr-6 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+            {billsOverdue > 9 ? "9+" : billsOverdue}
+          </span>
+        )}
       </button>
     );
   };

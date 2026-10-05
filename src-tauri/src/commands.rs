@@ -12926,6 +12926,12 @@ fn bank_overhead_by_bucket(conn: &rusqlite::Connection, fmt: &str, lo: &str, hi:
     map
 }
 
+/// R-449: the same per-month shipping/fee overhead `get_analytics_range` merges onto its months,
+/// for Bills' true profit to read months Analytics drops (outside the trading span). Read only.
+pub(crate) fn bank_overhead_by_month(conn: &rusqlite::Connection, lo: &str, hi: &str) -> std::collections::BTreeMap<String, (f64, f64)> {
+    bank_overhead_by_bucket(conn, "%Y-%m", lo, hi)
+}
+
 /// Converts a half-open window's exclusive `hi` (e.g. `CentralWindow.day_hi`, the 1st of
 /// the next month) into the inclusive calendar day `BANK_OVERHEAD_SQL` expects — one
 /// day earlier. Same conversion already used ad hoc at the brief's `week_end`.

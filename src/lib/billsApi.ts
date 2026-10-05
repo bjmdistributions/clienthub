@@ -227,6 +227,13 @@ export interface ProfitTotals {
   true_profit: number;
 }
 
+export interface ProfitBlock {
+  months: ProfitMonthRow[];
+  totals: ProfitTotals;
+  /** Shipping already inside deal costs (already in deal profit). */
+  shipping_in_deals: number;
+}
+
 export interface SpendingResponse {
   from: string;
   to: string;
@@ -235,12 +242,8 @@ export interface SpendingResponse {
   report: SpendReport;
   /** Money out with no category yet and no bill behind it. */
   unbooked: { count: number; amount: number };
-  profit: {
-    months: ProfitMonthRow[];
-    totals: ProfitTotals;
-    /** Shipping already inside deal costs (already in deal profit). */
-    shipping_in_deals: number;
-  };
+  /** Null when the answer holds no deal profit (the caller may not see it): show Spending instead. */
+  profit: ProfitBlock | null;
 }
 
 export interface PushPrefs {

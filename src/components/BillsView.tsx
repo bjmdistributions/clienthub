@@ -8,7 +8,7 @@ import { Plus, RefreshCw } from "lucide-react";
 import { toast } from "./Toast";
 import type { Me } from "../lib/api";
 import { localDay } from "../lib/format";
-import { isAdmin } from "../lib/permissions";
+import { can, isAdmin } from "../lib/permissions";
 import {
   billsApi, type BillCandidate, type BillFields, type BillOut, type BillsList, type SpendingResponse,
 } from "../lib/billsApi";
@@ -38,7 +38,7 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function BillsView({ me }: { me: Me | null | undefined }) {
   const admin = isAdmin(me);
-  const [mode, setMode] = useState<Mode>("bills");
+  const [pick, setPick] = useState<Mode>("bills");
   const [period, setPeriod] = useState<PeriodKind>("this_month");
   const [data, setData] = useState<BillsList | null>(null);
   const [error, setError] = useState("");
@@ -49,6 +49,12 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
   const [form, setForm] = useState<{ bill?: BillOut; seed?: Partial<BillFields> } | null>(null);
   const [sp, setSp] = useState<{ resp?: SpendingResponse; error?: string; busy: boolean }>({ busy: false });
   const spSeq = useRef(0);
+
+  // True profit is deal profit, the figures Analytics holds: admins and anyone with analytics:view
+  // see it. An answer without a profit block falls back to Spending the same way.
+  const resp = sp.resp;
+  const hideProfit = !(admin || can(me, "analytics:view")) || (!!resp && resp.profit == null);
+  const mode: Mode = pick === "profit" && hideProfit ? "spending" : pick;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -104,7 +110,6 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
     try { await billsApi.archive(b.id, false); toast("Restored"); await load(); } catch (e) { toast(msg(e), "error"); }
   };
 
-  const resp = sp.resp;
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
@@ -113,7 +118,7 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
           <p className="text-[12px] text-muted mt-0.5">{SUB[mode]}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <Seg value={mode} onChange={setMode} options={MODES} />
+          <Seg value={mode} onChange={setPick} options={hideProfit ? MODES.filter((m) => m.value !== "profit") : MODES} />
           <button onClick={load} className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-[13px] text-ink-2 border border-line hover:bg-surface-2 transition-colors duration-[130ms]">
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
           </button>
@@ -164,7 +169,7 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
       ) : (
         <div className={`transition-opacity duration-[130ms] ${sp.busy ? "opacity-60" : ""}`}>
           {sp.error && <div className="mb-4 text-[13px] text-danger-ink bg-danger-bg border border-danger-ink/20 rounded-lg px-3 py-2">{sp.error}</div>}
-          {mode === "spending" ? <SpendingMode resp={resp} bills={data.bills} /> : <TrueProfitMode resp={resp} />}
+          {mode === "profit" && resp.profit ? <TrueProfitMode profit={resp.profit} /> : <SpendingMode resp={resp} bills={data.bills} />}
         </div>
       )}
 

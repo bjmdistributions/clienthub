@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { BillsAlerts } from "./billsApi";
 import {
   alertRow, chipState, daysBetween, daysInMonth, dueText, initials, monthLabels, pctChange, periodRange,
-  rangeText, shortDay, tintIndex,
+  PERIOD_PILL, rangeText, shortDay, tintIndex,
 } from "./billsFormat";
 
 // R-449 / R-446. The date and period rules the Bills screen leans on. All are plain strings, so
@@ -149,5 +149,11 @@ describe("alertRow", () => {
   it("names at most three and says there are more", () => {
     const r = alertRow(alerts(["A", "B", "C", "D"].map((n) => item(n, "overdue"))))!;
     expect(r.sub).toBe("A, B, C…");
+  });
+});
+
+describe("period pills", () => {
+  it("reads a due date with no payment yet as \"Due\", which is true for today, a grace day and three days ahead", () => {
+    expect(PERIOD_PILL.due.label).toBe("Due");
   });
 });
