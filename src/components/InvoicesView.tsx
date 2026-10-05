@@ -606,7 +606,7 @@ export default function InvoicesView() {
       {detailId && detailInvoice && (
         <InvoiceDetailPanel
           invoice={detailInvoice}
-          onClose={() => { setDetailId(null); setDetailInvoice(null); }}
+          onClose={() => { setDetailId(null); setDetailInvoice(null); load(); }}
           onPdf={() => handlePdf(detailInvoice.id)}
           onResend={() => handleSend(detailInvoice.id)}
           onDelete={async () => {
@@ -1226,6 +1226,8 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
   // Load the deal flow behind this invoice (if any) so bank payments can be paired
   // right here. Voided/draft invoices with no flow simply won't show the panel.
   const [dealFlow, setDealFlow] = useState<DealFlow | null>(null);
+  // R-438: bumped when Link financials or the refund step changes this deal's money, so the other refreshes.
+  const [moneyRev, setMoneyRev] = useState(0);
   useEffect(() => {
     let alive = true;
     if (voided) { setDealFlow(null); return; }
@@ -1332,8 +1334,12 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           )}
 
           {/* Pair the buyer payment to this invoice's deal, then run any refund. */}
-          {dealFlow && <ReconciliationPanel flow={dealFlow} />}
-          {dealFlow && <RefundWorkspace dealFlowId={dealFlow.id} />}
+          {/* R-438: a change in either panel (a payment, a refund, a resold move, closing it)
+              reloads this deal and refreshes the other panel, so neither shows stale figures. */}
+          {dealFlow && <ReconciliationPanel flow={dealFlow} reloadKey={moneyRev}
+            onChange={() => { setMoneyRev((n) => n + 1); api.getDealFlowByInvoice(invoice.id).then(setDealFlow).catch(() => {}); }} />}
+          {dealFlow && <RefundWorkspace dealFlowId={dealFlow.id} reloadKey={moneyRev}
+            onChange={() => { setMoneyRev((n) => n + 1); api.getDealFlowByInvoice(invoice.id).then(setDealFlow).catch(() => {}); }} />}
         </div>
 
         <div className="sticky bottom-0 bg-surface/95 backdrop-blur-sm border-t border-line px-6 py-4 space-y-2.5">

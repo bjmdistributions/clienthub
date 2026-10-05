@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { RotateCcw, Trash2, Pencil, Check, X } from "lucide-react";
-import { api, DealFlow, SupplierPayment, SupplierPaymentInput } from "../lib/api";
+import { api, DealFlow, SupplierPayment, SupplierPaymentInput, isResoldLine } from "../lib/api";
 import { fmtAmount, primarySupplierLabel, localDay } from "../lib/format";
 import { toast } from "./Toast";
 import RefundPanel from "./RefundPanel";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
+import ResoldNote from "./ResoldNote";
 
 // Shared field styling (matches DealFlowView's `inp` focus pattern).
 const fieldCls =
@@ -17,7 +18,9 @@ const fieldCls =
 export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
   const [saving, setSaving] = useState(false);
   const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
-  useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id]);
+  // R-438: bumped when the refund step or Link financials beside them change the deal's money.
+  const [moneyRev, setMoneyRev] = useState(0);
+  useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id, flow.updated_at, moneyRev]);
 
   // Once bank payments are paired, the P&L reflects what actually moved (from the
   // linked payments), not the deal's projected figures. Nothing linked → projected.
@@ -261,6 +264,7 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
                   {flow.shipping_mode && p.category === "freight" && (
                     <div className="text-[10.5px] text-muted">Replaced by the logistics booking, not counted</div>
                   )}
+                  {p.notes && <ResoldNote note={p.notes} />}
                 </div>
                 {editId === p.id ? (
                   <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -285,10 +289,12 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
                 ) : (
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <span className={`text-[13px] font-semibold tabular-nums ${flow.shipping_mode && p.category === "freight" ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</span>
-                    <button type="button" onClick={() => startEdit(p)} disabled={saving} title="Edit cost"
-                      className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors">
-                      <Pencil size={12} />
-                    </button>
+                    {!isResoldLine(p) && (
+                      <button type="button" onClick={() => startEdit(p)} disabled={saving} title="Edit cost"
+                        className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors">
+                        <Pencil size={12} />
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -321,10 +327,10 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
       <RefundPanel dealFlowId={flow.id} />
 
       {/* Pair real bank transactions to the deal's money legs → actual profit */}
-      <ReconciliationPanel flow={flow} />
+      <ReconciliationPanel flow={flow} reloadKey={moneyRev} onChange={() => { setMoneyRev((n) => n + 1); onReload(); }} />
 
       {/* Full refund workflow: received money, owed, refund payments, remaining */}
-      <RefundWorkspace dealFlowId={flow.id} onChange={onReload} />
+      <RefundWorkspace dealFlowId={flow.id} reloadKey={moneyRev} onChange={() => { setMoneyRev((n) => n + 1); onReload(); }} />
 
       {/* Actions */}
       <div className="flex items-center gap-3 pt-1">

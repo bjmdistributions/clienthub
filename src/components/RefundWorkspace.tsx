@@ -3,8 +3,8 @@ import {
   ChevronRight, Plus, X, Trash2, Search, Link2,
   CheckCircle2, AlertTriangle, ArrowDownLeft, ArrowUpRight,
 } from "lucide-react";
-import { api, DealAllocation, DealFlow, DealReceipt, DealShortage, RefundRow, UnallocatedTxn } from "../lib/api";
-import { fmtAmount, parseLocalDay, parseAmount } from "../lib/format";
+import { api, DealAllocation, DealFlow, DealReceipt, DealShortage, RefundRow, UnallocatedTxn, ResoldMove, resoldMoves, isResoldLine, openDealFlow } from "../lib/api";
+import { fmtAmount, parseLocalDay, parseAmount, localDay } from "../lib/format";
 import { toast } from "./Toast";
 
 // ─── Refund workspace ───────────────────────────────────────────────────────
@@ -113,7 +113,11 @@ function TxnPicker({ txns, onPick, onClose }: {
   );
 }
 
-export default function RefundWorkspace({ dealFlowId, primary = false, onChange }: { dealFlowId: string; primary?: boolean; onChange?: () => void }) {
+export default function RefundWorkspace({ dealFlowId, primary = false, onChange, reloadKey }: {
+  dealFlowId: string; primary?: boolean; onChange?: () => void;
+  /** R-438: bumped by the host when a panel beside this one changed the deal's money. */
+  reloadKey?: number;
+}) {
   const [allocs, setAllocs] = useState<DealAllocation[]>([]);
   const [receipts, setReceipts] = useState<DealReceipt[]>([]);
   const [refunds, setRefunds] = useState<RefundRow[]>([]);
@@ -162,7 +166,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
     } catch (e: any) {
       setErr(typeof e === "string" ? e : e?.message || "Failed to load refund data");
     }
-  }, [dealFlowId]);
+  }, [dealFlowId, reloadKey]);
   useEffect(() => { load(); }, [load]);
 
   const run = async (fn: () => Promise<void>) => {
@@ -192,17 +196,29 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
   const supplierGap = Math.max(0, supplierExpected - supplierArrived);
   const refundOwed: number = payout?.refund_owed || 0;
   const totalRefunded = payout?.refunded || refunds.reduce((s, r) => s + r.amount, 0);
-  const remaining = Math.max(refundOwed - totalRefunded, 0);
+  // Rounded to the cent, as the server does, so this step, the Refunds list and the close all agree.
+  const remaining = Math.max(Math.round((refundOwed - totalRefunded) * 100) / 100, 0);
+  // R-438: what the refund comes to. "Refund owed" is optional: a refund booked from
+  // Financials, or recorded as a payment with no owed figure, is a refund of what was paid.
+  const refundScope = Math.max(refundOwed, totalRefunded);
+  const settled = refundScope > 0.005 && remaining <= 0.01;
 
-  const hasActivity = refundOwed > 0 || refunds.length > 0;
+  const hasActivity = refundScope > 0.005 || refunds.length > 0;
   // As the primary view (refund mode) it's always open — no collapse.
   const open = primary ? true : (openOverride ?? hasActivity);
 
-  // Lock a FULLY-completed refund so it can't be changed by accident; Reopen
-  // re-enables editing. An in-progress refund (pending balance) is never locked.
-  const [reopened, setReopened] = useState(false);
-  const complete = refundOwed > 0 && remaining <= 0.005;
-  const locked = complete && !reopened;
+  // R-438: one meaning of "done". Closed is the saved flag, set by Close refund at the foot of
+  // this step and honoured only while nothing is owed back; it also makes the step read-only
+  // until Reopen refund. (There used to be a separate local lock that saved nothing, a header
+  // button on one screen only, and a drawer button on the phone; all three disagreed.)
+  const flowMeta: any = (() => { try { return JSON.parse(flow?.metadata || "{}"); } catch { return {}; } })();
+  const closed = !!flowMeta.refund_done && remaining <= 0.01;
+  const closedAt: string | undefined = flowMeta.refund_done_at;
+  const locked = closed;
+  const setClosed = (v: boolean) => run(async () => {
+    await api.setRefundDone(dealFlowId, v);
+    toast(v ? "Refund closed" : "Refund reopened");
+  });
 
   // Actions
   const linkReceived = (t: UnallocatedTxn, amount: number) => run(async () => {
@@ -259,15 +275,16 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
       setShortDraft(null); setSupOwedDraft("");
     });
   };
-  // ── Resold to another buyer (R-435) ──
+  // ── Resold to another buyer (R-435, R-438) ──
   // The goods cost still on this deal (supplier lines, less any already moved), and the
-  // moves already made, from the deal's own record.
-  const goodsLeft = (flow?.supplier_payments ?? [])
+  // moves recorded on it: to the deal the goods were sold again on, or from the refunded deal
+  // they came from. An undone move stays in the record and is not shown.
+  const goodsOf = (f: DealFlow | null | undefined) => (f?.supplier_payments ?? [])
     .filter((p) => !p.kept && (p.category || "supplier") === "supplier")
     .reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  const resoldTo: { invoice_number?: string | null; amount: number }[] = (() => {
-    try { return JSON.parse(flow?.metadata || "{}").resold_to || []; } catch { return []; }
-  })();
+  const goodsLeft = goodsOf(flow);
+  const liveResoldTo = resoldMoves(flow, "resold_to").filter((m) => !m.undone_at);
+  const liveResoldFrom = resoldMoves(flow, "resold_from").filter((m) => !m.undone_at);
   const openResell = async () => {
     setResell(true); setResellTo(null); setResellQuery("");
     setResellAmt(goodsLeft > 0 ? goodsLeft.toFixed(2) : "");
@@ -284,10 +301,25 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
   const moveResold = () => {
     if (!resellTo) { setErr("Pick the new buyer's deal."); return; }
     if (!isFinite(resellNum) || resellNum <= 0) { setErr("Enter the cost of what was resold."); return; }
+    // The cost moves to stop it being counted twice; if the new deal already carries goods
+    // cost of its own, that may be these same goods typed in by hand.
+    const theirs = (resellTo.supplier_payments ?? [])
+      .filter((p) => !p.kept && (p.category || "supplier") === "supplier" && !isResoldLine(p))
+      .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    if (theirs > 0.005 && !confirm(`${resellTo.invoice_number || "That deal"} already has ${fmtAmount(theirs)} of goods cost. If that is these same goods, moving ${fmtAmount(resellNum)} there counts them twice; remove that cost first. Move anyway?`)) return;
     run(async () => {
-      await api.moveResoldCost(dealFlowId, resellTo.id, resellNum);
-      toast(`Moved ${fmtAmount(resellNum)} of cost to ${resellTo.invoice_number || "the new deal"}`);
+      const r = await api.moveResoldCost(dealFlowId, resellTo.id, resellNum);
+      toast(`Moved ${fmtAmount(r.moved)} of cost to ${resellTo.invoice_number || "the new deal"}`
+        + (r.moved_bank > 0.005 ? `, with ${fmtAmount(r.moved_bank)} of the supplier's bank payment` : "")
+        + (refundScope > 0.005 && r.refund_remaining <= 0.01 ? ". The refund is settled; close it at the bottom." : "."));
       setResell(false); setResellTo(null);
+    });
+  };
+  const undoResold = (m: ResoldMove) => {
+    if (!confirm(`Undo this resold move? ${fmtAmount(m.amount)} of cost comes back to this deal from ${m.invoice_number || "the other deal"}, and the supplier payment that moved with it comes back too.`)) return;
+    run(async () => {
+      await api.undoResoldCost(dealFlowId, m.deal_flow_id, m.at);
+      toast("Resold move undone");
     });
   };
 
@@ -307,13 +339,17 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
           {!primary && <ChevronRight size={14} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} />}
           Refund
         </span>
-        {remaining > 0 ? (
-          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-danger-ink">
-            <AlertTriangle size={12} /> {fmtAmount(remaining)} still owed
-          </span>
-        ) : refundOwed > 0 ? (
+        {closed ? (
           <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
-            <CheckCircle2 size={13} /> Fully refunded
+            <CheckCircle2 size={13} /> Refund closed
+          </span>
+        ) : remaining > 0.005 ? (
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-danger-ink">
+            <AlertTriangle size={12} /> {fmtAmount(remaining)} still to send back
+          </span>
+        ) : settled ? (
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
+            <CheckCircle2 size={13} /> Settled, ready to close
           </span>
         ) : (
           <span className="text-[11px] text-muted">Start a refund</span>
@@ -322,15 +358,16 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
 
       {open && (
         <div className="px-4 pb-4 pt-1 space-y-4 border-t border-line-2">
-          {/* Complete refunds are locked read-only; Reopen to make changes. */}
-          {complete && (
-            <div className="flex items-center justify-between gap-2 rounded-lg bg-surface-2 border border-line px-3 py-2">
-              <span className="flex items-center gap-1.5 text-[12px] font-semibold text-success-ink">
-                <CheckCircle2 size={13} /> Refund complete{locked ? " · locked" : " · editing"}
+          {/* R-438: a closed refund is read-only; Reopen refund is the only way back in. */}
+          {closed && (
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-success-bg border border-success/40 px-3 py-2">
+              <span className="flex items-center gap-1.5 text-[12px] font-semibold text-success-ink min-w-0">
+                <CheckCircle2 size={13} className="flex-shrink-0" />
+                <span className="truncate">Refund closed{closedAt && !isNaN(new Date(closedAt).getTime()) ? ` ${fmtDate(localDay(new Date(closedAt)))}` : ""}. Nothing here can change until it is reopened.</span>
               </span>
-              <button onClick={() => setReopened((v) => !v)}
-                className="text-[11.5px] font-medium text-accent hover:text-accent-hover">
-                {locked ? "Reopen to edit" : "Done editing"}
+              <button onClick={() => setClosed(false)} disabled={busy}
+                className="text-[11.5px] font-medium text-accent hover:text-accent-hover flex-shrink-0">
+                Reopen refund
               </button>
             </div>
           )}
@@ -492,7 +529,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
               parties, two obligations, and one is not the other's offset. Shown
               whenever the supplier owes us or has already sent money back, even if
               nothing was typed into the shortage box. */}
-          {(supplierExpected > 0.005 || supplierBack.length > 0) && (<>
+          {((supplierExpected > 0.005 && liveResoldTo.length === 0) || supplierBack.length > 0) && (<>
             <section>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[12.5px] font-medium text-ink-2">Supplier recovery</span>
@@ -644,30 +681,53 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
             </div>
           )}
 
-          {/* 6 · Resold to another buyer (R-435) */}
-          {(refundOwed > 0 || totalRefunded > 0 || resoldTo.length > 0) && (<>
+          {/* 6 · Resold to another buyer (R-435, R-438) */}
+          {(refundScope > 0.005 || liveResoldTo.length > 0 || liveResoldFrom.length > 0) && (<>
             <div className="border-t border-line-2" />
             <section>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[12.5px] font-medium text-ink-2">Resold to another buyer</span>
-                <span className="text-[11px] text-muted tabular-nums">Cost on this deal {fmtAmount(goodsLeft)}</span>
+                {refundScope > 0.005 && <span className="text-[11px] text-muted tabular-nums">Goods cost on this deal {fmtAmount(goodsLeft)}</span>}
               </div>
-              {resoldTo.map((r, i) => (
-                <div key={i} className="flex items-center gap-2 text-[12px] py-0.5">
+              {liveResoldTo.map((m) => (
+                <div key={m.at} className="flex items-center gap-2 text-[12px] py-1">
                   <ArrowUpRight size={13} className="text-muted flex-shrink-0" />
-                  <span className="flex-1 min-w-0 truncate text-ink">Cost moved to {r.invoice_number || "another deal"}</span>
-                  <span className="tabular-nums text-ink">{fmtAmount(r.amount)}</span>
+                  <span className="flex-1 min-w-0 text-ink">
+                    {fmtAmount(m.amount)} of cost moved to{" "}
+                    <button onClick={() => m.invoice_number && openDealFlow(m.invoice_number, "supplier")}
+                      className="text-accent hover:text-accent-hover underline underline-offset-2">{m.invoice_number || "the other deal"}</button>
+                    {m.moved_bank == null ? ", with the supplier payment linked to it"
+                      : m.moved_bank > 0.005 ? `, with ${fmtAmount(m.moved_bank)} of the supplier's bank payment`
+                      : ". No bank payment was linked to move"}
+                  </span>
+                  {!locked && (
+                    <button onClick={() => undoResold(m)} disabled={busy}
+                      className="text-[11px] text-muted hover:text-ink-2 flex-shrink-0">Undo</button>
+                  )}
                 </div>
               ))}
-              <div className="text-[10.5px] text-muted mt-1">
-                Sold these goods again on a new invoice? Move their cost to that deal. This deal keeps only what its buyer kept, and the new deal carries what the goods really cost. The supplier payment moves with it.
-              </div>
-              {!resell ? (
-                goodsLeft > 0.005 && (
-                  <button onClick={openResell}
-                    className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><ArrowUpRight size={12} /> Move the cost to the new deal</button>
-                )
-              ) : (
+              {liveResoldFrom.map((m) => (
+                <div key={m.at} className="flex items-center gap-2 text-[12px] py-1">
+                  <ArrowDownLeft size={13} className="text-muted flex-shrink-0" />
+                  <span className="flex-1 min-w-0 text-ink">
+                    {fmtAmount(m.amount)} of cost came from{" "}
+                    <button onClick={() => m.invoice_number && openDealFlow(m.invoice_number, "refund")}
+                      className="text-accent hover:text-accent-hover underline underline-offset-2">{m.invoice_number || "the refunded deal"}</button>
+                    , a refunded load sold again here. Undo it from that deal's refund step.
+                  </span>
+                </div>
+              ))}
+              {refundScope > 0.005 && (
+                <div className="text-[10.5px] text-muted mt-1">
+                  Sold these goods again on a new invoice? Move their cost to that deal. This deal keeps only what its buyer kept,
+                  and the new deal carries what the goods really cost, with the supplier payment linked to it. The buyer's refund here does not change.
+                </div>
+              )}
+              {refundScope > 0.005 && !locked && !resell && goodsLeft > 0.005 && (
+                <button onClick={openResell}
+                  className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><ArrowUpRight size={12} /> Move the cost to the new deal</button>
+              )}
+              {resell && !locked && (
                 <div className="space-y-2 mt-2 bg-surface-2 rounded-lg p-2.5">
                   <div className="relative">
                     <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-faint" />
@@ -682,7 +742,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
                           className="w-full flex items-center gap-2 text-left text-[12px] px-2 py-1.5 rounded-md hover:bg-surface">
                           <span className="tabular-nums text-ink-2 flex-shrink-0">{d.invoice_number || "No number"}</span>
                           <span className="flex-1 min-w-0 truncate text-ink">{d.client_name || d.name || ""}</span>
-                          <span className="tabular-nums text-muted flex-shrink-0">{fmtAmount(d.gross_revenue || 0)}</span>
+                          <span className="tabular-nums text-muted flex-shrink-0">{fmtAmount((d.gross_revenue || 0) > 0 ? d.gross_revenue : (d.invoice_total || 0))}</span>
                         </button>
                       ))}
                       {resellMatches.length === 0 && <div className="text-[11.5px] text-muted px-2 py-1">No deal matches.</div>}
@@ -709,6 +769,22 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
                   </div>
                 </div>
               )}
+            </section>
+          </>)}
+
+          {/* 7 · Close the refund (R-438): the one way to finish it, on every screen this step is on. */}
+          {refundScope > 0.005 && !closed && (<>
+            <div className="border-t border-line-2" />
+            <section className="flex items-center gap-3 flex-wrap">
+              <button onClick={() => setClosed(true)} disabled={busy || remaining > 0.01}
+                className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+                <CheckCircle2 size={13} /> Close refund
+              </button>
+              <span className="text-[11.5px] text-muted flex-1 min-w-[200px]">
+                {remaining > 0.01
+                  ? `${fmtAmount(remaining)} is still to send back. Record the refund payment, or lower the refund owed, and then close it.`
+                  : "Everything owed back has gone out. Closing it marks the refund done and makes this step read-only."}
+              </span>
             </section>
           </>)}
 

@@ -2747,6 +2747,33 @@ export interface UnallocatedBankTxns {
   money_in: UnallocatedTxn[];
   money_out: UnallocatedTxn[];
 }
+/** R-435/R-438: a resold move as a deal records it in `metadata.resold_to` (on the refunded
+ *  deal) or `metadata.resold_from` (on the deal the goods were sold again on). */
+export interface ResoldMove {
+  deal_flow_id: string;
+  invoice_number?: string | null;
+  amount: number;
+  /** How much of the supplier's bank payment moved with the cost (absent on a move made before R-438). */
+  moved_bank?: number;
+  at: string;
+  undone_at?: string;
+}
+export function resoldMoves(flow: { metadata?: string | null } | null | undefined, key: "resold_to" | "resold_from"): ResoldMove[] {
+  try { return (JSON.parse(flow?.metadata || "{}")[key] || []) as ResoldMove[]; } catch { return []; }
+}
+/** R-438: a cost line written by a resold move; one half of a pair, never edited alone. */
+export const isResoldLine = (p: { notes?: string | null }) =>
+  !!p.notes && (p.notes.startsWith("Resold: cost moved to ") || p.notes.startsWith("Resold from "));
+/** R-438: open one deal in Deal Flow on one step, from anywhere (including Deal Flow itself). */
+export function openDealFlow(invoiceNumber: string, section: string = "supplier") {
+  try {
+    localStorage.setItem("dealflow_invoice_filter", invoiceNumber);
+    localStorage.setItem("dealflow_open_section", JSON.stringify({ invoice: invoiceNumber, section }));
+  } catch { /* ignore */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
+  window.dispatchEvent(new CustomEvent("dealflow-open"));
+}
+
 export interface DealReconciliation {
   expected_profit: number;
   gross_revenue: number;
@@ -2767,6 +2794,10 @@ export interface DealReconciliation {
   supplier_paid_paired: boolean;
   shipping_paid_paired?: boolean;
   fully_reconciled: boolean;
+  /** R-438: the plan before refunds; `expected_profit` is after them. */
+  expected_before_refunds?: number;
+  /** R-438: this deal's goods cost moved to the deal it was resold on, so its supplier leg is there. */
+  resold_away?: boolean;
 }
 export interface MoneyConfig {
   bank_balance: number;
@@ -3480,7 +3511,10 @@ export const api = {
   listDealFlows: () => invoke<DealFlow[]>("list_deal_flows"),
   // R-435: the cost of goods refunded here and sold again on another deal moves to that deal.
   moveResoldCost: (fromId: string, toId: string, amount: number) =>
-    invoke<{ moved: number; moved_bank: number }>("move_resold_cost", { fromId, toId, amount }),
+    invoke<{ moved: number; moved_bank: number; refund_remaining: number }>("move_resold_cost", { fromId, toId, amount }),
+  // R-438: take a resold move back (identified by the deal it went to and its `at` stamp).
+  undoResoldCost: (fromId: string, toId: string, at: string) =>
+    invoke<{ amount: number; links_back: number }>("undo_resold_cost", { fromId, toId, at }),
   // R-277 freight tracking (Priority1 emails)
   listShipments: () => invoke<Shipment[]>("list_shipments"),
   linkShipment: (id: string, dealFlowId: string) => invoke<void>("link_shipment", { id, dealFlowId }),
@@ -4167,7 +4201,7 @@ export const api = {
   reconciliationStatusAll: () =>
     invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_paid_paired?: boolean; no_shipping_link?: boolean; shipping_missing?: boolean }[]>("reconciliation_status_all"),
   refundStatusAll: () =>
-    invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number; done: boolean }[]>("refund_status_all"),
+    invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number; done: boolean; done_at?: string | null }[]>("refund_status_all"),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
   /// `publishManual` must be true ONLY when this device's manual balance is the figure
   /// actually in use here (Free Cash showing `balance_source === "manual"`). It is what

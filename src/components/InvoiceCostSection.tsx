@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { X, Plus } from "lucide-react";
-import { api, DealFlow, Supplier, PayoutShare } from "../lib/api";
+import { api, DealFlow, Supplier, PayoutShare, isResoldLine } from "../lib/api";
 import { fmtAmount, shippingEstimateOf } from "../lib/format";
 import { toast } from "./Toast";
 import CostProfitPanel from "./CostProfitPanel";
+import ResoldNote from "./ResoldNote";
 import StatusPill from "./StatusPill";
 
 /**
@@ -189,7 +190,8 @@ export default function InvoiceCostSection({
                 {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
                 {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept: didn't pay, not counted as a cost</div>}
                 {replaced(p) && <div className="text-[10.5px] text-muted">Replaced by the logistics booking, not counted</div>}
-                {!locked && (
+                {p.notes && <ResoldNote note={p.notes} />}
+                {!locked && !isResoldLine(p) && (
                   <div className="flex items-center gap-2.5 mt-0.5">
                     {!p.paid && (
                       <button disabled={saving}
@@ -206,7 +208,7 @@ export default function InvoiceCostSection({
                 )}
               </div>
               <div className={`text-[13px] font-semibold tabular-nums ${p.kept || replaced(p) ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
-              {!locked && (
+              {!locked && !isResoldLine(p) && (
                 <button title="Remove this cost line" disabled={saving}
                   onClick={() => { if (confirm("Remove this cost line?")) act(() => api.removeSupplierPayment(flow.id, p.id)); }}
                   className="text-faint hover:text-danger-ink transition-colors disabled:opacity-40"><X size={13} /></button>

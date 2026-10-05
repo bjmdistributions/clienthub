@@ -130,7 +130,10 @@ export default function PayablesView() {
     setRowErr((e) => { const n = { ...e }; delete n[key]; return n; });
     try {
       const flow = await api.getDealFlow(it.deal_flow_id);
-      const matches = (flow.supplier_payments || []).filter(
+      // R-438: the row's own line first (a row can be less than its line once a resold offset is
+      // folded in), then the old payee-and-amount match.
+      const byId = (flow.supplier_payments || []).filter((p) => !p.paid && (it as any).payment_id && p.id === (it as any).payment_id);
+      const matches = byId.length ? byId : (flow.supplier_payments || []).filter(
         (p) => !p.paid && (p.supplier_name || "") === (it.payee || "") && Math.abs(p.amount - it.amount) < 0.005
       );
       if (matches.length === 0) {

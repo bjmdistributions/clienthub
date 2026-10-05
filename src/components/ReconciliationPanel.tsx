@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search } from "lucide-react";
-import { api, DealFlow, DealAllocation, BankTxn } from "../lib/api";
+import { api, DealFlow, DealAllocation, BankTxn, resoldMoves } from "../lib/api";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 
@@ -29,7 +29,11 @@ type Leg = {
   target: number; // expected amount, drives the "match" hint
 };
 
-export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow; onChange?: () => void }) {
+export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
+  flow: DealFlow; onChange?: () => void;
+  /** R-438: bumped by the host when a panel beside this one changed the deal's money. */
+  reloadKey?: number;
+}) {
   const [allocs, setAllocs] = useState<DealAllocation[]>([]);
   const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
   const [busy, setBusy] = useState(false);
@@ -42,7 +46,9 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
     } catch (e: any) {
       toast(String(e), "error");
     }
-  }, [flow.id]);
+  // R-438: refetched whenever the deal changes (a resold move, a refund, an edit made on
+  // another step or screen), not only when a different deal is shown.
+  }, [flow.id, flow.updated_at, reloadKey]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -65,7 +71,20 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
   const supplierTarget = Math.max(0, flow.total_supplier_cost - (flow.freight_typed ?? 0));
   const shippingTarget = recon?.pieces?.shipping_target ?? (flow.shipping_mode ? (flow.logistics_paid ?? 0) : (flow.freight_typed ?? 0));
   const buyerComplete = flow.invoice_total > 0 ? buyerSum >= flow.invoice_total - 0.5 : buyer.length > 0;
-  const supplierComplete = supplierTarget > 0 ? supplierSum >= supplierTarget - 0.5 : supplier.length > 0;
+  // R-438: a refunded deal whose goods cost moved to the deal it was resold on has no supplier
+  // leg of its own; the payment is linked there, and this leg says so instead of "Not paired".
+  const resoldAway = !!recon?.resold_away;
+  const liveTo = resoldMoves(flow, "resold_to").filter((m) => !m.undone_at);
+  const resoldTo = liveTo.map((m) => m.invoice_number).filter(Boolean).join(", ") || "the deal these goods were resold on";
+  const movedBank = liveTo.reduce((s, m) => s + (Number(m.moved_bank) || 0), 0);
+  const anyOldMove = liveTo.some((m) => m.moved_bank == null);
+  const elsewhereText = !resoldAway ? undefined
+    : movedBank > 0.005 && !anyOldMove ? `Paid on ${resoldTo}: the cost and ${fmtAmount(movedBank)} of the supplier's bank payment moved there when the goods were sold again.`
+    : anyOldMove ? `The goods cost moved to ${resoldTo} when the goods were sold again; their supplier payment is paired there, not here.`
+    : `The goods cost moved to ${resoldTo} when the goods were sold again. No supplier bank payment was linked here, so pair or pay it on ${resoldTo}.`;
+  const supplierComplete = resoldAway || (supplierTarget > 0 ? supplierSum >= supplierTarget - 0.5 : supplier.length > 0);
+  // Refund payments that went out through the bank, as rows (the total is in the summary).
+  const refundOut = byRole("refund_out");
   const shippingComplete = shippingTarget > 0.005 ? shippingSum >= shippingTarget - 0.5 : true;
   const fullyReconciled = recon?.fully_reconciled ?? (buyerComplete && supplierComplete && shippingComplete);
   const anyPaired = buyer.length > 0 || supplier.length > 0 || shipping.length > 0 || fees.length > 0 || refundIn.length > 0;
@@ -206,6 +225,7 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           onClose={closePicker}
           onUnpair={unpair}
           pairLabel="Pair supplier payment"
+          elsewhere={elsewhereText}
           manualOpen={manualLeg === "supplier_payment"}
           onOpenManual={() => { setManualLeg("supplier_payment"); closePicker(); }}
           onCloseManual={() => setManualLeg(null)}
@@ -231,6 +251,20 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           onCloseManual={() => setManualLeg(null)}
           onAddManual={addManual}
         />
+
+        {/* R-438: refunds paid back to the buyer through the bank, as rows. Recorded and closed
+            on the deal's refund step; listed here so every linked transaction is in one place. */}
+        {refundOut.length > 0 && (
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[13px] font-medium text-ink">Refunds to the buyer</div>
+              <span className="text-[13px] font-semibold text-danger-ink tabular-nums">−{fmtAmount(refundOut.reduce((s, a) => s + a.amount, 0))}</span>
+            </div>
+            <div className="mt-2 space-y-1.5">
+              {refundOut.map((a) => <PairedRow key={a.id} a={a} onUnpair={unpair} busy={busy} />)}
+            </div>
+          </div>
+        )}
 
         {/* Wire fees (money-out, optional, subtract from actual profit) */}
         <div className="px-4 py-3">
@@ -415,7 +449,7 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
 // ── One money leg: title, paired rows or empty state, inline picker ──
 function LegBlock({
   title, leg, rows, picker, busy, flow, onOpen, onClose, onUnpair, pairLabel,
-  manualOpen, onOpenManual, onCloseManual, onAddManual, quietWhenEmpty,
+  manualOpen, onOpenManual, onCloseManual, onAddManual, quietWhenEmpty, elsewhere,
 }: {
   title: string;
   leg: Leg;
@@ -433,10 +467,12 @@ function LegBlock({
   onAddManual: (role: Leg["role"], amount: number, date: string, who: string, note: string) => void;
   /** A leg with nothing expected and nothing paired shows no warning (the shipping leg on a deal that ships nothing). */
   quietWhenEmpty?: boolean;
+  /** R-438: the leg is settled on another deal (a resold move); says where instead of "Not paired". */
+  elsewhere?: string;
 }) {
   const paired = rows.length > 0;
   const sum = rows.reduce((s, a) => s + a.amount, 0);
-  const complete = leg.target > 0 ? sum >= leg.target - 0.5 : paired;
+  const complete = (!!elsewhere && !paired) || (leg.target > 0 ? sum >= leg.target - 0.5 : paired);
   const partial = paired && !complete;
   // More money linked than this leg expected. Allowed on purpose — a wire can be
   // bigger than the invoice — but it moves recorded profit, so it is never silent.
@@ -452,7 +488,7 @@ function LegBlock({
             : <AlertTriangle size={14} className="text-warning-ink flex-shrink-0" />}
           <span className="text-[13px] font-medium text-ink truncate">{title}</span>
           {quiet && <span className="text-[11px] text-muted">Nothing to pair yet</span>}
-          {!paired && !quiet && <span className="text-[11px] text-warning-ink">Not paired</span>}
+          {!paired && !quiet && !elsewhere && <span className="text-[11px] text-warning-ink">Not paired</span>}
           {partial && leg.target > 0 && (
             <span className="text-[11px] text-warning-ink tabular-nums">
               Partially paired · {fmtAmount(sum)} of {fmtAmount(leg.target)}
@@ -470,6 +506,7 @@ function LegBlock({
         </div>
       </div>
 
+      {!!elsewhere && !paired && <div className="mt-1 text-[11.5px] text-muted">{elsewhere}</div>}
       {paired && (
         <div className="mt-2 space-y-1.5">
           {rows.map((a) => <PairedRow key={a.id} a={a} onUnpair={onUnpair} busy={busy} />)}
