@@ -27957,6 +27957,17 @@ mod r442_bought_back_tests {
         assert_eq!((on(&small), on(&big)), (a.clone(), a.clone()));
     }
 
+    /// R-443: the screens always send what was ticked; a deal with no bank links ticks nothing.
+    #[tokio::test]
+    async fn nothing_ticked_moves_a_cost_no_bank_payment_stands_behind() {
+        let _db = crate::db::init_test_store();
+        let a = deal("u", 5000.0, vec![line(4000.0, false)], "payment_received", 5000.0);
+        let b = deal("ub", 4500.0, vec![], "payment_received", 0.0);
+        let r = move_resold_cost(a.clone(), b.clone(), 4000.0, Some(vec![])).await.unwrap();
+        assert_eq!((r["moved"].as_f64(), r["moved_bank"].as_f64()), (Some(4000.0), Some(0.0)));
+        assert_eq!(read_df(&b).unwrap().supplier_owed, 4000.0);
+    }
+
     #[tokio::test]
     async fn refunds_from_another_deal_or_none_are_refused() {
         let _db = crate::db::init_test_store();

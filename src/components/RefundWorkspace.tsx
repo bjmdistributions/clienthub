@@ -313,9 +313,11 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
       .filter((p) => !p.kept && (p.category || "supplier") === "supplier" && !isResoldLine(p))
       .reduce((s, p) => s + (Number(p.amount) || 0), 0);
     if (theirs > 0.005 && !confirm(`${resellTo.invoice_number || "That deal"} already has ${fmtAmount(theirs)} of goods cost. If that is these same goods, moving ${fmtAmount(resellNum)} there counts them twice; remove that cost first. Move anyway?`)) return;
+    if (overGoods) { setErr(`This deal's goods cost ${fmtAmount(goodsLeft)}; that is the most that can move.`); return; }
     if (!linksOk) { setErr(`${fmtAmount(bankPart)} of this cost was paid from the bank. Tick the supplier payment that paid for these goods.`); return; }
     run(async () => {
-      const r = await api.moveResoldCost(dealFlowId, resellTo.id, resellNum, supplierLinks.length > 0 ? resellLinks : undefined);
+      // Always the list ticked (possibly empty), so a payment is never picked for the user.
+      const r = await api.moveResoldCost(dealFlowId, resellTo.id, resellNum, tickedLinks);
       toast(`Moved ${fmtAmount(r.moved)} of cost to ${resellTo.invoice_number || "the new deal"}`
         + (r.moved_bank > 0.005 ? `, with ${fmtAmount(r.moved_bank)} of the supplier's bank payment` : "")
         + (refundScope > 0.005 && r.refund_remaining <= 0.01 ? ". The refund is settled; close it at the bottom." : "."));
@@ -327,8 +329,12 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
   // goes with the payments ticked, so they must add up to at least that.
   const supplierLinks = allocs.filter((a) => a.role === "supplier_payment");
   const linkedSupplier = supplierLinks.reduce((s, a) => s + a.amount, 0);
-  const bankPart = isFinite(resellNum) ? Math.max(0, Math.round((resellNum - Math.max(0, goodsLeft - linkedSupplier)) * 100) / 100) : 0;
-  const tickedTotal = Math.round(supplierLinks.filter((a) => resellLinks.includes(a.id)).reduce((s, a) => s + a.amount, 0) * 100) / 100;
+  // More than the goods cost cannot move; that is said first, not as a payment to tick.
+  const overGoods = isFinite(resellNum) && resellNum > goodsLeft + 0.005;
+  const bankPart = isFinite(resellNum) ? Math.max(0, Math.round((Math.min(resellNum, goodsLeft) - Math.max(0, goodsLeft - linkedSupplier)) * 100) / 100) : 0;
+  // Only payments still linked count (a panel beside this one may have unlinked one since).
+  const tickedLinks = resellLinks.filter((id) => supplierLinks.some((a) => a.id === id));
+  const tickedTotal = Math.round(supplierLinks.filter((a) => tickedLinks.includes(a.id)).reduce((s, a) => s + a.amount, 0) * 100) / 100;
   const linksOk = !(bankPart > 0.005) || tickedTotal >= bankPart - 0.005;
   // A live buy-back (R-442) is undone before the cost moves, or the goods are costed twice.
   const canCost = goodsLeft > 0.005 && boughtBack.length === 0;
@@ -802,7 +808,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
                     <div className="space-y-0.5">
                       {supplierLinks.map((a) => (
                         <label key={a.id} className="flex items-center gap-2 text-[12px] py-1 cursor-pointer">
-                          <input type="checkbox" checked={resellLinks.includes(a.id)} className="accent-[rgb(var(--c-accent))]"
+                          <input type="checkbox" checked={tickedLinks.includes(a.id)} className="accent-[rgb(var(--c-accent))]"
                             onChange={(e) => setResellLinks((v) => e.target.checked ? [...v, a.id] : v.filter((x) => x !== a.id))} />
                           <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
                           <span className="flex-1 min-w-0 truncate text-ink" title={a.counterparty_name || a.description}>{a.counterparty_name || a.description || "Supplier payment"}</span>
@@ -812,9 +818,9 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
                     </div>
                   </>)}
                   <div className="flex items-center gap-2">
-                    <button onClick={moveResold} disabled={busy || !resellTo || !(resellNum > 0) || !linksOk}
+                    <button onClick={moveResold} disabled={busy || !resellTo || !(resellNum > 0) || overGoods || !linksOk}
                       className="flex-1 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
-                      {!linksOk ? "Tick the supplier payment" : resellTo && resellNum > 0 ? `Move ${fmtAmount(resellNum)} to ${resellTo.invoice_number || "this deal"}` : "Move the cost"}
+                      {overGoods ? `At most ${fmtAmount(goodsLeft)} can move` : !linksOk ? "Tick the supplier payment" : resellTo && resellNum > 0 ? `Move ${fmtAmount(resellNum)} to ${resellTo.invoice_number || "this deal"}` : "Move the cost"}
                     </button>
                     <button onClick={() => setResell(false)} className="h-8 px-3 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2">Cancel</button>
                   </div>
