@@ -422,6 +422,109 @@ pub fn link_id(bill_id: &str, bank_txn_id: &str) -> String {
     format!("bp-{bill_id}-{bank_txn_id}")
 }
 
+// ----------------------------------------------------------------------------- search
+
+const MONTH_NAMES: [&str; 12] = [
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+];
+
+/// One search word as an amount in cents: `$1,500.00`, `1500` and `500.5` are amounts.
+fn amount_word(tok: &str) -> Option<i64> {
+    let t: String = tok.trim_start_matches('$').chars().filter(|c| *c != ',').collect();
+    if !t.chars().any(|c| c.is_ascii_digit()) || t.matches('.').count() > 1 || !t.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    t.parse::<f64>().ok().map(|v| (v * 100.0).round() as i64)
+}
+
+/// The month (1..=12) a word names: "aug", "august", "sept"; at least three letters.
+fn month_word(tok: &str) -> Option<u32> {
+    if tok.len() < 3 || !tok.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    MONTH_NAMES.iter().position(|m| m.starts_with(tok)).map(|i| i as u32 + 1)
+}
+
+/// A date word: `2026-08`, `2026-08-18`, `8/18`, `08/18/2026`, `8/18/26`. The posted dates it
+/// matches, as a test on the date.
+fn date_word(tok: &str, posted: NaiveDate) -> Option<bool> {
+    if !tok.is_ascii() {
+        return None;
+    }
+    let b = tok.as_bytes();
+    let all_digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    if (b.len() == 7 || b.len() == 10) && b[4] == b'-' && all_digits(&tok[..4]) && all_digits(&tok[5..7]) {
+        if b.len() == 7 {
+            return Some(fmt_day(posted).starts_with(tok));
+        }
+        if b[7] == b'-' && all_digits(&tok[8..]) {
+            return Some(fmt_day(posted) == tok);
+        }
+    }
+    let parts: Vec<&str> = tok.split('/').collect();
+    if (parts.len() == 2 || parts.len() == 3) && parts.iter().all(|p| all_digits(p)) {
+        let m: u32 = parts[0].parse().ok()?;
+        let d: u32 = parts[1].parse().ok()?;
+        if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+            return None;
+        }
+        let year_ok = match parts.get(2) {
+            None => true,
+            Some(y) => {
+                let y: i32 = y.parse().ok()?;
+                posted.year() == if y < 100 { 2000 + y } else { y }
+            }
+        };
+        return Some(posted.month() == m && posted.day() == d && year_ok);
+    }
+    None
+}
+
+/// R-454: a payment answers a search when it answers every word (case does not matter): an
+/// amount word matches the amount to the cent; a date word the posted date (`2026-08`,
+/// `2026-08-18`, `8/18`, `08/18/2026`); a month name (`aug`, `august`) the posted month or the
+/// payee or memo, and a month name followed by a day (`aug 18`) that date; any other word the
+/// payee or memo. An empty search matches everything.
+pub fn search_matches(t: &Txn, q: &str) -> bool {
+    let text = format!("{} {}", t.payee, t.memo).to_lowercase();
+    let posted = parse_day(&t.posted_at);
+    let cents = (t.amount * 100.0).round() as i64;
+    let lower = q.to_lowercase();
+    let toks: Vec<&str> = lower.split_whitespace().collect();
+    let mut i = 0;
+    while i < toks.len() {
+        let tok = toks[i];
+        i += 1;
+        if let (Some(m), Some(day)) = (month_word(tok), posted) {
+            // "aug 18": the month and its day, both words used.
+            let next_day = toks.get(i).and_then(|n| n.parse::<u32>().ok()).filter(|d| (1..=31).contains(d));
+            if let Some(d) = next_day {
+                i += 1;
+                if !(day.month() == m && day.day() == d) {
+                    return false;
+                }
+                continue;
+            }
+            if day.month() == m || text.contains(tok) {
+                continue;
+            }
+            return false;
+        }
+        let hit = if let Some(want) = amount_word(tok) {
+            cents == want
+        } else if let Some(hit) = posted.and_then(|day| date_word(tok, day)) {
+            hit
+        } else {
+            text.contains(tok)
+        };
+        if !hit {
+            return false;
+        }
+    }
+    true
+}
+
 // --------------------------------------------------------------------------- matching
 
 /// `t` went to `bill`'s payee: money out, posted, not deal money, every word of the bill's text,
@@ -1874,6 +1977,26 @@ mod tests {
         assert_eq!(by_txn("0"), "");
         assert_eq!(by_txn("1"), "2026-08-01");
         assert!(period_fixes(&b, &links).is_empty());
+    }
+
+    #[test]
+    fn a_search_finds_a_payment_by_word_amount_date_or_month() {
+        let t = out("t", "2026-08-18", 1800.0, "WAREHOUSE RENT");
+        for q in ["warehouse", "Warehouse rent", "1800", "$1,800.00", "1800.00", "2026-08", "2026-08-18", "8/18", "08/18", "8/18/2026", "08/18/26", "aug", "August", "aug 18", "warehouse aug", "warehouse 1800 aug", "", "   "] {
+            assert!(search_matches(&t, q), "{q:?} should find it");
+        }
+        for q in ["storage", "1850", "180", "2026-09", "2026-08-19", "8/19", "8/18/2025", "sept", "warehouse sep", "aug 1801"] {
+            assert!(!search_matches(&t, q), "{q:?} should not find it");
+        }
+        // A month name is also a word: "may" finds a payee called May even in another month.
+        let m = out("m", "2026-02-03", 40.0, "MAY CLEANING CO");
+        assert!(search_matches(&m, "may"));
+        // "18" alone is an amount, not a day.
+        assert!(!search_matches(&t, "18"));
+        // Words that only look like dates never break the search.
+        for q in ["\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}", "ab\u{e9}-01-02", "13/40", "2026/08/18", "1e5", "-5"] {
+            let _ = search_matches(&t, q);
+        }
     }
 
     #[test]

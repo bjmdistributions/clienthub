@@ -900,39 +900,6 @@ fn archive(conn: &rusqlite::Connection, id: &str, archived: bool, today: NaiveDa
 
 // ------------------------------------------------------------------- picking payments
 
-/// A search word that is an amount (`$1,500.00`, `1500`, `500.5`), in cents.
-fn amount_token(tok: &str) -> Option<i64> {
-    let t: String = tok.trim_start_matches('$').chars().filter(|c| *c != ',').collect();
-    if !t.chars().any(|c| c.is_ascii_digit()) || t.matches('.').count() > 1 || !t.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        return None;
-    }
-    t.parse::<f64>().ok().map(|v| (v * 100.0).round() as i64)
-}
-
-/// A search word shaped `YYYY-MM` or `YYYY-MM-DD`: it matches the start of the posted date.
-fn date_token(tok: &str) -> bool {
-    let b = tok.as_bytes();
-    let digits = |r: std::ops::Range<usize>| b[r].iter().all(|c| c.is_ascii_digit());
-    match b.len() {
-        7 => digits(0..4) && b[4] == b'-' && digits(5..7),
-        10 => digits(0..4) && b[4] == b'-' && digits(5..7) && b[7] == b'-' && digits(8..10),
-        _ => false,
-    }
-}
-
-/// R-454: every search word (lower case) is found in the payment. An amount word matches the
-/// amount to the cent, a date word the start of the posted date, any other word the payee or memo.
-fn search_matches(t: &core::Txn, tokens: &[String]) -> bool {
-    tokens.iter().all(|tok| {
-        if let Some(cents) = amount_token(tok) {
-            cents == (t.amount * 100.0).round() as i64
-        } else if date_token(tok) {
-            t.posted_at.starts_with(tok.as_str())
-        } else {
-            t.payee.to_lowercase().contains(tok.as_str()) || t.memo.to_lowercase().contains(tok.as_str())
-        }
-    })
-}
 
 /// The payments Jack can link to a bill by hand. Without `q`: the unlinked payments of the last 120
 /// days that could be this bill's, best match first, at most 40. With `q` (R-454): any payment of
@@ -942,13 +909,13 @@ fn search_matches(t: &core::Txn, tokens: &[String]) -> bool {
 fn candidates_json(conn: &rusqlite::Connection, id: &str, q: Option<&str>, today: NaiveDate) -> Result<Value, String> {
     let bill = load_bill(conn, id)?;
     let cb = bill.to_core();
-    let tokens: Vec<String> = q.unwrap_or("").to_lowercase().split_whitespace().map(|t| t.to_string()).collect();
-    let searching = !tokens.is_empty();
+    let q = q.unwrap_or("");
+    let searching = !q.trim().is_empty();
     let txns = load_txns(conn, &if searching { String::new() } else { since(today, 120) })?;
     let mut rows: Vec<(bool, f64, &core::Txn)> = txns
         .iter()
         .filter(|t| core::eligible(t))
-        .filter(|t| if searching { t.bill_id != bill.id && search_matches(t, &tokens) } else { t.bill_id.is_empty() })
+        .filter(|t| if searching { t.bill_id != bill.id && core::search_matches(t, q) } else { t.bill_id.is_empty() })
         .map(|t| (!core::words_match(&cb.payee_match, t), (t.amount - cb.amount).abs(), t))
         .collect();
     if searching {
@@ -2218,22 +2185,6 @@ mod tests {
         assert_eq!(get_json(&conn, &id, today()).unwrap()["bill"]["state"]["paid_count"], json!(3));
     }
 
-    #[test]
-    fn search_words_are_amounts_dates_or_text() {
-        assert_eq!(amount_token("$1,500.00"), Some(150000));
-        assert_eq!(amount_token("1500"), Some(150000));
-        assert_eq!(amount_token("500.5"), Some(50050));
-        assert_eq!(amount_token("0.07"), Some(7));
-        for not in ["", "$", ".", "1.2.3", "2026-08", "2026-08-18", "inf", "1e5", "-5", "rent", "7781a"] {
-            assert_eq!(amount_token(not), None, "{not}");
-        }
-        for yes in ["2026-08", "2026-08-18"] {
-            assert!(date_token(yes), "{yes}");
-        }
-        for no in ["2026", "2026-8", "2026-08-1", "20260818", "2026-08-188", "abcd-ef", "2026/08/18", "\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}"] {
-            assert!(!date_token(no), "{no}");
-        }
-    }
 
     /// R-454: every money-out payment of any date can be found by word, exact amount or month, and a
     /// payment that already pays another bill is shown with that bill's name.
