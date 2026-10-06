@@ -348,7 +348,9 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
   const costStillHere = Math.round((goodsLeft - supplierArrived) * 100) / 100;
   const lossAcked = !!flowMeta.refund_loss_ack;
   const costMovedAway = liveResoldTo.some((m) => m.kind !== "refunds");
-  const lossQuestion = sale > 0.005 && refundScope >= sale - 0.5 && costStillHere > 0.5 && !costMovedAway;
+  // Only once the buyer has actually been paid back in full (Analytics' rule): before that the
+  // step is about what is still to send back.
+  const lossQuestion = sale > 0.005 && totalRefunded >= sale - 0.5 && remaining <= 0.01 && costStillHere > 0.5 && !costMovedAway;
   const unexplained = lossQuestion && !lossAcked;
   const scrollTo = (id: string) => setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
   const answerSupplier = () => { setPickSupplierBack(true); scrollTo(`rf-supplier-${dealFlowId}`); };

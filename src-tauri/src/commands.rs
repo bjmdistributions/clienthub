@@ -14486,12 +14486,15 @@ fn non_deal_categories_sql() -> String {
 /// - `over`: the refund was more than the deal made.
 /// - `loss_kept` (R-451): `cost_here`, but the user said on the refund step that it is a real loss
 ///   (the supplier kept the money and the goods are gone), so it is named, not questioned.
-pub(crate) fn refunded_deal_status(gross: f64, refunded: f64, owed: f64, cost: f64, profit: f64, refund_in: f64, cost_moved: bool, loss_ack: bool) -> &'static str {
+/// `cost` is the recorded cost, already net of supplier money back (`refund_in` is a cost link,
+/// R-444), so a deal with part of it back still reads `cost_here` for what is left, the same
+/// figure the refund step asks about (R-451).
+pub(crate) fn refunded_deal_status(gross: f64, refunded: f64, owed: f64, cost: f64, profit: f64, cost_moved: bool, loss_ack: bool) -> &'static str {
     let remaining = ((owed - refunded).max(0.0) * 100.0).round() / 100.0;
     let full = gross > 0.005 && refunded >= gross - 0.5;
     if remaining > 0.01 { "owed" }
     else if profit >= -0.5 { if full { "cancelled" } else { "kept" } }
-    else if full && cost > 0.005 && refund_in <= 0.005 && !cost_moved { if loss_ack { "loss_kept" } else { "cost_here" } }
+    else if full && cost > 0.5 && !cost_moved { if loss_ack { "loss_kept" } else { "cost_here" } }
     else { "over" }
 }
 
@@ -14567,7 +14570,7 @@ pub async fn analytics_refunds(start_date: String, end_date: String) -> Result<V
     ))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     let (mut refunded_total, mut refunded_deals, mut cancelled, mut loss_deals, mut loss_total, mut owed_back) = (0.0, 0i64, 0i64, 0i64, 0.0, 0.0);
     let deals: Vec<Value> = raw.into_iter().map(|(id, inv, client, closed, gross, refunded, owed, cost, profit, refund_in, typed_at, bank_day, meta, invoice_id)| {
-        let status = refunded_deal_status(gross, refunded, owed, cost, profit, refund_in, has_live_cost_move(&meta), refund_loss_acked(&meta));
+        let status = refunded_deal_status(gross, refunded, owed, cost, profit, has_live_cost_move(&meta), refund_loss_acked(&meta));
         let refunded_on = refund_day(&typed_at, &bank_day);
         if refunded > 0.005 { refunded_deals += 1; }
         let remaining = to_cents((owed - refunded).max(0.0));
@@ -28232,13 +28235,15 @@ mod r444_analytics_refunds_tests {
 
     #[test]
     fn the_status_words_each_refunded_deal() {
-        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 0.0, 0.0, 0.0, true, false), "cancelled");
-        assert_eq!(refunded_deal_status(10000.0, 1000.0, 1000.0, 8000.0, 1000.0, 0.0, false, false), "kept");
-        assert_eq!(refunded_deal_status(10000.0, 4000.0, 10000.0, 8000.0, -2000.0, 0.0, false, false), "owed");
-        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, false, false), "cost_here");
-        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, false, true), "loss_kept");
-        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, true, false), "over");
-        assert_eq!(refunded_deal_status(10000.0, 3000.0, 3000.0, 8000.0, -1000.0, 0.0, false, false), "over");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 0.0, 0.0, true, false), "cancelled");
+        assert_eq!(refunded_deal_status(10000.0, 1000.0, 1000.0, 8000.0, 1000.0, false, false), "kept");
+        assert_eq!(refunded_deal_status(10000.0, 4000.0, 10000.0, 8000.0, -2000.0, false, false), "owed");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, false, false), "cost_here");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, false, true), "loss_kept");
+        // Part of the supplier's money back: the recorded cost is what is left, named the same way.
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 3000.0, -3000.0, false, true), "loss_kept");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, true, false), "over");
+        assert_eq!(refunded_deal_status(10000.0, 3000.0, 3000.0, 8000.0, -1000.0, false, false), "over");
     }
 
     #[tokio::test]
