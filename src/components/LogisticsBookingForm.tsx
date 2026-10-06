@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { X, Plus, Trash2, ExternalLink, Lock } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { api, type FreightBooking, type FreightBookingPatch, type FreightStatus } from "../lib/api";
+import { api, type FreightBooking, type FreightBookingPatch, type FreightStatus, type FreightStop } from "../lib/api";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import StatusPill from "./StatusPill";
 import NumberInput from "./NumberInput";
@@ -61,6 +61,24 @@ export function placeLabel(name: string, address: string, canNames: boolean, can
   if (canNames && name.trim()) return name.trim();
   if (canAddr && address.trim()) return cityOf(address);
   return "";
+}
+
+/** R-452: the pickups after the first on the same truck. */
+export const extraStops = (b: Pick<FreightBooking, "extra_pickups">): FreightStop[] =>
+  Array.isArray(b.extra_pickups) ? b.extra_pickups : [];
+
+/** A blank extra pickup. */
+export const blankStop = (): FreightStop => ({ name: "", address: "", window: "", contact: "", phone: "", notes: "" });
+
+/** "Birchwood to Lantern Bay", "Birchwood + Kestrel Mill to Lantern Bay", or "Birchwood + 2 more to
+ *  Lantern Bay": the route as a row reads it. Empty when the viewer may see none of the places. */
+export function routeLabel(b: FreightBooking): string {
+  let from = placeLabel(b.pickup_name, b.pickup_address, b.can_see_names, b.can_see_addresses);
+  const to = placeLabel(b.delivery_name, b.delivery_address, b.can_see_names, b.can_see_addresses);
+  const extra = extraStops(b).map((x) => placeLabel(x.name, x.address, b.can_see_names, b.can_see_addresses));
+  if (from && extra.length === 1 && extra[0]) from = `${from} + ${extra[0]}`;
+  else if (from && extra.length) from = `${from} + ${extra.length} more`;
+  return from && to ? `${from} to ${to}` : from || to;
 }
 
 /** Reload on a sync that applied changes from another device (Logistics types a date on his
@@ -145,14 +163,19 @@ const TEXT_KEYS = [
   "paid_at", "paid_method", "paid_note", "notes",
 ] as const;
 type TextKey = typeof TEXT_KEYS[number];
-type Draft = Record<TextKey, string> & { status: FreightStatus; paid: string };
+type Draft = Record<TextKey, string> & { status: FreightStatus; paid: string; stops: FreightStop[] };
 
 const moneyText = (n: number | null | undefined) => (n == null ? "" : String(n));
+const STOP_KEYS: (keyof FreightStop)[] = ["name", "address", "window", "contact", "phone", "notes"];
+const stopsKey = (list: FreightStop[]) => JSON.stringify(list.map((x) => STOP_KEYS.map((k) => (x[k] ?? "").trim())));
 
 function toDraft(b: FreightBooking): Draft {
   const d: Record<string, string> = {};
   for (const k of TEXT_KEYS) d[k] = (b[k] ?? "") as string;
-  return { ...(d as Record<TextKey, string>), status: b.status, paid: moneyText(b.paid_amount) };
+  return {
+    ...(d as Record<TextKey, string>), status: b.status, paid: moneyText(b.paid_amount),
+    stops: extraStops(b).map((x) => ({ ...blankStop(), ...x })),
+  };
 }
 
 /** null = fine, a string = the sentence to show. Empty means "no figure", which is allowed. */
@@ -220,7 +243,7 @@ export default function LogisticsBookingForm({
   useEffect(() => { setDraft(toDraft(booking)); setError(""); }, [booking]);
 
   const full = booking.can_see_deal;           // Jack: sees the deal, so his dates move it
-  const dirty = (Object.keys(base) as (keyof Draft)[]).some((k) => base[k] !== draft[k]);
+  const dirty = (Object.keys(base) as (keyof Draft)[]).some((k) => k === "stops" ? stopsKey(base.stops) !== stopsKey(draft.stops) : base[k] !== draft[k]);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }));
 
   const tryClose = () => {
@@ -255,6 +278,7 @@ export default function LogisticsBookingForm({
     for (const k of TEXT_KEYS) if (draft[k] !== base[k]) patch[k] = draft[k];
     if (draft.status !== base.status) patch.status = draft.status;
     if (draft.paid !== base.paid) patch.paid_amount = moneyValue(draft.paid);
+    if (stopsKey(draft.stops) !== stopsKey(base.stops)) patch.extra_pickups = draft.stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim() }));
     if (Object.keys(patch).length === 0) return;
     setSaving(true); setError("");
     try {
@@ -305,6 +329,17 @@ export default function LogisticsBookingForm({
     full ? `This moves the deal's ${kind} date` : "Your team sees this date";
 
   const track = booking.tracking;
+  // R-452: the team (who sees the deal, names and addresses) adds, changes and removes the extra
+  // pickups; anyone else fills in each one's window, contact, phone and notes, and the server keeps
+  // what they may not see.
+  const stopEdit = full && booking.can_see_names && booking.can_see_addresses;
+  const setStop = (i: number, k: keyof FreightStop, v: string) =>
+    setDraft((d) => ({ ...d, stops: d.stops.map((x, j) => (j === i ? { ...x, [k]: v } : x)) }));
+  const stopInput = (i: number, k: keyof FreightStop, label: string, wide?: boolean) => (
+    <Field label={label} wide={wide}>
+      <input className={inp} value={draft.stops[i][k]} onChange={(e) => setStop(i, k, e.target.value)} />
+    </Field>
+  );
 
   return (
     <>
@@ -362,7 +397,7 @@ export default function LogisticsBookingForm({
             )}
           </Section>
 
-          <Section title="Pickup">
+          <Section title={draft.stops.length ? "Pickup 1" : "Pickup"}>
             <Place name={booking.pickup_name} address={booking.pickup_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
             <div className="grid grid-cols-2 gap-3">
               {t("pickup_date", "Pickup date", { type: "date", hint: dateHint("pickup") })}
@@ -374,6 +409,39 @@ export default function LogisticsBookingForm({
               </Field>
             </div>
           </Section>
+
+          {draft.stops.map((x, i) => (
+            <Section key={i} title={`Pickup ${i + 2}`}>
+              {stopEdit ? (
+                <div className="grid grid-cols-2 gap-3">
+                  {stopInput(i, "name", "Name", true)}
+                  {stopInput(i, "address", "Address", true)}
+                </div>
+              ) : (
+                <Place name={x.name} address={x.address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                {stopInput(i, "window", "Time window")}
+                {stopInput(i, "contact", "Contact")}
+                {stopInput(i, "phone", "Phone")}
+                <Field label="Dock notes" wide>
+                  <textarea className={area} value={x.notes} onChange={(e) => setStop(i, "notes", e.target.value)} />
+                </Field>
+              </div>
+              {stopEdit && (
+                <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: d.stops.filter((_, j) => j !== i) }))}
+                  className="flex items-center gap-1 text-[12px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 h-8 rounded-lg transition-colors">
+                  <Trash2 size={12} /> Remove pickup {i + 2}
+                </button>
+              )}
+            </Section>
+          ))}
+          {stopEdit && draft.stops.length < 9 && (
+            <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: [...d.stops, blankStop()] }))}
+              className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors">
+              <Plus size={13} /> Add a pickup
+            </button>
+          )}
 
           <Section title="Delivery">
             <Place name={booking.delivery_name} address={booking.delivery_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />

@@ -3205,10 +3205,15 @@ export interface FreightBooking {
   trucks_on_deal?: number;
   /** While on, our side fills in the freight and the logistics person only reads it. */
   freight_by_team?: boolean;
+  /** R-452: the pickups after the first, on the same truck (one delivery). A name or address the
+   *  viewer may not see comes back empty. Absent on an older server. */
+  extra_pickups?: FreightStop[];
   tracking: FreightTracking | null;
   /** Only for someone who may see deals. There is no deal_flow_id key for anyone else. */
   deal: { id: string; invoice_number: string; client_name: string; stage: string } | null;
 }
+/** R-452: one more pickup on a truck. The truck's one pickup date stays `pickup_date`. */
+export interface FreightStop { name: string; address: string; window: string; contact: string; phone: string; notes: string }
 /** The fields a person can write. Only the ones present are saved. */
 export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "id" | "code" | "booked_at" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |

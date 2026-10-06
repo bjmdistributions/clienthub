@@ -6,7 +6,7 @@ import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
 import { YourPayCard } from "./LogisticsPay";
 import LogisticsBookingForm, {
-  AmountNeededPill, FreightStatusPill, fmtDay, needsAmount, placeLabel, useNetsyncApplied,
+  AmountNeededPill, FreightStatusPill, extraStops, fmtDay, needsAmount, routeLabel, useNetsyncApplied,
 } from "./LogisticsBookingForm";
 
 // R-400: the Logistics screen. Two people use it. The Logistics account (a person Jack has
@@ -42,6 +42,7 @@ function haystack(b: FreightBooking): string {
     b.code, b.pickup_name, b.delivery_name, b.pickup_address, b.delivery_address,
     b.carrier, b.broker, b.bol, b.pro, b.reference,
     b.deal?.invoice_number, b.deal?.client_name,
+    ...extraStops(b).flatMap((x) => [x.name, x.address]),
   ].join(" ").toLowerCase();
 }
 
@@ -52,9 +53,7 @@ const byPickup = (a: FreightBooking, b: FreightBooking) => {
 };
 
 function BookingRow({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
-  const from = placeLabel(b.pickup_name, b.pickup_address, b.can_see_names, b.can_see_addresses);
-  const to = placeLabel(b.delivery_name, b.delivery_address, b.can_see_names, b.can_see_addresses);
-  const route = from && to ? `${from} to ${to}` : from || to;
+  const route = routeLabel(b);
   const dates = [
     b.pickup_date && `Pickup ${fmtDay(b.pickup_date)}`,
     (b.delivered_at || b.delivery_date) && `${b.delivered_at ? "Delivered" : "Delivery"} ${fmtDay(b.delivered_at || b.delivery_date)}`,
