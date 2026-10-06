@@ -380,7 +380,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
 
 Undo it anyway? Whatever this move added that still exists is taken back. Nothing else changes.`)) throw e;
         const r = await api.forceUndoResold(dealFlowId, m.deal_flow_id, m.at);
-        toast(r.notes.length ? `Resold move undone. ${r.notes[0]}.` : "Resold move undone");
+        toast(r.notes.length ? `Resold move undone. ${r.notes.join(" ")}` : "Resold move undone", r.notes.length ? "error" : "success");
         return;
       }
       toast("Resold move undone");

@@ -153,12 +153,15 @@ pub fn near_duplicates(rows: &[NdRow]) -> Vec<NearDup> {
         used.insert(k);
         used.insert(e);
         let extra = &rows[e];
+        // A pending payment never posts before the day it went pending: a posted row dated
+        // earlier is a different payment, so that pair is only ever asked about.
+        let posted_after = day(&rows[k].date) >= day(&extra.date);
         out.push(NearDup {
             keep_id: rows[k].id.clone(),
             extra_id: extra.id.clone(),
             reason,
             gap_days: gap,
-            automatic: reason == "pending_and_posted" && extra.pending && !extra.linked && !extra.reviewed,
+            automatic: reason == "pending_and_posted" && extra.pending && !extra.linked && !extra.reviewed && posted_after,
         });
     }
     out.sort_by(|p, q| p.extra_id.cmp(&q.extra_id));
@@ -213,7 +216,12 @@ mod tests {
         let d = near_duplicates(&[p.clone(), q.clone()]);
         assert_eq!((d[0].keep_id.as_str(), d[0].extra_id.as_str(), d[0].automatic), ("q", "p", true));
         p.reviewed = true;
-        assert!(!near_duplicates(&[p, q])[0].automatic);
+        assert!(!near_duplicates(&[p.clone(), q])[0].automatic);
+        // A posted payment dated before the pending one is a different payment: asked, never automatic.
+        p.reviewed = false;
+        let earlier = row("e", A, "2026-09-30", 900.0, "ACH FROM BUYER A");
+        let d = near_duplicates(&[p, earlier]);
+        assert_eq!((d[0].reason, d[0].automatic), ("pending_and_posted", false));
     }
 
     #[test]

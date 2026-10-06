@@ -42,11 +42,15 @@ export default function NearDuplicates({ reloadKey, onChanged }: { reloadKey: un
   const load = () => api.listNearDuplicates().then(setPairs).catch(() => setPairs([]));
   useEffect(() => { load(); }, [reloadKey]);
 
-  const resolve = async (keep: NearDupRow, extra: NearDupRow, same: boolean) => {
-    setBusy(extra.id + keep.id);
+  const resolve = async (pairKey: string, keep: NearDupRow, extra: NearDupRow, same: boolean) => {
+    setBusy(pairKey);
     try {
-      await api.resolveNearDuplicate(keep.id, extra.id, same);
-      toast(same ? "Extra copy removed. Its booking moved to the copy that stays." : "Kept both as two real payments");
+      const r = await api.resolveNearDuplicate(keep.id, extra.id, same);
+      if (same && r.over_allocated && r.over_allocated.length) {
+        toast(`Extra copy removed, but the payment now has more linked than its amount: ${r.over_allocated.join("; ")}. Fix that deal's links.`, "error");
+      } else {
+        toast(same ? "Extra copy removed. Its booking moved to the copy that stays." : "Kept both as two real payments");
+      }
       await load();
       onChanged();
     } catch (e: any) {
@@ -83,16 +87,16 @@ export default function NearDuplicates({ reloadKey, onChanged }: { reloadKey: un
                   <Side label="Extra copy" row={p.extra} />
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <button onClick={() => resolve(p.keep, p.extra, true)} disabled={busy === key}
+                  <button onClick={() => resolve(key, p.keep, p.extra, true)} disabled={busy !== null}
                     className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
                     Same payment: remove the extra
                   </button>
-                  <button onClick={() => resolve(p.extra, p.keep, true)} disabled={busy === key}
-                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface transition-colors">
+                  <button onClick={() => resolve(key, p.extra, p.keep, true)} disabled={busy !== null}
+                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface disabled:opacity-40 transition-colors">
                     Keep the other copy instead
                   </button>
-                  <button onClick={() => resolve(p.keep, p.extra, false)} disabled={busy === key}
-                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2 hover:bg-surface transition-colors">
+                  <button onClick={() => resolve(key, p.keep, p.extra, false)} disabled={busy !== null}
+                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2 hover:bg-surface disabled:opacity-40 transition-colors">
                     Two real payments
                   </button>
                 </div>

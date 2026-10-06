@@ -6975,8 +6975,7 @@ async fn undo_resold_refunds(from: DealFlow, to: DealFlow, at: String) -> Result
             conn.query_row("SELECT COALESCE(refund_owed,0) FROM deal_flows WHERE id=?1", [&from_id], |r| r.get::<_, f64>(0)).unwrap_or(0.0) };
         // R-457: never more than the sale. Re-entering the refund after the buy-back and then
         // pressing Undo added it a second time (a $16,000 refund read $32,000 owed).
-        let sale = from.gross_revenue.max(from.invoice_total).max(from.payment_received_amount);
-        let back = if sale > 0.005 { r2((owed + delta).min(sale.max(owed))) } else { r2(owed + delta) };
+        let back = restore_refund_owed(owed, delta, from.gross_revenue.max(from.invoice_total).max(from.payment_received_amount));
         let mut cols = Map::new();
         cols.insert("refund_owed".into(), json!(back));
         sync::record_upsert("deal_flows", &from_id, cols).map_err(|e| e.to_string())?;
@@ -7038,32 +7037,88 @@ pub async fn force_undo_resold(from_id: String, to_id: String, at: String) -> Re
         return Err(format!("{}'s goods were resold again after this move. Undo that move first, on {}'s refund step.", to_inv, to_inv));
     }
     let refunds_kind = entry.get("kind").and_then(|k| k.as_str()) == Some("refunds");
-    let strs = |e: &Value, k: &str| -> Vec<String> {
-        e.get(k).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
+    let strs = |e: &Value, k: &str| -> Option<Vec<String>> {
+        e.get(k)?.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
     };
-    let from_ids = strs(&entry, "lines");
-    let mut to_ids = strs(&entry, "other_lines");
-    if to_ids.is_empty() { if let Some(i) = ti { to_ids = strs(&tm["resold_from"][i], "lines"); } }
+    // A move made before R-438 recorded no line or link ids: its lines carry the move's instant.
+    let legacy = |d: &DealFlow, prefix: &str| -> Vec<String> {
+        d.supplier_payments.iter()
+            .filter(|p| p.notes.as_deref().map_or(false, |n| n.starts_with(prefix)) && p.paid_at.as_deref() == Some(at.as_str()))
+            .map(|p| p.id.clone()).collect()
+    };
+    let from_ids = strs(&entry, "lines").unwrap_or_else(|| legacy(&from, "Resold: cost moved to "));
+    let to_ids = strs(&entry, "other_lines")
+        .or_else(|| ti.and_then(|i| strs(&tm["resold_from"][i], "lines")))
+        .unwrap_or_else(|| legacy(&to, if refunds_kind { "Bought back from " } else { "Resold from " }));
+    struct Rec { id: Option<String>, amount: f64, note_before: Option<String>, split_from: Option<String>, txn: String }
+    let recs: Vec<Rec> = match entry.get("allocs").and_then(|v| v.as_array()) {
+        Some(a) => a.iter().map(|x| Rec {
+            id: x.get("id").and_then(|v| v.as_str()).map(String::from),
+            amount: x.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            note_before: x.get("note_before").and_then(|v| v.as_str()).map(String::from),
+            split_from: x.get("split_from").and_then(|v| v.as_str()).map(String::from),
+            txn: x.get("bank_txn_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        }).collect(),
+        None => {
+            // Pre-R-438: the links the move stamped at its instant on the new deal.
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let mut st = conn.prepare("SELECT id, amount, bank_txn_id FROM bank_allocation WHERE deal_flow_id=?1 AND role='supplier_payment' AND (updated_at=?2 OR created_at=?2)")
+                .map_err(|e| e.to_string())?;
+            let v: Vec<Rec> = st.query_map(rusqlite::params![to_id, at], |r| Ok(Rec {
+                id: Some(r.get(0)?), amount: r.get(1)?, note_before: None, split_from: None, txn: r.get(2)?,
+            })).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect();
+            v
+        }
+    };
+    if from_ids.is_empty() && to_ids.is_empty() && recs.is_empty() {
+        return Err("Nothing of this move could be found to take back, so nothing was changed.".into());
+    }
     let now = Utc::now().to_rfc3339();
     let mut notes: Vec<String> = Vec::new();
+    // The bank payment each recorded link now sits on, for links brought back to this deal.
+    let mut came_back: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
-    // 1. The bank links the move recorded, where they still are on the other deal.
-    for a in entry.get("allocs").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
-        let Some(aid) = a.get("id").and_then(|v| v.as_str()).map(String::from) else { continue };
-        let note_before = a.get("note_before").and_then(|v| v.as_str()).map(String::from);
-        let split_from = a.get("split_from").and_then(|v| v.as_str()).map(String::from);
-        let now_on: Option<(String, f64)> = {
-            let conn = pool().get().map_err(|e| e.to_string())?;
-            conn.query_row("SELECT deal_flow_id, amount FROM bank_allocation WHERE id=?1", [&aid], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+    // 1. The bank links the move recorded, where they are still on the other deal (or the one that
+    //    replaced them there: same bank payment, or the copy it was retired onto, same amount).
+    for rec in &recs {
+        let where_now = |id: &str| -> Option<(String, f64, String)> {
+            let conn = pool().get().ok()?;
+            conn.query_row("SELECT deal_flow_id, amount, bank_txn_id FROM bank_allocation WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
         };
-        let Some((deal, amt)) = now_on else { notes.push("a bank link the move made is no longer in the books".into()); continue };
-        if deal != to_id { continue; }
-        let src_on_from = split_from.as_ref().and_then(|sf| {
+        let mut target: Option<(String, f64, String)> = None;
+        if let Some(id) = &rec.id {
+            match where_now(id) {
+                Some((deal, amt, txn)) if deal == to_id => target = Some((id.clone(), amt, txn)),
+                Some((deal, _, txn)) if deal == from_id => { if !rec.txn.is_empty() { came_back.insert(rec.txn.clone(), txn); } continue; }
+                Some(_) => { notes.push(format!("A {:.2} bank payment the move made is now on another deal, so it was left there.", rec.amount)); continue; }
+                None => {}
+            }
+        }
+        if target.is_none() && !rec.txn.is_empty() {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let mut txns = vec![rec.txn.clone()];
+            if let Ok(sv) = conn.query_row("SELECT survivor_id FROM bank_txn_deleted_backup WHERE id=?1", [&rec.txn], |r| r.get::<_, String>(0)) {
+                if !sv.is_empty() { txns.push(sv); }
+            }
+            let mut hits: Vec<(String, f64, String)> = Vec::new();
+            for t in &txns {
+                if let Ok(mut st) = conn.prepare("SELECT id, amount, bank_txn_id FROM bank_allocation WHERE deal_flow_id=?1 AND bank_txn_id=?2 AND role IN ('supplier_payment','refund_out') AND ABS(amount-?3) <= 0.01") {
+                    if let Ok(it) = st.query_map(rusqlite::params![to_id, t, rec.amount], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) {
+                        hits.extend(it.filter_map(|x| x.ok()));
+                    }
+                }
+            }
+            if hits.len() == 1 { target = hits.pop(); }
+        }
+        let Some((aid, amt, cur_txn)) = target else {
+            notes.push(format!("A {:.2} bank payment the move made could not be found on {}. Check that deal's links.", rec.amount, to_inv));
+            continue;
+        };
+        let src_on_from = rec.split_from.as_ref().and_then(|sf| {
             let conn = pool().get().ok()?;
             conn.query_row("SELECT amount FROM bank_allocation WHERE id=?1 AND deal_flow_id=?2", rusqlite::params![sf, from_id], |r| r.get::<_, f64>(0)).ok()
         });
-        if let (false, Some(sf), Some(src_amt)) = (refunds_kind, split_from.as_ref(), src_on_from) {
-            // A split link goes back into the row it was cut from.
+        if let (false, Some(sf), Some(src_amt)) = (refunds_kind, rec.split_from.as_ref(), src_on_from) {
             let merged = r2(src_amt + amt);
             let mut c = Map::new();
             c.insert("amount".into(), json!(merged));
@@ -7073,25 +7128,29 @@ pub async fn force_undo_resold(from_id: String, to_id: String, at: String) -> Re
             let conn = pool().get().map_err(|e| e.to_string())?;
             conn.execute("UPDATE bank_allocation SET amount=?1, updated_at=?2 WHERE id=?3", rusqlite::params![merged, now, sf]).map_err(|e| e.to_string())?;
             conn.execute("DELETE FROM bank_allocation WHERE id=?1", [&aid]).map_err(|e| e.to_string())?;
+            if !rec.txn.is_empty() { came_back.insert(rec.txn.clone(), cur_txn); }
             continue;
         }
         let mut c = Map::new();
         c.insert("deal_flow_id".into(), json!(from_id));
         if refunds_kind { c.insert("role".into(), json!("refund_out")); }
-        if let Some(n) = &note_before { c.insert("note".into(), json!(n)); }
+        if let Some(n) = &rec.note_before { c.insert("note".into(), json!(n)); }
         c.insert("updated_at".into(), json!(now));
         sync::record_upsert("bank_allocation", &aid, c).map_err(|e| e.to_string())?;
         let conn = pool().get().map_err(|e| e.to_string())?;
         if refunds_kind {
             conn.execute("UPDATE bank_allocation SET deal_flow_id=?1, role='refund_out', note=COALESCE(?2, note), updated_at=?3 WHERE id=?4",
-                         rusqlite::params![from_id, note_before, now, aid]).map_err(|e| e.to_string())?;
+                         rusqlite::params![from_id, rec.note_before, now, aid]).map_err(|e| e.to_string())?;
         } else {
             conn.execute("UPDATE bank_allocation SET deal_flow_id=?1, note=COALESCE(?2, note), updated_at=?3 WHERE id=?4",
-                         rusqlite::params![from_id, note_before, now, aid]).map_err(|e| e.to_string())?;
+                         rusqlite::params![from_id, rec.note_before, now, aid]).map_err(|e| e.to_string())?;
         }
+        if !rec.txn.is_empty() { came_back.insert(rec.txn.clone(), cur_txn); }
     }
 
-    // 2. A buy-back's refunds rows, where they are missing, and its refund owed.
+    // 2. A buy-back's refunds rows where missing: a typed one as it was; a bank one only when its
+    //    link came back to this deal, on the bank payment that link is on now (or it would be
+    //    listed twice, or listed as paid with nothing counting it).
     if refunds_kind {
         for row in entry.get("refunds_rows").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
             let id = row["id"].as_str().unwrap_or("").to_string();
@@ -7099,11 +7158,23 @@ pub async fn force_undo_resold(from_id: String, to_id: String, at: String) -> Re
             let exists = { let conn = pool().get().map_err(|e| e.to_string())?;
                 conn.query_row("SELECT 1 FROM refunds WHERE id=?1", [&id], |_| Ok(())).is_ok() };
             if exists { continue; }
+            let old_txn = row["bank_txn_id"].as_str().unwrap_or("").to_string();
+            let txn: Option<String> = if old_txn.is_empty() { None } else {
+                match came_back.get(&old_txn) {
+                    Some(t) => Some(t.clone()),
+                    None => {
+                        notes.push(format!("A {:.2} refund to the buyer paid from the bank was not brought back, because its bank payment is no longer linked to {}.",
+                            row["amount"].as_f64().unwrap_or(0.0), to_inv));
+                        continue;
+                    }
+                }
+            };
             let mut cols = Map::new();
             for k in ["org_id", "deal_flow_id", "client_id", "amount", "method", "source", "source_supplier_ref", "keep_rep_cut",
-                      "reason", "refunded_at", "created_by", "created_at", "updated_at", "bank_txn_id"] {
+                      "reason", "refunded_at", "created_by", "created_at", "updated_at"] {
                 cols.insert(k.into(), row.get(k).cloned().unwrap_or(Value::Null));
             }
+            cols.insert("bank_txn_id".into(), json!(txn));
             sync::record_upsert("refunds", &id, cols).map_err(|e| e.to_string())?;
             let conn = pool().get().map_err(|e| e.to_string())?;
             conn.execute("INSERT OR IGNORE INTO refunds (id, org_id, deal_flow_id, client_id, amount, method, source, source_supplier_ref, keep_rep_cut, reason, refunded_at, created_by, created_at, updated_at, bank_txn_id) \
@@ -7111,15 +7182,14 @@ pub async fn force_undo_resold(from_id: String, to_id: String, at: String) -> Re
                 rusqlite::params![id, row["org_id"].as_str(), row["deal_flow_id"].as_str(), row["client_id"].as_str(), row["amount"].as_f64(),
                                   row["method"].as_str(), row["source"].as_str(), row["source_supplier_ref"].as_str(), row["keep_rep_cut"].as_i64().unwrap_or(0),
                                   row["reason"].as_str(), row["refunded_at"].as_str(), row["created_by"].as_str(),
-                                  row["created_at"].as_str().unwrap_or(""), row["updated_at"].as_str().unwrap_or(""), row["bank_txn_id"].as_str()],
+                                  row["created_at"].as_str().unwrap_or(""), row["updated_at"].as_str().unwrap_or(""), txn],
             ).map_err(|e| e.to_string())?;
         }
         let delta = entry.get("refund_owed_delta").and_then(|v| v.as_f64()).unwrap_or(0.0);
         if delta > 0.005 {
             let owed = { let conn = pool().get().map_err(|e| e.to_string())?;
                 conn.query_row("SELECT COALESCE(refund_owed,0) FROM deal_flows WHERE id=?1", [&from_id], |r| r.get::<_, f64>(0)).unwrap_or(0.0) };
-            let sale = from.gross_revenue.max(from.invoice_total).max(from.payment_received_amount);
-            let back = if sale > 0.005 { r2((owed + delta).min(sale.max(owed))) } else { r2(owed + delta) };
+            let back = restore_refund_owed(owed, delta, from.gross_revenue.max(from.invoice_total).max(from.payment_received_amount));
             if (back - owed).abs() > 0.005 {
                 let mut cols = Map::new();
                 cols.insert("refund_owed".into(), json!(back));
@@ -7165,6 +7235,16 @@ pub async fn force_undo_resold(from_id: String, to_id: String, at: String) -> Re
     }
     crate::netsync::push_now();
     Ok(json!({ "undone": true, "notes": notes }))
+}
+
+/// R-457: the refund owed a buy-back's undo puts back. The move lowered it by `delta`; when what
+/// is owed now already covers that (someone re-entered the refund after the move, or an earlier
+/// undo already restored it), it stays as it is; otherwise the delta comes back, never above the
+/// sale. A $16,000 refund re-entered after the buy-back then undone used to read $32,000 owed.
+fn restore_refund_owed(owed: f64, delta: f64, sale: f64) -> f64 {
+    if owed + 0.005 >= delta { return r2(owed); }
+    let back = owed + delta;
+    r2(if sale > 0.005 { back.min(sale.max(owed)) } else { back })
 }
 
 /// Recalculate a completed deal's recorded numbers from its linked bank
@@ -17362,7 +17442,7 @@ fn retire_near_duplicate(
     let unmovable: i64 = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=?1)              OR EXISTS(SELECT 1 FROM loan WHERE bank_txn_id=?1)              OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=?1)              OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=?1)",
         [extra_id], |r| r.get(0)).unwrap_or(1);
-    if unmovable != 0 { return Settled::Refused(format!("{}: a refund, loan, purchase or expense is linked to it", e.desc)); }
+    if unmovable != 0 { return Settled::Refused(format!("{}: a refund, loan, purchase or expense is linked to it. Move that link to the copy that stays first", e.desc)); }
     let deals_of = |id: &str| -> std::collections::HashSet<String> {
         conn.prepare("SELECT deal_flow_id FROM bank_allocation WHERE bank_txn_id=?1")
             .and_then(|mut st| st.query_map([id], |r| r.get::<_, String>(0)).map(|it| it.filter_map(|x| x.ok()).collect()))
@@ -17370,26 +17450,48 @@ fn retire_near_duplicate(
     };
     let (ed, kd) = (deals_of(extra_id), deals_of(keep_id));
     if !ed.is_empty() && !kd.is_empty() && ed != kd {
-        return Settled::Refused(format!("{}: the two copies are linked to different deals", e.desc));
+        return Settled::Refused(format!("{}: the two copies are linked to different deals. Unlink the wrong one first", e.desc));
     }
-    // Bill payments travel with the booking (R-449); the kept copy's own link to the same bill
-    // and period wins.
-    let bps: Vec<(String, String, String, String, f64, String, String, String)> = conn
-        .prepare("SELECT id, COALESCE(org_id,''), bill_id, period, amount, COALESCE(status,''), COALESCE(created_by,''), COALESCE(created_at,'') \
-                    FROM bill_payments WHERE bank_txn_id=?1")
-        .and_then(|mut st| st.query_map([extra_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))
-            .map(|it| it.filter_map(|x| x.ok()).collect()))
-        .unwrap_or_default();
+    // Bill payments (R-449), decided per bill: one payment pays one bill once. When the kept copy
+    // already pays that bill, the extra copy's link goes (backed up), carrying a confirmed status
+    // onto the kept one; otherwise it moves. Two copies paying different bills are refused.
+    type Bp = (String, String, String, String, f64, String, String, String);
+    let bps_of = |id: &str| -> Vec<Bp> {
+        conn.prepare("SELECT id, COALESCE(org_id,''), bill_id, period, amount, COALESCE(status,''), COALESCE(created_by,''), COALESCE(created_at,'') \
+                        FROM bill_payments WHERE bank_txn_id=?1")
+            .and_then(|mut st| st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))
+                .map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default()
+    };
+    let (bps, kept_bps) = (bps_of(extra_id), bps_of(keep_id));
+    let live = |v: &[Bp]| -> std::collections::HashSet<String> { v.iter().filter(|b| b.5 != "rejected").map(|b| b.2.clone()).collect() };
+    let (e_bills, k_bills) = (live(&bps), live(&kept_bps));
+    if !e_bills.is_empty() && !k_bills.is_empty() && e_bills.is_disjoint(&k_bills) {
+        return Settled::Refused(format!("{}: the two copies pay different bills. Unlink the wrong one in Bills first", e.desc));
+    }
     if let Ok(rj) = conn.query_row(BANK_TXN_BACKUP_SQL, [extra_id], |r| r.get::<_, String>(0)) {
         let _ = conn.execute(
             "INSERT OR IGNORE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) VALUES (?1,?2,?3,?4,?5)",
             rusqlite::params![extra_id, rj, keep_id, reason, now]);
     }
     for (bid, borg, bill, period, amt, status, by, at) in &bps {
-        let kept_has: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM bill_payments WHERE bank_txn_id=?1 AND bill_id=?2 AND period=?3)",
-            rusqlite::params![keep_id, bill, period], |r| r.get::<_, i64>(0)).unwrap_or(0) != 0;
-        if kept_has {
+        let kept_live = kept_bps.iter().find(|k| &k.2 == bill && k.5 != "rejected");
+        if let Some(k) = kept_live {
+            // The kept copy already pays this bill: the extra link goes, backed up first, and a
+            // confirmed answer on it carries over.
+            let bp_json = json!({ "id": bid, "org_id": borg, "bill_id": bill, "bank_txn_id": extra_id, "period": period,
+                                  "amount": amt, "status": status, "created_by": by, "created_at": at }).to_string();
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) VALUES (?1,?2,?3,'near_duplicate_bill_link',?4)",
+                rusqlite::params![format!("bp:{bid}"), bp_json, keep_id, now]);
+            if status == "confirmed" && k.5 != "confirmed" {
+                let mut c = Map::new();
+                c.insert("status".into(), json!("confirmed"));
+                c.insert("period".into(), json!(period));
+                c.insert("updated_at".into(), json!(now));
+                if sync::record_upsert("bill_payments", &k.0, c).is_err() { return Settled::Refused(format!("{}: could not carry its bill payment", e.desc)); }
+                let _ = conn.execute("UPDATE bill_payments SET status='confirmed', period=?1, updated_at=?2 WHERE id=?3", rusqlite::params![period, now, k.0]);
+            }
             if sync::record_delete("bill_payments", bid).is_err() { return Settled::Refused(format!("{}: could not move its bill payment", e.desc)); }
             let _ = conn.execute("DELETE FROM bill_payments WHERE id=?1", [bid]);
         } else {
@@ -17452,7 +17554,7 @@ pub async fn resolve_near_duplicate(keep_id: String, extra_id: String, same: boo
     for d in &touched { let _ = resync_completed_deal(d); }
     match outcome {
         Settled::Retired => { crate::netsync::push_now(); Ok(json!({ "removed": true, "over_allocated": over })) }
-        Settled::Refused(w) => Err(format!("Nothing was changed: {w}. Move that link to the copy that stays first.")),
+        Settled::Refused(w) => Err(format!("Nothing was changed: {w}.")),
         Settled::None => Err("Nothing was changed: that pair is no longer in the ledger.".into()),
     }
 }
@@ -28487,6 +28589,41 @@ mod r442_bought_back_tests {
         move_resold_cost(a.clone(), b.clone(), 14950.0, Some(vec![])).await.unwrap();
         let (ad, bd) = (read_df(&a).unwrap(), read_df(&b).unwrap());
         assert_eq!((ad.total_supplier_cost, bd.total_supplier_cost), (0.0, 14950.0));
+    }
+
+    /// A move made before R-438 recorded no ids: Undo anyway finds its lines by their note and
+    /// instant, and its links by their stamp, rather than marking it undone with nothing done.
+    #[tokio::test]
+    async fn undo_anyway_takes_back_a_move_that_recorded_no_ids() {
+        let _db = crate::db::init_test_store();
+        let a = deal("lg", 10000.0, vec![line(8000.0, true)], "payment_received", 10000.0);
+        link(&a, "lg_sup", "supplier_payment", 8000.0);
+        let b = deal("lgb", 9000.0, vec![], "payment_received", 0.0);
+        move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
+        let at = at_of(&a);
+        for (id, key) in [(&a, "resold_to"), (&b, "resold_from")] {
+            let mut m = deal_metadata(&read_df(id).unwrap());
+            if let Some(e) = m.get_mut(key).and_then(|v| v.as_array_mut()).and_then(|l| l.get_mut(0)).and_then(|e| e.as_object_mut()) {
+                for k in ["lines", "other_lines", "allocs", "moved_bank"] { e.remove(k); }
+            }
+            write_deal_metadata(id, m).unwrap();
+        }
+        force_undo_resold(a.clone(), b.clone(), at).await.unwrap();
+        assert!(read_df(&a).unwrap().supplier_payments.iter().all(|p| !is_resold_line(p)));
+        assert!(read_df(&b).unwrap().supplier_payments.is_empty());
+        assert_eq!((sum(&a, "supplier_payment"), sum(&b, "supplier_payment")), (8000.0, 0.0));
+    }
+
+    #[test]
+    fn the_refund_owed_comes_back_once_and_never_above_the_sale() {
+        // Re-entered after the buy-back: kept as it is (the $32,000 case and the partial one).
+        assert_eq!(restore_refund_owed(16000.0, 16000.0, 16000.0), 16000.0);
+        assert_eq!(restore_refund_owed(10000.0, 10000.0, 20000.0), 10000.0);
+        // Untouched since: what the move took off comes back.
+        assert_eq!(restore_refund_owed(0.0, 10000.0, 20000.0), 10000.0);
+        assert_eq!(restore_refund_owed(6000.0, 10000.0, 16000.0), 16000.0);
+        // Never above the sale.
+        assert_eq!(restore_refund_owed(5000.0, 14000.0, 16000.0), 16000.0);
     }
 
     #[tokio::test]
