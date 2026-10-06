@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ChevronRight, Search, Truck } from "lucide-react";
+import { ChevronRight, Paperclip, Search, Truck } from "lucide-react";
 import { api, type FreightBooking, type Me } from "../lib/api";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
 import { YourPayCard } from "./LogisticsPay";
 import LogisticsBookingForm, {
-  AmountNeededPill, FreightStatusPill, extraStops, fmtDay, needsAmount, routeLabel, useNetsyncApplied,
+  AmountNeededPill, FreightStatusPill, UrgentPill, extraStops, isHot, needsAmount, routeLabel, timingLine, useNetsyncApplied,
 } from "./LogisticsBookingForm";
 
 // R-400: the Logistics screen. Two people use it. The Logistics account (a person Jack has
@@ -18,8 +18,10 @@ import LogisticsBookingForm, {
 
 const REFRESH_MS = 30_000;
 
-type GroupKey = "requested" | "needs" | "booked" | "way" | "delivered";
+type GroupKey = "urgent" | "requested" | "needs" | "booked" | "way" | "delivered";
 const GROUPS: { key: GroupKey; title: string }[] = [
+  // R-458: urgent trucks that are not picked up yet sit above everything else.
+  { key: "urgent", title: "Urgent" },
   { key: "requested", title: "To book" },
   { key: "needs", title: "Needs the amount paid" },
   { key: "booked", title: "Booked" },
@@ -29,6 +31,7 @@ const GROUPS: { key: GroupKey; title: string }[] = [
 
 function groupOf(b: FreightBooking): GroupKey | null {
   if (b.status === "cancelled") return null;
+  if (isHot(b)) return "urgent";
   if (b.status === "requested") return "requested";
   if (needsAmount(b)) return "needs";
   if (b.status === "booked") return "booked";
@@ -40,7 +43,7 @@ function groupOf(b: FreightBooking): GroupKey | null {
 function haystack(b: FreightBooking): string {
   return [
     b.code, b.pickup_name, b.delivery_name, b.pickup_address, b.delivery_address,
-    b.carrier, b.broker, b.bol, b.pro, b.reference,
+    b.carrier, b.broker, b.bol, b.pro, b.reference, b.request_note,
     b.deal?.invoice_number, b.deal?.client_name,
     ...extraStops(b).flatMap((x) => [x.name, x.address]),
   ].join(" ").toLowerCase();
@@ -54,11 +57,11 @@ const byPickup = (a: FreightBooking, b: FreightBooking) => {
 
 function BookingRow({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
   const route = routeLabel(b);
-  const dates = [
-    b.pickup_date && `Pickup ${fmtDay(b.pickup_date)}`,
-    (b.delivered_at || b.delivery_date) && `${b.delivered_at ? "Delivered" : "Delivery"} ${fmtDay(b.delivered_at || b.delivery_date)}`,
-  ].filter(Boolean).join(", ");
+  // R-458: when it has to happen, the team's note and the files, readable without opening it.
+  const dates = timingLine(b);
   const who = b.deal ? [b.deal.invoice_number, b.deal.client_name].filter(Boolean).join(" for ") : "";
+  const note = b.request_note.trim().split("\n")[0];
+  const files = b.files?.length ?? 0;
   return (
     <button
       type="button" onClick={onOpen}
@@ -74,8 +77,15 @@ function BookingRow({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
             {dates}{dates && who ? " · " : ""}{who && <span className="text-ink-2">{who}</span>}
           </div>
         )}
+        {(note || files > 0) && (
+          <div className="text-[12px] mt-0.5 flex items-center gap-2 min-w-0">
+            {note && <span className="text-ink-2 truncate min-w-0">{note}</span>}
+            {files > 0 && <span className="inline-flex items-center gap-0.5 text-muted flex-shrink-0"><Paperclip size={11} />{files}</span>}
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-1.5 flex-shrink-0">
+        {isHot(b) && <UrgentPill />}
         {needsAmount(b) && <AmountNeededPill />}
         <FreightStatusPill status={b.status} />
       </div>
@@ -84,12 +94,12 @@ function BookingRow({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
   );
 }
 
-function GroupCard({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+function GroupCard({ title, count, children, hot }: { title: string; count: number; children: ReactNode; hot?: boolean }) {
   return (
-    <section className="bg-surface border border-line rounded-xl overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-line flex items-center gap-2">
-        <h3 className="text-[13px] font-semibold text-ink">{title}</h3>
-        <StatusPill tone="neutral">{count}</StatusPill>
+    <section className={`bg-surface border rounded-xl overflow-hidden ${hot ? "border-danger-ink/30" : "border-line"}`}>
+      <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${hot ? "border-danger-ink/20 bg-danger-bg" : "border-line"}`}>
+        <h3 className={`text-[13px] font-semibold ${hot ? "text-danger-ink" : "text-ink"}`}>{title}</h3>
+        <StatusPill tone={hot ? "danger" : "neutral"}>{count}</StatusPill>
       </div>
       <div className="divide-y divide-line">{children}</div>
     </section>
@@ -141,12 +151,12 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   const match = (b: FreightBooking) => !needle || haystack(b).includes(needle);
 
   const grouped = useMemo(() => {
-    const g: Record<GroupKey, FreightBooking[]> = { requested: [], needs: [], booked: [], way: [], delivered: [] };
+    const g: Record<GroupKey, FreightBooking[]> = { urgent: [], requested: [], needs: [], booked: [], way: [], delivered: [] };
     for (const b of (rows ?? []).filter(match)) {
       const k = groupOf(b);
       if (k) g[k].push(b);
     }
-    for (const k of ["needs", "booked", "way"] as GroupKey[]) g[k].sort(byPickup);
+    for (const k of ["urgent", "needs", "booked", "way"] as GroupKey[]) g[k].sort(byPickup);
     return g;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, needle]);
@@ -228,7 +238,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
       )}
 
       {GROUPS.map((g) => grouped[g.key].length > 0 && (
-        <GroupCard key={g.key} title={g.title} count={grouped[g.key].length}>{grouped[g.key].map(row)}</GroupCard>
+        <GroupCard key={g.key} title={g.title} count={grouped[g.key].length} hot={g.key === "urgent"}>{grouped[g.key].map(row)}</GroupCard>
       ))}
 
       <section className="bg-surface border border-line rounded-xl overflow-hidden">

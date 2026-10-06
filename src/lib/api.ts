@@ -3222,17 +3222,23 @@ export interface FreightBooking {
   /** R-452: the pickups after the first, on the same truck (one delivery). A name or address the
    *  viewer may not see comes back empty. Absent on an older server. */
   extra_pickups?: FreightStop[];
+  /** R-458: marked urgent by the team: it leads the list until it is picked up. Absent on an older server. */
+  urgent?: boolean;
+  /** R-458: the files on the booking (BOLs, rate confirmations). Fetch one with logistics.files.get. */
+  files?: FreightFile[];
   tracking: FreightTracking | null;
   /** Only for someone who may see deals. There is no deal_flow_id key for anyone else. */
   deal: { id: string; invoice_number: string; client_name: string; stage: string } | null;
 }
+/** R-458: one file on a booking. The bytes stay on the server, sealed. */
+export interface FreightFile { id: string; name: string; mime: string; size: number; by: string; at: string }
 /** R-452: one more pickup on a truck. The truck's one pickup date stays `pickup_date`. */
 export interface FreightStop { name: string; address: string; window: string; contact: string; phone: string; notes: string }
 /** The fields a person can write. Only the ones present are saved. */
 export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "id" | "code" | "booked_at" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |
   "can_see_names" | "can_see_addresses" | "can_see_deal" | "can_see_money" | "tracking" | "deal" |
-  "shipping_billed" | "trucks_on_deal" | "freight_by_team"
+  "shipping_billed" | "trucks_on_deal" | "freight_by_team" | "files"
 >> & { today?: string };
 /** R-415: the one Logistics setting. */
 export interface LogisticsSettings { freight_by_team: boolean }
@@ -3735,6 +3741,19 @@ export const api = {
       logisticsRequest<FreightBooking>("PATCH", `/api/logistics/bookings/${encodeURIComponent(id)}`, { today: localDay(), ...patch }),
     /** Archives it (deal edit access only). Logistics cancels with status "cancelled" instead. */
     remove: (id: string) => logisticsRequest<unknown>("DELETE", `/api/logistics/bookings/${encodeURIComponent(id)}`),
+    /** R-458: files on a booking. `data` is the file in base64; add and remove return the booking.
+     *  Removing archives the file on the server, it is never erased. */
+    files: {
+      add: (bookingId: string, name: string, data: string) =>
+        logisticsRequest<FreightBooking>("POST", `/api/logistics/bookings/${encodeURIComponent(bookingId)}/files`, { name, data }),
+      get: (bookingId: string, fileId: string) =>
+        logisticsRequest<{ name: string; mime: string; size: number; data: string }>("GET", `/api/logistics/bookings/${encodeURIComponent(bookingId)}/files/${encodeURIComponent(fileId)}`),
+      remove: (bookingId: string, fileId: string) =>
+        logisticsRequest<FreightBooking>("DELETE", `/api/logistics/bookings/${encodeURIComponent(bookingId)}/files/${encodeURIComponent(fileId)}`),
+      /** Writes the file to `dest`, a path from the save dialog. */
+      saveAs: (bookingId: string, fileId: string, dest: string) =>
+        invoke<void>("logistics_save_file", { bookingId, fileId, dest }),
+    },
     /** R-415: who fills in the freight. Anyone the Logistics routes let in reads it; saving is an admin's. */
     settings: {
       get: () => logisticsRequest<LogisticsSettings>("GET", "/api/logistics/settings"),

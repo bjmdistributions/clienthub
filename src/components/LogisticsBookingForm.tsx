@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { X, Plus, Trash2, ExternalLink, Lock } from "lucide-react";
+import { X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { api, type FreightBooking, type FreightBookingPatch, type FreightStatus, type FreightStop } from "../lib/api";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { api, type FreightBooking, type FreightBookingPatch, type FreightFile, type FreightStatus, type FreightStop } from "../lib/api";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import StatusPill from "./StatusPill";
 import NumberInput from "./NumberInput";
@@ -37,6 +38,136 @@ export function AmountNeededPill() {
   return <StatusPill tone="warning">Amount paid needed</StatusPill>;
 }
 
+/** R-458: urgent and not picked up yet. Once the truck has the load it is no longer ahead of anything. */
+export const isHot = (b: Pick<FreightBooking, "urgent" | "status">) => !!b.urgent && (b.status === "requested" || b.status === "booked");
+
+export function UrgentPill() {
+  return <StatusPill tone="danger">Urgent</StatusPill>;
+}
+
+// ─── files (R-458) ────────────────────────────────────────────────────────
+
+const MAX_FILE_BYTES = 15 * 1024 * 1024;
+
+export const fileSize = (n: number) =>
+  n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+
+/** The file as base64, for the server's JSON upload. */
+export function fileBase64(f: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split("base64,")[1] ?? "");
+    r.onerror = () => reject(new Error(`Could not read ${f.name}`));
+    r.readAsDataURL(f);
+  });
+}
+
+/** The files a person dropped or chose that are small enough, saying which were not. */
+export function keepSmall(list: File[]): File[] {
+  const big = list.filter((f) => f.size > MAX_FILE_BYTES);
+  if (big.length) toast(`${big.map((f) => f.name).join(", ")} ${big.length === 1 ? "is" : "are"} over 15 MB`, "error");
+  return list.filter((f) => f.size > 0 && f.size <= MAX_FILE_BYTES);
+}
+
+/** Drag files here or choose them. Hands the chosen files on; it uploads nothing itself. */
+export function FileDrop({ onFiles, busy, hint }: { onFiles: (files: File[]) => void; busy?: boolean; hint?: string }) {
+  const [over, setOver] = useState(false);
+  const input = useRef<HTMLInputElement | null>(null);
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => { e.preventDefault(); setOver(false); const l = keepSmall(Array.from(e.dataTransfer.files)); if (l.length) onFiles(l); }}
+      className={`rounded-xl border border-dashed px-4 py-4 text-center transition-colors ${over ? "border-accent bg-accent/10" : "border-line bg-surface-2/50"}`}
+    >
+      <Upload size={16} className="mx-auto text-muted mb-1" />
+      <div className="text-[12.5px] text-ink-2">
+        {busy ? "Adding..." : <>Drop a BOL, rate confirmation or photo here, or{" "}
+          <button type="button" onClick={() => input.current?.click()} className="text-accent font-medium hover:underline">choose files</button></>}
+      </div>
+      {hint && <div className="text-[11px] text-muted mt-0.5">{hint}</div>}
+      <input ref={input} type="file" multiple className="hidden"
+        onChange={(e) => { const l = keepSmall(Array.from(e.target.files ?? [])); e.target.value = ""; if (l.length) onFiles(l); }} />
+    </div>
+  );
+}
+
+/** Upload files to a booking one by one. Returns the booking after the last one that landed. */
+export async function uploadFiles(bookingId: string, files: File[]): Promise<FreightBooking | null> {
+  let last: FreightBooking | null = null;
+  for (const f of files) {
+    try {
+      last = await api.logistics.files.add(bookingId, f.name, await fileBase64(f));
+    } catch (e) { toast(`${f.name}: ${String(e)}`, "error"); }
+  }
+  return last;
+}
+
+/** The files on a booking: open, save, add (both sides), remove. Writes straight away, apart from Save. */
+function BookingFiles({ booking, canEdit, onSaved }: { booking: FreightBooking; canEdit: boolean; onSaved: (b: FreightBooking) => void }) {
+  const files = booking.files ?? [];
+  const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<{ url: string; name: string; mime: string } | null>(null);
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
+
+  const add = async (list: File[]) => {
+    setBusy(true);
+    const b = await uploadFiles(booking.id, list);
+    setBusy(false);
+    if (b) { toast(list.length === 1 ? "File added" : "Files added"); onSaved(b); }
+  };
+  const save = async (f: FreightFile) => {
+    const dest = await saveDialog({ defaultPath: f.name });
+    if (!dest) return;
+    try { await api.logistics.files.saveAs(booking.id, f.id, dest); toast("Saved"); } catch (e) { toast(String(e), "error"); }
+  };
+  const open = async (f: FreightFile) => {
+    if (!(f.mime.startsWith("image/") || f.mime === "application/pdf")) return save(f);
+    try {
+      const got = await api.logistics.files.get(booking.id, f.id);
+      const bin = Uint8Array.from(atob(got.data), (c) => c.charCodeAt(0));
+      setPreview({ url: URL.createObjectURL(new Blob([bin], { type: got.mime })), name: got.name, mime: got.mime });
+    } catch (e) { toast(String(e), "error"); }
+  };
+  const remove = async (f: FreightFile) => {
+    if (!confirm(`Remove ${f.name} from this booking?`)) return;
+    try { onSaved(await api.logistics.files.remove(booking.id, f.id)); toast("File removed"); } catch (e) { toast(String(e), "error"); }
+  };
+
+  return (
+    <Section title={files.length ? `Files (${files.length})` : "Files"}>
+      {files.length > 0 && (
+        <div className="rounded-lg border border-line divide-y divide-line">
+          {files.map((f) => (
+            <div key={f.id} className="flex items-center gap-2 px-3 py-2 min-w-0">
+              <FileText size={14} className="text-muted flex-shrink-0" />
+              <button type="button" onClick={() => open(f)} className="min-w-0 flex-1 text-left">
+                <div className="text-[13px] text-ink truncate hover:underline">{f.name}</div>
+                <div className="text-[11px] text-muted truncate">{[fileSize(f.size), f.by, fmtDay(f.at)].filter(Boolean).join(", ")}</div>
+              </button>
+              <button type="button" onClick={() => save(f)} title="Save a copy"
+                className="p-1.5 rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><Download size={14} /></button>
+              {canEdit && (
+                <button type="button" onClick={() => remove(f)} title="Remove"
+                  className="p-1.5 rounded-lg text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors flex-shrink-0"><Trash2 size={14} /></button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {canEdit && <FileDrop onFiles={add} busy={busy} hint="Each file up to 15 MB. Both sides see it straight away." />}
+      {!canEdit && files.length === 0 && <p className="text-[12px] text-muted">No files yet.</p>}
+      {preview && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-6" onClick={() => setPreview(null)}>
+          {preview.mime === "application/pdf"
+            ? <iframe src={preview.url} title={preview.name} className="w-full max-w-[900px] h-full rounded-lg bg-surface" />
+            : <img src={preview.url} alt={preview.name} className="max-w-full max-h-full rounded-lg shadow-xl" />}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 /** Bare YYYY-MM-DD as "Oct 2" (the year only when it is not this one). Local, never UTC. */
 export function fmtDay(s: string | null | undefined): string {
   const v = (s || "").slice(0, 10);
@@ -45,6 +176,26 @@ export function fmtDay(s: string | null | undefined): string {
   if (isNaN(d.getTime())) return v;
   const sameYear = d.getFullYear() === new Date().getFullYear();
   return d.toLocaleDateString("en-US", sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** R-458: a day as people say it: "today", "tomorrow", else "Oct 2". */
+export function dayWord(s: string | null | undefined): string {
+  const v = (s || "").slice(0, 10);
+  if (!v) return "";
+  if (v === localDay()) return "today";
+  const t = new Date(); t.setDate(t.getDate() + 1);
+  if (v === localDay(t)) return "tomorrow";
+  return fmtDay(v);
+}
+
+/** R-458: when the truck has to be where, in one line: "Pickup today before 4 pm, stop 2 after 1 pm, ETA Oct 9". */
+export function timingLine(b: FreightBooking): string {
+  const parts: string[] = [];
+  if (b.pickup_date || b.pickup_window) parts.push(["Pickup", dayWord(b.pickup_date), b.pickup_window].filter(Boolean).join(" "));
+  extraStops(b).forEach((x, i) => { if (x.window?.trim()) parts.push(`stop ${i + 2} ${x.window.trim()}`); });
+  if (b.delivered_at) parts.push(`delivered ${fmtDay(b.delivered_at)}`);
+  else if (b.delivery_date || b.delivery_window) parts.push(["ETA", fmtDay(b.delivery_date), b.delivery_window].filter(Boolean).join(" "));
+  return parts.join(", ");
 }
 
 /** The city out of a one-line address ("Street, City, ST 12345" or "City, ST 12345"). */
@@ -163,7 +314,7 @@ const TEXT_KEYS = [
   "paid_at", "paid_method", "paid_note", "notes",
 ] as const;
 type TextKey = typeof TEXT_KEYS[number];
-type Draft = Record<TextKey, string> & { status: FreightStatus; paid: string; stops: FreightStop[] };
+type Draft = Record<TextKey, string> & { status: FreightStatus; paid: string; stops: FreightStop[]; urgent: boolean };
 
 const moneyText = (n: number | null | undefined) => (n == null ? "" : String(n));
 const STOP_KEYS: (keyof FreightStop)[] = ["name", "address", "window", "contact", "phone", "notes"];
@@ -175,6 +326,7 @@ function toDraft(b: FreightBooking): Draft {
   return {
     ...(d as Record<TextKey, string>), status: b.status, paid: moneyText(b.paid_amount),
     stops: extraStops(b).map((x) => ({ ...blankStop(), ...x })),
+    urgent: !!b.urgent,
   };
 }
 
@@ -278,6 +430,7 @@ export default function LogisticsBookingForm({
     for (const k of TEXT_KEYS) if (draft[k] !== base[k]) patch[k] = draft[k];
     if (draft.status !== base.status) patch.status = draft.status;
     if (draft.paid !== base.paid) patch.paid_amount = moneyValue(draft.paid);
+    if (draft.urgent !== base.urgent) patch.urgent = draft.urgent;
     if (stopsKey(draft.stops) !== stopsKey(base.stops)) patch.extra_pickups = draft.stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim() }));
     if (Object.keys(patch).length === 0) return;
     setSaving(true); setError("");
@@ -353,6 +506,7 @@ export default function LogisticsBookingForm({
           <div className="min-w-0 flex items-center gap-2 flex-wrap">
             <h3 className="text-[14px] font-semibold text-ink font-mono">{booking.code}</h3>
             <FreightStatusPill status={booking.status} />
+            {isHot(booking) && <UrgentPill />}
             {needsAmount(booking) && <AmountNeededPill />}
           </div>
           <button onClick={tryClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors flex-shrink-0"><X size={16} /></button>
@@ -363,6 +517,13 @@ export default function LogisticsBookingForm({
             <div className="text-[12.5px] text-ink-2 min-w-0">
               <span className="font-medium text-ink">{booking.deal.invoice_number || "Deal"}</span>
               {booking.deal.client_name ? <span className="text-muted">{" "}for {booking.deal.client_name}</span> : null}
+            </div>
+          )}
+
+          {isHot(booking) && (
+            <div className="rounded-xl bg-danger-bg border border-danger/30 px-4 py-3 text-[13px] text-danger-ink" role="status">
+              <span className="font-semibold">Urgent.</span> Book this truck first.
+              {booking.pickup_date && <> Pickup {booking.pickup_date === localDay() ? "today" : fmtDay(booking.pickup_date)}{booking.pickup_window ? `, ${booking.pickup_window}` : ""}.</>}
             </div>
           )}
 
@@ -388,6 +549,10 @@ export default function LogisticsBookingForm({
                 );
               })}
             </div>
+            <label className="flex items-center gap-2 text-[13px] text-ink cursor-pointer w-fit">
+              <input type="checkbox" checked={draft.urgent} onChange={(e) => set("urgent", e.target.checked)} className="w-4 h-4 accent-danger" />
+              Urgent <span className="text-muted text-[12px]">it leads the list until it is picked up</span>
+            </label>
             {draft.status === "delivered" && (
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Delivered on" hint={dateHint("delivery")}>
@@ -396,6 +561,8 @@ export default function LogisticsBookingForm({
               </div>
             )}
           </Section>
+
+          <BookingFiles booking={booking} canEdit onSaved={onSaved} />
 
           <Section title={draft.stops.length ? "Pickup 1" : "Pickup"}>
             <Place name={booking.pickup_name} address={booking.pickup_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
@@ -446,8 +613,8 @@ export default function LogisticsBookingForm({
           <Section title="Delivery">
             <Place name={booking.delivery_name} address={booking.delivery_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
             <div className="grid grid-cols-2 gap-3">
-              {t("delivery_date", "Estimated delivery date", { type: "date", hint: dateHint("delivery") })}
-              {t("delivery_window", "Time window")}
+              {t("delivery_date", "ETA (delivery day)", { type: "date", hint: dateHint("delivery") })}
+              {t("delivery_window", "ETA time or window", { placeholder: "Around 2 pm" })}
               {t("delivery_contact", "Contact")}
               {t("delivery_phone", "Phone")}
               <Field label="Delivery notes" wide>

@@ -13,6 +13,8 @@
 // the setting off), the read-only Freight and the charged line on a booking (&open=L-A91C3D, as=dad),
 // the Logistics settings card and the Off / Pay / Track choice (view=settings, &mode=track|off), the tracker
 // in track mode (view=tracker&mode=track) and All shipments (view=logistics&ship=1, owner only).
+// R-458 adds: the first booking is urgent with a pickup today, two pickup times, a file; files can be dropped,
+// opened and removed on a booking (&open=L-7F3K2A), and the Send sheet carries urgent, the day and files.
 // Query: ?as=dad|jack  &names=0|1  &addr=0|1  &dark=1  &view=logistics|deal|settings|tracker|freight
 //        &byteam=0|1  &mode=pay|track|off  &ship=1  &send=1  &open=<booking code>
 import { useEffect } from "react";
@@ -49,7 +51,7 @@ const base = {
   pallets: "", pieces: "", weight_lbs: "", freight_class: "", dimensions: "", commodity: "", accessorials: "",
   quoted_cost: null as number | null, paid_amount: null as number | null, paid_at: "", paid_method: "", paid_note: "", notes: "",
   created_by_name: "Sam Rivera", updated_by_name: "", created_at: `${back(5)}T10:00:00Z`, updated_at: `${back(1)}T10:00:00Z`,
-  tracking: null as any,
+  tracking: null as any, urgent: false, files: [] as any[], extra_pickups: [] as any[],
 };
 
 const P1 = { name: "Northgate Wholesale", address: "418 Alder Way, Fairmont, OH 43201" };
@@ -57,7 +59,10 @@ const D1 = { name: "Lakeside Discount Co", address: "77 Quay Road, Marlow, PA 15
 const D2 = { name: "Tidewater Surplus", address: "9 Kiln Street, Ashby, VA 23301" };
 
 const BOOKINGS: any[] = [
-  { ...base, id: "fb_7f3k2a0000", status: "requested", request_note: "Dock closes at 3. Call the office before you come.",
+  { ...base, id: "fb_7f3k2a0000", status: "requested", request_note: "Needs to go out today. Pickup 2 closes at 4, get there first.",
+    urgent: true, pickup_date: localDay(), pickup_window: "Before 4 pm",
+    extra_pickups: [{ name: "Harbor Row Liquidators", address: "20 Pier Lane, Colby, MD 21201", window: "Before 4 pm", contact: "", phone: "", notes: "" }],
+    files: [{ id: "ff_1", name: "Rate confirmation RW48211.pdf", mime: "application/pdf", size: 184320, by: "Sam Rivera", at: `${back(0)}T13:00:00Z` }],
     pickup_name: P1.name, pickup_address: P1.address, delivery_name: D1.name, delivery_address: D1.address, pallets: "12",
     weight_lbs: "9400", pieces: "96", freight_class: "70", dimensions: "48 x 40 x 60 in", commodity: "Mixed apparel", accessorials: "Liftgate at delivery, Appointment, Dock has a low door",
     deal: { id: "df1", invoice_number: "INV-5001", client_name: "Lakeside Discount Co", stage: "payment_received" } },
@@ -151,6 +156,14 @@ const handlers: Record<string, (a: any) => any> = {
     const [p, qs = ""] = path.split("?");
     const bookings = () => (qs.includes("include_done=1") ? [...BOOKINGS, ...DONE] : live());
     if (method === "GET" && p === "/api/logistics/bookings") return { bookings: bookings().map(shape) };
+    const mf = /^\/api\/logistics\/bookings\/([^/]+)\/files(?:\/(.+))?$/.exec(p);
+    if (mf) {
+      const b = [...BOOKINGS, ...DONE].find((x) => x.id === mf[1]);
+      if (!b) return Promise.reject("That booking was not found.");
+      if (method === "POST") { b.files = [...(b.files || []), { id: "ff_" + Math.random().toString(16).slice(2, 8), name: body.name, mime: /\.pdf$/i.test(body.name) ? "application/pdf" : "image/png", size: Math.round(String(body.data).length * 0.75), by: AS === "dad" ? "Ines Okafor" : "Owner", at: new Date().toISOString() }]; return shape(b); }
+      if (method === "DELETE") { b.files = (b.files || []).filter((f: any) => f.id !== mf[2]); return shape(b); }
+      return { name: "tiny.png", mime: "image/png", size: 68, data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" };
+    }
     const m = /^\/api\/logistics\/bookings\/(.+)$/.exec(p);
     if (method === "PATCH" && m) {
       const b = [...BOOKINGS, ...DONE].find((x) => x.id === m[1]);
@@ -170,7 +183,9 @@ const handlers: Record<string, (a: any) => any> = {
         pickup_name: from?.pickup_name ?? body?.pickup_name ?? "", pickup_address: from?.pickup_address ?? body?.pickup_address ?? "",
         delivery_name: from?.delivery_name ?? body?.delivery_name ?? "", delivery_address: from?.delivery_address ?? body?.delivery_address ?? "",
         request_note: from?.request_note ?? body?.request_note ?? "", pallets: body?.pallets ?? "", pieces: body?.pieces ?? "", weight_lbs: body?.weight_lbs ?? "",
-        freight_class: body?.freight_class ?? "", dimensions: body?.dimensions ?? "", commodity: body?.commodity ?? "", accessorials: body?.accessorials ?? "" };
+        freight_class: body?.freight_class ?? "", dimensions: body?.dimensions ?? "", commodity: body?.commodity ?? "", accessorials: body?.accessorials ?? "",
+        urgent: !!body?.urgent, pickup_date: body?.pickup_date ?? "", pickup_window: body?.pickup_window ?? "", extra_pickups: body?.extra_pickups ?? from?.extra_pickups ?? [] };
+      (window as any).__sent = [...((window as any).__sent || []), body];
       BOOKINGS.push(nb);
       return shape(nb);
     }

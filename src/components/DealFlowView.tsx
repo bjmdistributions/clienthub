@@ -759,10 +759,11 @@ function invoiceStatusPill(status: string | undefined): { label: string; cls: st
 // buyer payment at all: `complete_deal_flow` records it (amount, date, invoice paid)
 // when a deal completes straight from `invoiced`, and a reopened deal still unwinds
 // through `uncomplete_deal_flow` as before.
+// R-458: Shipping is the second step: once the supplier is in, the truck is the next thing to arrange.
 const SECTIONS = [
   { key: "supplier", label: "Supplier & cost" },
-  { key: "link",     label: "Link financials" },
   { key: "shipping", label: "Shipping" },
+  { key: "link",     label: "Link financials" },
   { key: "profit",   label: "Profit" },
   { key: "complete", label: "Review & complete" },
 ] as const;
@@ -851,6 +852,8 @@ function DealFlowCard({
     if (refundState !== null) return "refund";
     if (isComplete) return "complete";
     if (!supplierDone) return "supplier";
+    // R-458: the truck comes next until it is sent, or the deal ships direct.
+    if (!done.shipping) return "shipping";
     return "link";
   };
   const [section, setSection] = useState<SectionKey>(firstOpen);
@@ -1861,7 +1864,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
         </span>
         <button onClick={handleContinue} disabled={saving}
           className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-          {formDirty ? "Save and continue" : "Continue to financials"} <Check size={14} strokeWidth={2.5} />
+          {formDirty ? "Save and continue" : "Continue to shipping"} <Check size={14} strokeWidth={2.5} />
         </button>
       </div>
     </div>
@@ -1919,7 +1922,7 @@ function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: 
       <div className="flex items-center justify-end pt-1">
         <button onClick={onAdvance}
           className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
-          Continue to shipping <Check size={14} strokeWidth={2.5} />
+          Continue to profit <Check size={14} strokeWidth={2.5} />
         </button>
       </div>
     </div>

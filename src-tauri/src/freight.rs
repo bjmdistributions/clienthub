@@ -86,6 +86,21 @@ pub async fn logistics_request(method: String, path: String, body: Option<Value>
     Ok(value)
 }
 
+/// R-458: save one file on a booking to `dest` (a path the person just chose in the save dialog).
+/// The bytes come from the server's file route, never from the page.
+#[tauri::command]
+pub async fn logistics_save_file(booking_id: String, file_id: String, dest: String) -> Result<(), String> {
+    use base64::Engine;
+    let ok_id = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !ok_id(&booking_id) || !ok_id(&file_id) {
+        return Err("That file was not found.".into());
+    }
+    let got = logistics_request("GET".into(), format!("/api/logistics/bookings/{booking_id}/files/{file_id}"), None).await?;
+    let data = got.get("data").and_then(|v| v.as_str()).unwrap_or("");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| "The file could not be read.".to_string())?;
+    std::fs::write(&dest, bytes).map_err(|e| format!("Could not save the file: {e}"))
+}
+
 // ── the local read ──────────────────────────────────────────────────────────
 
 /// The booking's text columns, in the order the booking object lists them (status, booked_at,
@@ -152,13 +167,14 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
                 COALESCE(df.id,''), COALESCE(i.number,''), COALESCE(c.name,''), COALESCE(df.stage,''),
                 COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0),
                 (SELECT COUNT(*) FROM freight_bookings tb WHERE tb.deal_flow_id = fb.deal_flow_id AND tb.archived = 0 AND tb.status != 'cancelled'),
-                COALESCE(fb.extra_pickups,'[]')
+                COALESCE(fb.extra_pickups,'[]'), COALESCE(fb.urgent,0), COALESCE(fb.files,'[]')
          FROM freight_bookings fb
          LEFT JOIN deal_flows df ON df.id = fb.deal_flow_id
          LEFT JOIN invoices i ON i.id = df.invoice_id
          LEFT JOIN clients c ON c.id = i.client_id
          WHERE fb.archived = 0 AND (?1 = '' OR fb.deal_flow_id = ?1)
-         ORDER BY CASE fb.status WHEN 'requested' THEN 0 ELSE 1 END,
+         ORDER BY CASE WHEN COALESCE(fb.urgent,0) = 1 AND fb.status IN ('requested','booked') THEN 0 ELSE 1 END,
+                  CASE fb.status WHEN 'requested' THEN 0 ELSE 1 END,
                   CASE WHEN COALESCE(fb.pickup_date,'') = '' THEN 1 ELSE 0 END, fb.pickup_date, fb.created_at",
         a = a.join(", "), b = b.join(", "),
     );
@@ -190,6 +206,13 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
         let stops: Vec<Value> = serde_json::from_str::<Vec<Value>>(&r.get::<_, String>(at + 7)?)
             .unwrap_or_default().into_iter().filter(|v| v.is_object()).collect();
         m.insert("extra_pickups".into(), Value::Array(stops));
+        // R-458: urgent as a yes or no, and the files listed on the booking (the server's shape).
+        m.insert("urgent".into(), json!(r.get::<_, i64>(at + 8)? == 1));
+        let files: Vec<Value> = serde_json::from_str::<Vec<Value>>(&r.get::<_, String>(at + 9)?)
+            .unwrap_or_default().into_iter()
+            .filter(|f| f.get("id").and_then(|v| v.as_str()).map_or(false, |id| !id.is_empty()))
+            .collect();
+        m.insert("files".into(), Value::Array(files));
         m.insert("can_see_names".into(), json!(true));
         m.insert("can_see_addresses".into(), json!(true));
         m.insert("can_see_deal".into(), json!(true));
@@ -790,12 +813,24 @@ mod tests {
             "delivered_at", "carrier", "broker", "service", "equipment", "bol", "pro", "pickup_number", "reference", "tracking_url", "driver_name",
             "driver_phone", "truck_number", "trailer_number", "pallets", "pieces", "weight_lbs", "freight_class", "dimensions", "commodity", "accessorials",
             "quoted_cost", "paid_amount", "paid_at", "paid_method", "paid_note", "notes", "created_by_name", "updated_by_name", "created_at", "updated_at",
-            "can_see_names", "can_see_addresses", "can_see_deal", "tracking", "deal", "extra_pickups",
+            "can_see_names", "can_see_addresses", "can_see_deal", "tracking", "deal", "extra_pickups", "urgent", "files",
         ] {
             assert!(b.get(key).is_some(), "the key {key} is always there");
         }
         assert_eq!(b["extra_pickups"][0]["name"], "Second sample yard");
         assert_eq!(b["extra_pickups"][0]["window"], "1 to 4");
+        // R-458: not urgent and no files until the server says so; then both read as the server sends them.
+        assert_eq!((b["urgent"].as_bool(), b["files"].clone()), (Some(false), json!([])));
+        {
+            let conn = pool().get().unwrap();
+            conn.execute(
+                "UPDATE freight_bookings SET urgent=1, files='[{\"id\":\"ff_1\",\"name\":\"Sample BOL.pdf\",\"mime\":\"application/pdf\",\"size\":1200,\"by\":\"Sample sender\",\"at\":\"2026-10-06\"},{\"name\":\"no id\"}]' WHERE id='fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77'", [],
+            ).unwrap();
+        }
+        let b = &list_freight_bookings(Some(deal.clone())).await.unwrap()[0];
+        assert_eq!(b["urgent"], true);
+        assert_eq!(b["files"].as_array().unwrap().len(), 1, "an entry without an id is not a file");
+        assert_eq!(b["files"][0]["name"], "Sample BOL.pdf");
         // Without a deal filter: all live rows, whichever deal.
         assert!(list_freight_bookings(None).await.unwrap().iter().any(|r| r["id"] == "fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77"));
     }

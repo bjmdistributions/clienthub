@@ -2369,4 +2369,14 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE freight_bookings ADD COLUMN extra_pickups TEXT DEFAULT '[]';
         "#,
     ),
+    (
+        109,
+        // R-458: a truck marked urgent, and the files on it (BOLs, rate confirmations) as a JSON
+        // list of {id, name, mime, size, by, at}. The bytes stay sealed on the server and are
+        // fetched over /api/logistics. Server-authored (clienthub-api sync.rs adds the same columns).
+        r#"
+        ALTER TABLE freight_bookings ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE freight_bookings ADD COLUMN files TEXT DEFAULT '[]';
+        "#,
+    ),
 ];

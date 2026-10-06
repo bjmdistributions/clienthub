@@ -1207,6 +1207,7 @@ fn main() {
             shipments::scan_priority1_mail,
             // Logistics (R-400)
             freight::logistics_request,
+            freight::logistics_save_file,
             freight::list_freight_bookings,
             freight::get_deal_logistics_pay,
             // Warehouse stock + truckload packer (R-326)

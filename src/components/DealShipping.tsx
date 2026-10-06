@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Check, Plus, Send, Truck, X } from "lucide-react";
+import { Check, FileText, Paperclip, Plus, Send, Truck, X } from "lucide-react";
 import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
-import { fmtAmount, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
+import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
 import StatusPill from "./StatusPill";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
 import LogisticsBookingForm, {
-  AccessorialsField, AmountNeededPill, FreightStatusPill, blankStop, extraStops, fmtDay, needsAmount, useNetsyncApplied,
+  AccessorialsField, AmountNeededPill, FileDrop, FreightStatusPill, UrgentPill, blankStop, fileSize, fmtDay, isHot, needsAmount,
+  timingLine, uploadFiles, useNetsyncApplied,
 } from "./LogisticsBookingForm";
 
 // R-400: the deal's Shipping step. Freight is its own leg of the deal, separate from what is
@@ -45,6 +46,10 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
   const [delivery, setDelivery] = useState({ name: "", address: "" });
   const [freight, setFreight] = useState({ pallets: "", pieces: "", weight_lbs: "", freight_class: "", dimensions: "", commodity: "", accessorials: "" });
   const [note, setNote] = useState("");
+  // R-458: everything logistics needs in one send: how urgent, the day and the times, and the papers.
+  const [urgent, setUrgent] = useState(false);
+  const [when, setWhen] = useState({ date: "", window: "" });
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   // Until the setting is read, the default (on) holds.
   const [byTeam, setByTeam] = useState(true);
@@ -73,16 +78,19 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
     if (missing) { setErr("Fill in the pallets, weight and dimensions before sending to logistics."); return; }
     setBusy(true); setErr("");
     try {
-      await api.logistics.create(flow.id, {
+      const made = await api.logistics.create(flow.id, {
+        urgent, pickup_date: when.date, pickup_window: when.window.trim(),
         pickup_name: pickup.name, pickup_address: pickup.address,
-        extra_pickups: stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim() })).filter((x) => x.name || x.address),
+        extra_pickups: stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim(), window: x.window.trim() })).filter((x) => x.name || x.address),
         delivery_name: delivery.name, delivery_address: delivery.address,
         pallets: freight.pallets.trim(), pieces: freight.pieces.trim(), weight_lbs: freight.weight_lbs.trim(),
         freight_class: freight.freight_class.trim(), dimensions: freight.dimensions.trim(),
         commodity: freight.commodity.trim(), accessorials: freight.accessorials.trim(),
         request_note: note.trim(),
       });
-      toast("Sent to logistics");
+      // The booking exists now; a file that fails to upload says so and can be added on the booking.
+      if (files.length) await uploadFiles(made.id, files);
+      toast(urgent ? "Sent to logistics as urgent" : "Sent to logistics");
       onSent();
     } catch (e) { setErr(String(e)); }
     setBusy(false);
@@ -122,6 +130,31 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                     : "The invoice has no shipping line."}
                 </div>
               )}
+              <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${urgent ? "border-danger-ink/30 bg-danger-bg" : "border-line hover:bg-surface-2"}`}>
+                <input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} className="w-4 h-4 mt-0.5 accent-danger" />
+                <span className="min-w-0">
+                  <span className={`block text-[13px] font-medium ${urgent ? "text-danger-ink" : "text-ink"}`}>Urgent</span>
+                  <span className="block text-[11.5px] text-muted">It goes to the top of their list in red, and they get a notice that says urgent.</span>
+                </span>
+              </label>
+              <div className="space-y-2">
+                <div className="text-[12px] font-medium text-ink-2">When it needs picking up</div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {([["Today", 0], ["Tomorrow", 1]] as const).map(([label, add]) => {
+                    const d = new Date(); d.setDate(d.getDate() + add);
+                    const v = localDay(d);
+                    const on = when.date === v;
+                    return (
+                      <button key={label} type="button" aria-pressed={on} onClick={() => setWhen((w) => ({ ...w, date: on ? "" : v }))}
+                        className={`h-8 px-3 rounded-lg border text-[12px] transition-colors ${on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+                        {label}
+                      </button>
+                    );
+                  })}
+                  <input type="date" className={`${inp} w-auto`} aria-label="Pickup day" value={when.date} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, date: v })); }} />
+                </div>
+                <div className="text-[11px] text-muted">Leave it empty and logistics sets the day. The day moves the deal's pickup date.</div>
+              </div>
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Pickup</div>
                 {options.length > 1 && (
@@ -134,6 +167,7 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                 )}
                 <input className={inp} placeholder="Name" value={pickup.name} onChange={(e) => setPickup({ ...pickup, name: e.target.value })} />
                 <input className={inp} placeholder="Address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
+                <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={when.window} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, window: v })); }} />
               </div>
               {stops.map((x, i) => (
                 <div key={i} className="space-y-2">
@@ -144,6 +178,7 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                   </div>
                   <input className={inp} placeholder="Name" aria-label={`Pickup ${i + 2} name`} value={x.name} onChange={(e) => setStop(i, { name: e.target.value })} />
                   <input className={inp} placeholder="Address" aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
+                  <input className={inp} placeholder="Time, like before 4 pm" aria-label={`Pickup ${i + 2} time`} value={x.window} onChange={(e) => setStop(i, { window: e.target.value })} />
                 </div>
               ))}
               {stops.length < 9 && (
@@ -191,7 +226,24 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                 <label className="block text-[12px] font-medium text-ink-2 mb-1">Note for logistics</label>
                 <textarea
                   className="border border-line px-3 py-2 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted resize-y min-h-[72px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
-                  placeholder="Dock hours, who to call, anything that helps" value={note} onChange={(e) => setNote(e.target.value)} />
+                  placeholder="Like: needs to go out today, call the dock first" value={note} onChange={(e) => setNote(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <div className="text-[12px] font-medium text-ink-2">Files</div>
+                {files.length > 0 && (
+                  <div className="rounded-lg border border-line divide-y divide-line">
+                    {files.map((f, i) => (
+                      <div key={i} className="flex items-center gap-2 px-3 py-1.5 text-[12.5px] min-w-0">
+                        <FileText size={13} className="text-muted flex-shrink-0" />
+                        <span className="truncate min-w-0 flex-1 text-ink">{f.name}</span>
+                        <span className="text-[11px] text-muted flex-shrink-0">{fileSize(f.size)}</span>
+                        <button type="button" onClick={() => setFiles((l) => l.filter((_, j) => j !== i))} title="Take it off"
+                          className="p-1 rounded-md text-muted hover:text-danger-ink hover:bg-danger-bg flex-shrink-0"><X size={12} /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <FileDrop onFiles={(l) => setFiles((cur) => [...cur, ...l])} hint="Sent with the booking. Each file up to 15 MB." />
               </div>
             </>
           )}
@@ -344,6 +396,14 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
     catch (e) { toast(String(e), "error"); }
   };
 
+  // R-458: Shipping is the second step, so a deal with no truck to book answers it here too.
+  const shipsDirect = async () => {
+    try {
+      await api.setDealFlowShipping(flow.id, day(flow.pickup_date) || null, day(flow.expected_delivery_date) || null, true);
+      onReload();
+    } catch (e) { toast(String(e), "error"); }
+  };
+
   const undoDirect = async () => {
     try {
       await api.setDealFlowShipping(flow.id, day(flow.pickup_date) || null, day(flow.expected_delivery_date) || null, false);
@@ -354,11 +414,9 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
   const card = (b: FreightBooking) => {
     const who = [b.carrier, b.broker && (b.carrier ? `via ${b.broker}` : b.broker)].filter(Boolean).join(" ");
     const refs = [b.bol && `BOL ${b.bol}`, b.pro && `PRO ${b.pro}`].filter(Boolean).join(", ");
-    const dates = [
-      extraStops(b).length > 0 && `${extraStops(b).length + 1} pickups`,
-      b.pickup_date && `Pickup ${fmtDay(b.pickup_date)}`,
-      (b.delivered_at || b.delivery_date) && `${b.delivered_at ? "Delivered" : "Delivery"} ${fmtDay(b.delivered_at || b.delivery_date)}`,
-    ].filter(Boolean).join(", ");
+    // R-458: the times the team set and the ETA logistics typed, in one line.
+    const dates = timingLine(b);
+    const nFiles = b.files?.length ?? 0;
     const money = [
       b.paid_amount != null && `Amount paid ${fmtAmount(b.paid_amount)}${b.paid_at ? ` on ${fmtDay(b.paid_at)}` : ""}${b.paid_method ? ` with ${b.paid_method}` : ""}`,
       b.paid_amount == null && b.quoted_cost != null && `Quote ${fmtAmount(b.quoted_cost)}`,
@@ -371,8 +429,10 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="font-mono text-[12px] text-muted">{b.code}</span>
           <FreightStatusPill status={b.status} />
+          {isHot(b) && <UrgentPill />}
           {needsAmount(b) && <AmountNeededPill />}
           {who && <span className="text-[13px] font-medium text-ink truncate min-w-0">{who}</span>}
+          {nFiles > 0 && <span className="ml-auto inline-flex items-center gap-0.5 text-[11.5px] text-muted"><Paperclip size={11} />{nFiles} {nFiles === 1 ? "file" : "files"}</span>}
         </div>
         {(refs || dates) && <div className="text-[12px] text-ink-2 mt-1">{[refs, dates].filter(Boolean).join(" · ")}</div>}
         {b.status === "requested" && !refs && !dates && <div className="text-[12px] text-muted mt-1">Waiting for logistics to book it.</div>}
@@ -406,6 +466,12 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
                 <button type="button" onClick={addTruck}
                   className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">
                   <Plus size={13} /> Add another truck
+                </button>
+              )}
+              {live.length === 0 && !locked && (
+                <button type="button" onClick={shipsDirect}
+                  className="px-3 h-8 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">
+                  It ships direct
                 </button>
               )}
               <button type="button" onClick={() => setSending(true)}
@@ -479,7 +545,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
         <div className="flex items-center justify-end pt-1">
           <button type="button" onClick={onAdvance}
             className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
-            Continue to profit <Check size={14} strokeWidth={2.5} />
+            Continue to link financials <Check size={14} strokeWidth={2.5} />
           </button>
         </div>
       )}
