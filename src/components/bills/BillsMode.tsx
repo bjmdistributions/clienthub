@@ -5,7 +5,7 @@ import { Check, Plus, RotateCcw } from "lucide-react";
 import StatusPill from "../StatusPill";
 import { fmtAmount } from "../../lib/format";
 import type { BillCandidate, BillOut, BillsList, UpcomingDue } from "../../lib/billsApi";
-import {
+import { amountText,
   PERIOD_PILL, STATUS_PILL, billMethodLabel, cadenceLabel, chipState, daysInMonth, dueText, longDay,
   monthTitle, shortDay, type ChipState,
 } from "../../lib/billsFormat";
@@ -80,7 +80,7 @@ export default function BillsMode({ data, cands, admin, onOpen, onAdd, onTrack, 
                     <span className="block text-[13px] font-medium text-ink truncate">{b.name}</span>
                     <span className="block text-[11px] text-muted truncate">{cadenceLabel(b.cadence)}</span>
                   </span>
-                  <span className="text-[13px] tabular-nums text-ink-2 flex-shrink-0">{b.amount > 0 ? fmtAmount(b.amount) : "Varies"}</span>
+                  <span className="text-[13px] tabular-nums text-ink-2 flex-shrink-0">{amountText(b.amount, b.state.avg_amount, fmtAmount).text}</span>
                 </button>
                 {admin && <button onClick={() => onRestore(b)} className={btn}><RotateCcw size={12} /> Restore</button>}
               </div>
@@ -242,7 +242,8 @@ function BillCard({ bill: b, onOpen }: { bill: BillOut; onOpen: (id: string) => 
       <div className="flex items-end justify-between gap-3 min-w-0">
         <div className="min-w-0">
           <div className="text-[22px] font-bold text-ink tabular-nums leading-none truncate">
-            {b.amount > 0 ? fmtAmount(b.amount) : "Varies"}
+            {amountText(b.amount, st.avg_amount, fmtAmount).text}
+            {amountText(b.amount, st.avg_amount, fmtAmount).average && <span className="text-[12px] font-medium text-muted ml-1.5">avg</span>}
           </div>
           {b.amount <= 0 && st.last_amount != null && (
             <div className="text-[11px] text-muted mt-1.5 tabular-nums truncate">Last paid {fmtAmount(st.last_amount)}</div>

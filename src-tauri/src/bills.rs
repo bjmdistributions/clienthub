@@ -15,6 +15,10 @@
 //!    `plaid_sync`, after a pull that applied bills events (`PullHook`), and for one bill after
 //!    it is saved. A link id is made from the bill and the bank row, so two devices that link the
 //!    same payment write one row, and a link Jack rejected is never written again.
+//!  * R-454: the due date a link pays is worked out from all of the bill's payments
+//!    (`bills_core::assign_periods`); the `period` stored on the link is only a copy. `heal_periods`
+//!    writes the copies that are stale, after every save, hand link, unlink and restore and on every
+//!    auto-link pass, so a payment stored under the wrong due date moves to the right one.
 //!  * `bills_icon` and the two push preference commands go to the server (`netsync::server_request`).
 //!
 //! Every message returned as an `Err` is shown to Jack as it is, so each is a plain sentence.
@@ -317,7 +321,8 @@ fn link_one(conn: &rusqlite::Connection, bill: &BillRow, today: NaiveDate) -> Re
     }
     let txns = load_txns(conn, &since(today, 400))?;
     let known = known_link_ids(conn)?;
-    let links = core::auto_links(&[bill.to_core()], &txns, &known);
+    let stored = load_links(conn)?;
+    let links = core::auto_links(&[bill.to_core()], &txns, &known, &stored);
     write_auto_links(conn, &links)
 }
 
@@ -329,23 +334,61 @@ fn link_all(conn: &rusqlite::Connection, today: NaiveDate) -> Result<usize, Stri
     }
     let txns = load_txns(conn, &since(today, 400))?;
     let known = known_link_ids(conn)?;
-    let links = core::auto_links(&bills, &txns, &known);
+    let stored = load_links(conn)?;
+    let links = core::auto_links(&bills, &txns, &known, &stored);
     write_auto_links(conn, &links)
 }
 
-/// Link every payment that belongs to a bill and has not been linked. Called after a converged
-/// Plaid sync and after a pull that applied bills events; idempotent, best effort. Tells the open
-/// screens when it wrote a link.
+/// R-454: write the `period` of every live link of these bills whose stored copy is not the due
+/// date its payment pays now (`core::period_fixes`), and send each change to the other devices.
+/// Only `period` and `updated_at` go out. Returns how many links changed.
+fn heal_periods(conn: &rusqlite::Connection, bill_ids: &[String]) -> Result<usize, String> {
+    if bill_ids.is_empty() {
+        return Ok(0);
+    }
+    let bills = load_bills(conn)?;
+    let links = load_links(conn)?;
+    let now = now_string();
+    let mut changed = 0;
+    for id in bill_ids {
+        let Some(bill) = bills.iter().find(|b| &b.id == id) else { continue };
+        for (pid, period) in core::period_fixes(&bill.to_core(), &links) {
+            let mut cols = Map::new();
+            cols.insert("period".into(), json!(period));
+            cols.insert("updated_at".into(), json!(now));
+            if write(conn, "bill_payments", &pid, cols, false)? {
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
+}
+
+/// One auto-link pass: link what the bank has for every active bill, then heal the due date every
+/// active bill's links carry (this is what moves a payment stored under the wrong due date, like
+/// rent missed on the 1st and paid on the 18th, to the right one). Returns how many links were
+/// written and how many were moved.
+fn auto_link_pass(conn: &rusqlite::Connection, today: NaiveDate) -> Result<(usize, usize), String> {
+    let wrote = link_all(conn, today)?;
+    let active: Vec<String> = load_bills(conn)?.into_iter().filter(|b| b.status == "active").map(|b| b.id).collect();
+    let healed = heal_periods(conn, &active)?;
+    Ok((wrote, healed))
+}
+
+/// Link every payment that belongs to a bill and has not been linked, and move the links that
+/// pay the wrong due date. Called after a converged Plaid sync and after a pull that applied bills
+/// events; idempotent, best effort. Tells the open screens when it wrote or moved a link, and
+/// returns how many it wrote plus how many it moved.
 pub fn run_auto_links() -> Result<usize, String> {
     // No store yet (early boot, or a test with no database): nothing to link.
     let Some(p) = crate::db::pool_opt() else { return Ok(0) };
     let conn = p.get().map_err(|e| e.to_string())?;
-    let wrote = link_all(&conn, crate::commands::central_today())?;
-    if wrote > 0 {
-        tracing::info!("bills: linked {wrote} payment(s)");
+    let (wrote, healed) = auto_link_pass(&conn, crate::commands::central_today())?;
+    if wrote + healed > 0 {
+        tracing::info!("bills: linked {wrote} payment(s), moved {healed} to the due date they pay");
         announce();
     }
-    Ok(wrote)
+    Ok(wrote + healed)
 }
 
 // ------------------------------------------------------------------------------- JSON
@@ -363,7 +406,12 @@ fn state_json(st: &core::BillState) -> Value {
         "on_time_count": st.on_time_count,
         "history": st.history.iter().map(|p| json!({
             "due": p.due, "paid_on": p.paid_on, "paid_amount": p.paid_amount, "state": p.state,
+            "extra_amount": p.extra_amount,
         })).collect::<Vec<_>>(),
+        "extras": st.extras.iter().map(|e| json!({ "posted_at": e.posted_at, "amount": e.amount })).collect::<Vec<_>>(),
+        "extras_year": st.extras_year,
+        "avg_amount": st.avg_amount,
+        "avg_count": st.avg_count,
     })
 }
 
@@ -373,7 +421,7 @@ fn bill_json(b: &BillRow, st: &core::BillState) -> Value {
         "tolerance_pct": b.tolerance_pct, "cadence": b.cadence, "anchor_date": b.anchor_date,
         "category": b.category, "method": b.method, "website": b.website, "logo": b.logo,
         "notes": b.notes, "status": b.status, "created_at": b.created_at, "updated_at": b.updated_at,
-        "monthly": core::monthly_equivalent(b.amount, &b.cadence),
+        "monthly": core::monthly_equivalent(core::expected_amount(b.amount, st), &b.cadence),
         "state": state_json(st),
     })
 }
@@ -434,16 +482,17 @@ fn list_json(conn: &rusqlite::Connection, today: NaiveDate) -> Result<Value, Str
     active.sort_by_key(by_due);
     archived.sort_by_key(|(b, _)| b.name.to_lowercase());
 
-    let paid: HashSet<(String, String)> = c
-        .links
-        .iter()
-        .filter(|l| l.status != "rejected")
-        .map(|l| (l.bill_id.clone(), l.period.clone()))
-        .collect();
+    // R-454: the due dates paid are the ones the payments pay now, not the stored copies.
+    let mut paid: HashSet<(String, String)> = HashSet::new();
+    for b in &c.bills {
+        for period in core::assign_periods(&b.to_core(), &c.links).into_values().filter(|p| !p.is_empty()) {
+            paid.insert((b.id.clone(), period));
+        }
+    }
     let (month_lo, month_hi) = (first_of_month(today), last_of_month(today));
     let mut upcoming: Vec<(String, String, Value)> = Vec::new();
     let (mut paid_this_month, mut expected_this_month) = (0, 0);
-    for (b, _) in &active {
+    for (b, st) in &active {
         for d in dues_between(&b.to_core(), month_lo, today + Duration::days(45)) {
             let due = day_string(d);
             let is_paid = paid.contains(&(b.id.clone(), due.clone()));
@@ -453,7 +502,7 @@ fn list_json(conn: &rusqlite::Connection, today: NaiveDate) -> Result<Value, Str
                     paid_this_month += 1;
                 }
             }
-            upcoming.push((due.clone(), b.name.to_lowercase(), json!({ "bill_id": b.id, "due": due, "amount": b.amount, "paid": is_paid })));
+            upcoming.push((due.clone(), b.name.to_lowercase(), json!({ "bill_id": b.id, "due": due, "amount": core::expected_amount(b.amount, st), "paid": is_paid })));
         }
     }
     upcoming.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
@@ -462,14 +511,16 @@ fn list_json(conn: &rusqlite::Connection, today: NaiveDate) -> Result<Value, Str
     let (mut due_30_total, mut due_30_count) = (0.0, 0);
     let (mut overdue_total, mut overdue_count, mut due_soon_count) = (0.0, 0, 0);
     for (b, st) in &active {
-        monthly_total += core::monthly_equivalent(b.amount, &b.cadence);
+        // R-455: a bill whose amount varies counts at what it costs on average.
+        let expected = core::expected_amount(b.amount, st);
+        monthly_total += core::monthly_equivalent(expected, &b.cadence);
         if st.days_until.map_or(false, |d| d <= 30) {
-            due_30_total += b.amount;
+            due_30_total += expected;
             due_30_count += 1;
         }
         if !st.overdue.is_empty() {
             overdue_count += 1;
-            overdue_total += b.amount * st.overdue.len() as f64;
+            overdue_total += expected * st.overdue.len() as f64;
         }
         if st.status == "due_soon" {
             due_soon_count += 1;
@@ -528,6 +579,9 @@ fn alerts_json(conn: &rusqlite::Connection, today: NaiveDate) -> Result<Value, S
 fn get_json(conn: &rusqlite::Connection, id: &str, today: NaiveDate) -> Result<Value, String> {
     let c = Ctx::load(conn, today)?;
     let bill = c.out(id)?;
+    // R-454: each live payment carries the due date it pays now ("" for an extra charge), worked out
+    // from all of the bill's payments. An unlinked one keeps the copy it was stored with.
+    let derived = c.bills.iter().find(|b| b.id == id).map(|b| core::assign_periods(&b.to_core(), &c.links)).unwrap_or_default();
     let mut stmt = db(conn.prepare(
         "SELECT p.id, p.bank_txn_id, COALESCE(p.period,''), COALESCE(p.status,'auto'), COALESCE(p.amount,0), \
                 COALESCE(substr(t.posted_at,1,10),''), COALESCE(t.counterparty_name,''), COALESCE(t.description,''), \
@@ -537,9 +591,13 @@ fn get_json(conn: &rusqlite::Connection, id: &str, today: NaiveDate) -> Result<V
          ORDER BY COALESCE(substr(t.posted_at,1,10),'') DESC, p.created_at DESC, p.id",
     ))?;
     let rows = db(stmt.query_map([id], |r| {
+        let pid: String = r.get(0)?;
+        let status: String = r.get(3)?;
+        let stored: String = r.get(2)?;
+        let period = if status == "rejected" { stored } else { derived.get(&pid).cloned().unwrap_or(stored) };
         Ok(json!({
-            "id": r.get::<_, String>(0)?, "bank_txn_id": r.get::<_, String>(1)?, "period": r.get::<_, String>(2)?,
-            "status": r.get::<_, String>(3)?, "amount": r.get::<_, f64>(4)?, "posted_at": r.get::<_, String>(5)?,
+            "id": pid, "bank_txn_id": r.get::<_, String>(1)?, "extra": period.is_empty(), "period": period,
+            "status": status, "amount": r.get::<_, f64>(4)?, "posted_at": r.get::<_, String>(5)?,
             "payee": r.get::<_, String>(6)?, "memo": r.get::<_, String>(7)?, "account_id": r.get::<_, String>(8)?,
         }))
     }))?;
@@ -737,43 +795,6 @@ fn set_number(cols: &mut Map<String, Value>, key: &str, new: Option<f64>, old: f
     }
 }
 
-/// The due date a payment posted on `posted` pays: the one whose window it falls in, else the
-/// nearest. Empty when the date does not read.
-fn period_of(bill: &core::Bill, posted: &str) -> String {
-    core::parse_day(posted)
-        .and_then(|d| core::period_for(bill, d).or_else(|| core::nearest_due(bill, d)))
-        .map(day_string)
-        .unwrap_or_default()
-}
-
-/// A bill's first due date or cadence changed, so the due dates moved: point every payment link of
-/// the bill at the due date its payment now pays. A rejected link moves too, or Undo would bring
-/// back a period that no longer exists. A link's period is the only thing `bill_state` reads to
-/// call a due date paid, so left alone they all read as missed.
-fn reperiod_links(conn: &rusqlite::Connection, bill: &BillRow) -> Result<(), String> {
-    let cb = bill.to_core();
-    let rows: Vec<(String, String, String)> = {
-        let mut stmt = db(conn.prepare(
-            "SELECT p.id, COALESCE(p.period,''), COALESCE(substr(t.posted_at,1,10),'') \
-             FROM bill_payments p JOIN bank_txn t ON t.id = p.bank_txn_id WHERE p.bill_id=?1 ORDER BY p.created_at, p.id",
-        ))?;
-        let found = db(stmt.query_map([&bill.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))))?;
-        db(found.collect::<rusqlite::Result<Vec<_>>>())?
-    };
-    let now = now_string();
-    for (pid, old, posted) in rows {
-        let period = period_of(&cb, &posted);
-        if period.is_empty() || period == old {
-            continue;
-        }
-        let mut cols = Map::new();
-        cols.insert("period".into(), json!(period));
-        cols.insert("updated_at".into(), json!(now));
-        write(conn, "bill_payments", &pid, cols, false)?;
-    }
-    Ok(())
-}
-
 /// Create (`id` None) or update a bill, then link what the bank already has for it.
 fn save(conn: &rusqlite::Connection, id: Option<&str>, fields: &Value, today: NaiveDate) -> Result<Value, String> {
     let f = parse_fields(fields)?;
@@ -811,14 +832,8 @@ fn save(conn: &rusqlite::Connection, id: Option<&str>, fields: &Value, today: Na
             set_text(&mut cols, "notes", &f.notes, &cur.notes);
             set_text(&mut cols, "status", &f.status, &cur.status);
             if !cols.is_empty() {
-                // Moving the due dates strands the periods the links carry; re-period them before
-                // the link pass below, which leaves a bank row that already pays this bill alone.
-                let moves_dues = cols.contains_key("anchor_date") || cols.contains_key("cadence");
                 cols.insert("updated_at".into(), json!(now));
                 write(conn, "bills", id, cols, false)?;
-                if moves_dues {
-                    reperiod_links(conn, &load_bill(conn, id)?)?;
-                }
             }
             id.to_string()
         }
@@ -863,6 +878,9 @@ fn save(conn: &rusqlite::Connection, id: Option<&str>, fields: &Value, today: Na
     };
     let bill = load_bill(conn, &bill_id)?;
     let linked = link_one(conn, &bill, today)?;
+    // Moving the first due date or the cadence moves the due dates, and a new payment can change
+    // which due date an older one pays: write the periods that are now stale (R-454).
+    heal_periods(conn, &[bill_id.clone()])?;
     let c = Ctx::load(conn, today)?;
     Ok(json!({ "bill": c.out(&bill_id)?, "linked": linked }))
 }
@@ -882,31 +900,84 @@ fn archive(conn: &rusqlite::Connection, id: &str, archived: bool, today: NaiveDa
 
 // ------------------------------------------------------------------- picking payments
 
-fn candidates_json(conn: &rusqlite::Connection, id: &str, today: NaiveDate) -> Result<Value, String> {
+/// A search word that is an amount (`$1,500.00`, `1500`, `500.5`), in cents.
+fn amount_token(tok: &str) -> Option<i64> {
+    let t: String = tok.trim_start_matches('$').chars().filter(|c| *c != ',').collect();
+    if !t.chars().any(|c| c.is_ascii_digit()) || t.matches('.').count() > 1 || !t.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    t.parse::<f64>().ok().map(|v| (v * 100.0).round() as i64)
+}
+
+/// A search word shaped `YYYY-MM` or `YYYY-MM-DD`: it matches the start of the posted date.
+fn date_token(tok: &str) -> bool {
+    let b = tok.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(|c| c.is_ascii_digit());
+    match b.len() {
+        7 => digits(0..4) && b[4] == b'-' && digits(5..7),
+        10 => digits(0..4) && b[4] == b'-' && digits(5..7) && b[7] == b'-' && digits(8..10),
+        _ => false,
+    }
+}
+
+/// R-454: every search word (lower case) is found in the payment. An amount word matches the
+/// amount to the cent, a date word the start of the posted date, any other word the payee or memo.
+fn search_matches(t: &core::Txn, tokens: &[String]) -> bool {
+    tokens.iter().all(|tok| {
+        if let Some(cents) = amount_token(tok) {
+            cents == (t.amount * 100.0).round() as i64
+        } else if date_token(tok) {
+            t.posted_at.starts_with(tok.as_str())
+        } else {
+            t.payee.to_lowercase().contains(tok.as_str()) || t.memo.to_lowercase().contains(tok.as_str())
+        }
+    })
+}
+
+/// The payments Jack can link to a bill by hand. Without `q`: the unlinked payments of the last 120
+/// days that could be this bill's, best match first, at most 40. With `q` (R-454): any payment of
+/// any date that went out, matching every word of `q`, newest first, at most 60; one that already
+/// pays another bill is listed with that bill's name in `linked_to` and cannot be picked. Each row
+/// says in `due` which due date it would pay ("" when it would be an extra charge).
+fn candidates_json(conn: &rusqlite::Connection, id: &str, q: Option<&str>, today: NaiveDate) -> Result<Value, String> {
     let bill = load_bill(conn, id)?;
     let cb = bill.to_core();
-    let txns = load_txns(conn, &since(today, 120))?;
+    let tokens: Vec<String> = q.unwrap_or("").to_lowercase().split_whitespace().map(|t| t.to_string()).collect();
+    let searching = !tokens.is_empty();
+    let txns = load_txns(conn, &if searching { String::new() } else { since(today, 120) })?;
     let mut rows: Vec<(bool, f64, &core::Txn)> = txns
         .iter()
-        .filter(|t| core::eligible(t) && t.bill_id.is_empty())
+        .filter(|t| core::eligible(t))
+        .filter(|t| if searching { t.bill_id != bill.id && search_matches(t, &tokens) } else { t.bill_id.is_empty() })
         .map(|t| (!core::words_match(&cb.payee_match, t), (t.amount - cb.amount).abs(), t))
         .collect();
-    rows.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .then(b.2.posted_at.cmp(&a.2.posted_at))
-            .then(a.2.id.cmp(&b.2.id))
-    });
+    if searching {
+        rows.sort_by(|a, b| b.2.posted_at.cmp(&a.2.posted_at).then(a.2.id.cmp(&b.2.id)));
+    } else {
+        rows.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .then(b.2.posted_at.cmp(&a.2.posted_at))
+                .then(a.2.id.cmp(&b.2.id))
+        });
+    }
+    let paid: HashSet<String> = core::assign_periods(&cb, &load_links(conn)?).into_values().filter(|p| !p.is_empty()).collect();
+    let names: HashMap<String, String> = load_bills(conn)?.into_iter().map(|b| (b.id, b.name)).collect();
     let mut out = Vec::new();
-    for (_, _, t) in rows.into_iter().take(40) {
+    for (_, _, t) in rows.into_iter().take(if searching { 60 } else { 40 }) {
         let account: String = db(conn
             .query_row("SELECT COALESCE(account_id,'') FROM bank_txn WHERE id=?1", [&t.id], |r| r.get(0))
             .optional())?
             .unwrap_or_default();
-        let due = core::parse_day(&t.posted_at).and_then(|d| core::nearest_due(&cb, d)).map(day_string).unwrap_or_default();
+        let due = core::parse_day(&t.posted_at).map(|d| core::assign_period(&cb, d, t.amount, true, &paid)).unwrap_or_default();
+        let linked_to = if t.bill_id.is_empty() {
+            Value::Null
+        } else {
+            json!(names.get(&t.bill_id).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| "another bill".to_string()))
+        };
         out.push(json!({
             "id": t.id, "posted_at": t.posted_at, "amount": t.amount, "payee": t.payee,
-            "memo": t.memo, "account_id": account, "due": due,
+            "memo": t.memo, "account_id": account, "due": due, "linked_to": linked_to,
         }));
     }
     Ok(json!({ "txns": out }))
@@ -947,7 +1018,9 @@ fn paid_to_another(conn: &rusqlite::Connection, bank_txn_id: &str, bill_id: &str
     Ok(other)
 }
 
-/// Link a payment to a bill by hand. It pays the due date its date falls in, else the nearest.
+/// Link a payment to a bill by hand. It pays the latest due date on or before it that nothing else
+/// pays, else the next one at any time before it; a payment the amount band does not fit is an extra
+/// charge (R-454).
 fn link(conn: &rusqlite::Connection, bill_id: &str, bank_txn_id: &str) -> Result<(), String> {
     let bill = load_bill(conn, bill_id)?;
     let Some((posted, amount, direction)): Option<(String, f64, String)> = db(conn
@@ -971,7 +1044,14 @@ fn link(conn: &rusqlite::Connection, bill_id: &str, bank_txn_id: &str) -> Result
     let existing: Option<(String, String)> = db(conn
         .query_row("SELECT COALESCE(status,''), COALESCE(period,'') FROM bill_payments WHERE id=?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional())?;
-    let period = period_of(&bill.to_core(), &posted);
+    // The due dates the bill's other live payments pay now keep them.
+    let cb = bill.to_core();
+    let paid: HashSet<String> = core::assign_periods(&cb, &load_links(conn)?)
+        .into_iter()
+        .filter(|(pid, p)| *pid != id && !p.is_empty())
+        .map(|(_, p)| p)
+        .collect();
+    let period = core::parse_day(&posted).map(|d| core::assign_period(&cb, d, amount, true, &paid)).unwrap_or_default();
     match existing {
         Some((status, old_period)) => {
             // The link may predate a change to the bill's due dates: pay the due date it pays now.
@@ -979,7 +1059,7 @@ fn link(conn: &rusqlite::Connection, bill_id: &str, bank_txn_id: &str) -> Result
             if status != "confirmed" {
                 cols.insert("status".into(), json!("confirmed"));
             }
-            if !period.is_empty() && period != old_period {
+            if period != old_period {
                 cols.insert("period".into(), json!(period));
             }
             if !cols.is_empty() {
@@ -1001,6 +1081,8 @@ fn link(conn: &rusqlite::Connection, bill_id: &str, bank_txn_id: &str) -> Result
             write(conn, "bill_payments", &id, cols, true)?;
         }
     }
+    // Adding this payment can change which due date a neighbour pays.
+    heal_periods(conn, &[bill_id.to_string()])?;
     Ok(())
 }
 
@@ -1027,6 +1109,8 @@ fn set_link_status(conn: &rusqlite::Connection, pid: &str, status: &str) -> Resu
         cols.insert("updated_at".into(), json!(now_string()));
         write(conn, "bill_payments", pid, cols, false)?;
     }
+    // A payment taken off or put back changes which due date the others pay.
+    heal_periods(conn, &[bill_id])?;
     Ok(())
 }
 
@@ -1289,9 +1373,9 @@ pub async fn bills_ignore(key: String, name: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn bills_candidates(id: String) -> Result<Value, String> {
+pub async fn bills_candidates(id: String, q: Option<String>) -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    candidates_json(&conn, &id, crate::commands::central_today())
+    candidates_json(&conn, &id, q.as_deref(), crate::commands::central_today())
 }
 
 #[tauri::command]
@@ -1622,22 +1706,25 @@ mod tests {
         txn("feb", "2031-02-01", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES JPM99A", "", "");
         txn("jan", "2031-01-02T08:30:00", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES JPM98B", "", "");
         txn("other", "2031-02-01", 2400.0, "out", "ZELLE PAYMENT TO PINE ROAD LLC", "", "");
-        txn("wrong_amount", "2031-02-02", 900.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
+        txn("extra", "2031-02-02", 900.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
         txn("pending", "2031-03-01", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", r#"{"pnd":true}"#);
         txn("money_in", "2031-03-02", 2400.0, "in", "OAK STREET PROPERTIES REFUND", "", "");
 
         let out = save_new(&conn, rent_fields());
-        assert_eq!(out["linked"], json!(2));
+        // Two rent payments, and the 900.00 to the same payee, which fits no due date (R-453).
+        assert_eq!(out["linked"], json!(3));
         let id = out["bill"]["id"].as_str().unwrap().to_string();
         let rows: Vec<(String, String, String, String, f64, String)> = {
             let mut stmt = conn.prepare("SELECT id, bill_id, period, status, amount, created_by FROM bill_payments ORDER BY id").unwrap();
             stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap().map(|r| r.unwrap()).collect()
         };
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, format!("bp-{id}-{}", bt("feb")));
-        assert_eq!((rows[0].2.as_str(), rows[0].3.as_str(), rows[0].4, rows[0].5.as_str()), ("2031-02-01", "auto", 2400.0, "system"));
-        assert_eq!(rows[1].2, "2031-01-01", "a posted_at with a time still pays its due date");
-        let cols = queued_columns("bill_payments", &rows[0].0);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].0, format!("bp-{id}-{}", bt("extra")));
+        assert_eq!((rows[0].2.as_str(), rows[0].3.as_str(), rows[0].4), ("", "auto", 900.0), "an extra charge pays no due date");
+        assert_eq!(rows[1].0, format!("bp-{id}-{}", bt("feb")));
+        assert_eq!((rows[1].2.as_str(), rows[1].3.as_str(), rows[1].4, rows[1].5.as_str()), ("2031-02-01", "auto", 2400.0, "system"));
+        assert_eq!(rows[2].2, "2031-01-01", "a posted_at with a time still pays its due date");
+        let cols = queued_columns("bill_payments", &rows[1].0);
         for k in ["org_id", "bill_id", "bank_txn_id", "period", "amount", "status", "created_by", "created_at", "updated_at"] {
             assert!(cols.contains_key(k), "the link create carries {k}");
         }
@@ -1652,9 +1739,11 @@ mod tests {
 
         // The state reads the links: Jan and Feb paid, March's feed reached Mar 2 so it is not yet overdue.
         let b = get_json(&conn, &id, today()).unwrap();
-        assert_eq!(b["bill"]["state"]["paid_count"], json!(2));
-        assert_eq!(b["payments"].as_array().unwrap().len(), 2);
-        assert_eq!(b["payments"][0]["posted_at"], json!("2031-02-01"), "newest first");
+        assert_eq!(b["bill"]["state"]["paid_count"], json!(2), "an extra charge does not mark a due date paid");
+        assert_eq!(b["payments"].as_array().unwrap().len(), 3);
+        assert_eq!(b["payments"][0]["posted_at"], json!("2031-02-02"), "newest first");
+        assert_eq!((b["payments"][0]["period"].clone(), b["payments"][0]["extra"].clone()), (json!(""), json!(true)));
+        assert_eq!((b["payments"][1]["period"].clone(), b["payments"][1]["extra"].clone()), (json!("2031-02-01"), json!(false)));
     }
 
     fn run_auto_links_at(conn: &rusqlite::Connection) -> usize {
@@ -1690,7 +1779,7 @@ mod tests {
         assert_eq!(got["payments"][0]["status"], json!("rejected"));
         assert_eq!(got["bill"]["state"]["paid_count"], json!(0));
         // It is a candidate to pick by hand again.
-        let cands = candidates_json(&conn, &id, today()).unwrap();
+        let cands = candidates_json(&conn, &id, None, today()).unwrap();
         assert_eq!(cands["txns"][0]["id"], json!(bt("feb")));
         assert_eq!(cands["txns"][0]["due"], json!("2031-02-01"));
 
@@ -1701,7 +1790,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_link_pays_the_nearest_due_date_and_refuses_a_payment_that_pays_another_bill() {
+    fn a_hand_link_pays_the_due_date_it_was_late_for_and_refuses_a_payment_that_pays_another_bill() {
         let _db = crate::db::init_test_store();
         let _clean = Clean::new();
         let conn = pool().get().unwrap();
@@ -1710,16 +1799,16 @@ mod tests {
             .as_str().unwrap().to_string();
         // Mid-month and a different amount: no auto match, but Jack can link it.
         txn("odd", "2031-02-18", 2350.5, "out", "OAK STREET PROPERTIES PARTIAL", "", "");
-        assert_eq!(candidates_json(&conn, &rent, today()).unwrap()["txns"][0]["id"], json!(bt("odd")), "the words match, so it is offered first");
+        assert_eq!(candidates_json(&conn, &rent, None, today()).unwrap()["txns"][0]["id"], json!(bt("odd")), "the words match, so it is offered first");
 
         link(&conn, &rent, &bt("odd")).unwrap();
         let (period, status, by): (String, String, String) = conn
             .query_row("SELECT period, status, created_by FROM bill_payments WHERE id=?1", [core::link_id(&rent, &bt("odd"))], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .unwrap();
-        // Feb 18 is eleven days before March 1 and seventeen after Feb 1, outside both windows.
-        assert_eq!((period.as_str(), status.as_str(), by.as_str()), ("2031-03-01", "confirmed", ""));
+        // Rent due Feb 1 and paid on Feb 18 pays Feb 1, the due date it was late for (R-454).
+        assert_eq!((period.as_str(), status.as_str(), by.as_str()), ("2031-02-01", "confirmed", ""));
         // Not offered again, and the other bill cannot take it.
-        assert!(candidates_json(&conn, &storage, today()).unwrap()["txns"].as_array().unwrap().iter().all(|t| t["id"] != json!(bt("odd"))));
+        assert!(candidates_json(&conn, &storage, None, today()).unwrap()["txns"].as_array().unwrap().iter().all(|t| t["id"] != json!(bt("odd"))));
         assert_eq!(link(&conn, &storage, &bt("odd")).unwrap_err(), "That payment is already linked to Oak Street Properties.");
         assert_eq!(link(&conn, &storage, "bt-bills-none").unwrap_err(), "That payment was not found.");
         txn("in", "2031-02-20", 50.0, "in", "OAK STREET PROPERTIES REFUND", "", "");
@@ -1754,11 +1843,11 @@ mod tests {
         let period = |pid: &str| -> String { conn.query_row("SELECT period FROM bill_payments WHERE id=?1", [pid], |r| r.get(0)).unwrap() };
         let status = |pid: &str| -> String { conn.query_row("SELECT status FROM bill_payments WHERE id=?1", [pid], |r| r.get(0)).unwrap() };
         assert_eq!((period(&jan), period(&feb), period(&mar)), ("2031-01-01".into(), "2031-02-01".into(), "2031-03-01".into()));
-        // March was unlinked by hand: its period must move too, or an Undo brings back a date that is gone.
         set_link_status(&conn, &mar, "rejected").unwrap();
 
         let out = save(&conn, Some(&id), &json!({ "anchor_date": "2031-01-05" }), today()).unwrap();
-        assert_eq!((period(&jan), period(&feb), period(&mar)), ("2031-01-05".into(), "2031-02-05".into(), "2031-03-05".into()));
+        // The unlinked March payment keeps its copy: it pays nothing until it is restored.
+        assert_eq!((period(&jan), period(&feb), period(&mar)), ("2031-01-05".into(), "2031-02-05".into(), "2031-03-01".into()));
         assert_eq!(status(&mar), "rejected", "moving a period never changes a link's status");
         assert_eq!(out["linked"], json!(0), "the payments stay linked, none is linked twice");
         let state = &out["bill"]["state"];
@@ -1808,10 +1897,12 @@ mod tests {
             let mut stmt = conn.prepare("SELECT p.period FROM bill_payments p JOIN bank_txn t ON t.id=p.bank_txn_id WHERE p.bill_id=?1 ORDER BY t.posted_at").unwrap();
             stmt.query_map([&id], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
         };
-        assert_eq!(periods, ["2031-01-01", "2031-02-01", "2031-02-01", "2031-03-01"]);
+        // Feb 5 is a second payment in February: an extra charge, never a second paid due date.
+        assert_eq!(periods, ["2031-01-01", "2031-02-01", "", "2031-03-01"]);
         let state = &out["bill"]["state"];
         assert_eq!(state["overdue"], json!([]));
         assert_eq!(state["paid_count"], json!(3));
+        assert_eq!(state["extras"], json!([{ "posted_at": "2031-02-05", "amount": 100.0 }]));
         assert_eq!(state["status"], json!("paid"));
     }
 
@@ -1972,6 +2063,254 @@ mod tests {
         // Nothing to do when dropped here: the store has no bills.
         h.touched = false;
         h2.touched = false;
+    }
+
+    fn stored_period(conn: &rusqlite::Connection, pid: &str) -> String {
+        conn.query_row("SELECT period FROM bill_payments WHERE id=?1", [pid], |r| r.get(0)).unwrap()
+    }
+
+    /// R-454: the warehouse payment missed on Aug 1 and paid on Aug 18 was stored under Sep 1. The
+    /// next auto-link pass writes Aug 1 on it. The bill never read overdue because of it, and
+    /// August reads late.
+    #[test]
+    fn a_late_payment_stored_under_the_next_due_date_moves_back_to_the_one_it_paid() {
+        let _db = crate::db::init_test_store();
+        let _clean = Clean::new();
+        let conn = pool().get().unwrap();
+        let today = NaiveDate::from_ymd_opt(2031, 9, 5).unwrap();
+        for (k, day) in [("jun", "2031-06-01"), ("jul", "2031-07-01"), ("aug", "2031-08-18"), ("sep", "2031-09-02")] {
+            txn(k, day, 1800.0, "out", "ZELLE PAYMENT TO NORTH DOCK WAREHOUSE", "", "");
+        }
+        let fields = json!({ "name": "North Dock Warehouse", "payee_match": "north dock", "amount": 1800.0, "anchor_date": "2031-06-01" });
+        let made = save(&conn, None, &fields, today).unwrap();
+        assert_eq!(made["linked"], json!(4));
+        let id = made["bill"]["id"].as_str().unwrap().to_string();
+        let aug = core::link_id(&id, &bt("aug"));
+        assert_eq!(stored_period(&conn, &aug), "2031-08-01", "a new link is written under the due date it pays");
+
+        // How the older release stored it: under the next due date, beside the Sep 2 payment.
+        conn.execute("UPDATE bill_payments SET period='2031-09-01' WHERE id=?1", [&aug]).unwrap();
+
+        // Read before the pass, the bill already knows which due date each payment paid.
+        let got = get_json(&conn, &id, today).unwrap();
+        let aug_row = got["payments"].as_array().unwrap().iter().find(|p| p["id"] == json!(aug)).unwrap();
+        assert_eq!((aug_row["period"].clone(), aug_row["extra"].clone()), (json!("2031-08-01"), json!(false)));
+        let state = &got["bill"]["state"];
+        assert_ne!(state["status"], json!("overdue"));
+        assert_eq!(state["overdue"], json!([]));
+        assert_eq!(state["paid_count"], json!(4));
+        let history = state["history"].as_array().unwrap();
+        let month = |due: &str| history.iter().find(|p| p["due"] == json!(due)).unwrap();
+        assert_eq!((month("2031-08-01")["state"].clone(), month("2031-08-01")["paid_on"].clone()), (json!("late"), json!("2031-08-18")));
+        assert_eq!(month("2031-09-01")["state"], json!("paid"));
+
+        // The pass moves the stored copy, sends only that change, and a second pass changes nothing.
+        let sent = || -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM netsync_outbound WHERE event_json LIKE '%\"table\":\"bill_payments\"%'", [], |r| r.get(0)).unwrap()
+        };
+        let before = sent();
+        assert_eq!(auto_link_pass(&conn, today).unwrap(), (0, 1));
+        assert_eq!(stored_period(&conn, &aug), "2031-08-01");
+        let cols = queued_columns("bill_payments", &aug);
+        let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, ["period", "updated_at"]);
+        assert_eq!(cols["period"], json!("2031-08-01"));
+        assert_eq!(sent(), before + 1);
+        assert_eq!(auto_link_pass(&conn, today).unwrap(), (0, 0));
+        assert_eq!(sent(), before + 1);
+        assert_eq!(stored_period(&conn, &core::link_id(&id, &bt("sep"))), "2031-09-01");
+        assert_eq!(list_json(&conn, today).unwrap()["summary"]["overdue_count"], json!(0));
+    }
+
+    /// R-453: a $5 charge in the middle of a $20 subscription is linked to the bill with no due date.
+    /// It counts in the bill and in spending, and never marks a due date paid.
+    #[test]
+    fn an_extra_charge_links_with_no_due_date_and_never_marks_a_due_date_paid() {
+        let _db = crate::db::init_test_store();
+        let _clean = Clean::new();
+        let conn = pool().get().unwrap();
+        for (k, day, amount) in [("jan", "2031-01-01", 20.0), ("feb", "2031-02-01", 20.0), ("top", "2031-02-17", 5.0), ("mar", "2031-03-01", 20.0)] {
+            txn(k, day, amount, "out", "ANTHROPIC SUBSCRIPTION", "", "");
+        }
+        txn("coffee", "2031-02-18", 5.0, "out", "COFFEE SHOP", "meals", "");
+        let made = save_new(&conn, json!({ "name": "Anthropic", "payee_match": "anthropic", "amount": 20.0, "anchor_date": "2031-01-01" }));
+        assert_eq!(made["linked"], json!(4));
+        let id = made["bill"]["id"].as_str().unwrap().to_string();
+        let top = core::link_id(&id, &bt("top"));
+        let (period, amount): (String, f64) = conn.query_row("SELECT period, amount FROM bill_payments WHERE id=?1", [&top], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((period.as_str(), amount), ("", 5.0));
+
+        let got = get_json(&conn, &id, today()).unwrap();
+        let state = &got["bill"]["state"];
+        assert_eq!(state["paid_count"], json!(3));
+        assert_eq!(state["extras"], json!([{ "posted_at": "2031-02-17", "amount": 5.0 }]));
+        assert_eq!(state["extras_year"], json!(5.0));
+        let history = state["history"].as_array().unwrap();
+        let extra_in = |due: &str| history.iter().find(|p| p["due"] == json!(due)).unwrap()["extra_amount"].clone();
+        assert_eq!((extra_in("2031-01-01"), extra_in("2031-02-01"), extra_in("2031-03-01")), (json!(0.0), json!(5.0), json!(0.0)));
+        let payments = got["payments"].as_array().unwrap();
+        let row = payments.iter().find(|p| p["id"] == json!(top)).unwrap();
+        assert_eq!((row["period"].clone(), row["extra"].clone()), (json!(""), json!(true)));
+        assert_eq!(payments.iter().filter(|p| p["extra"] == json!(true)).count(), 1);
+
+        // It is bill money in Spending, beside the coffee that is not.
+        let spend = out_rows(&conn, "2031-01-01", "2031-03-31", "1=1").unwrap();
+        let on_bill = |k: &str| spend.iter().find(|r| r.id == bt(k)).unwrap().bill_id.clone();
+        assert_eq!((on_bill("top"), on_bill("coffee")), (id.clone(), String::new()));
+
+        // With the Feb 1 payment unlinked, the $5 does not pay February.
+        set_link_status(&conn, &core::link_id(&id, &bt("feb")), "rejected").unwrap();
+        let after = get_json(&conn, &id, today()).unwrap();
+        assert_eq!(after["bill"]["state"]["paid_count"], json!(2));
+        let history = after["bill"]["state"]["history"].as_array().unwrap().clone();
+        let feb = history.iter().find(|p| p["due"] == json!("2031-02-01")).unwrap();
+        assert_eq!((feb["state"].clone(), feb["paid_on"].clone(), feb["extra_amount"].clone()), (json!("missed"), json!(null), json!(5.0)));
+    }
+
+    /// R-454: a payment linked by hand pays the due date it was late for, and the next due date at
+    /// any time before it when that one is taken.
+    #[test]
+    fn a_hand_link_fills_the_late_due_date_first_and_then_the_next_one() {
+        let _db = crate::db::init_test_store();
+        let _clean = Clean::new();
+        let conn = pool().get().unwrap();
+        txn("jan", "2031-01-01", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
+        let rent = save_new(&conn, rent_fields())["bill"]["id"].as_str().unwrap().to_string();
+        // Both arrive after the save, so nothing links them but Jack.
+        txn("late", "2031-02-10", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
+        txn("again", "2031-02-18", 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
+        let cands = candidates_json(&conn, &rent, None, today()).unwrap();
+        let due_of = |c: &Value, k: &str| c["txns"].as_array().unwrap().iter().find(|t| t["id"] == json!(bt(k))).unwrap()["due"].clone();
+        assert_eq!((due_of(&cands, "late"), due_of(&cands, "again")), (json!("2031-02-01"), json!("2031-02-01")));
+
+        link(&conn, &rent, &bt("late")).unwrap();
+        assert_eq!(stored_period(&conn, &core::link_id(&rent, &bt("late"))), "2031-02-01");
+        // The picker now says what the second one would pay.
+        let cands = candidates_json(&conn, &rent, None, today()).unwrap();
+        assert_eq!(due_of(&cands, "again"), json!("2031-03-01"));
+        link(&conn, &rent, &bt("again")).unwrap();
+        assert_eq!(stored_period(&conn, &core::link_id(&rent, &bt("again"))), "2031-03-01", "Jack's choice reaches the next due date, beyond the early window");
+        assert_eq!(stored_period(&conn, &core::link_id(&rent, &bt("late"))), "2031-02-01", "linking the second does not move the first");
+        assert_eq!(get_json(&conn, &rent, today()).unwrap()["bill"]["state"]["paid_count"], json!(3));
+    }
+
+    /// An unlinked payment pays no due date; putting it back works its due date out again.
+    #[test]
+    fn restoring_an_unlinked_payment_works_its_due_date_out_again() {
+        let _db = crate::db::init_test_store();
+        let _clean = Clean::new();
+        let conn = pool().get().unwrap();
+        for (k, day) in [("jan", "2031-01-02"), ("feb", "2031-02-01"), ("mar", "2031-03-01")] {
+            txn(k, day, 2400.0, "out", "ZELLE PAYMENT TO OAK STREET PROPERTIES", "", "");
+        }
+        let id = save_new(&conn, rent_fields())["bill"]["id"].as_str().unwrap().to_string();
+        let mar = core::link_id(&id, &bt("mar"));
+        set_link_status(&conn, &mar, "rejected").unwrap();
+        save(&conn, Some(&id), &json!({ "anchor_date": "2031-01-05" }), today()).unwrap();
+        assert_eq!(stored_period(&conn, &mar), "2031-03-01");
+        set_link_status(&conn, &mar, "confirmed").unwrap();
+        assert_eq!(stored_period(&conn, &mar), "2031-03-05");
+        let cols = queued_columns("bill_payments", &mar);
+        let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, ["period", "updated_at"], "the restore sends the status first, then the period it healed");
+        assert_eq!(get_json(&conn, &id, today()).unwrap()["bill"]["state"]["paid_count"], json!(3));
+    }
+
+    #[test]
+    fn search_words_are_amounts_dates_or_text() {
+        assert_eq!(amount_token("$1,500.00"), Some(150000));
+        assert_eq!(amount_token("1500"), Some(150000));
+        assert_eq!(amount_token("500.5"), Some(50050));
+        assert_eq!(amount_token("0.07"), Some(7));
+        for not in ["", "$", ".", "1.2.3", "2026-08", "2026-08-18", "inf", "1e5", "-5", "rent", "7781a"] {
+            assert_eq!(amount_token(not), None, "{not}");
+        }
+        for yes in ["2026-08", "2026-08-18"] {
+            assert!(date_token(yes), "{yes}");
+        }
+        for no in ["2026", "2026-8", "2026-08-1", "20260818", "2026-08-188", "abcd-ef", "2026/08/18", "\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}"] {
+            assert!(!date_token(no), "{no}");
+        }
+    }
+
+    /// R-454: every money-out payment of any date can be found by word, exact amount or month, and a
+    /// payment that already pays another bill is shown with that bill's name.
+    #[test]
+    fn searching_finds_any_payment_and_names_the_bill_one_already_pays() {
+        let _db = crate::db::init_test_store();
+        let _clean = Clean::new();
+        let conn = pool().get().unwrap();
+        let w = save_new(&conn, json!({ "name": "North Dock Warehouse", "payee_match": "north dock", "amount": 1500.0, "anchor_date": "2030-06-01" }))["bill"]["id"]
+            .as_str().unwrap().to_string();
+        let s = save_new(&conn, json!({ "name": "Pine Road Storage", "payee_match": "pine road", "amount": 300.0, "anchor_date": "2030-06-20" }))["bill"]["id"]
+            .as_str().unwrap().to_string();
+        let dock = "ZELLE PAYMENT TO NORTH DOCK WAREHOUSE";
+        txn("w1", "2029-11-05", 1500.0, "out", dock, "", "");
+        txn("w2", "2029-12-05", 1500.0, "out", dock, "", "");
+        txn("w3", "2030-08-18", 1500.0, "out", dock, "", "");
+        txn("recent", "2031-03-02", 1500.0, "out", dock, "", "");
+        txn("mine", "2030-07-01", 1500.0, "out", dock, "", "");
+        txn("taken", "2030-10-01", 300.0, "out", "PINE ROAD STORAGE", "", "");
+        txn("in", "2030-08-20", 1500.0, "in", "REFUND NORTH DOCK WAREHOUSE", "", "");
+        txn("pending", "2030-08-21", 1500.0, "out", dock, "", r#"{"pnd":true}"#);
+        txn("deal", "2030-08-22", 1500.0, "out", dock, "payment", "");
+        conn.execute("UPDATE bank_txn SET description='Security deposit hold' WHERE id=?1", [bt("w2")]).unwrap();
+        link(&conn, &w, &bt("mine")).unwrap();
+        link(&conn, &s, &bt("taken")).unwrap();
+
+        let find = |bill: &str, q: Option<&str>| -> Vec<String> {
+            let got = candidates_json(&conn, bill, q, today()).unwrap();
+            got["txns"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().trim_start_matches("bt-bills-").to_string()).collect()
+        };
+        // By word: any date, newest first, never the ones this bill already pays or that cannot pay a bill.
+        assert_eq!(find(&w, Some("warehouse")), ["recent", "w3", "w2", "w1"]);
+        assert_eq!(find(&w, Some("WAREHOUSE")), ["recent", "w3", "w2", "w1"]);
+        assert_eq!(find(&w, Some("security hold")), ["w2"], "the memo counts");
+        assert_eq!(find(&w, Some("DEPOSIT")), ["w2"]);
+        // By exact amount, written any way.
+        for q in ["1500", "$1,500.00", "1500.00", "$1500"] {
+            assert_eq!(find(&w, Some(q)), ["recent", "w3", "w2", "w1"], "{q}");
+        }
+        assert!(find(&w, Some("1500.5")).is_empty() && find(&w, Some("150")).is_empty());
+        // By month or day, and every word has to match.
+        assert_eq!(find(&w, Some("2029-11")), ["w1"]);
+        assert_eq!(find(&w, Some("2029-12-05")), ["w2"]);
+        assert_eq!(find(&w, Some("2030-08")), ["w3"]);
+        assert!(find(&w, Some("warehouse 2029")).is_empty(), "2029 is read as an amount");
+        assert_eq!(find(&w, Some("1500 2029-12 dock")), ["w2"]);
+        assert!(find(&w, Some("warehouse 2031-04")).is_empty());
+        // What each would pay: the late August payment pays Aug 1, a payment from before the bill's
+        // first due date is an extra charge, and nothing here is linked to another bill.
+        let got = candidates_json(&conn, &w, Some("warehouse"), today()).unwrap();
+        let row = |k: &str| got["txns"].as_array().unwrap().iter().find(|t| t["id"] == json!(bt(k))).unwrap().clone();
+        assert_eq!((row("w3")["due"].clone(), row("w1")["due"].clone()), (json!("2030-08-01"), json!("")));
+        assert!(got["txns"].as_array().unwrap().iter().all(|t| t["linked_to"].is_null()));
+        assert_eq!(row("w2")["account_id"], json!("Sample Checking"));
+
+        // The other bill sees the payment that pays the warehouse, named, and its own is hidden.
+        let got = candidates_json(&conn, &s, Some("warehouse"), today()).unwrap();
+        let mine = got["txns"].as_array().unwrap().iter().find(|t| t["id"] == json!(bt("mine"))).unwrap().clone();
+        assert_eq!((mine["linked_to"].clone(), mine["due"].clone()), (json!("North Dock Warehouse"), json!("")));
+        assert!(find(&s, Some("pine")).is_empty());
+        assert_eq!(find(&w, Some("pine")), ["taken"]);
+        let taken = candidates_json(&conn, &w, Some("pine"), today()).unwrap();
+        assert_eq!(taken["txns"][0]["linked_to"], json!("Pine Road Storage"));
+
+        // No words, or only spaces: today's list, the last 120 days that no bill pays.
+        assert_eq!(find(&w, None), ["recent"]);
+        assert_eq!(find(&w, Some("   ")), ["recent"]);
+        let list = candidates_json(&conn, &w, None, today()).unwrap();
+        assert_eq!((list["txns"][0]["due"].clone(), list["txns"][0]["linked_to"].clone()), (json!("2031-03-01"), json!(null)));
+
+        // A long history is cut to the newest sixty.
+        for i in 0..65 {
+            txn(&format!("bulk{i}"), &format!("2029-{:02}-{:02}", 1 + i / 28, 1 + i % 28), 17.0 + i as f64, "out", "BULK SUPPLY CO", "", "");
+        }
+        let many = find(&w, Some("bulk"));
+        assert_eq!((many.len(), many[0].as_str(), many[59].as_str()), (60, "bulk64", "bulk5"));
+        assert_eq!(find(&w, Some("17")), ["bulk0"], "an amount matches to the cent");
     }
 
     fn seed_deal(tag: &str, completed: &str, total_cost: f64, shipping_cost: f64) {

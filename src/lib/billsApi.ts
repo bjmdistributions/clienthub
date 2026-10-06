@@ -15,6 +15,14 @@ export interface BillPeriod {
   paid_on: string | null;
   paid_amount: number;
   state: PeriodState;
+  /** R-453: extra charges posted from this due date up to the next one. */
+  extra_amount: number;
+}
+
+/** R-453: a payment to the bill's payee that pays no due date (a small charge in between). */
+export interface BillExtra {
+  posted_at: string;
+  amount: number;
 }
 
 export interface BillState {
@@ -30,6 +38,12 @@ export interface BillState {
   on_time_count: number;
   /** Newest first, at most 12. */
   history: BillPeriod[];
+  /** R-453: extra charges, newest first, at most 24, and what they add up to over the last year. */
+  extras: BillExtra[];
+  extras_year: number;
+  /** R-455: what a due date has cost on average over the paid ones in `history`; null before the first. */
+  avg_amount?: number | null;
+  avg_count?: number;
 }
 
 export interface BillOut {
@@ -88,7 +102,10 @@ export interface BillsList {
 export interface BillPayment {
   id: string;
   bank_txn_id: string;
+  /** The due date this payment pays, worked out from all the bill's payments. '' for an extra charge. */
   period: string;
+  /** R-453: true when it pays no due date. */
+  extra: boolean;
   status: "auto" | "confirmed" | "rejected";
   amount: number;
   posted_at: string;
@@ -142,8 +159,10 @@ export interface PickTxn {
   payee: string;
   memo: string;
   account_id: string;
-  /** The due date it would pay. */
+  /** The due date it would pay, or '' when it would be an extra charge on the bill. */
   due: string;
+  /** R-454: the name of another bill this payment already pays, or null. Such a row cannot be linked here. */
+  linked_to: string | null;
 }
 
 export interface PreviewTxn {
@@ -274,7 +293,11 @@ export const billsApi = {
   archive: (id: string, archived: boolean) => invoke<{ bill: BillOut }>("bills_archive", { id, archived }),
   detect: () => invoke<{ candidates: BillCandidate[] }>("bills_detect").then((r) => r.candidates || []),
   ignore: (key: string, name: string) => invoke<{ ok: boolean }>("bills_ignore", { key, name }),
-  candidates: (id: string) => invoke<{ txns: PickTxn[] }>("bills_candidates", { id }).then((r) => r.txns || []),
+  /** Without q: the recent unlinked payments, best first. With q: any payment out of the bank,
+   *  any date, that matches every word (a payee or memo word, an exact amount, or a YYYY-MM or
+   *  YYYY-MM-DD date), newest first. */
+  candidates: (id: string, q?: string) =>
+    invoke<{ txns: PickTxn[] }>("bills_candidates", { id, q: q?.trim() || null }).then((r) => r.txns || []),
   link: (id: string, bankTxnId: string) => invoke<{ ok: boolean }>("bills_link", { id, bankTxnId }),
   reject: (pid: string) => invoke<{ ok: boolean }>("bills_reject", { pid }),
   restore: (pid: string) => invoke<{ ok: boolean }>("bills_restore", { pid }),

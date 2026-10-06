@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import type { BillsAlerts } from "./billsApi";
 import {
-  alertRow, chipState, daysBetween, daysInMonth, dueText, initials, monthLabels, pctChange, periodRange,
-  PERIOD_PILL, rangeText, shortDay, tintIndex,
+  amountText, alertRow, chipState, daysBetween, daysInMonth, dueText, extraNote, initials, monthLabels, pctChange, paysText,
+  periodRange, PERIOD_PILL, rangeText, shortDay, tintIndex,
 } from "./billsFormat";
 
 // R-449 / R-446. The date and period rules the Bills screen leans on. All are plain strings, so
@@ -155,5 +155,41 @@ describe("alertRow", () => {
 describe("period pills", () => {
   it("reads a due date with no payment yet as \"Due\", which is true for today, a grace day and three days ahead", () => {
     expect(PERIOD_PILL.due.label).toBe("Due");
+  });
+});
+
+// R-453 / R-454. What a payment does to a bill, as the picker and the due-dates table say it.
+describe("paysText", () => {
+  it("names the due date a payment pays", () => {
+    expect(paysText("2026-08-01")).toBe("Pays Aug 1");
+  });
+  it("calls a payment that pays no due date an extra charge", () => {
+    expect(paysText("")).toBe("Extra charge");
+  });
+});
+
+describe("extraNote", () => {
+  const money = (n: number) => `$${n.toFixed(2)}`;
+  it("writes the extra under a due date that had one", () => {
+    expect(extraNote(5, money)).toBe("+ $5.00 extra");
+    expect(extraNote(12.5, money)).toBe("+ $12.50 extra");
+  });
+  it("writes nothing for zero or a rounding crumb", () => {
+    expect(extraNote(0, money)).toBe("");
+    expect(extraNote(0.001, money)).toBe("");
+  });
+});
+
+describe("amountText (R-455)", () => {
+  const money = (n: number) => `$${n.toFixed(2)}`;
+  it("shows the bill's own amount when it has one", () => {
+    expect(amountText(2400, 225, money)).toEqual({ text: "$2400.00", average: false });
+  });
+  it("shows the average for a bill that varies", () => {
+    expect(amountText(0, 225, money)).toEqual({ text: "$225.00", average: true });
+  });
+  it("says Varies before the first payment", () => {
+    expect(amountText(0, null, money)).toEqual({ text: "Varies", average: false });
+    expect(amountText(0, undefined, money)).toEqual({ text: "Varies", average: false });
   });
 });

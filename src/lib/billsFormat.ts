@@ -137,6 +137,22 @@ export const PERIOD_PILL: Record<PeriodState, { label: string; tone: Tone }> = {
   due: { label: "Due", tone: "neutral" },
 };
 
+/** R-453: what a payment does to a bill. "Pays Aug 1" for a due date, "Extra charge" when it pays
+ *  none (a small charge between due dates). */
+/** R-455: what a bill shows as its amount: its own, or for a bill whose amount varies, what
+ *  it has cost on average (marked so), or "Varies" until it has been paid once. */
+export function amountText(amount: number, avg: number | null | undefined, money: (n: number) => string): { text: string; average: boolean } {
+  if (amount > 0) return { text: money(amount), average: false };
+  if (avg != null && avg > 0) return { text: money(avg), average: true };
+  return { text: "Varies", average: false };
+}
+
+export const paysText = (due: string): string => (due ? `Pays ${shortDay(due)}` : "Extra charge");
+
+/** R-453: "+ $5.00 extra" under a due date that also had extra charges, or "" when it had none. */
+export const extraNote = (amount: number, money: (n: number) => string): string =>
+  amount > 0.004 ? `+ ${money(amount)} extra` : "";
+
 /** "Oct 8, in 3 days" */
 export function dueText(nextDue: string | null, daysUntil: number | null): string {
   if (!nextDue) return "No date yet";

@@ -1,6 +1,8 @@
 // R-449: one bill opened from its card. The facts, the last twelve due dates, the bank payments
 // behind them (unlink one, or undo an unlink) and a picker to link a payment Ecliptr did not
 // match on its own. Reads are open to anyone who can see Bills; every write is admin only.
+// R-453 / R-454: a payment that pays no due date reads "Extra charge", and the picker can search
+// every payment out of the bank, on any date.
 import { useCallback, useEffect, useState } from "react";
 import { Archive, Link2, Pencil, RotateCcw, X } from "lucide-react";
 import StatusPill from "../StatusPill";
@@ -8,8 +10,8 @@ import { toast } from "../Toast";
 import { catLabel } from "../FinancialsView";
 import { fmtAmount } from "../../lib/format";
 import { billsApi, type BillDetail as Detail, type BillOut, type BillPayment, type PickTxn } from "../../lib/billsApi";
-import { PERIOD_PILL, STATUS_PILL, billMethodLabel, cadenceLabel, dueText, longDay, shortDay } from "../../lib/billsFormat";
-import { BillLogo, btn, useEscape } from "./ui";
+import { amountText, PERIOD_PILL, STATUS_PILL, billMethodLabel, cadenceLabel, dueText, extraNote, longDay, paysText, shortDay } from "../../lib/billsFormat";
+import { BillLogo, btn, inp, useEscape } from "./ui";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -25,7 +27,13 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
   const [d, setD] = useState<Detail | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
-  const [picker, setPicker] = useState<PickTxn[] | null>(null);
+  // The "Link a payment" list: open or not, what is typed, what was last sent (300 ms after the
+  // last key), and what came back.
+  const [pickOpen, setPickOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [dq, setDq] = useState("");
+  const [rows, setRows] = useState<PickTxn[] | null>(null);
+  const [pickError, setPickError] = useState("");
   useEscape(onClose);
 
   const load = useCallback(async () => {
@@ -43,10 +51,23 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
     } catch (e) { toast(msg(e), "error"); } finally { setBusy(""); }
   };
 
-  const openPicker = async () => {
-    setBusy("pick");
-    try { setPicker(await billsApi.candidates(id)); } catch (e) { toast(msg(e), "error"); } finally { setBusy(""); }
-  };
+  useEffect(() => {
+    const t = setTimeout(() => setDq(q.trim()), 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  // Read the list again when the search changes, and when the bill's payments do (a link or an
+  // unlink moves what each row would pay). An answer to an older search is dropped.
+  useEffect(() => {
+    if (!pickOpen) return;
+    let live = true;
+    billsApi.candidates(id, dq)
+      .then((r) => { if (live) { setRows(r); setPickError(""); } })
+      .catch((e) => { if (live) setPickError(msg(e)); });
+    return () => { live = false; };
+  }, [pickOpen, id, dq, d]);
+
+  const closePicker = () => { setPickOpen(false); setRows(null); setQ(""); setDq(""); setPickError(""); };
 
   const b = d?.bill;
   const pill = b ? STATUS_PILL[b.state.status] : null;
@@ -80,14 +101,19 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
             )}
 
             <dl className="grid grid-cols-2 gap-x-4 gap-y-4">
-              <Fact label="Amount" value={b.amount > 0 ? fmtAmount(b.amount) : "Varies"}
-                hint={b.amount > 0 && b.cadence !== "monthly" ? `About ${fmtAmount(b.monthly)} a month` : b.amount <= 0 && b.state.last_amount != null ? `Last paid ${fmtAmount(b.state.last_amount)}` : undefined} />
+              <Fact label={amountText(b.amount, b.state.avg_amount, fmtAmount).average ? "Costs on average" : "Amount"}
+                value={amountText(b.amount, b.state.avg_amount, fmtAmount).text}
+                hint={b.amount > 0 && b.cadence !== "monthly" ? `About ${fmtAmount(b.monthly)} a month`
+                  : b.amount <= 0 && b.state.last_amount != null
+                    ? `Last paid ${fmtAmount(b.state.last_amount)}${(b.state.avg_count ?? 0) > 0 ? `, over the last ${b.state.avg_count} paid` : ""}`
+                    : undefined} />
               <Fact label={b.state.status === "overdue" ? "Overdue since" : "Next due"}
                 value={b.state.status === "overdue" && b.state.overdue.length > 0 ? longDay(b.state.overdue[0]) : dueText(b.state.next_due, b.state.days_until)} />
               <Fact label="Shows in the bank as" value={b.payee_match} />
               <Fact label="Counts as a match" value={b.amount > 0 ? `Within ${b.tolerance_pct}% of the amount` : "Any amount"} />
               <Fact label="Category" value={b.category ? catLabel(b.category) : "None"} />
               <Fact label="Paid on time" value={b.state.paid_count > 0 ? `${b.state.on_time_count} of ${b.state.paid_count}` : "No payments yet"} />
+              {b.state.extras_year > 0 && <Fact label="Extra charges in the last year" value={fmtAmount(b.state.extras_year)} />}
               {b.website && <Fact label="Website" value={b.website} />}
               {b.notes && <div className="col-span-2"><Fact label="Notes" value={b.notes} wrap /></div>}
             </dl>
@@ -112,7 +138,10 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
                         <tr key={p.due}>
                           <td className="px-3 py-2 text-ink whitespace-nowrap">{longDay(p.due)}</td>
                           <td className="px-3 py-2 text-ink-2 whitespace-nowrap">{p.paid_on ? shortDay(p.paid_on) : "-"}</td>
-                          <td className="px-3 py-2 text-ink-2 text-right tabular-nums">{p.paid_on ? fmtAmount(p.paid_amount) : "-"}</td>
+                          <td className="px-3 py-2 text-ink-2 text-right tabular-nums">
+                            {p.paid_on ? fmtAmount(p.paid_amount) : "-"}
+                            {p.extra_amount > 0 && <div className="text-[11px] text-muted whitespace-nowrap">{extraNote(p.extra_amount, fmtAmount)}</div>}
+                          </td>
                           <td className="px-3 py-2 text-right"><StatusPill tone={PERIOD_PILL[p.state].tone}>{PERIOD_PILL[p.state].label}</StatusPill></td>
                         </tr>
                       ))}
@@ -126,36 +155,55 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
               <div className="flex items-center justify-between gap-3 mb-2">
                 <h4 className="text-[13px] font-semibold text-ink">Payments</h4>
                 {admin && b.status === "active" && (
-                  <button onClick={() => (picker ? setPicker(null) : openPicker())} disabled={busy === "pick"} className={btn}>
-                    <Link2 size={12} /> {picker ? "Close the list" : "Link a payment"}
+                  <button onClick={() => (pickOpen ? closePicker() : setPickOpen(true))} className={btn}>
+                    <Link2 size={12} /> {pickOpen ? "Close the list" : "Link a payment"}
                   </button>
                 )}
               </div>
 
-              {picker && (
+              {pickOpen && (
                 <div className="mb-3 border border-line rounded-xl bg-surface-2/40">
-                  <div className="px-3 py-2 text-[12px] text-muted border-b border-line-2">
-                    Recent payments out of the bank that no bill has claimed. Closest matches first.
+                  <div className="px-3 py-2 border-b border-line-2">
+                    <input value={q} onChange={(e) => setQ(e.target.value)} className={inp} autoFocus
+                      placeholder="Search payee, amount or date" aria-label="Search payments" />
                   </div>
-                  {picker.length === 0 ? (
-                    <div className="px-3 py-4 text-[12.5px] text-muted">There are no unlinked payments from the last 120 days.</div>
+                  <div className="px-3 py-2 text-[12px] text-muted border-b border-line-2">
+                    {dq
+                      ? "Every payment out of the bank that matches, newest first. One already on another bill is greyed out."
+                      : "Recent payments out of the bank that no bill has claimed, closest matches first. Search to find a payment on any date."}
+                  </div>
+                  {pickError ? (
+                    <div className="px-3 py-3 text-[12.5px] text-danger-ink">{pickError}</div>
+                  ) : rows === null ? (
+                    <div className="px-3 py-4 text-[12.5px] text-muted">Loading.</div>
+                  ) : rows.length === 0 ? (
+                    <div className="px-3 py-4 text-[12.5px] text-muted">
+                      {dq ? "No payment out of the bank matches that." : "There are no unlinked payments from the last 120 days."}
+                    </div>
                   ) : (
                     <div className="divide-y divide-line-2 max-h-72 overflow-y-auto">
-                      {picker.map((t) => (
-                        <div key={t.id} className="flex items-center gap-3 px-3 py-2 min-w-0">
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[12.5px] text-ink truncate">{t.payee || "Unnamed payee"}</div>
-                            <div className="text-[11px] text-muted truncate">{shortDay(t.posted_at.slice(0, 10))}{t.memo ? `, ${t.memo}` : ""}</div>
+                      {rows.map((t) => {
+                        const taken = !!t.linked_to;
+                        return (
+                          <div key={t.id} className={`flex items-center gap-3 px-3 py-2 min-w-0 ${taken ? "opacity-60" : ""}`}>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[12.5px] text-ink truncate">{t.payee || "Unnamed payee"}</div>
+                              <div className="text-[11px] text-muted truncate">{longDay(t.posted_at.slice(0, 10))}{t.memo ? `, ${t.memo}` : ""}</div>
+                            </div>
+                            <div className="text-right flex-shrink-0">
+                              <div className="text-[12.5px] text-ink tabular-nums">{fmtAmount(t.amount)}</div>
+                              <div className="text-[11px] text-muted max-w-[9rem] truncate" title={taken ? `Already on ${t.linked_to}` : undefined}>
+                                {taken ? `Already on ${t.linked_to}` : paysText(t.due)}
+                              </div>
+                            </div>
+                            {!taken && (
+                              <button disabled={busy === "l" + t.id}
+                                onClick={() => act("l" + t.id, async () => { await billsApi.link(b.id, t.id); setRows((r) => (r || []).filter((x) => x.id !== t.id)); }, "Linked")}
+                                className={btn}>Link</button>
+                            )}
                           </div>
-                          <div className="text-right flex-shrink-0">
-                            <div className="text-[12.5px] text-ink tabular-nums">{fmtAmount(t.amount)}</div>
-                            <div className="text-[11px] text-muted">Pays {shortDay(t.due)}</div>
-                          </div>
-                          <button disabled={busy === "l" + t.id}
-                            onClick={() => act("l" + t.id, async () => { await billsApi.link(b.id, t.id); setPicker((p) => (p || []).filter((x) => x.id !== t.id)); }, "Linked")}
-                            className={btn}>Link</button>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -202,11 +250,14 @@ function PaymentRow({ p, admin, busy, onUnlink, onUndo }: {
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 min-w-0">
       <div className={`min-w-0 flex-1 ${rejected ? "opacity-60" : ""}`}>
-        <div className={`text-[12.5px] text-ink truncate ${rejected ? "line-through" : ""}`}>{p.payee || "Unnamed payee"}</div>
+        <div className="flex items-center gap-2 min-w-0">
+          <div className={`text-[12.5px] text-ink truncate ${rejected ? "line-through" : ""}`}>{p.payee || "Unnamed payee"}</div>
+          {!rejected && p.extra && <StatusPill tone="neutral">Extra charge</StatusPill>}
+        </div>
         <div className="text-[11px] text-muted truncate">
           {shortDay(p.posted_at.slice(0, 10))}
           {rejected ? ", unlinked" : p.status === "auto" ? ", matched automatically" : ", linked by hand"}
-          {!rejected && p.period ? `, pays ${shortDay(p.period)}` : ""}
+          {!rejected && !p.extra && p.period ? `, pays ${shortDay(p.period)}` : ""}
         </div>
       </div>
       <div className={`text-[12.5px] tabular-nums flex-shrink-0 ${rejected ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>

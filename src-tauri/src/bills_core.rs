@@ -11,11 +11,18 @@
 //! - A bill is due on a schedule that starts at its first due date (`anchor`). Monthly,
 //!   quarterly, twice-yearly and yearly bills keep the anchor's day of the month, clamped to
 //!   the month's last day (due on the 31st means the 28th in February, then the 31st again).
-//! - A payment matches a bill when it went out, every word of the bill's "shows in the bank
-//!   as" text is in the payment's payee or memo, the amount is inside the bill's band, and
-//!   the date is inside the window around one due date. It then pays that due date.
+//! - A payment belongs to a bill when it went out and every word of the bill's "shows in the
+//!   bank as" text is in the payment's payee or memo. Inside the amount band it pays a due date
+//!   (R-454): the latest one on or before it while that one is unpaid, however late (rent missed
+//!   on the 1st and paid on the 18th pays the 1st), else the next one when it comes early. Which
+//!   due date each payment pays is worked out again from all of the bill's payments every time,
+//!   so a stored period is only a copy and `period_fixes` says which copies are stale.
 //! - A link's id is made from the bill and the bank row, so two devices that link the same
 //!   payment write one row, never two.
+//! - R-453: a payment to the bill's payee that pays no due date (an added $5 on a
+//!   subscription, a move-in payment before the first due date) is an **extra charge**: it
+//!   links with an empty `period`, counts in the bill and in Spending, and never marks a due
+//!   date paid.
 
 use std::collections::{HashMap, HashSet};
 
@@ -201,6 +208,64 @@ pub fn nearest_due(bill: &Bill, d: NaiveDate) -> Option<NaiveDate> {
     Some(occurrence(anchor, &bill.cadence, nearest_index(anchor, &bill.cadence, d)))
 }
 
+/// R-454: the due date a payment of `amount` on `d` pays, given the due dates already paid, or
+/// "" when it is an extra charge on the bill. Inside the amount band it pays the latest due date
+/// on or before `d` while that one is unpaid; otherwise the next due date when `d` is inside its
+/// early window (linked by hand: any time before it). Never a due date before the first one.
+pub fn assign_period(bill: &Bill, d: NaiveDate, amount: f64, by_hand: bool, paid: &HashSet<String>) -> String {
+    let Some(anchor) = parse_day(&bill.anchor) else { return String::new() };
+    if !amount_matches(bill, amount) {
+        return String::new();
+    }
+    let mut k = nearest_index(anchor, &bill.cadence, d);
+    if occurrence(anchor, &bill.cadence, k) > d {
+        k -= 1;
+    }
+    let this = occurrence(anchor, &bill.cadence, k);
+    let next = occurrence(anchor, &bill.cadence, k + 1);
+    let free = |due: NaiveDate| due >= anchor && !paid.contains(&fmt_day(due));
+    if free(this) {
+        return fmt_day(this);
+    }
+    if free(next) && (by_hand || (next - d).num_days() <= window_of(&bill.cadence).0) {
+        return fmt_day(next);
+    }
+    String::new()
+}
+
+/// R-454: the due date every live link of `bill` pays, oldest payment first, so a late payment
+/// fills the due date it was late for before a later payment is placed. Rejected links are left
+/// out. A link Jack made by hand may pay the next due date at any time before it.
+pub fn assign_periods(bill: &Bill, links: &[Link]) -> HashMap<String, String> {
+    let mut mine: Vec<&Link> = links.iter().filter(|l| l.bill_id == bill.id && l.status != "rejected").collect();
+    mine.sort_by(|a, b| a.posted_at.get(..10).cmp(&b.posted_at.get(..10)).then(a.id.cmp(&b.id)));
+    let mut paid: HashSet<String> = HashSet::new();
+    let mut out = HashMap::new();
+    for l in mine {
+        let period = parse_day(&l.posted_at)
+            .map(|d| assign_period(bill, d, l.amount, l.status == "confirmed", &paid))
+            .unwrap_or_default();
+        if !period.is_empty() {
+            paid.insert(period.clone());
+        }
+        out.insert(l.id.clone(), period);
+    }
+    out
+}
+
+/// R-454: the live links of `bill` whose stored period is not the one `assign_periods` gives,
+/// with the right one. Writing these keeps the stored copy true (and heals links stored under
+/// an older rule).
+pub fn period_fixes(bill: &Bill, links: &[Link]) -> Vec<(String, String)> {
+    let want = assign_periods(bill, links);
+    let mut out: Vec<(String, String)> = links
+        .iter()
+        .filter_map(|l| want.get(&l.id).filter(|p| **p != l.period).map(|p| (l.id.clone(), p.clone())))
+        .collect();
+    out.sort();
+    out
+}
+
 /// What the bill costs in an average month.
 pub fn monthly_equivalent(amount: f64, cadence: &str) -> f64 {
     let f = match cadence {
@@ -297,15 +362,24 @@ pub fn link_id(bill_id: &str, bank_txn_id: &str) -> String {
 
 // --------------------------------------------------------------------------- matching
 
-/// The due date `t` pays on `bill`, when it is that bill's payment.
+/// `t` went to `bill`'s payee: money out, posted, not deal money, every word of the bill's text,
+/// and no earlier than one step before the first due date (the move-in payment, the first month
+/// paid early). Older payments to the same payee are history, not this bill.
+pub fn belongs(bill: &Bill, t: &Txn) -> bool {
+    if bill.status != "active" || !eligible(t) || !words_match(&bill.payee_match, t) {
+        return false;
+    }
+    let (Some(anchor), Some(d)) = (parse_day(&bill.anchor), parse_day(&t.posted_at)) else { return false };
+    d >= occurrence(anchor, &bill.cadence, -1) - Duration::days(window_of(&bill.cadence).0)
+}
+
+/// The due date `t` would pay on `bill` if nothing else were paid yet, when it is that bill's
+/// payment and not an extra charge.
 pub fn match_payment(bill: &Bill, t: &Txn) -> Option<NaiveDate> {
-    if bill.status != "active" || !eligible(t) {
+    if !belongs(bill, t) {
         return None;
     }
-    if !words_match(&bill.payee_match, t) || !amount_matches(bill, t.amount) {
-        return None;
-    }
-    period_for(bill, parse_day(&t.posted_at)?)
+    parse_day(&assign_period(bill, parse_day(&t.posted_at)?, t.amount, false, &HashSet::new()))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -313,43 +387,72 @@ pub struct NewLink {
     pub id: String,
     pub bill_id: String,
     pub bank_txn_id: String,
+    /// The due date it pays, or "" for an extra charge.
     pub period: String,
     pub amount: f64,
 }
 
-/// The links to write: for each unlinked payment, the bill it pays best. `known` holds every
-/// link id that already exists in any status, so a link Jack rejected is never written again.
-pub fn auto_links(bills: &[Bill], txns: &[Txn], known: &HashSet<String>) -> Vec<NewLink> {
+/// The links to write, oldest payment first. A payment goes to the bill whose amount it fits
+/// (the closest amount, then the most words); a payment that fits no bill's amount is an extra
+/// charge on the one bill whose words fit best (two tied bills is a guess, so nothing). `known`
+/// holds every link id that exists in any status: a payment Jack unlinked from any bill is never
+/// linked again by itself. `links` are the links already stored, so a new payment fills the due
+/// dates they leave open.
+pub fn auto_links(bills: &[Bill], txns: &[Txn], known: &HashSet<String>, links: &[Link]) -> Vec<NewLink> {
+    let mut paid: HashMap<String, HashSet<String>> = HashMap::new();
+    for b in bills {
+        paid.insert(b.id.clone(), assign_periods(b, links).into_values().filter(|p| !p.is_empty()).collect());
+    }
+    let mut order: Vec<&Txn> = txns.iter().filter(|t| t.bill_id.is_empty()).collect();
+    order.sort_by(|a, b| a.posted_at.get(..10).cmp(&b.posted_at.get(..10)).then(a.id.cmp(&b.id)));
     let mut out = Vec::new();
-    for t in txns {
-        if !t.bill_id.is_empty() {
+    for t in order {
+        if bills.iter().any(|b| known.contains(&link_id(&b.id, &t.id))) {
             continue;
         }
-        let mut best: Option<(&Bill, NaiveDate, f64, usize)> = None;
-        for b in bills {
-            let Some(due) = match_payment(b, t) else { continue };
-            if known.contains(&link_id(&b.id, &t.id)) {
-                continue;
-            }
+        let mine: Vec<&Bill> = bills.iter().filter(|b| belongs(b, t)).collect();
+        let mut best: Option<(&Bill, f64, usize)> = None;
+        for b in mine.iter().filter(|b| amount_matches(b, t.amount)) {
             let gap = if b.amount > 0.0 { (t.amount - b.amount).abs() } else { f64::MAX / 4.0 };
             let specific = words(&b.payee_match).len();
             let better = match &best {
                 None => true,
-                Some((_, _, g, s)) => gap < *g - 0.005 || ((gap - *g).abs() <= 0.005 && specific > *s),
+                Some((_, g, s)) => gap < *g - 0.005 || ((gap - *g).abs() <= 0.005 && specific > *s),
             };
             if better {
-                best = Some((b, due, gap, specific));
+                best = Some((b, gap, specific));
             }
         }
-        if let Some((b, due, _, _)) = best {
-            out.push(NewLink {
-                id: link_id(&b.id, &t.id),
-                bill_id: b.id.clone(),
-                bank_txn_id: t.id.clone(),
-                period: fmt_day(due),
-                amount: round2(t.amount),
-            });
+        let chosen = match best {
+            Some((b, _, _)) => Some(b),
+            None => {
+                // R-453: an extra charge on the one bill whose words fit best.
+                let (mut extra, mut most, mut tied): (Option<&Bill>, usize, bool) = (None, 0, false);
+                for b in &mine {
+                    let specific = words(&b.payee_match).len();
+                    if extra.is_none() || specific > most {
+                        (extra, most, tied) = (Some(*b), specific, false);
+                    } else if specific == most {
+                        tied = true;
+                    }
+                }
+                if tied { None } else { extra }
+            }
+        };
+        let Some(b) = chosen else { continue };
+        let Some(d) = parse_day(&t.posted_at) else { continue };
+        let set = paid.entry(b.id.clone()).or_default();
+        let period = assign_period(b, d, t.amount, false, set);
+        if !period.is_empty() {
+            set.insert(period.clone());
         }
+        out.push(NewLink {
+            id: link_id(&b.id, &t.id),
+            bill_id: b.id.clone(),
+            bank_txn_id: t.id.clone(),
+            period,
+            amount: round2(t.amount),
+        });
     }
     out
 }
@@ -364,6 +467,15 @@ pub struct Period {
     pub paid_amount: f64,
     /// 'paid', 'late' (paid after the grace days), 'missed', 'due' (not yet due or in grace)
     pub state: String,
+    /// R-453: extra charges posted from this due date up to the next one.
+    pub extra_amount: f64,
+}
+
+/// R-453: one extra charge on the bill.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Extra {
+    pub posted_at: String,
+    pub amount: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -383,6 +495,19 @@ pub struct BillState {
     pub on_time_count: usize,
     /// Expected due dates, newest first, at most 12.
     pub history: Vec<Period>,
+    /// R-453: extra charges, newest first, at most 24, and their total over the last year.
+    pub extras: Vec<Extra>,
+    pub extras_year: f64,
+    /// R-455: what a due date has cost on average (its payments plus the extra charges after
+    /// it), over the paid due dates in `history`; None before the first one is paid.
+    pub avg_amount: Option<f64>,
+    pub avg_count: usize,
+}
+
+/// R-455: the amount to plan with: the bill's own amount, or for a bill whose amount varies,
+/// what it has cost on average (0 until it has been paid once).
+pub fn expected_amount(amount: f64, st: &BillState) -> f64 {
+    if amount > 0.0 { amount } else { st.avg_amount.unwrap_or(0.0) }
 }
 
 /// Where the bill stands on `today`. `feed_latest` is the newest bank date seen: an unpaid
@@ -391,9 +516,17 @@ pub struct BillState {
 pub fn bill_state(bill: &Bill, links: &[Link], today: NaiveDate, feed_latest: Option<NaiveDate>) -> BillState {
     let mut paid: HashMap<String, (String, f64)> = HashMap::new();
     let mut last: Option<(String, f64)> = None;
+    let mut extras: Vec<Extra> = Vec::new();
+    // R-454: the due date each payment pays is worked out from the payments, not read back.
+    let periods_of = assign_periods(bill, links);
     for l in links.iter().filter(|l| l.bill_id == bill.id && l.status != "rejected") {
         let day = l.posted_at.get(..10).unwrap_or(&l.posted_at).to_string();
-        let e = paid.entry(l.period.clone()).or_insert((day.clone(), 0.0));
+        let period = periods_of.get(&l.id).cloned().unwrap_or_default();
+        if period.is_empty() {
+            extras.push(Extra { posted_at: day, amount: round2(l.amount) });
+            continue;
+        }
+        let e = paid.entry(period).or_insert((day.clone(), 0.0));
         if day > e.0 {
             e.0 = day.clone();
         }
@@ -413,9 +546,18 @@ pub fn bill_state(bill: &Bill, links: &[Link], today: NaiveDate, feed_latest: Op
         paid_count: 0,
         on_time_count: 0,
         history: Vec::new(),
+        extras: Vec::new(),
+        extras_year: 0.0,
+        avg_amount: None,
+        avg_count: 0,
     };
+    extras.sort_by(|a, b| b.posted_at.cmp(&a.posted_at));
+    let year_ago = fmt_day(today - Duration::days(365));
+    st.extras_year = round2(extras.iter().filter(|e| e.posted_at >= year_ago).map(|e| e.amount).sum());
     let Some(anchor) = parse_day(&bill.anchor) else {
         st.status = if bill.status == "active" { "upcoming".into() } else { "archived".into() };
+        extras.truncate(24);
+        st.extras = extras;
         return st;
     };
     let horizon = today + Duration::days(DUE_SOON_DAYS);
@@ -451,11 +593,14 @@ pub fn bill_state(bill: &Bill, links: &[Link], today: NaiveDate, feed_latest: Op
             st.next_due = Some(key.clone());
             st.days_until = Some((due - today).num_days());
         }
+        let next = fmt_day(occurrence(anchor, &bill.cadence, k + 1));
+        let extra_amount = round2(extras.iter().filter(|e| e.posted_at >= key && e.posted_at < next).map(|e| e.amount).sum());
         periods.push(Period {
             due: key,
             paid_on: p.map(|(d, _)| d.clone()),
             paid_amount: p.map_or(0.0, |(_, a)| round2(*a)),
             state: state.into(),
+            extra_amount,
         });
         k += 1;
     }
@@ -491,7 +636,14 @@ pub fn bill_state(bill: &Bill, links: &[Link], today: NaiveDate, feed_latest: Op
     };
     periods.reverse();
     periods.truncate(12);
+    let costs: Vec<f64> = periods.iter().filter(|p| p.paid_on.is_some()).map(|p| p.paid_amount + p.extra_amount).collect();
+    st.avg_count = costs.len();
+    if !costs.is_empty() {
+        st.avg_amount = Some(round2(costs.iter().sum::<f64>() / costs.len() as f64));
+    }
     st.history = periods;
+    extras.truncate(24);
+    st.extras = extras;
     st
 }
 
@@ -616,14 +768,33 @@ pub fn detect(txns: &[Txn], bills: &[Bill], today: NaiveDate) -> Vec<Candidate> 
                 continue;
             }
             c.sort_by(|a, b| a.posted_at.cmp(&b.posted_at));
-            let dates: Vec<NaiveDate> = c.iter().filter_map(|t| parse_day(&t.posted_at)).collect();
-            let gaps: Vec<i64> = dates.windows(2).map(|w| (w[1] - w[0]).num_days()).collect();
-            let mut gf: Vec<f64> = gaps.iter().map(|g| *g as f64).collect();
-            let Some(cadence) = cadence_of_gap(median(&mut gf)) else { continue };
-            let regular = gaps.iter().filter(|g| in_band(**g, cadence)).count();
-            if (regular as f64) < (gaps.len() as f64 * 0.6) {
-                continue;
+            // R-453: a first payment off the usual day (rent paid on the 20th, then the 1st every
+            // month after) must not hide the schedule. Try every payment, then all but the first.
+            let mut off_first: Option<NaiveDate> = None;
+            let mut found: Option<&'static str> = None;
+            for drop in 0..=1usize {
+                if c.len() - drop < 3 {
+                    break;
+                }
+                let dates: Vec<NaiveDate> = c[drop..].iter().filter_map(|t| parse_day(&t.posted_at)).collect();
+                let gaps: Vec<i64> = dates.windows(2).map(|w| (w[1] - w[0]).num_days()).collect();
+                let mut gf: Vec<f64> = gaps.iter().map(|g| *g as f64).collect();
+                let Some(cad) = cadence_of_gap(median(&mut gf)) else { continue };
+                let regular = gaps.iter().filter(|g| in_band(**g, cad)).count();
+                // With the odd first payment kept, every later gap must be regular.
+                let need = if drop == 0 { gaps.len() as f64 * 0.6 } else { gaps.len() as f64 };
+                if (regular as f64) < need {
+                    continue;
+                }
+                if drop == 1 {
+                    off_first = parse_day(&c[0].posted_at);
+                    c.remove(0);
+                }
+                found = Some(cad);
+                break;
             }
+            let Some(cadence) = found else { continue };
+            let dates: Vec<NaiveDate> = c.iter().filter_map(|t| parse_day(&t.posted_at)).collect();
             let last = *dates.last().unwrap();
             let (sd, sm) = step_of(cadence);
             let step_days = if sd > 0 { sd } else { sm * 31 };
@@ -634,7 +805,7 @@ pub fn detect(txns: &[Txn], bills: &[Bill], today: NaiveDate) -> Vec<Candidate> 
             let amount = round2(median(&mut amts));
             let spread = c.iter().map(|t| (t.amount - amount).abs() / amount.max(0.01)).fold(0.0, f64::max);
             let tolerance = ((spread * 100.0 / 5.0).ceil() * 5.0).clamp(5.0, 30.0);
-            let first = dates[0];
+            let mut first = dates[0];
             let anchor = if sd > 0 {
                 first
             } else {
@@ -644,16 +815,22 @@ pub fn detect(txns: &[Txn], bills: &[Bill], today: NaiveDate) -> Vec<Candidate> 
                     *by_day.entry(d.day()).or_default() += 1;
                 }
                 let day = by_day.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(d, _)| *d).unwrap_or(first.day());
-                let d = day.min(days_in_month(first.year(), first.month()));
-                let mut a = NaiveDate::from_ymd_opt(first.year(), first.month(), d).unwrap_or(first);
-                // A first payment made early (the 28th for the 1st) belongs to next month.
-                if (first - a).num_days() < -10 {
-                    a = add_months_keep_day(a, -1);
+                // The schedule starts at the first payment that lands near that day; one before it
+                // (kept in the cluster with the 60% rule) is an extra charge, like a dropped one.
+                let (early, late) = window_of(cadence);
+                let near = |p: NaiveDate| -> Option<NaiveDate> {
+                    let base = NaiveDate::from_ymd_opt(p.year(), p.month(), day.min(days_in_month(p.year(), p.month())))?;
+                    [add_months_keep_day(base, -1), base, add_months_keep_day(base, 1)]
+                        .into_iter()
+                        .map(|a| NaiveDate::from_ymd_opt(a.year(), a.month(), day.min(days_in_month(a.year(), a.month()))).unwrap_or(a))
+                        .find(|a| (p - *a).num_days() >= -early && (p - *a).num_days() <= late)
+                };
+                let start = dates.iter().position(|p| near(*p).is_some()).unwrap_or(0);
+                if start > 0 && off_first.is_none() {
+                    off_first = Some(dates[0]);
                 }
-                if (first - a).num_days() > 15 {
-                    a = add_months_keep_day(a, 1);
-                }
-                a
+                first = dates[start];
+                near(first).unwrap_or(first)
             };
             let probe = Bill {
                 id: String::new(),
@@ -682,13 +859,16 @@ pub fn detect(txns: &[Txn], bills: &[Bill], today: NaiveDate) -> Vec<Candidate> 
                 "quarterly" => "every three months".to_string(),
                 _ => format!("every month, usually on the {}", ordinal(anchor.day())),
             };
-            let why = format!(
+            let mut why = format!(
                 "Paid {} times since {}, {}, about {} each time.",
                 c.len(),
                 first.format("%b %-d, %Y"),
                 every,
                 money(amount)
             );
+            if let Some(o) = off_first {
+                why.push_str(&format!(" The first payment, on {}, was off that day and counts as an extra charge.", o.format("%b %-d")));
+            }
             out.push(Candidate {
                 name: title_case(&key),
                 key: key.clone(),
@@ -1063,14 +1243,14 @@ mod tests {
         let car = bill("car", "ally", 612.0, "monthly", "2026-01-05");
         let truck = bill("truck", "ally", 845.0, "monthly", "2026-01-05");
         let t = out("t1", "2026-02-05", 845.0, "ALLY PAYMT");
-        let links = auto_links(&[car.clone(), truck.clone()], &[t.clone()], &HashSet::new());
+        let links = auto_links(&[car.clone(), truck.clone()], &[t.clone()], &HashSet::new(), &[]);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].bill_id, "truck");
         assert_eq!(links[0].id, "bp-truck-t1");
         assert_eq!(links[0].period, "2026-02-05");
         let mut known = HashSet::new();
         known.insert("bp-truck-t1".to_string());
-        let again = auto_links(&[car, truck], &[t], &known);
+        let again = auto_links(&[car, truck], &[t], &known, &[]);
         assert!(again.is_empty(), "a rejected link must not come back, got {again:?}");
     }
 
@@ -1079,7 +1259,7 @@ mod tests {
         let b = bill("rent", "oak", 1000.0, "monthly", "2026-01-01");
         let mut t = out("t1", "2026-02-01", 1000.0, "oak");
         t.bill_id = "other".into();
-        assert!(auto_links(&[b], &[t], &HashSet::new()).is_empty());
+        assert!(auto_links(&[b], &[t], &HashSet::new(), &[]).is_empty());
     }
 
     fn link(bill: &str, txn: &str, period: &str, posted: &str, amount: f64) -> Link {
@@ -1135,7 +1315,11 @@ mod tests {
     #[test]
     fn early_payment_moves_next_due_on() {
         let b = bill("rent", "oak", 1000.0, "monthly", "2026-01-01");
-        let links = vec![link("rent", "a", "2026-03-01", "2026-02-27", 1000.0)];
+        let links = vec![
+            link("rent", "j", "2026-01-01", "2026-01-01", 1000.0),
+            link("rent", "f", "2026-02-01", "2026-02-01", 1000.0),
+            link("rent", "a", "2026-03-01", "2026-02-27", 1000.0),
+        ];
         let s = bill_state(&b, &links, d("2026-02-28"), Some(d("2026-02-28")));
         assert_eq!(s.next_due.as_deref(), Some("2026-04-01"));
         assert!(s.current_paid);
@@ -1184,7 +1368,7 @@ mod tests {
         assert_eq!(r.count, 4);
         // Accepting it links every payment it was found from.
         let b = Bill { id: "b".into(), payee_match: r.key.clone(), amount: r.amount, tolerance_pct: r.tolerance_pct, cadence: r.cadence.clone(), anchor: r.anchor.clone(), status: "active".into(), name: r.name.clone() };
-        let links = auto_links(&[b], &txns, &HashSet::new());
+        let links = auto_links(&[b], &txns, &HashSet::new(), &[]);
         assert_eq!(links.len(), 4, "{links:?}");
         assert_eq!(links.iter().find(|l| l.bank_txn_id == "2").unwrap().period, "2026-02-01");
         // An existing bill with those words hides the suggestion.
@@ -1297,6 +1481,179 @@ mod tests {
         // April had rent and no deal: it still shows, as a loss.
         assert_eq!(out[1].month, "2026-04");
         assert_eq!(out[1].true_profit, -2400.0);
+    }
+
+    // ---------------------------------------------------------------- R-453 extra charges
+
+    #[test]
+    fn a_small_charge_between_due_dates_is_an_extra_on_the_bill() {
+        let b = bill("ai", "anthropic", 200.0, "monthly", "2026-01-03");
+        let txns = vec![
+            out("1", "2026-01-03", 200.0, "ANTHROPIC CLAUDE"),
+            out("2", "2026-02-03", 200.0, "ANTHROPIC CLAUDE"),
+            out("x", "2026-02-17", 5.0, "ANTHROPIC CLAUDE"),
+            out("3", "2026-03-03", 200.0, "ANTHROPIC CLAUDE"),
+            // Not the payee: never an extra.
+            out("y", "2026-02-18", 5.0, "CORNER CAFE"),
+        ];
+        let links = auto_links(&[b.clone()], &txns, &HashSet::new(), &[]);
+        assert_eq!(links.len(), 4, "{links:?}");
+        let x = links.iter().find(|l| l.bank_txn_id == "x").unwrap();
+        assert_eq!((x.period.as_str(), x.amount), ("", 5.0));
+        assert!(links.iter().filter(|l| l.bank_txn_id != "x").all(|l| !l.period.is_empty()));
+        let stored: Vec<Link> = links
+            .iter()
+            .map(|l| Link {
+                id: l.id.clone(),
+                bill_id: l.bill_id.clone(),
+                bank_txn_id: l.bank_txn_id.clone(),
+                period: l.period.clone(),
+                status: "auto".into(),
+                posted_at: txns.iter().find(|t| t.id == l.bank_txn_id).unwrap().posted_at.clone(),
+                amount: l.amount,
+            })
+            .collect();
+        let s = bill_state(&b, &stored, d("2026-03-10"), Some(d("2026-03-10")));
+        // The extra pays no due date and is not the last payment of the bill.
+        assert_eq!(s.paid_count, 3);
+        assert_eq!(s.status, "paid");
+        assert_eq!(s.last_paid.as_deref(), Some("2026-03-03"));
+        assert_eq!(s.last_amount, Some(200.0));
+        assert_eq!(s.extras, vec![Extra { posted_at: "2026-02-17".into(), amount: 5.0 }]);
+        assert_eq!(s.extras_year, 5.0);
+        let feb = s.history.iter().find(|p| p.due == "2026-02-03").unwrap();
+        assert_eq!((feb.paid_amount, feb.extra_amount), (200.0, 5.0));
+        assert!(s.history.iter().filter(|p| p.due != "2026-02-03").all(|p| p.extra_amount == 0.0));
+    }
+
+    #[test]
+    fn an_extra_needs_one_clear_bill_and_a_recent_date() {
+        // Two bills, one lender, the same words: a payment that fits neither due date is a guess.
+        let car = bill("car", "ally", 612.0, "monthly", "2026-01-05");
+        let truck = bill("truck", "ally", 845.0, "monthly", "2026-01-05");
+        let odd = out("t", "2026-02-19", 75.0, "ALLY PAYMT");
+        assert!(auto_links(&[car.clone(), truck.clone()], &[odd.clone()], &HashSet::new(), &[]).is_empty());
+        // More words wins.
+        let fee = bill("fee", "ally late fee", 0.0, "annual", "2026-01-05");
+        let late = out("f", "2026-03-19", 75.0, "ALLY LATE FEE");
+        let links = auto_links(&[car.clone(), fee], &[late], &HashSet::new(), &[]);
+        assert_eq!(links.len(), 1);
+        // A payment to the same payee long before the bill started is history, not this bill.
+        let old = out("o", "2025-06-01", 50.0, "ALLY PAYMT");
+        assert!(auto_links(&[car.clone()], &[old], &HashSet::new(), &[]).is_empty());
+        // A rejected extra never comes back.
+        let mut known = HashSet::new();
+        known.insert(link_id("car", "t"));
+        assert!(auto_links(&[car], &[odd], &known, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_payment_pays_the_due_date_it_is_late_for_before_the_next_one() {
+        let b = bill("rent", "oak", 2400.0, "monthly", "2026-02-01");
+        let none = HashSet::new();
+        assert_eq!(assign_period(&b, d("2026-03-02"), 2400.0, false, &none), "2026-03-01");
+        // Missed on the 1st and paid on the 18th: it pays the 1st, late, not the next month.
+        assert_eq!(assign_period(&b, d("2026-03-18"), 2400.0, false, &none), "2026-03-01");
+        assert_eq!(assign_period(&b, d("2026-03-18"), 2400.0, true, &none), "2026-03-01");
+        // The 1st already paid: early for the next month inside its window, by hand any time.
+        let mar: HashSet<String> = ["2026-03-01".to_string()].into_iter().collect();
+        assert_eq!(assign_period(&b, d("2026-03-25"), 2400.0, false, &mar), "2026-04-01");
+        assert_eq!(assign_period(&b, d("2026-03-18"), 2400.0, false, &mar), "");
+        assert_eq!(assign_period(&b, d("2026-03-18"), 2400.0, true, &mar), "2026-04-01");
+        // Not the bill's amount: an extra charge, by hand or not.
+        assert_eq!(assign_period(&b, d("2026-03-01"), 150.0, true, &none), "");
+        // Before the first due date: the first due date only when paid early, or by hand.
+        assert_eq!(assign_period(&b, d("2026-01-02"), 2400.0, false, &none), "");
+        assert_eq!(assign_period(&b, d("2026-01-25"), 2400.0, false, &none), "2026-02-01");
+        assert_eq!(assign_period(&b, d("2026-01-02"), 2400.0, true, &none), "2026-02-01");
+        assert_eq!(match_payment(&b, &out("j", "2026-01-02", 2400.0, "oak")), None);
+    }
+
+    #[test]
+    fn the_warehouse_rent_paid_on_the_18th_moves_back_to_august() {
+        // Stored under the old rule: the Aug 18 payment, linked by hand, was put on Sep 1.
+        let b = bill("wh", "warehouse", 1800.0, "monthly", "2026-06-01");
+        let mut aug = link("wh", "aug", "2026-09-01", "2026-08-18", 1800.0);
+        aug.status = "confirmed".into();
+        let links = vec![
+            link("wh", "jun", "2026-06-01", "2026-06-01", 1800.0),
+            link("wh", "jul", "2026-07-01", "2026-07-01", 1800.0),
+            aug,
+            link("wh", "sep", "2026-09-01", "2026-09-02", 1800.0),
+        ];
+        assert_eq!(period_fixes(&b, &links), vec![(link_id("wh", "aug"), "2026-08-01".to_string())]);
+        let s = bill_state(&b, &links, d("2026-09-10"), Some(d("2026-09-10")));
+        assert_eq!(s.status, "paid", "{s:?}");
+        assert!(s.overdue.is_empty());
+        let aug_row = s.history.iter().find(|p| p.due == "2026-08-01").unwrap();
+        assert_eq!((aug_row.paid_on.as_deref(), aug_row.state.as_str()), (Some("2026-08-18"), "late"));
+        assert_eq!(s.history.iter().find(|p| p.due == "2026-09-01").unwrap().state, "paid");
+        // A new payment fills what the stored ones leave open.
+        let oct = out("oct", "2026-10-01", 1800.0, "WAREHOUSE RENT");
+        let new = auto_links(&[b.clone()], &[oct], &HashSet::new(), &links);
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].period, "2026-10-01");
+    }
+
+    #[test]
+    fn rent_paid_off_day_the_first_time_keeps_the_first_of_the_month() {
+        // Move-in paid on the 20th, then the 1st every month.
+        let txns = vec![
+            out("0", "2026-01-20", 2400.0, "Zelle payment to Oak Street Properties JPM0"),
+            out("1", "2026-02-01", 2400.0, "Zelle payment to Oak Street Properties JPM1"),
+            out("2", "2026-03-01", 2400.0, "Zelle payment to Oak Street Properties JPM2"),
+            out("3", "2026-04-01", 2400.0, "Zelle payment to Oak Street Properties JPM3"),
+        ];
+        let c = detect(&txns, &[], d("2026-04-10"));
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].cadence, "monthly");
+        assert_eq!(c[0].anchor, "2026-02-01");
+        assert_eq!(c[0].first_paid, "2026-02-01");
+        assert_eq!(c[0].next_due, "2026-05-01");
+        assert!(c[0].why.contains("The first payment, on Jan 20, was off that day"), "{}", c[0].why);
+        let b = Bill { id: "b".into(), name: "Rent".into(), payee_match: c[0].key.clone(), amount: c[0].amount, tolerance_pct: c[0].tolerance_pct, cadence: "monthly".into(), anchor: c[0].anchor.clone(), status: "active".into() };
+        let links = auto_links(&[b], &txns, &HashSet::new(), &[]);
+        assert_eq!(links.len(), 4, "{links:?}");
+        assert_eq!(links.iter().find(|l| l.bank_txn_id == "0").unwrap().period, "");
+        assert_eq!(links.iter().find(|l| l.bank_txn_id == "1").unwrap().period, "2026-02-01");
+    }
+
+    #[test]
+    fn a_prorated_first_rent_in_its_own_amount_still_links_as_the_first_payment() {
+        let txns = vec![
+            out("0", "2026-01-18", 1100.0, "OAK STREET PROPERTIES"),
+            out("1", "2026-02-01", 2400.0, "OAK STREET PROPERTIES"),
+            out("2", "2026-03-01", 2400.0, "OAK STREET PROPERTIES"),
+            out("3", "2026-04-01", 2400.0, "OAK STREET PROPERTIES"),
+        ];
+        let c = detect(&txns, &[], d("2026-04-10"));
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!((c[0].anchor.as_str(), c[0].amount, c[0].count), ("2026-02-01", 2400.0, 3));
+        let b = Bill { id: "b".into(), name: "Rent".into(), payee_match: c[0].key.clone(), amount: 2400.0, tolerance_pct: c[0].tolerance_pct, cadence: "monthly".into(), anchor: c[0].anchor.clone(), status: "active".into() };
+        let links = auto_links(&[b], &txns, &HashSet::new(), &[]);
+        assert_eq!(links.len(), 4);
+        assert_eq!(links.iter().find(|l| l.bank_txn_id == "0").unwrap().period, "");
+    }
+
+    #[test]
+    fn a_bill_that_varies_shows_what_it_costs_on_average() {
+        let b = bill("power", "city electric", 0.0, "monthly", "2026-01-20");
+        let links = vec![
+            link("power", "a", "", "2026-01-21", 210.0),
+            link("power", "b", "", "2026-02-20", 260.0),
+            link("power", "x", "", "2026-02-27", 15.0),
+            link("power", "c", "", "2026-03-20", 190.0),
+        ];
+        // A varying bill takes any amount, so the $15 also pays a due date unless one is free:
+        // February is already paid by the $260, March is not due yet on the 27th, so it is extra.
+        let s = bill_state(&b, &links, d("2026-03-25"), Some(d("2026-03-25")));
+        assert_eq!(s.avg_count, 3);
+        assert_eq!(s.avg_amount, Some(225.0)); // (210 + 260 + 15 + 190) / 3
+        assert_eq!(expected_amount(0.0, &s), 225.0);
+        assert_eq!(expected_amount(80.0, &s), 80.0);
+        let none = bill_state(&b, &[], d("2026-01-10"), Some(d("2026-01-10")));
+        assert_eq!((none.avg_amount, none.avg_count), (None, 0));
+        assert_eq!(expected_amount(0.0, &none), 0.0);
     }
 
     #[test]
