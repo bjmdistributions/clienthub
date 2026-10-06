@@ -1870,6 +1870,7 @@ function RefundOutcome({ d }: { d: AnalyticsRefundDeal }) {
       </div>
     </div>
   );
+  if (d.status === "loss_kept") return <StatusPill tone="danger">A real loss</StatusPill>;
   return <StatusPill tone="danger">Refund more than it made</StatusPill>;
 }
 

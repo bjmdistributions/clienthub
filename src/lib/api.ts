@@ -1926,7 +1926,7 @@ export interface AnalyticsRefundDeal {
   /** Profit after the refund. */
   profit: number;
   invoice_id: string;
-  status: "owed" | "cancelled" | "kept" | "cost_here" | "over";
+  status: "owed" | "cancelled" | "kept" | "cost_here" | "loss_kept" | "over";
 }
 export interface AnalyticsRefunds {
   deals: AnalyticsRefundDeal[];
@@ -3628,6 +3628,8 @@ export const api = {
   setDealLinkNa: (id: string, noBuyer: boolean, noSupplier: boolean, noShipping?: boolean) =>
     invoke<void>("set_deal_link_na", { id, noBuyer, noSupplier, noShipping }),
   setRefundDone: (id: string, done: boolean) => invoke<void>("set_refund_done", { id, done }),
+  // R-451: "it's a real loss" on the refund step (false takes the answer back).
+  setRefundLossAck: (dealFlowId: string, ack: boolean) => invoke<void>("set_refund_loss_ack", { dealFlowId, ack }),
   setDealPayoutIncluded: (id: string, included: boolean) => invoke<void>("set_deal_payout_included", { id, included }),
   updateDealCompletedAt: (id: string, date: string) =>
     invoke<void>("update_deal_completed_at", { id, date }),

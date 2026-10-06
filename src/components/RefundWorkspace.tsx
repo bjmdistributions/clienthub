@@ -338,6 +338,31 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
   const linksOk = !(bankPart > 0.005) || tickedTotal >= bankPart - 0.005;
   // A live buy-back (R-442) is undone before the cost moves, or the goods are costed twice.
   const canCost = goodsLeft > 0.005 && boughtBack.length === 0;
+
+  // R-451: a full refund takes the sale back, but the supplier cost stays on the deal until the
+  // supplier's money back is linked or the cost moves with resold goods, so the deal reads as a
+  // loss of that cost. Jack: "i thought i was supposed to initaite refunds, but it shows i lost
+  // 12,540 dollars". The step asks what happened; each answer is the one action that settles it,
+  // and "a real loss" is saved so it stops asking. Close refund waits for an answer.
+  const sale = (flow?.gross_revenue || 0) > 0.005 ? (flow?.gross_revenue || 0) : (flow?.invoice_total || 0);
+  const costStillHere = Math.round((goodsLeft - supplierArrived) * 100) / 100;
+  const lossAcked = !!flowMeta.refund_loss_ack;
+  const costMovedAway = liveResoldTo.some((m) => m.kind !== "refunds");
+  const lossQuestion = sale > 0.005 && refundScope >= sale - 0.5 && costStillHere > 0.5 && !costMovedAway;
+  const unexplained = lossQuestion && !lossAcked;
+  const scrollTo = (id: string) => setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
+  const answerSupplier = () => { setPickSupplierBack(true); scrollTo(`rf-supplier-${dealFlowId}`); };
+  const answerResold = () => {
+    if (!canCost) { setErr("Undo the buy-back below first, then move this deal's supplier cost."); scrollTo(`rf-resold-${dealFlowId}`); return; }
+    openResell(); scrollTo(`rf-resold-${dealFlowId}`);
+  };
+  const answerLoss = (ack: boolean) => {
+    if (ack && !confirm(`Record this as a real loss? The ${fmtAmount(costStillHere)} paid to the supplier stays on this deal as a loss, and this step stops asking. You can take it back here.`)) return;
+    run(async () => {
+      await api.setRefundLossAck(dealFlowId, ack);
+      toast(ack ? "Recorded as a real loss" : "Answer taken back");
+    });
+  };
   const undoResold = (m: ResoldMove) => {
     const ask = m.kind === "refunds"
       ? `Undo this? The ${fmtAmount(m.amount)} becomes refunds to ${m.buyer || "the buyer"} on this deal again, with its bank payments, and comes off ${m.invoice_number || "the other deal"}'s cost.`
@@ -350,7 +375,8 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
   };
 
   const linkSupplierBack = (t: UnallocatedTxn, amount: number) => run(async () => {
-    await api.allocateBankTxn(t.id, dealFlowId, amount, "refund_in", "Supplier returned the short units");
+    await api.allocateBankTxn(t.id, dealFlowId, amount, "refund_in",
+      supplierExpected > 0.005 ? "Supplier returned the short units" : "Supplier refunded the deal");
     setPickSupplierBack(false);
   });
 
@@ -372,6 +398,10 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
         ) : remaining > 0.01 ? (
           <span className="flex items-center gap-1.5 text-[11px] font-semibold text-danger-ink">
             <AlertTriangle size={12} /> {fmtAmount(remaining)} still to send back
+          </span>
+        ) : unexplained ? (
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-warning-ink">
+            <AlertTriangle size={12} /> Supplier cost still here
           </span>
         ) : settled ? (
           <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
@@ -399,6 +429,43 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
               </button>
             </div>
           )}
+          {/* R-451: what happened to the supplier's money, asked while it is unexplained. */}
+          {lossQuestion && !closed && (unexplained ? (
+            <div className="rounded-lg border border-warning/40 bg-warning-bg px-3 py-2.5 space-y-2">
+              <div className="flex items-start gap-1.5 text-[12px] text-ink">
+                <AlertTriangle size={13} className="text-warning-ink flex-shrink-0 mt-0.5" />
+                <span>
+                  The buyer has their money back, but the {fmtAmount(costStillHere)} paid to the supplier is still on this deal,
+                  so it reads as a loss of that much. What happened to that money?
+                </span>
+              </div>
+              {!locked && (
+                <div className="flex flex-wrap gap-2 pl-5">
+                  <button onClick={answerSupplier} disabled={busy}
+                    className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+                    The supplier refunded me
+                  </button>
+                  <button onClick={answerResold} disabled={busy}
+                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 transition-colors">
+                    I resold the goods
+                  </button>
+                  <button onClick={() => answerLoss(true)} disabled={busy}
+                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 transition-colors">
+                    It's a real loss
+                  </button>
+                </div>
+              )}
+              <div className="text-[10.5px] text-muted pl-5">
+                Most refunds are a clean slate: the supplier pays you back, you link it here, and the deal reads zero.
+                Still holding the goods? The deal reads as a loss until you sell them, then use I resold the goods.
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2 text-[11.5px] text-muted">
+              <span>You recorded the {fmtAmount(costStillHere)} paid to the supplier as a real loss.</span>
+              {!locked && <button onClick={() => answerLoss(false)} disabled={busy} className="text-accent hover:text-accent-hover flex-shrink-0">Take it back</button>}
+            </div>
+          ))}
           {/* 1 · Money received */}
           <section>
             <div className="flex items-center justify-between mb-2">
@@ -557,8 +624,8 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
               parties, two obligations, and one is not the other's offset. Shown
               whenever the supplier owes us or has already sent money back, even if
               nothing was typed into the shortage box. */}
-          {((supplierExpected > 0.005 && liveResoldTo.length === 0) || supplierBack.length > 0) && (<>
-            <section>
+          {((supplierExpected > 0.005 && liveResoldTo.length === 0) || supplierBack.length > 0 || pickSupplierBack) && (<>
+            <section id={`rf-supplier-${dealFlowId}`}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[12.5px] font-medium text-ink-2">Supplier recovery</span>
                 {supplierGap > 0.005 ? (
@@ -571,6 +638,9 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
                   </span>
                 ) : null}
               </div>
+              {/* R-451: the owed / arrived / to-come figures are a short shipment's; a supplier who
+                  refunded a cancelled deal owed nothing typed here, so only what arrived is listed. */}
+              {supplierExpected > 0.005 && (
               <div className="grid grid-cols-3 gap-x-4 text-[12px] rounded-lg border border-line bg-surface-2 px-3 py-2">
                 <div>
                   <div className="text-[10.5px] text-muted">Supplier owes us</div>
@@ -585,6 +655,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
                   <div className={`tabular-nums font-semibold ${supplierGap > 0.005 ? "text-warning-ink" : "text-ink"}`}>{fmtAmount(supplierGap)}</div>
                 </div>
               </div>
+              )}
               <div className="mt-2 space-y-0.5">
                 {supplierBack.map((a) => (
                   <div key={a.id} className="flex items-center gap-2 text-[12px] py-0.5">
@@ -712,7 +783,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
           {/* 6 · Resold to another buyer (R-435, R-438) */}
           {(refundScope > 0.005 || liveResoldTo.length > 0 || liveResoldFrom.length > 0) && (<>
             <div className="border-t border-line-2" />
-            <section>
+            <section id={`rf-resold-${dealFlowId}`}>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[12.5px] font-medium text-ink-2">Resold to another buyer</span>
                 {refundScope > 0.005 && <span className="text-[11px] text-muted tabular-nums">Goods cost on this deal {fmtAmount(goodsLeft)}</span>}
@@ -833,13 +904,15 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
           {refundScope > 0.005 && !closed && (<>
             <div className="border-t border-line-2" />
             <section className="flex items-center gap-3 flex-wrap">
-              <button onClick={() => setClosed(true)} disabled={busy || remaining > 0.01}
+              <button onClick={() => setClosed(true)} disabled={busy || remaining > 0.01 || unexplained}
                 className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
                 <CheckCircle2 size={13} /> Close refund
               </button>
               <span className="text-[11.5px] text-muted flex-1 min-w-[200px]">
                 {remaining > 0.01
                   ? `${fmtAmount(remaining)} is still to send back. Record the refund payment, or lower the refund owed, and then close it.`
+                  : unexplained
+                  ? "Say what happened to the supplier's money first, at the top of this step."
                   : "Everything owed back has gone out. Closing it marks the refund done and makes this step read-only."}
               </span>
             </section>

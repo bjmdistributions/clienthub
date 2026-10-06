@@ -14484,13 +14484,22 @@ fn non_deal_categories_sql() -> String {
 /// - `cost_here`: refunded in full but the supplier cost is still on the deal, with no supplier
 ///   money linked back and no cost moved with resold goods, so it reads as a loss of that cost;
 /// - `over`: the refund was more than the deal made.
-pub(crate) fn refunded_deal_status(gross: f64, refunded: f64, owed: f64, cost: f64, profit: f64, refund_in: f64, cost_moved: bool) -> &'static str {
+/// - `loss_kept` (R-451): `cost_here`, but the user said on the refund step that it is a real loss
+///   (the supplier kept the money and the goods are gone), so it is named, not questioned.
+pub(crate) fn refunded_deal_status(gross: f64, refunded: f64, owed: f64, cost: f64, profit: f64, refund_in: f64, cost_moved: bool, loss_ack: bool) -> &'static str {
     let remaining = ((owed - refunded).max(0.0) * 100.0).round() / 100.0;
     let full = gross > 0.005 && refunded >= gross - 0.5;
     if remaining > 0.01 { "owed" }
     else if profit >= -0.5 { if full { "cancelled" } else { "kept" } }
-    else if full && cost > 0.005 && refund_in <= 0.005 && !cost_moved { "cost_here" }
+    else if full && cost > 0.005 && refund_in <= 0.005 && !cost_moved { if loss_ack { "loss_kept" } else { "cost_here" } }
     else { "over" }
+}
+
+/// R-451: whether the user said, on the refund step, that a refunded deal's remaining supplier
+/// cost is a real loss (`metadata.refund_loss_ack`).
+pub(crate) fn refund_loss_acked(metadata: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(metadata).ok()
+        .and_then(|m| m.get("refund_loss_ack").and_then(|v| v.as_bool())).unwrap_or(false)
 }
 
 /// R-444 (Jack, 2026-10-05: "i want them to be noticed and be able to view them", in Analytics,
@@ -14500,6 +14509,28 @@ pub(crate) fn refunded_deal_status(gross: f64, refunded: f64, owed: f64, cost: f
 /// date (Jack chose this over the month it was paid). Also: what is still owed back across every
 /// deal, and supplier money in the bank linked to no deal (R-323), which is why a fully refunded
 /// deal can still read as a loss.
+/// R-451 (Jack, 2026-10-06: "i thought i was supposed to initaite refunds, but it shows i lost
+/// 12,540 dollars"): a full refund takes the sale back, but the supplier cost stays on the deal
+/// until the supplier's money back is linked or the cost moves with resold goods. The refund step
+/// asks what happened; "a real loss" is the one answer that changes nothing in the books, so it
+/// is saved here (`metadata.refund_loss_ack`, merged, synced) and the step stops asking.
+/// `ack: false` takes the answer back.
+#[tauri::command]
+pub async fn set_refund_loss_ack(deal_flow_id: String, ack: bool) -> Result<(), String> {
+    let df = read_df(&deal_flow_id)?;
+    let mut meta = deal_metadata(&df);
+    if ack {
+        meta.insert("refund_loss_ack".into(), json!(true));
+        meta.insert("refund_loss_ack_at".into(), json!(Utc::now().to_rfc3339()));
+    } else {
+        meta.remove("refund_loss_ack");
+        meta.remove("refund_loss_ack_at");
+    }
+    write_deal_metadata(&deal_flow_id, meta)?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
 /// R-444: the Central day a refund went out. A typed refund's `refunded_at` is the UTC instant
 /// it was recorded (an evening entry is the next day in UTC); a bank refund's date is already a
 /// day. The later of the two.
@@ -14536,7 +14567,7 @@ pub async fn analytics_refunds(start_date: String, end_date: String) -> Result<V
     ))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     let (mut refunded_total, mut refunded_deals, mut cancelled, mut loss_deals, mut loss_total, mut owed_back) = (0.0, 0i64, 0i64, 0i64, 0.0, 0.0);
     let deals: Vec<Value> = raw.into_iter().map(|(id, inv, client, closed, gross, refunded, owed, cost, profit, refund_in, typed_at, bank_day, meta, invoice_id)| {
-        let status = refunded_deal_status(gross, refunded, owed, cost, profit, refund_in, has_live_cost_move(&meta));
+        let status = refunded_deal_status(gross, refunded, owed, cost, profit, refund_in, has_live_cost_move(&meta), refund_loss_acked(&meta));
         let refunded_on = refund_day(&typed_at, &bank_day);
         if refunded > 0.005 { refunded_deals += 1; }
         let remaining = to_cents((owed - refunded).max(0.0));
@@ -28178,6 +28209,20 @@ mod r444_analytics_refunds_tests {
         assert_eq!(r["deals"][0]["refunded_on"].as_str(), Some("2031-05-12"));
     }
 
+    /// R-451: "it's a real loss" on the refund step names the loss in Analytics and can be taken back.
+    #[tokio::test]
+    async fn a_loss_answered_on_the_refund_step_is_named_and_can_be_taken_back() {
+        let _db = crate::db::init_test_store();
+        let g = done("g", 6000.0, 5000.0, "2031-06-10", 6000.0);
+        link(&g, "g_out", "refund_out", 6000.0, "2031-06-12");
+        let status = || async { analytics_refunds("2031-06-01".into(), "2031-06-30".into()).await.unwrap()["deals"][0]["status"].as_str().unwrap().to_string() };
+        assert_eq!(status().await, "cost_here");
+        set_refund_loss_ack(g.clone(), true).await.unwrap();
+        assert_eq!(status().await, "loss_kept");
+        set_refund_loss_ack(g.clone(), false).await.unwrap();
+        assert_eq!(status().await, "cost_here");
+    }
+
     #[test]
     fn a_typed_refund_is_dated_on_the_central_day() {
         // 7:30pm Central on 3 Oct is 00:30 UTC on 4 Oct.
@@ -28187,12 +28232,13 @@ mod r444_analytics_refunds_tests {
 
     #[test]
     fn the_status_words_each_refunded_deal() {
-        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 0.0, 0.0, 0.0, true), "cancelled");
-        assert_eq!(refunded_deal_status(10000.0, 1000.0, 1000.0, 8000.0, 1000.0, 0.0, false), "kept");
-        assert_eq!(refunded_deal_status(10000.0, 4000.0, 10000.0, 8000.0, -2000.0, 0.0, false), "owed");
-        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, false), "cost_here");
-        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, true), "over");
-        assert_eq!(refunded_deal_status(10000.0, 3000.0, 3000.0, 8000.0, -1000.0, 0.0, false), "over");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 0.0, 0.0, 0.0, true, false), "cancelled");
+        assert_eq!(refunded_deal_status(10000.0, 1000.0, 1000.0, 8000.0, 1000.0, 0.0, false, false), "kept");
+        assert_eq!(refunded_deal_status(10000.0, 4000.0, 10000.0, 8000.0, -2000.0, 0.0, false, false), "owed");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, false, false), "cost_here");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, false, true), "loss_kept");
+        assert_eq!(refunded_deal_status(10000.0, 10000.0, 10000.0, 8000.0, -8000.0, 0.0, true, false), "over");
+        assert_eq!(refunded_deal_status(10000.0, 3000.0, 3000.0, 8000.0, -1000.0, 0.0, false, false), "over");
     }
 
     #[tokio::test]

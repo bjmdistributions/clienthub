@@ -1042,6 +1042,7 @@ fn main() {
             get_analytics_range,
             analytics_reconciliation,
             analytics_refunds,
+            set_refund_loss_ack,
             analytics_labels,
             list_deal_labels,
             set_deal_labels,
