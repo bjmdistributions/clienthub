@@ -80,7 +80,10 @@ export default function BillsMode({ data, cands, admin, onOpen, onAdd, onTrack, 
                     <span className="block text-[13px] font-medium text-ink truncate">{b.name}</span>
                     <span className="block text-[11px] text-muted truncate">{cadenceLabel(b.cadence)}</span>
                   </span>
-                  <span className="text-[13px] tabular-nums text-ink-2 flex-shrink-0">{amountText(b.amount, b.state.avg_amount, fmtAmount).text}</span>
+                  <span className="text-[13px] tabular-nums text-ink-2 flex-shrink-0">
+                    {amountText(b.amount, b.state.avg_amount, fmtAmount).text}
+                    {amountText(b.amount, b.state.avg_amount, fmtAmount).average && <span className="text-[11px] font-medium text-muted ml-1">avg</span>}
+                  </span>
                 </button>
                 {admin && <button onClick={() => onRestore(b)} className={btn}><RotateCcw size={12} /> Restore</button>}
               </div>

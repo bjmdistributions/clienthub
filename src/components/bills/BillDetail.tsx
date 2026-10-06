@@ -105,7 +105,7 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
                 value={amountText(b.amount, b.state.avg_amount, fmtAmount).text}
                 hint={b.amount > 0 && b.cadence !== "monthly" ? `About ${fmtAmount(b.monthly)} a month`
                   : b.amount <= 0 && b.state.last_amount != null
-                    ? `Last paid ${fmtAmount(b.state.last_amount)}${(b.state.avg_count ?? 0) > 0 ? `, over the last ${b.state.avg_count} paid` : ""}`
+                    ? `${(b.state.avg_count ?? 0) > 0 ? `Average of the last ${b.state.avg_count} paid. ` : ""}Last paid ${fmtAmount(b.state.last_amount)}`
                     : undefined} />
               <Fact label={b.state.status === "overdue" ? "Overdue since" : "Next due"}
                 value={b.state.status === "overdue" && b.state.overdue.length > 0 ? longDay(b.state.overdue[0]) : dueText(b.state.next_due, b.state.days_until)} />
