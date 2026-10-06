@@ -18,6 +18,7 @@ import DealPicker from "./DealPicker";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
 import AccountantChanges from "./AccountantChanges";
+import NearDuplicates from "./NearDuplicates";
 import { parseAmount } from "../lib/format";
 
 // Backend errors arrive as raw Rust strings and were shown to the user verbatim,
@@ -3508,6 +3509,8 @@ export default function FinancialsView() {
       </div>
 
       {/* Cash — free cash and loans together; the best-designed screens stay as they are. */}
+      {/* R-456: a payment on the books twice, flagged where the money is booked and searched. */}
+      {(tab === "tobook" || tab === "ledger") && <NearDuplicates reloadKey={txns} onChanged={() => { refreshAll(false); }} />}
       {tab === "cash" && (
         <div className="space-y-4">
           <div className="flex items-center gap-1">

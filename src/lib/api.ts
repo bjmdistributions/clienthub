@@ -1907,6 +1907,20 @@ export interface DealLabelInput {
 
 /** R-444: `analytics_refunds`'s payload: every refunded deal that closed in the range, what
  *  went back and when, and how it came out, on the same population as `get_analytics_range`. */
+/** R-456: one side of a likely-duplicate pair, as `list_near_duplicates` describes it. */
+export interface NearDupRow {
+  id: string; account: string; date: string; amount: number; direction: string; description: string;
+  source: string; pending: boolean; category: string; booked: boolean; counterparty: string;
+  /** What the row is tied to, in words ("supplier payment on INV-2041 (12540.00)", "a bill payment"). */
+  links: string[];
+}
+export interface NearDupPair {
+  keep: NearDupRow;
+  extra: NearDupRow;
+  reason: "pending_and_posted" | "two_sources" | "two_connections" | "different_text";
+  gap_days: number;
+  automatic: boolean;
+}
 export interface AnalyticsRefundDeal {
   deal_flow_id: string;
   invoice_number: string;
@@ -3558,6 +3572,9 @@ export const api = {
   // R-438: take a resold move back (identified by the deal it went to and its `at` stamp).
   undoResoldCost: (fromId: string, toId: string, at: string) =>
     invoke<{ amount: number; links_back: number }>("undo_resold_cost", { fromId, toId, at }),
+  // When the checked Undo refuses: take back whatever of the move still exists.
+  forceUndoResold: (fromId: string, toId: string, at: string) =>
+    invoke<{ undone: boolean; notes: string[] }>("force_undo_resold", { fromId, toId, at }),
   // R-277 freight tracking (Priority1 emails)
   listShipments: () => invoke<Shipment[]>("list_shipments"),
   linkShipment: (id: string, dealFlowId: string) => invoke<void>("link_shipment", { id, dealFlowId }),
@@ -4205,6 +4222,10 @@ export const api = {
   setAutoBookEnabled: (enabled: boolean) => invoke<void>("set_auto_book_enabled", { enabled }),
   undoAutoBooking: (id: string) => invoke<void>("undo_auto_booking", { id }),
   listTakeoverSuggestions: () => invoke<TakeoverSuggestion[]>("list_takeover_suggestions"),
+  // R-456: likely duplicates (same account, direction and amount, a few days apart, different text).
+  listNearDuplicates: () => invoke<NearDupPair[]>("list_near_duplicates"),
+  resolveNearDuplicate: (keepId: string, extraId: string, same: boolean) =>
+    invoke<{ removed?: boolean; kept_both?: boolean; over_allocated?: string[] }>("resolve_near_duplicate", { keepId, extraId, same }),
   takeOverBooking: (fromId: string, toId: string) =>
     invoke<{ moved: boolean; over_allocated: string[] }>("take_over_booking", { fromId, toId }),
   dedupeBankTxns: (dryRun: boolean, aggressive = false) =>

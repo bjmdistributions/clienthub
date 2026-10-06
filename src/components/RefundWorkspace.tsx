@@ -371,7 +371,18 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange,
       : `Undo this resold move? ${fmtAmount(m.amount)} of cost comes back to this deal from ${m.invoice_number || "the other deal"}, and the supplier payment that moved with it comes back too.`;
     if (!confirm(ask)) return;
     run(async () => {
-      await api.undoResoldCost(dealFlowId, m.deal_flow_id, m.at);
+      try {
+        await api.undoResoldCost(dealFlowId, m.deal_flow_id, m.at);
+      } catch (e: any) {
+        // The checked Undo refuses when anything moved on since; never leave the deal stranded.
+        const why = typeof e === "string" ? e : e?.message || "it could not check everything";
+        if (!confirm(`This move can't be undone the careful way: ${why}
+
+Undo it anyway? Whatever this move added that still exists is taken back. Nothing else changes.`)) throw e;
+        const r = await api.forceUndoResold(dealFlowId, m.deal_flow_id, m.at);
+        toast(r.notes.length ? `Resold move undone. ${r.notes[0]}.` : "Resold move undone");
+        return;
+      }
       toast("Resold move undone");
     });
   };

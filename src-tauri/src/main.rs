@@ -2,6 +2,7 @@
 
 mod ai;
 mod bank_dedup;
+mod bank_near_dup;
 mod bank_learn;
 mod bank_import;
 mod bills;
@@ -780,6 +781,7 @@ fn main() {
             employees::confirm_workspace_switch,
             move_resold_cost,
             undo_resold_cost,
+            force_undo_resold,
             employees::resume_switch_login,
             employees::active_workspace,
             employees::list_staff,
@@ -1095,6 +1097,8 @@ fn main() {
             set_auto_book_enabled,
             undo_auto_booking,
             take_over_booking,
+            list_near_duplicates,
+            resolve_near_duplicate,
             delete_bank_txns,
             undo_bank_account_merge,
             get_money_config,
