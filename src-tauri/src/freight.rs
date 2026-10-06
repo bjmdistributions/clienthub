@@ -151,7 +151,8 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
         "SELECT fb.id, {a}, fb.quoted_cost, fb.paid_amount, {b},
                 COALESCE(df.id,''), COALESCE(i.number,''), COALESCE(c.name,''), COALESCE(df.stage,''),
                 COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0),
-                (SELECT COUNT(*) FROM freight_bookings tb WHERE tb.deal_flow_id = fb.deal_flow_id AND tb.archived = 0 AND tb.status != 'cancelled')
+                (SELECT COUNT(*) FROM freight_bookings tb WHERE tb.deal_flow_id = fb.deal_flow_id AND tb.archived = 0 AND tb.status != 'cancelled'),
+                COALESCE(fb.extra_pickups,'[]')
          FROM freight_bookings fb
          LEFT JOIN deal_flows df ON df.id = fb.deal_flow_id
          LEFT JOIN invoices i ON i.id = df.invoice_id
@@ -185,6 +186,10 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
         m.insert("shipping_billed".into(), if deal.is_empty() { Value::Null } else { json!(charged_of(&items, field).0) });
         m.insert("trucks_on_deal".into(), json!(if deal.is_empty() { 0 } else { trucks }));
         m.insert("freight_by_team".into(), json!(by_team));
+        // R-452: the pickups after the first, as the server sends them to a full viewer.
+        let stops: Vec<Value> = serde_json::from_str::<Vec<Value>>(&r.get::<_, String>(at + 7)?)
+            .unwrap_or_default().into_iter().filter(|v| v.is_object()).collect();
+        m.insert("extra_pickups".into(), Value::Array(stops));
         m.insert("can_see_names".into(), json!(true));
         m.insert("can_see_addresses".into(), json!(true));
         m.insert("can_see_deal".into(), json!(true));
@@ -750,6 +755,10 @@ mod tests {
                 "INSERT INTO freight_bookings (id, deal_flow_id, status, created_at, updated_at) VALUES ('fb_readgone', ?1, 'requested', '2026-09-01', '2026-09-01')", [&deal],
             ).unwrap();
             conn.execute("UPDATE freight_bookings SET archived=1 WHERE id='fb_readgone'", []).unwrap();
+            // R-452: a second pickup on the same truck.
+            conn.execute(
+                "UPDATE freight_bookings SET extra_pickups='[{\"name\":\"Second sample yard\",\"address\":\"1 Sample Rd, Sample City, ST 00001\",\"window\":\"1 to 4\",\"contact\":\"\",\"phone\":\"\",\"notes\":\"\"}]' WHERE id='fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77'", [],
+            ).unwrap();
             conn.execute(
                 "INSERT INTO shipments (id, deal_flow_id, bol, stage, status, carrier, last_location, last_update_at, refs_json, created_at, updated_at, dismissed)
                  VALUES ('shp-org_default-77881', '', '77881', 'in_transit', 'In transit', 'Sample Freight', 'Sample City, ST', '2026-10-03T12:00:00Z', '[{\"label\":\"PO\",\"value\":\"secret\"}]', '2026-10-01', '2026-10-03', 0)", [],
@@ -781,10 +790,12 @@ mod tests {
             "delivered_at", "carrier", "broker", "service", "equipment", "bol", "pro", "pickup_number", "reference", "tracking_url", "driver_name",
             "driver_phone", "truck_number", "trailer_number", "pallets", "pieces", "weight_lbs", "freight_class", "dimensions", "commodity", "accessorials",
             "quoted_cost", "paid_amount", "paid_at", "paid_method", "paid_note", "notes", "created_by_name", "updated_by_name", "created_at", "updated_at",
-            "can_see_names", "can_see_addresses", "can_see_deal", "tracking", "deal",
+            "can_see_names", "can_see_addresses", "can_see_deal", "tracking", "deal", "extra_pickups",
         ] {
             assert!(b.get(key).is_some(), "the key {key} is always there");
         }
+        assert_eq!(b["extra_pickups"][0]["name"], "Second sample yard");
+        assert_eq!(b["extra_pickups"][0]["window"], "1 to 4");
         // Without a deal filter: all live rows, whichever deal.
         assert!(list_freight_bookings(None).await.unwrap().iter().any(|r| r["id"] == "fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77"));
     }

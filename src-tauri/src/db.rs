@@ -2359,4 +2359,14 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_bill_payments_txn ON bill_payments(bank_txn_id);
         "#,
     ),
+    (
+        108,
+        // R-452: a truck that picks up at more than one place. The pickups after the first, as a
+        // JSON array of {name, address, window, contact, phone, notes}; the first stays in the
+        // pickup_* columns. Server-authored like the rest of the row (clienthub-api sync.rs adds
+        // the same column to the mirror).
+        r#"
+        ALTER TABLE freight_bookings ADD COLUMN extra_pickups TEXT DEFAULT '[]';
+        "#,
+    ),
 ];

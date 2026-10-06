@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, Plus, Send, Truck, X } from "lucide-react";
-import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type SupplierPayment } from "../lib/api";
+import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
 import StatusPill from "./StatusPill";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
 import LogisticsBookingForm, {
-  AccessorialsField, AmountNeededPill, FreightStatusPill, fmtDay, needsAmount, useNetsyncApplied,
+  AccessorialsField, AmountNeededPill, FreightStatusPill, blankStop, extraStops, fmtDay, needsAmount, useNetsyncApplied,
 } from "./LogisticsBookingForm";
 
 // R-400: the deal's Shipping step. Freight is its own leg of the deal, separate from what is
@@ -40,6 +40,8 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
   const [pre, setPre] = useState<FreightPrefill | null>(null);
   const [err, setErr] = useState("");
   const [pickup, setPickup] = useState({ name: "", address: "" });
+  // R-452: more pickups on the same truck, one delivery.
+  const [stops, setStops] = useState<FreightStop[]>([]);
   const [delivery, setDelivery] = useState({ name: "", address: "" });
   const [freight, setFreight] = useState({ pallets: "", pieces: "", weight_lbs: "", freight_class: "", dimensions: "", commodity: "", accessorials: "" });
   const [note, setNote] = useState("");
@@ -73,6 +75,7 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
     try {
       await api.logistics.create(flow.id, {
         pickup_name: pickup.name, pickup_address: pickup.address,
+        extra_pickups: stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim() })).filter((x) => x.name || x.address),
         delivery_name: delivery.name, delivery_address: delivery.address,
         pallets: freight.pallets.trim(), pieces: freight.pieces.trim(), weight_lbs: freight.weight_lbs.trim(),
         freight_class: freight.freight_class.trim(), dimensions: freight.dimensions.trim(),
@@ -86,6 +89,13 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
   };
 
   const options = pre?.pickup_options ?? [];
+  // A new pickup starts as the next supplier on the deal that is not already one, or blank.
+  const addStop = () => {
+    const used = [pickup.name, ...stops.map((x) => x.name)].map((n) => n.trim().toLowerCase());
+    const next = options.find((o) => o.name && !used.includes(o.name.trim().toLowerCase()));
+    setStops((l) => [...l, { ...blankStop(), name: next?.name ?? "", address: next?.address ?? "" }]);
+  };
+  const setStop = (i: number, patch: Partial<FreightStop>) => setStops((l) => l.map((x, j) => (j === i ? { ...x, ...patch } : x)));
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
       <div
@@ -125,6 +135,23 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                 <input className={inp} placeholder="Name" value={pickup.name} onChange={(e) => setPickup({ ...pickup, name: e.target.value })} />
                 <input className={inp} placeholder="Address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
               </div>
+              {stops.map((x, i) => (
+                <div key={i} className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[12px] font-medium text-ink-2">Pickup {i + 2}</div>
+                    <button type="button" onClick={() => setStops((l) => l.filter((_, j) => j !== i))}
+                      className="text-[11.5px] text-muted hover:text-danger-ink px-1.5 h-6 rounded-md hover:bg-danger-bg transition-colors">Remove</button>
+                  </div>
+                  <input className={inp} placeholder="Name" aria-label={`Pickup ${i + 2} name`} value={x.name} onChange={(e) => setStop(i, { name: e.target.value })} />
+                  <input className={inp} placeholder="Address" aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
+                </div>
+              ))}
+              {stops.length < 9 && (
+                <button type="button" onClick={addStop}
+                  className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2.5 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors">
+                  <Plus size={13} /> Add a pickup
+                </button>
+              )}
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Delivery</div>
                 <input className={inp} placeholder="Name" value={delivery.name} onChange={(e) => setDelivery({ ...delivery, name: e.target.value })} />
@@ -328,6 +355,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
     const who = [b.carrier, b.broker && (b.carrier ? `via ${b.broker}` : b.broker)].filter(Boolean).join(" ");
     const refs = [b.bol && `BOL ${b.bol}`, b.pro && `PRO ${b.pro}`].filter(Boolean).join(", ");
     const dates = [
+      extraStops(b).length > 0 && `${extraStops(b).length + 1} pickups`,
       b.pickup_date && `Pickup ${fmtDay(b.pickup_date)}`,
       (b.delivered_at || b.delivery_date) && `${b.delivered_at ? "Delivered" : "Delivery"} ${fmtDay(b.delivered_at || b.delivery_date)}`,
     ].filter(Boolean).join(", ");

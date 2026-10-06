@@ -69,6 +69,8 @@ const shape = (b: any) => {
   };
   if (!o.can_see_names) { o.pickup_name = ""; o.delivery_name = ""; }
   if (!o.can_see_addresses) { o.pickup_address = ""; o.delivery_address = ""; }
+  // R-452: the extra pickups, redacted the same way.
+  o.extra_pickups = (o.extra_pickups ?? []).map((x: any) => ({ ...x, name: o.can_see_names ? x.name : "", address: o.can_see_addresses ? x.address : "" }));
   if (dad) o.deal = null;
   return o;
 };
@@ -134,6 +136,14 @@ const handlers: Record<string, (a: any) => any> = {
       const rows = qs.includes("include_done=1") ? [...LIVE, ...DONE] : LIVE;
       return { bookings: rows.map(shape) };
     }
+    // R-452: the Send sheet's prefill (two suppliers on the deal) and its create.
+    if (method === "GET" && p.startsWith("/api/logistics/prefill/")) {
+      return { pickup_name: "Northgate Wholesale", pickup_address: "410 Mercer Ave, Northgate, OH 44120", delivery_name: "Lakeside Discount Co",
+        delivery_address: "12 Shore Rd, Lakeside, MI 49001", pickup_options: [
+          { name: "Northgate Wholesale", address: "410 Mercer Ave, Northgate, OH 44120" },
+          { name: "Birchwood Supply Yard", address: "88 Kiln St, Fairhaven, OH 44101" }] };
+    }
+    if (method === "POST" && p === "/api/logistics/bookings") { (window as any).__created = body; return shape({ ...LIVE[0], ...body, id: "fb_new0000000" }); }
     const m = /^\/api\/logistics\/bookings\/(.+)$/.exec(p);
     if (method === "PATCH" && m) {
       const b = [...LIVE, ...DONE].find((x) => x.id === m[1]);

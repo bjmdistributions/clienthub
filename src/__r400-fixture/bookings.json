@@ -114,7 +114,17 @@
         "client_name": "Lakeside Discount Co",
         "stage": "payment_received"
       },
-      "booked_at": ""
+      "booked_at": "",
+      "extra_pickups": [
+        {
+          "name": "Birchwood Supply Yard",
+          "address": "88 Kiln St, Fairhaven, OH 44101",
+          "window": "1 to 4",
+          "contact": "Dana",
+          "phone": "555-0142",
+          "notes": ""
+        }
+      ]
     },
     {
       "status": "delivered",
