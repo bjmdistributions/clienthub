@@ -173,7 +173,6 @@ export function LogisticsFreightSetting() {
  *  so this only changes the counters. An admin's setting. */
 export function LogisticsNumberingSetting() {
   type Form = { loadPrefix: string; loadNext: number; bolPrefix: string; bolNext: number };
-  const [freight, setFreight] = useState(true);
   const [base, setBase] = useState<Form | null>(null);
   const [form, setForm] = useState<Form | null>(null);
   const [err, setErr] = useState("");
@@ -182,7 +181,7 @@ export function LogisticsNumberingSetting() {
     try {
       const s = await api.logistics.settings.get();
       const f: Form = { loadPrefix: s.load_prefix ?? "LD-", loadNext: s.load_next_number ?? 1, bolPrefix: s.bol_prefix ?? "BOL-", bolNext: s.bol_next_number ?? 1 };
-      setFreight(s.freight_by_team !== false); setBase(f); setForm(f); setErr("");
+      setBase(f); setForm(f); setErr("");
     } catch (e) { setErr(String(e)); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -201,7 +200,7 @@ export function LogisticsNumberingSetting() {
     setBusy(true); setErr("");
     try {
       const s = await api.logistics.settings.save({
-        freight_by_team: freight, load_prefix: form.loadPrefix.trim(), load_next_number: form.loadNext,
+        load_prefix: form.loadPrefix.trim(), load_next_number: form.loadNext,
         bol_prefix: form.bolPrefix.trim(), bol_next_number: form.bolNext,
       });
       const f: Form = { loadPrefix: s.load_prefix ?? form.loadPrefix.trim(), loadNext: s.load_next_number ?? form.loadNext, bolPrefix: s.bol_prefix ?? form.bolPrefix.trim(), bolNext: s.bol_next_number ?? form.bolNext };

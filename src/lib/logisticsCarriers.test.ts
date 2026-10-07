@@ -130,7 +130,9 @@ describe("who may pay carriers", () => {
     expect(canEditCarriers(me(["logistics:view", "logistics:edit"]))).toBe(true);
     expect(canEditCarriers(me(["logistics:view"]))).toBe(false);
     expect(canSeePayDetails(me(["logistics:view", "deal_flow:view_numbers"]))).toBe(true);
-    expect(canSeePayDetails(me(["logistics:view"]))).toBe(false);
+    expect(canSeePayDetails(me(["logistics:view"]))).toBe(true);
+    expect(canSeePayDetails(me(["deal_flow:view", "logistics:view"]))).toBe(false);
+    expect(canSeePayDetails(me(["deal_flow:view", "deal_flow:edit"]))).toBe(false);
   });
   it("offers Mark paid only on a booked, picked up or delivered load the viewer has the figures for", () => {
     const b = { status: "delivered" as const, can_see_deal: true, can_see_money: true };

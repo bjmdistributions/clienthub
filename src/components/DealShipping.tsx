@@ -3,7 +3,7 @@ import { Check, FileText, Paperclip, Plus, Send, Truck, X } from "lucide-react";
 import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
 import { laneEnds } from "../lib/logisticsCarriers";
-import { PAID_BANNER, SEND_UNPAID_CONFIRM, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
+import { PAID_BANNER, SEND_UNPAID_CONFIRM, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidMethodWord, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
 import { CarrierHost } from "./LogisticsCarriers";
 import { RateCard } from "./LogisticsRates";
@@ -459,7 +459,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
     const dates = timingLine(b);
     const nFiles = b.files?.length ?? 0;
     const money = [
-      b.paid_amount != null && `Amount paid ${fmtAmount(b.paid_amount)}${b.paid_at ? ` on ${fmtDay(b.paid_at)}` : ""}${b.paid_method ? ` with ${b.paid_method}` : ""}`,
+      b.paid_amount != null && `Amount paid ${fmtAmount(b.paid_amount)}${b.paid_at ? ` on ${fmtDay(b.paid_at)}` : ""}${b.paid_method ? ` with ${paidMethodWord(b.paid_method)}` : ""}`,
       b.paid_amount == null && b.quoted_cost != null && `Carrier rate ${fmtAmount(b.quoted_cost)}`,
       b.status === "quoted" && b.quote_amount != null && `Quote ${fmtAmount(b.quote_amount)}, ${(b.quote_invoiced_at || "").trim() ? "on the invoice" : "not on the invoice yet"}`,
     ].filter(Boolean).join(", ");

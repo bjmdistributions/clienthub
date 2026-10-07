@@ -4724,7 +4724,8 @@ macro_rules! ship_facts_cols {
             "(SELECT COALESCE(SUM(fb.quoted_cost),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NULL AND fb.quoted_cost IS NOT NULL) AS logistics_quoted, ",
             "COALESCE((SELECT MIN(CASE fb.status WHEN 'requested' THEN 1 WHEN 'booked' THEN 2 WHEN 'picked_up' THEN 3 WHEN 'delivered' THEN 4 ELSE 5 END) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted')), (SELECT MIN(CASE fb.status WHEN 'quote' THEN 6 ELSE 7 END) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status IN ('quote','quoted')), 0) AS logistics_stage_rank, ",
             "(SELECT COALESCE(SUM(sa.amount),0) FROM bank_allocation sa WHERE sa.deal_flow_id=df.id AND sa.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn sbt WHERE sbt.id=sa.bank_txn_id)) AS shipping_linked, ",
-            "(SELECT COUNT(*) FROM bank_allocation sa WHERE sa.deal_flow_id=df.id AND sa.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn sbt WHERE sbt.id=sa.bank_txn_id)) AS shipping_link_count"
+            "(SELECT COUNT(*) FROM bank_allocation sa WHERE sa.deal_flow_id=df.id AND sa.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn sbt WHERE sbt.id=sa.bank_txn_id)) AS shipping_link_count, ",
+            "(SELECT group_concat(fb.paid_amount) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NOT NULL) AS logistics_paid_list"
         )
     };
 }
@@ -4765,6 +4766,9 @@ pub struct ShipFacts {
     pub stage_rank: i64,
     pub linked: f64,
     pub has_link: bool,
+    /// R-459: the paid amount of the trucks the shipping links do not cover yet (`freight::shipping_link_rest`);
+    /// the bank wins for the trucks it covers, this is the rest. 0 unless the links cover only some trucks.
+    pub link_rest: f64,
     pub freight_typed: f64,
     /// R-415: what the customer was charged for shipping (`freight::charged_of` over the invoice)
     /// and where it came from (`lines`, `field`, `none`; empty reads as `none`).
@@ -4775,11 +4779,11 @@ pub struct ShipFacts {
 impl ShipFacts {
     pub fn mode(&self) -> bool { self.bookings > 0 || self.has_link }
     pub fn leg(&self) -> f64 {
-        if self.has_link { self.linked } else if self.mode() { self.paid } else { 0.0 }
+        if self.has_link { self.linked + self.link_rest } else if self.mode() { self.paid } else { 0.0 }
     }
     pub fn estimate(&self) -> f64 {
         if self.mode() {
-            let known = if self.has_link { self.linked } else { self.paid };
+            let known = if self.has_link { self.linked + self.link_rest } else { self.paid };
             if self.unpaid > 0 { (known + self.quoted).max(self.billed) } else { known }
         } else {
             self.freight_typed
@@ -4806,7 +4810,7 @@ impl ShipFacts {
     /// floor Payables and Free cash use, the same as the projection's. Twin of the server's `owed`.
     pub fn shipping_owed(&self) -> f64 {
         if !self.mode() || self.unpaid == 0 { return 0.0; }
-        let known = if self.has_link { self.linked } else { self.paid };
+        let known = if self.has_link { self.linked + self.link_rest } else { self.paid };
         r2((self.estimate() - known).max(0.0))
     }
 }
@@ -4845,14 +4849,20 @@ fn ship_facts_from_row(r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipF
     let items: String = r.get("inv_line_items_json").unwrap_or_default();
     let field: f64 = r.get("inv_shipping_charged").unwrap_or(0.0);
     let (billed, billed_source) = crate::freight::charged_of(&items, field);
+    let linked = r2(r.get::<_, f64>("shipping_linked").unwrap_or(0.0));
+    let has_link = r.get::<_, i64>("shipping_link_count").unwrap_or(0) > 0;
+    let paid_list: String = r.get::<_, Option<String>>("logistics_paid_list").ok().flatten().unwrap_or_default();
+    let paid_amounts: Vec<f64> = paid_list.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    let link_rest = if has_link { crate::freight::shipping_link_rest(linked, &paid_amounts) } else { 0.0 };
     ShipFacts {
         bookings: r.get("logistics_bookings").unwrap_or(0),
         unpaid: r.get("logistics_unpaid").unwrap_or(0),
         paid: r2(r.get::<_, f64>("logistics_paid").unwrap_or(0.0)),
         quoted: r2(r.get::<_, f64>("logistics_quoted").unwrap_or(0.0)),
         stage_rank: r.get("logistics_stage_rank").unwrap_or(0),
-        linked: r2(r.get::<_, f64>("shipping_linked").unwrap_or(0.0)),
-        has_link: r.get::<_, i64>("shipping_link_count").unwrap_or(0) > 0,
+        linked,
+        has_link,
+        link_rest,
         freight_typed: freight_typed_of(payments),
         billed,
         billed_source,
@@ -18715,7 +18725,7 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         let supplier_missing = !supplier_linked && !no_supplier && supplier_target > 0.01;
         // Only a deal that uses Logistics is flagged for a missing shipping link; one that does
         // not keeps the needs-review it always had. Same rule as the server.
-        let shipping_missing = facts.mode() && shipping_required && !(shipping_paired > 0.01) && !no_shipping;
+        let shipping_missing = facts.mode() && shipping_required && (!(shipping_paired > 0.01) || facts.link_rest > 0.005) && !no_shipping;
         let shipping_ok = !shipping_required || shp
             || (!facts.mode() && supplier_paired + shipping_paired >= supplier_target + facts.freight_typed - 0.5);
         let needs_review = buyer_missing || supplier_missing || shipping_missing;
@@ -27444,6 +27454,25 @@ mod r400_shipping_tests {
         let r = deal_reconciliation(id.clone()).await.unwrap();
         assert_eq!(r["actual_profit"], json!(3200.0));
         assert_eq!(r["fully_reconciled"], json!(true));
+    }
+
+    /// R-459: a shipping link that covers only one of two paid trucks does not drop the other truck.
+    #[tokio::test]
+    async fn a_partly_linked_shipping_leg_keeps_the_truck_the_bank_does_not_cover() {
+        let _db = crate::db::init_test_store();
+        let id = deal("recon_part", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(300.0), None, 0);
+        booking(&id, "2", "delivered", Some(500.0), None, 0);
+        link(&id, "buyer_payment", 10000.0);
+        link(&id, "supplier_payment", 6000.0);
+        link(&id, "shipping", 300.0);
+        let facts = ship_facts(&pool().get().unwrap(), &id);
+        assert_eq!((facts.linked, facts.link_rest, facts.leg()), (300.0, 500.0, 800.0));
+        let s = futures::executor::block_on(reconciliation_status_all()).unwrap().into_iter().find(|v| v["deal_flow_id"] == id.as_str()).unwrap();
+        assert_eq!(s["shipping_missing"], json!(true), "a paid truck with no link yet is flagged");
+        pool().get().unwrap().execute("UPDATE bank_allocation SET amount=800 WHERE deal_flow_id=?1 AND role='shipping'", [&id]).unwrap();
+        let facts = ship_facts(&pool().get().unwrap(), &id);
+        assert_eq!((facts.linked, facts.link_rest, facts.leg()), (800.0, 0.0, 800.0));
     }
 
     /// Reopen, lose the booking, complete again: the old shipping figure must not linger on the row.

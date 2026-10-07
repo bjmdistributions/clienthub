@@ -241,7 +241,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
       )}
 
       {view === "shipments" && canShipments ? <LogisticsShipments />
-        : view === "carriers" ? <CarriersView openId={carrierId} onOpenLoad={(id) => { setView("bookings"); openLoad(id); }} />
+        : view === "carriers" ? <CarriersView openId={carrierId} onHostClose={() => setCarrierId(undefined)} onOpenLoad={(id) => { setView("bookings"); openLoad(id); }} />
         : view === "pay" && canPay ? <PayCarriersView rev={payRev} onOpenLoad={(id, step) => openLoad(id, step)} /> : (<>
 
       {/* R-401: his own pay, only when he is the one being paid. Nothing about what a customer was charged. */}

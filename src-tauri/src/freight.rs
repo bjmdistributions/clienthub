@@ -551,7 +551,28 @@ impl DealPay {
 /// freight known, so a load whose amount paid is missing is pending (see `deal_pay`) and is never
 /// measured against a quote or the billed figure.
 pub fn freight_of(facts: &crate::commands::ShipFacts) -> (f64, &'static str) {
-    if facts.has_link { (cents(facts.linked), "bank") } else { (cents(facts.paid), "paid") }
+    if facts.has_link { (cents(facts.linked + facts.link_rest), "bank") } else { (cents(facts.paid), "paid") }
+}
+
+/// R-459: the paid amount of the trucks a deal's shipping bank links do not cover yet. The bank still wins for the trucks it
+/// covers. Only when the links add up (within 0.50) to a strict subset of two or more paid trucks is the rest uncovered; any
+/// other shape (one truck, links at or above what was paid, a bank amount that matches no subset) returns 0 and the bank
+/// wins as before.
+pub fn shipping_link_rest(linked: f64, paid_amounts: &[f64]) -> f64 {
+    let n = paid_amounts.len();
+    let paid: f64 = paid_amounts.iter().sum();
+    if n < 2 || n > 12 || linked + 0.50 >= paid {
+        return 0.0;
+    }
+    let mut best: Option<(f64, f64)> = None; // (distance, subset sum)
+    for mask in 1u32..((1u32 << n) - 1) {
+        let s: f64 = (0..n).filter(|i| mask & (1 << i) != 0).map(|i| paid_amounts[i]).sum();
+        let d = (s - linked).abs();
+        if d <= 0.50 + 1e-9 && best.map_or(true, |(bd, _)| d < bd) {
+            best = Some((d, s));
+        }
+    }
+    best.map_or(0.0, |(_, s)| ((paid - s) * 100.0).round() / 100.0)
 }
 
 /// The logistics pay for one deal under the org's rule, or `None` when there is no line: the rule
@@ -1064,6 +1085,18 @@ mod pay_tests {
         assert_eq!(freight_of(&bank), (810.0, "bank"));
         let only_bank = crate::commands::ShipFacts { bookings: 1, has_link: true, linked: 810.0, ..Default::default() };
         assert_eq!(freight_of(&only_bank), (810.0, "bank"));
+    }
+
+    #[test]
+    fn shipping_link_rest_covers_the_trucks_the_bank_does_not() {
+        assert_eq!(shipping_link_rest(300.0, &[300.0, 500.0]), 500.0);
+        assert_eq!(shipping_link_rest(800.0, &[300.0, 500.0]), 0.0);
+        assert_eq!(shipping_link_rest(340.0, &[350.0]), 0.0);
+        assert_eq!(shipping_link_rest(840.0, &[350.0, 500.0]), 0.0);
+        assert_eq!(shipping_link_rest(0.0, &[300.0, 500.0]), 0.0);
+        assert_eq!(shipping_link_rest(299.75, &[300.0, 500.0, 200.0]), 700.0);
+        let partly = crate::commands::ShipFacts { bookings: 2, has_link: true, linked: 300.0, link_rest: 500.0, paid: 800.0, ..Default::default() };
+        assert_eq!(freight_of(&partly), (800.0, "bank"));
     }
 
     #[test]

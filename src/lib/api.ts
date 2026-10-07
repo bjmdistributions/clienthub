@@ -3910,7 +3910,8 @@ export const api = {
     /** R-415: who fills in the freight. Anyone the Logistics routes let in reads it; saving is an admin's. */
     settings: {
       get: () => logisticsRequest<LogisticsSettings>("GET", "/api/logistics/settings"),
-      save: (s: LogisticsSettings) => logisticsRequest<LogisticsSettings>("PUT", "/api/logistics/settings", s),
+      /** Only the keys present are written (the server keeps the rest), so a block saves its own keys and never another's. */
+      save: (s: Partial<LogisticsSettings>) => logisticsRequest<LogisticsSettings>("PUT", "/api/logistics/settings", s),
     },
     /** R-415: every deal with a booking, with what was charged, paid and left over. An admin, or a
      *  deal viewer with the dollar switch. `from` and `to` are days (YYYY-MM-DD), both optional. */

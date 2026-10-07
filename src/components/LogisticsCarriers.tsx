@@ -322,7 +322,7 @@ export function CarrierPicker({ value, carrierId, carriers, onType, onPick, onSa
 
 // ─── the Carriers view ────────────────────────────────────────────────────
 
-export function CarriersView({ openId, onOpenLoad }: { openId?: string; onOpenLoad: (bookingId: string) => void }) {
+export function CarriersView({ openId, onOpenLoad, onHostClose }: { openId?: string; onOpenLoad: (bookingId: string) => void; onHostClose?: () => void }) {
   const me = useSessionMe();
   const canEdit = canEditCarriers(me);
   const { list, error, reload } = useCarriers();
@@ -389,7 +389,7 @@ export function CarriersView({ openId, onOpenLoad }: { openId?: string; onOpenLo
           ))}
         </section>
       )}
-      {host && <CarrierHost id={host.id} onClose={() => setHost(null)} onChanged={reload} onOpenLoad={(id) => { setHost(null); onOpenLoad(id); }} />}
+      {host && <CarrierHost id={host.id} onClose={() => { setHost(null); onHostClose?.(); }} onChanged={reload} onOpenLoad={(id) => { setHost(null); onHostClose?.(); onOpenLoad(id); }} />}
     </div>
   );
 }

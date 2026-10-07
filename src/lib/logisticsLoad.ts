@@ -99,12 +99,22 @@ export const BANK_LINK_WORD: Record<string, string> = {
   linked: "Linked to the bank", partial: "Partly linked to the bank", none: "Not linked to the bank",
 };
 
+const PAID_METHOD_WORDS: Record<string, string> = {
+  zelle: "Zelle", wire: "Wire", ach: "ACH", credit_card: "Credit card", check: "Check", other: "Other",
+};
+
+/** How a load was paid, as a word: a key an older phone build stored ("credit_card") reads as its label. */
+export const paidMethodWord = (m: string | null | undefined): string => {
+  const t = (m || "").trim();
+  return PAID_METHOD_WORDS[t.toLowerCase()] ?? t;
+};
+
 /** "Paid $1,850.00 on Oct 6 by Zelle, ref 4471" or "Not paid yet". */
 export function paymentLine(b: { paid_amount: number | null; paid_at: string; paid_method: string; paid_note: string }): string {
   if (b.paid_amount == null) return "Not paid yet";
   const bits = [`Paid ${fmtAmount(b.paid_amount)}`];
   if (b.paid_at) bits.push(`on ${fmtDayLabel(b.paid_at)}`);
-  if (b.paid_method) bits.push(`by ${b.paid_method}`);
+  if (b.paid_method) bits.push(`by ${paidMethodWord(b.paid_method)}`);
   const head = bits.join(" ");
   return b.paid_note.trim() ? `${head}, ${b.paid_note.trim()}` : head;
 }
@@ -180,6 +190,25 @@ export function pickStatus(cur: Actuals, to: FreightStatus, today: string): Actu
   else if (to === "picked_up") { out.picked_up_at = cur.picked_up_at || today; out.delivered_at = ""; }
   else if (to === "requested" || to === "booked") { out.picked_up_at = ""; out.picked_up_time = ""; out.delivered_at = ""; }
   return out;
+}
+
+/** The pickup-number check to send with a save, or undefined to leave it as it is. A changed number clears the
+ *  check on the server, so a box ticked again after the number changed is a re-confirmation and is sent even
+ *  though it was ticked before. */
+export function confirmToSend(numberChanged: boolean, was: boolean, now: boolean): boolean | undefined {
+  if (numberChanged && now) return true;
+  return now !== was ? now : undefined;
+}
+
+/** Whether a status may be picked on a load that is `from` now. The team (deal_flow:edit) may pick any.
+ *  Without it the server refuses `quote` always, `quoted` unless the load is a quote already, and every
+ *  other status while the load is a quote or quoted (the team sends it to book). The current status is
+ *  always listed. */
+export function statusAllowed(to: FreightStatus, from: string, dealEdit: boolean): boolean {
+  if (dealEdit || to === from) return true;
+  if (to === "quote") return false;
+  if (to === "quoted") return isQuoteStage(from);
+  return !isQuoteStage(from);
 }
 
 /** A person fills in an actual day. The pickup day moves To book or Booked to On the way, and the
@@ -264,9 +293,10 @@ export const GROUPS: { key: GroupKey; title: string }[] = [
   { key: "delivered", title: "Delivered" },
 ];
 
-/** Urgent and not picked up yet. Once the truck has the load it is no longer ahead of anything. */
+/** Urgent and not picked up yet. Once the truck has the load it is no longer ahead of anything, and a
+ *  quoted load is with the team (the phone and the server list it the same way). */
 export const isHot = (b: { urgent?: boolean; status: string }): boolean =>
-  !!b.urgent && (isQuoteStage(b.status) || b.status === "requested" || b.status === "booked");
+  !!b.urgent && (b.status === "quote" || b.status === "requested" || b.status === "booked");
 
 /** Picked up or delivered and nobody has recorded what the carrier charged yet. A figure the server
  *  withheld is hidden, not missing. (The deal side still asks for it; the logistics list no longer does.) */

@@ -3,7 +3,7 @@ import type { FreightBooking } from "./api";
 import {
   EQUIPMENT, GROUPS, LOAD_STEPS, QUOTE_WAITING_WARNING, STATUS_ORDER,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
-  isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, paperworkOf, paymentLine, pickStatus,
+  isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, paidMethodWord, paperworkOf, paymentLine, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, statusAfterActual, statusWord, stepDone, timeWord,
 } from "./logisticsLoad";
 
@@ -237,6 +237,30 @@ describe("the list groups", () => {
     expect(groupOf(mk({ status: "booked", urgent: true }))).toBe("urgent");
     expect(groupOf(mk({ status: "picked_up", urgent: true }))).toBe("way");
     expect(isHot({ status: "delivered", urgent: true })).toBe(false);
+  });
+  it("does not lead with an urgent quoted load, it is with the team (as on the phone and the server)", () => {
+    expect(isHot({ status: "quoted", urgent: true })).toBe(false);
+    expect(groupOf(mk({ status: "quoted", urgent: true }))).toBe("quoted");
+    expect(isHot({ status: "quote", urgent: true })).toBe(true);
+  });
+  it("lists only the statuses the server lets a viewer without deal edit pick", () => {
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quote", false))).toEqual(["quote", "quoted"]);
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quoted", false))).toEqual(["quoted"]);
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "booked", false))).toEqual(["requested", "booked", "picked_up", "delivered", "cancelled"]);
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quote", true))).toEqual(STATUS_ORDER);
+  });
+  it("sends a pickup number check that was ticked again after the number changed", () => {
+    expect(confirmToSend(true, true, true)).toBe(true);
+    expect(confirmToSend(true, true, false)).toBe(false);
+    expect(confirmToSend(false, true, true)).toBeUndefined();
+    expect(confirmToSend(false, false, true)).toBe(true);
+    expect(confirmToSend(true, false, false)).toBeUndefined();
+  });
+  it("reads a legacy pay method key as its label", () => {
+    expect(paymentLine({ paid_amount: 100, paid_at: "", paid_method: "credit_card", paid_note: "" })).toBe("Paid $100.00 by Credit card");
+    expect(paymentLine({ paid_amount: 100, paid_at: "", paid_method: "Zelle", paid_note: "" })).toBe("Paid $100.00 by Zelle");
+    expect(paidMethodWord("wire")).toBe("Wire");
+    expect(paidMethodWord("Cash app")).toBe("Cash app");
   });
   it("holds a delivered load for paperwork until the proof, the carrier invoice and the rate are in", () => {
     expect(groupOf(mk({ status: "delivered", quoted_cost: 1500 }))).toBe("paperwork");

@@ -115,9 +115,10 @@ export function canPayCarriers(me: Perms | null | undefined): boolean {
 export const canEditCarriers = (me: Perms | null | undefined): boolean =>
   !!me && (isAdmin(me) || can(me, "logistics:edit") || can(me, "deal_flow:edit"));
 
-/** Who sees how a carrier gets paid (the details are money): the dollar switch, or an admin. */
+/** Who sees how a carrier gets paid (the details are money): the dollar switch, an admin, or an account
+ *  with no deal access at all (the Logistics person who sets how a carrier is paid). The server's money rule. */
 export const canSeePayDetails = (me: Perms | null | undefined): boolean =>
-  !!me && (isAdmin(me) || can(me, "deal_flow:view_numbers"));
+  !!me && (isAdmin(me) || can(me, "deal_flow:view_numbers") || !can(me, "deal_flow:view"));
 
 export interface MarkPaidForm { amount: string; paidAt: string; method: string; note: string }
 

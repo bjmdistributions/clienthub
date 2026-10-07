@@ -10,9 +10,10 @@ import {
   FILE_KINDS, LOAD_STEPS, PAID_BANNER, SEND_UNPAID_CONFIRM, STATUS_ORDER,
   dealPaid, equipmentOptions, fileKind, fileKindLabel, firstStep, fmtDayLabel, isHot, isLogisticsSide,
   isQuoteStage, laneLabel, loadNumber, moneyHidden, needsAmount, paperworkOf, paymentLine, pickStatus as pickStatusFields,
-  pickupNumberUnconfirmed, statusAfterActual, statusWord, stepDone, timeWord, type LoadStep,
+  pickupNumberUnconfirmed, confirmToSend, statusAfterActual, statusAllowed, statusWord, stepDone, timeWord, type LoadStep,
 } from "../lib/logisticsLoad";
-import { canEditCarriers, canPayCarriers, canRecordOn, payMethodLabel } from "../lib/logisticsCarriers";
+import { canEditCarriers, canPayCarriers, canRecordOn, carrierByName, payMethodLabel } from "../lib/logisticsCarriers";
+import { can } from "../lib/permissions";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
 import { openLogisticsHit, startBolFromLoad } from "../lib/logisticsSearch";
 import { useSessionMe } from "../lib/useSessionMe";
@@ -343,12 +344,14 @@ export function AccessorialsField({ value, onChange }: { value: string; onChange
   );
 }
 
-/** Every text column a person can write. Names and addresses are deliberately absent: they
- *  are read-only here, so a redacted empty string can never be written back over the real one.
+/** Every text column a person can write. The names and addresses of the first pickup and the delivery are
+ *  here too, but `save` sends them only while the viewer may see them, so a redacted empty string can
+ *  never be written back over the real one.
  *  R-459: the carrier payment (paid amount, day, method, note) is no longer typed here: the team
  *  records it. The carrier rate (`quoted_cost`) and the quote (`quote_amount`) are money, so they
  *  sit in the draft beside these as `rate` and `quote`. */
 const TEXT_KEYS = [
+  "pickup_name", "pickup_address", "delivery_name", "delivery_address",
   "pickup_date", "pickup_appt_time", "pickup_window", "pickup_contact", "pickup_phone", "pickup_dock", "pickup_notes", "pickup_number",
   "picked_up_at", "picked_up_time",
   "delivery_date", "delivery_appt_time", "delivery_window", "delivery_contact", "delivery_phone", "delivery_dock", "delivery_notes",
@@ -364,6 +367,11 @@ type Draft = Record<TextKey, string> & {
   /** The pickup-number check on the first pickup. */
   confirmed: boolean;
 };
+
+/** A name is written only by someone who may see names, an address only by someone who may see addresses. */
+const hiddenPlaceKey = (k: string, b: { can_see_names: boolean; can_see_addresses: boolean }): boolean =>
+  (k.endsWith("_name") && (k.startsWith("pickup") || k.startsWith("delivery")) && !b.can_see_names) ||
+  (k.endsWith("_address") && !b.can_see_addresses);
 
 const moneyText = (n: number | null | undefined) => (n == null ? "" : String(n));
 const STOP_KEYS: (keyof FreightStop)[] = ["name", "address", "window", "contact", "phone", "notes", "dock", "pickup_number"];
@@ -574,10 +582,19 @@ export default function LogisticsBookingForm({
     }));
   };
   /** An actual day is filled in or cleared: the status follows it before Save, the way the server reads it. */
+  const dealEdit = can(me, "deal_flow:edit");
   const setActual = (field: "picked_up_at" | "delivered_at", v: string) =>
-    setDraft((d) => ({ ...d, [field]: v, status: statusAfterActual(d.status, field, v, field === "picked_up_at" ? v : d.picked_up_at) }));
+    setDraft((d) => ({
+      ...d, [field]: v,
+      // Without deal edit the server never moves a quote or quoted load (the team sends it to book).
+      status: !dealEdit && isQuoteStage(d.status) ? d.status : statusAfterActual(d.status, field, v, field === "picked_up_at" ? v : d.picked_up_at),
+    }));
+  /** Typing a name that is exactly a saved carrier's name is picking that carrier, so the load carries its id. */
   const setCarrier = (v: string) =>
-    setDraft((d) => ({ ...d, carrier: v, carrier_id: v === base.carrier ? base.carrier_id : "" }));
+    setDraft((d) => {
+      const hit = carriers && !carriersError ? carrierByName(v, carriers) : null;
+      return { ...d, carrier: v, carrier_id: hit ? hit.id : v === base.carrier ? base.carrier_id : "" };
+    });
   /** A saved carrier is picked: its name and id go on the load, and the save carries both. */
   const pickCarrier = (c: { id: string; name: string }) => setDraft((d) => ({ ...d, carrier: c.name, carrier_id: c.id }));
   const setPickupNumber = (v: string) =>
@@ -597,13 +614,14 @@ export default function LogisticsBookingForm({
     if (problem) { setError(problem); return; }
     if (opts?.withQuote && moneyValue(draft.quote) == null) { setError("Add the quote amount first."); return; }
     const patch: Record<string, unknown> = {};
-    for (const k of TEXT_KEYS) if (draft[k] !== base[k]) patch[k] = draft[k];
+    for (const k of TEXT_KEYS) if (draft[k] !== base[k] && !hiddenPlaceKey(k, booking)) patch[k] = draft[k];
     if (draft.status !== base.status) patch.status = draft.status;
     if (opts?.status) patch.status = opts.status;
     if (draft.quote !== base.quote || opts?.withQuote) patch.quote_amount = moneyValue(draft.quote);
     if (draft.rate !== base.rate) patch.quoted_cost = moneyValue(draft.rate);
     if (draft.urgent !== base.urgent) patch.urgent = draft.urgent;
-    if (draft.confirmed !== base.confirmed) patch.pickup_number_confirmed = draft.confirmed;
+    const sendConfirm = confirmToSend(draft.pickup_number !== base.pickup_number, base.confirmed, draft.confirmed);
+    if (sendConfirm !== undefined) patch.pickup_number_confirmed = sendConfirm;
     if (stopsKey(draft.stops) !== stopsKey(base.stops)) {
       // The server stamps who confirmed a stop and when; the client only says whether it is confirmed.
       patch.extra_pickups = draft.stops.map((s) => {
@@ -688,6 +706,19 @@ export default function LogisticsBookingForm({
       ...d,
       stops: d.stops.map((x, j) => (j === i ? { ...x, pickup_number: v, confirmed: v.trim() === (base.stops[i]?.pickup_number ?? "").trim() ? !!base.stops[i]?.confirmed : false } : x)),
     }));
+  /** The first pickup's and the delivery's name and address: inputs for what the viewer may see, the read-only
+   *  card when they may see neither (a hidden half stays a lock, never an empty box that could be written back). */
+  const placeBlock = (p: "pickup" | "delivery") => {
+    const names = booking.can_see_names, addrs = booking.can_see_addresses;
+    if (!names && !addrs) return <Place name="" address="" canNames={false} canAddr={false} />;
+    const hidden = <p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={11} />Hidden by your permissions</p>;
+    return (
+      <div className="grid grid-cols-2 gap-3">
+        {names ? t(`${p}_name`, "Name", { wide: true }) : <Field label="Name" wide>{hidden}</Field>}
+        {addrs ? t(`${p}_address`, "Address", { wide: true }) : <Field label="Address" wide>{hidden}</Field>}
+      </div>
+    );
+  };
   const stopInput = (i: number, k: keyof FreightStop, label: string, wide?: boolean) => (
     <Field label={label} wide={wide}>
       <input className={inp} value={String(draft.stops[i][k] ?? "")} onChange={(e) => setStop(i, k, e.target.value)} />
@@ -784,7 +815,7 @@ export default function LogisticsBookingForm({
             {onInvoice && (
               <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink flex items-center justify-between gap-3 flex-wrap" role="status">
                 <span>On invoice {onInvoice.invoice_number}. Review and send it.</span>
-                <button type="button" onClick={() => { openInvoiceById(onInvoice.invoice_id); onClose(); }}
+                <button type="button" onClick={() => leaveFor(() => { openInvoiceById(onInvoice.invoice_id); onClose(); })}
                   className="flex items-center gap-1 px-3 h-8 rounded-lg border border-success/40 text-[12px] font-medium hover:bg-success-bg/60 whitespace-nowrap">
                   <ExternalLink size={12} /> Open the invoice
                 </button>
@@ -833,7 +864,7 @@ export default function LogisticsBookingForm({
         </p>
       )}
       <Section title={draft.stops.length ? "Pickup 1" : "Pickup"}>
-        <Place name={booking.pickup_name} address={booking.pickup_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+        {placeBlock("pickup")}
         <div className="grid grid-cols-2 gap-3">
           {t("pickup_contact", "Contact")}
           {t("pickup_phone", "Phone")}
@@ -893,7 +924,7 @@ export default function LogisticsBookingForm({
       )}
 
       <Section title="Delivery">
-        <Place name={booking.delivery_name} address={booking.delivery_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+        {placeBlock("delivery")}
         <div className="grid grid-cols-2 gap-3">
           {t("delivery_contact", "Contact")}
           {t("delivery_phone", "Phone")}
@@ -958,7 +989,7 @@ export default function LogisticsBookingForm({
   const pickupStep = (
     <div className="space-y-6">
       <Section title="Pickup">
-        <Place name={booking.pickup_name} address={booking.pickup_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+        <Place name={draft.pickup_name} address={draft.pickup_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
         <div className="grid grid-cols-2 gap-x-3 gap-y-4">
           <div className="min-w-0 space-y-3">
             <div className="text-[12px] font-medium text-ink-2">Appointment</div>
@@ -983,7 +1014,7 @@ export default function LogisticsBookingForm({
   const deliveryStep = (
     <div className="space-y-6">
       <Section title="Delivery">
-        <Place name={booking.delivery_name} address={booking.delivery_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+        <Place name={draft.delivery_name} address={draft.delivery_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
         <div className="grid grid-cols-2 gap-x-3 gap-y-4">
           <div className="min-w-0 space-y-3">
             <div className="text-[12px] font-medium text-ink-2">ETA or appointment</div>
@@ -1128,7 +1159,7 @@ export default function LogisticsBookingForm({
               </label>
               <select aria-label="Status" value={draft.status} onChange={(e) => pickStatus(e.target.value as FreightStatus)}
                 className="h-8 rounded-lg border border-line bg-surface text-[12.5px] text-ink px-2 focus:outline-none focus:ring-2 focus:ring-accent/40">
-                {STATUS_ORDER.map((s) => <option key={s} value={s}>{statusWord(s, lg)}</option>)}
+                {STATUS_ORDER.map((s) => <option key={s} value={s} disabled={s !== draft.status && !statusAllowed(s, booking.status, dealEdit)}>{statusWord(s, lg)}</option>)}
               </select>
             </div>
           </div>
@@ -1147,7 +1178,7 @@ export default function LogisticsBookingForm({
 
           {isHot(booking) && (
             <div className="rounded-xl bg-danger-bg border border-danger/30 px-4 py-3 text-[13px] text-danger-ink" role="status">
-              <span className="font-semibold">Urgent.</span> {isQuoteStage(booking.status) ? "Quote this one first." : "Book this truck first."}
+              <span className="font-semibold">Urgent.</span> {booking.status === "quote" ? "Quote this one first." : "Book this truck first."}
               {booking.pickup_date && <> Pickup {booking.pickup_date === localDay() ? "today" : fmtDay(booking.pickup_date)}{booking.pickup_window ? `, ${booking.pickup_window}` : ""}.</>}
             </div>
           )}
@@ -1174,7 +1205,7 @@ export default function LogisticsBookingForm({
           {error && <div className="text-[12px] text-danger-ink" role="alert">{error}</div>}
           <div className="flex items-center gap-2 flex-wrap">
             {/* While the team fills the freight in, the team adds the trucks (the logistics person could not fill a new one). */}
-            {!freightLocked && (
+            {!freightLocked && (dealEdit || !isQuoteStage(booking.status)) && (
             <button type="button" onClick={addTruck}
               className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors">
               <Plus size={13} /> Add another truck
