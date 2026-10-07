@@ -48,6 +48,7 @@ import {
   Pin,
   Truck,
   CalendarClock,
+  ScrollText,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -88,10 +89,11 @@ import OnboardingWizard from "./components/OnboardingWizard";
 import GettingStarted from "./components/GettingStarted";
 import AuthView from "./components/AuthView";
 import LogisticsView from "./components/LogisticsView";
+import BolsView from "./components/BolsView";
 import { useAppStore } from "./lib/store";
 import { api, isUnavailable, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
-import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly } from "./lib/permissions";
+import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
 // never opens them. Globe is the expensive one — it is the only importer of
@@ -136,7 +138,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety" | "settings";
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -543,7 +545,7 @@ export default function App() {
   const logisticsLanded = useRef(false);
   useEffect(() => {
     if (!logisticsOnly) { logisticsLanded.current = false; return; }
-    const allowed = tab === "logistics" || (tab === "settings" && logisticsLanded.current);
+    const allowed = isLogisticsOnlyTab(tab) || (tab === "settings" && logisticsLanded.current);
     logisticsLanded.current = true;
     if (!allowed) { setTabState("logistics"); setPageKey((k) => k + 1); }
     if (splitTab) setSplit(null);
@@ -783,6 +785,7 @@ export default function App() {
     { id: "manifest", label: "Manifest analyzer", icon: ClipboardList },
     { id: "dealflow", label: "Deal Flow", icon: GitBranch, children: [
       { id: "logistics", label: "Logistics", icon: Truck },
+      { id: "bols", label: "BOLs", icon: ScrollText },
     ] },
     { id: "invoices", label: "Invoice", icon: FileText, children: [
       { id: "completed",  label: "Completed",  icon: Briefcase },
@@ -816,8 +819,8 @@ export default function App() {
   const visible = (id: Tab): boolean =>
     // R-400: a Logistics-only account sees its own screen and Settings (appearance and
     // profile only, see SettingsView). Everyone else sees Logistics when they may see deals.
-    logisticsOnly ? (id === "logistics" || id === "settings")
-    : id === "logistics" ? canViewLogistics(me)
+    logisticsOnly ? (isLogisticsOnlyTab(id) || id === "settings")
+    : id === "logistics" || id === "bols" ? canViewLogistics(me) // R-459: our own BOLs ride the same switch as the loads
     : id === "platform" ? (superadmin || localSuper)
     : id === "datasafety" ? (superadmin || localSuper) // secret integrity console
 
@@ -1143,6 +1146,7 @@ export default function App() {
             {t === "clientreceipt" && <ClientStatementView />}
             {t === "dealflow"   && <DealFlowView />}
             {t === "logistics"  && <LogisticsView me={me} />}
+            {t === "bols"       && <BolsView me={me} />}
             {t === "suppliers"  && <SuppliersView />}
             {t === "inventory"  && <InventoryView />}
             {t === "warehouse"  && <WarehouseView />}
@@ -1658,7 +1662,7 @@ export default function App() {
 
       {showTour && <GettingStarted onDone={() => setShowTour(false)} />}
       {quickLogOpen && !logisticsOnly && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}
-      {paletteOpen && !logisticsOnly && <CommandPalette onClose={() => setPaletteOpen(false)} />}
+      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} logisticsOnly={logisticsOnly} />}
       {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
       {sharePanelIds && (
         <WhatsAppSharePanel

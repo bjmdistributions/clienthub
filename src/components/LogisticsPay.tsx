@@ -7,6 +7,7 @@ import {
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { isLogisticsOnly } from "../lib/permissions";
 import { describeSchedule, logisticsPayFor, WEEKDAYS } from "../lib/logisticsPay";
+import { lowersCounter, numberPreview, numberingProblem } from "../lib/logisticsBols";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
@@ -163,6 +164,75 @@ export function LogisticsFreightSetting() {
         <Switch on={on} onClick={flip} disabled={busy} label="We fill in the freight details before sending to logistics" />
       </div>
       {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+    </div>
+  );
+}
+
+/** R-459: how load numbers and BOL numbers are made, like the invoice numbers: a prefix and the number the next
+ *  one gets. The server mints them (the first load is LD-0001 and the first BOL BOL-0001 unless this says otherwise),
+ *  so this only changes the counters. An admin's setting. */
+export function LogisticsNumberingSetting() {
+  type Form = { loadPrefix: string; loadNext: number; bolPrefix: string; bolNext: number };
+  const [freight, setFreight] = useState(true);
+  const [base, setBase] = useState<Form | null>(null);
+  const [form, setForm] = useState<Form | null>(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      const s = await api.logistics.settings.get();
+      const f: Form = { loadPrefix: s.load_prefix ?? "LD-", loadNext: s.load_next_number ?? 1, bolPrefix: s.bol_prefix ?? "BOL-", bolNext: s.bol_next_number ?? 1 };
+      setFreight(s.freight_by_team !== false); setBase(f); setForm(f); setErr("");
+    } catch (e) { setErr(String(e)); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!form || !base) {
+    return err
+      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
+      : <div className="text-[12.5px] text-muted">Loading...</div>;
+  }
+  const set = (p: Partial<Form>) => { setForm({ ...form, ...p }); setErr(""); };
+  const changed = JSON.stringify(form) !== JSON.stringify(base);
+  const save = async () => {
+    const problem = numberingProblem(form.loadNext, form.bolNext);
+    if (problem) { setErr(problem); return; }
+    if ((lowersCounter(base.loadNext, form.loadNext) || lowersCounter(base.bolNext, form.bolNext))
+      && !confirm("A next number lower than before can repeat a number that was already used. Save anyway?")) return;
+    setBusy(true); setErr("");
+    try {
+      const s = await api.logistics.settings.save({
+        freight_by_team: freight, load_prefix: form.loadPrefix.trim(), load_next_number: form.loadNext,
+        bol_prefix: form.bolPrefix.trim(), bol_next_number: form.bolNext,
+      });
+      const f: Form = { loadPrefix: s.load_prefix ?? form.loadPrefix.trim(), loadNext: s.load_next_number ?? form.loadNext, bolPrefix: s.bol_prefix ?? form.bolPrefix.trim(), bolNext: s.bol_next_number ?? form.bolNext };
+      setBase(f); setForm(f); toast("Saved");
+    } catch (e) { setErr(String(e)); }
+    setBusy(false);
+  };
+  const block = (title: string, prefix: string, next: number, onPrefix: (v: string) => void, onNext: (n: number) => void, hint: string) => (
+    <div>
+      <div className="text-[13px] font-medium text-ink">{title}</div>
+      <div className="text-[12px] text-muted mt-0.5 mb-2">{hint}</div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-[12.5px] font-medium text-muted mb-1">Prefix</label>
+          <input className={inp} value={prefix} onChange={(e) => onPrefix(e.target.value)} aria-label={`${title} prefix`} />
+        </div>
+        <div>
+          <label className="block text-[12.5px] font-medium text-muted mb-1">Next number</label>
+          <NumberInput integer className={inp} value={next} onValue={(n) => onNext(n)} aria-label={`${title} next number`} />
+        </div>
+      </div>
+      <p className="text-[11px] text-muted mt-2">The next one is <span className="tabular-nums font-semibold text-accent-hover">{numberPreview(prefix, next)}</span></p>
+    </div>
+  );
+  return (
+    <div className="space-y-4">
+      {block("Load numbers", form.loadPrefix, form.loadNext, (v) => set({ loadPrefix: v }), (n) => set({ loadNext: n }), "Every load gets one when it is created. Search finds a load by it.")}
+      {block("BOL numbers", form.bolPrefix, form.bolNext, (v) => set({ bolPrefix: v }), (n) => set({ bolNext: n }), "Every BOL we make gets one when it is saved.")}
+      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      <button type="button" onClick={save} disabled={!changed || busy}
+        className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40">{busy ? "Saving..." : "Save"}</button>
     </div>
   );
 }

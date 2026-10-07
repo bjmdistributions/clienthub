@@ -7,13 +7,16 @@
 // rules the form depends on: a quote with an amount becomes quoted, and a pickup day moves the status.
 // Every name, number and amount here is invented.
 //
-// Query: ?view=logistics|shipping|bills  &as=team|logistics  &dark=1  &tab=Carriers|Pay carriers (click that Logistics view)
+// Query: ?view=logistics|shipping|bills|bols|numbering|palette  &as=team|logistics  &dark=1  &tab=Carriers|Pay carriers (click that Logistics view)
 //        &open=LD-0004  (click that load's row)  &step=Quote|Book|Pickup|Delivery|Pay  &paid=1 (the customer has paid)
 import { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import LogisticsView from "./components/LogisticsView";
 import DealShipping from "./components/DealShipping";
 import { CarriersToPaySection } from "./components/LogisticsPayCarriers";
+import BolsView from "./components/BolsView";
+import CommandPalette from "./components/CommandPalette";
+import { LogisticsNumberingSetting } from "./components/LogisticsPay";
 import { canPayCarriers } from "./lib/logisticsCarriers";
 import { ToastHost } from "./components/Toast";
 import { localDay } from "./lib/format";
@@ -93,6 +96,28 @@ const rateMatches = [
   { booking_id: "fb_x", load_number: "LD-0002", day: daysAgo(80), carrier: "Harbor Lines", carrier_id: "c2", rate: 1480, quote_amount: null, paid: true, equipment: "Reefer", pallets: "4", weight_lbs: "3100", exact: false },
 ];
 
+// R-459 section 8: the BOLs we make, invented. Names and figures are not real.
+const bolData = (over: any = {}) => ({
+  ship_date: today, freight_terms: "prepaid",
+  shipper: { name: "Northgate Wholesale", address: "410 Mercer Ave, Northgate, OH 44120", contact: "Dana Whitcombe", phone: "555-0142" },
+  consignee: { name: "Lakeside Discount Co", address: "12 Shore Rd, Lakeside, MI 49001", contact: "", phone: "" },
+  bill_to: { name: "Lakeside Discount Co", address: "" },
+  carrier: { name: "Northline Freight", scac: "NLFT", pro: "PRO-5521", trailer: "T-204", seal: "" },
+  refs: { load_number: "LD-0008", po: "PO-4410", pickup_number: "PU-7731", customer_ref: "" },
+  items: [{ units: 6, unit_type: "Pallet", pieces: 72, description: "Shelving units", weight_lbs: 5400, class: "70", nmfc: "", hazmat: false }],
+  special_instructions: "Call the dock before arrival.", cod_amount: "", declared_value: "", ...over,
+});
+const BOLS: any[] = [
+  { id: "bol_1", number: "BOL-0003", booking_id: "fb_8", load_number: "LD-0008", data: bolData(), created_at: "2026-10-05T10:00:00Z", updated_at: "2026-10-05T10:00:00Z" },
+  { id: "bol_2", number: "BOL-0004", booking_id: "", load_number: "", created_at: "2026-10-06T09:00:00Z", updated_at: "2026-10-06T09:00:00Z",
+    data: bolData({ shipper: { name: "Mill Road Foods", address: "9 Mill Rd, Dayton, OH 45402", contact: "", phone: "" }, consignee: { name: "Harbor Grocers", address: "", contact: "", phone: "" }, refs: { load_number: "", po: "", pickup_number: "", customer_ref: "" }, carrier: { name: "", scac: "", pro: "", trailer: "", seal: "" } }) },
+];
+const bolRow = (b: any) => ({ id: b.id, number: b.number, booking_id: b.booking_id, load_number: b.load_number, ship_date: b.data.ship_date, shipper: b.data.shipper.name, consignee: b.data.consignee.name, carrier: b.data.carrier.name, created_at: b.created_at });
+const SETTINGS: any = { freight_by_team: true, load_prefix: "LD-", load_next_number: 10, bol_prefix: "BOL-", bol_next_number: 5 };
+// A tiny PDF, base64, so the in-app preview has something to draw.
+const TINY_PDF = "JVBERi0xLjQKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+ZW5kb2JqCjIgMCBvYmo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iagozIDAgb2JqPDwvVHlwZS9QYWdlL1BhcmVudCAyIDAgUi9NZWRpYUJveFswIDAgMjAwIDIwMF0+PmVuZG9iagp0cmFpbGVyPDwvUm9vdCAxIDAgUj4+CiUlRU9G";
+const qParam = (qs: string) => (/(?:^|&)q=([^&]*)/.exec(qs)?.[1] || "").replace(/\+/g, " ").toLowerCase();
+
 const paperwork = (b: any) => {
   const kinds = new Set((b.files ?? []).map((f: any) => f.kind));
   return { bol: kinds.has("bol"), pod: kinds.has("pod"), carrier_invoice: kinds.has("carrier_invoice") };
@@ -133,13 +158,54 @@ const handlers: Record<string, (a: any) => any> = {
   employee_me: () => meFor(state.who),
   get_invoice: () => ({ id: "inv1", number: "INV-6001", status: "sent", line_items_json: JSON.stringify([{ description: "Shipping", qty: 1, rate: 0, amount: 0 }]), shipping_charged: 0 }),
   get_deal_logistics_pay: () => null,
+  global_search: () => ({ clients: [], invoices: [], deals: [], suppliers: [] }),
+  logistics_save_download: ({ path }: any) => { (window as any).__download = path; return "C:/Users/Example/Downloads/" + path.split("/")[4] + ".pdf"; },
   list_freight_bookings: () => LOADS.filter((b) => b.status !== "cancelled" || true).map((b) => ({ ...shape(b), can_see_deal: true, deal_paid: undefined, paperwork: undefined, bols: undefined })),
   logistics_request: ({ method, path, body }: any) => {
     const [p, qs = ""] = path.split("?");
     if (method === "GET" && p === "/api/logistics/bookings") {
       return { bookings: (qs.includes("include_done=1") ? LOADS : LOADS.filter((b) => b.status !== "cancelled")).map(shape) };
     }
-    if (method === "GET" && p === "/api/logistics/settings") return { freight_by_team: true };
+    if (method === "GET" && p === "/api/logistics/settings") return { ...SETTINGS };
+    if (method === "PUT" && p === "/api/logistics/settings") { (window as any).__settings = body; Object.assign(SETTINGS, body); return { ...SETTINGS }; }
+    // R-459: BOLs and search.
+    if (method === "GET" && p === "/api/logistics/bols") {
+      const n = qParam(qs);
+      return { bols: BOLS.map(bolRow).filter((r) => !n || Object.values(r).join(" ").toLowerCase().includes(n)) };
+    }
+    if (method === "GET" && p === "/api/logistics/bols/prefill") {
+      (window as any).__prefill = qs;
+      const b = LOADS.find((x) => qs.includes("booking_id=" + x.id)) ?? LOADS[0];
+      return { booking_id: b.id, load_number: b.load_number, data: bolData({ carrier: { name: b.carrier || "", scac: "", pro: b.pro || "", trailer: b.trailer_number || "", seal: "" },
+        refs: { load_number: b.load_number, po: "", pickup_number: b.pickup_number || "", customer_ref: "" } }) };
+    }
+    if (p === "/api/logistics/bols" && method === "POST") {
+      (window as any).__bolCreate = body;
+      const b = { id: "bol_" + (BOLS.length + 1), number: "BOL-" + String(SETTINGS.bol_next_number++).padStart(4, "0"), booking_id: body.booking_id || "", load_number: LOADS.find((x) => x.id === body.booking_id)?.load_number || "",
+        data: body.data, created_at: today + "T10:00:00Z", updated_at: today + "T10:00:00Z" };
+      BOLS.push(b);
+      return b;
+    }
+    const bm = /^\/api\/logistics\/bols\/([^/]+?)(\/pdf)?$/.exec(p);
+    if (bm) {
+      const b = BOLS.find((x) => x.id === bm[1]);
+      if (bm[2] && method === "GET") return { name: b.number + ".pdf", mime: "application/pdf", data: TINY_PDF };
+      if (method === "GET") return state.who === "logistics" ? { ...b, can_see_names: false, can_see_addresses: false, data: { ...b.data, shipper: { ...b.data.shipper, name: "", address: "" } } } : b;
+      if (method === "PATCH") { (window as any).__bolPatch = body; Object.assign(b, { booking_id: body.booking_id, data: body.data, load_number: LOADS.find((x) => x.id === body.booking_id)?.load_number || "" }); return b; }
+      if (method === "DELETE") { BOLS.splice(BOLS.indexOf(b), 1); return {}; }
+    }
+    if (method === "GET" && p === "/api/logistics/search") {
+      (window as any).__search = qs;
+      const n = qParam(qs);
+      const lg = state.who === "logistics";
+      return {
+        loads: LOADS.filter((b) => (b.load_number + " " + b.carrier + " " + b.pickup_number).toLowerCase().includes(n)).slice(0, 8)
+          .map((b) => ({ id: b.id, load_number: b.load_number, route: "Northgate, OH to Lakeside, MI", status: b.status, carrier: b.carrier, deal_label: lg ? undefined : "INV-6001 for Lakeside Discount Co" })),
+        bols: BOLS.filter((b) => (b.number + " " + b.load_number + " " + b.data.shipper.name).toLowerCase().includes(n))
+          .map((b) => ({ id: b.id, number: b.number, shipper: b.data.shipper.name, consignee: b.data.consignee.name, load_number: b.load_number })),
+        carriers: CARRIERS.filter((c) => (c.name + " " + c.mc_number).toLowerCase().includes(n)).map((c) => ({ id: c.id, name: c.name, mc_number: c.mc_number })),
+      };
+    }
     // R-459: carriers, rates, carrier pay.
     if (p === "/api/logistics/carriers" && method === "GET") return { carriers: CARRIERS.filter((c) => !c.archived).map(carrierRow) };
     if (p === "/api/logistics/carriers" && method === "POST") {
@@ -255,7 +321,8 @@ function useAutoOpen() {
 }
 
 function Harness() {
-  const [view, setView] = useState<"logistics" | "shipping" | "bills">((q.get("view") as "logistics" | "shipping" | "bills") || "logistics");
+  type V = "logistics" | "shipping" | "bills" | "bols" | "numbering" | "palette";
+  const [view, setView] = useState<V>((q.get("view") as V) || "logistics");
   const [who, setWho] = useState<Who>(state.who);
   state.who = who;
   useAutoOpen();
@@ -263,7 +330,7 @@ function Harness() {
   return (
     <div className="flex h-screen bg-bg">
       <aside className="w-[216px] flex-shrink-0 border-r border-line bg-surface p-3 space-y-1">
-        {([["logistics", "Logistics"], ["shipping", "Deal shipping"], ["bills", "Bills"]] as const).map(([v, label]) => (
+        {([["logistics", "Logistics"], ["bols", "BOLs"], ["shipping", "Deal shipping"], ["bills", "Bills"], ["numbering", "Numbering settings"], ["palette", "Command palette"]] as const).map(([v, label]) => (
           <button key={v} onClick={() => setView(v)} className={`${tab} ${view === v ? "bg-surface-2 text-ink font-medium" : "text-ink-2"}`}>{label}</button>
         ))}
         <div className="pt-3 mt-3 border-t border-line space-y-1">
@@ -275,6 +342,9 @@ function Harness() {
       <main className="flex-1 overflow-y-auto p-7 min-w-0">
         <div className="max-w-[1280px] mx-auto">
           {view === "logistics" && <LogisticsView key={who} me={meFor(who)} />}
+          {view === "bols" && <BolsView key={who} me={meFor(who)} />}
+          {view === "numbering" && <div className="max-w-xl bg-surface border border-line rounded-xl p-5"><LogisticsNumberingSetting /></div>}
+          {view === "palette" && <CommandPalette key={who} logisticsOnly={who === "logistics"} onClose={() => {}} />}
           {view === "bills" && (
             <div className="min-w-0">
               <h2 className="text-[18px] font-semibold text-ink tracking-tight mb-5">Bills</h2>

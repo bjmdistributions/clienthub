@@ -14,6 +14,7 @@ import {
 } from "../lib/logisticsLoad";
 import { canEditCarriers, canPayCarriers, canRecordOn, payMethodLabel } from "../lib/logisticsCarriers";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
+import { openLogisticsHit, startBolFromLoad } from "../lib/logisticsSearch";
 import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
 import { CarrierHost, CarrierPicker, useCarriers } from "./LogisticsCarriers";
@@ -280,10 +281,10 @@ export { useNetsyncApplied };
 
 // ─── the form ─────────────────────────────────────────────────────────────
 
-const inp =
+export const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted " +
   "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors disabled:opacity-60";
-const area =
+export const area =
   "border border-line px-3 py-2 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted resize-y min-h-[64px] " +
   "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
@@ -396,7 +397,7 @@ const moneyValue = (raw: string): number | null => {
   return t ? Math.round(Number(t.replace(/[$,\s]/g, "")) * 100) / 100 : null;
 };
 
-function Field({ label, hint, children, wide }: { label: string; hint?: string; children: ReactNode; wide?: boolean }) {
+export function Field({ label, hint, children, wide }: { label: string; hint?: string; children: ReactNode; wide?: boolean }) {
   return (
     <div className={`min-w-0 ${wide ? "col-span-2" : ""}`}>
       <label className="block text-[12px] font-medium text-muted mb-1">{label}</label>
@@ -406,7 +407,7 @@ function Field({ label, hint, children, wide }: { label: string; hint?: string; 
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+export function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-3">
       <h4 className="text-[13px] font-semibold text-ink">{title}</h4>
@@ -540,6 +541,11 @@ export default function LogisticsBookingForm({
   const tryClose = () => {
     if (dirty && !confirm("You have changes that are not saved. Leave without saving them?")) return;
     onClose();
+  };
+  /** Leaving this page for another screen (a BOL): unsaved typing is asked about first. */
+  const leaveFor = (go: () => void) => {
+    if (dirty && !confirm("You have changes that are not saved. Leave without saving them?")) return;
+    go();
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") tryClose(); };
@@ -1076,10 +1082,17 @@ export default function LogisticsBookingForm({
         )}
       </Section>
 
-      {(booking.bols?.length ?? 0) > 0 && (
+      {((booking.bols?.length ?? 0) > 0 || canEditCarrier) && (
         <Section title="BOLs for this load">
           <div className="flex items-center gap-1.5 flex-wrap">
-            {booking.bols!.map((x) => <StatusPill key={x.id} tone="neutral">{x.number}</StatusPill>)}
+            {(booking.bols ?? []).map((x) => (
+              <button key={x.id} type="button" onClick={() => leaveFor(() => openLogisticsHit({ kind: "BOL", id: x.id }))} title="Open this BOL"
+                className="px-2.5 h-8 rounded-lg border border-line text-[12.5px] font-mono text-ink-2 hover:bg-surface-2 hover:text-ink transition-colors">{x.number}</button>
+            ))}
+            {canEditCarrier && (
+              <button type="button" onClick={() => leaveFor(() => startBolFromLoad(booking.id))}
+                className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Make a BOL from this load</button>
+            )}
           </div>
         </Section>
       )}

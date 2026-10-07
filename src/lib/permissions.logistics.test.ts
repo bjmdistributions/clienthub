@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canViewLogistics, canViewTab, isLogisticsOnly, tabPerm, type Perms } from "./permissions";
+import { canViewLogistics, canViewTab, isLogisticsOnly, isLogisticsOnlyTab, tabPerm, type Perms } from "./permissions";
 
 // R-400. A Logistics-only session gets one screen and nothing else, so this rule has to agree
 // with the server's `employees::is_logistics_only` in every case: a list that is not empty,
@@ -61,5 +61,23 @@ describe("the logistics tab", () => {
     expect(tabPerm("logistics")).toBe("logistics:view");
     expect(canViewTab(me("logistics:view"), "logistics")).toBe(true);
     expect(canViewTab(me("clients:view"), "logistics")).toBe(false);
+  });
+});
+
+describe("the BOLs tab (R-459)", () => {
+  it("rides the logistics switch, so a Logistics-only account and a deal viewer both get it", () => {
+    expect(tabPerm("bols")).toBe("logistics:view");
+    expect(canViewTab(me("logistics:view"), "bols")).toBe(true);
+    expect(canViewTab(me("clients:view"), "bols")).toBe(false);
+    expect(canViewLogistics(me("deal_flow:view"))).toBe(true);
+    expect(isLogisticsOnly(me("logistics:view", "logistics:edit"))).toBe(true);
+  });
+});
+
+describe("what a Logistics-only account may open (R-459)", () => {
+  it("is Logistics and BOLs, nothing else", () => {
+    expect(isLogisticsOnlyTab("logistics")).toBe(true);
+    expect(isLogisticsOnlyTab("bols")).toBe(true);
+    for (const t of ["dashboard", "dealflow", "invoices", "financials", "bills", "settings", "documents"]) expect(isLogisticsOnlyTab(t)).toBe(false);
   });
 });

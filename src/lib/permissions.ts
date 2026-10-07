@@ -9,7 +9,7 @@ export type Feature =
   | "dashboard" | "clients" | "invoices" | "quotes" | "completed" | "dealflow"
   | "suppliers" | "analytics" | "newsletter" | "brief" | "globe" | "settings"
   | "tiers" | "inventory" | "automation" | "notes" | "receivables" | "payables"
-  | "financials" | "clientreceipt" | "logistics";
+  | "financials" | "clientreceipt" | "logistics" | "bols";
 
 /** True if the user holds a permission (wildcard "*" grants everything). */
 export function can(me: Perms | null | undefined, perm: string): boolean {
@@ -41,8 +41,10 @@ export function tabPerm(feature: Feature): string | null {
     // via `*`/admin:manage — see the financials case in App.tsx's `visible`.
     case "financials":   return "financials:view";
     // R-400: the Logistics screen. Anyone who sees deals also sees it (see canViewLogistics),
-    // so this single string is only the floor for a role built for it.
-    case "logistics":    return "logistics:view";
+    // so this single string is only the floor for a role built for it. R-459: the BOLs we make ride
+    // the same switch as the loads they travel with.
+    case "logistics":
+    case "bols":         return "logistics:view";
     case "suppliers":
     case "inventory":    return "inventory:view";
     case "analytics":
@@ -95,3 +97,8 @@ export function isLogisticsOnly(perms: string[] | Perms | null | undefined): boo
 export function isAdmin(me: Perms | null | undefined): boolean {
   return can(me, "*") || can(me, "admin:manage");
 }
+
+/** R-459: the screens a Logistics-only account may open besides Settings. The sidebar's gate and the
+ *  lock that bounces it back to Logistics both read this one list. */
+export const LOGISTICS_ONLY_TABS = ["logistics", "bols"] as const;
+export const isLogisticsOnlyTab = (id: string): boolean => (LOGISTICS_ONLY_TABS as readonly string[]).includes(id);

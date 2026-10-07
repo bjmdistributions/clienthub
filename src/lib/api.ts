@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { localDay } from "./format";
 import { queryText } from "./logisticsCarriers";
+import { bolPdfPath } from "./logisticsBols";
 import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
 import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, PalletSpec, WarehousePallet } from "./palletFit";
 
@@ -3326,6 +3327,26 @@ export interface CarrierPayRow {
 export interface CarrierPayResponse { to_pay: CarrierPayRow[]; paid: CarrierPayRow[] }
 /** R-459: what the candidates route answers. The rows are read tolerantly (see carrierPayCandidates). */
 export type CarrierPayCandidatesResponse = Record<string, unknown>;
+/** R-459: a bill of lading we make. Every key is present on read. The numbers are kept as the text a
+ *  person typed (the way a booking keeps pallets and weight). */
+export type BolTerms = "prepaid" | "collect" | "third_party";
+export interface BolParty { name: string; address: string; contact: string; phone: string }
+export interface BolItem { units: string; unit_type: string; pieces: string; description: string; weight_lbs: string; class: string; nmfc: string; hazmat: boolean }
+export interface BolData {
+  ship_date: string; freight_terms: BolTerms;
+  shipper: BolParty; consignee: BolParty; bill_to: { name: string; address: string };
+  carrier: { name: string; scac: string; pro: string; trailer: string; seal: string };
+  refs: { load_number: string; po: string; pickup_number: string; customer_ref: string };
+  items: BolItem[]; special_instructions: string; cod_amount: string; declared_value: string;
+}
+/** One row of the BOL list. */
+export interface BolRow { id: string; number: string; booking_id: string; load_number: string; ship_date: string; shipper: string; consignee: string; carrier: string; created_at: string }
+/** R-459: what /api/logistics/search answers: at most eight of each. */
+export interface LogisticsSearchResults {
+  loads: { id: string; load_number: string; route: string; status: string; carrier: string; deal_label?: string }[];
+  bols: { id: string; number: string; shipper: string; consignee: string; load_number: string }[];
+  carriers: { id: string; name: string; mc_number: string }[];
+}
 /** R-415: one truck as the All shipments list shows it. */
 export interface ShipmentTruck {
   id: string; code: string; status: FreightStatus; carrier: string; broker: string; bol: string; pro: string;
@@ -3869,6 +3890,23 @@ export const api = {
       link: (bookingId: string, txnId: string) =>
         logisticsRequest<unknown>("POST", `/api/logistics/carrier-pay/${encodeURIComponent(bookingId)}/link`, { txn_id: txnId }),
     },
+    /** R-459: the BOLs we make. Answers are read through lib/logisticsBols (normalBol, bolRecordOf), because a BOL's
+     *  data comes back with every key present and the names and addresses a viewer may not see blanked. */
+    bols: {
+      list: (q?: string) => logisticsRequest<{ bols: BolRow[] }>("GET", `/api/logistics/bols${q && queryText(q) ? `?q=${queryText(q)}` : ""}`),
+      prefill: (bookingId: string) => logisticsRequest<unknown>("GET", `/api/logistics/bols/prefill?booking_id=${encodeURIComponent(bookingId)}`),
+      get: (id: string) => logisticsRequest<unknown>("GET", `/api/logistics/bols/${encodeURIComponent(id)}`),
+      create: (bookingId: string, data: BolData) =>
+        logisticsRequest<unknown>("POST", "/api/logistics/bols", { ...(bookingId ? { booking_id: bookingId } : {}), data }),
+      /** `bookingId` "" detaches the BOL from its load. */
+      update: (id: string, bookingId: string, data: BolData) =>
+        logisticsRequest<unknown>("PATCH", `/api/logistics/bols/${encodeURIComponent(id)}`, { booking_id: bookingId, data }),
+      archive: (id: string) => logisticsRequest<unknown>("DELETE", `/api/logistics/bols/${encodeURIComponent(id)}`),
+      /** The PDF as base64, for the in-app preview. Saving to disk goes through `saveDownload(bolPdfPath(id))`. */
+      pdf: (id: string) => logisticsRequest<{ name: string; mime: string; data: string }>("GET", bolPdfPath(id)),
+    },
+    /** R-459: find a load, a BOL or a carrier by number or name. At most eight of each. */
+    search: (q: string) => logisticsRequest<LogisticsSearchResults>("GET", `/api/logistics/search?q=${queryText(q)}`),
     /** R-415: who fills in the freight. Anyone the Logistics routes let in reads it; saving is an admin's. */
     settings: {
       get: () => logisticsRequest<LogisticsSettings>("GET", "/api/logistics/settings"),

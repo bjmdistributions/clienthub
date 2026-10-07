@@ -109,7 +109,7 @@ import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
 import NumberInput from "./NumberInput";
-import { LogisticsFreightSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel } from "./LogisticsPay";
+import { LogisticsFreightSetting, LogisticsNumberingSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel } from "./LogisticsPay";
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
 import CrossDock from "./CrossDock";
@@ -373,6 +373,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "import", label: "Import from Google Contacts", kw: "gmail contacts address book" },
   { tab: "splits", card: "Sales reps", label: "Rep pay", kw: "commission profit percent gross percent fixed dollar pay type" },
   { tab: "splits", card: "Logistics", label: "Logistics freight details", kw: "we fill in pallets weight dimensions accessorials before sending to logistics freight" },
+  { tab: "splits", card: "Logistics", label: "Load and BOL numbers", kw: "load number prefix next number bill of lading bol numbering reference" },
   { tab: "splits", card: "Logistics pay", label: "Logistics pay", kw: "shipping profit share freight surplus loss pay date weekly biweekly monthly zelle track brief off" },
   { tab: "splits", card: "Profit split", label: "Profit split", kw: "owners business partners share percentage" },
   { tab: "team", card: "people", label: "People", kw: "users staff roster deactivate member" },
@@ -5191,8 +5192,9 @@ function SplitsTab() {
         )}
       </SettingCard>
 
-      <SettingCard icon={Truck} title="Logistics" purpose="Who fills in the pallets, weight, dimensions and accessorials before a deal is sent to the logistics person.">
+      <SettingCard icon={Truck} title="Logistics" purpose="Who fills in the pallets, weight, dimensions and accessorials before a deal is sent to the logistics person, and how load and BOL numbers are made.">
         <LogisticsFreightSetting />
+        <div className="border-t border-line mt-4 pt-4"><LogisticsNumberingSetting /></div>
       </SettingCard>
 
       <SettingCard icon={Truck} title="Logistics pay" purpose="What happens to the shipping surplus: paid to the person doing logistics as a share (taken off the top with the rep's cut before the split), or only tracked in the Brief.">
