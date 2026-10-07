@@ -9,10 +9,12 @@ import { toast } from "./Toast";
 import type { Me } from "../lib/api";
 import { localDay } from "../lib/format";
 import { can, isAdmin } from "../lib/permissions";
+import { canPayCarriers } from "../lib/logisticsCarriers";
 import {
   billsApi, type BillCandidate, type BillFields, type BillOut, type BillsList, type SpendingResponse,
 } from "../lib/billsApi";
 import { PERIODS, periodRange, rangeText, type PeriodKind } from "../lib/billsFormat";
+import { CarriersToPaySection } from "./LogisticsPayCarriers";
 import BillsMode from "./bills/BillsMode";
 import BillDetail from "./bills/BillDetail";
 import BillForm from "./bills/BillForm";
@@ -125,6 +127,9 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
           {admin && mode === "bills" && <button onClick={() => setForm({})} className={pri}><Plus size={14} /> Add a bill</button>}
         </div>
       </div>
+
+      {/* R-459: the carriers the team owes, above the recurring bills. Nothing shows when no one is owed. */}
+      {mode === "bills" && <CarriersToPaySection canPay={canPayCarriers(me)} />}
 
       {mode !== "bills" && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4">

@@ -3,13 +3,17 @@ import { ChevronRight, Paperclip, Search, Truck } from "lucide-react";
 import { api, type FreightBooking, type Me } from "../lib/api";
 import { localDay } from "../lib/format";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
+import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canPayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
   GROUPS, dueLabel, dueTone, groupOf, isHot, isLogisticsSide, loadHaystack, loadNumber, missingPaperwork, pickupNumberUnconfirmed,
-  type GroupKey,
+  type GroupKey, type LoadStep,
 } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
 import { YourPayCard } from "./LogisticsPay";
+import { CarriersView } from "./LogisticsCarriers";
+import { PayCarriersView } from "./LogisticsPayCarriers";
+import { toast } from "./Toast";
 import LogisticsBookingForm, {
   FreightStatusPill, PickupNumberPill, UrgentPill, routeLabel, timingLine, useNetsyncApplied,
 } from "./LogisticsBookingForm";
@@ -98,7 +102,11 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   // R-415: every shipment, for the business. The server reads it for an admin, or for someone who
   // sees deals and their dollar figures; a Logistics-only account never does.
   const canShipments = !logisticsOnly && (isAdmin(me) || (can(me, "deal_flow:view") && can(me, "deal_flow:view_numbers")));
-  const [view, setView] = useState<"bookings" | "shipments">("bookings");
+  // R-459: Carriers for everyone on this screen, Pay carriers for whoever may pay them.
+  const canPay = canPayCarriers(me);
+  const [view, setView] = useState<"bookings" | "carriers" | "pay" | "shipments">("bookings");
+  const [carrierId, setCarrierId] = useState<string | undefined>(undefined);
+  const [payRev, setPayRev] = useState(0);
   const [rows, setRows] = useState<FreightBooking[] | null>(null);
   const [doneRows, setDoneRows] = useState<FreightBooking[] | null>(null);
   const [doneOpen, setDoneOpen] = useState(false);
@@ -107,6 +115,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   // A snapshot, not a pointer into `rows`: a background refresh must never replace what the
   // open form is holding while someone is typing into it.
   const [open, setOpen] = useState<FreightBooking | null>(null);
+  const [openStep, setOpenStep] = useState<LoadStep | undefined>(undefined);
 
   const load = useCallback(async () => {
     try {
@@ -122,6 +131,27 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
     try { setDoneRows((await api.logistics.list({ includeDone: true })).bookings); } catch { /* the main list already says if the server is unreachable */ }
   }, []);
 
+  /** Open a load, on a step when another screen names one (Bills opens it on Pay). Reads the server's copy: it has the paperwork. */
+  const openLoad = useCallback(async (id: string, step?: LoadStep) => {
+    try { const b = await api.logistics.get(id); setOpenStep(step); setOpen(b); }
+    catch (e) { toast(String(e), "error"); }
+  }, []);
+  // Another screen stashed a load (or a carrier) to open, then switched here. Read on arrival and when this
+  // screen is already open.
+  const takeHandoff = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(OPEN_LOAD_KEY);
+      if (raw) { localStorage.removeItem(OPEN_LOAD_KEY); const t = parseOpenLoad(raw); if (t) { setView("bookings"); openLoad(t.id, t.step); } }
+      const c = localStorage.getItem(OPEN_CARRIER_KEY);
+      if (c) { localStorage.removeItem(OPEN_CARRIER_KEY); setView("carriers"); setCarrierId(c.trim() || undefined); }
+    } catch { /* storage can be blocked: nothing to open */ }
+  }, [openLoad]);
+  useEffect(() => {
+    takeHandoff();
+    window.addEventListener("logistics-open-load", takeHandoff);
+    return () => window.removeEventListener("logistics-open-load", takeHandoff);
+  }, [takeHandoff]);
+
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     // Another person changes these rows from another device. A Logistics-only desktop never
@@ -134,6 +164,11 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   useNetsyncApplied(() => { load(); if (doneOpen) loadDone(); });
   useEffect(() => { if (doneOpen) loadDone(); }, [doneOpen, loadDone]);
 
+  const views: (readonly ["bookings" | "carriers" | "pay" | "shipments", string])[] = [
+    ["bookings", "Bookings"], ["carriers", "Carriers"],
+    ...(canPay ? [["pay", "Pay carriers"] as const] : []),
+    ...(canShipments ? [["shipments", "All shipments"] as const] : []),
+  ];
   const needle = q.trim().toLowerCase();
   const match = (b: FreightBooking) => !needle || loadHaystack(b).includes(needle);
 
@@ -158,7 +193,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   }, [rows, doneRows, needle]);
 
   const shown = GROUPS.reduce((n, g) => n + grouped[g.key].length, 0);
-  const row = (b: FreightBooking) => <BookingRow key={b.id} b={b} group={groupOf(b) ?? "delivered"} onOpen={() => setOpen(b)} />;
+  const row = (b: FreightBooking) => <BookingRow key={b.id} b={b} group={groupOf(b) ?? "delivered"} onOpen={() => { setOpenStep(undefined); setOpen(b); }} />;
 
   if (rows === null) {
     return (
@@ -179,7 +214,9 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
             {logisticsOnly
               ? "Quotes to give, trucks to book, and the paperwork for each load."
               : view === "shipments" ? "Every deal with a truck sent to logistics: what was charged, what the carrier was paid, what is left."
-              : "Every truck sent to logistics, and where each one stands."}
+              : view === "carriers" ? "The carriers you book, how to reach them and how each one gets paid."
+              : view === "pay" ? "What each carrier is owed, what has been paid, and the bank payment behind it."
+              : "Every load, from the quote to the carrier being paid."}
           </p>
         </div>
         {view === "bookings" && <div className="relative w-full max-w-[280px] min-w-[200px]">
@@ -192,10 +229,10 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         </div>}
       </div>
 
-      {canShipments && (
-        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-surface-2 border border-line" role="group" aria-label="Logistics view">
-          {([["bookings", "Bookings"], ["shipments", "All shipments"]] as const).map(([k, label]) => (
-            <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)}
+      {views.length > 1 && (
+        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-surface-2 border border-line max-w-full overflow-x-auto" role="group" aria-label="Logistics view">
+          {views.map(([k, label]) => (
+            <button key={k} type="button" aria-pressed={view === k} onClick={() => { setView(k); if (k !== "carriers") setCarrierId(undefined); }}
               className={`h-8 px-3.5 rounded-md text-[12.5px] whitespace-nowrap transition-colors ${view === k ? "bg-surface text-ink font-medium shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
               {label}
             </button>
@@ -203,7 +240,9 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         </div>
       )}
 
-      {view === "shipments" && canShipments ? <LogisticsShipments /> : (<>
+      {view === "shipments" && canShipments ? <LogisticsShipments />
+        : view === "carriers" ? <CarriersView openId={carrierId} onOpenLoad={(id) => { setView("bookings"); openLoad(id); }} />
+        : view === "pay" && canPay ? <PayCarriersView rev={payRev} onOpenLoad={(id, step) => openLoad(id, step)} /> : (<>
 
       {/* R-401: his own pay, only when he is the one being paid. Nothing about what a customer was charged. */}
       <YourPayCard />
@@ -249,19 +288,22 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         )}
       </section>
 
+      </>)}
+
       {open && (
         <LogisticsBookingForm
           booking={open}
-          onClose={() => setOpen(null)}
+          initialStep={openStep}
+          onClose={() => { setOpen(null); setPayRev((n) => n + 1); }}
           onSaved={(b) => {
             setOpen(b);
+            setPayRev((n) => n + 1);
             setRows((prev) => (prev ?? []).map((x) => (x.id === b.id ? b : x)));
             load(); if (doneOpen) loadDone();
           }}
           onChanged={() => { load(); if (doneOpen) loadDone(); }}
         />
       )}
-      </>)}
     </div>
   );
 }

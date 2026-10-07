@@ -2,8 +2,11 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, FileText, Paperclip, Plus, Send, Truck, X } from "lucide-react";
 import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
+import { laneEnds } from "../lib/logisticsCarriers";
 import { PAID_BANNER, SEND_UNPAID_CONFIRM, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
+import { CarrierHost } from "./LogisticsCarriers";
+import { RateCard } from "./LogisticsRates";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
 import LogisticsBookingForm, {
@@ -55,6 +58,9 @@ function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; bi
   const [when, setWhen] = useState({ date: "", window: "" });
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
+  // R-459: what the lane cost last time, once both addresses read as a place; a carrier name opens its card.
+  const [carrierId, setCarrierId] = useState<string | null>(null);
+  const lane = laneEnds(pickup.address, delivery.address);
   // Until the setting is read, the default (on) holds.
   const [byTeam, setByTeam] = useState(true);
   const setF = (patch: Partial<typeof freight>) => setFreight((f) => ({ ...f, ...patch }));
@@ -112,6 +118,7 @@ function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; bi
   };
   const setStop = (i: number, patch: Partial<FreightStop>) => setStops((l) => l.map((x, j) => (j === i ? { ...x, ...patch } : x)));
   return (
+    <>
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
       <div
         role="dialog" aria-modal="true" aria-label="Send to logistics"
@@ -199,6 +206,7 @@ function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; bi
                 <input className={inp} placeholder="Name" value={delivery.name} onChange={(e) => setDelivery({ ...delivery, name: e.target.value })} />
                 <input className={inp} placeholder="Address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
               </div>
+              {lane && <RateCard by={lane} onOpenCarrier={setCarrierId} />}
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Freight</div>
                 <div className="grid grid-cols-2 gap-3">
@@ -274,6 +282,9 @@ function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; bi
         </div>
       </div>
     </div>
+    {/* Beside the sheet, not inside it: a click on the card's backdrop must not close the sheet too. */}
+    {carrierId && <CarrierHost id={carrierId} onClose={() => setCarrierId(null)} onChanged={() => {}} />}
+    </>
   );
 }
 

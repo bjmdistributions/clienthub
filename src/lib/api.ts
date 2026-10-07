@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { localDay } from "./format";
+import { queryText } from "./logisticsCarriers";
 import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
 import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, PalletSpec, WarehousePallet } from "./palletFit";
 
@@ -3290,6 +3291,41 @@ export interface LogisticsSettings {
 export interface FreightInvoiceLine {
   invoice_id: string; invoice_number: string; line: number; subtotal: number; tax: number; total: number;
 }
+/** R-459: how a carrier gets paid. Identical on every surface. */
+export type CarrierPayMethod = "zelle" | "wire" | "ach" | "credit_card" | "check" | "other" | "";
+/** R-459: one carrier in the directory. `last_rate` is null without the dollar switch. */
+export interface FreightCarrier {
+  id: string; name: string; mc_number: string; dot_number: string; contact_name: string; phone: string; email: string; address: string;
+  pay_method: CarrierPayMethod; pay_terms_days: number | null; notes: string;
+  load_count: number; last_used: string; last_rate: number | null;
+}
+/** R-459: one past load for a carrier. `rate` is null without money, `lane` blank without addresses. */
+export interface CarrierHistoryRow { booking_id: string; load_number: string; day: string; lane: string; rate: number | null; paid: boolean }
+/** R-459: a carrier with how it gets paid (decrypted, "" without money) and its last twenty loads. */
+export interface FreightCarrierDetail extends FreightCarrier { pay_details: string; history: CarrierHistoryRow[] }
+/** What a person can write. `pay_details` is sent only by someone who may see money. */
+export interface FreightCarrierInput {
+  name: string; mc_number?: string; dot_number?: string; contact_name?: string; phone?: string; email?: string; address?: string;
+  pay_method?: CarrierPayMethod; pay_details?: string; pay_terms_days?: number | null; notes?: string;
+}
+/** R-459: one earlier load on a lane. */
+export interface RateMatch {
+  booking_id: string; load_number: string; day: string; carrier: string; carrier_id: string;
+  rate: number | null; quote_amount: number | null; paid: boolean; equipment: string; pallets: string; weight_lbs: string; exact: boolean;
+}
+export interface RatesResponse { lane: { from: string; to: string }; last: RateMatch | null; matches: RateMatch[] }
+/** R-459: one load in Pay carriers (and the Bills section). */
+export interface CarrierPayRow {
+  booking_id: string; load_number: string; deal_flow_id: string; deal_label: string; route: string;
+  carrier: string; carrier_id: string; pay_method: CarrierPayMethod; pay_details: string;
+  rate: number | null; quote_amount: number | null; pay_due_date: string; days_until: number | null; overdue: boolean;
+  status: FreightStatus; delivered_at: string; paperwork: { bol: boolean; pod: boolean; carrier_invoice: boolean };
+  carrier_invoice_file_id: string; paid_amount: number | null; paid_at: string; paid_method: string; paid_note: string;
+  bank_linked: "" | "linked" | "partial" | "none";
+}
+export interface CarrierPayResponse { to_pay: CarrierPayRow[]; paid: CarrierPayRow[] }
+/** R-459: what the candidates route answers. The rows are read tolerantly (see carrierPayCandidates). */
+export type CarrierPayCandidatesResponse = Record<string, unknown>;
 /** R-415: one truck as the All shipments list shows it. */
 export interface ShipmentTruck {
   id: string; code: string; status: FreightStatus; carrier: string; broker: string; bol: string; pro: string;
@@ -3811,6 +3847,28 @@ export const api = {
     /** R-459: GETs an /api/logistics path that answers {name, mime, data}, asks where to save it and
      *  writes it. Resolves to the saved path, or null when the person cancelled. */
     saveDownload: (path: string) => invoke<string | null>("logistics_save_download", { path }),
+    /** R-459: the carriers directory. The server holds it, it is never synced. */
+    carriers: {
+      list: (q?: string) => logisticsRequest<{ carriers: FreightCarrier[] }>("GET", `/api/logistics/carriers${q && queryText(q) ? `?q=${queryText(q)}` : ""}`),
+      get: (id: string) => logisticsRequest<FreightCarrierDetail>("GET", `/api/logistics/carriers/${encodeURIComponent(id)}`),
+      create: (c: FreightCarrierInput) => logisticsRequest<FreightCarrierDetail>("POST", "/api/logistics/carriers", c),
+      update: (id: string, c: Partial<FreightCarrierInput>) => logisticsRequest<FreightCarrierDetail>("PATCH", `/api/logistics/carriers/${encodeURIComponent(id)}`, c),
+      /** Archives it: loads that used it keep the name. */
+      archive: (id: string) => logisticsRequest<unknown>("DELETE", `/api/logistics/carriers/${encodeURIComponent(id)}`),
+    },
+    /** R-459: what the last loads on this lane cost, by load or (for the send sheet) by the two ends. */
+    rates: (by: { bookingId: string } | { pickup: string; delivery: string }) =>
+      logisticsRequest<RatesResponse>("GET", `/api/logistics/rates?${"bookingId" in by
+        ? `booking_id=${encodeURIComponent(by.bookingId)}`
+        : `pickup=${queryText(by.pickup)}&delivery=${queryText(by.delivery)}`}`),
+    /** R-459: pay carriers. Only someone who may pay (full deal access, money, deal edit, or an admin). */
+    carrierPay: {
+      list: (days = 60) => logisticsRequest<CarrierPayResponse>("GET", `/api/logistics/carrier-pay?days=${days}`),
+      candidates: (bookingId: string) =>
+        logisticsRequest<CarrierPayCandidatesResponse>("GET", `/api/logistics/carrier-pay/${encodeURIComponent(bookingId)}/candidates`),
+      link: (bookingId: string, txnId: string) =>
+        logisticsRequest<unknown>("POST", `/api/logistics/carrier-pay/${encodeURIComponent(bookingId)}/link`, { txn_id: txnId }),
+    },
     /** R-415: who fills in the freight. Anyone the Logistics routes let in reads it; saving is an admin's. */
     settings: {
       get: () => logisticsRequest<LogisticsSettings>("GET", "/api/logistics/settings"),

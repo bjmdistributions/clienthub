@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload, Send } from "lucide-react";
-import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api, type FreightBooking, type FreightBookingPatch, type FreightFile, type FreightFileKind, type FreightInvoiceLine,
@@ -8,12 +7,18 @@ import {
 } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import {
-  BANK_LINK_WORD, FILE_KINDS, LOAD_STEPS, PAID_BANNER, SEND_UNPAID_CONFIRM, STATUS_ORDER,
+  FILE_KINDS, LOAD_STEPS, PAID_BANNER, SEND_UNPAID_CONFIRM, STATUS_ORDER,
   dealPaid, equipmentOptions, fileKind, fileKindLabel, firstStep, fmtDayLabel, isHot, isLogisticsSide,
   isQuoteStage, laneLabel, loadNumber, moneyHidden, needsAmount, paperworkOf, paymentLine, pickStatus as pickStatusFields,
   pickupNumberUnconfirmed, statusAfterActual, statusWord, stepDone, timeWord, type LoadStep,
 } from "../lib/logisticsLoad";
+import { canEditCarriers, canPayCarriers, canRecordOn, payMethodLabel } from "../lib/logisticsCarriers";
+import { useNetsyncApplied } from "../lib/useNetsyncApplied";
+import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
+import { CarrierHost, CarrierPicker, useCarriers } from "./LogisticsCarriers";
+import { RateCard } from "./LogisticsRates";
+import { BankLinkPill, LinkBankSheet, MarkPaidSheet, undoCarrierPaid, type PayTarget } from "./LogisticsPayCarriers";
 import StepBar from "./StepBar";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
@@ -271,23 +276,7 @@ export function routeLabel(b: FreightBooking): string {
   return from && to ? `${from} to ${to}` : from || to;
 }
 
-/** Reload on a sync that applied changes from another device (Logistics types a date on his
- *  phone or laptop, this desktop pulls it). A Tauri event, so it needs listen(), not a window
- *  listener. Debounced so a burst of applied events is one reload. */
-export function useNetsyncApplied(cb: () => void, ms = 800) {
-  const ref = useRef(cb);
-  useEffect(() => { ref.current = cb; });
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let timer: number | undefined;
-    let dead = false;
-    listen("netsync-applied", () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => ref.current(), ms);
-    }).then((u) => { if (dead) u(); else unlisten = u; }).catch(() => {});
-    return () => { dead = true; window.clearTimeout(timer); unlisten?.(); };
-  }, [ms]);
-}
+export { useNetsyncApplied };
 
 // ─── the form ─────────────────────────────────────────────────────────────
 
@@ -498,7 +487,7 @@ function InvoiceLineSheet({ booking, initial, onClose, onDone }: {
 }
 
 export default function LogisticsBookingForm({
-  booking, onClose, onSaved, onChanged, dealPaid: dealPaidKnown,
+  booking, onClose, onSaved, onChanged, dealPaid: dealPaidKnown, initialStep,
 }: {
   booking: FreightBooking;
   onClose: () => void;
@@ -508,11 +497,19 @@ export default function LogisticsBookingForm({
   onChanged: () => void;
   /** R-459: the screen that knows the deal says whether the customer has paid. Without it the load's own flag is used. */
   dealPaid?: boolean;
+  /** R-459: open on this step instead of the one the status points at (Bills opens a load on Pay). */
+  initialStep?: LoadStep;
 }) {
   const [draft, setDraft] = useState<Draft>(() => toDraft(booking));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [step, setStep] = useState<LoadStep>(() => firstStep(booking.status));
+  const [step, setStep] = useState<LoadStep>(() => initialStep ?? firstStep(booking.status));
+  const me = useSessionMe();
+  const { list: carriers, error: carriersError, reload: reloadCarriers } = useCarriers();
+  // The carrier card, or the add form seeded from a typed name; and the two sheets on the Pay step.
+  const [carrierHost, setCarrierHost] = useState<{ id?: string; edit?: boolean; seedName?: string } | null>(null);
+  const [payTarget, setPayTarget] = useState<PayTarget | null>(null);
+  const [linkTarget, setLinkTarget] = useState<PayTarget | null>(null);
   const [invoiceSheet, setInvoiceSheet] = useState(false);
   const [onInvoice, setOnInvoice] = useState<FreightInvoiceLine | null>(null);
   const base = useMemo(() => toDraft(booking), [booking]);
@@ -530,7 +527,7 @@ export default function LogisticsBookingForm({
   }, [booking]);
   // Another load opened: start on the step its status points at.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setStep(firstStep(booking.status)); setOnInvoice(null); }, [booking.id]);
+  useEffect(() => { setStep(initialStep ?? firstStep(booking.status)); setOnInvoice(null); }, [booking.id]);
   const body = useRef<HTMLDivElement | null>(null);
   useEffect(() => { body.current?.scrollTo({ top: 0 }); }, [step]);
 
@@ -575,9 +572,13 @@ export default function LogisticsBookingForm({
     setDraft((d) => ({ ...d, [field]: v, status: statusAfterActual(d.status, field, v, field === "picked_up_at" ? v : d.picked_up_at) }));
   const setCarrier = (v: string) =>
     setDraft((d) => ({ ...d, carrier: v, carrier_id: v === base.carrier ? base.carrier_id : "" }));
+  /** A saved carrier is picked: its name and id go on the load, and the save carries both. */
+  const pickCarrier = (c: { id: string; name: string }) => setDraft((d) => ({ ...d, carrier: c.name, carrier_id: c.id }));
   const setPickupNumber = (v: string) =>
     setDraft((d) => ({ ...d, pickup_number: v, confirmed: v.trim() === base.pickup_number.trim() ? base.confirmed : false }));
 
+  const canPay = canRecordOn(booking, canPayCarriers(me));
+  const canEditCarrier = canEditCarriers(me);
   const quoteErr = moneyProblem(draft.quote, "The quote");
   const rateErr = moneyProblem(draft.rate, "The carrier rate");
   // R-415: our side fills in the freight, so the logistics person only reads it.
@@ -617,6 +618,15 @@ export default function LogisticsBookingForm({
     } finally {
       setSaving(false);
     }
+  };
+
+  /** Something recorded straight on the server (a payment, a bank link): read the load again so the page says so. */
+  const reloadLoad = async () => {
+    try { takeServerCopy(await api.logistics.get(booking.id)); } catch (e) { toast(String(e), "error"); }
+  };
+  const payFor: PayTarget = {
+    bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost,
+    payMethod: booking.carrier_pay_method || "", paidAmount: booking.paid_amount,
   };
 
   const sendToBook = async () => {
@@ -732,6 +742,7 @@ export default function LogisticsBookingForm({
         <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink" role="status">{PAID_BANNER}</div>
       )}
       {lane && <div className="text-[13px] text-ink-2"><span className="text-muted">Lane</span> {lane}</div>}
+      <RateCard by={{ bookingId: booking.id }} onOpenCarrier={(id) => setCarrierHost({ id })} />
 
       <Section title="Freight">
         {freightFields}
@@ -891,9 +902,11 @@ export default function LogisticsBookingForm({
       </Section>
 
       <Section title="Carrier">
+        <RateCard by={{ bookingId: booking.id }} onOpenCarrier={(id) => setCarrierHost({ id })} />
         <div className="grid grid-cols-2 gap-3">
           <Field label="Carrier">
-            <input className={inp} value={draft.carrier} onChange={(e) => setCarrier(e.target.value)} />
+            <CarrierPicker value={draft.carrier} carrierId={draft.carrier_id} carriers={carriersError ? null : carriers} canEdit={canEditCarrier}
+              onType={setCarrier} onPick={pickCarrier} onSave={(name) => setCarrierHost({ seedName: name })} onOpen={(id) => setCarrierHost({ id })} />
           </Field>
           {noMoney ? (
             <Field label="Carrier rate"><p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={11} />Hidden by your permissions</p></Field>
@@ -1027,20 +1040,38 @@ export default function LogisticsBookingForm({
             <dl className="rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px] space-y-2">
               <div className="min-w-0">
                 <dt className="text-[11.5px] text-muted">How the carrier gets paid</dt>
-                <dd className="text-ink break-words">{booking.carrier_pay_method || "-"}</dd>
+                <dd className="text-ink break-words flex items-center gap-2 flex-wrap">
+                  <span>{payMethodLabel(booking.carrier_pay_method) || booking.carrier_pay_method || "-"}</span>
+                  {booking.carrier_id
+                    ? canEditCarrier && <button type="button" onClick={() => setCarrierHost({ id: booking.carrier_id, edit: true })} className="text-[12px] text-accent font-medium hover:underline">Edit carrier</button>
+                    : <span className="text-[12px] text-muted">Pick the carrier on the Book step.</span>}
+                </dd>
               </div>
               <div className="min-w-0">
                 <dt className="text-[11.5px] text-muted">Payment</dt>
                 <dd className="text-ink break-words flex items-center gap-2 flex-wrap">
                   <span>{paymentLine(booking)}</span>
-                  {booking.paid_amount != null && booking.bank_linked && (
-                    <StatusPill tone={booking.bank_linked === "linked" ? "success" : booking.bank_linked === "partial" ? "warning" : "neutral"}>
-                      {BANK_LINK_WORD[booking.bank_linked] ?? booking.bank_linked}
-                    </StatusPill>
-                  )}
+                  {booking.paid_amount != null && <BankLinkPill state={booking.bank_linked ?? ""} />}
                 </dd>
               </div>
             </dl>
+            {canPay && (
+              <div className="flex items-center gap-2 flex-wrap">
+                {booking.paid_amount == null ? (
+                  <button type="button" onClick={() => setPayTarget(payFor)}
+                    className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">Mark paid</button>
+                ) : (
+                  <>
+                    {booking.bank_linked !== "linked" && (
+                      <button type="button" onClick={() => setLinkTarget(payFor)}
+                        className="px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Link bank payment</button>
+                    )}
+                    <button type="button" onClick={async () => { if (await undoCarrierPaid(booking.id, payFor.label, booking.paid_amount)) reloadLoad(); }}
+                      className="px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Undo</button>
+                  </>
+                )}
+              </div>
+            )}
           </>
         )}
       </Section>
@@ -1155,6 +1186,12 @@ export default function LogisticsBookingForm({
           </div>
         </div>
       </div>
+      {carrierHost && (
+        <CarrierHost id={carrierHost.id} edit={carrierHost.edit} seedName={carrierHost.seedName} onClose={() => setCarrierHost(null)} onChanged={reloadCarriers}
+          onSaved={(c) => { if (!carrierHost.id) pickCarrier(c); }} />
+      )}
+      {payTarget && <MarkPaidSheet target={payTarget} onClose={() => setPayTarget(null)} onDone={() => { setPayTarget(null); reloadLoad(); }} />}
+      {linkTarget && <LinkBankSheet target={linkTarget} onClose={() => setLinkTarget(null)} onDone={() => { setLinkTarget(null); reloadLoad(); }} />}
       {invoiceSheet && (
         <InvoiceLineSheet
           booking={booking}
