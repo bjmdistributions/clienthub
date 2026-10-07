@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Check, ChevronRight } from "lucide-react";
+import { Check, ChevronRight, HandCoins } from "lucide-react";
 import {
   api, type LogisticsPayDate, type LogisticsPayMine, type LogisticsPaySettings, type LogisticsPayTracker,
   type LogisticsPayTrackerLine,
@@ -8,6 +8,8 @@ import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { isLogisticsOnly } from "../lib/permissions";
 import { describeSchedule, logisticsPayFor, WEEKDAYS } from "../lib/logisticsPay";
 import { lowersCounter, numberPreview, numberingProblem } from "../lib/logisticsBols";
+import type { PayBlock } from "../lib/logisticsBills";
+import { PAY_TRACKER_KEY, PAY_TRACKER_SUB } from "../lib/notices";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
@@ -822,6 +824,61 @@ export function YourPayCard() {
           )}
         </div>
       )}
+    </section>
+  );
+}
+
+// ─── R-464: Bills screen and notices ──────────────────────────────────────
+
+/** Open the pay tracker (Settings, Team, Payouts) from another screen: stash where to land, switch to Settings,
+ *  and tell a Settings screen that is already open (the same stash-then-switch handoff the Bills screen uses). */
+export function openPayTracker() {
+  try {
+    localStorage.setItem("clienthub_settings_tab", "team");
+    localStorage.setItem(PAY_TRACKER_KEY, PAY_TRACKER_SUB);
+  } catch { /* storage blocked: Settings just opens */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "settings" }));
+  setTimeout(() => window.dispatchEvent(new CustomEvent("settings-team-sub")), 100);
+}
+
+/** The pay tracker for the Bills screen, read now and again on a timer and on focus. null until it is read, and
+ *  null for good when it is refused or logistics pay is off: the block and the marks just do not show. Nothing
+ *  is asked unless `enabled`. */
+export function usePayTracker(enabled: boolean): LogisticsPayTracker | null {
+  const [t, setT] = useState<LogisticsPayTracker | null>(null);
+  const load = useCallback(async () => {
+    if (!enabled) { setT(null); return; }
+    try { setT(await api.logistics.pay.tracker()); } catch { setT(null); }
+  }, [enabled]);
+  useRefresh(load);
+  return t;
+}
+
+/** The Logistics pay block at the top of the Bills screen: who is paid, on which date, how much, and for how many
+ *  loads. It opens the pay tracker, where the payment is recorded. */
+export function LogisticsPayBillsBlock({ block, onOpen }: { block: PayBlock; onOpen: () => void }) {
+  const pill = block.nothingOwed ? { tone: "neutral" as const, word: "Coming up" }
+    : block.late ? { tone: "danger" as const, word: "Late" }
+    : block.dueNow ? { tone: "warning" as const, word: "Due today" }
+    : { tone: "neutral" as const, word: "Coming up" };
+  const bits = [block.payee, fmtDay(block.date), block.nothingOwed ? "" : `${block.loads} ${block.loads === 1 ? "load" : "loads"}`].filter(Boolean);
+  return (
+    <section className="mb-5 bg-surface border border-line rounded-2xl overflow-hidden" aria-label="Logistics pay">
+      <div className="px-4 py-3 flex items-center gap-3 flex-wrap min-w-0">
+        <span className="w-8 h-8 rounded-lg bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0"><HandCoins size={16} /></span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-[14px] font-semibold text-ink">Logistics pay</h3>
+            <StatusPill tone={pill.tone}>{pill.word}</StatusPill>
+          </div>
+          <div className="text-[12px] text-muted truncate">{bits.join(", ")}</div>
+        </div>
+        <span className="text-[16px] font-semibold tabular-nums text-ink flex-shrink-0">{block.nothingOwed ? "Nothing owed yet" : fmtAmount(block.amount)}</span>
+        <button type="button" onClick={onOpen}
+          className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12.5px] font-medium whitespace-nowrap flex-shrink-0 inline-flex items-center gap-1">
+          Open pay tracker <ChevronRight size={13} />
+        </button>
+      </div>
     </section>
   );
 }

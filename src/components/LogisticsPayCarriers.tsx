@@ -326,9 +326,11 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
 
 /** The top of the Bills screen: every carrier still owed, with when it is due and how it gets paid. A row opens
  *  the load on its Pay step. Nothing renders unless someone is owed, and nothing is asked of the server unless
- *  `canPay` (the carrier-pay routes are for the people who may pay). */
-export function CarriersToPaySection({ canPay }: { canPay: boolean }) {
-  const { data } = useCarrierPay(canPay);
+ *  `canPay` (the carrier-pay routes are for the people who may pay). Pass `data` to share rows already read. */
+export function CarriersToPaySection({ canPay, data: given }: { canPay: boolean; data?: { to_pay: CarrierPayRow[]; paid: CarrierPayRow[] } | null }) {
+  // R-464: the Bills screen reads the rows once and hands them to this section and to its month strip.
+  const own = useCarrierPay(canPay && given === undefined);
+  const data = given === undefined ? own.data : given;
   const today = localDay();
   const rows = useMemo(() => data?.to_pay ?? [], [data]);
   const sum = useMemo(() => toPaySummary(rows, today), [rows, today]);

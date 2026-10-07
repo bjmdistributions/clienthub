@@ -12,9 +12,14 @@ import { can, canViewLogistics, isAdmin, isLogisticsOnly, type Perms } from "./p
 
 // ─── the team's notices ───────────────────────────────────────────────────
 
-export const TEAM_NOTICE_KINDS = ["logistics_quote", "carrier_due", "carrier_overdue", "bill_due", "bill_overdue", "bill_paid"] as const;
+export const TEAM_NOTICE_KINDS = ["logistics_quote", "carrier_due", "carrier_overdue", "bill_due", "bill_overdue", "bill_paid", "logistics_pay_due"] as const;
 export type TeamNoticeKind = (typeof TEAM_NOTICE_KINDS)[number];
 export const isTeamNoticeKind = (k: string): k is TeamNoticeKind => (TEAM_NOTICE_KINDS as readonly string[]).includes(k);
+
+/** R-464: the kinds only an admin sees. "Pay <payee> today" is raised on the morning of a logistics pay date
+ *  and is the owner's to act on; the server hides it from everyone else and this list does too. */
+export const ADMIN_NOTICE_KINDS = ["logistics_pay_due"] as const;
+const isAdminKind = (k: string): boolean => (ADMIN_NOTICE_KINDS as readonly string[]).includes(k);
 
 /** Who sees the bell with these notices: an admin (as always), or anyone who sees deals or the books. A
  *  Logistics-only account never does (it has its own bell, and the server refuses it these routes). */
@@ -23,17 +28,20 @@ export function canSeeTeamNotices(me: Perms | null | undefined): boolean {
   return isAdmin(me) || can(me, "deal_flow:view") || can(me, "financials:view");
 }
 
-/** The unread notices of the six kinds, newest first. Anything else the server sends is not listed here. */
-export function teamNoticesOf(list: readonly LeadNotification[] | null | undefined): LeadNotification[] {
+/** The unread notices of the seven kinds, newest first. Anything else the server sends is not listed here, and
+ *  the admin-only kinds are kept only for an admin (the default keeps them out). */
+export function teamNoticesOf(list: readonly LeadNotification[] | null | undefined, admin = false): LeadNotification[] {
   return (list ?? [])
-    .filter((n) => isTeamNoticeKind(n.kind) && n.status !== "acknowledged")
+    .filter((n) => isTeamNoticeKind(n.kind) && n.status !== "acknowledged" && (admin || !isAdminKind(n.kind)))
     .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
 }
 
 export type NoticeTarget =
   | { to: "load"; id: string; step: LoadStep }
   | { to: "logistics" }
-  | { to: "bill"; id?: string };
+  | { to: "bill"; id?: string }
+  /** R-464: the logistics pay tracker (Settings, Team, Payouts), where a pay date is recorded. */
+  | { to: "paytracker" };
 
 const payloadOf = (n: Pick<LeadNotification, "payload_json">): Record<string, unknown> => {
   try {
@@ -44,8 +52,8 @@ const payloadOf = (n: Pick<LeadNotification, "payload_json">): Record<string, un
 const idIn = (o: Record<string, unknown>, key: string): string => (typeof o[key] === "string" ? (o[key] as string).trim() : "");
 
 /** Where Open goes. A quote notice opens its load on the Quote step, a carrier notice the load's Pay step,
- *  a bill notice the Bills screen (on the bill when the payload names one). A notice whose payload names no
- *  load falls back to the screen that holds it. */
+ *  a bill notice the Bills screen (on the bill when the payload names one), a pay-day notice the logistics pay
+ *  tracker. A notice whose payload names no load falls back to the screen that holds it. */
 export function noticeTarget(n: Pick<LeadNotification, "kind" | "payload_json">): NoticeTarget | null {
   const p = payloadOf(n);
   const load = idIn(p, "booking_id");
@@ -61,6 +69,8 @@ export function noticeTarget(n: Pick<LeadNotification, "kind" | "payload_json">)
       const bill = idIn(p, "bill_id");
       return bill ? { to: "bill", id: bill } : { to: "bill" };
     }
+    case "logistics_pay_due":
+      return { to: "paytracker" };
     default:
       return null;
   }
@@ -74,17 +84,25 @@ export const NOTICE_KIND_LABEL: Record<TeamNoticeKind, string> = {
   bill_due: "Bill due",
   bill_overdue: "Bill overdue",
   bill_paid: "Bill paid",
+  logistics_pay_due: "Pay day",
 };
 export const noticeTone = (k: string): "danger" | "warning" | "success" | "neutral" =>
-  k === "carrier_overdue" || k === "bill_overdue" ? "danger" : k === "carrier_due" || k === "bill_due" ? "warning" : k === "bill_paid" ? "success" : "neutral";
+  k === "carrier_overdue" || k === "bill_overdue" ? "danger"
+    : k === "carrier_due" || k === "bill_due" || k === "logistics_pay_due" ? "warning"
+    : k === "bill_paid" ? "success" : "neutral";
 
 /** The Bills screen opens a bill from another screen the same stash-then-switch way Invoices does. */
 export const BILL_OPEN_KEY = "bills_open_id";
+/** R-464: Settings opens on this Team sub-screen when another screen asks for the pay tracker. */
+export const PAY_TRACKER_KEY = "settings_team_sub";
+export const PAY_TRACKER_SUB = "payouts";
 
 /** Whether this person can open what a notice points at. Loads need the Logistics screen, bills the books. */
 export function canOpenTarget(t: NoticeTarget | null, me: Perms | null | undefined): boolean {
   if (!t || !me) return false;
   if (t.to === "bill") return isAdmin(me) || can(me, "financials:view");
+  // The tracker lives in Settings, whose Team section is the admin's.
+  if (t.to === "paytracker") return isAdmin(me);
   return canViewLogistics(me);
 }
 

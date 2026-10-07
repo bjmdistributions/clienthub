@@ -280,9 +280,9 @@ export interface CallRequest {
 export interface LeadNotification {
   id: string;
   org_id: string;
-  /** R-460: the last six are the team's logistics and bill notices (see lib/notices.ts). */
+  /** R-460: the last seven are the team's logistics and bill notices (see lib/notices.ts). */
   kind: "supply_lead" | "supplier_profile" | "call_request" | "system"
-    | "logistics_quote" | "carrier_due" | "carrier_overdue" | "bill_due" | "bill_overdue" | "bill_paid";
+    | "logistics_quote" | "carrier_due" | "carrier_overdue" | "bill_due" | "bill_overdue" | "bill_paid" | "logistics_pay_due";
   title: string;
   body: string;
   payload_json: string | null;

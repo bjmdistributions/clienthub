@@ -1,7 +1,7 @@
 // R-449: the Bills mode of the Bills screen. A band of four figures, what Ecliptr found in the
 // bank that looks like a bill, the month as a strip of due dates, then one card per bill.
 import { useMemo, useState } from "react";
-import { Check, Plus, RotateCcw } from "lucide-react";
+import { Check, HandCoins, Plus, RotateCcw, Truck } from "lucide-react";
 import StatusPill from "../StatusPill";
 import { fmtAmount } from "../../lib/format";
 import type { BillCandidate, BillOut, BillsList, UpcomingDue } from "../../lib/billsApi";
@@ -9,6 +9,7 @@ import { amountText,
   PERIOD_PILL, STATUS_PILL, billMethodLabel, cadenceLabel, chipState, daysInMonth, dueText, longDay,
   monthTitle, shortDay, type ChipState,
 } from "../../lib/billsFormat";
+import type { LogisticsMark } from "../../lib/logisticsBills";
 import { BillLogo, Card, Tile, btn, pri } from "./ui";
 
 const count = (k: number, one: string, many = one + "s") => `${k} ${k === 1 ? one : many}`;
@@ -17,6 +18,9 @@ interface Props {
   data: BillsList;
   cands: BillCandidate[];
   admin: boolean;
+  /** R-464: the logistics pay dates and carrier due dates of this month, drawn on the month strip. */
+  marks: LogisticsMark[];
+  onMark: (m: LogisticsMark) => void;
   onOpen: (id: string) => void;
   onAdd: () => void;
   onTrack: (c: BillCandidate) => void;
@@ -24,19 +28,22 @@ interface Props {
   onRestore: (b: BillOut) => void;
 }
 
-export default function BillsMode({ data, cands, admin, onOpen, onAdd, onTrack, onIgnore, onRestore }: Props) {
+export default function BillsMode({ data, cands, admin, marks, onMark, onOpen, onAdd, onTrack, onIgnore, onRestore }: Props) {
   const s = data.summary;
   const active = data.bills.filter((b) => b.status === "active");
   const archived = data.bills.filter((b) => b.status === "archived");
 
   if (active.length === 0 && archived.length === 0 && cands.length === 0) {
     return (
-      <div className="bg-surface border border-line rounded-2xl py-14 px-6 flex flex-col items-center text-center">
-        <div className="text-[14px] font-semibold text-ink">No bills yet</div>
-        <p className="text-[12.5px] text-muted mt-1 max-w-[420px]">
-          Add rent, insurance or a car note. Ecliptr watches your bank for the payment and tells you when one is late.
-        </p>
-        {admin && <button onClick={onAdd} className={pri + " mt-4"}><Plus size={14} /> Add a bill</button>}
+      <div className="space-y-4">
+        {marks.length > 0 && <MonthStrip today={data.today} upcoming={data.upcoming} bills={active} marks={marks} onMark={onMark} onOpen={onOpen} />}
+        <div className="bg-surface border border-line rounded-2xl py-14 px-6 flex flex-col items-center text-center">
+          <div className="text-[14px] font-semibold text-ink">No bills yet</div>
+          <p className="text-[12.5px] text-muted mt-1 max-w-[420px]">
+            Add rent, insurance or a car note. Ecliptr watches your bank for the payment and tells you when one is late.
+          </p>
+          {admin && <button onClick={onAdd} className={pri + " mt-4"}><Plus size={14} /> Add a bill</button>}
+        </div>
       </div>
     );
   }
@@ -61,7 +68,7 @@ export default function BillsMode({ data, cands, admin, onOpen, onAdd, onTrack, 
 
       {cands.length > 0 && <Found cands={cands} admin={admin} onTrack={onTrack} onIgnore={onIgnore} />}
 
-      {active.length > 0 && <MonthStrip today={data.today} upcoming={data.upcoming} bills={active} onOpen={onOpen} />}
+      {(active.length > 0 || marks.length > 0) && <MonthStrip today={data.today} upcoming={data.upcoming} bills={active} marks={marks} onMark={onMark} onOpen={onOpen} />}
 
       {active.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -147,8 +154,26 @@ const RING: Record<ChipState, string> = {
   plain: "",
 };
 
-function MonthStrip({ today, upcoming, bills, onOpen }: {
-  today: string; upcoming: UpcomingDue[]; bills: BillOut[]; onOpen: (id: string) => void;
+/** The cell for a logistics mark: a small square with the pay-date or truck icon, ringed the way a bill chip is. */
+function MarkChip({ m, onMark }: { m: LogisticsMark; onMark: (m: LogisticsMark) => void }) {
+  const Icon = m.kind === "pay" ? HandCoins : Truck;
+  return (
+    <button onClick={() => onMark(m)} title={m.title} aria-label={m.title}
+      className={`relative rounded-[10px] p-[2px] ${RING[m.state]} ${m.state === "paid" ? "opacity-50 hover:opacity-100" : ""} transition-opacity`}>
+      <span className="w-[22px] h-[22px] rounded-lg bg-surface-3 text-ink-2 flex items-center justify-center">
+        <Icon size={13} strokeWidth={2} />
+      </span>
+      {m.state === "paid" && (
+        <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-success-bg text-success-ink ring-1 ring-success/30 flex items-center justify-center">
+          <Check size={9} strokeWidth={3} />
+        </span>
+      )}
+    </button>
+  );
+}
+
+function MonthStrip({ today, upcoming, bills, marks, onMark, onOpen }: {
+  today: string; upcoming: UpcomingDue[]; bills: BillOut[]; marks: LogisticsMark[]; onMark: (m: LogisticsMark) => void; onOpen: (id: string) => void;
 }) {
   const days = daysInMonth(today);
   const month = today.slice(0, 7);
@@ -162,18 +187,27 @@ function MonthStrip({ today, upcoming, bills, onOpen }: {
     }
     return m;
   }, [upcoming, byId, month]);
+  const marksPerDay = useMemo(() => {
+    const m = new Map<number, LogisticsMark[]>();
+    for (const k of marks) m.set(k.day, [...(m.get(k.day) || []), k]);
+    return m;
+  }, [marks]);
   const todayN = +today.slice(8, 10);
+  const hasPay = marks.some((k) => k.kind === "pay");
+  const hasCarrier = marks.some((k) => k.kind === "carrier");
 
   return (
     <Card title={monthTitle(today)} sub="Every due date this month"
       right={
-        <div className="flex items-center gap-3 text-[11px] text-muted">
+        <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted">
           <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded ring-2 ring-warning" /> Due soon</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded ring-2 ring-danger" /> Overdue</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-surface-3 flex items-center justify-center text-success-ink"><Check size={9} /></span> Paid</span>
+          {hasPay && <span className="inline-flex items-center gap-1.5"><HandCoins size={12} /> Logistics pay</span>}
+          {hasCarrier && <span className="inline-flex items-center gap-1.5"><Truck size={12} /> Carrier due</span>}
         </div>
       }>
-      {perDay.size === 0 ? (
+      {perDay.size === 0 && marks.length === 0 ? (
         <div className="px-5 py-8 text-[13px] text-muted text-center">Nothing falls due this month.</div>
       ) : (
         <div className="overflow-x-auto">
@@ -181,7 +215,11 @@ function MonthStrip({ today, upcoming, bills, onOpen }: {
           <div className="grid" style={{ gridTemplateColumns: `repeat(${days}, minmax(0, 1fr))`, minWidth: days * 28 }}>
             {Array.from({ length: days }, (_, i) => i + 1).map((d) => {
               const items = perDay.get(d) || [];
+              const dayMarks = marksPerDay.get(d) || [];
+              // Up to three bill chips, then the logistics marks, four cells in all; the rest is counted.
               const shown = items.slice(0, 3);
+              const shownMarks = dayMarks.slice(0, Math.max(0, 4 - shown.length));
+              const more = items.length - shown.length + dayMarks.length - shownMarks.length;
               return (
                 <div key={d} className={`min-h-[78px] py-2 flex flex-col items-center gap-1.5 border-l border-line-2 first:border-l-0 ${d === todayN ? "bg-accent/5" : ""}`}>
                   <span className={`text-[10px] tabular-nums leading-none ${d === todayN ? "text-accent-hover font-bold" : d < todayN ? "text-faint" : "text-muted"}`}>{d}</span>
@@ -201,7 +239,8 @@ function MonthStrip({ today, upcoming, bills, onOpen }: {
                       </button>
                     );
                   })}
-                  {items.length > shown.length && <span className="text-[10px] text-muted tabular-nums">+{items.length - shown.length}</span>}
+                  {shownMarks.map((m) => <MarkChip key={m.key} m={m} onMark={onMark} />)}
+                  {more > 0 && <span className="text-[10px] text-muted tabular-nums">+{more}</span>}
                 </div>
               );
             })}

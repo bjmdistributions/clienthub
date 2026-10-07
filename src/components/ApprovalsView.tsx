@@ -4,9 +4,11 @@ import PendingReviewModal from "./PendingReviewModal";
 import { UserPlus, Inbox, ChevronRight, X, Store, Megaphone, Check, Reply, Truck } from "lucide-react";
 import StatusPill from "./StatusPill";
 import { openLoadInLogistics } from "./LogisticsPayCarriers";
+import { openPayTracker } from "./LogisticsPay";
 import { BILL_OPEN_KEY, NOTICE_KIND_LABEL, canOpenTarget, noticeTarget, noticeTone, type NoticeTarget, type TeamNoticeKind } from "../lib/notices";
 import type { NoticeState } from "../lib/useNotices";
 import { isAdmin } from "../lib/permissions";
+import { renewalLine } from "../lib/renewals";
 
 const kindLabel = (k: string) =>
   k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k === "listing_stale" ? "Storefront listing" : k === "unsubscribe" ? "Unsubscribed" : k;
@@ -190,13 +192,14 @@ function SupplyLeadsSection({ leads, onAck }: { leads: OrUnavailable<LeadNotific
 function openTarget(t: NoticeTarget) {
   if (t.to === "load") { openLoadInLogistics(t.id, t.step); return; }
   if (t.to === "logistics") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "logistics" })); return; }
+  if (t.to === "paytracker") { openPayTracker(); return; }
   try { if (t.id) localStorage.setItem(BILL_OPEN_KEY, t.id); } catch { /* storage blocked: Bills just opens */ }
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "bills" }));
   setTimeout(() => window.dispatchEvent(new CustomEvent("bills-open")), 100);
 }
 
 // R-460: the team's logistics and bill notices (a quote ready, a carrier due or overdue, a bill due,
-// overdue or paid), newest first. Open goes to the thing and counts as reading it; Dismiss only reads it.
+// overdue or paid, a logistics pay day), newest first. Open goes to the thing and counts as reading it; Dismiss only reads it.
 function LogisticsBillsSection({ list, me, onOpen, onDismiss }: {
   list: LeadNotification[]; me: Me | null | undefined; onOpen: (n: LeadNotification) => void; onDismiss: (n: LeadNotification) => void;
 }) {
@@ -300,12 +303,12 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
     setSupplyLeads((l) => (l && !isUnavailable(l) ? l.filter((n) => n.id !== id) : l));
   };
 
-  // Stale storefront listings (renew or mark sold) get their own section; other
-  // non-client_add requests (e.g. deletions) are team requests.
+  // Stale storefront listings (renew or mark sold) are one line that opens the Renewals screen (R-466);
+  // other non-client_add requests (e.g. deletions) are team requests.
   const staleListings = items.filter((a) => a.kind === "listing_stale");
   const teamRequests = items.filter((a) => a.kind !== "client_add" && a.kind !== "listing_stale");
   const supplyLeadsCount = supplyLeads && !isUnavailable(supplyLeads) ? supplyLeads.length : 0;
-  const total = pending.length + staleListings.length + teamRequests.length + supplyLeadsCount + teamList.length;
+  const total = pending.length + (staleListings.length > 0 ? 1 : 0) + teamRequests.length + supplyLeadsCount + teamList.length;
 
   return (
     <div className="p-6 max-w-2xl mx-auto">
@@ -398,27 +401,14 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
             </section>
           )}
 
-          {/* Storefront listings that have gone stale — renew or mark sold */}
+          {/* R-466: the stale storefront listings are one line here; the Renewals screen lists them. */}
           {staleListings.length > 0 && (
             <section>
-              <div className="flex items-center gap-2 mb-2.5">
-                <Store size={15} className="text-muted" />
-                <h3 className="text-[13px] font-semibold text-ink">Storefront listings</h3>
-                <span className="text-[11px] font-semibold text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums">{staleListings.length}</span>
-              </div>
-              <div className="space-y-2.5">
-                {staleListings.map((a) => (
-                  <div key={a.id} className="bg-surface border border-line rounded-xl p-4 flex items-center justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[14px] font-medium text-ink truncate">{(a.summary || "").replace(/^Renew or mark sold:\s*/, "") || "Listing"}</div>
-                      <div className="text-[11px] text-muted mt-0.5">Not renewed in 5+ days: renew to keep it live, or mark it sold.</div>
-                    </div>
-                    <div className="flex gap-2 flex-shrink-0">
-                      <button onClick={() => quick(a.id, true)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Renew</button>
-                      <button onClick={() => quick(a.id, false)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">Mark sold</button>
-                    </div>
-                  </div>
-                ))}
+              <div className="bg-surface border border-line rounded-xl px-4 py-2.5 flex items-center gap-3">
+                <Store size={15} className="text-muted flex-shrink-0" />
+                <span className="text-[13px] font-medium text-ink min-w-0 flex-1 truncate">{renewalLine(staleListings.length)}</span>
+                <button onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "renewals" }))}
+                  className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium flex-shrink-0">Open</button>
               </div>
             </section>
           )}
