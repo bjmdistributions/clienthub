@@ -38,11 +38,12 @@ const POLL_SECS: u64 = 20;
 /// after loads already exist restores them from the server's snapshot to fill the new columns in
 /// (the row count is unchanged, so only a generation change triggers it).
 const HEAL_GENERATION: &str = "6";
-/// True when the current generation changed what a row CARRIES rather than which tables exist, so
-/// the count check in `auto_heal_if_behind` cannot see the gap: the new column values arrive only
-/// by restoring the snapshot, whatever the counts say. Generation "6" is column-only (R-459).
-/// Set it back to false for a generation that only widens the tables compared.
-const HEAL_RESTORES_REGARDLESS: bool = true;
+/// Tables the current generation refreshes from the snapshot even when the counts agree, because
+/// it changed what a row CARRIES rather than which tables exist, so the count check in
+/// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
+/// workspace. Generation "6" (R-459): `freight_bookings`, which only flows server to device, so the
+/// server's copy is always the one to keep. Empty for a generation that only widens the tables.
+const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings"];
 
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
 /// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`
@@ -1180,6 +1181,12 @@ pub async fn netsync_repair_hard() -> Result<serde_json::Value, String> {
 /// best-effort: a bad row is logged and skipped, never aborting the restore. Returns
 /// `{ table: rows_applied, ... }`.
 pub async fn restore_snapshot() -> Result<serde_json::Value> {
+    restore_snapshot_tables(None).await
+}
+
+/// `restore_snapshot`, limited to `only` when given (R-459: the generation-6 heal refreshes one
+/// table instead of the whole workspace).
+async fn restore_snapshot_tables(only: Option<&[&str]>) -> Result<serde_json::Value> {
     if logistics_only_device() {
         anyhow::bail!("This account uses the Logistics screen and does not sync the workspace.");
     }
@@ -1217,6 +1224,9 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
         // name is interpolated into SQL below).
         if !SNAPSHOT_TABLES.contains(&table.as_str()) {
             tracing::warn!("restore_snapshot: skipping unknown table {}", table);
+            continue;
+        }
+        if only.is_some_and(|o| !o.contains(&table.as_str())) {
             continue;
         }
         let conn = match pool().get() {
@@ -1466,12 +1476,15 @@ async fn auto_heal_if_behind() {
             None => false,
         }
     });
-    if diverged || HEAL_RESTORES_REGARDLESS {
+    if diverged || !HEAL_REFRESH_TABLES.is_empty() {
+        // Counts that diverge still restore everything, as before; otherwise only the tables this
+        // generation changed.
+        let only = if diverged { None } else { Some(HEAL_REFRESH_TABLES) };
         tracing::info!(
-            "netsync auto-heal: local/server counts diverge or this generation changed row contents (local={:?} server={:?}) — reconciling",
-            local, server
+            "netsync auto-heal: counts diverge, or this generation refreshes {:?} (local={:?} server={:?}) — reconciling",
+            only, local, server
         );
-        match restore_snapshot().await {
+        match restore_snapshot_tables(only).await {
             Ok(applied) => tracing::info!("netsync auto-heal: reconciled {:?}", applied),
             Err(e) => {
                 tracing::warn!("netsync auto-heal: restore failed: {}", e);
@@ -2669,7 +2682,7 @@ mod r400_sync_tests {
     #[test]
     fn r459_new_booking_columns_force_one_restore_per_device() {
         assert_ne!(HEAL_GENERATION, "5", "devices healed under generation 5 do not have the R-459 columns");
-        assert!(HEAL_RESTORES_REGARDLESS, "a column-only generation restores whatever the counts say");
+        assert_eq!(HEAL_REFRESH_TABLES, &["freight_bookings"], "a column-only generation refreshes only the table that gained columns");
     }
 
     #[tokio::test]
