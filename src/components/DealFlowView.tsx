@@ -434,11 +434,15 @@ export default function DealFlowView() {
     setSyncing(false);
   };
 
+  // R-467: every deal with its items, dated money movements and dates, in one workbook.
   const handleExportDealFlows = async () => {
-    const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "deal-flows.csv" });
+    const day = new Date().toLocaleDateString("en-CA");
+    const path = await saveDialog({ filters: [{ name: "Excel", extensions: ["xlsx"] }], defaultPath: `deal-records-${day}.xlsx` });
     if (!path) return;
-    const count = await api.exportDealFlowsCsv(path as string);
-    toast(`Exported ${count} deal flow${count !== 1 ? "s" : ""} to CSV`);
+    try {
+      const count = await api.exportDealRecords(path as string);
+      toast(`Exported ${count} deal${count !== 1 ? "s" : ""} with their items and payments`);
+    } catch (e: any) { toast(String(e), "error"); }
   };
 
   return (

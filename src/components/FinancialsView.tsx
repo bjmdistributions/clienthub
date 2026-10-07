@@ -2,6 +2,7 @@ import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, us
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
   Building2, RefreshCw, RotateCcw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle, Download,
+  Eye, EyeOff,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
@@ -863,6 +864,8 @@ export default function FinancialsView() {
   const [tieOutLoading, setTieOutLoading] = useState(false);
   const [tieOutKinds, setTieOutKinds]   = useState<Set<TieOutRow["kind"]>>(new Set(["wire", "zelle", "rtp", "cash"]));
   const [tieOutDir, setTieOutDir]       = useState<"all" | "in" | "out">("all");
+  // R-468: rows Jack hid sit behind their own toggle, never mixed into the list.
+  const [tieOutShowHidden, setTieOutShowHidden] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   // Four surfaces: To book (the daily queue) opens first; Ledger is the full
@@ -2525,10 +2528,12 @@ export default function FinancialsView() {
   // to the wrong category but never tied to a deal is exactly what this list is for.
   const tieOutFiltered = useMemo(
     () => tieOut
-      .filter((t) => tieOutKinds.has(t.kind) && (tieOutDir === "all" || t.direction === tieOutDir))
+      .filter((t) => !!t.hidden === tieOutShowHidden && tieOutKinds.has(t.kind) && (tieOutDir === "all" || t.direction === tieOutDir))
       .sort((a, b) => (b.posted_at || "").localeCompare(a.posted_at || "")),
-    [tieOut, tieOutKinds, tieOutDir],
+    [tieOut, tieOutKinds, tieOutDir, tieOutShowHidden],
   );
+
+  const tieOutHiddenCount = useMemo(() => tieOut.filter((t) => t.hidden).length, [tieOut]);
 
   const tieOutStats = useMemo(() => {
     let sumIn = 0, sumOut = 0;
@@ -2576,6 +2581,17 @@ export default function FinancialsView() {
     if (!full) return;
     await saveReview(full, { category });
     loadTieOut();
+  };
+
+  // R-468: Hide takes a row off the list and changes no figure; Show again puts it back.
+  const tieOutSetHidden = async (t: TieOutRow, hidden: boolean) => {
+    setTieOut((prev) => prev.map((x) => (x.id === t.id ? { ...x, hidden } : x)));
+    try {
+      await api.setTieOutHidden([t.id], hidden);
+    } catch (e) {
+      setTieOut((prev) => prev.map((x) => (x.id === t.id ? { ...x, hidden: !hidden } : x)));
+      toast(errText(e), "error");
+    }
   };
 
   const KIND_LABEL: Record<TieOutRow["kind"], string> = { wire: "Wire", zelle: "Zelle", rtp: "Real-time", cash: "Cash" };
@@ -3501,8 +3517,8 @@ export default function FinancialsView() {
             {v === "tobook" && toBookStats.count > 0 && (
               <span className="ml-1.5 font-normal text-muted tabular-nums">{toBookStats.count}</span>
             )}
-            {v === "tieout" && tieOut.length > 0 && (
-              <span className="ml-1.5 font-normal text-muted tabular-nums">{tieOut.length}</span>
+            {v === "tieout" && tieOut.length - tieOutHiddenCount > 0 && (
+              <span className="ml-1.5 font-normal text-muted tabular-nums">{tieOut.length - tieOutHiddenCount}</span>
             )}
           </button>
         ))}
@@ -5217,10 +5233,23 @@ export default function FinancialsView() {
                   {label}
                 </button>
               ))}
+              {(tieOutHiddenCount > 0 || tieOutShowHidden) && (
+                <>
+                  <span className="w-px h-5 bg-line mx-1" />
+                  <button
+                    onClick={() => setTieOutShowHidden((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12.5px] font-medium border transition-colors ${
+                      tieOutShowHidden ? "bg-surface-2 text-ink border-line" : "text-muted border-transparent hover:text-ink-2"
+                    }`}
+                  >
+                    <EyeOff size={12} /> Hidden <span className="tabular-nums">{tieOutHiddenCount}</span>
+                  </button>
+                </>
+              )}
             </div>
 
             <div className="text-[12px] text-muted">
-              {tieOutFiltered.length} movement{tieOutFiltered.length === 1 ? "" : "s"} · {fmtAmount(tieOutStats.sumIn)} in · {fmtAmount(tieOutStats.sumOut)} out still untied
+              {tieOutFiltered.length} {tieOutShowHidden ? "hidden " : ""}movement{tieOutFiltered.length === 1 ? "" : "s"} · {fmtAmount(tieOutStats.sumIn)} in · {fmtAmount(tieOutStats.sumOut)} out {tieOutShowHidden ? "untied, kept off the list" : "still untied"}
             </div>
 
             {tieOutLoading && tieOut.length === 0 ? skeletonRows
@@ -5230,7 +5259,9 @@ export default function FinancialsView() {
                   <Check size={18} className="text-success-ink" />
                 </div>
                 <p className="text-[14px] font-semibold text-ink-2">
-                  {tieOut.length > 0 ? "Nothing here matches" : "Every wire, Zelle and cash movement is tied to a deal."}
+                  {tieOutShowHidden ? "Nothing hidden matches"
+                    : tieOut.length - tieOutHiddenCount > 0 ? "Nothing here matches"
+                    : "Every wire, Zelle and cash movement is tied to a deal or hidden."}
                 </p>
               </div>
             ) : (
@@ -5286,6 +5317,15 @@ export default function FinancialsView() {
                                   className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-semibold transition-colors whitespace-nowrap"
                                 >
                                   <Link2 size={11} /> Tie to a deal
+                                </button>
+                              </span>
+                              <span className="flex-shrink-0 order-2 lg:order-none">
+                                <button
+                                  onClick={() => tieOutSetHidden(t, !t.hidden)}
+                                  title={t.hidden ? "Put it back on the Tie out list" : "Take it off the Tie out list. Changes no figure."}
+                                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-line text-ink-2 hover:bg-surface-2 text-[12px] font-medium transition-colors whitespace-nowrap"
+                                >
+                                  {t.hidden ? <><Eye size={11} /> Show again</> : <><EyeOff size={11} /> Hide</>}
                                 </button>
                               </span>
                             </div>

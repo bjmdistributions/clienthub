@@ -2632,6 +2632,8 @@ export interface TieOutRow {
   category: string;
   reviewed: boolean;
   kind: "wire" | "zelle" | "rtp" | "cash";
+  /** R-468: taken off the Tie out list by hand. Changes no figure. */
+  hidden: boolean;
 }
 // R-282 accountant portal — one row per edit the accountant made on the web (ecliptr.app/staff)
 // to a bank transaction. `field` is one of category|note|confirmed_method|reviewed; `old_value`/
@@ -3560,8 +3562,8 @@ export const api = {
     invoke<number>("export_invoices_csv", { outputPath }),
   exportDealsCsv: (outputPath: string) =>
     invoke<number>("export_deals_csv", { outputPath }),
-  exportDealFlowsCsv: (outputPath: string) =>
-    invoke<number>("export_deal_flows_csv", { outputPath }),
+  exportDealRecords: (outputPath: string) =>
+    invoke<number>("export_deal_records_xlsx", { outputPath }),
   exportInventoryCsv: (statusFilter: string | null, outputPath: string) =>
     invoke<number>("export_inventory_csv", { statusFilter, outputPath }),
   exportTaxYearPnlCsv: (year: number, outputPath: string) =>
@@ -4368,6 +4370,7 @@ export const api = {
   plaidRefreshSync: () => invoke<PlaidSyncSummary>("plaid_refresh_sync"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   listTieOutBacklog: () => invoke<TieOutRow[]>("list_tie_out_backlog"),
+  setTieOutHidden: (ids: string[], hidden: boolean) => invoke<number>("set_tie_out_hidden", { ids, hidden }),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   // Takes a patch, not a full row: only the fields present are written. Sync is
   // per-column last-write-wins, so sending a field you aren't changing re-stamps

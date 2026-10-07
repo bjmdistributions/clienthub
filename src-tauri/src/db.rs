@@ -2412,4 +2412,17 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE freight_bookings ADD COLUMN pay_due_date TEXT DEFAULT '';
         "#,
     ),
+    (
+        112,
+        // R-468: a Tie out row Jack hid because it does not matter. It only takes the row off the
+        // Tie out list, it changes no figure, and Show again puts it back. Nullable with a default,
+        // never NOT NULL (sync-engine 10.1 and 10.2). Mirrored in clienthub-api (schema.sql and the
+        // sync.rs ensure_meta_tables backfill), which must be DEPLOYED FIRST or apply_upsert drops
+        // the flag out of every bank_txn event as SCHEMA DRIFT. Must ship after migration 111, the
+        // runner skips any number below the highest one applied. Never put a semicolon inside a
+        // comment here, the runner splits on it.
+        r#"
+        ALTER TABLE bank_txn ADD COLUMN tie_out_hidden INTEGER DEFAULT 0;
+        "#,
+    ),
 ];

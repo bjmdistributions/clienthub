@@ -28,6 +28,7 @@ mod manifest_images;
 mod manifest_split;
 mod manifest_category;
 mod deal_label;
+mod deal_export;
 mod oauth_flow;
 mod plaid;
 mod client_statement;
@@ -635,7 +636,7 @@ fn main() {
             export_clients_csv,
             export_invoices_csv,
             export_deals_csv,
-            export_deal_flows_csv,
+            export_deal_records_xlsx,
             export_inventory_csv,
             export_tax_year_pnl_csv,
             export_ledger_csv,
@@ -1073,6 +1074,7 @@ fn main() {
             plaid_sync,
             list_bank_txns,
             list_tie_out_backlog,
+            set_tie_out_hidden,
             bank_txn_summary,
             set_bank_txn_review,
             allocate_bank_txn,

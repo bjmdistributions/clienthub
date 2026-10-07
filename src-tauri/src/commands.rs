@@ -1470,31 +1470,16 @@ pub async fn export_deals_csv(output_path: String) -> Result<u32, String> {
     Ok(count)
 }
 
+/// R-467: every deal flow with its items, dated money movements and dates, as one workbook
+/// (`deal_export.rs`, byte-identical on the server, which sends the same file to the website and
+/// the phone). Replaces the one-row-per-deal CSV, whose columns are all on its Deals sheet.
 #[tauri::command]
-pub async fn export_deal_flows_csv(output_path: String) -> Result<u32, String> {
+pub async fn export_deal_records_xlsx(output_path: String) -> Result<u32, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut wtr = csv::Writer::from_path(&output_path).map_err(|e| e.to_string())?;
-    // R-436: the refund on each deal, and revenue and profit after it, beside the stored
-    // figures (which are before refunds), so the file adds up the way the screens do.
-    wtr.write_record(["name","client","stage","gross_revenue","total_cost","net_profit","created_at",
-                      "refunds","revenue_after_refunds","profit_after_refunds","completed_at"]).map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT df.name,COALESCE(c.name,''),df.stage,COALESCE(df.gross_revenue,0),COALESCE(df.total_cost,0),COALESCE(df.net_profit,0),df.created_at,
-                {DF_REFUNDS_SQL}, COALESCE(df.completed_at,'')
-         FROM deal_flows df LEFT JOIN clients c ON c.id=df.client_id ORDER BY df.updated_at DESC")
-    ).map_err(|e| e.to_string())?;
-    let mut count: u32 = 0;
-    let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,f64>(4)?,r.get::<_,f64>(5)?,r.get::<_,String>(6)?,
-            r.get::<_,f64>(7)?,r.get::<_,String>(8)?))
-    }).map_err(|e| e.to_string())?;
-    for r in rows.filter_map(|r| r.ok()) {
-        wtr.write_record(&[&r.0,&r.1,&r.2,&format!("{:.2}",r.3),&format!("{:.2}",r.4),&format!("{:.2}",r.5),&r.6,
-                           &format!("{:.2}",r.7),&format!("{:.2}",r.3 - r.7),&format!("{:.2}",r.5 - r.7),&r.8]).map_err(|e| e.to_string())?;
-        count += 1;
-    }
-    wtr.flush().map_err(|e| e.to_string())?;
-    Ok(count)
+    let (bytes, deals) = crate::deal_export::workbook(&conn, "")?;
+    drop(conn);
+    std::fs::write(&output_path, bytes).map_err(|e| e.to_string())?;
+    Ok(deals as u32)
 }
 
 #[tauri::command]
@@ -17120,7 +17105,8 @@ pub async fn list_tie_out_backlog() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = "SELECT bt.id, bt.posted_at, bt.direction, bt.amount, bt.description,
                       bt.counterparty_name, bt.account_id, bt.category, bt.reviewed,
-                      COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated
+                      COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated,
+                      COALESCE(bt.tie_out_hidden, 0)
                FROM bank_txn bt
                WHERE COALESCE(bt.counterparty_type,'') != 'loan'
                  AND COALESCE(bt.category,'') NOT IN ('internal_transfer','card_payment','fee','merchant_fees',
@@ -17140,12 +17126,13 @@ pub async fn list_tie_out_backlog() -> Result<Vec<Value>, String> {
             r.get::<_, String>(7)?,  // category
             r.get::<_, i64>(8)? != 0,// reviewed
             r.get::<_, f64>(9)?,     // allocated
+            r.get::<_, i64>(10)? != 0,// tie_out_hidden (R-468)
         ))
     }).map_err(|e| e.to_string())?;
 
     let mut out = Vec::new();
     for row in rows {
-        let (id, posted_at, direction, amount, description, counterparty_name, account_id, category, reviewed, allocated) =
+        let (id, posted_at, direction, amount, description, counterparty_name, account_id, category, reviewed, allocated, hidden) =
             row.map_err(|e| e.to_string())?;
         let remaining = ((amount - allocated) * 100.0).round() / 100.0;
         if remaining <= 0.01 { continue; }
@@ -17163,9 +17150,38 @@ pub async fn list_tie_out_backlog() -> Result<Vec<Value>, String> {
             "category": category,
             "reviewed": reviewed,
             "kind": kind,
+            "hidden": hidden,
         }));
     }
     Ok(out)
+}
+
+/// R-468: take rows off the Tie out list (or put them back) without touching a figure. Only the
+/// flag is written, as its own column, so it can never re-stamp a category or a booking. The
+/// server's `PUT /api/bank/txns/:id` takes the same `tie_out_hidden` key for the phone.
+#[tauri::command]
+pub async fn set_tie_out_hidden(ids: Vec<String>, hidden: bool) -> Result<u32, String> {
+    let flag = if hidden { 1i64 } else { 0i64 };
+    let mut n = 0u32;
+    for id in &ids {
+        // Same guard as set_bank_txn_review: never write to a row that is gone.
+        let exists = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [id], |_| Ok(())).is_ok()
+        };
+        if !exists { continue; }
+        let now = Utc::now().to_rfc3339();
+        let mut cols = Map::new();
+        cols.insert("tie_out_hidden".into(), json!(flag));
+        cols.insert("updated_at".into(), Value::String(now.clone()));
+        sync::record_upsert("bank_txn", id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE bank_txn SET tie_out_hidden=?1, updated_at=?2 WHERE id=?3", rusqlite::params![flag, now, id])
+            .map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    crate::netsync::push_now();
+    Ok(n)
 }
 
 fn bank_txn_list_rows(conn: &rusqlite::Connection, where_sql: &str, param: &str) -> Result<Vec<Value>, String> {
@@ -28013,6 +28029,12 @@ mod r436_net_revenue_tests {
     #[test]
     fn net_revenue_is_gross_less_the_one_refund_rule() {
         assert_eq!(DF_NET_REVENUE_SQL, format!("(df.gross_revenue - {DF_REFUNDS_SQL})"));
+    }
+
+    /// R-467: the deal records workbook counts refunds by the same rule as every screen.
+    #[test]
+    fn the_deal_export_counts_refunds_by_the_one_rule() {
+        assert_eq!(crate::deal_export::REFUNDS_SQL, DF_REFUNDS_SQL);
     }
 
     /// A refund comes off revenue and profit once each, whichever way it was recorded.
