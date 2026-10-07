@@ -2412,4 +2412,26 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE freight_bookings ADD COLUMN pay_due_date TEXT DEFAULT '';
         "#,
     ),
+    (
+        111,
+        // R-464 and R-465: the flow before a truck is booked, and the logistics person's markup.
+        // shipping_charge says how the customer pays for the freight ('' not decided, 'invoice' on
+        // the invoice, 'own' we pay it ourselves). book_override_at and book_override_by stamp a
+        // load sent to book before the invoice was sent and paid. quote_cost is the carrier cost a
+        // quote was built on, markup_pct and markup_amount the markup on top of it (the quote is
+        // cost plus markup), markup_by_name and markup_at who set the percentage and when.
+        // Server-authored like the rest of the row (clienthub-api schema.sql and its sync.rs add
+        // the same columns with the same names and types). Never put a semicolon inside a comment
+        // here, the runner splits on it.
+        r#"
+        ALTER TABLE freight_bookings ADD COLUMN shipping_charge TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN book_override_at TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN book_override_by TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN quote_cost REAL;
+        ALTER TABLE freight_bookings ADD COLUMN markup_pct REAL;
+        ALTER TABLE freight_bookings ADD COLUMN markup_amount REAL;
+        ALTER TABLE freight_bookings ADD COLUMN markup_by_name TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN markup_at TEXT DEFAULT '';
+        "#,
+    ),
 ];

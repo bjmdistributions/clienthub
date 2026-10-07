@@ -179,9 +179,12 @@ const TEXT_C: &[&str] = &[
     "load_number", "quote_note", "quoted_at", "quoted_by_name", "quote_invoiced_at", "sent_to_book_at", "carrier_id",
     "pickup_appt_time", "picked_up_at", "picked_up_time", "delivery_appt_time", "delivered_time", "pickup_dock",
     "delivery_dock", "pickup_number_confirmed_at", "pickup_number_confirmed_by", "pay_due_date",
+    // R-464 and R-465, appended so no offset above moves.
+    "shipping_charge", "book_override_at", "book_override_by", "markup_by_name", "markup_at",
 ];
-/// (`quote_amount` and `quote_invoiced_amount`, the two new REAL columns, are selected by name
-/// right after `files`.)
+/// (`quote_amount` and `quote_invoiced_amount`, the two R-459 REAL columns, are selected by name
+/// right after `files`. The three R-465 REAL columns `quote_cost`, `markup_pct` and `markup_amount`
+/// are selected by name after TEXT_C, the last columns of the SELECT.)
 
 /// R-459: which of the three papers a load has, from the kinds on its live files. Same shape as
 /// the server's `paperwork`. A file with no `kind` is `other` and counts for none of them.
@@ -241,7 +244,8 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
                 COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0),
                 (SELECT COUNT(*) FROM freight_bookings tb WHERE tb.deal_flow_id = fb.deal_flow_id AND tb.archived = 0 AND tb.status NOT IN ('cancelled','quote','quoted')),
                 COALESCE(fb.extra_pickups,'[]'), COALESCE(fb.urgent,0), COALESCE(fb.files,'[]'),
-                fb.quote_amount, fb.quote_invoiced_amount, {c}
+                fb.quote_amount, fb.quote_invoiced_amount, {c},
+                fb.quote_cost, fb.markup_pct, fb.markup_amount
          FROM freight_bookings fb
          LEFT JOIN deal_flows df ON df.id = fb.deal_flow_id
          LEFT JOIN invoices i ON i.id = df.invoice_id
@@ -294,6 +298,12 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
         for (i, c) in TEXT_C.iter().enumerate() {
             m.insert((*c).into(), json!(r.get::<_, String>(at + 12 + i)?));
         }
+        // R-465: the carrier cost the quote was built on and the markup on top of it (null when the
+        // quote was not built that way).
+        let at_real = at + 12 + TEXT_C.len();
+        m.insert("quote_cost".into(), json!(r.get::<_, Option<f64>>(at_real)?));
+        m.insert("markup_pct".into(), json!(r.get::<_, Option<f64>>(at_real + 1)?));
+        m.insert("markup_amount".into(), json!(r.get::<_, Option<f64>>(at_real + 2)?));
         let load_number = m.get("load_number").and_then(|v| v.as_str()).unwrap_or("").to_string();
         m.insert("code".into(), json!(booking_code_of(&id, &load_number)));
         m.insert("can_see_names".into(), json!(true));
@@ -467,6 +477,27 @@ pub fn pay_for(s: &PaySettings, charged: f64, freight: f64, pending: bool) -> (O
     }
 }
 
+/// R-465: the logistics person's pay when every live truck on the deal carries a markup. His pay is
+/// exactly his markup: the sum of `markup_amount` over the live trucks that have been booked
+/// (`booked`), never waiting on the carrier being paid, whether the customer was charged for the
+/// shipping or we paid it ourselves, and whatever the carrier ended up costing. Each truck is
+/// `(booked, markup_amount)`. Returns `(pay, markup_total, rule)` with `rule` `markup`, or
+/// `tracked` in track mode (the pay is 0 and the markup is still reported). `None` when there are
+/// no trucks or any live truck has no markup data (a load quoted before R-465, or by an old
+/// client): the whole deal then keeps the surplus-share rule, `pay_for`. Twin of the server's
+/// `pay_for_markup` in routes/logistics_pay.rs.
+pub fn pay_for_markup(s: &PaySettings, trucks: &[(bool, Option<f64>)]) -> Option<(f64, f64, &'static str)> {
+    if trucks.is_empty() || trucks.iter().any(|(_, m)| m.is_none()) {
+        return None;
+    }
+    let total = cents(trucks.iter().filter(|(booked, _)| *booked).filter_map(|(_, m)| *m).sum());
+    if s.tracks() {
+        Some((0.0, total, "tracked"))
+    } else {
+        Some((total, total, "markup"))
+    }
+}
+
 /// The owner split's starting figure: the net with the rep's cut and the logistics pay taken off
 /// the top. `net_profit` itself is never changed by either.
 pub fn owner_remainder(net: f64, rep_cut: f64, logistics_pay: f64) -> f64 {
@@ -533,6 +564,9 @@ pub struct DealPay {
     pub earned_on: String,
     pub due_date: String,
     pub booking_codes: Vec<String>,
+    /// R-465: the markup the pay was worked from (the sum over booked trucks), or `None` when the
+    /// deal is paid under the surplus-share rule.
+    pub markup: Option<f64>,
 }
 
 impl DealPay {
@@ -542,6 +576,7 @@ impl DealPay {
             "freight": self.freight, "freight_source": self.freight_source,
             "surplus": cents(self.surplus), "pay": self.pay, "rule": self.rule, "pending": self.pending,
             "earned_on": self.earned_on, "due_date": self.due_date, "booking_codes": self.booking_codes,
+            "markup": self.markup,
         })
     }
 }
@@ -597,23 +632,31 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
         return None;
     }
     let mut stmt = conn.prepare(
-        "SELECT id, COALESCE(booked_at,''), CASE WHEN paid_amount IS NULL THEN 1 ELSE 0 END, COALESCE(load_number,'')
+        "SELECT id, COALESCE(booked_at,''), CASE WHEN paid_amount IS NULL THEN 1 ELSE 0 END, COALESCE(load_number,''), markup_amount
          FROM freight_bookings WHERE deal_flow_id=?1 AND archived=0 AND status NOT IN ('cancelled','quote','quoted') ORDER BY created_at, id",
     ).ok()?;
-    let live: Vec<(String, String, i64, String)> = stmt
-        .query_map([deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok()?
+    let live: Vec<(String, String, i64, String, Option<f64>)> = stmt
+        .query_map([deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).ok()?
         .filter_map(|r| r.ok()).collect();
-    let earned_on = live.iter().map(|(_, b, _, _)| b.as_str()).filter(|b| !b.is_empty()).min()?.to_string();
-    let pending = live.iter().any(|(_, _, none, _)| *none != 0);
+    let earned_on = live.iter().map(|(_, b, _, _, _)| b.as_str()).filter(|b| !b.is_empty()).min()?.to_string();
     let (charged, charged_source) = charged_of(&items, field);
     let (freight, freight_source) = freight_of(&crate::commands::ship_facts(conn, deal_flow_id));
-    let (pay, rule) = pay_for(s, charged, freight, pending);
+    // R-465: a deal whose live trucks all carry a markup pays that markup and never waits on the
+    // carrier being paid. Any truck without markup data keeps the surplus-share rule for the deal.
+    let figs: Vec<(bool, Option<f64>)> = live.iter().map(|(_, b, _, _, m)| (!b.is_empty(), *m)).collect();
+    let by_markup = pay_for_markup(s, &figs);
+    let pending = by_markup.is_none() && live.iter().any(|(_, _, none, _, _)| *none != 0);
+    let (pay, rule) = match by_markup {
+        Some((pay, _, rule)) => (Some(pay), rule),
+        None => pay_for(s, charged, freight, pending),
+    };
     // Nothing is owed in track mode, so there is no pay date either.
     let due_date = if s.tracks() { String::new() } else { pay_date_for(&earned_on, s).map(|d| d.pay_date).unwrap_or_default() };
     Some(DealPay {
         charged, charged_source, freight, freight_source, surplus: charged - freight, pay, rule, pending,
         earned_on, due_date,
-        booking_codes: live.iter().map(|(id, _, _, ln)| booking_code_of(id, ln)).collect(),
+        booking_codes: live.iter().map(|(id, _, _, ln, _)| booking_code_of(id, ln)).collect(),
+        markup: by_markup.map(|(_, total, _)| total),
     })
 }
 
@@ -956,6 +999,8 @@ mod tests {
             "load_number", "quote_amount", "quote_note", "quoted_at", "quoted_by_name", "quote_invoiced_at", "quote_invoiced_amount",
             "sent_to_book_at", "carrier_id", "pickup_appt_time", "picked_up_at", "picked_up_time", "delivery_appt_time", "delivered_time",
             "pickup_dock", "delivery_dock", "pickup_number_confirmed_at", "pickup_number_confirmed_by", "pay_due_date", "paperwork",
+            // R-464 and R-465
+            "shipping_charge", "book_override_at", "book_override_by", "quote_cost", "markup_pct", "markup_amount", "markup_by_name", "markup_at",
         ] {
             assert!(b.get(key).is_some(), "the key {key} is always there");
         }
@@ -979,6 +1024,13 @@ mod tests {
         assert_eq!((b["load_number"].as_str(), b["pickup_appt_time"].as_str(), b["pay_due_date"].as_str()), (Some(""), Some(""), Some("")));
         assert_eq!((b["quote_amount"].clone(), b["quote_invoiced_amount"].clone()), (Value::Null, Value::Null));
         assert_eq!(b["paperwork"], json!({ "bol": false, "pod": false, "carrier_invoice": false }), "an entry with no kind is not any of the three");
+        // R-464 and R-465: a row from before them reads empty text and null numbers, never a missing key.
+        for k in ["shipping_charge", "book_override_at", "book_override_by", "markup_by_name", "markup_at"] {
+            assert_eq!(b[k], "", "{k} reads empty on an old row");
+        }
+        for k in ["quote_cost", "markup_pct", "markup_amount"] {
+            assert_eq!(b[k], Value::Null, "{k} reads null on an old row");
+        }
         {
             let conn = pool().get().unwrap();
             conn.execute(
@@ -1004,6 +1056,25 @@ mod tests {
         }
         assert_eq!(b["paperwork"], json!({ "bol": true, "pod": false, "carrier_invoice": true }));
         assert_eq!(b["files"][2]["id"], "ff_3");
+        // R-464 and R-465: the choices and stamps come back exactly as stored, the REAL columns as numbers.
+        {
+            let conn = pool().get().unwrap();
+            conn.execute(
+                "UPDATE freight_bookings SET shipping_charge='own', book_override_at='2026-10-07T09:00:00Z', book_override_by='Sample sender',
+                        quote_cost=1500, markup_pct=12.5, markup_amount=187.5, markup_by_name='Sample logistics', markup_at='2026-10-06T09:00:00Z'
+                 WHERE id='fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77'", [],
+            ).unwrap();
+        }
+        let b = &list_freight_bookings(Some(deal.clone())).await.unwrap()[0];
+        for (k, v) in [
+            ("shipping_charge", "own"), ("book_override_at", "2026-10-07T09:00:00Z"), ("book_override_by", "Sample sender"),
+            ("markup_by_name", "Sample logistics"), ("markup_at", "2026-10-06T09:00:00Z"),
+        ] {
+            assert_eq!(b[k], v, "{k}");
+        }
+        assert_eq!((b["quote_cost"].as_f64(), b["markup_pct"].as_f64(), b["markup_amount"].as_f64()), (Some(1500.0), Some(12.5), Some(187.5)));
+        // The columns before them did not move.
+        assert_eq!((b["load_number"].as_str(), b["pay_due_date"].as_str(), b["quote_invoiced_amount"].as_f64()), (Some("LD-0012"), Some("2026-11-05"), Some(1900.0)));
         // Without a deal filter: all live rows, whichever deal.
         assert!(list_freight_bookings(None).await.unwrap().iter().any(|r| r["id"] == "fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77"));
     }
@@ -1486,12 +1557,210 @@ mod pay_tests {
     }
 
     #[test]
+    fn migration_111_adds_the_shipping_charge_override_and_markup_columns() {
+        let _db = crate::db::init_test_store();
+        let conn = pool().get().unwrap();
+        let mut st = conn.prepare("PRAGMA table_info(freight_bookings)").unwrap();
+        let cols: Vec<(String, String, String)> = st
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(4)?.unwrap_or_default())))
+            .unwrap().filter_map(|r| r.ok()).collect();
+        // The server's names and types exactly (schema.sql and the sync.rs boot ALTER list).
+        let want_text = ["shipping_charge", "book_override_at", "book_override_by", "markup_by_name", "markup_at"];
+        for c in want_text {
+            let found = cols.iter().find(|(n, _, _)| n == c).unwrap_or_else(|| panic!("freight_bookings.{c} is missing"));
+            assert_eq!((found.1.as_str(), found.2.as_str()), ("TEXT", "''"), "{c} is TEXT DEFAULT ''");
+        }
+        let want_real = ["quote_cost", "markup_pct", "markup_amount"];
+        for c in want_real {
+            let found = cols.iter().find(|(n, _, _)| n == c).unwrap_or_else(|| panic!("freight_bookings.{c} is missing"));
+            assert_eq!((found.1.as_str(), found.2.as_str()), ("REAL", ""), "{c} is a nullable REAL");
+        }
+        assert_eq!(want_text.len() + want_real.len(), 8, "the contract lists 8 new columns in 2.1 and 8.1");
+        // The R-459 columns are still there, and 110 and 111 each ran once.
+        assert!(cols.iter().any(|(n, _, _)| n == "pay_due_date") && cols.iter().any(|(n, _, _)| n == "quote_amount"));
+        let v: Vec<i64> = conn.prepare("SELECT version FROM schema_migrations WHERE version IN (110, 111) ORDER BY version").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        assert_eq!(v, vec![110, 111]);
+        // An old row reads the defaults.
+        conn.execute("INSERT INTO freight_bookings (id, status, created_at, updated_at) VALUES ('fb_m111', 'requested', '2026-10-01', '2026-10-01')", []).unwrap();
+        let (sc, ov, ovb, qc, mp, ma, mb, mt): (String, String, String, Option<f64>, Option<f64>, Option<f64>, String, String) = conn
+            .query_row(
+                "SELECT shipping_charge, book_override_at, book_override_by, quote_cost, markup_pct, markup_amount, markup_by_name, markup_at FROM freight_bookings WHERE id='fb_m111'",
+                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+            ).unwrap();
+        assert_eq!((sc.as_str(), ov.as_str(), ovb.as_str(), qc, mp, ma, mb.as_str(), mt.as_str()), ("", "", "", None, None, None, "", ""));
+    }
+
+    // R-465: his pay is exactly his markup. The golden table below is the contract with the server's
+    // routes/logistics_pay.rs: the same inputs must give the same numbers there. Each case is
+    // (settings, trucks as (booked, markup_amount), expected (pay, markup total, rule)).
+
+    #[test]
+    fn r465_the_markup_pay_golden_table() {
+        let pay = on();
+        let tracked = track();
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(&PaySettings, Vec<(bool, Option<f64>)>, Option<(f64, f64, &str)>)> = vec![
+            // one booked truck: the pay is the markup
+            (&pay, vec![(true, Some(120.0))], Some((120.0, 120.0, "markup"))),
+            // a truck sent to book but not confirmed booked yet pays nothing yet
+            (&pay, vec![(false, Some(120.0))], Some((0.0, 0.0, "markup"))),
+            // two booked trucks add up, an unbooked third adds nothing
+            (&pay, vec![(true, Some(120.0)), (true, Some(80.5)), (false, Some(40.0))], Some((200.5, 200.5, "markup"))),
+            // a zero markup is still markup data: the pay is 0, not the surplus rule
+            (&pay, vec![(true, Some(0.0))], Some((0.0, 0.0, "markup"))),
+            // cents, half away from zero
+            (&pay, vec![(true, Some(10.004)), (true, Some(10.004))], Some((20.01, 20.01, "markup"))),
+            // track mode owes nothing and still reports the markup
+            (&tracked, vec![(true, Some(120.0)), (true, Some(30.0))], Some((0.0, 150.0, "tracked"))),
+            // any truck without markup data: the whole deal keeps the surplus rule
+            (&pay, vec![(true, Some(120.0)), (true, None)], None),
+            (&pay, vec![(true, None)], None),
+            (&tracked, vec![(true, Some(120.0)), (false, None)], None),
+            // no trucks: no line
+            (&pay, vec![], None),
+        ];
+        for (i, (s, trucks, want)) in cases.iter().enumerate() {
+            assert_eq!(pay_for_markup(s, trucks), *want, "golden case {i}");
+        }
+    }
+
+    /// Give a seeded truck the markup the server would have written for this cost and percentage.
+    fn set_markup(deal: &str, n: &str, cost: f64, pct: f64) {
+        let amount = cents(cost * pct / 100.0);
+        pool().get().unwrap().execute(
+            "UPDATE freight_bookings SET quote_cost=?1, markup_pct=?2, markup_amount=?3, quote_amount=?4 WHERE id=?5",
+            rusqlite::params![cost, pct, amount, cents(cost + amount), format!("fb_{deal}_{n}")],
+        ).unwrap();
+    }
+
+    #[test]
+    fn r465_a_markup_deal_pays_the_markup_on_booking_and_not_before() {
+        let _db = crate::db::init_test_store();
+        let id = seed("mk1", &lines("Shipping", 1.0, 1500.0), 0.0);
+        // Sent to book, not booked yet: no pay line at all.
+        book(&id, "1", "requested", "", None, None);
+        set_markup(&id, "1", 1000.0, 12.0);
+        assert!(read(&id, &on()).is_none(), "nothing is owed before the truck is confirmed booked");
+        // Booked: the pay is the markup at once, the carrier is not paid yet and the deal is not pending.
+        pool().get().unwrap().execute("UPDATE freight_bookings SET status='booked', booked_at='2026-10-01' WHERE id=?1", [format!("fb_{id}_1")]).unwrap();
+        let d = read(&id, &on()).unwrap();
+        assert_eq!((d.pay, d.rule, d.pending, d.markup), (Some(120.0), "markup", false, Some(120.0)));
+        assert_eq!(d.earned_on, "2026-10-01");
+        assert!(!d.due_date.is_empty(), "a pay date is worked out from the day it was booked");
+        assert_eq!(d.to_json()["markup"].as_f64(), Some(120.0));
+    }
+
+    #[test]
+    fn r465_a_cheaper_or_dearer_carrier_does_not_change_his_pay() {
+        let _db = crate::db::init_test_store();
+        for (tag, paid) in [("mkcheap", 700.0), ("mkquote", 1000.0), ("mkdear", 1400.0)] {
+            let id = seed(tag, &lines("Shipping", 1.0, 1120.0), 0.0);
+            book(&id, "1", "delivered", "2026-10-01", Some(paid), Some(paid));
+            set_markup(&id, "1", 1000.0, 12.0);
+            let d = read(&id, &on()).unwrap();
+            assert_eq!((d.pay, d.rule), (Some(120.0), "markup"), "carrier paid {paid}");
+        }
+        // The old rule moves with the carrier: charged 1120 less 700 is a 420 surplus.
+        let id = seed("mkold", &lines("Shipping", 1.0, 1120.0), 0.0);
+        book(&id, "1", "delivered", "2026-10-01", Some(700.0), None);
+        assert_eq!(read(&id, &on()).unwrap().pay, Some(420.0));
+    }
+
+    #[test]
+    fn r465_a_load_we_pay_ourselves_still_pays_the_markup() {
+        let _db = crate::db::init_test_store();
+        // Nothing on the invoice for shipping: the customer was charged 0.
+        let id = seed("mkown", &lines("Widgets", 10.0, 100.0), 0.0);
+        book(&id, "1", "booked", "2026-10-01", None, None);
+        pool().get().unwrap().execute("UPDATE freight_bookings SET shipping_charge='own' WHERE id=?1", [format!("fb_{id}_1")]).unwrap();
+        set_markup(&id, "1", 850.0, 10.0);
+        let d = read(&id, &on()).unwrap();
+        assert_eq!((d.charged, d.charged_source), (0.0, "none"));
+        assert_eq!((d.pay, d.rule, d.pending), (Some(85.0), "markup", false));
+    }
+
+    #[test]
+    fn r465_two_trucks_add_up_over_the_booked_ones_only() {
+        let _db = crate::db::init_test_store();
+        let id = seed("mk2", &lines("Shipping", 1.0, 2000.0), 0.0);
+        book(&id, "1", "booked", "2026-10-01", None, None);
+        book(&id, "2", "requested", "", None, None);
+        set_markup(&id, "1", 1000.0, 10.0);
+        set_markup(&id, "2", 500.0, 10.0);
+        let d = read(&id, &on()).unwrap();
+        assert_eq!((d.pay, d.markup), (Some(100.0), Some(100.0)), "the truck not booked yet adds nothing");
+        pool().get().unwrap().execute("UPDATE freight_bookings SET status='booked', booked_at='2026-10-03' WHERE id=?1", [format!("fb_{id}_2")]).unwrap();
+        let d = read(&id, &on()).unwrap();
+        assert_eq!((d.pay, d.markup, d.earned_on.as_str()), (Some(150.0), Some(150.0), "2026-10-01"));
+    }
+
+    #[test]
+    fn r465_a_deal_with_a_truck_that_has_no_markup_keeps_the_surplus_rule() {
+        let _db = crate::db::init_test_store();
+        let id = seed("mkmixed", &lines("Shipping", 1.0, 1000.0), 0.0);
+        book(&id, "1", "booked", "2026-10-01", Some(600.0), None);
+        book(&id, "2", "booked", "2026-10-02", None, None);
+        set_markup(&id, "2", 100.0, 10.0);
+        // Truck 2 carries a markup, truck 1 was quoted before R-465 (no markup): the old rule decides,
+        // so the deal waits on the amount paid for truck 2 exactly as it did.
+        let d = read(&id, &on()).unwrap();
+        assert_eq!((d.pay, d.rule, d.pending, d.markup), (None, "pending", true, None));
+        pool().get().unwrap().execute("UPDATE freight_bookings SET paid_amount=110 WHERE id=?1", [format!("fb_{id}_2")]).unwrap();
+        let d = read(&id, &on()).unwrap();
+        assert_eq!((d.freight, d.pay, d.rule, d.markup), (710.0, Some(290.0), "share", None));
+        // A deal wholly from before R-465 is untouched.
+        let old = seed("mkoldonly", &lines("Shipping", 1.0, 500.0), 0.0);
+        book(&old, "1", "booked", "2026-10-01", Some(350.0), None);
+        assert_eq!(read(&old, &on()).unwrap().pay, Some(150.0));
+    }
+
+    #[test]
+    fn r465_track_mode_pays_nothing_and_reports_the_markup() {
+        let _db = crate::db::init_test_store();
+        let id = seed("mktrack", &lines("Shipping", 1.0, 1200.0), 0.0);
+        book(&id, "1", "booked", "2026-10-01", None, None);
+        set_markup(&id, "1", 1000.0, 15.0);
+        let d = read(&id, &track()).unwrap();
+        assert_eq!((d.pay, d.rule, d.markup, d.due_date.as_str()), (Some(0.0), "tracked", Some(150.0), ""));
+    }
+
+    #[test]
+    fn r465_a_payment_already_made_keeps_paying_after_switching_to_track() {
+        let _db = crate::db::init_test_store();
+        let id = seed("mkpaid", &lines("Shipping", 1.0, 1200.0), 0.0);
+        book(&id, "1", "booked", "2026-10-01", Some(1000.0), None);
+        set_markup(&id, "1", 1000.0, 15.0);
+        pool().get().unwrap().execute(
+            "INSERT INTO logistics_payouts (id, payee_id, pay_date, amount, lines_json, created_at, updated_at)
+             VALUES ('lp_mk', '', '2026-10-09', 150, ?1, '2026-10-09', '2026-10-09')",
+            [json!([{ "deal_flow_id": id, "amount": 150.0, "share_pct": 100.0, "cover_losses": true, "loss_pay_pct": 10.0 }]).to_string()],
+        ).unwrap();
+        // Switching to track never takes money back that was already paid.
+        let d = read(&id, &track()).unwrap();
+        assert_eq!((d.pay, d.rule), (Some(150.0), "markup"));
+    }
+
+    #[test]
+    fn r465_a_quote_stage_truck_with_a_markup_is_not_a_truck() {
+        let _db = crate::db::init_test_store();
+        let id = seed("mkquote2", &lines("Shipping", 1.0, 1200.0), 0.0);
+        book(&id, "1", "quoted", "2026-10-01", None, None);
+        set_markup(&id, "1", 1000.0, 15.0);
+        assert!(read(&id, &on()).is_none());
+        // Beside a booked truck with no markup it does not turn the deal into a markup deal.
+        book(&id, "2", "booked", "2026-10-02", Some(700.0), None);
+        let d = read(&id, &on()).unwrap();
+        assert_eq!((d.pay, d.rule, d.markup), (Some(500.0), "share", None));
+    }
+
+    #[test]
     fn the_json_the_deal_page_reads_has_every_figure() {
         let _db = crate::db::init_test_store();
         let id = seed("json", &lines("Shipping", 1.0, 500.0), 0.0);
         book(&id, "1", "booked", "2026-10-01", Some(350.0), None);
         let v = read(&id, &on()).unwrap().to_json();
-        for k in ["charged", "charged_source", "freight", "freight_source", "surplus", "pay", "rule", "pending", "earned_on", "due_date", "booking_codes"] {
+        for k in ["charged", "charged_source", "freight", "freight_source", "surplus", "pay", "rule", "pending", "earned_on", "due_date", "booking_codes", "markup"] {
             assert!(v.get(k).is_some(), "{k}");
         }
         assert_eq!((v["surplus"].as_f64(), v["pay"].as_f64()), (Some(150.0), Some(150.0)));
