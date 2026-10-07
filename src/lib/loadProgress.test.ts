@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  BOOK_ANYWAY_CONFIRM, GATE_BUTTON, GATE_REASON, actualCost, bookGate, firstSection, invoiceWasSent, loadProgress, markupEditable,
+  BOOK_ANYWAY_CONFIRM, GATE_BUTTON, GATE_REASON, actualCost, bookGate, firstSection, invoiceWasSent, loadProgress, markupEditable, quoteCostLocked,
   markupPreview, markupProblem, markupStart, markupValue, sectionOfStage, sectionsFor, withDealFacts, type ProgressFacts, type Stage,
 } from "./loadProgress";
 
@@ -232,10 +232,21 @@ describe("invoiceWasSent and withDealFacts", () => {
     expect(invoiceWasSent(null)).toBe(false);
   });
 
-  it("what the screen knows about the deal wins over the load's own flags", () => {
+  it("a voided or archived invoice has not been sent", () => {
+    expect(invoiceWasSent({ status: "sent", sent_at: "2026-10-05T12:00:00Z", voided: true })).toBe(false);
+    expect(invoiceWasSent({ status: "paid", sent_at: null, archived: true })).toBe(false);
+    expect(invoiceWasSent({ status: "sent", sent_at: null, voided: false, archived: false })).toBe(true);
+  });
+
+  it("what the screen knows about the deal is laid over the load's own flags", () => {
     expect(withDealFacts(flow({ invoice_sent: false, deal_paid: false }), { invoiceSent: true, dealPaid: true })).toMatchObject({ invoice_sent: true, deal_paid: true });
     expect(withDealFacts(flow({ invoice_sent: true, deal_paid: true }), {})).toMatchObject({ invoice_sent: true, deal_paid: true });
-    expect(withDealFacts(flow({ invoice_sent: true }), { invoiceSent: false }).invoice_sent).toBe(false);
+  });
+
+  it("a sent invoice or a payment never un-happens: either source saying yes wins", () => {
+    expect(withDealFacts(flow({ invoice_sent: true }), { invoiceSent: false }).invoice_sent).toBe(true);
+    expect(withDealFacts(flow({ deal_paid: true }), { dealPaid: false }).deal_paid).toBe(true);
+    expect(withDealFacts(flow({ invoice_sent: false, deal_paid: false }), { invoiceSent: false, dealPaid: false })).toMatchObject({ invoice_sent: false, deal_paid: false });
   });
 });
 
@@ -286,6 +297,19 @@ describe("the markup", () => {
     expect(markupEditable(false, { markup_editable: false })).toBe(false);
     expect(markupEditable(false, {})).toBe(false);
     expect(markupEditable(false, { markup_editable: true })).toBe(true);
+  });
+
+  it("the server's can_set_markup answer comes first", () => {
+    expect(markupEditable(true, { can_set_markup: false })).toBe(false);
+    expect(markupEditable(false, { can_set_markup: true, markup_editable: false })).toBe(true);
+    expect(markupEditable(true, { can_set_markup: true })).toBe(true);
+  });
+
+  it("the carrier cost and markup are locked for a non-team person once the load is past quoted", () => {
+    expect(quoteCostLocked("quote", false)).toBe(false);
+    expect(quoteCostLocked("quoted", false)).toBe(false);
+    for (const st of ["requested", "booked", "picked_up", "delivered", "cancelled"]) expect(quoteCostLocked(st, false)).toBe(true);
+    for (const st of ["quote", "quoted", "requested", "booked", "delivered"]) expect(quoteCostLocked(st, true)).toBe(false);
   });
 
   it("the actual cost is the amount paid, else the carrier rate", () => {

@@ -368,9 +368,10 @@ export const QUOTE_WAITING_WARNING = "Shipping on this invoice is still waiting 
 export const PAID_BANNER = "Customer paid. Send the booking to logistics.";
 
 /** True when the deal's shipping is still waiting on a quote: a load in `quote`, or one in `quoted`
- *  whose quote has not been put on the invoice. The send-invoice warning asks about it. */
-export function quoteWaitingOnInvoice(bookings: { status: string; quote_invoiced_at?: string }[]): boolean {
-  return bookings.some((b) => b.status === "quote" || (b.status === "quoted" && !(b.quote_invoiced_at || "").trim()));
+ *  whose quote has not been put on the invoice and is not marked "we pay it ourselves". The send-invoice
+ *  warning asks about it. */
+export function quoteWaitingOnInvoice(bookings: { status: string; quote_invoiced_at?: string; shipping_charge?: string }[]): boolean {
+  return bookings.some((b) => b.status === "quote" || (b.status === "quoted" && !(b.quote_invoiced_at || "").trim() && b.shipping_charge !== "own"));
 }
 
 /** Whether the customer has paid: the screen that knows the deal says so (`known`), else the server's flag on the load. */

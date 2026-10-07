@@ -21,6 +21,8 @@ interface Props {
   /** R-464: the logistics pay dates and carrier due dates of this month, drawn on the month strip. */
   marks: LogisticsMark[];
   onMark: (m: LogisticsMark) => void;
+  /** R-464: false for a mark this reader cannot open (the pay tracker is the owner's); it is drawn but not clickable. */
+  markOpens?: (m: LogisticsMark) => boolean;
   onOpen: (id: string) => void;
   onAdd: () => void;
   onTrack: (c: BillCandidate) => void;
@@ -28,7 +30,7 @@ interface Props {
   onRestore: (b: BillOut) => void;
 }
 
-export default function BillsMode({ data, cands, admin, marks, onMark, onOpen, onAdd, onTrack, onIgnore, onRestore }: Props) {
+export default function BillsMode({ data, cands, admin, marks, onMark, markOpens, onOpen, onAdd, onTrack, onIgnore, onRestore }: Props) {
   const s = data.summary;
   const active = data.bills.filter((b) => b.status === "active");
   const archived = data.bills.filter((b) => b.status === "archived");
@@ -36,7 +38,7 @@ export default function BillsMode({ data, cands, admin, marks, onMark, onOpen, o
   if (active.length === 0 && archived.length === 0 && cands.length === 0) {
     return (
       <div className="space-y-4">
-        {marks.length > 0 && <MonthStrip today={data.today} upcoming={data.upcoming} bills={active} marks={marks} onMark={onMark} onOpen={onOpen} />}
+        {marks.length > 0 && <MonthStrip today={data.today} upcoming={data.upcoming} bills={active} marks={marks} onMark={onMark} markOpens={markOpens} onOpen={onOpen} />}
         <div className="bg-surface border border-line rounded-2xl py-14 px-6 flex flex-col items-center text-center">
           <div className="text-[14px] font-semibold text-ink">No bills yet</div>
           <p className="text-[12.5px] text-muted mt-1 max-w-[420px]">
@@ -68,7 +70,7 @@ export default function BillsMode({ data, cands, admin, marks, onMark, onOpen, o
 
       {cands.length > 0 && <Found cands={cands} admin={admin} onTrack={onTrack} onIgnore={onIgnore} />}
 
-      {(active.length > 0 || marks.length > 0) && <MonthStrip today={data.today} upcoming={data.upcoming} bills={active} marks={marks} onMark={onMark} onOpen={onOpen} />}
+      {(active.length > 0 || marks.length > 0) && <MonthStrip today={data.today} upcoming={data.upcoming} bills={active} marks={marks} onMark={onMark} markOpens={markOpens} onOpen={onOpen} />}
 
       {active.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -155,10 +157,11 @@ const RING: Record<ChipState, string> = {
 };
 
 /** The cell for a logistics mark: a small square with the pay-date or truck icon, ringed the way a bill chip is. */
-function MarkChip({ m, onMark }: { m: LogisticsMark; onMark: (m: LogisticsMark) => void }) {
+function MarkChip({ m, onMark, opens = true }: { m: LogisticsMark; onMark: (m: LogisticsMark) => void; opens?: boolean }) {
   const Icon = m.kind === "pay" ? HandCoins : Truck;
+  const Wrap = opens ? "button" : "span";
   return (
-    <button onClick={() => onMark(m)} title={m.title} aria-label={m.title}
+    <Wrap {...(opens ? { onClick: () => onMark(m) } : {})} title={m.title} aria-label={m.title}
       className={`relative rounded-[10px] p-[2px] ${RING[m.state]} ${m.state === "paid" ? "opacity-50 hover:opacity-100" : ""} transition-opacity`}>
       <span className="w-[22px] h-[22px] rounded-lg bg-surface-3 text-ink-2 flex items-center justify-center">
         <Icon size={13} strokeWidth={2} />
@@ -168,12 +171,12 @@ function MarkChip({ m, onMark }: { m: LogisticsMark; onMark: (m: LogisticsMark) 
           <Check size={9} strokeWidth={3} />
         </span>
       )}
-    </button>
+    </Wrap>
   );
 }
 
-function MonthStrip({ today, upcoming, bills, marks, onMark, onOpen }: {
-  today: string; upcoming: UpcomingDue[]; bills: BillOut[]; marks: LogisticsMark[]; onMark: (m: LogisticsMark) => void; onOpen: (id: string) => void;
+function MonthStrip({ today, upcoming, bills, marks, onMark, markOpens, onOpen }: {
+  today: string; upcoming: UpcomingDue[]; bills: BillOut[]; marks: LogisticsMark[]; onMark: (m: LogisticsMark) => void; markOpens?: (m: LogisticsMark) => boolean; onOpen: (id: string) => void;
 }) {
   const days = daysInMonth(today);
   const month = today.slice(0, 7);
@@ -239,7 +242,7 @@ function MonthStrip({ today, upcoming, bills, marks, onMark, onOpen }: {
                       </button>
                     );
                   })}
-                  {shownMarks.map((m) => <MarkChip key={m.key} m={m} onMark={onMark} />)}
+                  {shownMarks.map((m) => <MarkChip key={m.key} m={m} onMark={onMark} opens={markOpens ? markOpens(m) : true} />)}
                   {more > 0 && <span className="text-[10px] text-muted tabular-nums">+{more}</span>}
                 </div>
               );

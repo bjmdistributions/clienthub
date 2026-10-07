@@ -1,4 +1,4 @@
-import type { LogisticsPayRule, LogisticsPaySettings } from "./api";
+import type { LogisticsPayRule, LogisticsPaySettings, LogisticsPayTrackerLine, LogisticsPayTotals } from "./api";
 
 // R-401: the logistics pay rule, for the live example on the settings screen. The figures on
 // every other screen are worked out by the server (and the desktop's Rust twin), so this
@@ -41,4 +41,24 @@ export function describeSchedule(
   if (s.frequency === "monthly") return `On the ${ordinal(s.pay_day_of_month || 1)} of each month`;
   if (s.frequency === "biweekly") return s.anchor_date ? `Every two weeks, including ${fmtDay(s.anchor_date)}` : "Every two weeks";
   return `Every ${WEEKDAYS[s.pay_weekday] ?? "Friday"}`;
+}
+
+// R-465: a markup deal is not "pending" while the carrier is unpaid (his pay is the markup), so whether the
+// freight figures mean anything is `freight_known`, not `pending`. Same reading as the server's totals.
+
+/** True while the carrier has not been paid, so a line's freight and profit are not real yet. An older server
+ *  without `freight_known` is read by `pending`. */
+export const freightUnknown = (l: Pick<LogisticsPayTrackerLine, "pending" | "freight_known">): boolean =>
+  l.freight_known === undefined ? l.pending : !l.freight_known;
+
+/** What the lines add up to. Only a line whose freight is known counts toward charged, freight and surplus;
+ *  one still waiting is counted in `pending_loads` and nowhere else. */
+export function sumTrackedLines(lines: LogisticsPayTrackerLine[]): Required<LogisticsPayTotals> {
+  const known = lines.filter((l) => !l.dropped && !freightUnknown(l));
+  const sum = (f: (l: LogisticsPayTrackerLine) => number) => roundCents(known.reduce((n, l) => n + f(l), 0));
+  return {
+    charged: sum((l) => l.charged), freight: sum((l) => l.freight), surplus: sum((l) => l.surplus),
+    markup: roundCents(lines.reduce((n, l) => n + (l.markup ?? 0), 0)),
+    loads: lines.length, pending_loads: lines.filter(freightUnknown).length,
+  };
 }

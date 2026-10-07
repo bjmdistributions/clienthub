@@ -7,7 +7,7 @@
 //   5 Booked, 6 Picked up, 7 Delivered, 8 Carrier paid.
 
 import { roundCents } from "./logisticsPay";
-import { statusRank } from "./logisticsLoad";
+import { isQuoteStage, statusRank } from "./logisticsLoad";
 
 // ─── the tracker (stages) ─────────────────────────────────────────────────
 
@@ -181,9 +181,10 @@ export function bookGate(b: ProgressFacts): Gate {
   };
 }
 
-/** Whether a deal's invoice has gone out: its status says sent, overdue or paid, or it has a sent date. */
-export function invoiceWasSent(inv: { status?: string | null; sent_at?: string | null } | null | undefined): boolean {
-  if (!inv) return false;
+/** Whether a deal's invoice has gone out: its status says sent, overdue or paid, or it has a sent date.
+ *  A voided or archived invoice has not (the server reads it the same way). */
+export function invoiceWasSent(inv: { status?: string | null; sent_at?: string | null; voided?: boolean | null; archived?: boolean | null } | null | undefined): boolean {
+  if (!inv || inv.voided || inv.archived) return false;
   const s = (inv.status ?? "").trim().toLowerCase();
   return s === "sent" || s === "overdue" || s === "paid" || has(inv.sent_at);
 }
@@ -193,8 +194,9 @@ export function invoiceWasSent(inv: { status?: string | null; sent_at?: string |
 export function withDealFacts<T extends ProgressFacts>(b: T, known: { invoiceSent?: boolean; dealPaid?: boolean }): T {
   return {
     ...b,
-    invoice_sent: known.invoiceSent !== undefined ? known.invoiceSent : !!b.invoice_sent,
-    deal_paid: known.dealPaid !== undefined ? known.dealPaid : !!b.deal_paid,
+    // An invoice sent or a payment made does not un-happen, so either source saying yes wins.
+    invoice_sent: !!known.invoiceSent || !!b.invoice_sent,
+    deal_paid: !!known.dealPaid || !!b.deal_paid,
   };
 }
 
@@ -234,8 +236,14 @@ export function markupStart(b: { markup_pct?: number | null; markup_default_pct?
   return v == null ? "" : String(v);
 }
 
-/** Who may type the percent: the team always, the logistics person only when the owner allows it. */
-export const markupEditable = (teamView: boolean, b: { markup_editable?: boolean }): boolean => teamView || !!b.markup_editable;
+/** Who may type the percent. The server's own answer (can_set_markup) comes first; without it, the team
+ *  always and the logistics person only when the owner allows it. */
+export const markupEditable = (teamView: boolean, b: { markup_editable?: boolean; can_set_markup?: boolean }): boolean =>
+  b.can_set_markup ?? (teamView || !!b.markup_editable);
+
+/** The carrier cost and the markup are fixed once the load is past quoted, for the person who is not on the
+ *  team (his pay is the markup, so he cannot move it). The team can still re-quote. */
+export const quoteCostLocked = (status: string, dealEdit: boolean): boolean => !dealEdit && !isQuoteStage(status);
 
 /** What the carrier really cost: the amount paid once there is one, else the carrier rate. null while neither is known. */
 export function actualCost(b: { paid_amount?: number | null; quoted_cost?: number | null }): { amount: number; source: "paid" | "rate" } | null {

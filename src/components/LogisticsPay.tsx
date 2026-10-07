@@ -6,7 +6,7 @@ import {
 } from "../lib/api";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { isLogisticsOnly } from "../lib/permissions";
-import { describeSchedule, logisticsPayFor, WEEKDAYS } from "../lib/logisticsPay";
+import { describeSchedule, freightUnknown, logisticsPayFor, sumTrackedLines, WEEKDAYS } from "../lib/logisticsPay";
 import { lowersCounter, numberPreview, numberingProblem } from "../lib/logisticsBols";
 import type { PayBlock } from "../lib/logisticsBills";
 import { PAY_TRACKER_KEY, PAY_TRACKER_SUB } from "../lib/notices";
@@ -474,21 +474,26 @@ function LoadRow({ l }: { l: LogisticsPayTrackerLine }) {
           <div className="text-[11px] text-muted">{RULE_WORD[l.rule] ?? l.rule}</div>
         </div>
       </div>
-      <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-        <span>Charged {fmtAmount(l.charged)}</span>
-        <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>
-        <span className={l.surplus < 0 ? "text-danger-ink" : ""}>Profit {signed(l.surplus)}</span>
-      </div>
+      {freightUnknown(l) ? (
+        <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+          {l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>}
+          <span className="text-muted">Carrier not paid yet</span>
+        </div>
+      ) : (
+        <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+          <span>Charged {fmtAmount(l.charged)}</span>
+          {l.rule === "markup" && l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>}
+          <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>
+          {l.rule !== "markup" && <span className={l.surplus < 0 ? "text-danger-ink" : ""}>Profit {signed(l.surplus)}</span>}
+        </div>
+      )}
     </div>
   );
 }
 
 /** The surplus of the loads whose freight is known. The server sends `totals`; an older one does not. */
 function trackedTotals(t: LogisticsPayTracker) {
-  if (t.totals) return t.totals;
-  const known = t.lines.filter((l) => !l.pending && !l.dropped);
-  const sum = (f: (l: LogisticsPayTrackerLine) => number) => known.reduce((n, l) => n + f(l), 0);
-  return { charged: sum((l) => l.charged), freight: sum((l) => l.freight), surplus: sum((l) => l.surplus), loads: t.lines.length, pending_loads: t.lines.filter((l) => l.pending).length };
+  return t.totals ?? sumTrackedLines(t.lines);
 }
 
 /** R-415: one load while the surplus is only tracked: what was charged, what the carrier was paid,
@@ -502,14 +507,16 @@ function TrackedRow({ l }: { l: LogisticsPayTrackerLine }) {
           <div className="text-[11px] text-muted truncate">{l.booking_codes.join(", ")} · earned {fmtDay(l.earned_on)}</div>
         </div>
         <div className="text-right flex-shrink-0">
-          {l.pending
-            ? <div className="text-[12px] text-muted">Waiting on the amount paid</div>
+          {freightUnknown(l)
+            ? <div className="text-[12px] text-muted">{l.markup != null ? "Carrier not paid yet" : "Waiting on the amount paid"}</div>
             : <div className={`tabular-nums font-semibold ${l.surplus < 0 ? "text-danger-ink" : "text-ink"}`}>{signed(l.surplus)}</div>}
         </div>
       </div>
       <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-        <span>Charged {fmtAmount(l.charged)}</span>
-        {!l.pending && <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>}
+        {freightUnknown(l)
+          ? l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>
+          : <span>Charged {fmtAmount(l.charged)}</span>}
+        {!freightUnknown(l) && <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>}
         {l.paid > 0.005 && <span className="text-muted">Paid earlier {fmtAmount(l.paid)}</span>}
       </div>
     </div>
@@ -690,13 +697,11 @@ export function LogisticsPayBriefBlock({ t, from, onOpen }: { t: LogisticsPayTra
   const end = (() => { const d = parseLocalDay(from); d.setDate(d.getDate() + 7); return localDay(d); })();
   const week = t.lines.filter((l) => !l.dropped && l.earned_on >= from && l.earned_on < end);
   const earned = week.reduce((s, l) => s + (l.pay ?? 0), 0);
-  const waiting = t.lines.filter((l) => l.pending).length;
+  const waiting = t.lines.filter(freightUnknown).length;
   // R-415: what the week's loads were charged, what the carriers were paid, and the difference
   // (only loads whose freight is known).
-  const known = week.filter((l) => !l.pending);
-  const billed = known.reduce((s, l) => s + l.charged, 0);
-  const carriers = known.reduce((s, l) => s + l.freight, 0);
-  const surplus = known.reduce((s, l) => s + l.surplus, 0);
+  const known = week.filter((l) => !freightUnknown(l));
+  const { charged: billed, freight: carriers, surplus } = sumTrackedLines(week);
   const tracking = t.mode === "track" || t.settings.surplus_mode === "track";
   const figure = (value: number, label: string) => (
     <div className="px-5 py-4 min-w-0">
@@ -855,8 +860,8 @@ export function usePayTracker(enabled: boolean): LogisticsPayTracker | null {
 }
 
 /** The Logistics pay block at the top of the Bills screen: who is paid, on which date, how much, and for how many
- *  loads. It opens the pay tracker, where the payment is recorded. */
-export function LogisticsPayBillsBlock({ block, onOpen }: { block: PayBlock; onOpen: () => void }) {
+ *  loads. It opens the pay tracker, where the payment is recorded (the owner only: no button without `onOpen`). */
+export function LogisticsPayBillsBlock({ block, onOpen }: { block: PayBlock; onOpen?: () => void }) {
   const pill = block.nothingOwed ? { tone: "neutral" as const, word: "Coming up" }
     : block.late ? { tone: "danger" as const, word: "Late" }
     : block.dueNow ? { tone: "warning" as const, word: "Due today" }
@@ -874,10 +879,12 @@ export function LogisticsPayBillsBlock({ block, onOpen }: { block: PayBlock; onO
           <div className="text-[12px] text-muted truncate">{bits.join(", ")}</div>
         </div>
         <span className="text-[16px] font-semibold tabular-nums text-ink flex-shrink-0">{block.nothingOwed ? "Nothing owed yet" : fmtAmount(block.amount)}</span>
-        <button type="button" onClick={onOpen}
-          className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12.5px] font-medium whitespace-nowrap flex-shrink-0 inline-flex items-center gap-1">
-          Open pay tracker <ChevronRight size={13} />
-        </button>
+        {onOpen && (
+          <button type="button" onClick={onOpen}
+            className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12.5px] font-medium whitespace-nowrap flex-shrink-0 inline-flex items-center gap-1">
+            Open pay tracker <ChevronRight size={13} />
+          </button>
+        )}
       </div>
     </section>
   );

@@ -96,6 +96,7 @@ import { api, isUnavailable, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
 import { canSeeTeamNotices } from "./lib/notices";
+import { confirmLeaveUnsaved } from "./lib/unsavedWork";
 import { approvalsBellCount } from "./lib/renewals";
 import { useNotices } from "./lib/useNotices";
 
@@ -205,6 +206,8 @@ export default function App() {
   // hover menu on a narrow rail is hard to hit on a trackpad, and Jack asked for click.
   const [flyout, setFlyout] = useState<{ id: string; top: number } | null>(null);
   const setTab = (t: Tab) => {
+    // R-464: a full-page form with unsaved typing is asked about before the screen is switched away from it.
+    if (!confirmLeaveUnsaved()) return;
     setTabState(t);
     setPageKey(k => k + 1);
     setFlyout(null);

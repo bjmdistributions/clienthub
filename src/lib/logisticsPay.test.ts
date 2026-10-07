@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { describeSchedule, logisticsPayFor, roundCents } from "./logisticsPay";
+import { describeSchedule, freightUnknown, logisticsPayFor, roundCents, sumTrackedLines } from "./logisticsPay";
+import type { LogisticsPayTrackerLine } from "./api";
 
 // R-401: the same numbers the server and the desktop's Rust twin are tested against.
 const rule = { share_pct: 100, cover_losses: true, loss_pay_pct: 10 };
@@ -44,5 +45,35 @@ describe("describeSchedule", () => {
   it("names the anchor for every two weeks", () => {
     expect(describeSchedule({ frequency: "biweekly", pay_weekday: 4, anchor_date: "2026-10-02", pay_day_of_month: 1 }))
       .toBe("Every two weeks, including 2026-10-02");
+  });
+});
+
+const line = (o: Partial<LogisticsPayTrackerLine>): LogisticsPayTrackerLine => ({
+  deal_flow_id: "d", invoice_number: "INV1", client_name: "A", booking_codes: ["LD-1"], earned_on: "2026-10-05", due_date: "2026-10-09",
+  charged: 1500, charged_source: "lines", freight: 0, freight_source: "paid", surplus: 1500, rule: "markup", pay: 120, paid: 0, owed: 120,
+  pending: false, markup: 120, freight_known: false, ...o,
+});
+
+describe("freightUnknown (R-465)", () => {
+  it("a markup deal with the carrier unpaid is not pending but its freight is unknown", () => {
+    expect(freightUnknown(line({}))).toBe(true);
+    expect(freightUnknown(line({ freight_known: true, freight: 1000, surplus: 500 }))).toBe(false);
+  });
+  it("an older server without freight_known is read by pending", () => {
+    expect(freightUnknown(line({ freight_known: undefined, pending: true }))).toBe(true);
+    expect(freightUnknown(line({ freight_known: undefined, pending: false }))).toBe(false);
+  });
+});
+
+describe("sumTrackedLines (R-465)", () => {
+  it("leaves a freight-unknown line out of charged, freight and surplus, and counts it as waiting", () => {
+    const t = sumTrackedLines([
+      line({}),
+      line({ deal_flow_id: "e", freight_known: true, charged: 1000, freight: 800, surplus: 200, markup: 80 }),
+    ]);
+    expect(t).toEqual({ charged: 1000, freight: 800, surplus: 200, markup: 200, loads: 2, pending_loads: 1 });
+  });
+  it("leaves a dropped line out of the sums", () => {
+    expect(sumTrackedLines([line({ freight_known: true, charged: 100, freight: 60, surplus: 40, dropped: true })]).charged).toBe(0);
   });
 });

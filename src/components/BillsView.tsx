@@ -114,6 +114,8 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
   const tracker = usePayTracker(canReadPayTracker(me));
   const payBlock = payBlockOf(tracker, today);
   const marks = useMemo(() => logisticsMarks(today, tracker, carriers.data?.to_pay, fmtAmount), [today, tracker, carriers.data]);
+  // The pay tracker lives in the owner's Team settings: anyone else sees the block and the pay dates, not a way in.
+  const markOpens = (m: LogisticsMark) => (m.kind === "pay" || !m.bookingId ? admin : true);
   const openMark = (m: LogisticsMark) => (m.kind === "pay" || !m.bookingId ? openPayTracker() : openLoadInLogistics(m.bookingId, "pay"));
 
   const range = periodRange(period, today);
@@ -157,7 +159,7 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
       </div>
 
       {/* R-459: the carriers the team owes, above the recurring bills. Nothing shows when no one is owed. */}
-      {mode === "bills" && payBlock && <LogisticsPayBillsBlock block={payBlock} onOpen={openPayTracker} />}
+      {mode === "bills" && payBlock && <LogisticsPayBillsBlock block={payBlock} onOpen={admin ? openPayTracker : undefined} />}
       {mode === "bills" && <CarriersToPaySection canPay={canPay} data={carriers.data} />}
 
       {mode !== "bills" && (
@@ -187,7 +189,7 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
           </div>
         )
       ) : mode === "bills" ? (
-        <BillsMode data={data} cands={cands} admin={admin} marks={marks} onMark={openMark} onOpen={setOpen} onAdd={() => setForm({})}
+        <BillsMode data={data} cands={cands} admin={admin} marks={marks} onMark={openMark} markOpens={markOpens} onOpen={setOpen} onAdd={() => setForm({})}
           onTrack={track} onIgnore={ignore} onRestore={restore} />
       ) : !resp ? (
         sp.error ? (

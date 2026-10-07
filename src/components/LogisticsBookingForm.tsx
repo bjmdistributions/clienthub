@@ -14,9 +14,10 @@ import {
   pickupNumberUnconfirmed, confirmToSend, statusAfterActual, statusAllowed, statusWord, timeWord, type LoadStep,
 } from "../lib/logisticsLoad";
 import {
-  BOOK_ANYWAY, BOOK_ANYWAY_CONFIRM, actualCost, bookGate, firstSection, loadProgress, markupEditable, markupPreview, markupProblem, markupStart,
+  BOOK_ANYWAY, BOOK_ANYWAY_CONFIRM, actualCost, bookGate, firstSection, loadProgress, markupEditable, markupPreview, quoteCostLocked, markupProblem, markupStart,
   markupValue, sectionsFor, withDealFacts, type LoadSection, type ProgressFacts, type StageKey, sectionOfStage,
 } from "../lib/loadProgress";
+import { UNSAVED_LEAVE, setUnsavedWork } from "../lib/unsavedWork";
 import { canEditCarriers, canPayCarriers, canRecordOn, carrierByName, payMethodLabel } from "../lib/logisticsCarriers";
 import { can } from "../lib/permissions";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
@@ -636,9 +637,14 @@ export default function LogisticsBookingForm({
   };
   /** Leaving this page for another screen (a BOL, the invoice): unsaved typing is asked about first. */
   const leaveFor = (go: () => void) => {
-    if (dirty && !confirm("You have changes that are not saved. Leave without saving them?")) return;
+    if (dirty && !confirm(UNSAVED_LEAVE)) return;
+    setUnsavedWork(false); // asked once: the shell must not ask again when `go` switches screens
     go();
+    setUnsavedWork(dirty); // still here (a sheet opened): the typing is still unsaved
   };
+  // The shell asks before it switches screens while this page holds unsaved typing.
+  useEffect(() => { setUnsavedWork(dirty); }, [dirty]);
+  useEffect(() => () => setUnsavedWork(false), []);
   // Esc leaves the page through the unsaved check, unless a sheet is open on top of it (Esc belongs to the sheet then).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !sheetOpen) tryClose(); };
@@ -696,7 +702,9 @@ export default function LogisticsBookingForm({
   // The quote can be revised and the load sent to book only while it is a quote (on the saved status, not a pick in the box).
   const atQuote = isQuoteStage(booking.status);
   // R-465: the markup percent is typed by the team, and by the logistics person only when the owner allows it.
-  const pctEdit = markupEditable(full, booking);
+  // P-2: past quoted, the logistics person can no longer move the cost or the percent (his pay is the markup).
+  const costLocked = quoteCostLocked(booking.status, dealEdit);
+  const pctEdit = markupEditable(full, booking) && !costLocked;
   const preview = markupPreview(draft.cost, draft.pct);
 
   const save = async (opts?: { status?: FreightStatus; withQuote?: boolean; override?: boolean }) => {
@@ -921,9 +929,11 @@ export default function LogisticsBookingForm({
           <>
             <div className={g2}>
               <Field label="Carrier cost" hint={costErr ?? "What the carrier will charge. The quote is this plus the markup."}>
-                <NumberInput className={inp} value={draft.cost} placeholder="0.00" onValue={(_n, raw) => set("cost", raw)} />
+                {costLocked
+                  ? <p className="h-9 flex items-center text-[13px] text-ink tabular-nums">{draft.cost.trim() ? fmtAmount(moneyValue(draft.cost) ?? 0) : "-"}</p>
+                  : <NumberInput className={inp} value={draft.cost} placeholder="0.00" onValue={(_n, raw) => set("cost", raw)} />}
               </Field>
-              <Field label="Markup %" hint={pctErr ?? (pctEdit ? "Starts at the default. Change it for this load if you need to." : "Set by the owner. Your pay on this load is the markup.")}>
+              <Field label="Markup %" hint={pctErr ?? (costLocked ? "Fixed once the load has gone to book." : pctEdit ? "Starts at the default. Change it for this load if you need to." : "Set by the owner. Your pay on this load is the markup.")}>
                 {pctEdit
                   ? <NumberInput className={inp} value={draft.pct} placeholder="0" onValue={(_n, raw) => set("pct", raw)} />
                   : <p className="h-9 flex items-center text-[13px] text-ink tabular-nums">{draft.pct.trim() || "0"}%</p>}

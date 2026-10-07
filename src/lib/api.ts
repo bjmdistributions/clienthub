@@ -3254,6 +3254,8 @@ export interface FreightBooking {
   markup_by_name?: string; markup_at?: string;
   /** R-465: the default markup percent, and whether the logistics person may change it on a load. */
   markup_default_pct?: number; markup_editable?: boolean;
+  /** R-464: the server's answer to whether this caller may type the markup percent on this load. */
+  can_set_markup?: boolean;
   /** null = not paid yet. A number, zero included, is the exact amount the carrier charged. */
   paid_amount: number | null;
   paid_at: string; paid_method: string; paid_note: string; notes: string;
@@ -3302,7 +3304,7 @@ export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "load_number" | "quoted_at" | "quoted_by_name" | "quote_invoiced_at" | "quote_invoiced_amount" | "sent_to_book_at" |
   "pickup_number_confirmed_at" | "pickup_number_confirmed_by" | "paperwork" | "bols" | "carrier_pay_method" | "deal_paid" | "bank_linked" |
   "invoice_sent" | "deal_invoice_number" | "shipping_charge" | "book_override_at" | "book_override_by" |
-  "markup_amount" | "markup_by_name" | "markup_at" | "markup_default_pct" | "markup_editable"
+  "markup_amount" | "markup_by_name" | "markup_at" | "markup_default_pct" | "markup_editable" | "can_set_markup"
 >> & {
   today?: string;
   /** R-459: tick or untick the pickup-number check. */
@@ -3460,6 +3462,11 @@ export interface LogisticsPayTrackerLine {
   pending: boolean;
   /** True for a load that was paid and then lost its booking or its invoice: `owed` is what is taken back. */
   dropped?: boolean;
+  /** R-465: the markup in dollars on the deal's trucks, null on a deal quoted before markups. */
+  markup?: number | null;
+  /** R-465: whether the carrier has been paid, so `freight` and `surplus` mean something. A markup deal is not
+   *  `pending` while this is false, so read this, not `pending`. Absent on an older server. */
+  freight_known?: boolean;
 }
 export interface LogisticsPayDate {
   pay_date: string;
@@ -3489,6 +3496,8 @@ export interface LogisticsPayout {
 /** R-415: what the loads add up to. Only a load whose freight is known counts toward the three sums. */
 export interface LogisticsPayTotals {
   charged: number; freight: number; surplus: number; loads: number; pending_loads: number;
+  /** R-465: the markup earned over all the loads. Absent on an older server. */
+  markup?: number;
 }
 export interface LogisticsPayTracker {
   settings: LogisticsPaySettings;
