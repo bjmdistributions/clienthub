@@ -1208,6 +1208,7 @@ fn main() {
             // Logistics (R-400)
             freight::logistics_request,
             freight::logistics_save_file,
+            freight::logistics_save_download,
             freight::list_freight_bookings,
             freight::get_deal_logistics_pay,
             // Warehouse stock + truckload packer (R-326)

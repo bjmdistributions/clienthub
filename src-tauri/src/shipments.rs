@@ -423,7 +423,7 @@ fn deal_for_booking(conn: &rusqlite::Connection, refs: &[&String]) -> Option<Str
     }
     let mut stmt = conn.prepare(
         "SELECT deal_flow_id, COALESCE(bol,''), COALESCE(pro,'') FROM freight_bookings
-         WHERE archived = 0 AND status != 'cancelled' AND COALESCE(deal_flow_id,'') <> ''
+         WHERE archived = 0 AND status NOT IN ('cancelled','quote','quoted') AND COALESCE(deal_flow_id,'') <> ''
            AND (COALESCE(bol,'') <> '' OR COALESCE(pro,'') <> '')
          ORDER BY created_at DESC",
     ).ok()?;
@@ -1277,6 +1277,14 @@ Update Date: {when}");
         apply(&email("667788", "9/9/2026 2:00 PM", "Booked"), Some("<r400-c@priority1.com>"), None).unwrap();
         assert_eq!(deal_of("shp-org_default-556677"), "");
         assert_eq!(deal_of("shp-org_default-667788"), "");
+
+        // R-459: a booking still at the quote stage is not a truck, so its numbers name no deal.
+        pool().get().unwrap().execute("INSERT INTO freight_bookings (id, deal_flow_id, status, bol, created_at, updated_at) VALUES ('fb_r400she', 'df-r400sh-b', 'quote', '8899-00', '2026-09-02', '2026-09-02')", []).unwrap();
+        pool().get().unwrap().execute("INSERT INTO freight_bookings (id, deal_flow_id, status, bol, created_at, updated_at) VALUES ('fb_r400shf', 'df-r400sh-b', 'quoted', '9900-11', '2026-09-02', '2026-09-02')", []).unwrap();
+        apply(&email("889900", "9/9/2026 2:00 PM", "Booked"), Some("<r459-e@priority1.com>"), None).unwrap();
+        apply(&email("990011", "9/9/2026 2:00 PM", "Booked"), Some("<r459-f@priority1.com>"), None).unwrap();
+        assert_eq!(deal_of("shp-org_default-889900"), "");
+        assert_eq!(deal_of("shp-org_default-990011"), "");
 
         // The shipment was waiting unattached and the booking is made afterwards: the next email
         // for it attaches it.
