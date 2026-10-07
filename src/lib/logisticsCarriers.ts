@@ -8,7 +8,7 @@ import type {
   CarrierPayMethod, CarrierPayRow, FreightCarrier, FreightBooking, RateMatch, RatesResponse,
 } from "./api";
 import { fmtAmount } from "./format";
-import { LOAD_STEPS, dueLabel, dueTone, fmtDayLabel, laneOf, type LoadStep } from "./logisticsLoad";
+import { LOAD_STEPS, dueLabel, dueTone, fmtDayLabel, laneOf, paidMethodWord, type LoadStep } from "./logisticsLoad";
 import { formatLocation } from "./location";
 import { can, isAdmin, isLogisticsOnly, type Perms } from "./permissions";
 
@@ -126,6 +126,24 @@ export interface MarkPaidForm { amount: string; paidAt: string; method: string; 
  *  to be paid. Everything stays editable. */
 export function markPaidDefaults(r: { rate: number | null; pay_method: string }, today: string): MarkPaidForm {
   return { amount: r.rate == null ? "" : String(r.rate), paidAt: today, method: payMethodLabel(r.pay_method) || "", note: "" };
+}
+
+/** R-463: Change opens the same sheet with what is on record, so a wrong figure is fixed in one step. The method
+ *  may be stored as a key an older phone build wrote ("credit_card"), so it reads as its label. */
+export function changePaidDefaults(
+  p: { paid_amount: number | null; paid_at: string; paid_method: string; paid_note: string }, today: string,
+): MarkPaidForm {
+  return {
+    amount: p.paid_amount == null ? "" : String(p.paid_amount), paidAt: (p.paid_at || "").trim().slice(0, 10) || today,
+    method: paidMethodWord(p.paid_method), note: p.paid_note || "",
+  };
+}
+
+/** R-463: what the Change sheet says when the payment is tied to the bank. It still allows the change. "" when it is not. */
+export function bankLinkNote(state: string | null | undefined, amount: number | null | undefined): string {
+  if (state === "linked") return amount != null ? `This load is linked to a bank payment of ${fmtAmount(amount)}.` : "This load is linked to a bank payment.";
+  if (state === "partial") return "This load is partly linked to a bank payment.";
+  return "";
 }
 
 /** The PATCH that records the payment. null with a message when the figure cannot be used. */

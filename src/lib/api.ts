@@ -3240,6 +3240,20 @@ export interface FreightBooking {
   deal_paid?: boolean;
   /** R-459: whether the bank payments linked to the deal cover this carrier payment. "" when unpaid. */
   bank_linked?: "" | "linked" | "partial" | "none";
+  /** R-464: whether the deal's invoice has been sent. false for a viewer who cannot see the deal. Absent in the local copy. */
+  invoice_sent?: boolean;
+  /** R-464: the deal's invoice number, for the team. Absent in the local copy. */
+  deal_invoice_number?: string;
+  /** R-464: who pays for the shipping. "invoice" = on the customer's invoice, "own" = we pay it ourselves, "" = not decided. */
+  shipping_charge?: "" | "invoice" | "own";
+  /** R-464: the team sent it to book before the invoice was sent and paid. Server stamps: when, and who (a display name). */
+  book_override_at?: string; book_override_by?: string;
+  /** R-465: the carrier cost the quote was built on, the markup on top of it (a percent and the dollars), and who set it.
+   *  null = hidden or none. Quote = cost + markup. */
+  quote_cost?: number | null; markup_pct?: number | null; markup_amount?: number | null;
+  markup_by_name?: string; markup_at?: string;
+  /** R-465: the default markup percent, and whether the logistics person may change it on a load. */
+  markup_default_pct?: number; markup_editable?: boolean;
   /** null = not paid yet. A number, zero included, is the exact amount the carrier charged. */
   paid_amount: number | null;
   paid_at: string; paid_method: string; paid_note: string; notes: string;
@@ -3286,8 +3300,18 @@ export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "can_see_names" | "can_see_addresses" | "can_see_deal" | "can_see_money" | "tracking" | "deal" |
   "shipping_billed" | "trucks_on_deal" | "freight_by_team" | "files" |
   "load_number" | "quoted_at" | "quoted_by_name" | "quote_invoiced_at" | "quote_invoiced_amount" | "sent_to_book_at" |
-  "pickup_number_confirmed_at" | "pickup_number_confirmed_by" | "paperwork" | "bols" | "carrier_pay_method" | "deal_paid" | "bank_linked"
->> & { today?: string; /** R-459: tick or untick the pickup-number check. */ pickup_number_confirmed?: boolean };
+  "pickup_number_confirmed_at" | "pickup_number_confirmed_by" | "paperwork" | "bols" | "carrier_pay_method" | "deal_paid" | "bank_linked" |
+  "invoice_sent" | "deal_invoice_number" | "shipping_charge" | "book_override_at" | "book_override_by" |
+  "markup_amount" | "markup_by_name" | "markup_at" | "markup_default_pct" | "markup_editable"
+>> & {
+  today?: string;
+  /** R-459: tick or untick the pickup-number check. */
+  pickup_number_confirmed?: boolean;
+  /** R-464: "own" = we pay this shipping ourselves, "" = charge the customer instead. "invoice" is set only by the invoice-line route. */
+  shipping_charge?: "own" | "";
+  /** R-464: send to book before the invoice is sent and paid. The server stamps who and when. */
+  override?: boolean;
+};
 /** R-415: the one Logistics setting. */
 export interface LogisticsSettings {
   freight_by_team: boolean;
@@ -3408,10 +3432,14 @@ export interface LogisticsPaySettings {
   pay_day_of_month: number;
   method: string;
   details: string;
+  /** R-465: the default markup percent on freight, 0 to 100. His pay on a load is exactly its markup. */
+  markup_pct?: number;
+  /** R-465: the logistics person may change the markup percent on a load. */
+  markup_editable?: boolean;
   updated_at?: string;
   updated_by_name?: string;
 }
-export type LogisticsPayRule = "share" | "loss_cover" | "loss_share" | "pending" | "tracked";
+export type LogisticsPayRule = "share" | "loss_cover" | "loss_share" | "pending" | "tracked" | "markup";
 export interface LogisticsPayTrackerLine {
   deal_flow_id: string;
   invoice_number: string;
@@ -3500,6 +3528,8 @@ export interface DealLogisticsPay {
   due_date: string;
   booking_codes: string[];
   payee_name: string;
+  /** R-465: the markup the pay was worked from, or null when the deal is paid under the surplus-share rule. */
+  markup?: number | null;
 }
 
 // The Logistics screen rides one Tauri command too. It refuses any path outside /api/logistics

@@ -4,7 +4,7 @@ import { ChevronRight, FileText, Landmark } from "lucide-react";
 import { api, type CarrierPayRow } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import {
-  OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, carrierPayCandidates, encodeOpenLoad, markPaidDefaults, markPaidPatch, payDue, payMethodLabel,
+  OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, bankLinkNote, carrierPayCandidates, changePaidDefaults, encodeOpenLoad, markPaidDefaults, markPaidPatch, payDue, payMethodLabel,
   toPaySummary, type BankCandidate, type MarkPaidForm,
 } from "../lib/logisticsCarriers";
 import { BANK_LINK_WORD, fmtDayLabel, paymentLine, type LoadStep } from "../lib/logisticsLoad";
@@ -60,11 +60,21 @@ export function useCarrierPay(enabled: boolean) {
 
 // ─── Mark paid ────────────────────────────────────────────────────────────
 
-export interface PayTarget { bookingId: string; label: string; rate: number | null; payMethod: string; paidAmount?: number | null }
+export interface PayTarget {
+  bookingId: string; label: string; rate: number | null; payMethod: string; paidAmount?: number | null;
+  /** R-463: a payment already on record. With it the sheet is Change: it opens with what is on record. */
+  current?: { paid_amount: number | null; paid_at: string; paid_method: string; paid_note: string };
+  /** R-463: whether the bank payments linked to the deal cover this one, so Change can say so. */
+  bankLinked?: string;
+}
 
-/** Records the payment: the amount (the carrier rate to start), the day, how it was paid and a reference. */
+/** Records the payment: the amount (the carrier rate to start), the day, how it was paid and a reference.
+ *  R-463: with a payment on record (`target.current`) it is Change, so a wrong figure is fixed in one step. */
 export function MarkPaidSheet({ target, onClose, onDone }: { target: PayTarget; onClose: () => void; onDone: () => void }) {
-  const [f, setF] = useState<MarkPaidForm>(() => markPaidDefaults({ rate: target.rate, pay_method: target.payMethod }, localDay()));
+  const change = !!target.current;
+  const [f, setF] = useState<MarkPaidForm>(() => target.current
+    ? changePaidDefaults(target.current, localDay())
+    : markPaidDefaults({ rate: target.rate, pay_method: target.payMethod }, localDay()));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const set = (patch: Partial<MarkPaidForm>) => setF((x) => ({ ...x, ...patch }));
@@ -72,16 +82,19 @@ export function MarkPaidSheet({ target, onClose, onDone }: { target: PayTarget; 
     const r = markPaidPatch(f);
     if ("error" in r) { setErr(r.error); return; }
     setBusy(true); setErr("");
-    try { await api.logistics.update(target.bookingId, r.patch); toast("Marked paid"); onDone(); }
+    try { await api.logistics.update(target.bookingId, r.patch); toast(change ? "Payment changed" : "Marked paid"); onDone(); }
     catch (e) { setErr(String(e)); setBusy(false); }
   };
   const methods = PAY_METHODS.map((m) => m.label);
   return (
-    <LogisticsModal title="Mark paid" sub={target.label} onClose={onClose}
+    <LogisticsModal title={change ? "Change payment" : "Mark paid"} sub={target.label} onClose={onClose}
       footer={<>
         <button onClick={onClose} className={modalGhost}>Cancel</button>
-        <button onClick={go} disabled={busy} className={modalPrimary}>{busy ? "Saving..." : "Mark paid"}</button>
+        <button onClick={go} disabled={busy} className={modalPrimary}>{busy ? "Saving..." : change ? "Save payment" : "Mark paid"}</button>
       </>}>
+      {change && bankLinkNote(target.bankLinked, target.paidAmount) && (
+        <p className="text-[12.5px] text-warning-ink bg-warning-bg border border-warning/30 rounded-lg px-3 py-2" role="status">{bankLinkNote(target.bankLinked, target.paidAmount)}</p>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <div className="min-w-0">
           <label className="block text-[12px] font-medium text-muted mb-1">Amount paid</label>
@@ -104,7 +117,7 @@ export function MarkPaidSheet({ target, onClose, onDone }: { target: PayTarget; 
           <input className={inp} value={f.note} placeholder="Confirmation number" onChange={(e) => set({ note: e.target.value })} />
         </div>
       </div>
-      {target.rate == null && <p className="text-[12px] text-muted">This load has no carrier rate yet, so type what was paid.</p>}
+      {!change && target.rate == null && <p className="text-[12px] text-muted">This load has no carrier rate yet, so type what was paid.</p>}
       {err && <div className="text-[12px] text-danger-ink" role="alert">{err}</div>}
     </LogisticsModal>
   );
@@ -233,6 +246,11 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
   const targetOf = (r: CarrierPayRow): PayTarget => ({
     bookingId: r.booking_id, label: `${r.carrier || "Carrier"}, ${r.load_number}`, rate: r.rate, payMethod: r.pay_method, paidAmount: r.paid_amount,
   });
+  // R-463: a paid row changes through the same sheet, opened with what is on record.
+  const changeTargetOf = (r: CarrierPayRow): PayTarget => ({
+    ...targetOf(r), bankLinked: r.bank_linked,
+    current: { paid_amount: r.paid_amount, paid_at: r.paid_at, paid_method: r.paid_method, paid_note: r.paid_note },
+  });
   const sum = useMemo(() => toPaySummary(data?.to_pay ?? [], today), [data, today]);
 
   if (data === null) {
@@ -284,6 +302,8 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
             <div className="text-[12.5px] text-ink-2 min-w-0 max-w-[320px] truncate">{paymentLine({ paid_amount: r.paid_amount, paid_at: r.paid_at, paid_method: r.paid_method, paid_note: r.paid_note })}</div>
             <div className="flex items-center gap-1.5 flex-shrink-0">
               <BankLinkPill state={r.bank_linked} />
+              <button type="button" onClick={() => setPay(changeTargetOf(r))}
+                className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Change</button>
               {r.bank_linked !== "linked" && (
                 <button type="button" onClick={() => setLink(targetOf(r))}
                   className="flex items-center gap-1 px-2.5 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 whitespace-nowrap"><Landmark size={12} /> Link bank payment</button>

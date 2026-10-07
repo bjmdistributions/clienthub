@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { FreightCarrier, RateMatch, RatesResponse } from "./api";
 import {
-  OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, canEditCarriers, canPayCarriers, canRecordOn, canSeePayDetails, carrierByName, carrierIds,
+  OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, bankLinkNote, canEditCarriers, changePaidDefaults, canPayCarriers, canRecordOn, canSeePayDetails, carrierByName, carrierIds,
   carrierPayCandidates, encodeOpenLoad, filterCarriers, laneEnds, lastRate, markPaidDefaults, markPaidPatch, normalName, offerSaveCarrier,
   parseOpenLoad, payDue, payMethodKey, payMethodLabel, queryText, rateOf, termsWord, toPaySummary,
 } from "./logisticsCarriers";
@@ -217,5 +217,37 @@ describe("opening a load from another screen", () => {
     expect(parseOpenLoad(JSON.stringify({ step: "pay" }))).toBeNull();
     expect(parseOpenLoad("")).toBeNull();
     expect(parseOpenLoad(null)).toBeNull();
+  });
+});
+
+describe("R-463: changing a payment that was recorded wrong", () => {
+  it("opens with the amount, day, method and reference on record", () => {
+    expect(changePaidDefaults({ paid_amount: 8850, paid_at: "2026-10-03", paid_method: "Zelle", paid_note: "ref 4471" }, "2026-10-07"))
+      .toEqual({ amount: "8850", paidAt: "2026-10-03", method: "Zelle", note: "ref 4471" });
+  });
+
+  it("keeps a zero amount and falls back to today when the day is missing", () => {
+    expect(changePaidDefaults({ paid_amount: 0, paid_at: "", paid_method: "", paid_note: "" }, "2026-10-07"))
+      .toEqual({ amount: "0", paidAt: "2026-10-07", method: "", note: "" });
+  });
+
+  it("reads a method an older phone stored as a key, and a day that carries a time", () => {
+    expect(changePaidDefaults({ paid_amount: 850, paid_at: "2026-10-03T14:00:00Z", paid_method: "credit_card", paid_note: "" }, "2026-10-07"))
+      .toMatchObject({ paidAt: "2026-10-03", method: "Credit card" });
+  });
+
+  it("the fixed figure goes out through the same patch as Mark paid", () => {
+    const form = { ...changePaidDefaults({ paid_amount: 8850, paid_at: "2026-10-03", paid_method: "Zelle", paid_note: "" }, "2026-10-07"), amount: "850" };
+    const r = markPaidPatch(form);
+    expect("patch" in r && r.patch).toEqual({ paid_amount: 850, paid_at: "2026-10-03", paid_method: "Zelle", paid_note: "" });
+  });
+
+  it("says when the load is tied to a bank payment, and still lets the change through", () => {
+    expect(bankLinkNote("linked", 8850)).toBe("This load is linked to a bank payment of $8,850.00.");
+    expect(bankLinkNote("linked", null)).toBe("This load is linked to a bank payment.");
+    expect(bankLinkNote("partial", 8850)).toBe("This load is partly linked to a bank payment.");
+    expect(bankLinkNote("none", 8850)).toBe("");
+    expect(bankLinkNote("", 8850)).toBe("");
+    expect(bankLinkNote(undefined, 8850)).toBe("");
   });
 });

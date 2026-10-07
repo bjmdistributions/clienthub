@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload, Send } from "lucide-react";
+import { createPortal } from "react-dom";
+import { ArrowLeft, Check, X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload, Send } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api, type FreightBooking, type FreightBookingPatch, type FreightFile, type FreightFileKind, type FreightInvoiceLine,
@@ -7,11 +8,15 @@ import {
 } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import {
-  FILE_KINDS, LOAD_STEPS, PAID_BANNER, SEND_UNPAID_CONFIRM, STATUS_ORDER,
-  dealPaid, equipmentOptions, fileKind, fileKindLabel, firstStep, fmtDayLabel, isHot, isLogisticsSide,
+  FILE_KINDS, PAID_BANNER, STATUS_ORDER,
+  dealPaid, equipmentOptions, fileKind, fileKindLabel, fmtDayLabel, isHot, isLogisticsSide,
   isQuoteStage, laneLabel, loadNumber, moneyHidden, needsAmount, paperworkOf, paymentLine, pickStatus as pickStatusFields,
-  pickupNumberUnconfirmed, confirmToSend, statusAfterActual, statusAllowed, statusWord, stepDone, timeWord, type LoadStep,
+  pickupNumberUnconfirmed, confirmToSend, statusAfterActual, statusAllowed, statusWord, timeWord, type LoadStep,
 } from "../lib/logisticsLoad";
+import {
+  BOOK_ANYWAY, BOOK_ANYWAY_CONFIRM, actualCost, bookGate, firstSection, loadProgress, markupEditable, markupPreview, markupProblem, markupStart,
+  markupValue, sectionsFor, withDealFacts, type LoadSection, type ProgressFacts, type StageKey, sectionOfStage,
+} from "../lib/loadProgress";
 import { canEditCarriers, canPayCarriers, canRecordOn, carrierByName, payMethodLabel } from "../lib/logisticsCarriers";
 import { can } from "../lib/permissions";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
@@ -21,7 +26,7 @@ import StatusPill from "./StatusPill";
 import { CarrierHost, CarrierPicker, useCarriers } from "./LogisticsCarriers";
 import { RateCard } from "./LogisticsRates";
 import { BankLinkPill, LinkBankSheet, MarkPaidSheet, undoCarrierPaid, type PayTarget } from "./LogisticsPayCarriers";
-import StepBar from "./StepBar";
+import { LoadTracker } from "./LoadTracker";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
 
@@ -33,6 +38,12 @@ import { toast } from "./Toast";
 //
 // R-459: the page is a five step flow, like a deal: Quote, Book, Pickup, Delivery, Pay. Every step
 // is one click away at any time and every field stays editable; one Save writes the whole load.
+//
+// R-464: it is a full page over the content area (the sidebar stays), with the tracker of Jack's eight
+// stages above the sections (Quote, Invoice for the team, Book, Pickup, Delivery, Pay) and a Save that
+// stays in view. A load goes to book only through the gate: quoted, shipping decided, invoice sent,
+// customer paid, with "Book anyway" when only the last two are missing.
+// R-465: the quote is the carrier cost plus a markup, and his pay is that markup.
 
 // ─── shared words and shapes ──────────────────────────────────────────────
 
@@ -133,6 +144,13 @@ export function PaperworkZones({ booking, kinds, onBooking }: { booking: Freight
   const [busy, setBusy] = useState<FreightFileKind | null>(null);
   const [preview, setPreview] = useState<{ url: string; name: string; mime: string } | null>(null);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
+  // Esc closes the preview and goes no further: the page behind it would otherwise treat it as "leave".
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopImmediatePropagation(); setPreview(null); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [preview]);
 
   const add = async (kind: FreightFileKind, list: File[]) => {
     setBusy(kind);
@@ -348,8 +366,8 @@ export function AccessorialsField({ value, onChange }: { value: string; onChange
  *  here too, but `save` sends them only while the viewer may see them, so a redacted empty string can
  *  never be written back over the real one.
  *  R-459: the carrier payment (paid amount, day, method, note) is no longer typed here: the team
- *  records it. The carrier rate (`quoted_cost`) and the quote (`quote_amount`) are money, so they
- *  sit in the draft beside these as `rate` and `quote`. */
+ *  records it. The carrier rate (`quoted_cost`) and the carrier cost the quote is built on (`quote_cost`)
+ *  are money, so they sit in the draft beside these as `rate` and `cost`, with the markup percent `pct`. */
 const TEXT_KEYS = [
   "pickup_name", "pickup_address", "delivery_name", "delivery_address",
   "pickup_date", "pickup_appt_time", "pickup_window", "pickup_contact", "pickup_phone", "pickup_dock", "pickup_notes", "pickup_number",
@@ -363,7 +381,8 @@ const TEXT_KEYS = [
 ] as const;
 type TextKey = typeof TEXT_KEYS[number];
 type Draft = Record<TextKey, string> & {
-  status: FreightStatus; quote: string; rate: string; stops: FreightStop[]; urgent: boolean;
+  /** R-465: the carrier cost the quote is built on, and the markup percent on top of it. The quote is worked out from them. */
+  status: FreightStatus; cost: string; pct: string; rate: string; stops: FreightStop[]; urgent: boolean;
   /** The pickup-number check on the first pickup. */
   confirmed: boolean;
 };
@@ -381,7 +400,7 @@ function toDraft(b: FreightBooking): Draft {
   const d: Record<string, string> = {};
   for (const k of TEXT_KEYS) d[k] = (b[k] ?? "") as string;
   return {
-    ...(d as Record<TextKey, string>), status: b.status, quote: moneyText(b.quote_amount), rate: moneyText(b.quoted_cost),
+    ...(d as Record<TextKey, string>), status: b.status, cost: moneyText(b.quote_cost), pct: markupStart(b), rate: moneyText(b.quoted_cost),
     stops: extraStops(b).map((x) => ({ ...blankStop(), ...x, confirmed: !!x.confirmed })),
     urgent: !!b.urgent,
     confirmed: !!(b.pickup_number_confirmed_at ?? "").trim(),
@@ -407,7 +426,7 @@ const moneyValue = (raw: string): number | null => {
 
 export function Field({ label, hint, children, wide }: { label: string; hint?: string; children: ReactNode; wide?: boolean }) {
   return (
-    <div className={`min-w-0 ${wide ? "col-span-2" : ""}`}>
+    <div className={`min-w-0 ${wide ? "col-span-full" : ""}`}>
       <label className="block text-[12px] font-medium text-muted mb-1">{label}</label>
       {children}
       {hint && <div className="text-[11px] text-muted mt-1">{hint}</div>}
@@ -438,7 +457,7 @@ function Place({ name, address, canNames, canAddr }: { name: string; address: st
 /** The check and balance on a pickup: the driver has the pickup number and the warehouse confirmed it. */
 function ConfirmCheck({ checked, onChange, hasNumber, stamp }: { checked: boolean; onChange: (v: boolean) => void; hasNumber: boolean; stamp: string }) {
   return (
-    <div className="col-span-2 min-w-0">
+    <div className="col-span-full min-w-0">
       <label className={`flex items-start gap-2 text-[13px] ${hasNumber ? "text-ink cursor-pointer" : "text-muted"}`}>
         <input type="checkbox" checked={checked} disabled={!hasNumber} onChange={(e) => onChange(e.target.checked)} className="w-4 h-4 mt-0.5 accent-accent" />
         <span>Driver has the pickup number, confirmed with the warehouse</span>
@@ -458,6 +477,13 @@ function InvoiceLineSheet({ booking, initial, onClose, onDone }: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const problem = moneyProblem(amount, "The amount");
+  // Esc closes this sheet and never reaches the page under it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const go = async () => {
     const n = moneyValue(amount);
     if (problem) { setErr(problem); return; }
@@ -495,8 +521,59 @@ function InvoiceLineSheet({ booking, initial, onClose, onDone }: {
   );
 }
 
+/** The facts the tracker and the gate read off a load. `over` lays the draft's status and actual days on top, so
+ *  the page moves as a person types; `known` is what the screen knows about the deal that the load's copy may not. */
+function factsOf(
+  b: FreightBooking, over: Partial<Pick<ProgressFacts, "status" | "picked_up_at" | "delivered_at">>, known: { invoiceSent?: boolean; dealPaid?: boolean },
+): ProgressFacts {
+  return withDealFacts({
+    status: b.status, quote_amount: b.quote_amount, quote_invoiced_at: b.quote_invoiced_at, shipping_charge: b.shipping_charge,
+    invoice_sent: b.invoice_sent, deal_paid: b.deal_paid, book_override_at: b.book_override_at, book_override_by: b.book_override_by,
+    picked_up_at: b.picked_up_at, delivered_at: b.delivered_at, paid_amount: b.paid_amount, ...over,
+  }, known);
+}
+
+/** Two columns from about 760 px of page (the sidebar is 216), one below. */
+const g2 = "grid grid-cols-1 min-[976px]:grid-cols-2 gap-3";
+const btnPrimary = "bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap";
+const btnGhost = "px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap";
+
+/** One fact of the flow on the Invoice section: a tick or an empty ring, the fact in words, and what can be done about it. */
+function FlowRow({ done, title, children, actions }: { done: boolean; title: string; children: ReactNode; actions?: ReactNode }) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-line bg-surface px-4 py-3 min-w-0">
+      <span className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${done ? "bg-success text-surface" : "border border-line-3 text-faint"}`} aria-hidden>
+        {done && <Check size={12} strokeWidth={3} />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium text-ink">{title}</div>
+        <div className="text-[12.5px] text-ink-2 mt-0.5 break-words">{children}</div>
+        {actions && <div className="flex items-center gap-2 flex-wrap mt-2.5">{actions}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** One figure on the team's cost line. */
+function Figure({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[11.5px] text-muted">{label}</dt>
+      <dd className="text-[14px] font-semibold text-ink tabular-nums break-words">{value}</dd>
+      {sub && <dd className="text-[11px] text-muted">{sub}</dd>}
+    </div>
+  );
+}
+
+const GATE_ITEMS: { key: "quote" | "charge" | "sent" | "paid"; text: string }[] = [
+  { key: "quote", text: "Logistics has quoted it" },
+  { key: "charge", text: "The quote is on the invoice, or we pay the shipping ourselves" },
+  { key: "sent", text: "The invoice has been sent" },
+  { key: "paid", text: "The customer has paid" },
+];
+
 export default function LogisticsBookingForm({
-  booking, onClose, onSaved, onChanged, dealPaid: dealPaidKnown, initialStep,
+  booking, onClose, onSaved, onChanged, dealPaid: dealPaidKnown, invoiceSent: invoiceSentKnown, initialStep,
 }: {
   booking: FreightBooking;
   onClose: () => void;
@@ -506,13 +583,18 @@ export default function LogisticsBookingForm({
   onChanged: () => void;
   /** R-459: the screen that knows the deal says whether the customer has paid. Without it the load's own flag is used. */
   dealPaid?: boolean;
-  /** R-459: open on this step instead of the one the status points at (Bills opens a load on Pay). */
+  /** R-464: the screen that knows the deal's invoice says whether it has been sent. Without it the load's own flag is used. */
+  invoiceSent?: boolean;
+  /** R-459: open on this section instead of the one the current stage points at (Bills opens a load on Pay). */
   initialStep?: LoadStep;
 }) {
+  const known = { invoiceSent: invoiceSentKnown, dealPaid: dealPaidKnown };
   const [draft, setDraft] = useState<Draft>(() => toDraft(booking));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [step, setStep] = useState<LoadStep>(() => initialStep ?? firstStep(booking.status));
+  const startSection = (b: FreightBooking): LoadSection =>
+    initialStep ?? firstSection(loadProgress(factsOf(b, {}, known), b.can_see_deal), b.can_see_deal);
+  const [step, setStep] = useState<LoadSection>(() => startSection(booking));
   const me = useSessionMe();
   const { list: carriers, error: carriersError, reload: reloadCarriers } = useCarriers();
   // The carrier card, or the add form seeded from a typed name; and the two sheets on the Pay step.
@@ -521,6 +603,7 @@ export default function LogisticsBookingForm({
   const [linkTarget, setLinkTarget] = useState<PayTarget | null>(null);
   const [invoiceSheet, setInvoiceSheet] = useState(false);
   const [onInvoice, setOnInvoice] = useState<FreightInvoiceLine | null>(null);
+  const [choosing, setChoosing] = useState(false);
   const base = useMemo(() => toDraft(booking), [booking]);
   const baseRef = useRef(base);
   baseRef.current = base;
@@ -534,9 +617,9 @@ export default function LogisticsBookingForm({
     if (handedOver.current === booking) return;
     setDraft(toDraft(booking)); setError("");
   }, [booking]);
-  // Another load opened: start on the step its status points at.
+  // Another load opened: start on the section its current stage points at.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setStep(initialStep ?? firstStep(booking.status)); setOnInvoice(null); }, [booking.id]);
+  useEffect(() => { setStep(startSection(booking)); setOnInvoice(null); }, [booking.id]);
   const body = useRef<HTMLDivElement | null>(null);
   useEffect(() => { body.current?.scrollTo({ top: 0 }); }, [step]);
 
@@ -545,22 +628,24 @@ export default function LogisticsBookingForm({
   const noMoney = moneyHidden(booking);
   const dirty = (Object.keys(base) as (keyof Draft)[]).some((k) => draftChanged(base, draft, k));
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }));
+  const sheetOpen = !!(carrierHost || payTarget || linkTarget || invoiceSheet);
 
   const tryClose = () => {
     if (dirty && !confirm("You have changes that are not saved. Leave without saving them?")) return;
     onClose();
   };
-  /** Leaving this page for another screen (a BOL): unsaved typing is asked about first. */
+  /** Leaving this page for another screen (a BOL, the invoice): unsaved typing is asked about first. */
   const leaveFor = (go: () => void) => {
     if (dirty && !confirm("You have changes that are not saved. Leave without saving them?")) return;
     go();
   };
+  // Esc leaves the page through the unsaved check, unless a sheet is open on top of it (Esc belongs to the sheet then).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") tryClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !sheetOpen) tryClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dirty]);
+  }, [dirty, sheetOpen]);
 
   /** The server's copy of this load after something other than Save changed it. Fields nobody has touched
    *  take the new values, fields being edited keep what is typed. */
@@ -602,22 +687,37 @@ export default function LogisticsBookingForm({
 
   const canPay = canRecordOn(booking, canPayCarriers(me));
   const canEditCarrier = canEditCarriers(me);
-  const quoteErr = moneyProblem(draft.quote, "The quote");
+  const costErr = moneyProblem(draft.cost, "The carrier cost");
+  const pctErr = markupProblem(draft.pct);
   const rateErr = moneyProblem(draft.rate, "The carrier rate");
   // R-415: our side fills in the freight, so the logistics person only reads it.
   const freightLocked = !full && booking.freight_by_team === true;
   const paid = dealPaid(booking, dealPaidKnown);
-  const atQuote = isQuoteStage(draft.status);
+  // The quote can be revised and the load sent to book only while it is a quote (on the saved status, not a pick in the box).
+  const atQuote = isQuoteStage(booking.status);
+  // R-465: the markup percent is typed by the team, and by the logistics person only when the owner allows it.
+  const pctEdit = markupEditable(full, booking);
+  const preview = markupPreview(draft.cost, draft.pct);
 
-  const save = async (opts?: { status?: FreightStatus; withQuote?: boolean }) => {
-    const problem = quoteErr || rateErr;
+  const save = async (opts?: { status?: FreightStatus; withQuote?: boolean; override?: boolean }) => {
+    const problem = costErr || pctErr || rateErr;
     if (problem) { setError(problem); return; }
-    if (opts?.withQuote && moneyValue(draft.quote) == null) { setError("Add the quote amount first."); return; }
+    if (opts?.withQuote && moneyValue(draft.cost) == null) { setError("Add the carrier cost first."); return; }
     const patch: Record<string, unknown> = {};
     for (const k of TEXT_KEYS) if (draft[k] !== base[k] && !hiddenPlaceKey(k, booking)) patch[k] = draft[k];
     if (draft.status !== base.status) patch.status = draft.status;
     if (opts?.status) patch.status = opts.status;
-    if (draft.quote !== base.quote || opts?.withQuote) patch.quote_amount = moneyValue(draft.quote);
+    if (opts?.override) patch.override = true;
+    // The server works the markup and the quote out from the cost and the percent. A percent the person may not
+    // type is never sent: the server uses the default for it.
+    if (draft.cost !== base.cost || draft.pct !== base.pct || opts?.withQuote) {
+      const cost = moneyValue(draft.cost);
+      if (cost != null) {
+        patch.quote_cost = cost;
+        const pct = markupValue(draft.pct);
+        if (pctEdit && pct != null) patch.markup_pct = pct;
+      } else if (base.cost !== "") { setError("Add the carrier cost to change the quote."); return; }
+    }
     if (draft.rate !== base.rate) patch.quoted_cost = moneyValue(draft.rate);
     if (draft.urgent !== base.urgent) patch.urgent = draft.urgent;
     const sendConfirm = confirmToSend(draft.pickup_number !== base.pickup_number, base.confirmed, draft.confirmed);
@@ -634,7 +734,7 @@ export default function LogisticsBookingForm({
     setSaving(true); setError("");
     try {
       const saved = await api.logistics.update(booking.id, { ...(patch as FreightBookingPatch), today: localDay() });
-      toast(opts?.status === "requested" ? "Sent to logistics" : opts?.withQuote ? "Quote sent to your team" : "Saved");
+      toast(opts?.status === "requested" ? "Sent to logistics" : opts?.withQuote && !full ? "Quote sent to your team" : "Saved");
       handedOver.current = null;
       onSaved(saved);
     } catch (e) {
@@ -650,12 +750,38 @@ export default function LogisticsBookingForm({
   };
   const payFor: PayTarget = {
     bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost,
-    payMethod: booking.carrier_pay_method || "", paidAmount: booking.paid_amount,
+    payMethod: booking.carrier_pay_method || "", paidAmount: booking.paid_amount, bankLinked: booking.bank_linked ?? "",
+    // R-463: a payment on record opens the same sheet to be changed, with what is on record.
+    current: booking.paid_amount != null
+      ? { paid_amount: booking.paid_amount, paid_at: booking.paid_at, paid_method: booking.paid_method, paid_note: booking.paid_note }
+      : undefined,
   };
 
-  const sendToBook = async () => {
-    if (!paid && !confirm(SEND_UNPAID_CONFIRM)) return;
-    await save({ status: "requested" });
+  // ── the gate (R-464) ────────────────────────────────────────────────────
+  const gate = bookGate(factsOf(booking, {}, known));
+  const sendToBook = () => save({ status: "requested" });
+  /** The money is coming: the team sends it to book before the invoice is sent and paid, after one more look. */
+  const bookAnyway = async () => {
+    if (!confirm(BOOK_ANYWAY_CONFIRM)) return;
+    await save({ status: "requested", override: true });
+  };
+  /** "We pay this shipping ourselves" or back to charging the customer. Written at once, apart from Save. */
+  const setCharge = async (v: "own" | "") => {
+    setChoosing(true);
+    try {
+      const r = await api.logistics.update(booking.id, { shipping_charge: v });
+      takeServerCopy(r && r.id ? r : await api.logistics.get(booking.id));
+      toast(v === "own" ? "You are paying this shipping yourselves" : "The customer will be charged for shipping");
+    } catch (e) { toast(String(e), "error"); }
+    setChoosing(false);
+  };
+  /** Open the deal's invoice on the Invoices screen, to review and send it. */
+  const openInvoice = async () => {
+    try {
+      const id = onInvoice?.invoice_id ?? (booking.deal?.id ? (await api.getDealFlow(booking.deal.id)).invoice_id : "");
+      if (!id) { toast("This deal has no invoice yet.", "error"); return; }
+      leaveFor(() => { openInvoiceById(id); onClose(); });
+    } catch (e) { toast(String(e), "error"); }
   };
 
   const addTruck = async () => {
@@ -713,9 +839,9 @@ export default function LogisticsBookingForm({
     if (!names && !addrs) return <Place name="" address="" canNames={false} canAddr={false} />;
     const hidden = <p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={11} />Hidden by your permissions</p>;
     return (
-      <div className="grid grid-cols-2 gap-3">
-        {names ? t(`${p}_name`, "Name", { wide: true }) : <Field label="Name" wide>{hidden}</Field>}
-        {addrs ? t(`${p}_address`, "Address", { wide: true }) : <Field label="Address" wide>{hidden}</Field>}
+      <div className={g2}>
+        {names ? t(`${p}_name`, "Name") : <Field label="Name">{hidden}</Field>}
+        {addrs ? t(`${p}_address`, "Address") : <Field label="Address">{hidden}</Field>}
       </div>
     );
   };
@@ -729,16 +855,19 @@ export default function LogisticsBookingForm({
     { status: draft.status, pickup_date: draft.pickup_date, pickup_number_confirmed_at: draft.confirmed ? "x" : "", extra_pickups: draft.stops },
     localDay(),
   );
-  const done = stepDone({
-    status: draft.status, carrier: draft.carrier, picked_up_at: draft.picked_up_at, delivered_at: draft.delivered_at,
-    paid_amount: booking.paid_amount, paperwork: paperworkOf(booking),
-  });
+  // R-464: the tracker reads the draft's status and actual days, so it moves as they are typed.
+  const stages = loadProgress(factsOf(booking, { status: draft.status, picked_up_at: draft.picked_up_at, delivered_at: draft.delivered_at }, known), full);
+  const sections = sectionsFor(full);
+  const here: LoadSection = sections.some((s) => s.key === step) ? step : "quote";
   const lane = booking.can_see_addresses ? laneLabel(booking.pickup_address, booking.delivery_address) : "";
   const route = routeLabel(booking);
   const confirmedStamp = (by: string | undefined, at: string | undefined) =>
     by || at ? `Confirmed${by ? ` by ${by}` : ""}${at ? ` on ${fmtDay(at)}` : ""}` : "";
+  const invoiceNo = booking.deal?.invoice_number || booking.deal_invoice_number || "";
+  const actual = actualCost(booking);
+  const overridden = !!(booking.book_override_at ?? "").trim();
 
-  // ── the five steps ──────────────────────────────────────────────────────
+  // ── the sections ────────────────────────────────────────────────────────
 
   const freightFields = freightLocked ? (
     <>
@@ -761,7 +890,7 @@ export default function LogisticsBookingForm({
     </>
   ) : (
     <>
-      <div className="grid grid-cols-2 gap-3">
+      <div className={g2}>
         {t("pallets", "Pallets")}
         {t("pieces", "Pieces")}
         {t("dimensions", "Pallet dimensions (L x W x H in)", { placeholder: "48 x 40 x 60" })}
@@ -775,9 +904,6 @@ export default function LogisticsBookingForm({
 
   const quoteStep = (
     <div className="space-y-6">
-      {atQuote && paid && full && (
-        <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink" role="status">{PAID_BANNER}</div>
-      )}
       {lane && <div className="text-[13px] text-ink-2"><span className="text-muted">Lane</span> {lane}</div>}
       <RateCard by={{ bookingId: booking.id }} onOpenCarrier={(id) => setCarrierHost({ id })} />
 
@@ -793,18 +919,32 @@ export default function LogisticsBookingForm({
           <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Quote amounts are hidden by your permissions.</p>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Quote amount" hint={quoteErr ?? "What to charge for this freight, to go on the invoice."}>
-                <NumberInput className={inp} value={draft.quote} placeholder="0.00" onValue={(_n, raw) => set("quote", raw)} />
+            <div className={g2}>
+              <Field label="Carrier cost" hint={costErr ?? "What the carrier will charge. The quote is this plus the markup."}>
+                <NumberInput className={inp} value={draft.cost} placeholder="0.00" onValue={(_n, raw) => set("cost", raw)} />
               </Field>
-              <Field label="Quote note" wide>
-                <textarea className={area} value={draft.quote_note} onChange={(e) => set("quote_note", e.target.value)} placeholder="Anything the team should know about this quote" />
+              <Field label="Markup %" hint={pctErr ?? (pctEdit ? "Starts at the default. Change it for this load if you need to." : "Set by the owner. Your pay on this load is the markup.")}>
+                {pctEdit
+                  ? <NumberInput className={inp} value={draft.pct} placeholder="0" onValue={(_n, raw) => set("pct", raw)} />
+                  : <p className="h-9 flex items-center text-[13px] text-ink tabular-nums">{draft.pct.trim() || "0"}%</p>}
               </Field>
             </div>
+            {preview
+              ? <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[13px] text-ink tabular-nums" role="status">Markup {fmtAmount(preview.markup)}, quote {fmtAmount(preview.quote)}</div>
+              : <p className="text-[12px] text-muted">Add the carrier cost to see the quote.</p>}
+            <Field label="Quote note">
+              <textarea className={area} value={draft.quote_note} onChange={(e) => set("quote_note", e.target.value)} placeholder="Anything the team should know about this quote" />
+            </Field>
+            {booking.quote_amount != null && booking.quote_cost == null && (
+              <p className="text-[12px] text-muted">
+                Quoted at {fmtAmount(booking.quote_amount)}, from before the carrier cost and the markup were kept. Add the carrier cost to build it again.
+              </p>
+            )}
             {booking.quoted_at && (
               <p className="text-[12px] text-muted">
                 Quoted{booking.quoted_by_name ? ` by ${booking.quoted_by_name}` : ""} on {fmtDay(booking.quoted_at)}
                 {booking.quote_amount != null ? ` at ${fmtAmount(booking.quote_amount)}` : ""}.
+                {booking.markup_by_name && booking.markup_pct != null ? ` Markup of ${booking.markup_pct}% set by ${booking.markup_by_name}${booking.markup_at ? ` on ${fmtDay(booking.markup_at)}` : ""}.` : ""}
               </p>
             )}
             {booking.quote_invoiced_at && (
@@ -812,36 +952,24 @@ export default function LogisticsBookingForm({
                 On the invoice{booking.quote_invoiced_amount != null ? ` at ${fmtAmount(booking.quote_invoiced_amount)}` : ""} since {fmtDay(booking.quote_invoiced_at)}.
               </p>
             )}
-            {onInvoice && (
-              <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink flex items-center justify-between gap-3 flex-wrap" role="status">
-                <span>On invoice {onInvoice.invoice_number}. Review and send it.</span>
-                <button type="button" onClick={() => leaveFor(() => { openInvoiceById(onInvoice.invoice_id); onClose(); })}
-                  className="flex items-center gap-1 px-3 h-8 rounded-lg border border-success/40 text-[12px] font-medium hover:bg-success-bg/60 whitespace-nowrap">
-                  <ExternalLink size={12} /> Open the invoice
-                </button>
-              </div>
+            {/* R-465: the team always sees what the carrier cost, what was added, what the customer is quoted and what it really cost. */}
+            {full && (
+              <dl className="grid grid-cols-2 min-[976px]:grid-cols-3 gap-x-4 gap-y-3 rounded-lg bg-surface-2 border border-line px-3 py-3" aria-label="Cost and markup">
+                <Figure label="Carrier cost" value={booking.quote_cost != null ? fmtAmount(booking.quote_cost) : "-"} />
+                <Figure label="Markup" value={booking.markup_amount != null ? fmtAmount(booking.markup_amount) : "-"} sub={booking.markup_pct != null ? `${booking.markup_pct}%` : undefined} />
+                <Figure label="Quote" value={booking.quote_amount != null ? fmtAmount(booking.quote_amount) : "-"} />
+                {booking.quoted_cost != null && <Figure label="Carrier rate" value={fmtAmount(booking.quoted_cost)} />}
+                {booking.paid_amount != null && <Figure label="Amount paid" value={fmtAmount(booking.paid_amount)} />}
+                {actual && <Figure label="Actual cost" value={fmtAmount(actual.amount)} sub={actual.source === "paid" ? "The amount paid" : "The carrier rate"} />}
+              </dl>
             )}
           </>
         )}
         {atQuote && (
           <div className="flex items-center gap-2 flex-wrap">
-            {!full && !noMoney && (
-              <button type="button" onClick={() => save({ withQuote: true })} disabled={saving}
-                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
-                Submit quote
-              </button>
-            )}
-            {full && !noMoney && (booking.status === "quoted" || booking.quote_amount != null) && (
-              <button type="button" onClick={() => setInvoiceSheet(true)}
-                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">
-                Put on the invoice
-              </button>
-            )}
-            {full && (
-              <button type="button" onClick={sendToBook} disabled={saving}
-                className="flex items-center gap-1.5 px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap">
-                <Send size={13} /> Send to book
-              </button>
+            {!noMoney && <button type="button" onClick={() => save({ withQuote: true })} disabled={saving} className={btnPrimary}>Submit quote</button>}
+            {full && booking.quote_amount != null && (
+              <button type="button" onClick={() => setStep("invoice")} className="text-[12.5px] text-accent font-medium hover:underline whitespace-nowrap">Next: the invoice</button>
             )}
           </div>
         )}
@@ -856,6 +984,93 @@ export default function LogisticsBookingForm({
     </div>
   );
 
+  /** The four things before a load goes to book, and the button. Only the team sends a load to book, and only while it is a quote. */
+  const sendBar = full && atQuote && (
+    <div className="rounded-xl border border-line bg-surface-2/50 px-4 py-3 space-y-3">
+      <div className="text-[13px] font-medium text-ink">Send to book</div>
+      <ul className="space-y-1.5 list-none m-0 p-0">
+        {GATE_ITEMS.map((g) => {
+          const ok = !gate.missing.includes(g.key);
+          return (
+            <li key={g.key} className={`flex items-center gap-2 text-[12.5px] ${ok ? "text-ink-2" : "text-muted"}`}>
+              <span className={`w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 ${ok ? "bg-success text-surface" : "border border-line-3"}`} aria-hidden>
+                {ok && <Check size={10} strokeWidth={3} />}
+              </span>
+              <span>{g.text}</span>
+            </li>
+          );
+        })}
+      </ul>
+      {!gate.ok && <p className="text-[12px] text-muted">{gate.reason}</p>}
+      <div className="flex items-center gap-2 flex-wrap">
+        <button type="button" onClick={sendToBook} disabled={!gate.ok || saving}
+          className={`${btnPrimary} flex items-center gap-1.5`}>
+          <Send size={13} /> {gate.button}
+        </button>
+        {gate.canOverride && (
+          <button type="button" onClick={bookAnyway} disabled={saving} className={btnGhost}>{BOOK_ANYWAY}</button>
+        )}
+        {!gate.ok && (
+          <button type="button" onClick={reloadLoad} className="text-[12px] text-muted hover:text-ink-2 underline whitespace-nowrap">Check again</button>
+        )}
+      </div>
+    </div>
+  );
+
+  const invoiceStep = (
+    <div className="space-y-6">
+      <Section title="Shipping on the invoice">
+        <div className="space-y-2.5">
+          <FlowRow done={booking.shipping_charge === "own" || booking.shipping_charge === "invoice" || !!(booking.quote_invoiced_at ?? "").trim()} title="Who pays for the shipping"
+            actions={atQuote && !noMoney ? (
+              <>
+                {booking.quote_amount != null && booking.shipping_charge !== "own" && (
+                  <button type="button" onClick={() => setInvoiceSheet(true)} className={btnPrimary}>Put on the invoice</button>
+                )}
+                {booking.shipping_charge === "own"
+                  ? <button type="button" onClick={() => setCharge("")} disabled={choosing} className={btnGhost}>Charge the customer instead</button>
+                  : booking.shipping_charge !== "invoice" && !(booking.quote_invoiced_at ?? "").trim() && (
+                    <button type="button" onClick={() => setCharge("own")} disabled={choosing} className={btnGhost}>We pay this shipping ourselves</button>
+                  )}
+              </>
+            ) : undefined}>
+            {booking.shipping_charge === "own"
+              ? "We pay this shipping ourselves. The customer is not charged for it."
+              : booking.shipping_charge === "invoice" || (booking.quote_invoiced_at ?? "").trim()
+                ? `On the invoice${invoiceNo ? ` ${invoiceNo}` : ""}${booking.quote_invoiced_amount != null ? ` at ${fmtAmount(booking.quote_invoiced_amount)}` : ""}${booking.quote_invoiced_at ? ` since ${fmtDay(booking.quote_invoiced_at)}` : ""}.`
+                : booking.quote_amount == null
+                  ? "Waiting for logistics to quote it. Then put the quote on the invoice, or pay the shipping ourselves."
+                  : "Not decided yet. Put the quote on the invoice, or pay the shipping ourselves."}
+          </FlowRow>
+
+          {onInvoice && (
+            <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink" role="status">
+              On invoice {onInvoice.invoice_number}. Review and send it.
+            </div>
+          )}
+
+          <FlowRow done={!gate.missing.includes("sent")} title="Invoice sent"
+            actions={invoiceNo || booking.deal ? (
+              <button type="button" onClick={openInvoice} className={`${btnGhost} flex items-center gap-1.5`}><ExternalLink size={12} /> Open the invoice</button>
+            ) : undefined}>
+            {!gate.missing.includes("sent")
+              ? `The invoice${invoiceNo ? ` ${invoiceNo}` : ""} has been sent.`
+              : `The invoice${invoiceNo ? ` ${invoiceNo}` : ""} has not been sent yet.`}
+          </FlowRow>
+
+          <FlowRow done={!gate.missing.includes("paid") || overridden} title="Customer paid">
+            {!gate.missing.includes("paid")
+              ? "The customer has paid."
+              : overridden
+                ? `Sent to book before it was paid. Override by ${booking.book_override_by || "the team"}${booking.book_override_at ? ` on ${fmtDay(booking.book_override_at)}` : ""}.`
+                : "The customer has not paid yet."}
+          </FlowRow>
+        </div>
+      </Section>
+      {sendBar}
+    </div>
+  );
+
   const bookStep = (
     <div className="space-y-6">
       {atQuote && (
@@ -865,7 +1080,7 @@ export default function LogisticsBookingForm({
       )}
       <Section title={draft.stops.length ? "Pickup 1" : "Pickup"}>
         {placeBlock("pickup")}
-        <div className="grid grid-cols-2 gap-3">
+        <div className={g2}>
           {t("pickup_contact", "Contact")}
           {t("pickup_phone", "Phone")}
           {t("pickup_dock", "Dock door")}
@@ -886,14 +1101,14 @@ export default function LogisticsBookingForm({
       {draft.stops.map((x, i) => (
         <Section key={i} title={`Pickup ${i + 2}`}>
           {stopEdit ? (
-            <div className="grid grid-cols-2 gap-3">
-              {stopInput(i, "name", "Name", true)}
-              {stopInput(i, "address", "Address", true)}
+            <div className={g2}>
+              {stopInput(i, "name", "Name")}
+              {stopInput(i, "address", "Address")}
             </div>
           ) : (
             <Place name={x.name} address={x.address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
           )}
-          <div className="grid grid-cols-2 gap-3">
+          <div className={g2}>
             {stopInput(i, "contact", "Contact")}
             {stopInput(i, "phone", "Phone")}
             {stopInput(i, "dock", "Dock door")}
@@ -925,7 +1140,7 @@ export default function LogisticsBookingForm({
 
       <Section title="Delivery">
         {placeBlock("delivery")}
-        <div className="grid grid-cols-2 gap-3">
+        <div className={g2}>
           {t("delivery_contact", "Contact")}
           {t("delivery_phone", "Phone")}
           {t("delivery_dock", "Dock door")}
@@ -940,7 +1155,7 @@ export default function LogisticsBookingForm({
 
       <Section title="Carrier">
         <RateCard by={{ bookingId: booking.id }} onOpenCarrier={(id) => setCarrierHost({ id })} />
-        <div className="grid grid-cols-2 gap-3">
+        <div className={g2}>
           <Field label="Carrier">
             <CarrierPicker value={draft.carrier} carrierId={draft.carrier_id} carriers={carriersError ? null : carriers} canEdit={canEditCarrier}
               onType={setCarrier} onPick={pickCarrier} onSave={(name) => setCarrierHost({ seedName: name })} onOpen={(id) => setCarrierHost({ id })} />
@@ -977,12 +1192,7 @@ export default function LogisticsBookingForm({
         <textarea className={area} value={draft.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Anything else worth writing down" />
       </Section>
 
-      {atQuote && full && (
-        <button type="button" onClick={sendToBook} disabled={saving}
-          className="flex items-center gap-1.5 px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap">
-          <Send size={13} /> Send to book
-        </button>
-      )}
+      {sendBar}
     </div>
   );
 
@@ -1068,7 +1278,7 @@ export default function LogisticsBookingForm({
           <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Shipping amounts are hidden by your permissions.</p>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3">
+            <div className={g2}>
               <Field label="Carrier rate" hint={rateErr ?? "What the carrier is expected to charge."}>
                 <NumberInput className={inp} value={draft.rate} placeholder="0.00" onValue={(_n, raw) => set("rate", raw)} />
               </Field>
@@ -1095,16 +1305,15 @@ export default function LogisticsBookingForm({
             {canPay && (
               <div className="flex items-center gap-2 flex-wrap">
                 {booking.paid_amount == null ? (
-                  <button type="button" onClick={() => setPayTarget(payFor)}
-                    className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">Mark paid</button>
+                  <button type="button" onClick={() => setPayTarget(payFor)} className={btnPrimary}>Mark paid</button>
                 ) : (
                   <>
+                    <button type="button" onClick={() => setPayTarget(payFor)} className={btnGhost}>Change</button>
                     {booking.bank_linked !== "linked" && (
-                      <button type="button" onClick={() => setLinkTarget(payFor)}
-                        className="px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Link bank payment</button>
+                      <button type="button" onClick={() => setLinkTarget(payFor)} className={btnGhost}>Link bank payment</button>
                     )}
                     <button type="button" onClick={async () => { if (await undoCarrierPaid(booking.id, payFor.label, booking.paid_amount)) reloadLoad(); }}
-                      className="px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Undo</button>
+                      className={btnGhost}>Undo</button>
                   </>
                 )}
               </div>
@@ -1130,103 +1339,131 @@ export default function LogisticsBookingForm({
     </div>
   );
 
-  const stepBody: Record<LoadStep, ReactNode> = { quote: quoteStep, book: bookStep, pickup: pickupStep, delivery: deliveryStep, pay: payStep };
+  const stepBody: Record<LoadSection, ReactNode> = { quote: quoteStep, invoice: full ? invoiceStep : null, book: bookStep, pickup: pickupStep, delivery: deliveryStep, pay: payStep };
+  const goStage = (k: StageKey) => setStep(sectionOfStage(k, full));
 
-  return (
+  // The page covers the content area (the sidebar stays): it is put into <main>, which is the positioned box
+  // that area lives in. Outside the app (a test page) there is no <main> and it covers the window.
+  const host = typeof document !== "undefined" ? document.querySelector("main") : null;
+
+  const page = (
     <>
-      <div className="fixed inset-0 bg-black/20 backdrop-blur-[2px] z-40" onClick={tryClose} />
       <div
         role="dialog" aria-modal="true" aria-label={`Booking ${loadNumber(booking)}`}
-        className="fixed inset-y-0 right-0 w-[560px] max-w-[96vw] bg-surface shadow-[0_0_50px_rgba(0,0,0,0.12)] z-50 flex flex-col animate-slide-in-right"
-        onClick={(e) => e.stopPropagation()}
+        className={`${host ? "absolute" : "fixed"} inset-0 z-40 bg-surface flex flex-col animate-fade-in`}
       >
-        <div className="bg-surface/95 backdrop-blur-sm border-b border-line px-6 pt-4 pb-3 flex-shrink-0 space-y-2.5">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="text-[20px] font-semibold text-ink font-mono tracking-tight">{loadNumber(booking)}</h3>
-              {route && <div className="text-[13px] text-ink-2 truncate mt-0.5">{route}</div>}
-            </div>
-            <button onClick={tryClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors flex-shrink-0"><X size={16} /></button>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <FreightStatusPill status={draft.status} logistics={lg} />
-            {isHot(booking) && <UrgentPill />}
-            {unconfirmed && <PickupNumberPill />}
-            <div className="ml-auto flex items-center gap-3 flex-wrap">
-              <label className="flex items-center gap-1.5 text-[12.5px] text-ink cursor-pointer whitespace-nowrap">
-                <input type="checkbox" checked={draft.urgent} onChange={(e) => set("urgent", e.target.checked)} className="w-4 h-4 accent-danger" />
-                Urgent
-              </label>
-              <select aria-label="Status" value={draft.status} onChange={(e) => pickStatus(e.target.value as FreightStatus)}
-                className="h-8 rounded-lg border border-line bg-surface text-[12.5px] text-ink px-2 focus:outline-none focus:ring-2 focus:ring-accent/40">
-                {STATUS_ORDER.map((s) => <option key={s} value={s} disabled={s !== draft.status && !statusAllowed(s, booking.status, dealEdit)}>{statusWord(s, lg)}</option>)}
-              </select>
-            </div>
-          </div>
-        </div>
-        <div className="border-b border-line flex-shrink-0">
-          <StepBar steps={LOAD_STEPS} current={step} done={done} onGo={setStep} labels="always" compact />
-        </div>
-
-        <div ref={body} className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-6">
-          {full && booking.deal && (
-            <div className="text-[12.5px] text-ink-2 min-w-0">
-              <span className="font-medium text-ink">{booking.deal.invoice_number || "Deal"}</span>
-              {booking.deal.client_name ? <span className="text-muted">{" "}for {booking.deal.client_name}</span> : null}
-            </div>
-          )}
-
-          {isHot(booking) && (
-            <div className="rounded-xl bg-danger-bg border border-danger/30 px-4 py-3 text-[13px] text-danger-ink" role="status">
-              <span className="font-semibold">Urgent.</span> {booking.status === "quote" ? "Quote this one first." : "Book this truck first."}
-              {booking.pickup_date && <> Pickup {booking.pickup_date === localDay() ? "today" : fmtDay(booking.pickup_date)}{booking.pickup_window ? `, ${booking.pickup_window}` : ""}.</>}
-            </div>
-          )}
-
-          {booking.request_note.trim() && (
-            <div className="rounded-xl bg-accent/10 border border-accent/25 px-4 py-3">
-              <div className="text-[12px] font-medium text-accent-hover mb-1">
-                Note{booking.created_by_name ? ` from ${booking.created_by_name}` : " with the request"}
+        <div className="border-b border-line px-6 pt-3 pb-3 flex-shrink-0">
+          <div className="max-w-[1120px] mx-auto w-full space-y-2.5">
+            <button type="button" onClick={tryClose}
+              className="flex items-center gap-1.5 -ml-2 px-2 h-8 rounded-lg text-[12.5px] text-ink-2 hover:text-ink hover:bg-surface-2 transition-colors">
+              <ArrowLeft size={14} /> Back to loads
+            </button>
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="min-w-0">
+                <h3 className="text-[22px] font-semibold text-ink font-mono tracking-tight">{loadNumber(booking)}</h3>
+                {route && <div className="text-[13px] text-ink-2 truncate mt-0.5">{route}</div>}
               </div>
-              <div className="text-[13px] text-ink whitespace-pre-wrap break-words">{booking.request_note}</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <FreightStatusPill status={draft.status} logistics={lg} />
+                {isHot(booking) && <UrgentPill />}
+                {unconfirmed && <PickupNumberPill />}
+                <label className="flex items-center gap-1.5 text-[12.5px] text-ink cursor-pointer whitespace-nowrap ml-2">
+                  <input type="checkbox" checked={draft.urgent} onChange={(e) => set("urgent", e.target.checked)} className="w-4 h-4 accent-danger" />
+                  Urgent
+                </label>
+                <select aria-label="Status" value={draft.status} onChange={(e) => pickStatus(e.target.value as FreightStatus)}
+                  className="h-8 rounded-lg border border-line bg-surface text-[12.5px] text-ink px-2 focus:outline-none focus:ring-2 focus:ring-accent/40">
+                  {STATUS_ORDER.map((s) => <option key={s} value={s} disabled={s !== draft.status && !statusAllowed(s, booking.status, dealEdit)}>{statusWord(s, lg)}</option>)}
+                </select>
+              </div>
             </div>
-          )}
+          </div>
+        </div>
 
-          {stepBody[step]}
+        <div className="border-b border-line flex-shrink-0 px-4">
+          <div className="max-w-[1120px] mx-auto w-full">
+            <LoadTracker stages={stages} onGo={goStage} />
+          </div>
+        </div>
 
-          <div className="text-[11.5px] text-muted">
-            {booking.updated_by_name ? `Last changed by ${booking.updated_by_name}` : booking.created_by_name ? `Sent by ${booking.created_by_name}` : ""}
-            {booking.updated_at ? ` ${fmtDay(booking.updated_at)}` : ""}
+        <div className="border-b border-line flex-shrink-0 px-6">
+          <div role="tablist" aria-label="Sections" className="max-w-[1120px] mx-auto w-full flex items-center gap-1 overflow-x-auto">
+            {sections.map((s) => (
+              <button key={s.key} type="button" role="tab" aria-selected={here === s.key} onClick={() => setStep(s.key)}
+                className={`h-10 px-3.5 text-[13px] whitespace-nowrap border-b-2 -mb-px transition-colors ${
+                  here === s.key ? "border-accent text-ink font-medium" : "border-transparent text-muted hover:text-ink-2"}`}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div ref={body} className="flex-1 min-h-0 overflow-y-auto">
+          <div className="max-w-[1120px] mx-auto w-full px-6 py-5 space-y-6">
+            {full && atQuote && paid && (
+              <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink" role="status">{PAID_BANNER}</div>
+            )}
+
+            {full && booking.deal && (
+              <div className="text-[12.5px] text-ink-2 min-w-0">
+                <span className="font-medium text-ink">{booking.deal.invoice_number || "Deal"}</span>
+                {booking.deal.client_name ? <span className="text-muted">{" "}for {booking.deal.client_name}</span> : null}
+              </div>
+            )}
+
+            {isHot(booking) && (
+              <div className="rounded-xl bg-danger-bg border border-danger/30 px-4 py-3 text-[13px] text-danger-ink" role="status">
+                <span className="font-semibold">Urgent.</span> {booking.status === "quote" ? "Quote this one first." : "Book this truck first."}
+                {booking.pickup_date && <> Pickup {booking.pickup_date === localDay() ? "today" : fmtDay(booking.pickup_date)}{booking.pickup_window ? `, ${booking.pickup_window}` : ""}.</>}
+              </div>
+            )}
+
+            {booking.request_note.trim() && (
+              <div className="rounded-xl bg-accent/10 border border-accent/25 px-4 py-3">
+                <div className="text-[12px] font-medium text-accent-hover mb-1">
+                  Note{booking.created_by_name ? ` from ${booking.created_by_name}` : " with the request"}
+                </div>
+                <div className="text-[13px] text-ink whitespace-pre-wrap break-words">{booking.request_note}</div>
+              </div>
+            )}
+
+            {stepBody[here]}
+
+            <div className="text-[11.5px] text-muted">
+              {booking.updated_by_name ? `Last changed by ${booking.updated_by_name}` : booking.created_by_name ? `Sent by ${booking.created_by_name}` : ""}
+              {booking.updated_at ? ` ${fmtDay(booking.updated_at)}` : ""}
+            </div>
           </div>
         </div>
 
         {/* Pinned: save never scrolls away. */}
-        <div className="border-t border-line bg-surface px-6 py-3 flex-shrink-0 space-y-2">
-          {error && <div className="text-[12px] text-danger-ink" role="alert">{error}</div>}
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* While the team fills the freight in, the team adds the trucks (the logistics person could not fill a new one). */}
-            {!freightLocked && (dealEdit || !isQuoteStage(booking.status)) && (
-            <button type="button" onClick={addTruck}
-              className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors">
-              <Plus size={13} /> Add another truck
-            </button>
-            )}
-            {full && (
-              <>
-                <button type="button" onClick={openDeal}
-                  className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors">
-                  <ExternalLink size={12} /> Open the deal
-                </button>
-                <button type="button" onClick={remove}
-                  className="flex items-center gap-1 text-[12px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 h-8 rounded-lg transition-colors">
-                  <Trash2 size={12} /> Remove booking
-                </button>
-              </>
-            )}
-            <button type="button" onClick={() => save()} disabled={!dirty || saving}
-              className="ml-auto bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
-              {saving ? "Saving..." : "Save"}
-            </button>
+        <div className="border-t border-line bg-surface px-6 py-3 flex-shrink-0">
+          <div className="max-w-[1120px] mx-auto w-full space-y-2">
+            {error && <div className="text-[12px] text-danger-ink" role="alert">{error}</div>}
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* While the team fills the freight in, the team adds the trucks (the logistics person could not fill a new one). */}
+              {!freightLocked && (dealEdit || !isQuoteStage(booking.status)) && (
+              <button type="button" onClick={addTruck}
+                className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors">
+                <Plus size={13} /> Add another truck
+              </button>
+              )}
+              {full && (
+                <>
+                  <button type="button" onClick={openDeal}
+                    className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors">
+                    <ExternalLink size={12} /> Open the deal
+                  </button>
+                  <button type="button" onClick={remove}
+                    className="flex items-center gap-1 text-[12px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 h-8 rounded-lg transition-colors">
+                    <Trash2 size={12} /> Remove booking
+                  </button>
+                </>
+              )}
+              <button type="button" onClick={() => save()} disabled={!dirty || saving} className={`ml-auto ${btnPrimary}`}>
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1239,7 +1476,7 @@ export default function LogisticsBookingForm({
       {invoiceSheet && (
         <InvoiceLineSheet
           booking={booking}
-          initial={draft.quote || moneyText(booking.quote_amount)}
+          initial={moneyText(booking.quote_amount)}
           onClose={() => setInvoiceSheet(false)}
           onDone={async (r) => {
             setInvoiceSheet(false);
@@ -1252,4 +1489,5 @@ export default function LogisticsBookingForm({
       )}
     </>
   );
+  return host ? createPortal(page, host) : page;
 }

@@ -366,7 +366,6 @@ export function laneLabel(pickupAddress: string, deliveryAddress: string): strin
 
 export const QUOTE_WAITING_WARNING = "Shipping on this invoice is still waiting on the logistics quote. Send anyway?";
 export const PAID_BANNER = "Customer paid. Send the booking to logistics.";
-export const SEND_UNPAID_CONFIRM = "The customer has not paid yet. Send it to logistics to book anyway?";
 
 /** True when the deal's shipping is still waiting on a quote: a load in `quote`, or one in `quoted`
  *  whose quote has not been put on the invoice. The send-invoice warning asks about it. */

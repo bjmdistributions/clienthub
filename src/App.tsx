@@ -1613,7 +1613,7 @@ export default function App() {
 
 
       {/* Main */}
-      <main className="flex-1 overflow-hidden">
+      <main className="flex-1 overflow-hidden relative">
         {splitTab ? (
           <div ref={splitRowRef} className="flex h-full">
             {/* Left pane — driven by the sidebar nav */}

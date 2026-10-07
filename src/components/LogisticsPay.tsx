@@ -34,6 +34,7 @@ const FREQUENCIES: { value: LogisticsPaySettings["frequency"]; label: string }[]
 const DEFAULTS: LogisticsPaySettings = {
   enabled: false, surplus_mode: "pay", payee_id: "", payee_name: "", share_pct: 100, cover_losses: true, loss_pay_pct: 0,
   frequency: "weekly", pay_weekday: 4, anchor_date: "", pay_day_of_month: 1, method: "", details: "",
+  markup_pct: 0, markup_editable: false,
 };
 
 const RULE_WORD: Record<string, string> = {
@@ -42,6 +43,7 @@ const RULE_WORD: Record<string, string> = {
   loss_share: "Share of the loss",
   pending: "Waiting on the amount",
   tracked: "Tracked, not paid",
+  markup: "Markup on the freight",
 };
 const SOURCE_WORD: Record<string, string> = { bank: "from the bank", paid: "paid", quote: "quoted", mixed: "paid and quoted" };
 
@@ -318,6 +320,30 @@ export function LogisticsPaySettingsForm() {
       </div>
 
       {mode !== "off" && <div className="text-[11.5px] text-muted -mt-2">Changes apply to loads that have not been paid yet.</div>}
+
+      <div className="rounded-xl border border-line bg-surface-2/50 px-4 py-3 space-y-3">
+        <div className="text-[13px] font-medium text-ink">Markup on freight</div>
+        <p className="text-[12px] text-muted">
+          {mode === "pay"
+            ? `The quote is the carrier cost plus this markup. ${payee || "Logistics"} earns exactly the markup on a load, once it is booked, whatever the carrier ends up costing. The share of the shipping profit below only applies to loads quoted before markups.`
+            : mode === "track"
+              ? "The quote is the carrier cost plus this markup. The markup on each load shows in the Brief and the tracker. Nothing is paid out."
+              : "The quote is the carrier cost plus this markup. Logistics pay is off, so nothing is paid out of it."}
+        </p>
+        <Field label="Default markup %" hint="Used on every quote unless it is changed on the load.">
+          <div className="flex items-center gap-1.5 max-w-[200px]">
+            <NumberInput className={`${inp} text-right tabular-nums`} value={s.markup_pct ?? 0} onValue={(n) => set({ markup_pct: Math.min(100, Math.max(0, n)) })} />
+            <span className="w-3 shrink-0 text-[12px] text-muted">%</span>
+          </div>
+        </Field>
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-ink">Logistics may change the markup on a load</div>
+            <div className="text-[12px] text-muted mt-0.5">Off, the logistics person quotes at the default and cannot change it. You can always change it.</div>
+          </div>
+          <Switch on={!!s.markup_editable} onClick={() => set({ markup_editable: !s.markup_editable })} label="Logistics may change the markup on a load" />
+        </div>
+      </div>
 
       {mode === "pay" && (<>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
