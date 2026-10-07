@@ -2379,4 +2379,37 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE freight_bookings ADD COLUMN files TEXT DEFAULT '[]';
         "#,
     ),
+    (
+        110,
+        // R-459: logistics runs quote first. A truck now starts as a quote the team asks for and
+        // logistics answers (quote_amount, quote_note, quoted_at, quoted_by_name), the amount goes
+        // on the invoice (quote_invoiced_at, quote_invoiced_amount) and the team sends it to book
+        // (sent_to_book_at). Every truck carries a load number the server mints like an invoice
+        // number, the carrier it uses (carrier_id, the name stays in carrier), appointment and
+        // actual pickup and delivery times as HH:MM beside the existing dates, a dock door at each
+        // end, who confirmed the pickup number with the warehouse, and the day the carrier must
+        // be paid. Server-authored like the rest of the row (clienthub-api schema.sql and its sync.rs
+        // add the same columns). Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        ALTER TABLE freight_bookings ADD COLUMN load_number TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN quote_amount REAL;
+        ALTER TABLE freight_bookings ADD COLUMN quote_note TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN quoted_at TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN quoted_by_name TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN quote_invoiced_at TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN quote_invoiced_amount REAL;
+        ALTER TABLE freight_bookings ADD COLUMN sent_to_book_at TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN carrier_id TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN pickup_appt_time TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN picked_up_at TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN picked_up_time TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN delivery_appt_time TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN delivered_time TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN pickup_dock TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN delivery_dock TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN pickup_number_confirmed_at TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN pickup_number_confirmed_by TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN pay_due_date TEXT DEFAULT '';
+        "#,
+    ),
 ];

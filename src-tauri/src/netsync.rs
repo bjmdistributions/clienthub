@@ -33,7 +33,16 @@ const POLL_SECS: u64 = 20;
 /// (`logistics_payouts`, R-401, rides the same pass: neither shipped under generation 3).
 /// "5" adds `bills` and `bill_payments` (R-449), so a device that updates after bills exist restores
 /// them from the server's snapshot (a device older than the bills tables dead-letters their events).
-const HEAL_GENERATION: &str = "5";
+/// "6" adds the R-459 `freight_bookings` columns (load number, quote, appointment and actual times,
+/// docks, carrier, pay due date). Pull keeps only columns the device has, so a device that updates
+/// after loads already exist restores them from the server's snapshot to fill the new columns in
+/// (the row count is unchanged, so only a generation change triggers it).
+const HEAL_GENERATION: &str = "6";
+/// True when the current generation changed what a row CARRIES rather than which tables exist, so
+/// the count check in `auto_heal_if_behind` cannot see the gap: the new column values arrive only
+/// by restoring the snapshot, whatever the counts say. Generation "6" is column-only (R-459).
+/// Set it back to false for a generation that only widens the tables compared.
+const HEAL_RESTORES_REGARDLESS: bool = true;
 
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
 /// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`
@@ -1457,9 +1466,9 @@ async fn auto_heal_if_behind() {
             None => false,
         }
     });
-    if diverged {
+    if diverged || HEAL_RESTORES_REGARDLESS {
         tracing::info!(
-            "netsync auto-heal: local/server counts diverge (local={:?} server={:?}) — reconciling",
+            "netsync auto-heal: local/server counts diverge or this generation changed row contents (local={:?} server={:?}) — reconciling",
             local, server
         );
         match restore_snapshot().await {
@@ -2653,6 +2662,14 @@ mod r400_sync_tests {
         assert!(SNAPSHOT_TABLES.contains(&"logistics_payouts"), "a repaired device would never see the pay record");
         assert!(crate::sync::is_synced_table("logistics_payouts"), "its events would be dead-lettered");
         assert_ne!(HEAL_GENERATION, "3", "devices healed under generation 3 must get one more pass");
+    }
+
+    /// R-459: the new `freight_bookings` columns reach a device that already holds the rows only
+    /// through a restore, and equal row counts would never trigger one, so generation 6 forces it.
+    #[test]
+    fn r459_new_booking_columns_force_one_restore_per_device() {
+        assert_ne!(HEAL_GENERATION, "5", "devices healed under generation 5 do not have the R-459 columns");
+        assert!(HEAL_RESTORES_REGARDLESS, "a column-only generation restores whatever the counts say");
     }
 
     #[tokio::test]

@@ -4710,17 +4710,19 @@ pub struct SupplierPaymentInput {
 /// R-400: a deal's shipping facts as SQL columns, over the deal alias `df`. One text, used by
 /// `DF_JOIN` (every DealFlow read) and by `ship_facts` (the money code), so the derived fields on
 /// the screen and the figures behind a completion can never be worked out two ways. A live
-/// booking is `archived = 0` and not cancelled. `freight_typed` is not here: it is summed from
-/// the parsed cost lines in Rust. The clienthub-api twin (routes/deal_flows.rs DF_JOIN) is kept
+/// booking is `archived = 0` and not cancelled and not a quote (R-459: `quote` and `quoted` rows
+/// are a question to logistics, never a truck, so they change no figure here). A deal whose only
+/// bookings are quote-stage reads `quote` or `quoted` in `logistics_stage_rank` (6, 7).
+/// `freight_typed` is not here: it is summed from the parsed cost lines in Rust. The clienthub-api twin (routes/deal_flows.rs DF_JOIN) is kept
 /// identical in meaning.
 macro_rules! ship_facts_cols {
     () => {
         concat!(
-            "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled') AS logistics_bookings, ",
-            "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled' AND fb.paid_amount IS NULL) AS logistics_unpaid, ",
-            "(SELECT COALESCE(SUM(fb.paid_amount),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled' AND fb.paid_amount IS NOT NULL) AS logistics_paid, ",
-            "(SELECT COALESCE(SUM(fb.quoted_cost),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled' AND fb.paid_amount IS NULL AND fb.quoted_cost IS NOT NULL) AS logistics_quoted, ",
-            "(SELECT COALESCE(MIN(CASE fb.status WHEN 'requested' THEN 1 WHEN 'booked' THEN 2 WHEN 'picked_up' THEN 3 WHEN 'delivered' THEN 4 ELSE 5 END),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status!='cancelled') AS logistics_stage_rank, ",
+            "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted')) AS logistics_bookings, ",
+            "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NULL) AS logistics_unpaid, ",
+            "(SELECT COALESCE(SUM(fb.paid_amount),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NOT NULL) AS logistics_paid, ",
+            "(SELECT COALESCE(SUM(fb.quoted_cost),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NULL AND fb.quoted_cost IS NOT NULL) AS logistics_quoted, ",
+            "COALESCE((SELECT MIN(CASE fb.status WHEN 'requested' THEN 1 WHEN 'booked' THEN 2 WHEN 'picked_up' THEN 3 WHEN 'delivered' THEN 4 ELSE 5 END) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted')), (SELECT MIN(CASE fb.status WHEN 'quote' THEN 6 ELSE 7 END) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status IN ('quote','quoted')), 0) AS logistics_stage_rank, ",
             "(SELECT COALESCE(SUM(sa.amount),0) FROM bank_allocation sa WHERE sa.deal_flow_id=df.id AND sa.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn sbt WHERE sbt.id=sa.bank_txn_id)) AS shipping_linked, ",
             "(SELECT COUNT(*) FROM bank_allocation sa WHERE sa.deal_flow_id=df.id AND sa.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn sbt WHERE sbt.id=sa.bank_txn_id)) AS shipping_link_count"
         )
@@ -4740,7 +4742,7 @@ macro_rules! ship_billed_cols {
 /// predicate over the deal alias `df`, for the queries that add up a whole book at once.
 macro_rules! ship_mode_sql {
     () => {
-        "(EXISTS (SELECT 1 FROM freight_bookings mb WHERE mb.deal_flow_id=df.id AND mb.archived=0 AND mb.status!='cancelled') OR EXISTS (SELECT 1 FROM bank_allocation ma WHERE ma.deal_flow_id=df.id AND ma.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn mbt WHERE mbt.id=ma.bank_txn_id)))"
+        "(EXISTS (SELECT 1 FROM freight_bookings mb WHERE mb.deal_flow_id=df.id AND mb.archived=0 AND mb.status NOT IN ('cancelled','quote','quoted')) OR EXISTS (SELECT 1 FROM bank_allocation ma WHERE ma.deal_flow_id=df.id AND ma.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn mbt WHERE mbt.id=ma.bank_txn_id)))"
     };
 }
 
@@ -4787,7 +4789,7 @@ impl ShipFacts {
         if self.billed_source.is_empty() { "none" } else { self.billed_source }
     }
     pub fn stage(&self) -> &'static str {
-        match self.stage_rank { 1 => "requested", 2 => "booked", 3 => "picked_up", 4 => "delivered", _ => "" }
+        match self.stage_rank { 1 => "requested", 2 => "booked", 3 => "picked_up", 4 => "delivered", 6 => "quote", 7 => "quoted", _ => "" }
     }
     /// What an open deal is expected to cost: the entered lines with the typed freight taken out
     /// and the shipping estimate put in (equal to `total_supplier_cost` without Logistics).
@@ -4957,7 +4959,8 @@ pub struct DealFlow {
     #[serde(default)]
     pub logistics_quoted: f64,
     /// Least advanced status among the live bookings (requested, booked, picked_up, delivered),
-    /// or "" when there are none.
+    /// or "" when there are none. R-459: with no live booking, `quote` or `quoted` when the deal
+    /// has only quote-stage bookings.
     #[serde(default)]
     pub logistics_stage: String,
     #[serde(default)]
@@ -13913,7 +13916,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
          JOIN deal_flows df ON df.id = fb.deal_flow_id \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
          LEFT JOIN clients c ON c.id = i.client_id \
-         WHERE fb.archived=0 AND fb.status!='cancelled' AND fb.paid_amount IS NULL \
+         WHERE fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NULL \
            AND df.stage != 'complete' AND COALESCE(df.archived,0)=0 \
            AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0"),
     ).map_err(|e| e.to_string())?;
@@ -27566,6 +27569,81 @@ mod r400_shipping_tests {
         assert_eq!(owed().await - base, 6700.0);
         set_paid(&id, "1", 700.0);
         assert_eq!(owed().await - base, 6000.0, "paid: only the goods are still owed");
+    }
+
+    /// R-459: a booking still at `quote` or `quoted` is a question to logistics, not a truck. It
+    /// changes no ship fact, no Payables row and no Free cash figure, whatever it carries, and the
+    /// deal reads `quote` or `quoted` only while it has nothing live.
+    #[tokio::test]
+    async fn r459_a_quote_stage_booking_changes_no_ship_fact_payable_or_free_cash() {
+        let _db = crate::db::init_test_store();
+        let owed = || async { financials_overview().await.unwrap()["supplier_payables"].as_f64().unwrap() };
+        let base = owed().await;
+        let id = deal("q459", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "payment_received");
+        let rows = |v: &Value| -> Vec<Value> { v["items"].as_array().unwrap().iter().filter(|i| i["deal_flow_id"] == id).cloned().collect() };
+        let facts = || {
+            let d = read_df(&id).unwrap();
+            (d.shipping_mode, d.logistics_bookings, d.logistics_unpaid, d.logistics_quoted, d.shipping_estimate, d.projected_cost)
+        };
+        let untouched = (false, 0, 0, 0.0, 500.0, 6500.0);
+        assert_eq!(facts(), untouched);
+        assert_eq!(read_df(&id).unwrap().logistics_stage, "");
+        assert_eq!(rows(&get_payables_aging().await.unwrap()).len(), 2);
+        assert_eq!(owed().await - base, 6500.0);
+
+        // Asked for: logistics has not answered. Carrying a rate and the booked day changes nothing.
+        booking(&id, "1", "quote", None, Some(900.0), 0);
+        pool().get().unwrap().execute("UPDATE freight_bookings SET booked_at='2026-09-03' WHERE id=?1", [format!("fb_{id}_1")]).unwrap();
+        assert_eq!(facts(), untouched, "a quote is not a truck: typed freight still stands");
+        assert_eq!(read_df(&id).unwrap().logistics_stage, "quote");
+        let v = get_payables_aging().await.unwrap();
+        assert_eq!(rows(&v).len(), 2, "the typed freight line is still the payable");
+        assert!(rows(&v).iter().all(|i| i["kind"] != "shipping"), "no shipping row from a quote");
+        assert_eq!(owed().await - base, 6500.0);
+
+        // Quoted: the team's turn. Still not a truck.
+        pool().get().unwrap().execute("UPDATE freight_bookings SET status='quoted' WHERE id=?1", [format!("fb_{id}_1")]).unwrap();
+        assert_eq!(facts(), untouched);
+        assert_eq!(read_df(&id).unwrap().logistics_stage, "quoted");
+        assert_eq!(owed().await - base, 6500.0);
+
+        // The load goes live next to it: only the live truck counts, and the stage is its stage.
+        bill(&id, 400.0);
+        booking(&id, "2", "requested", None, None, 0);
+        let d = read_df(&id).unwrap();
+        assert_eq!((d.shipping_mode, d.logistics_bookings, d.logistics_unpaid, d.logistics_quoted), (true, 1, 1, 0.0));
+        assert_eq!(d.logistics_stage, "requested", "a live truck names the stage ahead of a quote");
+        let ship: Vec<Value> = rows(&get_payables_aging().await.unwrap()).into_iter().filter(|i| i["kind"] == "shipping").collect();
+        assert_eq!(ship.len(), 1, "one shipping row, for the live truck only");
+        assert_eq!(ship[0]["booking_id"], json!(format!("fb_{id}_2")));
+        assert_eq!(ship[0]["amount"].as_f64(), Some(400.0), "what the buyer was charged, not the 900 on the quote");
+
+        // Only quote-stage rows: quote reads before quoted when both are open.
+        let both = deal("q459b", vec![line("a", "supplier", 6000.0, false)], "invoiced");
+        booking(&both, "1", "quoted", None, None, 0);
+        booking(&both, "2", "quote", None, None, 0);
+        assert_eq!(read_df(&both).unwrap().logistics_stage, "quote");
+        // An archived quote names nothing.
+        let arc = deal("q459c", vec![line("a", "supplier", 6000.0, false)], "invoiced");
+        booking(&arc, "1", "quote", None, None, 1);
+        assert_eq!(read_df(&arc).unwrap().logistics_stage, "");
+    }
+
+    /// R-459: no query over `freight_bookings` may go back to testing `cancelled` alone, or a quote
+    /// would count as a truck there.
+    #[test]
+    fn r459_no_desktop_query_counts_a_quote_as_a_truck() {
+        for (file, src) in [
+            ("commands.rs", include_str!("commands.rs")),
+            ("freight.rs", include_str!("freight.rs")),
+            ("shipments.rs", include_str!("shipments.rs")),
+        ] {
+            // Built from pieces so this test does not match itself.
+            for bad in [["status", "!='cancelled'"].concat(), ["status", " != 'cancelled'"].concat(), ["status", "<>'cancelled'"].concat()] {
+                let hits: Vec<_> = src.lines().enumerate().filter(|(_, l)| l.contains(&bad)).map(|(i, _)| i + 1).collect();
+                assert!(hits.is_empty(), "{file} still counts a quote as a truck at lines {hits:?}");
+            }
+        }
     }
 
     /// R-418: with no quote, an unpaid truck owes what the buyer was charged for shipping, less what

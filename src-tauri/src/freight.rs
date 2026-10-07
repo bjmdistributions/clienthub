@@ -25,6 +25,20 @@ pub fn booking_code(id: &str) -> String {
     format!("L-{}", rest.chars().take(6).collect::<String>().to_ascii_uppercase())
 }
 
+/// R-459: the code a booking shows everywhere: its load number (`LD-0012`, minted by the server)
+/// when it has one, else the old `L-xxxxxx` made from the id, so a row from before load numbers
+/// still prints something. Twin of the server's `code_for`.
+pub fn booking_code_of(id: &str, load_number: &str) -> String {
+    let n = load_number.trim();
+    if n.is_empty() { booking_code(id) } else { n.to_string() }
+}
+
+/// R-459: the live-truck predicate every desktop query over `freight_bookings` uses is
+/// `status NOT IN ('cancelled','quote','quoted')` (with `archived = 0`), written as a literal in
+/// each query. A quote is a question to logistics, not freight on the road, so it never counts as
+/// a truck on its deal. Twin of the server's live predicate. `a_quote_is_never_a_live_truck`
+/// fails if a query goes back to testing `cancelled` alone.
+
 /// Only the logistics routes may be reached through `logistics_request`: `/api/logistics`, alone
 /// or followed by `/` or `?`, with nothing that could climb out of it.
 fn logistics_path_ok(path: &str) -> bool {
@@ -101,6 +115,48 @@ pub async fn logistics_save_file(booking_id: String, file_id: String, dest: Stri
     std::fs::write(&dest, bytes).map_err(|e| format!("Could not save the file: {e}"))
 }
 
+/// R-459: the file name a save dialog opens with, from the name the server sent: no folders, no
+/// characters Windows refuses, never empty.
+fn download_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let clean: String = base.chars().filter(|c| !c.is_control() && !matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')).collect();
+    let clean = clean.trim().trim_matches('.').trim().to_string();
+    if clean.is_empty() { "download".to_string() } else { clean }
+}
+
+/// R-459: the name and bytes of a server download, `{name, mime, data}` with `data` base64.
+fn read_download(got: &Value) -> Result<(String, Vec<u8>), String> {
+    use base64::Engine;
+    let data = got.get("data").and_then(|v| v.as_str()).unwrap_or("");
+    if data.is_empty() {
+        return Err("The file could not be read.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| "The file could not be read.".to_string())?;
+    Ok((download_name(got.get("name").and_then(|v| v.as_str()).unwrap_or("")), bytes))
+}
+
+/// R-459: fetch a file the server builds (our own bill of lading PDF, `/api/logistics/bols/{id}/pdf`)
+/// and save it where the person chooses. `path` must pass the same check as `logistics_request`
+/// and is read through the same server door, as GET. The answer is `{name, mime, data}` with
+/// `data` base64. The save dialog opens with `name`. Returns the saved path, or `None` when the
+/// person closed the dialog.
+#[tauri::command]
+pub async fn logistics_save_download(app: tauri::AppHandle, path: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if !logistics_path_ok(&path) {
+        return Err("That request is not allowed here.".into());
+    }
+    let got = logistics_request("GET".into(), path, None).await?;
+    let (name, bytes) = read_download(&got)?;
+    let picked = tauri::async_runtime::spawn_blocking(move || app.dialog().file().set_file_name(&name).blocking_save_file())
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(dest) = picked else { return Ok(None) };
+    let dest = dest.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&dest, bytes).map_err(|e| format!("Could not save the file: {e}"))?;
+    Ok(Some(dest.to_string_lossy().into_owned()))
+}
+
 // ── the local read ──────────────────────────────────────────────────────────
 
 /// The booking's text columns, in the order the booking object lists them (status, booked_at,
@@ -117,6 +173,22 @@ const TEXT_A: &[&str] = &[
 const TEXT_B: &[&str] = &[
     "paid_at", "paid_method", "paid_note", "notes", "created_by_name", "updated_by_name", "created_at", "updated_at",
 ];
+/// R-459: the text columns that came with quote-first logistics, after everything else in the
+/// SELECT (so the offsets above never move). `load_number` is the server-minted `LD-0001`.
+const TEXT_C: &[&str] = &[
+    "load_number", "quote_note", "quoted_at", "quoted_by_name", "quote_invoiced_at", "sent_to_book_at", "carrier_id",
+    "pickup_appt_time", "picked_up_at", "picked_up_time", "delivery_appt_time", "delivered_time", "pickup_dock",
+    "delivery_dock", "pickup_number_confirmed_at", "pickup_number_confirmed_by", "pay_due_date",
+];
+/// (`quote_amount` and `quote_invoiced_amount`, the two new REAL columns, are selected by name
+/// right after `files`.)
+
+/// R-459: which of the three papers a load has, from the kinds on its live files. Same shape as
+/// the server's `paperwork`. A file with no `kind` is `other` and counts for none of them.
+fn paperwork_of(files: &[Value]) -> Value {
+    let has = |kind: &str| files.iter().any(|f| f.get("kind").and_then(|k| k.as_str()) == Some(kind));
+    json!({ "bol": has("bol"), "pod": has("pod"), "carrier_invoice": has("carrier_invoice") })
+}
 
 /// The Priority1 shipment (not dismissed) whose BOL or PRO equals the booking's, as the small
 /// tracking object. Never the shipment's references or its deal.
@@ -162,21 +234,23 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
 
     let a: Vec<String> = TEXT_A.iter().map(|c| format!("COALESCE(fb.{c},'')")).collect();
     let b: Vec<String> = TEXT_B.iter().map(|c| format!("COALESCE(fb.{c},'')")).collect();
+    let c: Vec<String> = TEXT_C.iter().map(|c| format!("COALESCE(fb.{c},'')")).collect();
     let sql = format!(
         "SELECT fb.id, {a}, fb.quoted_cost, fb.paid_amount, {b},
                 COALESCE(df.id,''), COALESCE(i.number,''), COALESCE(c.name,''), COALESCE(df.stage,''),
                 COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0),
-                (SELECT COUNT(*) FROM freight_bookings tb WHERE tb.deal_flow_id = fb.deal_flow_id AND tb.archived = 0 AND tb.status != 'cancelled'),
-                COALESCE(fb.extra_pickups,'[]'), COALESCE(fb.urgent,0), COALESCE(fb.files,'[]')
+                (SELECT COUNT(*) FROM freight_bookings tb WHERE tb.deal_flow_id = fb.deal_flow_id AND tb.archived = 0 AND tb.status NOT IN ('cancelled','quote','quoted')),
+                COALESCE(fb.extra_pickups,'[]'), COALESCE(fb.urgent,0), COALESCE(fb.files,'[]'),
+                fb.quote_amount, fb.quote_invoiced_amount, {c}
          FROM freight_bookings fb
          LEFT JOIN deal_flows df ON df.id = fb.deal_flow_id
          LEFT JOIN invoices i ON i.id = df.invoice_id
          LEFT JOIN clients c ON c.id = i.client_id
          WHERE fb.archived = 0 AND (?1 = '' OR fb.deal_flow_id = ?1)
          ORDER BY CASE WHEN COALESCE(fb.urgent,0) = 1 AND fb.status IN ('requested','booked') THEN 0 ELSE 1 END,
-                  CASE fb.status WHEN 'requested' THEN 0 ELSE 1 END,
+                  CASE WHEN fb.status IN ('requested','quote') THEN 0 ELSE 1 END,
                   CASE WHEN COALESCE(fb.pickup_date,'') = '' THEN 1 ELSE 0 END, fb.pickup_date, fb.created_at",
-        a = a.join(", "), b = b.join(", "),
+        a = a.join(", "), b = b.join(", "), c = c.join(", "),
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let na = TEXT_A.len();
@@ -185,7 +259,6 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
         let id: String = r.get(0)?;
         let mut m = Map::new();
         m.insert("id".into(), json!(id));
-        m.insert("code".into(), json!(booking_code(&id)));
         for (i, c) in TEXT_A.iter().enumerate() {
             m.insert((*c).into(), json!(r.get::<_, String>(1 + i)?));
         }
@@ -212,7 +285,17 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
             .unwrap_or_default().into_iter()
             .filter(|f| f.get("id").and_then(|v| v.as_str()).map_or(false, |id| !id.is_empty()))
             .collect();
+        m.insert("paperwork".into(), paperwork_of(&files));
         m.insert("files".into(), Value::Array(files));
+        // R-459: the quote and invoice amounts, the load number and the other new columns. The
+        // code prefers the load number and falls back to the old id-derived one.
+        m.insert("quote_amount".into(), json!(r.get::<_, Option<f64>>(at + 10)?));
+        m.insert("quote_invoiced_amount".into(), json!(r.get::<_, Option<f64>>(at + 11)?));
+        for (i, c) in TEXT_C.iter().enumerate() {
+            m.insert((*c).into(), json!(r.get::<_, String>(at + 12 + i)?));
+        }
+        let load_number = m.get("load_number").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        m.insert("code".into(), json!(booking_code_of(&id, &load_number)));
         m.insert("can_see_names".into(), json!(true));
         m.insert("can_see_addresses".into(), json!(true));
         m.insert("can_see_deal".into(), json!(true));
@@ -493,14 +576,14 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
         return None;
     }
     let mut stmt = conn.prepare(
-        "SELECT id, COALESCE(booked_at,''), CASE WHEN paid_amount IS NULL THEN 1 ELSE 0 END
-         FROM freight_bookings WHERE deal_flow_id=?1 AND archived=0 AND status!='cancelled' ORDER BY created_at, id",
+        "SELECT id, COALESCE(booked_at,''), CASE WHEN paid_amount IS NULL THEN 1 ELSE 0 END, COALESCE(load_number,'')
+         FROM freight_bookings WHERE deal_flow_id=?1 AND archived=0 AND status NOT IN ('cancelled','quote','quoted') ORDER BY created_at, id",
     ).ok()?;
-    let live: Vec<(String, String, i64)> = stmt
-        .query_map([deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?
+    let live: Vec<(String, String, i64, String)> = stmt
+        .query_map([deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok()?
         .filter_map(|r| r.ok()).collect();
-    let earned_on = live.iter().map(|(_, b, _)| b.as_str()).filter(|b| !b.is_empty()).min()?.to_string();
-    let pending = live.iter().any(|(_, _, none)| *none != 0);
+    let earned_on = live.iter().map(|(_, b, _, _)| b.as_str()).filter(|b| !b.is_empty()).min()?.to_string();
+    let pending = live.iter().any(|(_, _, none, _)| *none != 0);
     let (charged, charged_source) = charged_of(&items, field);
     let (freight, freight_source) = freight_of(&crate::commands::ship_facts(conn, deal_flow_id));
     let (pay, rule) = pay_for(s, charged, freight, pending);
@@ -509,7 +592,7 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
     Some(DealPay {
         charged, charged_source, freight, freight_source, surplus: charged - freight, pay, rule, pending,
         earned_on, due_date,
-        booking_codes: live.iter().map(|(id, _, _)| booking_code(id)).collect(),
+        booking_codes: live.iter().map(|(id, _, _, ln)| booking_code_of(id, ln)).collect(),
     })
 }
 
@@ -655,6 +738,40 @@ mod tests {
     fn a_booking_code_is_the_first_six_characters_after_the_prefix() {
         assert_eq!(booking_code("fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77"), "L-7F3K2A");
         assert_eq!(booking_code("fb_ab"), "L-AB");
+    }
+
+    #[test]
+    fn r459_the_code_is_the_load_number_with_the_old_code_as_the_fallback() {
+        let id = "fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77";
+        assert_eq!(booking_code_of(id, "LD-0012"), "LD-0012");
+        assert_eq!(booking_code_of(id, "  LD-0012 "), "LD-0012", "stray spaces are not part of it");
+        assert_eq!(booking_code_of(id, ""), "L-7F3K2A", "a row from before load numbers keeps the old code");
+        assert_eq!(booking_code_of(id, "   "), "L-7F3K2A");
+        assert_eq!(booking_code_of("fb_ab", ""), "L-AB");
+    }
+
+    #[test]
+    fn r459_a_download_has_a_safe_name_and_decodes() {
+        assert_eq!(download_name("BOL-0003.pdf"), "BOL-0003.pdf");
+        assert_eq!(download_name("..\\..\\evil/BOL 0003.pdf"), "BOL 0003.pdf", "no folders");
+        assert_eq!(download_name("a:b*c?.pdf"), "abc.pdf");
+        assert_eq!(download_name(""), "download");
+        assert_eq!(download_name("../"), "download");
+        let ok = json!({ "name": "BOL-0003.pdf", "mime": "application/pdf", "data": "JVBERi0xLjQ=" });
+        let (name, bytes) = read_download(&ok).unwrap();
+        assert_eq!((name.as_str(), bytes.as_slice()), ("BOL-0003.pdf", b"%PDF-1.4".as_slice()));
+        assert!(read_download(&json!({ "name": "x.pdf", "data": "" })).is_err(), "no bytes is not a file");
+        assert!(read_download(&json!({ "name": "x.pdf", "data": "!!not base64!!" })).is_err());
+        assert!(read_download(&json!({ "name": "x.pdf" })).is_err());
+    }
+
+    #[test]
+    fn r459_the_download_door_is_the_logistics_door() {
+        // logistics_save_download checks logistics_path_ok before it asks the server for anything.
+        assert!(logistics_path_ok("/api/logistics/bols/bol_1/pdf"));
+        assert!(!logistics_path_ok("/api/clients"));
+        assert!(!logistics_path_ok("/api/logistics/../clients"));
+        assert!(!logistics_path_ok("/api/logistics/bols/%2e%2e/pdf"));
     }
 
     #[test]
@@ -814,6 +931,10 @@ mod tests {
             "driver_phone", "truck_number", "trailer_number", "pallets", "pieces", "weight_lbs", "freight_class", "dimensions", "commodity", "accessorials",
             "quoted_cost", "paid_amount", "paid_at", "paid_method", "paid_note", "notes", "created_by_name", "updated_by_name", "created_at", "updated_at",
             "can_see_names", "can_see_addresses", "can_see_deal", "tracking", "deal", "extra_pickups", "urgent", "files",
+            // R-459
+            "load_number", "quote_amount", "quote_note", "quoted_at", "quoted_by_name", "quote_invoiced_at", "quote_invoiced_amount",
+            "sent_to_book_at", "carrier_id", "pickup_appt_time", "picked_up_at", "picked_up_time", "delivery_appt_time", "delivered_time",
+            "pickup_dock", "delivery_dock", "pickup_number_confirmed_at", "pickup_number_confirmed_by", "pay_due_date", "paperwork",
         ] {
             assert!(b.get(key).is_some(), "the key {key} is always there");
         }
@@ -821,6 +942,7 @@ mod tests {
         assert_eq!(b["extra_pickups"][0]["window"], "1 to 4");
         // R-458: not urgent and no files until the server says so; then both read as the server sends them.
         assert_eq!((b["urgent"].as_bool(), b["files"].clone()), (Some(false), json!([])));
+        assert_eq!(b["paperwork"], json!({ "bol": false, "pod": false, "carrier_invoice": false }));
         {
             let conn = pool().get().unwrap();
             conn.execute(
@@ -831,6 +953,36 @@ mod tests {
         assert_eq!(b["urgent"], true);
         assert_eq!(b["files"].as_array().unwrap().len(), 1, "an entry without an id is not a file");
         assert_eq!(b["files"][0]["name"], "Sample BOL.pdf");
+        // R-459: no load number yet reads the old code, quote and times are empty or null.
+        assert_eq!(b["code"], "L-7F3K2A");
+        assert_eq!((b["load_number"].as_str(), b["pickup_appt_time"].as_str(), b["pay_due_date"].as_str()), (Some(""), Some(""), Some("")));
+        assert_eq!((b["quote_amount"].clone(), b["quote_invoiced_amount"].clone()), (Value::Null, Value::Null));
+        assert_eq!(b["paperwork"], json!({ "bol": false, "pod": false, "carrier_invoice": false }), "an entry with no kind is not any of the three");
+        {
+            let conn = pool().get().unwrap();
+            conn.execute(
+                "UPDATE freight_bookings SET load_number='LD-0012', quote_amount=1850.5, quote_note='Sample note', quoted_at='2026-10-06T09:00:00Z', quoted_by_name='Sample logistics',
+                        quote_invoiced_at='2026-10-06', quote_invoiced_amount=1900, sent_to_book_at='2026-10-07', carrier_id='fc_sample', pickup_appt_time='08:30', picked_up_at='2026-10-02',
+                        picked_up_time='09:15', delivery_appt_time='14:00', delivered_time='13:40', pickup_dock='Door 4', delivery_dock='Door 9',
+                        pickup_number_confirmed_at='2026-10-01T12:00:00Z', pickup_number_confirmed_by='Sample sender', pay_due_date='2026-11-05',
+                        files='[{\"id\":\"ff_1\",\"name\":\"a.pdf\",\"kind\":\"bol\"},{\"id\":\"ff_2\",\"name\":\"b.pdf\",\"kind\":\"carrier_invoice\"},{\"id\":\"ff_3\",\"name\":\"c.pdf\"}]'
+                 WHERE id='fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77'", [],
+            ).unwrap();
+        }
+        let b = &list_freight_bookings(Some(deal.clone())).await.unwrap()[0];
+        assert_eq!(b["code"], "LD-0012", "the load number wins");
+        assert_eq!((b["quote_amount"].as_f64(), b["quote_invoiced_amount"].as_f64()), (Some(1850.5), Some(1900.0)));
+        for (k, v) in [
+            ("load_number", "LD-0012"), ("quote_note", "Sample note"), ("quoted_at", "2026-10-06T09:00:00Z"), ("quoted_by_name", "Sample logistics"),
+            ("quote_invoiced_at", "2026-10-06"), ("sent_to_book_at", "2026-10-07"), ("carrier_id", "fc_sample"), ("pickup_appt_time", "08:30"),
+            ("picked_up_at", "2026-10-02"), ("picked_up_time", "09:15"), ("delivery_appt_time", "14:00"), ("delivered_time", "13:40"),
+            ("pickup_dock", "Door 4"), ("delivery_dock", "Door 9"), ("pickup_number_confirmed_at", "2026-10-01T12:00:00Z"),
+            ("pickup_number_confirmed_by", "Sample sender"), ("pay_due_date", "2026-11-05"),
+        ] {
+            assert_eq!(b[k], v, "{k}");
+        }
+        assert_eq!(b["paperwork"], json!({ "bol": true, "pod": false, "carrier_invoice": true }));
+        assert_eq!(b["files"][2]["id"], "ff_3");
         // Without a deal filter: all live rows, whichever deal.
         assert!(list_freight_bookings(None).await.unwrap().iter().any(|r| r["id"] == "fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77"));
     }
@@ -1232,6 +1384,72 @@ mod pay_tests {
         let versions: Vec<i64> = conn.prepare("SELECT version FROM schema_migrations WHERE version BETWEEN 104 AND 106 ORDER BY version").unwrap()
             .query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
         assert_eq!(versions, vec![105, 106], "R-402 owns 105, R-400 and R-401 share 106, nothing sits at 104");
+    }
+
+    /// R-459: a quote-stage booking is not a truck, so it neither opens the logistics pay line nor
+    /// holds one back as pending, whatever it carries.
+    #[test]
+    fn r459_a_quote_stage_booking_changes_no_logistics_pay() {
+        let _db = crate::db::init_test_store();
+        let items = lines("Shipping", 1.0, 500.0);
+        // Only a quote (even with a booked day on it): no line at all.
+        let only = seed("q459a", &items, 0.0);
+        book(&only, "1", "quote", "2026-10-01", None, Some(300.0));
+        book(&only, "2", "quoted", "2026-10-01", None, Some(300.0));
+        assert!(read(&only, &on()).is_none(), "nothing live is booked, so nothing is earned");
+        // A paid live truck beside an open quote: the pay is worked as if the quote were not there.
+        let both = seed("q459b", &items, 0.0);
+        book(&both, "1", "booked", "2026-10-02", Some(350.0), None);
+        let alone = read(&both, &on()).unwrap();
+        book(&both, "2", "quoted", "", None, Some(900.0));
+        book(&both, "3", "quote", "", None, None);
+        let with = read(&both, &on()).unwrap();
+        assert_eq!(alone, with, "the quotes change nothing");
+        assert_eq!((with.pending, with.pay, with.freight, with.earned_on.as_str()), (false, Some(150.0), 350.0, "2026-10-02"));
+        assert_eq!(with.booking_codes.len(), 1, "only the live truck is listed");
+    }
+
+    #[test]
+    fn r459_a_deal_pay_line_names_its_trucks_by_load_number() {
+        let _db = crate::db::init_test_store();
+        let id = seed("q459c", &lines("Shipping", 1.0, 500.0), 0.0);
+        book(&id, "1", "booked", "2026-10-01", Some(350.0), None);
+        book(&id, "2", "booked", "2026-10-01", Some(100.0), None);
+        pool().get().unwrap().execute("UPDATE freight_bookings SET load_number='LD-0007' WHERE id=?1", [format!("fb_{id}_1")]).unwrap();
+        let d = read(&id, &on()).unwrap();
+        assert_eq!(d.booking_codes.len(), 2);
+        assert!(d.booking_codes.contains(&"LD-0007".to_string()), "a load number wins");
+        assert!(d.booking_codes.iter().any(|c| c.starts_with("L-")), "a truck with no load number keeps the old code");
+    }
+
+    #[test]
+    fn migration_110_adds_every_quote_first_column() {
+        let _db = crate::db::init_test_store();
+        let conn = pool().get().unwrap();
+        let mut st = conn.prepare("PRAGMA table_info(freight_bookings)").unwrap();
+        let cols: Vec<(String, String, String)> = st
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(4)?.unwrap_or_default())))
+            .unwrap().filter_map(|r| r.ok()).collect();
+        let want_text = [
+            "load_number", "quote_note", "quoted_at", "quoted_by_name", "quote_invoiced_at", "sent_to_book_at", "carrier_id", "pickup_appt_time",
+            "picked_up_at", "picked_up_time", "delivery_appt_time", "delivered_time", "pickup_dock", "delivery_dock",
+            "pickup_number_confirmed_at", "pickup_number_confirmed_by", "pay_due_date",
+        ];
+        for c in want_text {
+            let found = cols.iter().find(|(n, _, _)| n == c).unwrap_or_else(|| panic!("freight_bookings.{c} is missing"));
+            assert_eq!((found.1.as_str(), found.2.as_str()), ("TEXT", "''"), "{c} is TEXT DEFAULT ''");
+        }
+        for c in ["quote_amount", "quote_invoiced_amount"] {
+            let found = cols.iter().find(|(n, _, _)| n == c).unwrap_or_else(|| panic!("freight_bookings.{c} is missing"));
+            assert_eq!((found.1.as_str(), found.2.as_str()), ("REAL", ""), "{c} is a nullable REAL");
+        }
+        assert_eq!(want_text.len() + 2, 19, "the contract lists 19 new columns");
+        let v: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations WHERE version=110", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 1);
+        // An old row (no new column named) reads back with the defaults.
+        conn.execute("INSERT INTO freight_bookings (id, status, created_at, updated_at) VALUES ('fb_m110', 'requested', '2026-10-01', '2026-10-01')", []).unwrap();
+        let (ln, qa): (String, Option<f64>) = conn.query_row("SELECT load_number, quote_amount FROM freight_bookings WHERE id='fb_m110'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((ln.as_str(), qa), ("", None));
     }
 
     #[test]
