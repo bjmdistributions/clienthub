@@ -16,6 +16,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import StatusPill from "./StatusPill";
 import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges, useDeliveredDeals } from "./FreightTracking";
 import DealShipping from "./DealShipping";
+import StepBar from "./StepBar";
 import { useNetsyncApplied, FreightStatusPill, AmountNeededPill } from "./LogisticsBookingForm";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
 
@@ -835,7 +836,8 @@ function DealFlowCard({
     supplier: supplierDone,
     // R-400: a truck sent to logistics, a shipping payment linked, freight typed on the
     // deal, or the answer "it ships direct". Any of them is an answered question.
-    shipping: !!flow.ships_direct || (flow.logistics_bookings ?? 0) > 0 || (flow.shipping_linked ?? 0) > 0.005 || (flow.freight_typed ?? 0) > 0.005,
+    // R-459: a load still at the quote stage is a truck not yet, but asking for it answers the question too.
+    shipping: !!flow.ships_direct || (flow.logistics_bookings ?? 0) > 0 || flow.logistics_stage === "quote" || flow.logistics_stage === "quoted" || (flow.shipping_linked ?? 0) > 0.005 || (flow.freight_typed ?? 0) > 0.005,
     // The link dot fills only when there's nothing left to link — every money leg
     // that's owed is either paired to the bank or explicitly marked "no record"
     // (reconStatus.needs_review === false). Being complete is NOT enough on its own:
@@ -1149,7 +1151,7 @@ function DealFlowCard({
             <div key={animKey} className="df-anim">
               {section === "supplier" && <SectionSupplier flow={flow} onReload={onReload} onAdvance={() => advance("supplier")} locked={locked} />}
               {section === "link"     && <SectionLink     flow={flow} onReload={onReload} onAdvance={() => advance("link")} />}
-              {section === "shipping" && <DealShipping flow={flow} onReload={onReload} locked={locked} onAdvance={() => advance("shipping")} />}
+              {section === "shipping" && <DealShipping flow={flow} onReload={onReload} locked={locked} dealPaid={pay.buyerIn} onAdvance={() => advance("shipping")} />}
               {section === "profit"   && <SectionProfit   flow={flow} onAdvance={() => advance("profit")} />}
               {section === "complete" && <PanelComplete   flow={flow} onReload={onReload} />}
               {section === "refund"   && <SectionRefund   flow={flow} onReload={onReload} />}
@@ -1334,35 +1336,7 @@ function SectionNav({ current, done, flash, onGo, refundLabel, refundTone }: {
   refundLabel: string; refundTone: "quiet" | "warning" | "danger";
 }) {
   return (
-    <div className="flex items-center px-4 py-3 overflow-x-auto">
-      {SECTIONS.map((s, i) => {
-        const isCur  = s.key === current;
-        const isDone = done[s.key];
-        return (
-          <div key={s.key} className="flex items-center flex-shrink-0">
-            <button
-              onClick={() => onGo(s.key)}
-              title={s.label}
-              aria-label={s.label}
-              className={`flex items-center gap-2 h-9 px-3 rounded-lg text-[12px] font-semibold transition-all ${
-                isCur ? "bg-accent/10 text-accent ring-1 ring-accent/25" : isDone ? "text-ink-2 hover:bg-surface-3" : "text-muted hover:bg-surface-3"
-              }`}
-            >
-              <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold ${flash === s.key ? "df-pop " : ""}${
-                isDone ? "bg-accent text-on-accent" : isCur ? "bg-accent/15 text-accent ring-1 ring-accent/40" : "bg-surface-3 text-faint"
-              }`}>
-                {isDone ? <Check size={13} strokeWidth={2.6} /> : i + 1}
-              </span>
-              {/* R-400: six steps no longer fit a card beside a 216px sidebar below 1280px, so the
-                  steps that are not open keep their number and lose the word until there is room. */}
-              <span className={`${isCur ? "hidden sm:block" : "hidden xl:block"} whitespace-nowrap`}>{s.label}</span>
-            </button>
-            {i < SECTIONS.length - 1 && (
-              <div className={`w-4 h-[2px] mx-0.5 rounded-full flex-shrink-0 ${isDone ? "bg-accent/50" : "bg-surface-3"}`} />
-            )}
-          </div>
-        );
-      })}
+    <StepBar steps={SECTIONS} current={current} done={done} flash={flash} onGo={onGo}>
       {/* Refunds are a step of the deal, not a view that replaces it (R-305): the money
           in, the linked transactions and the profit all stay one click away. Set apart
           from the numbered four because a deal is not meant to end here. */}
@@ -1377,7 +1351,7 @@ function SectionNav({ current, done, flash, onGo, refundLabel, refundTone }: {
       >
         <RotateCcw size={13} /> <span className="whitespace-nowrap">{refundLabel}</span>
       </button>
-    </div>
+    </StepBar>
   );
 }
 

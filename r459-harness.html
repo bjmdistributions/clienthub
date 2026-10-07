@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>R-459 load page harness</title>
+    <!--
+      DEV ONLY. Not referenced by index.html, so `npm run build` never sees it. Renders the real
+      LogisticsView and the real DealShipping step with a stubbed Tauri bridge. Everything is invented.
+      Query: ?view=logistics|shipping  &as=team|logistics  &dark=1  &paid=1
+             &open=LD-0004  &step=Quote|Book|Pickup|Delivery|Pay
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/__r459-harness.tsx"></script>
+  </body>
+</html>

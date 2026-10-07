@@ -2,12 +2,13 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, FileText, Paperclip, Plus, Send, Truck, X } from "lucide-react";
 import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
+import { PAID_BANNER, SEND_UNPAID_CONFIRM, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
 import LogisticsBookingForm, {
-  AccessorialsField, AmountNeededPill, FileDrop, FreightStatusPill, UrgentPill, blankStop, fileSize, fmtDay, isHot, needsAmount,
-  timingLine, uploadFiles, useNetsyncApplied,
+  AccessorialsField, AmountNeededPill, EquipmentSelect, FileDrop, FreightStatusPill, PickupNumberPill, UrgentPill, blankStop, fileSize, fmtDay, isHot,
+  needsAmount, timingLine, uploadFiles, useNetsyncApplied,
 } from "./LogisticsBookingForm";
 
 // R-400: the deal's Shipping step. Freight is its own leg of the deal, separate from what is
@@ -37,14 +38,17 @@ function Row({ label, value, sub }: { label: string; value: ReactNode; sub?: str
 // is where it comes from (one pick when several are owed). Everything can be changed before it
 // is sent. R-415: while the team fills in the freight (the default), the pallets, weight and
 // dimensions are filled in here, and the person doing logistics only books the truck.
-function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: number | null; onClose: () => void; onSent: () => void }) {
+// R-459: the usual first send is a request for a quote ("Ask for a quote"): logistics answers with a
+// price, the team puts it on the invoice, and the load is sent to book once the customer has paid.
+// "Send to book" is the same sheet straight to booking.
+function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; billed: number | null; paid: boolean; onClose: () => void; onSent: () => void }) {
   const [pre, setPre] = useState<FreightPrefill | null>(null);
   const [err, setErr] = useState("");
   const [pickup, setPickup] = useState({ name: "", address: "" });
   // R-452: more pickups on the same truck, one delivery.
   const [stops, setStops] = useState<FreightStop[]>([]);
   const [delivery, setDelivery] = useState({ name: "", address: "" });
-  const [freight, setFreight] = useState({ pallets: "", pieces: "", weight_lbs: "", freight_class: "", dimensions: "", commodity: "", accessorials: "" });
+  const [freight, setFreight] = useState({ pallets: "", pieces: "", weight_lbs: "", freight_class: "", dimensions: "", commodity: "", accessorials: "", equipment: "" });
   const [note, setNote] = useState("");
   // R-458: everything logistics needs in one send: how urgent, the day and the times, and the papers.
   const [urgent, setUrgent] = useState(false);
@@ -74,23 +78,26 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
   }, [flow.id]);
 
   const missing = byTeam && !(freight.pallets.trim() && freight.weight_lbs.trim() && freight.dimensions.trim());
-  const send = async () => {
-    if (missing) { setErr("Fill in the pallets, weight and dimensions before sending to logistics."); return; }
+  const send = async (kind: "quote" | "book") => {
+    if (missing) { setErr("Fill in the pallets, pallet dimensions and weight first."); return; }
+    // Sending a truck to book before the customer has paid is allowed, after one more look.
+    if (kind === "book" && !paid && !confirm(SEND_UNPAID_CONFIRM)) return;
     setBusy(true); setErr("");
     try {
       const made = await api.logistics.create(flow.id, {
+        ...(kind === "quote" ? { status: "quote" as const } : {}),
         urgent, pickup_date: when.date, pickup_window: when.window.trim(),
         pickup_name: pickup.name, pickup_address: pickup.address,
         extra_pickups: stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim(), window: x.window.trim() })).filter((x) => x.name || x.address),
         delivery_name: delivery.name, delivery_address: delivery.address,
         pallets: freight.pallets.trim(), pieces: freight.pieces.trim(), weight_lbs: freight.weight_lbs.trim(),
         freight_class: freight.freight_class.trim(), dimensions: freight.dimensions.trim(),
-        commodity: freight.commodity.trim(), accessorials: freight.accessorials.trim(),
+        commodity: freight.commodity.trim(), accessorials: freight.accessorials.trim(), equipment: freight.equipment,
         request_note: note.trim(),
       });
       // The booking exists now; a file that fails to upload says so and can be added on the booking.
       if (files.length) await uploadFiles(made.id, files);
-      toast(urgent ? "Sent to logistics as urgent" : "Sent to logistics");
+      toast(kind === "quote" ? (urgent ? "Quote asked as urgent" : "Quote asked") : urgent ? "Sent to logistics as urgent" : "Sent to logistics");
       onSent();
     } catch (e) { setErr(String(e)); }
     setBusy(false);
@@ -115,7 +122,7 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
           <div className="min-w-0">
             <h2 className="text-[16px] font-semibold text-ink">Send to logistics</h2>
             <p className="text-[12px] text-muted mt-0.5">
-              {flow.invoice_number ? `${flow.invoice_number}. ` : ""}{byTeam ? "Fill in the freight, then logistics books the truck." : "Logistics books the truck and fills in the rest."}
+              {flow.invoice_number ? `${flow.invoice_number}. ` : ""}{byTeam ? "Fill in the freight and ask for a quote. Send it to book once the customer has paid." : "Ask for a quote. Logistics fills in the rest."}
             </p>
           </div>
           <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
@@ -204,7 +211,7 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                     <NumberInput integer className={inp} value={freight.pieces} onValue={(_n, raw) => setF({ pieces: raw })} />
                   </div>
                   <div className="min-w-0">
-                    <label className="block text-[12px] text-muted mb-1">Weight in lbs{byTeam ? " (required)" : ""}</label>
+                    <label className="block text-[12px] text-muted mb-1">Weight (lbs){byTeam ? " (required)" : ""}</label>
                     <NumberInput className={inp} value={freight.weight_lbs} onValue={(_n, raw) => setF({ weight_lbs: raw })} />
                   </div>
                   <div className="min-w-0">
@@ -212,12 +219,16 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                     <input className={inp} value={freight.freight_class} onChange={(e) => setF({ freight_class: e.target.value })} />
                   </div>
                   <div className="min-w-0">
-                    <label className="block text-[12px] text-muted mb-1">Dimensions{byTeam ? " (required)" : ""}</label>
-                    <input className={inp} placeholder="48 x 40 x 60 in" value={freight.dimensions} onChange={(e) => setF({ dimensions: e.target.value })} />
+                    <label className="block text-[12px] text-muted mb-1">Pallet dimensions (L x W x H in){byTeam ? " (required)" : ""}</label>
+                    <input className={inp} placeholder="48 x 40 x 60" value={freight.dimensions} onChange={(e) => setF({ dimensions: e.target.value })} />
                   </div>
                   <div className="min-w-0">
-                    <label className="block text-[12px] text-muted mb-1">What it is</label>
+                    <label className="block text-[12px] text-muted mb-1">Description of goods</label>
                     <input className={inp} value={freight.commodity} onChange={(e) => setF({ commodity: e.target.value })} />
+                  </div>
+                  <div className="min-w-0 col-span-2">
+                    <label className="block text-[12px] text-muted mb-1">Equipment</label>
+                    <EquipmentSelect value={freight.equipment} onChange={(v) => setF({ equipment: v })} />
                   </div>
                 </div>
                 <AccessorialsField value={freight.accessorials} onChange={(v) => setF({ accessorials: v })} />
@@ -252,9 +263,13 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
         {err && <div className="px-5 py-2 text-[12px] text-danger-ink border-t border-line" role="alert">{err}</div>}
         <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
           <button onClick={onClose} className="px-4 h-9 rounded-lg text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
-          <button onClick={send} disabled={busy || pre === null}
-            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 flex items-center gap-1.5 whitespace-nowrap">
-            <Send size={13} /> {busy ? "Sending..." : "Send"}
+          <button onClick={() => send("book")} disabled={busy || pre === null}
+            className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1.5 whitespace-nowrap">
+            <Send size={13} /> Send to book
+          </button>
+          <button onClick={() => send("quote")} disabled={busy || pre === null}
+            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
+            {busy ? "Sending..." : "Ask for a quote"}
           </button>
         </div>
       </div>
@@ -343,7 +358,11 @@ const PAY_RULE_WORD: Record<string, string> = {
 };
 
 // ── The step ──────────────────────────────────────────────────────────────
-export default function DealShipping({ flow, onReload, locked, onAdvance }: { flow: DealFlow; onReload: () => void; locked: boolean; onAdvance?: () => void }) {
+export default function DealShipping({ flow, onReload, locked, onAdvance, dealPaid }: {
+  flow: DealFlow; onReload: () => void; locked: boolean; onAdvance?: () => void;
+  /** R-459: whether the buyer has paid, as the deal card reads it (the stage and the bank link). */
+  dealPaid?: boolean;
+}) {
   const [bookings, setBookings] = useState<FreightBooking[]>([]);
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
@@ -378,7 +397,10 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
 
   const refresh = () => { loadBookings(); onReload(); };
 
-  const live = bookings.filter((b) => b.status !== "cancelled");
+  // R-459: a quote is a load asked about, not a truck. It shows here with its stage and is never counted
+  // as a truck (the money rows below come from the deal, which leaves quotes out the same way).
+  const live = bookings.filter(isLiveTruck);
+  const quotes = bookings.filter((b) => isQuoteStage(b.status));
   const cancelled = bookings.filter((b) => b.status === "cancelled");
   const typed = (flow.supplier_payments || []).filter((p) => p.category === "freight");
   const typedTotal = typed.filter((p) => !p.kept).reduce((s, p) => s + (p.amount || 0), 0);
@@ -411,7 +433,15 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
     } catch (e) { toast(String(e), "error"); }
   };
 
+  // The drawer needs the server's copy (the paperwork, BOLs and the paid flag are not in the local mirror).
+  // It opens at once on the local one and swaps in the server's unless something was saved in between.
+  const openBooking = (b: FreightBooking) => {
+    setOpen(b);
+    api.logistics.get(b.id).then((s) => setOpen((cur) => (cur === b ? s : cur))).catch(() => {});
+  };
+
   const card = (b: FreightBooking) => {
+    const quoteStage = isQuoteStage(b.status);
     const who = [b.carrier, b.broker && (b.carrier ? `via ${b.broker}` : b.broker)].filter(Boolean).join(" ");
     const refs = [b.bol && `BOL ${b.bol}`, b.pro && `PRO ${b.pro}`].filter(Boolean).join(", ");
     // R-458: the times the team set and the ETA logistics typed, in one line.
@@ -419,23 +449,27 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
     const nFiles = b.files?.length ?? 0;
     const money = [
       b.paid_amount != null && `Amount paid ${fmtAmount(b.paid_amount)}${b.paid_at ? ` on ${fmtDay(b.paid_at)}` : ""}${b.paid_method ? ` with ${b.paid_method}` : ""}`,
-      b.paid_amount == null && b.quoted_cost != null && `Quote ${fmtAmount(b.quoted_cost)}`,
+      b.paid_amount == null && b.quoted_cost != null && `Carrier rate ${fmtAmount(b.quoted_cost)}`,
+      b.status === "quoted" && b.quote_amount != null && `Quote ${fmtAmount(b.quote_amount)}, ${(b.quote_invoiced_at || "").trim() ? "on the invoice" : "not on the invoice yet"}`,
     ].filter(Boolean).join(", ");
     return (
       <button
-        key={b.id} type="button" onClick={() => setOpen(b)}
+        key={b.id} type="button" onClick={() => openBooking(b)}
         className={`w-full text-left bg-surface border border-line rounded-xl px-4 py-3 hover:border-accent/40 transition-colors min-w-0 ${b.status === "cancelled" ? "opacity-60" : ""}`}
       >
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          <span className="font-mono text-[12px] text-muted">{b.code}</span>
+          <span className="font-mono text-[12px] text-muted">{loadNumber(b)}</span>
           <FreightStatusPill status={b.status} />
           {isHot(b) && <UrgentPill />}
+          {pickupNumberUnconfirmed(b, localDay()) && <PickupNumberPill />}
           {needsAmount(b) && <AmountNeededPill />}
           {who && <span className="text-[13px] font-medium text-ink truncate min-w-0">{who}</span>}
           {nFiles > 0 && <span className="ml-auto inline-flex items-center gap-0.5 text-[11.5px] text-muted"><Paperclip size={11} />{nFiles} {nFiles === 1 ? "file" : "files"}</span>}
         </div>
         {(refs || dates) && <div className="text-[12px] text-ink-2 mt-1">{[refs, dates].filter(Boolean).join(" · ")}</div>}
         {b.status === "requested" && !refs && !dates && <div className="text-[12px] text-muted mt-1">Waiting for logistics to book it.</div>}
+        {b.status === "quote" && <div className="text-[12px] text-muted mt-1">Waiting for logistics to quote it.</div>}
+        {quoteStage && isDealPaid(b, dealPaid) && <div className="text-[12px] text-success-ink mt-1">{PAID_BANNER}</div>}
         {money && <div className="text-[12px] text-ink-2 mt-0.5 tabular-nums">{money}</div>}
         {b.updated_by_name && <div className="text-[11px] text-muted mt-1">Updated by {b.updated_by_name} {fmtDay(b.updated_at)}</div>}
       </button>
@@ -459,7 +493,12 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
         <>
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="text-[12.5px] text-muted">
-              {live.length === 0 ? "Nothing sent to logistics yet." : `${live.length} ${live.length === 1 ? "truck" : "trucks"} with logistics.`}
+              {live.length === 0 && quotes.length === 0
+                ? "Nothing sent to logistics yet."
+                : [
+                  live.length > 0 && `${live.length} ${live.length === 1 ? "truck" : "trucks"} with logistics.`,
+                  quotes.length > 0 && `${quotes.length} ${quotes.length === 1 ? "quote" : "quotes"} with logistics.`,
+                ].filter(Boolean).join(" ")}
             </div>
             <div className="flex items-center gap-2">
               {live.length > 0 && (
@@ -468,7 +507,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
                   <Plus size={13} /> Add another truck
                 </button>
               )}
-              {live.length === 0 && !locked && (
+              {live.length === 0 && quotes.length === 0 && !locked && (
                 <button type="button" onClick={shipsDirect}
                   className="px-3 h-8 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">
                   It ships direct
@@ -481,7 +520,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
             </div>
           </div>
 
-          {ready && live.length > 0 && <div className="space-y-2">{live.map(card)}</div>}
+          {ready && (quotes.length > 0 || live.length > 0) && <div className="space-y-2">{[...quotes, ...live].map(card)}</div>}
 
           {(mode || paid > 0 || linked > 0 || quoted > 0 || charged.amount > 0.005) && (
             <div className="rounded-xl bg-surface border border-line px-4 py-3 space-y-1.5">
@@ -497,7 +536,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
                   sub={gap > 0.5 ? `${fmtAmount(gap)} ${linked > paid ? "more" : "less"} than the amount paid` : undefined}
                 />
               )}
-              {quoted > 0.005 && <Row label="Quoted, not paid yet" value={fmtAmount(quoted)} />}
+              {quoted > 0.005 && <Row label="Carrier rate, not paid yet" value={fmtAmount(quoted)} />}
               {charged.amount > 0.005 && (mode || linked > 0.005 || typedTotal > 0.005) && (
                 // The surplus is known only once every live truck has its amount paid (R-415), as on the phone.
                 (pay ? !pay.pending : (flow.logistics_unpaid ?? 0) === 0)
@@ -551,12 +590,13 @@ export default function DealShipping({ flow, onReload, locked, onAdvance }: { fl
       )}
 
       {sending && (
-        <SendSheet flow={flow} billed={chargedReady ? ((flow.shipping_billed ?? 0) > 0 ? (flow.shipping_billed as number) : charged.amount) : null}
+        <SendSheet flow={flow} paid={!!dealPaid} billed={chargedReady ? ((flow.shipping_billed ?? 0) > 0 ? (flow.shipping_billed as number) : charged.amount) : null}
           onClose={() => setSending(false)} onSent={() => { setSending(false); refresh(); }} />
       )}
       {open && (
         <LogisticsBookingForm
           booking={open}
+          dealPaid={dealPaid}
           onClose={() => setOpen(null)}
           onSaved={(b) => { setOpen(b); refresh(); }}
           onChanged={refresh}

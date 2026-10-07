@@ -14,6 +14,16 @@ import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { FromPicker, useSendFromOptions } from "./FromPicker";
 import { changesForInvoice, INVOICE_PREFILL_KEY, plainLines, unitsOnInvoice, type InvoicePrefill, type WhTag } from "../lib/warehouse";
+import { QUOTE_WAITING_WARNING, quoteWaitingOnInvoice } from "../lib/logisticsLoad";
+
+/** R-459: true when the deal behind this invoice has a load whose quote is not on the invoice yet. A
+ *  failed lookup says no: it must never be the reason an invoice cannot be sent. */
+async function shippingWaitsOnQuote(invoiceId: string): Promise<boolean> {
+  try {
+    const flow = await api.getDealFlowByInvoice(invoiceId);
+    return flow ? quoteWaitingOnInvoice(await api.listFreightBookings(flow.id)) : false;
+  } catch { return false; }
+}
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
 
@@ -175,7 +185,11 @@ export default function InvoicesView() {
     if (!sendModal) return;
     const id = sendModal;
     setBusy(id);
-    try { await api.sendInvoice(id, sendFrom); setSendModal(null); load(); }
+    try {
+      // R-459: shipping on the invoice may still be waiting on the logistics quote. Say so before it goes out.
+      if (await shippingWaitsOnQuote(id) && !confirm(QUOTE_WAITING_WARNING)) return;
+      await api.sendInvoice(id, sendFrom); setSendModal(null); load();
+    }
     catch (e: any) { toast(String(e), "error"); }
     finally { setBusy(null); }
   };

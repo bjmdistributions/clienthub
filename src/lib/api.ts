@@ -1113,7 +1113,7 @@ export interface DealFlow {
   logistics_paid?: number;
   logistics_quoted?: number;
   /** Least advanced status among the live bookings, '' when there are none. */
-  logistics_stage?: "" | "requested" | "booked" | "picked_up" | "delivered";
+  logistics_stage?: "" | "quote" | "quoted" | "requested" | "booked" | "picked_up" | "delivered";
   shipping_linked?: number;
   freight_typed?: number;
   /** True once the deal has a booking or a bank payment linked as shipping: the booking
@@ -3174,7 +3174,9 @@ export interface ShippingSplit { total: number; parts: ShippingSplitPart[] }
 // A freight booking is one truck. The server owns the rows (Logistics-only accounts read and
 // write them through `logistics_request`, which only reaches /api/logistics/*); a desktop that
 // holds the workspace also has them synced locally, which is what `list_freight_bookings` reads.
-export type FreightStatus = "requested" | "booked" | "picked_up" | "delivered" | "cancelled";
+// R-459: a load starts as a quote (`quote`: the team asked, `quoted`: logistics answered) and only
+// becomes a truck once it is sent to book (`requested`). A quote-stage row is never a live truck.
+export type FreightStatus = "quote" | "quoted" | "requested" | "booked" | "picked_up" | "delivered" | "cancelled";
 export interface FreightTracking {
   stage: string;
   status: string;
@@ -3184,8 +3186,11 @@ export interface FreightTracking {
 }
 export interface FreightBooking {
   id: string;
-  /** "L-" and six characters of the id. What a person quotes on the phone. */
+  /** What a person quotes on the phone: the load number ("LD-0012") once it has one (R-459), else
+   *  "L-" and six characters of the id. */
   code: string;
+  /** R-459: the server-minted load number, empty on a row from before numbering. */
+  load_number?: string;
   status: FreightStatus;
   /** R-401: the day freight was first confirmed booked. Set once, never moved or cleared.
    *  Empty until then. The logistics pay is earned on this day. */
@@ -3200,7 +3205,33 @@ export interface FreightBooking {
   driver_name: string; driver_phone: string; truck_number: string; trailer_number: string;
   pallets: string; pieces: string; weight_lbs: string; freight_class: string;
   dimensions: string; commodity: string; accessorials: string;
+  /** R-459: labelled "Carrier rate" in the UI: what the carrier is expected to charge. */
   quoted_cost: number | null;
+  /** R-459: what logistics quoted for the invoice, and the server's stamps around it. null = hidden or none. */
+  quote_amount?: number | null;
+  quote_note?: string;
+  quoted_at?: string; quoted_by_name?: string;
+  quote_invoiced_at?: string; quote_invoiced_amount?: number | null;
+  sent_to_book_at?: string;
+  carrier_id?: string;
+  /** R-459: wall-clock "HH:MM" (24 h) beside the day. The actuals fill the status in: a pickup day
+   *  moves the load to On the way, a delivered day to Delivered. */
+  pickup_appt_time?: string; picked_up_at?: string; picked_up_time?: string;
+  delivery_appt_time?: string; delivered_time?: string;
+  pickup_dock?: string; delivery_dock?: string;
+  /** R-459: set by the server when someone ticks "driver has the pickup number, confirmed with the warehouse". */
+  pickup_number_confirmed_at?: string; pickup_number_confirmed_by?: string;
+  pay_due_date?: string;
+  /** R-459: which paperwork is on file, derived from the live files. */
+  paperwork?: { bol: boolean; pod: boolean; carrier_invoice: boolean };
+  /** R-459: our own BOLs attached to this load. */
+  bols?: { id: string; number: string }[];
+  /** R-459: how the carrier gets paid (from the carrier record), "" without money. */
+  carrier_pay_method?: string;
+  /** R-459: true once the customer has paid the deal. false for a viewer who cannot see the deal. */
+  deal_paid?: boolean;
+  /** R-459: whether the bank payments linked to the deal cover this carrier payment. "" when unpaid. */
+  bank_linked?: "" | "linked" | "partial" | "none";
   /** null = not paid yet. A number, zero included, is the exact amount the carrier charged. */
   paid_amount: number | null;
   paid_at: string; paid_method: string; paid_note: string; notes: string;
@@ -3231,17 +3262,34 @@ export interface FreightBooking {
   deal: { id: string; invoice_number: string; client_name: string; stage: string } | null;
 }
 /** R-458: one file on a booking. The bytes stay on the server, sealed. */
-export interface FreightFile { id: string; name: string; mime: string; size: number; by: string; at: string }
+export interface FreightFile { id: string; name: string; mime: string; size: number; by: string; at: string; kind?: FreightFileKind }
+/** R-459: what a file is. A missing kind reads as `other`. */
+export type FreightFileKind = "bol" | "pod" | "carrier_invoice" | "other";
 /** R-452: one more pickup on a truck. The truck's one pickup date stays `pickup_date`. */
-export interface FreightStop { name: string; address: string; window: string; contact: string; phone: string; notes: string }
+export interface FreightStop {
+  name: string; address: string; window: string; contact: string; phone: string; notes: string;
+  /** R-459: dock door and the driver's pickup number for this stop. The confirmed flag is what the
+   *  client sends; `confirmed_at` and `confirmed_by` are the server's stamps. Absent on an older row. */
+  dock?: string; pickup_number?: string; confirmed?: boolean; confirmed_at?: string; confirmed_by?: string;
+}
 /** The fields a person can write. Only the ones present are saved. */
 export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "id" | "code" | "booked_at" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |
   "can_see_names" | "can_see_addresses" | "can_see_deal" | "can_see_money" | "tracking" | "deal" |
-  "shipping_billed" | "trucks_on_deal" | "freight_by_team" | "files"
->> & { today?: string };
+  "shipping_billed" | "trucks_on_deal" | "freight_by_team" | "files" |
+  "load_number" | "quoted_at" | "quoted_by_name" | "quote_invoiced_at" | "quote_invoiced_amount" | "sent_to_book_at" |
+  "pickup_number_confirmed_at" | "pickup_number_confirmed_by" | "paperwork" | "bols" | "carrier_pay_method" | "deal_paid" | "bank_linked"
+>> & { today?: string; /** R-459: tick or untick the pickup-number check. */ pickup_number_confirmed?: boolean };
 /** R-415: the one Logistics setting. */
-export interface LogisticsSettings { freight_by_team: boolean }
+export interface LogisticsSettings {
+  freight_by_team: boolean;
+  /** R-459: load and BOL numbering, like the invoice numbers. Absent on an older server. */
+  load_prefix?: string; load_next_number?: number; bol_prefix?: string; bol_next_number?: number;
+}
+/** R-459: what the invoice-line route answers. */
+export interface FreightInvoiceLine {
+  invoice_id: string; invoice_number: string; line: number; subtotal: number; tax: number; total: number;
+}
 /** R-415: one truck as the All shipments list shows it. */
 export interface ShipmentTruck {
   id: string; code: string; status: FreightStatus; carrier: string; broker: string; bol: string; pro: string;
@@ -3744,8 +3792,11 @@ export const api = {
     /** R-458: files on a booking. `data` is the file in base64; add and remove return the booking.
      *  Removing archives the file on the server, it is never erased. */
     files: {
-      add: (bookingId: string, name: string, data: string) =>
-        logisticsRequest<FreightBooking>("POST", `/api/logistics/bookings/${encodeURIComponent(bookingId)}/files`, { name, data }),
+      add: (bookingId: string, name: string, data: string, kind?: FreightFileKind) =>
+        logisticsRequest<FreightBooking>("POST", `/api/logistics/bookings/${encodeURIComponent(bookingId)}/files`, { name, data, ...(kind ? { kind } : {}) }),
+      /** R-459: change what a file is (a signed BOL, a proof of delivery, a carrier invoice, other). */
+      setKind: (bookingId: string, fileId: string, kind: FreightFileKind) =>
+        logisticsRequest<FreightBooking>("PATCH", `/api/logistics/bookings/${encodeURIComponent(bookingId)}/files/${encodeURIComponent(fileId)}`, { kind }),
       get: (bookingId: string, fileId: string) =>
         logisticsRequest<{ name: string; mime: string; size: number; data: string }>("GET", `/api/logistics/bookings/${encodeURIComponent(bookingId)}/files/${encodeURIComponent(fileId)}`),
       remove: (bookingId: string, fileId: string) =>
@@ -3754,6 +3805,12 @@ export const api = {
       saveAs: (bookingId: string, fileId: string, dest: string) =>
         invoke<void>("logistics_save_file", { bookingId, fileId, dest }),
     },
+    /** R-459: put a quote on the deal's invoice as its shipping line. Never sends the invoice. */
+    invoiceLine: (id: string, amount: number) =>
+      logisticsRequest<FreightInvoiceLine>("POST", `/api/logistics/bookings/${encodeURIComponent(id)}/invoice-line`, { amount }),
+    /** R-459: GETs an /api/logistics path that answers {name, mime, data}, asks where to save it and
+     *  writes it. Resolves to the saved path, or null when the person cancelled. */
+    saveDownload: (path: string) => invoke<string | null>("logistics_save_download", { path }),
     /** R-415: who fills in the freight. Anyone the Logistics routes let in reads it; saving is an admin's. */
     settings: {
       get: () => logisticsRequest<LogisticsSettings>("GET", "/api/logistics/settings"),

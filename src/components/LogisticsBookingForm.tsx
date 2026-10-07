@@ -1,10 +1,20 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload } from "lucide-react";
+import { X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload, Send } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { api, type FreightBooking, type FreightBookingPatch, type FreightFile, type FreightStatus, type FreightStop } from "../lib/api";
-import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
+import {
+  api, type FreightBooking, type FreightBookingPatch, type FreightFile, type FreightFileKind, type FreightInvoiceLine,
+  type FreightStatus, type FreightStop,
+} from "../lib/api";
+import { fmtAmount, localDay } from "../lib/format";
+import {
+  BANK_LINK_WORD, FILE_KINDS, LOAD_STEPS, PAID_BANNER, SEND_UNPAID_CONFIRM, STATUS_ORDER,
+  dealPaid, equipmentOptions, fileKind, fileKindLabel, firstStep, fmtDayLabel, isHot, isLogisticsSide,
+  isQuoteStage, laneLabel, loadNumber, moneyHidden, needsAmount, paperworkOf, paymentLine, pickStatus as pickStatusFields,
+  pickupNumberUnconfirmed, statusAfterActual, statusWord, stepDone, timeWord, type LoadStep,
+} from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
+import StepBar from "./StepBar";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
 
@@ -13,39 +23,42 @@ import { toast } from "./Toast";
 // a deal or from the Logistics screen). It writes only through the server's Logistics routes,
 // which decide what each person may see and change, so nothing here trusts what it was handed:
 // a redacted value comes back empty and is never written back.
+//
+// R-459: the page is a five step flow, like a deal: Quote, Book, Pickup, Delivery, Pay. Every step
+// is one click away at any time and every field stays editable; one Save writes the whole load.
 
 // ─── shared words and shapes ──────────────────────────────────────────────
 
-export const STATUS_WORD: Record<FreightStatus, string> = {
-  requested: "To book", booked: "Booked", picked_up: "Picked up", delivered: "Delivered", cancelled: "Cancelled",
-};
 const STATUS_TONE: Record<FreightStatus, "warning" | "accent" | "success" | "neutral"> = {
-  requested: "warning", booked: "accent", picked_up: "accent", delivered: "success", cancelled: "neutral",
+  quote: "warning", quoted: "accent", requested: "warning", booked: "accent", picked_up: "accent", delivered: "success", cancelled: "neutral",
 };
-const STATUS_ORDER: FreightStatus[] = ["requested", "booked", "picked_up", "delivered", "cancelled"];
 
-export function FreightStatusPill({ status }: { status: string }) {
-  const s = status as FreightStatus;
-  return <StatusPill tone={STATUS_TONE[s] ?? "neutral"}>{STATUS_WORD[s] ?? status}</StatusPill>;
+export { STATUS_ORDER, isHot, needsAmount };
+
+export function FreightStatusPill({ status, logistics }: { status: string; logistics?: boolean }) {
+  return <StatusPill tone={STATUS_TONE[status as FreightStatus] ?? "neutral"}>{statusWord(status, logistics)}</StatusPill>;
 }
-
-/** Picked up or delivered and nobody has typed what the carrier charged yet. An amount the
- *  server withheld (can_see_money false) is hidden, not missing. */
-export const needsAmount = (b: Pick<FreightBooking, "status" | "paid_amount" | "can_see_money">) =>
-  b.can_see_money !== false && (b.status === "picked_up" || b.status === "delivered") && b.paid_amount == null;
 
 export function AmountNeededPill() {
   return <StatusPill tone="warning">Amount paid needed</StatusPill>;
 }
 
-/** R-458: urgent and not picked up yet. Once the truck has the load it is no longer ahead of anything. */
-export const isHot = (b: Pick<FreightBooking, "urgent" | "status">) => !!b.urgent && (b.status === "requested" || b.status === "booked");
-
 export function UrgentPill() {
   return <StatusPill tone="danger">Urgent</StatusPill>;
 }
 
-// ─── files (R-458) ────────────────────────────────────────────────────────
+/** R-459: a booked load picks up today or tomorrow and nobody has confirmed the pickup number with the warehouse. */
+export function PickupNumberPill() {
+  return <StatusPill tone="danger">Pickup number not confirmed</StatusPill>;
+}
+
+/** R-459: open one invoice on the Invoices screen (the same stash-then-switch handoff the client screen uses). */
+export function openInvoiceById(invoiceId: string) {
+  try { localStorage.setItem("invoices_open_id", invoiceId); } catch { /* ignore */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
+}
+
+// ─── files (R-458, kinds R-459) ───────────────────────────────────────────
 
 const MAX_FILE_BYTES = 15 * 1024 * 1024;
 
@@ -69,8 +82,9 @@ export function keepSmall(list: File[]): File[] {
   return list.filter((f) => f.size > 0 && f.size <= MAX_FILE_BYTES);
 }
 
-/** Drag files here or choose them. Hands the chosen files on; it uploads nothing itself. */
-export function FileDrop({ onFiles, busy, hint }: { onFiles: (files: File[]) => void; busy?: boolean; hint?: string }) {
+/** Drag files here or choose them. Hands the chosen files on; it uploads nothing itself. `prompt` finishes
+ *  "Drop ... here" (a typed zone says what it is for). */
+export function FileDrop({ onFiles, busy, hint, prompt = "a BOL, rate confirmation or photo" }: { onFiles: (files: File[]) => void; busy?: boolean; hint?: string; prompt?: string }) {
   const [over, setOver] = useState(false);
   const input = useRef<HTMLInputElement | null>(null);
   return (
@@ -82,7 +96,7 @@ export function FileDrop({ onFiles, busy, hint }: { onFiles: (files: File[]) => 
     >
       <Upload size={16} className="mx-auto text-muted mb-1" />
       <div className="text-[12.5px] text-ink-2">
-        {busy ? "Adding..." : <>Drop a BOL, rate confirmation or photo here, or{" "}
+        {busy ? "Adding..." : <>Drop {prompt} here, or{" "}
           <button type="button" onClick={() => input.current?.click()} className="text-accent font-medium hover:underline">choose files</button></>}
       </div>
       {hint && <div className="text-[11px] text-muted mt-0.5">{hint}</div>}
@@ -92,29 +106,32 @@ export function FileDrop({ onFiles, busy, hint }: { onFiles: (files: File[]) => 
   );
 }
 
-/** Upload files to a booking one by one. Returns the booking after the last one that landed. */
-export async function uploadFiles(bookingId: string, files: File[]): Promise<FreightBooking | null> {
+/** Upload files to a booking one by one, each as `kind` (a missing kind is stored as other). Returns the
+ *  booking after the last one that landed. */
+export async function uploadFiles(bookingId: string, files: File[], kind?: FreightFileKind): Promise<FreightBooking | null> {
   let last: FreightBooking | null = null;
   for (const f of files) {
     try {
-      last = await api.logistics.files.add(bookingId, f.name, await fileBase64(f));
+      last = await api.logistics.files.add(bookingId, f.name, await fileBase64(f), kind);
     } catch (e) { toast(`${f.name}: ${String(e)}`, "error"); }
   }
   return last;
 }
 
-/** The files on a booking: open, save, add (both sides), remove. Writes straight away, apart from Save. */
-function BookingFiles({ booking, canEdit, onSaved }: { booking: FreightBooking; canEdit: boolean; onSaved: (b: FreightBooking) => void }) {
+/** The typed drop zones on a load. One zone per kind in `kinds`, each listing the files of its kind with
+ *  a drop target under it. A file row shows its kind and can change it. Writes straight away, apart from
+ *  the form's Save, and hands the booking the server answers with to `onBooking`. */
+export function PaperworkZones({ booking, kinds, onBooking }: { booking: FreightBooking; kinds: FreightFileKind[]; onBooking: (b: FreightBooking) => void }) {
   const files = booking.files ?? [];
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<FreightFileKind | null>(null);
   const [preview, setPreview] = useState<{ url: string; name: string; mime: string } | null>(null);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
 
-  const add = async (list: File[]) => {
-    setBusy(true);
-    const b = await uploadFiles(booking.id, list);
-    setBusy(false);
-    if (b) { toast(list.length === 1 ? "File added" : "Files added"); onSaved(b); }
+  const add = async (kind: FreightFileKind, list: File[]) => {
+    setBusy(kind);
+    const b = await uploadFiles(booking.id, list, kind);
+    setBusy(null);
+    if (b) { toast(list.length === 1 ? "File added" : "Files added"); onBooking(b); }
   };
   const save = async (f: FreightFile) => {
     const dest = await saveDialog({ defaultPath: f.name });
@@ -131,32 +148,53 @@ function BookingFiles({ booking, canEdit, onSaved }: { booking: FreightBooking; 
   };
   const remove = async (f: FreightFile) => {
     if (!confirm(`Remove ${f.name} from this booking?`)) return;
-    try { onSaved(await api.logistics.files.remove(booking.id, f.id)); toast("File removed"); } catch (e) { toast(String(e), "error"); }
+    try { onBooking(await api.logistics.files.remove(booking.id, f.id)); toast("File removed"); } catch (e) { toast(String(e), "error"); }
+  };
+  const setKind = async (f: FreightFile, kind: FreightFileKind) => {
+    if (kind === fileKind(f)) return;
+    try {
+      const r = await api.logistics.files.setKind(booking.id, f.id, kind);
+      onBooking(r && r.id ? r : await api.logistics.get(booking.id));
+    } catch (e) { toast(String(e), "error"); }
   };
 
   return (
-    <Section title={files.length ? `Files (${files.length})` : "Files"}>
-      {files.length > 0 && (
-        <div className="rounded-lg border border-line divide-y divide-line">
-          {files.map((f) => (
-            <div key={f.id} className="flex items-center gap-2 px-3 py-2 min-w-0">
-              <FileText size={14} className="text-muted flex-shrink-0" />
-              <button type="button" onClick={() => open(f)} className="min-w-0 flex-1 text-left">
-                <div className="text-[13px] text-ink truncate hover:underline">{f.name}</div>
-                <div className="text-[11px] text-muted truncate">{[fileSize(f.size), f.by, fmtDay(f.at)].filter(Boolean).join(", ")}</div>
-              </button>
-              <button type="button" onClick={() => save(f)} title="Save a copy"
-                className="p-1.5 rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><Download size={14} /></button>
-              {canEdit && (
-                <button type="button" onClick={() => remove(f)} title="Remove"
-                  className="p-1.5 rounded-lg text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors flex-shrink-0"><Trash2 size={14} /></button>
-              )}
+    <div className="space-y-4">
+      {kinds.map((kind) => {
+        const mine = files.filter((f) => fileKind(f) === kind);
+        return (
+          <section key={kind} className="space-y-2" aria-label={fileKindLabel(kind)}>
+            <div className="flex items-center gap-2">
+              <h5 className="text-[12.5px] font-semibold text-ink">{fileKindLabel(kind)}</h5>
+              {kind !== "other" && <StatusPill tone={mine.length ? "success" : "neutral"}>{mine.length ? "On file" : "Missing"}</StatusPill>}
             </div>
-          ))}
-        </div>
-      )}
-      {canEdit && <FileDrop onFiles={add} busy={busy} hint="Each file up to 15 MB. Both sides see it straight away." />}
-      {!canEdit && files.length === 0 && <p className="text-[12px] text-muted">No files yet.</p>}
+            {mine.length > 0 && (
+              <div className="rounded-lg border border-line divide-y divide-line">
+                {mine.map((f) => (
+                  <div key={f.id} className="flex items-center gap-2 px-3 py-2 min-w-0">
+                    <FileText size={14} className="text-muted flex-shrink-0" />
+                    <button type="button" onClick={() => open(f)} className="min-w-0 flex-1 text-left">
+                      <div className="text-[13px] text-ink truncate hover:underline">{f.name}</div>
+                      <div className="text-[11px] text-muted truncate">{[fileSize(f.size), f.by, fmtDay(f.at)].filter(Boolean).join(", ")}</div>
+                    </button>
+                    <select aria-label={`What ${f.name} is`} value={fileKind(f)} onChange={(e) => setKind(f, e.target.value as FreightFileKind)}
+                      className="h-8 rounded-lg border border-line bg-surface text-[12px] text-ink-2 px-1.5 flex-shrink-0 max-w-[132px]">
+                      {FILE_KINDS.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
+                    </select>
+                    <button type="button" onClick={() => save(f)} title="Save a copy"
+                      className="p-1.5 rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><Download size={14} /></button>
+                    <button type="button" onClick={() => remove(f)} title="Remove"
+                      className="p-1.5 rounded-lg text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors flex-shrink-0"><Trash2 size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <FileDrop onFiles={(l) => add(kind, l)} busy={busy === kind}
+              prompt={kind === "bol" ? "the signed BOL" : kind === "pod" ? "the proof of delivery" : kind === "carrier_invoice" ? "the carrier's invoice" : "a rate confirmation or photo"}
+              hint="Each file up to 15 MB. Both sides see it straight away." />
+          </section>
+        );
+      })}
       {preview && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-6" onClick={() => setPreview(null)}>
           {preview.mime === "application/pdf"
@@ -164,18 +202,13 @@ function BookingFiles({ booking, canEdit, onSaved }: { booking: FreightBooking; 
             : <img src={preview.url} alt={preview.name} className="max-w-full max-h-full rounded-lg shadow-xl" />}
         </div>
       )}
-    </Section>
+    </div>
   );
 }
 
 /** Bare YYYY-MM-DD as "Oct 2" (the year only when it is not this one). Local, never UTC. */
 export function fmtDay(s: string | null | undefined): string {
-  const v = (s || "").slice(0, 10);
-  if (!v) return "";
-  const d = parseLocalDay(v);
-  if (isNaN(d.getTime())) return v;
-  const sameYear = d.getFullYear() === new Date().getFullYear();
-  return d.toLocaleDateString("en-US", sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+  return fmtDayLabel(s);
 }
 
 /** R-458: a day as people say it: "today", "tomorrow", else "Oct 2". */
@@ -188,13 +221,19 @@ export function dayWord(s: string | null | undefined): string {
   return fmtDay(v);
 }
 
-/** R-458: when the truck has to be where, in one line: "Pickup today before 4 pm, stop 2 after 1 pm, ETA Oct 9". */
+/** R-458: when the truck has to be where, in one line: "Pickup today 9:00 am before 4 pm, stop 2 after 1 pm, ETA Oct 9".
+ *  R-459: the appointment time rides beside the day, and the actual days say what has happened. */
 export function timingLine(b: FreightBooking): string {
   const parts: string[] = [];
-  if (b.pickup_date || b.pickup_window) parts.push(["Pickup", dayWord(b.pickup_date), b.pickup_window].filter(Boolean).join(" "));
+  if (b.pickup_date || b.pickup_appt_time || b.pickup_window) {
+    parts.push(["Pickup", dayWord(b.pickup_date), timeWord(b.pickup_appt_time), b.pickup_window].filter(Boolean).join(" "));
+  }
   extraStops(b).forEach((x, i) => { if (x.window?.trim()) parts.push(`stop ${i + 2} ${x.window.trim()}`); });
+  if (b.picked_up_at && !b.delivered_at) parts.push(`picked up ${fmtDay(b.picked_up_at)}`);
   if (b.delivered_at) parts.push(`delivered ${fmtDay(b.delivered_at)}`);
-  else if (b.delivery_date || b.delivery_window) parts.push(["ETA", fmtDay(b.delivery_date), b.delivery_window].filter(Boolean).join(" "));
+  else if (b.delivery_date || b.delivery_appt_time || b.delivery_window) {
+    parts.push(["ETA", fmtDay(b.delivery_date), timeWord(b.delivery_appt_time), b.delivery_window].filter(Boolean).join(" "));
+  }
   return parts.join(", ");
 }
 
@@ -219,7 +258,7 @@ export const extraStops = (b: Pick<FreightBooking, "extra_pickups">): FreightSto
   Array.isArray(b.extra_pickups) ? b.extra_pickups : [];
 
 /** A blank extra pickup. */
-export const blankStop = (): FreightStop => ({ name: "", address: "", window: "", contact: "", phone: "", notes: "" });
+export const blankStop = (): FreightStop => ({ name: "", address: "", window: "", contact: "", phone: "", notes: "", dock: "", pickup_number: "", confirmed: false });
 
 /** "Birchwood to Lantern Bay", "Birchwood + Kestrel Mill to Lantern Bay", or "Birchwood + 2 more to
  *  Lantern Bay": the route as a row reads it. Empty when the viewer may see none of the places. */
@@ -267,6 +306,17 @@ const ACCESSORIALS = [
 
 const splitList = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
 
+/** R-459: the equipment as a drop-down of every option. A value stored before the list existed stays
+ *  selected as an extra option. Shared with the Send sheet. */
+export function EquipmentSelect({ value, onChange, className }: { value: string; onChange: (v: string) => void; className?: string }) {
+  return (
+    <select className={className ?? inp} value={value} onChange={(e) => onChange(e.target.value)} aria-label="Equipment">
+      <option value="">Not set</option>
+      {equipmentOptions(value).map((e) => <option key={e} value={e}>{e}</option>)}
+    </select>
+  );
+}
+
 /** R-415: the accessorials as toggle chips for the usual ones and free text for the rest. One
  *  comma-separated string in and out, the way the booking stores it. Shared with the Send sheet. */
 export function AccessorialsField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -304,31 +354,43 @@ export function AccessorialsField({ value, onChange }: { value: string; onChange
 }
 
 /** Every text column a person can write. Names and addresses are deliberately absent: they
- *  are read-only here, so a redacted empty string can never be written back over the real one. */
+ *  are read-only here, so a redacted empty string can never be written back over the real one.
+ *  R-459: the carrier payment (paid amount, day, method, note) is no longer typed here: the team
+ *  records it. The carrier rate (`quoted_cost`) and the quote (`quote_amount`) are money, so they
+ *  sit in the draft beside these as `rate` and `quote`. */
 const TEXT_KEYS = [
-  "pickup_date", "pickup_window", "pickup_contact", "pickup_phone", "pickup_notes",
-  "delivery_date", "delivery_window", "delivery_contact", "delivery_phone", "delivery_notes", "delivered_at",
-  "carrier", "broker", "service", "equipment", "bol", "pro", "pickup_number", "reference", "tracking_url",
+  "pickup_date", "pickup_appt_time", "pickup_window", "pickup_contact", "pickup_phone", "pickup_dock", "pickup_notes", "pickup_number",
+  "picked_up_at", "picked_up_time",
+  "delivery_date", "delivery_appt_time", "delivery_window", "delivery_contact", "delivery_phone", "delivery_dock", "delivery_notes",
+  "delivered_at", "delivered_time",
+  "carrier", "carrier_id", "broker", "service", "equipment", "bol", "pro", "reference", "tracking_url",
   "driver_name", "driver_phone", "truck_number", "trailer_number",
   "pallets", "pieces", "weight_lbs", "freight_class", "dimensions", "commodity", "accessorials",
-  "paid_at", "paid_method", "paid_note", "notes",
+  "quote_note", "pay_due_date", "notes",
 ] as const;
 type TextKey = typeof TEXT_KEYS[number];
-type Draft = Record<TextKey, string> & { status: FreightStatus; paid: string; stops: FreightStop[]; urgent: boolean };
+type Draft = Record<TextKey, string> & {
+  status: FreightStatus; quote: string; rate: string; stops: FreightStop[]; urgent: boolean;
+  /** The pickup-number check on the first pickup. */
+  confirmed: boolean;
+};
 
 const moneyText = (n: number | null | undefined) => (n == null ? "" : String(n));
-const STOP_KEYS: (keyof FreightStop)[] = ["name", "address", "window", "contact", "phone", "notes"];
-const stopsKey = (list: FreightStop[]) => JSON.stringify(list.map((x) => STOP_KEYS.map((k) => (x[k] ?? "").trim())));
+const STOP_KEYS: (keyof FreightStop)[] = ["name", "address", "window", "contact", "phone", "notes", "dock", "pickup_number"];
+const stopsKey = (list: FreightStop[]) => JSON.stringify(list.map((x) => [...STOP_KEYS.map((k) => String(x[k] ?? "").trim()), !!x.confirmed]));
 
 function toDraft(b: FreightBooking): Draft {
   const d: Record<string, string> = {};
   for (const k of TEXT_KEYS) d[k] = (b[k] ?? "") as string;
   return {
-    ...(d as Record<TextKey, string>), status: b.status, paid: moneyText(b.paid_amount),
-    stops: extraStops(b).map((x) => ({ ...blankStop(), ...x })),
+    ...(d as Record<TextKey, string>), status: b.status, quote: moneyText(b.quote_amount), rate: moneyText(b.quoted_cost),
+    stops: extraStops(b).map((x) => ({ ...blankStop(), ...x, confirmed: !!x.confirmed })),
     urgent: !!b.urgent,
+    confirmed: !!(b.pickup_number_confirmed_at ?? "").trim(),
   };
 }
+
+const draftChanged = (a: Draft, b: Draft, k: keyof Draft) => (k === "stops" ? stopsKey(a.stops) !== stopsKey(b.stops) : a[k] !== b[k]);
 
 /** null = fine, a string = the sentence to show. Empty means "no figure", which is allowed. */
 function moneyProblem(raw: string, what: string): string | null {
@@ -375,8 +437,68 @@ function Place({ name, address, canNames, canAddr }: { name: string; address: st
   );
 }
 
+/** The check and balance on a pickup: the driver has the pickup number and the warehouse confirmed it. */
+function ConfirmCheck({ checked, onChange, hasNumber, stamp }: { checked: boolean; onChange: (v: boolean) => void; hasNumber: boolean; stamp: string }) {
+  return (
+    <div className="col-span-2 min-w-0">
+      <label className={`flex items-start gap-2 text-[13px] ${hasNumber ? "text-ink cursor-pointer" : "text-muted"}`}>
+        <input type="checkbox" checked={checked} disabled={!hasNumber} onChange={(e) => onChange(e.target.checked)} className="w-4 h-4 mt-0.5 accent-accent" />
+        <span>Driver has the pickup number, confirmed with the warehouse</span>
+      </label>
+      {checked && stamp && <div className="text-[11px] text-muted mt-1 ml-6">{stamp}</div>}
+      {!hasNumber && <div className="text-[11px] text-muted mt-1 ml-6">Add the pickup number first.</div>}
+    </div>
+  );
+}
+
+/** R-459: "Put on the invoice". The amount comes from the quote and can be changed here; it becomes the
+ *  deal's shipping line. Nothing is sent: the invoice is opened to review and send. */
+function InvoiceLineSheet({ booking, initial, onClose, onDone }: {
+  booking: FreightBooking; initial: string; onClose: () => void; onDone: (r: FreightInvoiceLine) => void;
+}) {
+  const [amount, setAmount] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const problem = moneyProblem(amount, "The amount");
+  const go = async () => {
+    const n = moneyValue(amount);
+    if (problem) { setErr(problem); return; }
+    if (n == null) { setErr("Add the amount to put on the invoice."); return; }
+    setBusy(true); setErr("");
+    try { onDone(await api.logistics.invoiceLine(booking.id, n)); }
+    catch (e) { setErr(String(e)); setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-label="Put on the invoice"
+        className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between px-5 pt-5 pb-3 border-b border-line">
+          <div className="min-w-0">
+            <h2 className="text-[15px] font-semibold text-ink">Put on the invoice</h2>
+            <p className="text-[12px] text-muted mt-0.5">{booking.deal?.invoice_number ? `${booking.deal.invoice_number}. ` : ""}It becomes the shipping line. You review and send the invoice yourself.</p>
+          </div>
+          <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          <Field label="Shipping amount" hint={problem ?? (booking.quote_amount != null ? `Logistics quoted ${fmtAmount(booking.quote_amount)}. Change it if the invoice should say something else.` : undefined)}>
+            <NumberInput className={inp} value={amount} placeholder="0.00" onValue={(_n, raw) => setAmount(raw)} />
+          </Field>
+          {err && <div className="text-[12px] text-danger-ink" role="alert">{err}</div>}
+        </div>
+        <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
+          <button onClick={onClose} className="px-4 h-9 rounded-lg text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
+          <button onClick={go} disabled={busy}
+            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
+            {busy ? "Putting it on..." : "Put on the invoice"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function LogisticsBookingForm({
-  booking, onClose, onSaved, onChanged,
+  booking, onClose, onSaved, onChanged, dealPaid: dealPaidKnown,
 }: {
   booking: FreightBooking;
   onClose: () => void;
@@ -384,18 +506,38 @@ export default function LogisticsBookingForm({
   onSaved: (b: FreightBooking) => void;
   /** Something other than a save changed the list (a truck added or a booking removed). */
   onChanged: () => void;
+  /** R-459: the screen that knows the deal says whether the customer has paid. Without it the load's own flag is used. */
+  dealPaid?: boolean;
 }) {
   const [draft, setDraft] = useState<Draft>(() => toDraft(booking));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [step, setStep] = useState<LoadStep>(() => firstStep(booking.status));
+  const [invoiceSheet, setInvoiceSheet] = useState(false);
+  const [onInvoice, setOnInvoice] = useState<FreightInvoiceLine | null>(null);
   const base = useMemo(() => toDraft(booking), [booking]);
+  const baseRef = useRef(base);
+  baseRef.current = base;
+  // A booking the form handed to the parent itself (a file added, a quote put on the invoice) is rebased
+  // into the draft instead of replacing it, so what is typed and not saved yet survives.
+  const handedOver = useRef<FreightBooking | null>(null);
   // The server's copy replaces the draft after a save, and a booking the parent swaps in
   // (another one opened) starts clean. The parent holds the open booking as a snapshot and
   // replaces it only on a save, so a background refresh never wipes what is being typed.
-  useEffect(() => { setDraft(toDraft(booking)); setError(""); }, [booking]);
+  useEffect(() => {
+    if (handedOver.current === booking) return;
+    setDraft(toDraft(booking)); setError("");
+  }, [booking]);
+  // Another load opened: start on the step its status points at.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setStep(firstStep(booking.status)); setOnInvoice(null); }, [booking.id]);
+  const body = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { body.current?.scrollTo({ top: 0 }); }, [step]);
 
   const full = booking.can_see_deal;           // Jack: sees the deal, so his dates move it
-  const dirty = (Object.keys(base) as (keyof Draft)[]).some((k) => k === "stops" ? stopsKey(base.stops) !== stopsKey(draft.stops) : base[k] !== draft[k]);
+  const lg = isLogisticsSide(booking);
+  const noMoney = moneyHidden(booking);
+  const dirty = (Object.keys(base) as (keyof Draft)[]).some((k) => draftChanged(base, draft, k));
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }));
 
   const tryClose = () => {
@@ -409,40 +551,77 @@ export default function LogisticsBookingForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirty]);
 
-  const pickStatus = (s: FreightStatus) => {
+  /** The server's copy of this load after something other than Save changed it. Fields nobody has touched
+   *  take the new values, fields being edited keep what is typed. */
+  const takeServerCopy = (b: FreightBooking) => {
+    const old = baseRef.current, next = toDraft(b);
+    handedOver.current = b;
     setDraft((d) => {
-      const next = { ...d, status: s };
-      // Delivered asks for the day it landed, and today is the usual answer.
-      if (s === "delivered" && !d.delivered_at) next.delivered_at = localDay();
-      // Any other status must not keep a delivered day: the server reads one as "delivered".
-      if (s !== "delivered") next.delivered_at = "";
-      return next;
+      const out = { ...next } as Record<string, unknown>;
+      for (const k of Object.keys(next) as (keyof Draft)[]) if (draftChanged(old, d, k)) out[k] = d[k];
+      return out as unknown as Draft;
     });
+    onSaved(b);
   };
 
-  const paidErr = moneyProblem(draft.paid, "The amount paid");
+  const pickStatus = (s: FreightStatus) => {
+    setDraft((d) => ({
+      ...d,
+      ...pickStatusFields({ delivered_at: d.delivered_at, picked_up_at: d.picked_up_at, picked_up_time: d.picked_up_time }, s, localDay()),
+    }));
+  };
+  /** An actual day is filled in or cleared: the status follows it before Save, the way the server reads it. */
+  const setActual = (field: "picked_up_at" | "delivered_at", v: string) =>
+    setDraft((d) => ({ ...d, [field]: v, status: statusAfterActual(d.status, field, v, field === "picked_up_at" ? v : d.picked_up_at) }));
+  const setCarrier = (v: string) =>
+    setDraft((d) => ({ ...d, carrier: v, carrier_id: v === base.carrier ? base.carrier_id : "" }));
+  const setPickupNumber = (v: string) =>
+    setDraft((d) => ({ ...d, pickup_number: v, confirmed: v.trim() === base.pickup_number.trim() ? base.confirmed : false }));
+
+  const quoteErr = moneyProblem(draft.quote, "The quote");
+  const rateErr = moneyProblem(draft.rate, "The carrier rate");
   // R-415: our side fills in the freight, so the logistics person only reads it.
   const freightLocked = !full && booking.freight_by_team === true;
+  const paid = dealPaid(booking, dealPaidKnown);
+  const atQuote = isQuoteStage(draft.status);
 
-  const save = async () => {
-    if (paidErr) { setError(paidErr); return; }
+  const save = async (opts?: { status?: FreightStatus; withQuote?: boolean }) => {
+    const problem = quoteErr || rateErr;
+    if (problem) { setError(problem); return; }
+    if (opts?.withQuote && moneyValue(draft.quote) == null) { setError("Add the quote amount first."); return; }
     const patch: Record<string, unknown> = {};
     for (const k of TEXT_KEYS) if (draft[k] !== base[k]) patch[k] = draft[k];
     if (draft.status !== base.status) patch.status = draft.status;
-    if (draft.paid !== base.paid) patch.paid_amount = moneyValue(draft.paid);
+    if (opts?.status) patch.status = opts.status;
+    if (draft.quote !== base.quote || opts?.withQuote) patch.quote_amount = moneyValue(draft.quote);
+    if (draft.rate !== base.rate) patch.quoted_cost = moneyValue(draft.rate);
     if (draft.urgent !== base.urgent) patch.urgent = draft.urgent;
-    if (stopsKey(draft.stops) !== stopsKey(base.stops)) patch.extra_pickups = draft.stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim() }));
+    if (draft.confirmed !== base.confirmed) patch.pickup_number_confirmed = draft.confirmed;
+    if (stopsKey(draft.stops) !== stopsKey(base.stops)) {
+      // The server stamps who confirmed a stop and when; the client only says whether it is confirmed.
+      patch.extra_pickups = draft.stops.map((s) => {
+        const x = { ...s, name: s.name.trim(), address: s.address.trim(), confirmed: !!s.confirmed };
+        delete x.confirmed_at; delete x.confirmed_by;
+        return x;
+      });
+    }
     if (Object.keys(patch).length === 0) return;
     setSaving(true); setError("");
     try {
       const saved = await api.logistics.update(booking.id, { ...(patch as FreightBookingPatch), today: localDay() });
-      toast("Saved");
+      toast(opts?.status === "requested" ? "Sent to logistics" : opts?.withQuote ? "Quote sent to your team" : "Saved");
+      handedOver.current = null;
       onSaved(saved);
     } catch (e) {
       setError(String(e));
     } finally {
       setSaving(false);
     }
+  };
+
+  const sendToBook = async () => {
+    if (!paid && !confirm(SEND_UNPAID_CONFIRM)) return;
+    await save({ status: "requested" });
   };
 
   const addTruck = async () => {
@@ -455,7 +634,7 @@ export default function LogisticsBookingForm({
   };
 
   const remove = async () => {
-    if (!confirm(`Remove booking ${booking.code}? It leaves the list and the deal's shipping figures. The record is kept, but it cannot be brought back from the app.`)) return;
+    if (!confirm(`Remove booking ${loadNumber(booking)}? It leaves the list and the deal's shipping figures. The record is kept, but it cannot be brought back from the app.`)) return;
     try {
       await api.logistics.remove(booking.id);
       toast("Booking removed");
@@ -488,31 +667,433 @@ export default function LogisticsBookingForm({
   const stopEdit = full && booking.can_see_names && booking.can_see_addresses;
   const setStop = (i: number, k: keyof FreightStop, v: string) =>
     setDraft((d) => ({ ...d, stops: d.stops.map((x, j) => (j === i ? { ...x, [k]: v } : x)) }));
+  const setStopNumber = (i: number, v: string) =>
+    setDraft((d) => ({
+      ...d,
+      stops: d.stops.map((x, j) => (j === i ? { ...x, pickup_number: v, confirmed: v.trim() === (base.stops[i]?.pickup_number ?? "").trim() ? !!base.stops[i]?.confirmed : false } : x)),
+    }));
   const stopInput = (i: number, k: keyof FreightStop, label: string, wide?: boolean) => (
     <Field label={label} wide={wide}>
-      <input className={inp} value={draft.stops[i][k]} onChange={(e) => setStop(i, k, e.target.value)} />
+      <input className={inp} value={String(draft.stops[i][k] ?? "")} onChange={(e) => setStop(i, k, e.target.value)} />
     </Field>
   );
+
+  const unconfirmed = pickupNumberUnconfirmed(
+    { status: draft.status, pickup_date: draft.pickup_date, pickup_number_confirmed_at: draft.confirmed ? "x" : "", extra_pickups: draft.stops },
+    localDay(),
+  );
+  const done = stepDone({
+    status: draft.status, carrier: draft.carrier, picked_up_at: draft.picked_up_at, delivered_at: draft.delivered_at,
+    paid_amount: booking.paid_amount, paperwork: paperworkOf(booking),
+  });
+  const lane = booking.can_see_addresses ? laneLabel(booking.pickup_address, booking.delivery_address) : "";
+  const route = routeLabel(booking);
+  const confirmedStamp = (by: string | undefined, at: string | undefined) =>
+    by || at ? `Confirmed${by ? ` by ${by}` : ""}${at ? ` on ${fmtDay(at)}` : ""}` : "";
+
+  // ── the five steps ──────────────────────────────────────────────────────
+
+  const freightFields = freightLocked ? (
+    <>
+      <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Filled in by your team</p>
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px]">
+        {([
+          ["Pallets", draft.pallets], ["Pieces", draft.pieces], ["Pallet dimensions (L x W x H in)", draft.dimensions], ["Weight (lbs)", draft.weight_lbs],
+          ["Freight class", draft.freight_class], ["Description of goods", draft.commodity],
+        ] as const).map(([label, v]) => (
+          <div key={label} className="min-w-0">
+            <dt className="text-[11.5px] text-muted">{label}</dt>
+            <dd className="text-ink break-words">{v.trim() || "-"}</dd>
+          </div>
+        ))}
+        <div className="col-span-2 min-w-0">
+          <dt className="text-[11.5px] text-muted">Accessorials</dt>
+          <dd className="text-ink break-words">{draft.accessorials.trim() || "-"}</dd>
+        </div>
+      </dl>
+    </>
+  ) : (
+    <>
+      <div className="grid grid-cols-2 gap-3">
+        {t("pallets", "Pallets")}
+        {t("pieces", "Pieces")}
+        {t("dimensions", "Pallet dimensions (L x W x H in)", { placeholder: "48 x 40 x 60" })}
+        {t("weight_lbs", "Weight (lbs)")}
+        {t("freight_class", "Freight class")}
+        {t("commodity", "Description of goods")}
+      </div>
+      <AccessorialsField value={draft.accessorials} onChange={(v) => set("accessorials", v)} />
+    </>
+  );
+
+  const quoteStep = (
+    <div className="space-y-6">
+      {atQuote && paid && full && (
+        <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink" role="status">{PAID_BANNER}</div>
+      )}
+      {lane && <div className="text-[13px] text-ink-2"><span className="text-muted">Lane</span> {lane}</div>}
+
+      <Section title="Freight">
+        {freightFields}
+        <Field label="Equipment">
+          <EquipmentSelect value={draft.equipment} onChange={(v) => set("equipment", v)} />
+        </Field>
+      </Section>
+
+      <Section title="Quote">
+        {noMoney ? (
+          <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Quote amounts are hidden by your permissions.</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Quote amount" hint={quoteErr ?? "What to charge for this freight, to go on the invoice."}>
+                <NumberInput className={inp} value={draft.quote} placeholder="0.00" onValue={(_n, raw) => set("quote", raw)} />
+              </Field>
+              <Field label="Quote note" wide>
+                <textarea className={area} value={draft.quote_note} onChange={(e) => set("quote_note", e.target.value)} placeholder="Anything the team should know about this quote" />
+              </Field>
+            </div>
+            {booking.quoted_at && (
+              <p className="text-[12px] text-muted">
+                Quoted{booking.quoted_by_name ? ` by ${booking.quoted_by_name}` : ""} on {fmtDay(booking.quoted_at)}
+                {booking.quote_amount != null ? ` at ${fmtAmount(booking.quote_amount)}` : ""}.
+              </p>
+            )}
+            {booking.quote_invoiced_at && (
+              <p className="text-[12px] text-success-ink">
+                On the invoice{booking.quote_invoiced_amount != null ? ` at ${fmtAmount(booking.quote_invoiced_amount)}` : ""} since {fmtDay(booking.quote_invoiced_at)}.
+              </p>
+            )}
+            {onInvoice && (
+              <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink flex items-center justify-between gap-3 flex-wrap" role="status">
+                <span>On invoice {onInvoice.invoice_number}. Review and send it.</span>
+                <button type="button" onClick={() => { openInvoiceById(onInvoice.invoice_id); onClose(); }}
+                  className="flex items-center gap-1 px-3 h-8 rounded-lg border border-success/40 text-[12px] font-medium hover:bg-success-bg/60 whitespace-nowrap">
+                  <ExternalLink size={12} /> Open the invoice
+                </button>
+              </div>
+            )}
+          </>
+        )}
+        {atQuote && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {!full && !noMoney && (
+              <button type="button" onClick={() => save({ withQuote: true })} disabled={saving}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
+                Submit quote
+              </button>
+            )}
+            {full && !noMoney && (booking.status === "quoted" || booking.quote_amount != null) && (
+              <button type="button" onClick={() => setInvoiceSheet(true)}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">
+                Put on the invoice
+              </button>
+            )}
+            {full && (
+              <button type="button" onClick={sendToBook} disabled={saving}
+                className="flex items-center gap-1.5 px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap">
+                <Send size={13} /> Send to book
+              </button>
+            )}
+          </div>
+        )}
+        {atQuote && full && booking.status === "quote" && booking.quote_amount == null && (
+          <p className="text-[12px] text-muted">Waiting for logistics to quote it. You can fill in the booking details on the Book step meanwhile. They are stored here and not sent.</p>
+        )}
+      </Section>
+
+      <Section title="Files">
+        <PaperworkZones booking={booking} kinds={["other"]} onBooking={takeServerCopy} />
+      </Section>
+    </div>
+  );
+
+  const bookStep = (
+    <div className="space-y-6">
+      {atQuote && (
+        <p className="text-[12px] text-muted">
+          {full ? "Fill in the booking details any time. They are stored here and sent to logistics when you send the load to book." : "Your team sends the load to book. You can read what is here."}
+        </p>
+      )}
+      <Section title={draft.stops.length ? "Pickup 1" : "Pickup"}>
+        <Place name={booking.pickup_name} address={booking.pickup_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+        <div className="grid grid-cols-2 gap-3">
+          {t("pickup_contact", "Contact")}
+          {t("pickup_phone", "Phone")}
+          {t("pickup_dock", "Dock door")}
+          <Field label="Pickup number">
+            <input className={inp} value={draft.pickup_number} onChange={(e) => setPickupNumber(e.target.value)} />
+          </Field>
+          <ConfirmCheck checked={draft.confirmed} hasNumber={draft.pickup_number.trim() !== ""} onChange={(v) => set("confirmed", v)}
+            stamp={draft.confirmed === base.confirmed && draft.pickup_number.trim() === base.pickup_number.trim() ? confirmedStamp(booking.pickup_number_confirmed_by, booking.pickup_number_confirmed_at) : ""} />
+          {t("pickup_date", "Appointment date", { type: "date", hint: dateHint("pickup") })}
+          {t("pickup_appt_time", "Appointment time", { type: "time" })}
+          {t("pickup_window", "Time window", { placeholder: "8 to 12" })}
+          <Field label="Dock notes" wide>
+            <textarea className={area} value={draft.pickup_notes} onChange={(e) => set("pickup_notes", e.target.value)} />
+          </Field>
+        </div>
+      </Section>
+
+      {draft.stops.map((x, i) => (
+        <Section key={i} title={`Pickup ${i + 2}`}>
+          {stopEdit ? (
+            <div className="grid grid-cols-2 gap-3">
+              {stopInput(i, "name", "Name", true)}
+              {stopInput(i, "address", "Address", true)}
+            </div>
+          ) : (
+            <Place name={x.name} address={x.address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            {stopInput(i, "contact", "Contact")}
+            {stopInput(i, "phone", "Phone")}
+            {stopInput(i, "dock", "Dock door")}
+            <Field label="Pickup number">
+              <input className={inp} value={x.pickup_number ?? ""} onChange={(e) => setStopNumber(i, e.target.value)} />
+            </Field>
+            <ConfirmCheck checked={!!x.confirmed} hasNumber={(x.pickup_number ?? "").trim() !== ""}
+              onChange={(v) => setDraft((d) => ({ ...d, stops: d.stops.map((s, j) => (j === i ? { ...s, confirmed: v } : s)) }))}
+              stamp={base.stops[i] && !!base.stops[i].confirmed === !!x.confirmed ? confirmedStamp(base.stops[i].confirmed_by, base.stops[i].confirmed_at) : ""} />
+            {stopInput(i, "window", "Time window")}
+            <Field label="Dock notes" wide>
+              <textarea className={area} value={x.notes} onChange={(e) => setStop(i, "notes", e.target.value)} />
+            </Field>
+          </div>
+          {stopEdit && (
+            <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: d.stops.filter((_, j) => j !== i) }))}
+              className="flex items-center gap-1 text-[12px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 h-8 rounded-lg transition-colors">
+              <Trash2 size={12} /> Remove pickup {i + 2}
+            </button>
+          )}
+        </Section>
+      ))}
+      {stopEdit && draft.stops.length < 9 && (
+        <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: [...d.stops, blankStop()] }))}
+          className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors">
+          <Plus size={13} /> Add a pickup
+        </button>
+      )}
+
+      <Section title="Delivery">
+        <Place name={booking.delivery_name} address={booking.delivery_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+        <div className="grid grid-cols-2 gap-3">
+          {t("delivery_contact", "Contact")}
+          {t("delivery_phone", "Phone")}
+          {t("delivery_dock", "Dock door")}
+          {t("delivery_window", "Time window", { placeholder: "Around 2 pm" })}
+          {t("delivery_date", "Appointment date", { type: "date", hint: dateHint("delivery") })}
+          {t("delivery_appt_time", "Appointment time", { type: "time" })}
+          <Field label="Delivery notes" wide>
+            <textarea className={area} value={draft.delivery_notes} onChange={(e) => set("delivery_notes", e.target.value)} />
+          </Field>
+        </div>
+      </Section>
+
+      <Section title="Carrier">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Carrier">
+            <input className={inp} value={draft.carrier} onChange={(e) => setCarrier(e.target.value)} />
+          </Field>
+          {noMoney ? (
+            <Field label="Carrier rate"><p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={11} />Hidden by your permissions</p></Field>
+          ) : (
+            <Field label="Carrier rate" hint={rateErr ?? "What the carrier is expected to charge."}>
+              <NumberInput className={inp} value={draft.rate} placeholder="0.00" onValue={(_n, raw) => set("rate", raw)} />
+            </Field>
+          )}
+          {t("broker", "Broker")}
+          <Field label="Equipment">
+            <EquipmentSelect value={draft.equipment} onChange={(v) => set("equipment", v)} />
+          </Field>
+          <Field label="Service">
+            <select className={inp} value={draft.service} onChange={(e) => set("service", e.target.value)}>
+              {SERVICES.map((s) => <option key={s} value={s}>{s || "Not set"}</option>)}
+              {draft.service && !SERVICES.includes(draft.service) && <option value={draft.service}>{draft.service}</option>}
+            </select>
+          </Field>
+          {t("bol", "BOL number")}
+          {t("pro", "PRO number")}
+          {t("reference", "Carrier reference")}
+          {t("tracking_url", "Tracking link", { wide: true, placeholder: "https://" })}
+          {t("driver_name", "Driver name")}
+          {t("driver_phone", "Driver phone")}
+          {t("truck_number", "Truck number")}
+          {t("trailer_number", "Trailer number")}
+        </div>
+      </Section>
+
+      <Section title="Notes">
+        <textarea className={area} value={draft.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Anything else worth writing down" />
+      </Section>
+
+      {atQuote && full && (
+        <button type="button" onClick={sendToBook} disabled={saving}
+          className="flex items-center gap-1.5 px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap">
+          <Send size={13} /> Send to book
+        </button>
+      )}
+    </div>
+  );
+
+  const pickupStep = (
+    <div className="space-y-6">
+      <Section title="Pickup">
+        <Place name={booking.pickup_name} address={booking.pickup_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+        <div className="grid grid-cols-2 gap-x-3 gap-y-4">
+          <div className="min-w-0 space-y-3">
+            <div className="text-[12px] font-medium text-ink-2">Appointment</div>
+            {t("pickup_date", "Date", { type: "date", hint: dateHint("pickup") })}
+            {t("pickup_appt_time", "Time", { type: "time" })}
+          </div>
+          <div className="min-w-0 space-y-3">
+            <div className="text-[12px] font-medium text-ink-2">Actual</div>
+            <Field label="Date" hint="Filling this in moves the load to On the way.">
+              <input className={inp} type="date" value={draft.picked_up_at} onChange={(e) => setActual("picked_up_at", e.target.value)} />
+            </Field>
+            {t("picked_up_time", "Time", { type: "time" })}
+          </div>
+        </div>
+        {draft.stops.length > 0 && (
+          <p className="text-[12px] text-muted">Pickup times for the other {draft.stops.length === 1 ? "stop" : "stops"} are on the Book step.</p>
+        )}
+      </Section>
+    </div>
+  );
+
+  const deliveryStep = (
+    <div className="space-y-6">
+      <Section title="Delivery">
+        <Place name={booking.delivery_name} address={booking.delivery_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
+        <div className="grid grid-cols-2 gap-x-3 gap-y-4">
+          <div className="min-w-0 space-y-3">
+            <div className="text-[12px] font-medium text-ink-2">ETA or appointment</div>
+            {t("delivery_date", "Date", { type: "date", hint: dateHint("delivery") })}
+            {t("delivery_appt_time", "Time", { type: "time" })}
+            {t("delivery_window", "Window", { placeholder: "Around 2 pm" })}
+          </div>
+          <div className="min-w-0 space-y-3">
+            <div className="text-[12px] font-medium text-ink-2">Actual</div>
+            <Field label="Date" hint="Filling this in moves the load to Delivered.">
+              <input className={inp} type="date" value={draft.delivered_at} onChange={(e) => setActual("delivered_at", e.target.value)} />
+            </Field>
+            {t("delivered_time", "Time", { type: "time" })}
+          </div>
+        </div>
+        <Field label="Delivery notes">
+          <textarea className={area} value={draft.delivery_notes} onChange={(e) => set("delivery_notes", e.target.value)} />
+        </Field>
+      </Section>
+      <Section title="Paperwork">
+        <PaperworkZones booking={booking} kinds={["pod"]} onBooking={takeServerCopy} />
+      </Section>
+      {track && (
+        <Section title="Tracking">
+          <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[12.5px] text-ink-2">
+            {[track.carrier, track.status || track.stage, track.last_location].filter(Boolean).join(", ") || "Waiting for the carrier's first update"}
+            {track.last_update_at ? <span className="text-muted">{" "}(updated {fmtDay(track.last_update_at)})</span> : null}
+          </div>
+        </Section>
+      )}
+    </div>
+  );
+
+  const payStep = (
+    <div className="space-y-6">
+      <Section title="Paperwork">
+        <PaperworkZones booking={booking} kinds={["bol", "pod", "carrier_invoice", "other"]} onBooking={takeServerCopy} />
+      </Section>
+
+      <Section title="Carrier payment">
+        {booking.shipping_billed != null && (
+          <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[13px]">
+            <span className="text-muted">Charged to the customer for shipping:</span>{" "}
+            <span className="font-semibold text-ink tabular-nums">{fmtAmount(booking.shipping_billed)}</span>
+            {(booking.trucks_on_deal ?? 0) > 1 && (
+              <div className="text-[11.5px] text-muted mt-0.5">for the {booking.trucks_on_deal} trucks on this shipment</div>
+            )}
+          </div>
+        )}
+        {noMoney ? (
+          <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Shipping amounts are hidden by your permissions.</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Carrier rate" hint={rateErr ?? "What the carrier is expected to charge."}>
+                <NumberInput className={inp} value={draft.rate} placeholder="0.00" onValue={(_n, raw) => set("rate", raw)} />
+              </Field>
+              {t("pay_due_date", "Pay due date", { type: "date", hint: "When the carrier has to be paid." })}
+            </div>
+            <dl className="rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px] space-y-2">
+              <div className="min-w-0">
+                <dt className="text-[11.5px] text-muted">How the carrier gets paid</dt>
+                <dd className="text-ink break-words">{booking.carrier_pay_method || "-"}</dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="text-[11.5px] text-muted">Payment</dt>
+                <dd className="text-ink break-words flex items-center gap-2 flex-wrap">
+                  <span>{paymentLine(booking)}</span>
+                  {booking.paid_amount != null && booking.bank_linked && (
+                    <StatusPill tone={booking.bank_linked === "linked" ? "success" : booking.bank_linked === "partial" ? "warning" : "neutral"}>
+                      {BANK_LINK_WORD[booking.bank_linked] ?? booking.bank_linked}
+                    </StatusPill>
+                  )}
+                </dd>
+              </div>
+            </dl>
+          </>
+        )}
+      </Section>
+
+      {(booking.bols?.length ?? 0) > 0 && (
+        <Section title="BOLs for this load">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {booking.bols!.map((x) => <StatusPill key={x.id} tone="neutral">{x.number}</StatusPill>)}
+          </div>
+        </Section>
+      )}
+    </div>
+  );
+
+  const stepBody: Record<LoadStep, ReactNode> = { quote: quoteStep, book: bookStep, pickup: pickupStep, delivery: deliveryStep, pay: payStep };
 
   return (
     <>
       <div className="fixed inset-0 bg-black/20 backdrop-blur-[2px] z-40" onClick={tryClose} />
       <div
-        role="dialog" aria-modal="true" aria-label={`Booking ${booking.code}`}
+        role="dialog" aria-modal="true" aria-label={`Booking ${loadNumber(booking)}`}
         className="fixed inset-y-0 right-0 w-[560px] max-w-[96vw] bg-surface shadow-[0_0_50px_rgba(0,0,0,0.12)] z-50 flex flex-col animate-slide-in-right"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="bg-surface/95 backdrop-blur-sm border-b border-line px-6 py-4 flex items-center justify-between gap-3 flex-shrink-0">
-          <div className="min-w-0 flex items-center gap-2 flex-wrap">
-            <h3 className="text-[14px] font-semibold text-ink font-mono">{booking.code}</h3>
-            <FreightStatusPill status={booking.status} />
-            {isHot(booking) && <UrgentPill />}
-            {needsAmount(booking) && <AmountNeededPill />}
+        <div className="bg-surface/95 backdrop-blur-sm border-b border-line px-6 pt-4 pb-3 flex-shrink-0 space-y-2.5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="text-[20px] font-semibold text-ink font-mono tracking-tight">{loadNumber(booking)}</h3>
+              {route && <div className="text-[13px] text-ink-2 truncate mt-0.5">{route}</div>}
+            </div>
+            <button onClick={tryClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors flex-shrink-0"><X size={16} /></button>
           </div>
-          <button onClick={tryClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors flex-shrink-0"><X size={16} /></button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <FreightStatusPill status={draft.status} logistics={lg} />
+            {isHot(booking) && <UrgentPill />}
+            {unconfirmed && <PickupNumberPill />}
+            <div className="ml-auto flex items-center gap-3 flex-wrap">
+              <label className="flex items-center gap-1.5 text-[12.5px] text-ink cursor-pointer whitespace-nowrap">
+                <input type="checkbox" checked={draft.urgent} onChange={(e) => set("urgent", e.target.checked)} className="w-4 h-4 accent-danger" />
+                Urgent
+              </label>
+              <select aria-label="Status" value={draft.status} onChange={(e) => pickStatus(e.target.value as FreightStatus)}
+                className="h-8 rounded-lg border border-line bg-surface text-[12.5px] text-ink px-2 focus:outline-none focus:ring-2 focus:ring-accent/40">
+                {STATUS_ORDER.map((s) => <option key={s} value={s}>{statusWord(s, lg)}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="border-b border-line flex-shrink-0">
+          <StepBar steps={LOAD_STEPS} current={step} done={done} onGo={setStep} labels="always" compact />
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-6">
+        <div ref={body} className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-6">
           {full && booking.deal && (
             <div className="text-[12.5px] text-ink-2 min-w-0">
               <span className="font-medium text-ink">{booking.deal.invoice_number || "Deal"}</span>
@@ -522,7 +1103,7 @@ export default function LogisticsBookingForm({
 
           {isHot(booking) && (
             <div className="rounded-xl bg-danger-bg border border-danger/30 px-4 py-3 text-[13px] text-danger-ink" role="status">
-              <span className="font-semibold">Urgent.</span> Book this truck first.
+              <span className="font-semibold">Urgent.</span> {isQuoteStage(booking.status) ? "Quote this one first." : "Book this truck first."}
               {booking.pickup_date && <> Pickup {booking.pickup_date === localDay() ? "today" : fmtDay(booking.pickup_date)}{booking.pickup_window ? `, ${booking.pickup_window}` : ""}.</>}
             </div>
           )}
@@ -536,187 +1117,7 @@ export default function LogisticsBookingForm({
             </div>
           )}
 
-          <Section title="Status">
-            <div className="grid grid-cols-5 gap-0.5 p-0.5 rounded-lg bg-surface-2 border border-line">
-              {STATUS_ORDER.map((s) => {
-                const on = draft.status === s;
-                return (
-                  <button key={s} type="button" aria-pressed={on} onClick={() => pickStatus(s)}
-                    className={`h-9 rounded-md px-1 text-[12px] whitespace-nowrap transition-colors ${
-                      on ? "bg-surface text-ink font-medium shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
-                    {STATUS_WORD[s]}
-                  </button>
-                );
-              })}
-            </div>
-            <label className="flex items-center gap-2 text-[13px] text-ink cursor-pointer w-fit">
-              <input type="checkbox" checked={draft.urgent} onChange={(e) => set("urgent", e.target.checked)} className="w-4 h-4 accent-danger" />
-              Urgent <span className="text-muted text-[12px]">it leads the list until it is picked up</span>
-            </label>
-            {draft.status === "delivered" && (
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Delivered on" hint={dateHint("delivery")}>
-                  <input className={inp} type="date" value={draft.delivered_at} onChange={(e) => set("delivered_at", e.target.value)} />
-                </Field>
-              </div>
-            )}
-          </Section>
-
-          <BookingFiles booking={booking} canEdit onSaved={onSaved} />
-
-          <Section title={draft.stops.length ? "Pickup 1" : "Pickup"}>
-            <Place name={booking.pickup_name} address={booking.pickup_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
-            <div className="grid grid-cols-2 gap-3">
-              {t("pickup_date", "Pickup date", { type: "date", hint: dateHint("pickup") })}
-              {t("pickup_window", "Time window", { placeholder: "8 to 12" })}
-              {t("pickup_contact", "Contact")}
-              {t("pickup_phone", "Phone")}
-              <Field label="Dock notes" wide>
-                <textarea className={area} value={draft.pickup_notes} onChange={(e) => set("pickup_notes", e.target.value)} />
-              </Field>
-            </div>
-          </Section>
-
-          {draft.stops.map((x, i) => (
-            <Section key={i} title={`Pickup ${i + 2}`}>
-              {stopEdit ? (
-                <div className="grid grid-cols-2 gap-3">
-                  {stopInput(i, "name", "Name", true)}
-                  {stopInput(i, "address", "Address", true)}
-                </div>
-              ) : (
-                <Place name={x.name} address={x.address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
-              )}
-              <div className="grid grid-cols-2 gap-3">
-                {stopInput(i, "window", "Time window")}
-                {stopInput(i, "contact", "Contact")}
-                {stopInput(i, "phone", "Phone")}
-                <Field label="Dock notes" wide>
-                  <textarea className={area} value={x.notes} onChange={(e) => setStop(i, "notes", e.target.value)} />
-                </Field>
-              </div>
-              {stopEdit && (
-                <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: d.stops.filter((_, j) => j !== i) }))}
-                  className="flex items-center gap-1 text-[12px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 h-8 rounded-lg transition-colors">
-                  <Trash2 size={12} /> Remove pickup {i + 2}
-                </button>
-              )}
-            </Section>
-          ))}
-          {stopEdit && draft.stops.length < 9 && (
-            <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: [...d.stops, blankStop()] }))}
-              className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors">
-              <Plus size={13} /> Add a pickup
-            </button>
-          )}
-
-          <Section title="Delivery">
-            <Place name={booking.delivery_name} address={booking.delivery_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
-            <div className="grid grid-cols-2 gap-3">
-              {t("delivery_date", "ETA (delivery day)", { type: "date", hint: dateHint("delivery") })}
-              {t("delivery_window", "ETA time or window", { placeholder: "Around 2 pm" })}
-              {t("delivery_contact", "Contact")}
-              {t("delivery_phone", "Phone")}
-              <Field label="Delivery notes" wide>
-                <textarea className={area} value={draft.delivery_notes} onChange={(e) => set("delivery_notes", e.target.value)} />
-              </Field>
-            </div>
-          </Section>
-
-          <Section title="Carrier">
-            <div className="grid grid-cols-2 gap-3">
-              {t("carrier", "Carrier")}
-              {t("broker", "Broker")}
-              <Field label="Service">
-                <select className={inp} value={draft.service} onChange={(e) => set("service", e.target.value)}>
-                  {SERVICES.map((s) => <option key={s} value={s}>{s || "Not set"}</option>)}
-                  {draft.service && !SERVICES.includes(draft.service) && <option value={draft.service}>{draft.service}</option>}
-                </select>
-              </Field>
-              {t("equipment", "Equipment", { placeholder: "53 ft dry van" })}
-              {t("bol", "BOL number")}
-              {t("pro", "PRO number")}
-              {t("pickup_number", "Pickup number")}
-              {t("reference", "Reference or load number")}
-              {t("tracking_url", "Tracking link", { wide: true, placeholder: "https://" })}
-              {t("driver_name", "Driver name")}
-              {t("driver_phone", "Driver phone")}
-              {t("truck_number", "Truck number")}
-              {t("trailer_number", "Trailer number")}
-            </div>
-          </Section>
-
-          <Section title="Freight">
-            {freightLocked ? (
-              <>
-                <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Filled in by your team</p>
-                <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px]">
-                  {([
-                    ["Pallets", draft.pallets], ["Pieces", draft.pieces], ["Weight in lbs", draft.weight_lbs],
-                    ["Freight class", draft.freight_class], ["Dimensions", draft.dimensions], ["What it is", draft.commodity],
-                  ] as const).map(([label, v]) => (
-                    <div key={label} className="min-w-0">
-                      <dt className="text-[11.5px] text-muted">{label}</dt>
-                      <dd className="text-ink break-words">{v.trim() || "-"}</dd>
-                    </div>
-                  ))}
-                  <div className="col-span-2 min-w-0">
-                    <dt className="text-[11.5px] text-muted">Accessorials</dt>
-                    <dd className="text-ink break-words">{draft.accessorials.trim() || "-"}</dd>
-                  </div>
-                </dl>
-              </>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 gap-3">
-                  {t("pallets", "Pallets")}
-                  {t("pieces", "Pieces")}
-                  {t("weight_lbs", "Weight in lbs")}
-                  {t("freight_class", "Freight class")}
-                  {t("dimensions", "Dimensions", { placeholder: "48 x 40 x 60 in" })}
-                  {t("commodity", "What it is")}
-                </div>
-                <AccessorialsField value={draft.accessorials} onChange={(v) => set("accessorials", v)} />
-              </>
-            )}
-          </Section>
-
-          <Section title="Cost">
-            {booking.shipping_billed != null && (
-              <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[13px]">
-                <span className="text-muted">Charged to the customer for shipping:</span>{" "}
-                <span className="font-semibold text-ink tabular-nums">{fmtAmount(booking.shipping_billed)}</span>
-                {(booking.trucks_on_deal ?? 0) > 1 && (
-                  <div className="text-[11.5px] text-muted mt-0.5">for the {booking.trucks_on_deal} trucks on this shipment</div>
-                )}
-              </div>
-            )}
-            {booking.can_see_money === false ? (
-              <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Shipping amounts are hidden by your permissions.</p>
-            ) : (
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Amount paid" hint={paidErr ?? "The exact amount the carrier charged. Type it once the carrier is paid."}>
-                <NumberInput className={inp} value={draft.paid} placeholder="0.00" onValue={(_n, raw) => set("paid", raw)} />
-              </Field>
-              {t("paid_at", "Paid on", { type: "date" })}
-              {t("paid_method", "Paid with", { placeholder: "Card, ACH, check" })}
-              {t("paid_note", "Note", { wide: true })}
-            </div>
-            )}
-          </Section>
-
-          <Section title="Notes">
-            <textarea className={area} value={draft.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Anything else worth writing down" />
-          </Section>
-
-          {track && (
-            <Section title="Tracking">
-              <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[12.5px] text-ink-2">
-                {[track.carrier, track.status || track.stage, track.last_location].filter(Boolean).join(", ") || "Waiting for the carrier's first update"}
-                {track.last_update_at ? <span className="text-muted">{" "}(updated {fmtDay(track.last_update_at)})</span> : null}
-              </div>
-            </Section>
-          )}
+          {stepBody[step]}
 
           <div className="text-[11.5px] text-muted">
             {booking.updated_by_name ? `Last changed by ${booking.updated_by_name}` : booking.created_by_name ? `Sent by ${booking.created_by_name}` : ""}
@@ -747,13 +1148,27 @@ export default function LogisticsBookingForm({
                 </button>
               </>
             )}
-            <button type="button" onClick={save} disabled={!dirty || saving}
+            <button type="button" onClick={() => save()} disabled={!dirty || saving}
               className="ml-auto bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
               {saving ? "Saving..." : "Save"}
             </button>
           </div>
         </div>
       </div>
+      {invoiceSheet && (
+        <InvoiceLineSheet
+          booking={booking}
+          initial={draft.quote || moneyText(booking.quote_amount)}
+          onClose={() => setInvoiceSheet(false)}
+          onDone={async (r) => {
+            setInvoiceSheet(false);
+            setOnInvoice(r);
+            toast(`On invoice ${r.invoice_number}`);
+            // The load now says it is on the invoice. A failed refresh is not worth an error: the invoice is done.
+            try { takeServerCopy(await api.logistics.get(booking.id)); } catch { /* the banner above already says it */ }
+          }}
+        />
+      )}
     </>
   );
 }

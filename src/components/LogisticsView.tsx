@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronRight, Paperclip, Search, Truck } from "lucide-react";
 import { api, type FreightBooking, type Me } from "../lib/api";
+import { localDay } from "../lib/format";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
+import {
+  GROUPS, dueLabel, dueTone, groupOf, isHot, isLogisticsSide, loadHaystack, loadNumber, missingPaperwork, pickupNumberUnconfirmed,
+  type GroupKey,
+} from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
 import { YourPayCard } from "./LogisticsPay";
 import LogisticsBookingForm, {
-  AmountNeededPill, FreightStatusPill, UrgentPill, extraStops, isHot, needsAmount, routeLabel, timingLine, useNetsyncApplied,
+  FreightStatusPill, PickupNumberPill, UrgentPill, routeLabel, timingLine, useNetsyncApplied,
 } from "./LogisticsBookingForm";
 
 // R-400: the Logistics screen. Two people use it. The Logistics account (a person Jack has
@@ -18,45 +23,25 @@ import LogisticsBookingForm, {
 
 const REFRESH_MS = 30_000;
 
-type GroupKey = "urgent" | "requested" | "needs" | "booked" | "way" | "delivered";
-const GROUPS: { key: GroupKey; title: string }[] = [
-  // R-458: urgent trucks that are not picked up yet sit above everything else.
-  { key: "urgent", title: "Urgent" },
-  { key: "requested", title: "To book" },
-  { key: "needs", title: "Needs the amount paid" },
-  { key: "booked", title: "Booked" },
-  { key: "way", title: "On the way" },
-  { key: "delivered", title: "Delivered" },
-];
-
-function groupOf(b: FreightBooking): GroupKey | null {
-  if (b.status === "cancelled") return null;
-  if (isHot(b)) return "urgent";
-  if (b.status === "requested") return "requested";
-  if (needsAmount(b)) return "needs";
-  if (b.status === "booked") return "booked";
-  if (b.status === "picked_up") return "way";
-  return "delivered";
-}
-
-/** Everything a person could type in the search box, of what this viewer can see. */
-function haystack(b: FreightBooking): string {
-  return [
-    b.code, b.pickup_name, b.delivery_name, b.pickup_address, b.delivery_address,
-    b.carrier, b.broker, b.bol, b.pro, b.reference, b.request_note,
-    b.deal?.invoice_number, b.deal?.client_name,
-    ...extraStops(b).flatMap((x) => [x.name, x.address]),
-  ].join(" ").toLowerCase();
-}
-
 /** Earliest pickup first, an empty pickup last, then the order they were sent. */
 const byPickup = (a: FreightBooking, b: FreightBooking) => {
   if (!!a.pickup_date !== !!b.pickup_date) return a.pickup_date ? -1 : 1;
   return a.pickup_date.localeCompare(b.pickup_date) || a.created_at.localeCompare(b.created_at);
 };
 
-function BookingRow({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
+/** Carrier to be paid: the earliest due date first, a load with no due date last. */
+const byDue = (a: FreightBooking, b: FreightBooking) => {
+  const x = a.pay_due_date || "", y = b.pay_due_date || "";
+  if (!!x !== !!y) return x ? -1 : 1;
+  return x.localeCompare(y) || a.created_at.localeCompare(b.created_at);
+};
+
+function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: GroupKey; onOpen: () => void }) {
   const route = routeLabel(b);
+  const today = localDay();
+  // R-459: a load that waits on paperwork says which; the team sees when the carrier is due.
+  const missing = group === "paperwork" ? missingPaperwork(b) : [];
+  const due = group === "topay" && b.can_see_deal ? b.pay_due_date || "" : null;
   // R-458: when it has to happen, the team's note and the files, readable without opening it.
   const dates = timingLine(b);
   const who = b.deal ? [b.deal.invoice_number, b.deal.client_name].filter(Boolean).join(" for ") : "";
@@ -69,7 +54,7 @@ function BookingRow({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2 min-w-0">
-          <span className="font-mono text-[12px] text-muted flex-shrink-0">{b.code}</span>
+          <span className="font-mono text-[12px] text-muted flex-shrink-0">{loadNumber(b)}</span>
           {route && <span className="text-[13.5px] font-medium text-ink truncate min-w-0">{route}</span>}
         </div>
         {(dates || who) && (
@@ -77,6 +62,7 @@ function BookingRow({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
             {dates}{dates && who ? " · " : ""}{who && <span className="text-ink-2">{who}</span>}
           </div>
         )}
+        {missing.length > 0 && <div className="text-[12px] text-muted mt-0.5 truncate">Needs {missing.join(", ").toLowerCase()}</div>}
         {(note || files > 0) && (
           <div className="text-[12px] mt-0.5 flex items-center gap-2 min-w-0">
             {note && <span className="text-ink-2 truncate min-w-0">{note}</span>}
@@ -86,8 +72,9 @@ function BookingRow({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
       </div>
       <div className="flex items-center gap-1.5 flex-shrink-0">
         {isHot(b) && <UrgentPill />}
-        {needsAmount(b) && <AmountNeededPill />}
-        <FreightStatusPill status={b.status} />
+        {pickupNumberUnconfirmed(b, today) && <PickupNumberPill />}
+        {due !== null && <StatusPill tone={dueTone(due, today)}>{dueLabel(due, today)}</StatusPill>}
+        <FreightStatusPill status={b.status} logistics={isLogisticsSide(b)} />
       </div>
       <ChevronRight size={14} className="text-faint flex-shrink-0" />
     </button>
@@ -148,15 +135,16 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   useEffect(() => { if (doneOpen) loadDone(); }, [doneOpen, loadDone]);
 
   const needle = q.trim().toLowerCase();
-  const match = (b: FreightBooking) => !needle || haystack(b).includes(needle);
+  const match = (b: FreightBooking) => !needle || loadHaystack(b).includes(needle);
 
   const grouped = useMemo(() => {
-    const g: Record<GroupKey, FreightBooking[]> = { urgent: [], requested: [], needs: [], booked: [], way: [], delivered: [] };
+    const g: Record<GroupKey, FreightBooking[]> = { urgent: [], quotes: [], quoted: [], requested: [], booked: [], way: [], paperwork: [], topay: [], delivered: [] };
     for (const b of (rows ?? []).filter(match)) {
       const k = groupOf(b);
       if (k) g[k].push(b);
     }
-    for (const k of ["urgent", "needs", "booked", "way"] as GroupKey[]) g[k].sort(byPickup);
+    for (const k of ["urgent", "booked", "way"] as GroupKey[]) g[k].sort(byPickup);
+    g.topay.sort(byDue);
     return g;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, needle]);
@@ -170,7 +158,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   }, [rows, doneRows, needle]);
 
   const shown = GROUPS.reduce((n, g) => n + grouped[g.key].length, 0);
-  const row = (b: FreightBooking) => <BookingRow key={b.id} b={b} onOpen={() => setOpen(b)} />;
+  const row = (b: FreightBooking) => <BookingRow key={b.id} b={b} group={groupOf(b) ?? "delivered"} onOpen={() => setOpen(b)} />;
 
   if (rows === null) {
     return (
@@ -189,7 +177,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
           <h2 className="text-[20px] font-semibold text-ink tracking-tight">Logistics</h2>
           <p className="text-[13px] text-muted mt-0.5">
             {logisticsOnly
-              ? "Each truck to book, and the amount paid once the carrier is paid."
+              ? "Quotes to give, trucks to book, and the paperwork for each load."
               : view === "shipments" ? "Every deal with a truck sent to logistics: what was charged, what the carrier was paid, what is left."
               : "Every truck sent to logistics, and where each one stands."}
           </p>
@@ -197,7 +185,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         {view === "bookings" && <div className="relative w-full max-w-[280px] min-w-[200px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
           <input
-            value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search code, place, carrier, BOL or PRO"
+            value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search load number, place, carrier, BOL or PRO"
             aria-label="Search bookings"
             className="w-full border border-line pl-8 pr-3 h-9 rounded-lg text-[13px] bg-surface text-ink placeholder-muted focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
           />
@@ -230,9 +218,9 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
       {shown === 0 && !error && (
         <div className="bg-surface border border-line rounded-xl px-6 py-12 text-center">
           <Truck size={22} className="mx-auto text-faint mb-2" />
-          <div className="text-[14px] font-medium text-ink">{needle ? "Nothing matches that search" : "No trucks to book"}</div>
+          <div className="text-[14px] font-medium text-ink">{needle ? "Nothing matches that search" : "No loads yet"}</div>
           <div className="text-[12.5px] text-muted mt-1">
-            {needle ? "Try a code, a place, a carrier or a BOL number." : logisticsOnly ? "New requests show up here as they are sent." : "Send a deal to logistics from its Shipping step."}
+            {needle ? "Try a load number, a place, a carrier or a BOL number." : logisticsOnly ? "New requests show up here as they are sent." : "Ask logistics for a quote from a deal's Shipping step."}
           </div>
         </div>
       )}
