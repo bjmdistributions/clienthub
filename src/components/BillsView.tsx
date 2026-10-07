@@ -2,20 +2,22 @@
 // Lazy-loaded from App.tsx (it is the only importer of recharts besides Analytics and Dashboard).
 // Visible to admins and to anyone holding financials:view; every write control is admin only, and
 // the server refuses a non-admin's write as well.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, RefreshCw } from "lucide-react";
 import { toast } from "./Toast";
 import type { Me } from "../lib/api";
-import { localDay } from "../lib/format";
+import { fmtAmount, localDay } from "../lib/format";
 import { can, isAdmin } from "../lib/permissions";
 import { canPayCarriers } from "../lib/logisticsCarriers";
+import { canReadPayTracker, logisticsMarks, payBlockOf, type LogisticsMark } from "../lib/logisticsBills";
 import { BILL_OPEN_KEY } from "../lib/notices";
 import {
   billsApi, type BillCandidate, type BillFields, type BillOut, type BillsList, type SpendingResponse,
 } from "../lib/billsApi";
 import { PERIODS, periodRange, rangeText, type PeriodKind } from "../lib/billsFormat";
-import { CarriersToPaySection } from "./LogisticsPayCarriers";
+import { CarriersToPaySection, openLoadInLogistics, useCarrierPay } from "./LogisticsPayCarriers";
+import { LogisticsPayBillsBlock, openPayTracker, usePayTracker } from "./LogisticsPay";
 import BillsMode from "./bills/BillsMode";
 import BillDetail from "./bills/BillDetail";
 import BillForm from "./bills/BillForm";
@@ -103,6 +105,19 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
 
   // Spending and True profit read the same answer for the period, so it is fetched once.
   const today = data?.today || localDay();
+
+  // R-464: logistics money on this screen. The carriers still owed (the section below, and a mark on the month
+  // strip on each due date) and the logistics pay (the block, and a mark on each pay date). Each is asked only of
+  // a person the server lets read it.
+  const canPay = canPayCarriers(me);
+  const carriers = useCarrierPay(canPay);
+  const tracker = usePayTracker(canReadPayTracker(me));
+  const payBlock = payBlockOf(tracker, today);
+  const marks = useMemo(() => logisticsMarks(today, tracker, carriers.data?.to_pay, fmtAmount), [today, tracker, carriers.data]);
+  // The pay tracker lives in the owner's Team settings: anyone else sees the block and the pay dates, not a way in.
+  const markOpens = (m: LogisticsMark) => (m.kind === "pay" || !m.bookingId ? admin : true);
+  const openMark = (m: LogisticsMark) => (m.kind === "pay" || !m.bookingId ? openPayTracker() : openLoadInLogistics(m.bookingId, "pay"));
+
   const range = periodRange(period, today);
   const wantsSpend = mode !== "bills" && !!data;
   useEffect(() => {
@@ -144,7 +159,8 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
       </div>
 
       {/* R-459: the carriers the team owes, above the recurring bills. Nothing shows when no one is owed. */}
-      {mode === "bills" && <CarriersToPaySection canPay={canPayCarriers(me)} />}
+      {mode === "bills" && payBlock && <LogisticsPayBillsBlock block={payBlock} onOpen={admin ? openPayTracker : undefined} />}
+      {mode === "bills" && <CarriersToPaySection canPay={canPay} data={carriers.data} />}
 
       {mode !== "bills" && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4">
@@ -173,7 +189,7 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
           </div>
         )
       ) : mode === "bills" ? (
-        <BillsMode data={data} cands={cands} admin={admin} onOpen={setOpen} onAdd={() => setForm({})}
+        <BillsMode data={data} cands={cands} admin={admin} marks={marks} onMark={openMark} markOpens={markOpens} onOpen={setOpen} onAdd={() => setForm({})}
           onTrack={track} onIgnore={ignore} onRestore={restore} />
       ) : !resp ? (
         sp.error ? (

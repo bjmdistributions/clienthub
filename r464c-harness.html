@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>R-464 bills and renewals harness</title>
+    <!--
+      DEV ONLY. Not referenced by index.html, so `npm run build` never sees it. Renders the real BillsView
+      (with its Logistics pay block and the month strip marks), the real ApprovalsView and the real RenewalsView
+      with a stubbed Tauri bridge. Everything is invented.
+      Query: ?view=bills|notifications|renewals  &as=admin|books  &dark=1  &none=1 (no logistics money)
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/__r464c-harness.tsx"></script>
+  </body>
+</html>

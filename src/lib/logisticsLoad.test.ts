@@ -320,6 +320,9 @@ describe("paying and invoicing", () => {
     expect(quoteWaitingOnInvoice([{ status: "quote" }])).toBe(true);
     expect(quoteWaitingOnInvoice([{ status: "quoted", quote_invoiced_at: "" }])).toBe(true);
     expect(quoteWaitingOnInvoice([{ status: "quoted" }])).toBe(true);
+    expect(quoteWaitingOnInvoice([{ status: "quoted", shipping_charge: "own" }])).toBe(false);
+    expect(quoteWaitingOnInvoice([{ status: "quoted", shipping_charge: "invoice" }])).toBe(true);
+    expect(quoteWaitingOnInvoice([{ status: "quote", shipping_charge: "own" }])).toBe(true);
     expect(quoteWaitingOnInvoice([{ status: "quoted", quote_invoiced_at: "2026-10-06" }])).toBe(false);
     expect(quoteWaitingOnInvoice([{ status: "requested" }, { status: "booked" }, { status: "cancelled" }])).toBe(false);
     expect(quoteWaitingOnInvoice([])).toBe(false);

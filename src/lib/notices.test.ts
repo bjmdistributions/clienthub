@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LeadNotification } from "./api";
 import {
-  DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, noticeTone, RAISE_CAP, SEEN_CAP, canOpenTarget, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
+  ADMIN_NOTICE_KINDS, DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, PAY_TRACKER_KEY, PAY_TRACKER_SUB, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, noticeTone, RAISE_CAP, SEEN_CAP, canOpenTarget, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
   logisticsBellCount, mergeSeen, noticeTarget, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
   type NoticeLoad,
 } from "./notices";
@@ -42,6 +42,53 @@ describe("the list of team notices", () => {
     ];
     expect(teamNoticesOf(list).map((n) => n.id)).toEqual(["c", "e", "a"]);
     expect(teamNoticesOf(null)).toEqual([]);
+  });
+});
+
+describe("the pay-day notice (R-464)", () => {
+  const payDay = (id: string, over: Partial<LeadNotification> = {}) =>
+    note(id, "logistics_pay_due", { title: "Pay Sam Rivera today", body: "2 loads. Open it to record the payment.", payload_json: '{"pay_date":"2026-10-09"}', ...over });
+
+  it("is one of the team kinds, and the only admin kind", () => {
+    expect(TEAM_NOTICE_KINDS).toContain("logistics_pay_due");
+    expect([...ADMIN_NOTICE_KINDS]).toEqual(["logistics_pay_due"]);
+  });
+  it("an admin sees it in the list, newest first among the rest", () => {
+    const list = [note("a", "carrier_due", { created_at: hoursAgo(5) }), payDay("p", { created_at: hoursAgo(1) }), note("b", "bill_due", { created_at: hoursAgo(3) })];
+    expect(teamNoticesOf(list, true).map((n) => n.id)).toEqual(["p", "b", "a"]);
+  });
+  it("anyone else never sees it, whatever the server sent", () => {
+    const list = [payDay("p"), note("a", "carrier_due")];
+    expect(teamNoticesOf(list, false).map((n) => n.id)).toEqual(["a"]);
+    expect(teamNoticesOf(list).map((n) => n.id)).toEqual(["a"]);
+  });
+  it("an acknowledged one is gone", () => {
+    expect(teamNoticesOf([payDay("p", { status: "acknowledged" })], true)).toEqual([]);
+  });
+  it("opens the pay tracker, for an admin only", () => {
+    const t = noticeTarget(payDay("p"));
+    expect(t).toEqual({ to: "paytracker" });
+    expect(canOpenTarget(t, { permissions: ["*"] })).toBe(true);
+    expect(canOpenTarget(t, { permissions: ["admin:manage"] })).toBe(true);
+    expect(canOpenTarget(t, { permissions: ["financials:view", "deal_flow:view"] })).toBe(false);
+    expect(canOpenTarget(t, null)).toBe(false);
+  });
+  it("opens the tracker even when the payload is empty or broken", () => {
+    expect(noticeTarget({ kind: "logistics_pay_due", payload_json: null })).toEqual({ to: "paytracker" });
+    expect(noticeTarget({ kind: "logistics_pay_due", payload_json: "nope" })).toEqual({ to: "paytracker" });
+  });
+  it("reads as a warning labelled Pay day, with the handoff keys named", () => {
+    expect(NOTICE_KIND_LABEL.logistics_pay_due).toBe("Pay day");
+    expect(noticeTone("logistics_pay_due")).toBe("warning");
+    expect(PAY_TRACKER_KEY).toBe("settings_team_sub");
+    expect(PAY_TRACKER_SUB).toBe("payouts");
+  });
+  it("is raised once per device like the others, with no dollar figure in it", () => {
+    const n = payDay("p");
+    const first = planTeamRaise([n], [], NOW);
+    expect(first.raise.map((x) => x.id)).toEqual(["p"]);
+    expect(first.raise[0].title + first.raise[0].body).not.toContain("$");
+    expect(planTeamRaise([n], first.seen, NOW).raise).toEqual([]);
   });
 });
 

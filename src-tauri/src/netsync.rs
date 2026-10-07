@@ -37,11 +37,14 @@ const POLL_SECS: u64 = 20;
 /// docks, carrier, pay due date). Pull keeps only columns the device has, so a device that updates
 /// after loads already exist restores them from the server's snapshot to fill the new columns in
 /// (the row count is unchanged, so only a generation change triggers it).
-const HEAL_GENERATION: &str = "6";
+/// "7" is the same kind of pass for the R-464 and R-465 columns on `freight_bookings` (the shipping
+/// charge choice, the booking override stamps, the carrier cost the quote was built on and the
+/// markup). A column-only change: the refresh list below stays `freight_bookings` alone.
+const HEAL_GENERATION: &str = "7";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
-/// workspace. Generation "6" (R-459): `freight_bookings`, which only flows server to device, so the
+/// workspace. Generations "6" (R-459) and "7" (R-464): `freight_bookings`, which only flows server to device, so the
 /// server's copy is always the one to keep. Empty for a generation that only widens the tables.
 const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings"];
 
@@ -2682,6 +2685,16 @@ mod r400_sync_tests {
     #[test]
     fn r459_new_booking_columns_force_one_restore_per_device() {
         assert_ne!(HEAL_GENERATION, "5", "devices healed under generation 5 do not have the R-459 columns");
+        assert_eq!(HEAL_REFRESH_TABLES, &["freight_bookings"], "a column-only generation refreshes only the table that gained columns");
+    }
+
+    /// R-464/R-465: the shipping charge, override and markup columns also reach a device that
+    /// already holds the rows only through a restore, so generation 7 forces one more pass and
+    /// still refreshes nothing but `freight_bookings`.
+    #[test]
+    fn r464_new_booking_columns_force_one_more_restore_per_device() {
+        assert_ne!(HEAL_GENERATION, "6", "devices healed under generation 6 do not have the R-464 and R-465 columns");
+        assert_eq!(HEAL_GENERATION, "7");
         assert_eq!(HEAL_REFRESH_TABLES, &["freight_bookings"], "a column-only generation refreshes only the table that gained columns");
     }
 

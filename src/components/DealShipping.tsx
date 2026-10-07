@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Check, FileText, Paperclip, Plus, Send, Truck, X } from "lucide-react";
+import { Check, FileText, Paperclip, Plus, Truck, X } from "lucide-react";
 import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
-import { laneEnds } from "../lib/logisticsCarriers";
-import { PAID_BANNER, SEND_UNPAID_CONFIRM, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidMethodWord, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
+import { canPayCarriers, canRecordOn, laneEnds } from "../lib/logisticsCarriers";
+import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidMethodWord, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
+import { invoiceWasSent, loadProgress, withDealFacts } from "../lib/loadProgress";
+import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
 import { CarrierHost } from "./LogisticsCarriers";
+import { MarkPaidSheet, type PayTarget } from "./LogisticsPayCarriers";
+import { LoadTrackerCompact } from "./LoadTracker";
 import { RateCard } from "./LogisticsRates";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
@@ -41,10 +45,10 @@ function Row({ label, value, sub }: { label: string; value: ReactNode; sub?: str
 // is where it comes from (one pick when several are owed). Everything can be changed before it
 // is sent. R-415: while the team fills in the freight (the default), the pallets, weight and
 // dimensions are filled in here, and the person doing logistics only books the truck.
-// R-459: the usual first send is a request for a quote ("Ask for a quote"): logistics answers with a
-// price, the team puts it on the invoice, and the load is sent to book once the customer has paid.
-// "Send to book" is the same sheet straight to booking.
-function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; billed: number | null; paid: boolean; onClose: () => void; onSent: () => void }) {
+// R-459: the first send is a request for a quote ("Ask for a quote"): logistics answers with a price, the
+// team puts it on the invoice, and the load is sent to book from the load's page. R-464: every load starts
+// as a quote, so this sheet has the one button, and the load page holds the gate to booking.
+function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: number | null; onClose: () => void; onSent: () => void }) {
   const [pre, setPre] = useState<FreightPrefill | null>(null);
   const [err, setErr] = useState("");
   const [pickup, setPickup] = useState({ name: "", address: "" });
@@ -84,14 +88,12 @@ function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; bi
   }, [flow.id]);
 
   const missing = byTeam && !(freight.pallets.trim() && freight.weight_lbs.trim() && freight.dimensions.trim());
-  const send = async (kind: "quote" | "book") => {
+  const send = async () => {
     if (missing) { setErr("Fill in the pallets, pallet dimensions and weight first."); return; }
-    // Sending a truck to book before the customer has paid is allowed, after one more look.
-    if (kind === "book" && !paid && !confirm(SEND_UNPAID_CONFIRM)) return;
     setBusy(true); setErr("");
     try {
       const made = await api.logistics.create(flow.id, {
-        ...(kind === "quote" ? { status: "quote" as const } : {}),
+        status: "quote" as const,
         urgent, pickup_date: when.date, pickup_window: when.window.trim(),
         pickup_name: pickup.name, pickup_address: pickup.address,
         extra_pickups: stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim(), window: x.window.trim() })).filter((x) => x.name || x.address),
@@ -103,7 +105,7 @@ function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; bi
       });
       // The booking exists now; a file that fails to upload says so and can be added on the booking.
       if (files.length) await uploadFiles(made.id, files);
-      toast(kind === "quote" ? (urgent ? "Quote asked as urgent" : "Quote asked") : urgent ? "Sent to logistics as urgent" : "Sent to logistics");
+      toast(urgent ? "Quote asked as urgent" : "Quote asked");
       onSent();
     } catch (e) { setErr(String(e)); }
     setBusy(false);
@@ -129,7 +131,7 @@ function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; bi
           <div className="min-w-0">
             <h2 className="text-[16px] font-semibold text-ink">Send to logistics</h2>
             <p className="text-[12px] text-muted mt-0.5">
-              {flow.invoice_number ? `${flow.invoice_number}. ` : ""}{byTeam ? "Fill in the freight and ask for a quote. Send it to book once the customer has paid." : "Ask for a quote. Logistics fills in the rest."}
+              {flow.invoice_number ? `${flow.invoice_number}. ` : ""}{byTeam ? "Fill in the freight and ask for a quote. You send it to book from the load once it is on the invoice and the customer has paid." : "Ask for a quote. Logistics fills in the rest."}
             </p>
           </div>
           <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
@@ -271,11 +273,7 @@ function SendSheet({ flow, billed, paid, onClose, onSent }: { flow: DealFlow; bi
         {err && <div className="px-5 py-2 text-[12px] text-danger-ink border-t border-line" role="alert">{err}</div>}
         <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
           <button onClick={onClose} className="px-4 h-9 rounded-lg text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
-          <button onClick={() => send("book")} disabled={busy || pre === null}
-            className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1.5 whitespace-nowrap">
-            <Send size={13} /> Send to book
-          </button>
-          <button onClick={() => send("quote")} disabled={busy || pre === null}
+          <button onClick={send} disabled={busy || pre === null}
             className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
             {busy ? "Sending..." : "Ask for a quote"}
           </button>
@@ -366,6 +364,7 @@ const PAY_RULE_WORD: Record<string, string> = {
   share: "share of the shipping profit",
   loss_cover: "covering a load that lost money",
   loss_share: "share of the loss",
+  markup: "markup on the freight",
 };
 
 // ── The step ──────────────────────────────────────────────────────────────
@@ -382,6 +381,11 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   const [charged, setCharged] = useState<{ amount: number; source: "lines" | "field" | "none" }>({ amount: 0, source: "none" });
   const [chargedReady, setChargedReady] = useState(false);
   const [pay, setPay] = useState<DealLogisticsPay | null>(null);
+  // R-464: whether the deal's invoice has gone out (the loads' tracker and the gate need it) and who may change a payment.
+  const [invoiceSent, setInvoiceSent] = useState<boolean | undefined>(undefined);
+  const [changing, setChanging] = useState<PayTarget | null>(null);
+  const me = useSessionMe();
+  const canPay = canPayCarriers(me);
 
   const loadBookings = useCallback(async () => {
     try { setBookings(await api.listFreightBookings(flow.id)); }
@@ -394,7 +398,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   useEffect(() => {
     let dead = false;
     api.getInvoice(flow.invoice_id)
-      .then((inv) => { if (!dead) { setCharged(shippingChargedOf(inv.line_items_json, inv.shipping_charged)); setChargedReady(true); } })
+      .then((inv) => { if (!dead) { setCharged(shippingChargedOf(inv.line_items_json, inv.shipping_charged)); setChargedReady(true); setInvoiceSent(invoiceWasSent(inv)); } })
       .catch(() => {});
     return () => { dead = true; };
   }, [flow.invoice_id]);
@@ -411,6 +415,8 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   // R-459: a quote is a load asked about, not a truck. It shows here with its stage and is never counted
   // as a truck (the money rows below come from the deal, which leaves quotes out the same way).
   const live = bookings.filter(isLiveTruck);
+  // R-463: "Shipping paid" is the sum of these, so each one is listed where the sum is read.
+  const paidLoads = live.filter((b) => b.paid_amount != null);
   const quotes = bookings.filter((b) => isQuoteStage(b.status));
   const cancelled = bookings.filter((b) => b.status === "cancelled");
   const typed = (flow.supplier_payments || []).filter((p) => p.category === "freight");
@@ -421,6 +427,24 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   const quoted = flow.logistics_quoted ?? 0;
   const gap = Math.abs(paid - linked);
   const complete = flow.stage === "complete";
+
+  // R-463: the payment on a load is fixed from where it was seen. The server's copy has the bank link, so it is asked for
+  // first; the local copy is enough when the server cannot be reached.
+  const startChange = async (b: FreightBooking) => {
+    let src = b;
+    try { src = await api.logistics.get(b.id); } catch { /* the local copy is enough */ }
+    setChanging({
+      bookingId: b.id, label: `${src.carrier || "Carrier"}, ${loadNumber(src)}`, rate: src.quoted_cost, payMethod: src.carrier_pay_method || "",
+      paidAmount: src.paid_amount, bankLinked: src.bank_linked ?? "",
+      current: { paid_amount: src.paid_amount, paid_at: src.paid_at, paid_method: src.paid_method, paid_note: src.paid_note },
+    });
+  };
+  const changed = async (id: string) => {
+    setChanging(null);
+    // The list reads the local copy, which sync updates in a moment: put the server's answer in now so the row is right at once.
+    try { const fresh = await api.logistics.get(id); setBookings((l) => l.map((x) => (x.id === id ? fresh : x))); } catch { /* sync brings it */ }
+    refresh();
+  };
 
   const addTruck = async () => {
     const from = live[live.length - 1] ?? bookings[bookings.length - 1];
@@ -477,6 +501,9 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
           {who && <span className="text-[13px] font-medium text-ink truncate min-w-0">{who}</span>}
           {nFiles > 0 && <span className="ml-auto inline-flex items-center gap-0.5 text-[11.5px] text-muted"><Paperclip size={11} />{nFiles} {nFiles === 1 ? "file" : "files"}</span>}
         </div>
+        {b.status !== "cancelled" && (
+          <div className="mt-1.5"><LoadTrackerCompact stages={loadProgress(withDealFacts(b, { invoiceSent, dealPaid }), true)} /></div>
+        )}
         {(refs || dates) && <div className="text-[12px] text-ink-2 mt-1">{[refs, dates].filter(Boolean).join(" · ")}</div>}
         {b.status === "requested" && !refs && !dates && <div className="text-[12px] text-muted mt-1">Waiting for logistics to book it.</div>}
         {b.status === "quote" && <div className="text-[12px] text-muted mt-1">Waiting for logistics to quote it.</div>}
@@ -540,6 +567,22 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
                   sub={(pay?.charged_source ?? charged.source) === "lines" ? "From the invoice's shipping line" : "From the invoice's shipping charge"} />
               )}
               <Row label="Shipping paid" value={fmtAmount(paid)} />
+              {paidLoads.length > 0 && (
+                <ul className="list-none m-0 pl-3 border-l-2 border-line space-y-1" aria-label="Shipping paid by load">
+                  {paidLoads.map((b) => (
+                    <li key={b.id} className="flex items-center gap-2 text-[12px] min-w-0">
+                      <span className="min-w-0 flex-1 truncate text-ink-2">
+                        <span className="font-mono text-muted">{loadNumber(b)}</span>{b.carrier ? `, ${b.carrier}` : ""}
+                      </span>
+                      <span className="tabular-nums text-ink flex-shrink-0">{fmtAmount(b.paid_amount ?? 0)}</span>
+                      {canRecordOn(b, canPay) && (
+                        <button type="button" onClick={() => startChange(b)}
+                          className="text-[11.5px] text-accent font-medium hover:underline flex-shrink-0">Change</button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
               {linked > 0.005 && (
                 <Row
                   label="Linked from the bank"
@@ -556,7 +599,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
               )}
               {pay && (
                 pay.rule === "tracked"
-                  ? <Row label="Logistics pay" value="Tracked, not paid" sub="The surplus shows in the Brief" />
+                  ? <Row label="Logistics pay" value="Tracked, not paid" sub={pay.markup != null ? `Markup of ${fmtAmount(pay.markup)}, shows in the Brief` : "The surplus shows in the Brief"} />
                 : pay.pay == null
                   ? <Row label="Logistics pay" value="Waiting on the amount paid" />
                   : <Row label="Logistics pay" value={fmtAmount(pay.pay)}
@@ -601,13 +644,15 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
       )}
 
       {sending && (
-        <SendSheet flow={flow} paid={!!dealPaid} billed={chargedReady ? ((flow.shipping_billed ?? 0) > 0 ? (flow.shipping_billed as number) : charged.amount) : null}
+        <SendSheet flow={flow} billed={chargedReady ? ((flow.shipping_billed ?? 0) > 0 ? (flow.shipping_billed as number) : charged.amount) : null}
           onClose={() => setSending(false)} onSent={() => { setSending(false); refresh(); }} />
       )}
+      {changing && <MarkPaidSheet target={changing} onClose={() => setChanging(null)} onDone={() => changed(changing.bookingId)} />}
       {open && (
         <LogisticsBookingForm
           booking={open}
           dealPaid={dealPaid}
+          invoiceSent={invoiceSent}
           onClose={() => setOpen(null)}
           onSaved={(b) => { setOpen(b); refresh(); }}
           onChanged={refresh}

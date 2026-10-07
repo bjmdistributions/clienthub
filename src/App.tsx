@@ -6,7 +6,7 @@ import {
   Mail,
   Settings as SettingsIcon,
   LayoutDashboard,
-  RefreshCw, LogOut,
+  RefreshCw, RotateCw, LogOut,
   PanelLeftClose, PanelLeftOpen,
   Briefcase,
   BarChart3,
@@ -63,6 +63,7 @@ import ManifestView from "./components/ManifestView";
 import LotEngineView from "./components/LotEngineView";
 import ShowPackingView from "./components/ShowPackingView";
 import WarehouseView from "./components/WarehouseView";
+import RenewalsView from "./components/RenewalsView";
 import WhatsAppSharePanel from "./components/WhatsAppSharePanel";
 import CloseoutView from "./components/CloseoutView";
 import BriefView from "./components/BriefView";
@@ -95,6 +96,8 @@ import { api, isUnavailable, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
 import { canSeeTeamNotices } from "./lib/notices";
+import { confirmLeaveUnsaved } from "./lib/unsavedWork";
+import { approvalsBellCount } from "./lib/renewals";
 import { useNotices } from "./lib/useNotices";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
@@ -140,7 +143,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety" | "settings";
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -203,6 +206,8 @@ export default function App() {
   // hover menu on a narrow rail is hard to hit on a trackpad, and Jack asked for click.
   const [flyout, setFlyout] = useState<{ id: string; top: number } | null>(null);
   const setTab = (t: Tab) => {
+    // R-464: a full-page form with unsaved typing is asked about before the screen is switched away from it.
+    if (!confirmLeaveUnsaved()) return;
     setTabState(t);
     setPageKey(k => k + 1);
     setFlyout(null);
@@ -499,9 +504,9 @@ export default function App() {
       // view's Supplier leads section.
       api.listLeadNotifications(undefined, "unread"),
     ]).then(([reqs, pend, leads]) => {
-      const nonAdd = reqs.filter((a) => a.kind !== "client_add").length;
       const leadCount = isUnavailable(leads) ? 0 : leads.filter((n) => n.kind === "supply_lead" || n.kind === "supplier_profile").length;
-      setApCount(pend.length + nonAdd + leadCount);
+      // R-466: every stale listing together is ONE item on the bell, not one per listing.
+      setApCount(approvalsBellCount(pend.length, reqs, leadCount));
     }).catch(() => {});
     refresh();
     const onChanged = () => refresh();
@@ -790,6 +795,7 @@ export default function App() {
     { id: "suppliers", label: "Suppliers", icon: Package },
     { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
       { id: "warehouse", label: "Warehouse", icon: WarehouseIcon },
+      { id: "renewals", label: "Renewals", icon: RotateCw },
       { id: "lotengine", label: "Lot engine", icon: Boxes },
       { id: "showpacking", label: "Show packing", icon: PackageCheck },
       { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
@@ -850,6 +856,7 @@ export default function App() {
     : id === "manifest" ? canViewTab(me, "inventory" as any) // analyzer rides inventory access
     : id === "lotengine" ? canViewTab(me, "inventory" as any) // so does the lot engine
     : id === "warehouse" ? canViewTab(me, "inventory" as any) // and the warehouse (R-326)
+    : id === "renewals" ? isAdmin(me) // R-466: the stale-listing requests are read for admins only, here and on the bell
     // Show packing (R-271/R-272): rides inventory access, plus the plan entitlement
     // itself — whether the add-on is turned ON for this org is a state the view
     // handles internally (setup screen), not a reason to hide the tab.
@@ -1162,6 +1169,7 @@ export default function App() {
             {t === "suppliers"  && <SuppliersView />}
             {t === "inventory"  && <InventoryView />}
             {t === "warehouse"  && <WarehouseView />}
+            {t === "renewals"   && <RenewalsView />}
             {t === "manifest"   && <ManifestView onNavigate={setTab} />}
             {t === "lotengine"  && <LotEngineView me={me} />}
             {t === "showpacking" && <ShowPackingView me={me} />}
@@ -1613,7 +1621,7 @@ export default function App() {
 
 
       {/* Main */}
-      <main className="flex-1 overflow-hidden">
+      <main className="flex-1 overflow-hidden relative">
         {splitTab ? (
           <div ref={splitRowRef} className="flex h-full">
             {/* Left pane — driven by the sidebar nav */}

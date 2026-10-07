@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Check, ChevronRight } from "lucide-react";
+import { Check, ChevronRight, HandCoins } from "lucide-react";
 import {
   api, type LogisticsPayDate, type LogisticsPayMine, type LogisticsPaySettings, type LogisticsPayTracker,
   type LogisticsPayTrackerLine,
 } from "../lib/api";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { isLogisticsOnly } from "../lib/permissions";
-import { describeSchedule, logisticsPayFor, WEEKDAYS } from "../lib/logisticsPay";
+import { describeSchedule, freightUnknown, logisticsPayFor, sumTrackedLines, WEEKDAYS } from "../lib/logisticsPay";
 import { lowersCounter, numberPreview, numberingProblem } from "../lib/logisticsBols";
+import type { PayBlock } from "../lib/logisticsBills";
+import { PAY_TRACKER_KEY, PAY_TRACKER_SUB } from "../lib/notices";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
@@ -34,6 +36,7 @@ const FREQUENCIES: { value: LogisticsPaySettings["frequency"]; label: string }[]
 const DEFAULTS: LogisticsPaySettings = {
   enabled: false, surplus_mode: "pay", payee_id: "", payee_name: "", share_pct: 100, cover_losses: true, loss_pay_pct: 0,
   frequency: "weekly", pay_weekday: 4, anchor_date: "", pay_day_of_month: 1, method: "", details: "",
+  markup_pct: 0, markup_editable: false,
 };
 
 const RULE_WORD: Record<string, string> = {
@@ -42,6 +45,7 @@ const RULE_WORD: Record<string, string> = {
   loss_share: "Share of the loss",
   pending: "Waiting on the amount",
   tracked: "Tracked, not paid",
+  markup: "Markup on the freight",
 };
 const SOURCE_WORD: Record<string, string> = { bank: "from the bank", paid: "paid", quote: "quoted", mixed: "paid and quoted" };
 
@@ -319,6 +323,30 @@ export function LogisticsPaySettingsForm() {
 
       {mode !== "off" && <div className="text-[11.5px] text-muted -mt-2">Changes apply to loads that have not been paid yet.</div>}
 
+      <div className="rounded-xl border border-line bg-surface-2/50 px-4 py-3 space-y-3">
+        <div className="text-[13px] font-medium text-ink">Markup on freight</div>
+        <p className="text-[12px] text-muted">
+          {mode === "pay"
+            ? `The quote is the carrier cost plus this markup. ${payee || "Logistics"} earns exactly the markup on a load, once it is booked, whatever the carrier ends up costing. The share of the shipping profit below only applies to loads quoted before markups.`
+            : mode === "track"
+              ? "The quote is the carrier cost plus this markup. The markup on each load shows in the Brief and the tracker. Nothing is paid out."
+              : "The quote is the carrier cost plus this markup. Logistics pay is off, so nothing is paid out of it."}
+        </p>
+        <Field label="Default markup %" hint="Used on every quote unless it is changed on the load.">
+          <div className="flex items-center gap-1.5 max-w-[200px]">
+            <NumberInput className={`${inp} text-right tabular-nums`} value={s.markup_pct ?? 0} onValue={(n) => set({ markup_pct: Math.min(100, Math.max(0, n)) })} />
+            <span className="w-3 shrink-0 text-[12px] text-muted">%</span>
+          </div>
+        </Field>
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-ink">Logistics may change the markup on a load</div>
+            <div className="text-[12px] text-muted mt-0.5">Off, the logistics person quotes at the default and cannot change it. You can always change it.</div>
+          </div>
+          <Switch on={!!s.markup_editable} onClick={() => set({ markup_editable: !s.markup_editable })} label="Logistics may change the markup on a load" />
+        </div>
+      </div>
+
       {mode === "pay" && (<>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Who gets it">
@@ -446,21 +474,26 @@ function LoadRow({ l }: { l: LogisticsPayTrackerLine }) {
           <div className="text-[11px] text-muted">{RULE_WORD[l.rule] ?? l.rule}</div>
         </div>
       </div>
-      <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-        <span>Charged {fmtAmount(l.charged)}</span>
-        <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>
-        <span className={l.surplus < 0 ? "text-danger-ink" : ""}>Profit {signed(l.surplus)}</span>
-      </div>
+      {freightUnknown(l) ? (
+        <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+          {l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>}
+          <span className="text-muted">Carrier not paid yet</span>
+        </div>
+      ) : (
+        <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+          <span>Charged {fmtAmount(l.charged)}</span>
+          {l.rule === "markup" && l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>}
+          <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>
+          {l.rule !== "markup" && <span className={l.surplus < 0 ? "text-danger-ink" : ""}>Profit {signed(l.surplus)}</span>}
+        </div>
+      )}
     </div>
   );
 }
 
 /** The surplus of the loads whose freight is known. The server sends `totals`; an older one does not. */
 function trackedTotals(t: LogisticsPayTracker) {
-  if (t.totals) return t.totals;
-  const known = t.lines.filter((l) => !l.pending && !l.dropped);
-  const sum = (f: (l: LogisticsPayTrackerLine) => number) => known.reduce((n, l) => n + f(l), 0);
-  return { charged: sum((l) => l.charged), freight: sum((l) => l.freight), surplus: sum((l) => l.surplus), loads: t.lines.length, pending_loads: t.lines.filter((l) => l.pending).length };
+  return t.totals ?? sumTrackedLines(t.lines);
 }
 
 /** R-415: one load while the surplus is only tracked: what was charged, what the carrier was paid,
@@ -474,14 +507,16 @@ function TrackedRow({ l }: { l: LogisticsPayTrackerLine }) {
           <div className="text-[11px] text-muted truncate">{l.booking_codes.join(", ")} · earned {fmtDay(l.earned_on)}</div>
         </div>
         <div className="text-right flex-shrink-0">
-          {l.pending
-            ? <div className="text-[12px] text-muted">Waiting on the amount paid</div>
+          {freightUnknown(l)
+            ? <div className="text-[12px] text-muted">{l.markup != null ? "Carrier not paid yet" : "Waiting on the amount paid"}</div>
             : <div className={`tabular-nums font-semibold ${l.surplus < 0 ? "text-danger-ink" : "text-ink"}`}>{signed(l.surplus)}</div>}
         </div>
       </div>
       <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-        <span>Charged {fmtAmount(l.charged)}</span>
-        {!l.pending && <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>}
+        {freightUnknown(l)
+          ? l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>
+          : <span>Charged {fmtAmount(l.charged)}</span>}
+        {!freightUnknown(l) && <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>}
         {l.paid > 0.005 && <span className="text-muted">Paid earlier {fmtAmount(l.paid)}</span>}
       </div>
     </div>
@@ -662,13 +697,11 @@ export function LogisticsPayBriefBlock({ t, from, onOpen }: { t: LogisticsPayTra
   const end = (() => { const d = parseLocalDay(from); d.setDate(d.getDate() + 7); return localDay(d); })();
   const week = t.lines.filter((l) => !l.dropped && l.earned_on >= from && l.earned_on < end);
   const earned = week.reduce((s, l) => s + (l.pay ?? 0), 0);
-  const waiting = t.lines.filter((l) => l.pending).length;
+  const waiting = t.lines.filter(freightUnknown).length;
   // R-415: what the week's loads were charged, what the carriers were paid, and the difference
   // (only loads whose freight is known).
-  const known = week.filter((l) => !l.pending);
-  const billed = known.reduce((s, l) => s + l.charged, 0);
-  const carriers = known.reduce((s, l) => s + l.freight, 0);
-  const surplus = known.reduce((s, l) => s + l.surplus, 0);
+  const known = week.filter((l) => !freightUnknown(l));
+  const { charged: billed, freight: carriers, surplus } = sumTrackedLines(week);
   const tracking = t.mode === "track" || t.settings.surplus_mode === "track";
   const figure = (value: number, label: string) => (
     <div className="px-5 py-4 min-w-0">
@@ -796,6 +829,63 @@ export function YourPayCard() {
           )}
         </div>
       )}
+    </section>
+  );
+}
+
+// ─── R-464: Bills screen and notices ──────────────────────────────────────
+
+/** Open the pay tracker (Settings, Team, Payouts) from another screen: stash where to land, switch to Settings,
+ *  and tell a Settings screen that is already open (the same stash-then-switch handoff the Bills screen uses). */
+export function openPayTracker() {
+  try {
+    localStorage.setItem("clienthub_settings_tab", "team");
+    localStorage.setItem(PAY_TRACKER_KEY, PAY_TRACKER_SUB);
+  } catch { /* storage blocked: Settings just opens */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "settings" }));
+  setTimeout(() => window.dispatchEvent(new CustomEvent("settings-team-sub")), 100);
+}
+
+/** The pay tracker for the Bills screen, read now and again on a timer and on focus. null until it is read, and
+ *  null for good when it is refused or logistics pay is off: the block and the marks just do not show. Nothing
+ *  is asked unless `enabled`. */
+export function usePayTracker(enabled: boolean): LogisticsPayTracker | null {
+  const [t, setT] = useState<LogisticsPayTracker | null>(null);
+  const load = useCallback(async () => {
+    if (!enabled) { setT(null); return; }
+    try { setT(await api.logistics.pay.tracker()); } catch { setT(null); }
+  }, [enabled]);
+  useRefresh(load);
+  return t;
+}
+
+/** The Logistics pay block at the top of the Bills screen: who is paid, on which date, how much, and for how many
+ *  loads. It opens the pay tracker, where the payment is recorded (the owner only: no button without `onOpen`). */
+export function LogisticsPayBillsBlock({ block, onOpen }: { block: PayBlock; onOpen?: () => void }) {
+  const pill = block.nothingOwed ? { tone: "neutral" as const, word: "Coming up" }
+    : block.late ? { tone: "danger" as const, word: "Late" }
+    : block.dueNow ? { tone: "warning" as const, word: "Due today" }
+    : { tone: "neutral" as const, word: "Coming up" };
+  const bits = [block.payee, fmtDay(block.date), block.nothingOwed ? "" : `${block.loads} ${block.loads === 1 ? "load" : "loads"}`].filter(Boolean);
+  return (
+    <section className="mb-5 bg-surface border border-line rounded-2xl overflow-hidden" aria-label="Logistics pay">
+      <div className="px-4 py-3 flex items-center gap-3 flex-wrap min-w-0">
+        <span className="w-8 h-8 rounded-lg bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0"><HandCoins size={16} /></span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-[14px] font-semibold text-ink">Logistics pay</h3>
+            <StatusPill tone={pill.tone}>{pill.word}</StatusPill>
+          </div>
+          <div className="text-[12px] text-muted truncate">{bits.join(", ")}</div>
+        </div>
+        <span className="text-[16px] font-semibold tabular-nums text-ink flex-shrink-0">{block.nothingOwed ? "Nothing owed yet" : fmtAmount(block.amount)}</span>
+        {onOpen && (
+          <button type="button" onClick={onOpen}
+            className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12.5px] font-medium whitespace-nowrap flex-shrink-0 inline-flex items-center gap-1">
+            Open pay tracker <ChevronRight size={13} />
+          </button>
+        )}
+      </div>
     </section>
   );
 }

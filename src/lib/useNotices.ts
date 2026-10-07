@@ -4,7 +4,7 @@ import { api, isUnavailable, type FreightBooking, type LeadNotification, type Me
 import {
   canSeeTeamNotices, desktopNoticesOn, logisticsBellCount, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
 } from "./notices";
-import { isLogisticsOnly } from "./permissions";
+import { isAdmin, isLogisticsOnly } from "./permissions";
 import { routeLabel } from "../components/LogisticsBookingForm";
 
 // R-460: the polling half of desktop notifications. One hook, mounted once by the app shell, so the
@@ -40,6 +40,7 @@ export interface NoticeState {
 export function useNotices(me: Me | null | undefined): NoticeState {
   const teamOn = canSeeTeamNotices(me);
   const logisticsOnly = isLogisticsOnly(me);
+  const admin = isAdmin(me);
   const userId = me?.id ?? "";
   const [team, setTeam] = useState<LeadNotification[]>([]);
   const [logisticsCount, setLogisticsCount] = useState(0);
@@ -53,7 +54,7 @@ export function useNotices(me: Me | null | undefined): NoticeState {
     if (!teamOn) return;
     const r = await api.listLeadNotifications(undefined, "unread").catch(() => null);
     if (!r || isUnavailable(r)) return;
-    const list = teamNoticesOf(r);
+    const list = teamNoticesOf(r, admin);
     setTeam(list);
     const key = seenKey("team", userId);
     if (teamSeen.current === undefined) teamSeen.current = readSeen(store(), key);
@@ -61,7 +62,7 @@ export function useNotices(me: Me | null | undefined): NoticeState {
     teamSeen.current = plan.seen;
     writeSeen(store(), key, plan.seen);
     raise(plan.raise.map((n) => ({ title: n.title, body: n.body })));
-  }, [teamOn, userId]);
+  }, [teamOn, userId, admin]);
 
   const refreshLogistics = useCallback(async () => {
     if (!logisticsOnly) return;
