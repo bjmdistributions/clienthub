@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
-import { api, isUnavailable, type ApprovalRequest, type Client, type ClientInput, type LeadNotification, type OrUnavailable } from "../lib/api";
+import { api, isUnavailable, type ApprovalRequest, type Client, type ClientInput, type LeadNotification, type Me, type OrUnavailable } from "../lib/api";
 import PendingReviewModal from "./PendingReviewModal";
-import { UserPlus, Inbox, ChevronRight, X, Store, Megaphone, Check, Reply } from "lucide-react";
+import { UserPlus, Inbox, ChevronRight, X, Store, Megaphone, Check, Reply, Truck } from "lucide-react";
 import StatusPill from "./StatusPill";
+import { openLoadInLogistics } from "./LogisticsPayCarriers";
+import { BILL_OPEN_KEY, NOTICE_KIND_LABEL, canOpenTarget, noticeTarget, noticeTone, type NoticeTarget, type TeamNoticeKind } from "../lib/notices";
+import type { NoticeState } from "../lib/useNotices";
+import { isAdmin } from "../lib/permissions";
 
 const kindLabel = (k: string) =>
   k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k === "listing_stale" ? "Storefront listing" : k === "unsubscribe" ? "Unsubscribed" : k;
@@ -181,7 +185,63 @@ function SupplyLeadsSection({ leads, onAck }: { leads: OrUnavailable<LeadNotific
   );
 }
 
-export function ApprovalsView() {
+// R-460: where Open goes. A load opens on the step the notice names (the same stash-then-switch handoff
+// the Bills screen uses to open a load), a bill opens on the Bills screen.
+function openTarget(t: NoticeTarget) {
+  if (t.to === "load") { openLoadInLogistics(t.id, t.step); return; }
+  if (t.to === "logistics") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "logistics" })); return; }
+  try { if (t.id) localStorage.setItem(BILL_OPEN_KEY, t.id); } catch { /* storage blocked: Bills just opens */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "bills" }));
+  setTimeout(() => window.dispatchEvent(new CustomEvent("bills-open")), 100);
+}
+
+// R-460: the team's logistics and bill notices (a quote ready, a carrier due or overdue, a bill due,
+// overdue or paid), newest first. Open goes to the thing and counts as reading it; Dismiss only reads it.
+function LogisticsBillsSection({ list, me, onOpen, onDismiss }: {
+  list: LeadNotification[]; me: Me | null | undefined; onOpen: (n: LeadNotification) => void; onDismiss: (n: LeadNotification) => void;
+}) {
+  if (list.length === 0) return null;
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-2.5">
+        <Truck size={15} className="text-muted" />
+        <h3 className="text-[13px] font-semibold text-ink">Logistics and bills</h3>
+        <span className="text-[11px] font-semibold text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums">{list.length}</span>
+      </div>
+      <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
+        {list.map((n) => {
+          const canOpen = canOpenTarget(noticeTarget(n), me);
+          return (
+            <div key={n.id} className="px-4 py-3 flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[13.5px] font-medium text-ink truncate">{n.title}</span>
+                  <StatusPill tone={noticeTone(n.kind)}>{NOTICE_KIND_LABEL[n.kind as TeamNoticeKind] ?? n.kind}</StatusPill>
+                </div>
+                {n.body && <div className="text-[12px] text-muted mt-0.5">{n.body}</div>}
+                <div className="text-[11px] text-faint mt-1">{new Date(n.created_at).toLocaleString()}</div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {canOpen && (
+                  <button onClick={() => onOpen(n)}
+                    className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Open</button>
+                )}
+                <button onClick={() => onDismiss(n)}
+                  className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">Dismiss</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: NoticeState }) {
+  // R-460: someone who only sees deals or the books has no customers or requests to review, only the
+  // logistics and bill notices below. The admin calls are never made for them.
+  const admin = isAdmin(me);
+  const teamList = notices?.team ?? [];
   const [items, setItems] = useState<ApprovalRequest[]>([]);
   const [pending, setPending] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
@@ -197,6 +257,7 @@ export function ApprovalsView() {
   const [loadingResolved, setLoadingResolved] = useState(false);
 
   const load = () =>
+    !admin ? Promise.resolve().then(() => setLoading(false)) :
     Promise.all([
       api.listApprovalRequests().then(setItems).catch(() => {}),
       api.getPendingApprovals().then(setPending).catch(() => {}),
@@ -223,6 +284,17 @@ export function ApprovalsView() {
     await api.resolveApprovalRequest(id, approve).catch(() => {});
     await load(); window.dispatchEvent(new CustomEvent("approvals-changed"));
   };
+  // Dismiss reads the notice; Open reads it too, then goes to it. The bell reads the server again after either.
+  const dismissNotice = async (n: LeadNotification) => {
+    notices?.drop(n.id);
+    await api.ackLeadNotification(n.id).catch(() => {});
+    window.dispatchEvent(new CustomEvent("approvals-changed"));
+  };
+  const openNotice = async (n: LeadNotification) => {
+    const t = noticeTarget(n);
+    await dismissNotice(n);
+    if (t) openTarget(t);
+  };
   const ackSupplyLead = async (id: string) => {
     await api.ackLeadNotification(id);
     setSupplyLeads((l) => (l && !isUnavailable(l) ? l.filter((n) => n.id !== id) : l));
@@ -233,13 +305,13 @@ export function ApprovalsView() {
   const staleListings = items.filter((a) => a.kind === "listing_stale");
   const teamRequests = items.filter((a) => a.kind !== "client_add" && a.kind !== "listing_stale");
   const supplyLeadsCount = supplyLeads && !isUnavailable(supplyLeads) ? supplyLeads.length : 0;
-  const total = pending.length + staleListings.length + teamRequests.length + supplyLeadsCount;
+  const total = pending.length + staleListings.length + teamRequests.length + supplyLeadsCount + teamList.length;
 
   return (
     <div className="p-6 max-w-2xl mx-auto">
       <div className="flex items-start justify-between gap-3 mb-1">
         <h2 className="text-[18px] font-semibold text-ink">Notifications</h2>
-        <div className="inline-flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 flex-shrink-0">
+        {admin && <div className="inline-flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 flex-shrink-0">
           <button onClick={() => setArchived(false)}
             className={`px-3 h-7 rounded-md text-[12px] font-medium transition-colors ${!archived ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
             Pending
@@ -248,11 +320,11 @@ export function ApprovalsView() {
             className={`px-3 h-7 rounded-md text-[12px] font-medium transition-colors ${archived ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
             Archive
           </button>
-        </div>
+        </div>}
       </div>
-      <p className="text-[12px] text-muted mb-5">Customers waiting on your review, and any requests from your team.</p>
+      <p className="text-[12px] text-muted mb-5">{admin ? "Customers waiting on your review, requests from your team, and logistics and bill notices." : "Logistics and bill notices that need you."}</p>
 
-      {archived ? (
+      {archived && admin ? (
         resolvedUnavailable ? (
           <div className="bg-surface border border-line rounded-2xl py-14 flex flex-col items-center">
             <div className="text-[13px] text-muted">Unavailable</div>
@@ -373,6 +445,8 @@ export function ApprovalsView() {
               </div>
             </section>
           )}
+
+          <LogisticsBillsSection list={teamList} me={me} onOpen={openNotice} onDismiss={dismissNotice} />
 
           <SupplyLeadsSection leads={supplyLeads} onAck={ackSupplyLead} />
         </div>

@@ -4739,6 +4739,17 @@ macro_rules! ship_billed_cols {
     };
 }
 
+/// R-460: the load numbers of a deal's non-archived, non-cancelled bookings (quote stage included),
+/// space-joined, "" when none. Over the deal alias `df`. The Deal Flow search reads it, so a deal is found
+/// by the number of any of its trucks. A quote counts here (it has its number from the start), which is why
+/// the test is `NOT IN ('cancelled')` and not the bare comparison `r459_no_desktop_query_counts_a_quote_as_a_truck`
+/// guards against. The clienthub-api twin (routes/deal_flows.rs DF_JOIN) says the same.
+macro_rules! deal_load_numbers_col {
+    () => {
+        "COALESCE((SELECT group_concat(ln_.n, ' ') FROM (SELECT fb.load_number AS n FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled') AND COALESCE(fb.load_number,'')<>'' ORDER BY fb.created_at, fb.id) ln_), '') AS load_numbers"
+    };
+}
+
 /// R-400: the same test as `shipping_mode` (a live booking, or a `shipping` bank link) as a SQL
 /// predicate over the deal alias `df`, for the queries that add up a whole book at once.
 macro_rules! ship_mode_sql {
@@ -4991,6 +5002,9 @@ pub struct DealFlow {
     pub shipping_billed: f64,
     #[serde(default)]
     pub shipping_billed_source: String,
+    /// R-460: the load numbers of the deal's live and quote-stage bookings, space-joined ("" when none).
+    #[serde(default)]
+    pub load_numbers: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -5070,10 +5084,11 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         projected_cost: facts.projected_cost(total_supplier_cost),
         shipping_billed: facts.billed,
         shipping_billed_source: facts.billed_source().to_string(),
+        load_numbers: r.get::<_, Option<String>>("load_numbers").ok().flatten().unwrap_or_default(),
     })
 }
 
-const DF_JOIN: &str = concat!("SELECT df.*, i.number as invoice_number, i.client_id, i.total as invoice_total, c.name as client_name, ", ship_facts_cols!(), ", ", ship_billed_cols!(), " FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id LEFT JOIN clients c ON i.client_id=c.id");
+const DF_JOIN: &str = concat!("SELECT df.*, i.number as invoice_number, i.client_id, i.total as invoice_total, c.name as client_name, ", ship_facts_cols!(), ", ", ship_billed_cols!(), ", ", deal_load_numbers_col!(), " FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id LEFT JOIN clients c ON i.client_id=c.id");
 
 fn sync_invoice_stage(invoice_id: &str, stage: &str) -> Result<(), String> {
     let mut inv_cols = Map::new();
@@ -10524,6 +10539,32 @@ pub async fn ack_lead_notification(id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// R-460: the most an operating-system notification carries. A title or body is cut to this on a
+/// character boundary with a plain "..." ending, never mid-character, and blank text is refused.
+pub fn clip_notice_text(s: &str, max: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max { return t.to_string(); }
+    let mut out: String = t.chars().take(max.saturating_sub(3)).collect();
+    out = out.trim_end().to_string();
+    out.push_str("...");
+    out
+}
+
+/// R-460: raise one operating-system notification (a quote asked for, a carrier due, a bill overdue).
+/// The screen decides what is new and whether the person switched them off; this only shows it.
+#[tauri::command]
+pub fn show_desktop_notification(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    let title = clip_notice_text(&title, 80);
+    if title.is_empty() { return Err("A notification needs a title.".into()); }
+    app.notification()
+        .builder()
+        .title(title)
+        .body(clip_notice_text(&body, 240))
+        .show()
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn list_lead_clicks(since: Option<String>) -> Result<Vec<LeadClick>, String> {
     let (base, token) = leads_server()?;
@@ -13904,7 +13945,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
                 json_extract(sp.value,'$.id') AS payment_id, df.stage AS df_stage, \
                 json_extract(sp.value,'$.category') AS category, \
                 COALESCE(json_extract(sp.value,'$.supplier_billed'),0) AS supplier_billed, \
-                NULL AS booking_id \
+                NULL AS booking_id, '' AS load_number \
          FROM deal_flows df \
          JOIN json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
@@ -13921,7 +13962,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
                 df.id AS deal_flow_id, df.invoice_id AS invoice_id, \
                 i.number AS invoice_number, i.client_id AS client_id, c.name AS client_name, \
                 NULL AS payment_id, df.stage AS df_stage, 'freight' AS category, 0 AS supplier_billed, \
-                fb.id AS booking_id \
+                fb.id AS booking_id, COALESCE(fb.load_number,'') AS load_number \
          FROM freight_bookings fb \
          JOIN deal_flows df ON df.id = fb.deal_flow_id \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
@@ -13944,6 +13985,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         r.get::<_, Option<String>>(10)?,
         r.get::<_, i64>(11)?,
         r.get::<_, Option<String>>(12)?,
+        r.get::<_, Option<String>>(13)?.unwrap_or_default(),
     ))).map_err(|e| e.to_string())?;
 
     let today = Utc::now().date_naive();
@@ -13989,7 +14031,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
             left -= take;
         }
     }
-    for (k, (payee, _typed, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id, df_stage, category, supplier_billed, booking_id)) in rows.into_iter().enumerate() {
+    for (k, (payee, _typed, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id, df_stage, category, supplier_billed, booking_id, load_number)) in rows.into_iter().enumerate() {
         let amount = amounts[k];
         if (booking_id.is_some() || netted[k]) && amount <= 0.005 { continue; }
         if committed_stages.contains(&df_stage.as_str()) { committed_total += amount; }
@@ -14027,6 +14069,8 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         if let (Some(bid), Some(o)) = (booking_id, item.as_object_mut()) {
             o.insert("kind".into(), json!("shipping"));
             o.insert("booking_id".into(), json!(bid));
+            // R-460: the truck's load number, so the row reads LD-0012 and its action opens that load's Pay step.
+            o.insert("load_number".into(), json!(load_number));
         }
         items.push(item);
         let e = map.entry(payee_key).or_insert(([0.0; 4], 0, true));
@@ -27656,6 +27700,53 @@ mod r400_shipping_tests {
         let arc = deal("q459c", vec![line("a", "supplier", 6000.0, false)], "invoiced");
         booking(&arc, "1", "quote", None, None, 1);
         assert_eq!(read_df(&arc).unwrap().logistics_stage, "");
+    }
+
+    /// R-460: a deal is found by the number of any truck on it. The Deal Flow read carries the load numbers of the
+    /// non-archived, non-cancelled bookings, quote stage included, space-joined; "" when it has none. Payables'
+    /// shipping rows carry their truck's load number.
+    #[tokio::test]
+    async fn r460_a_deal_carries_its_load_numbers_and_a_shipping_payable_its_own() {
+        let _db = crate::db::init_test_store();
+        let id = deal("ln460", vec![line("a", "supplier", 6000.0, false)], "payment_received");
+        assert_eq!(read_df(&id).unwrap().load_numbers, "", "no booking, no numbers");
+        let set = |n: &str, ln: &str| {
+            pool().get().unwrap().execute("UPDATE freight_bookings SET load_number=?1 WHERE id=?2", rusqlite::params![ln, format!("fb_{id}_{n}")]).unwrap();
+        };
+        booking(&id, "1", "quote", None, None, 0);
+        set("1", "LD-0101");
+        assert_eq!(read_df(&id).unwrap().load_numbers, "LD-0101", "a quote has its number from the start");
+        booking(&id, "2", "booked", None, Some(400.0), 0);
+        set("2", "LD-0102");
+        booking(&id, "3", "cancelled", None, None, 0);
+        set("3", "LD-0103");
+        booking(&id, "4", "requested", None, None, 1);
+        set("4", "LD-0104");
+        booking(&id, "5", "requested", None, None, 0);
+        let d = read_df(&id).unwrap();
+        assert_eq!(d.load_numbers, "LD-0101 LD-0102", "cancelled, archived and unnumbered loads are left out");
+        let listed = list_deal_flows().await.unwrap().into_iter().find(|x| x.id == id).unwrap();
+        assert_eq!(listed.load_numbers, "LD-0101 LD-0102", "the list carries it too");
+        assert!(serde_json::to_value(&listed).unwrap().get("load_numbers").is_some());
+
+        let v = get_payables_aging().await.unwrap();
+        let ship: Vec<Value> = v["items"].as_array().unwrap().iter().filter(|i| i["deal_flow_id"] == id && i["kind"] == "shipping").cloned().collect();
+        let mut numbers: Vec<String> = ship.iter().map(|i| i["load_number"].as_str().unwrap_or("?").to_string()).collect();
+        numbers.sort();
+        assert!(numbers.contains(&"LD-0102".to_string()), "the booked truck's row says its number: {numbers:?}");
+        assert!(!numbers.contains(&"LD-0101".to_string()), "a quote is no payable");
+    }
+
+    #[test]
+    fn r460_notification_text_is_clipped_on_a_character_boundary() {
+        assert_eq!(clip_notice_text("  Quote needed  ", 80), "Quote needed");
+        assert_eq!(clip_notice_text("", 80), "");
+        assert_eq!(clip_notice_text("abcdefghij", 10), "abcdefghij");
+        assert_eq!(clip_notice_text("abcdefghijk", 10), "abcdefg...");
+        let long = "é".repeat(100);
+        let c = clip_notice_text(&long, 20);
+        assert_eq!(c.chars().count(), 20);
+        assert!(c.ends_with("..."));
     }
 
     /// R-459: no query over `freight_bookings` may go back to testing `cancelled` alone, or a quote

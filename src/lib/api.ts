@@ -280,7 +280,9 @@ export interface CallRequest {
 export interface LeadNotification {
   id: string;
   org_id: string;
-  kind: "supply_lead" | "supplier_profile" | "call_request" | "system";
+  /** R-460: the last six are the team's logistics and bill notices (see lib/notices.ts). */
+  kind: "supply_lead" | "supplier_profile" | "call_request" | "system"
+    | "logistics_quote" | "carrier_due" | "carrier_overdue" | "bill_due" | "bill_overdue" | "bill_paid";
   title: string;
   body: string;
   payload_json: string | null;
@@ -786,6 +788,8 @@ export interface APItem {
    *  booking. Every other item carries no kind. */
   kind?: "shipping";
   booking_id?: string;
+  /** R-460: on a shipping row, the truck's load number (LD-0012), "" before numbering. */
+  load_number?: string;
 }
 export interface PayablesAging {
   summary: PayablesSummary;
@@ -1126,6 +1130,8 @@ export interface DealFlow {
    *  shipping charge), and where that figure came from. Zero without the dollar switch. */
   shipping_billed?: number;
   shipping_billed_source?: "lines" | "field" | "none";
+  /** R-460: the load numbers of the deal's live and quote-stage bookings, space-joined, "" when none. */
+  load_numbers?: string;
   /** total_supplier_cost - freight_typed + shipping_estimate. What an open deal is expected
    *  to cost. Equal to total_supplier_cost for a deal that does not use logistics. */
   projected_cost?: number;
@@ -4021,6 +4027,8 @@ export const api = {
   listLeadNotifications: (kind?: string, status?: string) =>
     safe(invoke<LeadNotification[]>("list_lead_notifications", { kind, status })),
   ackLeadNotification: (id: string) => safe(invoke<void>("ack_lead_notification", { id })),
+  /** R-460: one operating-system notification. The caller decides what is new and whether they are switched on. */
+  showDesktopNotification: (title: string, body: string) => safe(invoke<void>("show_desktop_notification", { title, body })),
   listLeadClicks: (since?: string) => safe(invoke<LeadClick[]>("list_lead_clicks", { since })),
   // Show packing (R-271/R-272) — buyer bins for Whatnot-style live shows.
   showPacking: {

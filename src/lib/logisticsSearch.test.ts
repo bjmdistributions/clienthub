@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SEARCH_MIN_CHARS, handoffFor, newBolHandoff, searchHits, searchable } from "./logisticsSearch";
+import { SEARCH_MIN_CHARS, dealMatchesQuery, handoffFor, newBolHandoff, searchHits, searchable } from "./logisticsSearch";
 import { parseOpenLoad } from "./logisticsCarriers";
 
 // R-459 section 12: the palette's Loads, BOLs and Carriers. Invented names throughout.
@@ -75,5 +75,27 @@ describe("handoffFor: what a hit opens", () => {
   });
   it("starts a BOL from a load on the BOLs screen", () => {
     expect(newBolHandoff("fb_9")).toEqual({ tab: "bols", key: "bols_new_from_load", value: "fb_9", event: "bols-open" });
+  });
+});
+
+// R-460: the Deal Flow search finds a deal by the number of any of its loads.
+describe("finding a deal by a load number", () => {
+  const deal = { invoice_number: "INV-0042", client_name: "Hollis Retail", name: "Spring lot", load_numbers: "LD-0101 LD-0102" };
+  it("matches any one of its load numbers, in any case, or part of one", () => {
+    expect(dealMatchesQuery(deal, "LD-0102")).toBe(true);
+    expect(dealMatchesQuery(deal, "ld-0101")).toBe(true);
+    expect(dealMatchesQuery(deal, "0102")).toBe(true);
+    expect(dealMatchesQuery(deal, "LD-0103")).toBe(false);
+  });
+  it("still matches the invoice, the client and the name", () => {
+    expect(dealMatchesQuery(deal, "inv-0042")).toBe(true);
+    expect(dealMatchesQuery(deal, "hollis")).toBe(true);
+    expect(dealMatchesQuery(deal, "spring")).toBe(true);
+    expect(dealMatchesQuery(deal, "nobody")).toBe(false);
+  });
+  it("an empty search matches every deal, and a deal with no numbers or names reads as empty", () => {
+    expect(dealMatchesQuery(deal, "  ")).toBe(true);
+    expect(dealMatchesQuery({}, "ld-")).toBe(false);
+    expect(dealMatchesQuery({ load_numbers: null, name: null }, "x")).toBe(false);
   });
 });

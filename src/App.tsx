@@ -94,6 +94,8 @@ import { useAppStore } from "./lib/store";
 import { api, isUnavailable, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
+import { canSeeTeamNotices } from "./lib/notices";
+import { useNotices } from "./lib/useNotices";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
 // never opens them. Globe is the expensive one — it is the only importer of
@@ -512,6 +514,16 @@ export default function App() {
     return () => { window.removeEventListener("approvals-changed", onChanged); clearInterval(t); unlisten?.(); };
   }, [me?.is_admin]);
 
+  // R-460: the logistics and bill notices (server side, for the team) and the Logistics-only account's own
+  // alerts. Counted into the bell below; the same hook raises the operating-system notifications.
+  const notices = useNotices(me);
+  // Everything waiting in the Notifications screen, and what the bell shows: for a Logistics-only account
+  // that is the loads to quote or book, and the bell opens Logistics.
+  const apTotal = apCount + notices.team.length;
+  const bellShown = canSeeTeamNotices(me) || logisticsOnly;
+  const bellCount = logisticsOnly ? notices.logisticsCount : apTotal;
+  const bellTab: Tab = logisticsOnly ? "logistics" : "approvals";
+
   useEffect(() => {
     api.getOrganizationName().then((n) => setOrgName((n || "").trim())).catch(() => {});
   }, []);
@@ -647,7 +659,7 @@ export default function App() {
     // rail opening or closing - and the ResizeObserver above cannot see it: the nav
     // is flex-1, so its own box never moves when its contents do.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, navCollapsed, navH, apCount, draftCount, billsOverdue, railPins]);
+  }, [tab, navCollapsed, navH, apTotal, draftCount, billsOverdue, railPins]);
 
   useEffect(() => {
     checkAi();
@@ -833,7 +845,7 @@ export default function App() {
     : id === "bills" ? (isAdmin(me) || can(me, "financials:view"))
 
     : id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
-    : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item
+    : id === "approvals" ? canSeeTeamNotices(me)  // was the header bell; also a Clients sub-item. R-460: deal and book viewers see their notices here too
     : id === "portals" ? canViewTab(me, "clients" as any) // R-290: rides client access, like Tiers
     : id === "manifest" ? canViewTab(me, "inventory" as any) // analyzer rides inventory access
     : id === "lotengine" ? canViewTab(me, "inventory" as any) // so does the lot engine
@@ -886,11 +898,11 @@ export default function App() {
                 {draftCount}
               </span>
         )}
-        {item.id === "approvals" && apCount > 0 && (
+        {item.id === "approvals" && apTotal > 0 && (
           navCollapsed
             ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-red-500" />
             : <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
-                {apCount > 9 ? "9+" : apCount}
+                {apTotal > 9 ? "9+" : apTotal}
               </span>
         )}
         {item.id === "bills" && billsOverdue > 0 && (
@@ -922,9 +934,9 @@ export default function App() {
    *  the same number would appear twice, one row above the other. */
   const railCount = (n: NavNode, expanded: boolean): number => {
     if (n.id === "newsletter") return visible("newsletter") ? draftCount : 0;
-    if (n.id === "approvals") return visible("approvals") ? apCount : 0;
+    if (n.id === "approvals") return visible("approvals") ? apTotal : 0;
     if (n.id === "bills") return visible("bills") ? billsOverdue : 0;
-    if (!expanded && n.children?.some((c) => c.id === "approvals") && visible("approvals")) return apCount;
+    if (!expanded && n.children?.some((c) => c.id === "approvals") && visible("approvals")) return apTotal;
     if (!expanded && n.children?.some((c) => c.id === "bills") && visible("bills")) return billsOverdue;
     return 0;
   };
@@ -1126,7 +1138,7 @@ export default function App() {
     if (t === "dashboard") return <Suspense fallback={paneFallback}><DashboardView onNavigate={setTab} me={me} /></Suspense>;
     if (t === "globe") return <Suspense fallback={globeFallback}><GlobeView me={me} /></Suspense>;
     if (t === "notes") return <NotesView me={me?.display_name || ""} />;
-    if (t === "approvals") return <ApprovalsView />;
+    if (t === "approvals") return <ApprovalsView me={me} notices={notices} />;
     if (t === "checkup") return <CheckupView />;
     return (
       <div className="p-7">
@@ -1188,20 +1200,21 @@ export default function App() {
   // the brand alone.
   const shellButtons = (
     <>
-        {/* Approvals notification bell (admins only) */}
-        {me?.is_admin && (
+        {/* Notification bell: the team's notices (admins, deal and book viewers), or for a Logistics-only
+            account the loads waiting on a quote or a booking. */}
+        {bellShown && (
           <button
-            onClick={() => setTab("approvals")}
-            title={apCount > 0 ? `${apCount} waiting for review` : "Notifications"}
+            onClick={() => setTab(bellTab)}
+            title={bellCount > 0 ? (logisticsOnly ? `${bellCount} to quote or book` : `${bellCount} waiting for review`) : "Notifications"}
             className="relative w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-            style={{ color: tab === "approvals" ? "var(--accent-400)" : "#7A7A90" }}
-            onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== "approvals") e.currentTarget.style.color = "var(--accent-400)"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = tab === "approvals" ? "var(--accent-400)" : "#7A7A90"; }}
+            style={{ color: tab === bellTab ? "var(--accent-400)" : "#7A7A90" }}
+            onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== bellTab) e.currentTarget.style.color = "var(--accent-400)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = tab === bellTab ? "var(--accent-400)" : "#7A7A90"; }}
           >
             <Bell size={13} strokeWidth={2} />
-            {apCount > 0 && (
+            {bellCount > 0 && (
               <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-[15px] text-center">
-                {apCount > 9 ? "9+" : apCount}
+                {bellCount > 9 ? "9+" : bellCount}
               </span>
             )}
           </button>
@@ -1389,7 +1402,7 @@ export default function App() {
                       style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
                       {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
                     </div>}
-                {me?.is_admin && apCount > 0 && (
+                {bellShown && bellCount > 0 && (
                   <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" style={{ border: "1px solid #101011" }} />
                 )}
               </button>
@@ -1534,13 +1547,13 @@ export default function App() {
                     <div className="text-[12px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
                     <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
                   </div>
-                  {me?.is_admin && (
-                    <button onClick={() => setTab("approvals")} className={RAIL_MENU_ROW}>
+                  {bellShown && (
+                    <button onClick={() => setTab(bellTab)} className={RAIL_MENU_ROW}>
                       <Bell size={14} strokeWidth={1.7} />
                       <span>Notifications</span>
-                      {apCount > 0 && (
+                      {bellCount > 0 && (
                         <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
-                          {apCount > 9 ? "9+" : apCount}
+                          {bellCount > 9 ? "9+" : bellCount}
                         </span>
                       )}
                     </button>
@@ -1572,7 +1585,7 @@ export default function App() {
                 <div className="max-h-[60vh] overflow-y-auto">
                   {flatTabs.map((t) => (
                     <div key={t.id} className="relative group/allrow">
-                      {flyoutRow(t, t.id === "approvals" ? apCount : t.id === "newsletter" ? draftCount : t.id === "bills" ? billsOverdue : undefined)}
+                      {flyoutRow(t, t.id === "approvals" ? apTotal : t.id === "newsletter" ? draftCount : t.id === "bills" ? billsOverdue : undefined)}
                       {NAV.some((n) => n.id === t.id) && (
                         <button
                           type="button"

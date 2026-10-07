@@ -17,6 +17,7 @@ import StatusPill from "./StatusPill";
 import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges, useDeliveredDeals } from "./FreightTracking";
 import DealShipping from "./DealShipping";
 import StepBar from "./StepBar";
+import { dealMatchesQuery } from "../lib/logisticsSearch";
 import { useNetsyncApplied, FreightStatusPill, AmountNeededPill } from "./LogisticsBookingForm";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
 
@@ -249,11 +250,7 @@ export default function DealFlowView() {
   }, []);
 
   const q        = search.toLowerCase();
-  const matchFl  = (f: DealFlow) =>
-    !q ||
-    (f.invoice_number || "").toLowerCase().includes(q) ||
-    (f.client_name    || "").toLowerCase().includes(q) ||
-    (f.name           || "").toLowerCase().includes(q);
+  const matchFl  = (f: DealFlow) => dealMatchesQuery(f, q);
 
   // An active deal flow must have a corresponding invoice that is still live
   // (not is_complete, not draft). This prevents stale flows from counting.
@@ -505,7 +502,7 @@ export default function DealFlowView() {
         <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
         <input
           type="text"
-          placeholder="Search invoice or client…"
+          placeholder="Search invoice, client or load number…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="w-full pl-9 pr-8 h-9 border border-line rounded-lg text-[13px] bg-surface

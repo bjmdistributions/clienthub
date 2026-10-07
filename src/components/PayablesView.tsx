@@ -3,6 +3,9 @@ import { api, PayablesAging, APItem, PayableSupplier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, ArrowUpRight, Inbox, Check } from "lucide-react";
 import StatusPill from "./StatusPill";
+import { openLoadInLogistics } from "./LogisticsPayCarriers";
+import { useSessionMe } from "../lib/useSessionMe";
+import { canViewLogistics } from "../lib/permissions";
 
 // Age buckets (days the obligation has been owed). Calm → alarming ramp.
 const BUCKETS = [
@@ -99,6 +102,9 @@ function deriveFromItems(items: APItem[]): { total: number; buckets: Record<stri
 }
 
 export default function PayablesView() {
+  // R-460: a shipping row opens its load on the Pay step, for someone who may open Logistics.
+  const me = useSessionMe();
+  const mayOpenLoads = canViewLogistics(me);
   const [data, setData] = useState<PayablesAging | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"chase" | "payee">("chase");
@@ -308,12 +314,19 @@ export default function PayablesView() {
                       <span className="w-1.5 h-9 rounded-full flex-shrink-0" style={{ background: meta?.color || "var(--c-line-3)" }} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
+                          {it.load_number && <span className="font-mono text-[12px] text-muted flex-shrink-0">{it.load_number}</span>}
                           <span className="text-[13px] font-semibold text-ink truncate">{it.payee || "Shipping"}</span>
                           <span className="text-[11.5px] text-muted flex-shrink-0">Quoted, not paid yet</span>
                         </div>
                         <div className="text-[11px] text-muted truncate mt-0.5">for {dealLabel}</div>
                       </div>
                       <span className="text-[14px] font-bold text-ink tabular-nums flex-shrink-0">{fmtAmount(it.amount)}</span>
+                      {!!it.booking_id && mayOpenLoads && (
+                        <button onClick={() => openLoadInLogistics(it.booking_id!, "pay")}
+                          className="border border-line text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-lg text-[11.5px] font-medium transition-colors inline-flex items-center gap-1 flex-shrink-0">
+                          Open load <ArrowUpRight size={11} />
+                        </button>
+                      )}
                       {!!it.deal_flow_id && !!drillTerm && (
                         <button onClick={() => openDealShipping(drillTerm)}
                           className="border border-line text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-lg text-[11.5px] font-medium transition-colors inline-flex items-center gap-1 flex-shrink-0">

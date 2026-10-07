@@ -62,3 +62,14 @@ export function startBolFromLoad(bookingId: string): void {
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: t.tab }));
   setTimeout(() => window.dispatchEvent(new CustomEvent(t.event)), 100);
 }
+
+/** R-460: the Deal Flow search box. A deal matches its invoice number, its client, its name, or the number of
+ *  any of its loads (`load_numbers`, space-joined: the live and quote-stage trucks). An empty search matches all. */
+export function dealMatchesQuery(
+  f: { invoice_number?: string | null; client_name?: string | null; name?: string | null; load_numbers?: string | null },
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [f.invoice_number, f.client_name, f.name, f.load_numbers].some((v) => (v || "").toLowerCase().includes(q));
+}

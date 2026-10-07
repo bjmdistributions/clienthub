@@ -10,6 +10,7 @@ import type { Me } from "../lib/api";
 import { localDay } from "../lib/format";
 import { can, isAdmin } from "../lib/permissions";
 import { canPayCarriers } from "../lib/logisticsCarriers";
+import { BILL_OPEN_KEY } from "../lib/notices";
 import {
   billsApi, type BillCandidate, type BillFields, type BillOut, type BillsList, type SpendingResponse,
 } from "../lib/billsApi";
@@ -51,6 +52,20 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
   const [form, setForm] = useState<{ bill?: BillOut; seed?: Partial<BillFields> } | null>(null);
   const [sp, setSp] = useState<{ resp?: SpendingResponse; error?: string; busy: boolean }>({ busy: false });
   const spSeq = useRef(0);
+
+  // R-460: a notification stashed a bill to open, then switched here (or this screen was already open).
+  // Read on arrival and when told; the bill opens on the Bills list.
+  useEffect(() => {
+    const take = () => {
+      try {
+        const id = localStorage.getItem(BILL_OPEN_KEY);
+        if (id) { localStorage.removeItem(BILL_OPEN_KEY); setPick("bills"); setOpen(id.trim()); }
+      } catch { /* storage blocked: Bills just opens */ }
+    };
+    take();
+    window.addEventListener("bills-open", take);
+    return () => window.removeEventListener("bills-open", take);
+  }, []);
 
   // True profit is deal profit, the figures Analytics holds: admins and anyone with analytics:view
   // see it. An answer without a profit block falls back to Spending the same way.

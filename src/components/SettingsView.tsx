@@ -100,6 +100,7 @@ import {
   MinusCircle,
   Search,
   Smartphone,
+  Bell,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -114,6 +115,7 @@ import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
 import CrossDock from "./CrossDock";
 import { pushApi, type PushPrefs, type PushPrefsResponse } from "../lib/billsApi";
+import { DESKTOP_NOTIFY_KEY, desktopNoticesOn } from "../lib/notices";
 
 // Opens the matching section of the website setup guide in the browser.
 function GuideLink({ section }: { section: string }) {
@@ -286,6 +288,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "account", label: "Your phone", kw: "contact number" },
   { tab: "account", label: "Replay the getting-started tour", kw: "onboarding walkthrough welcome tour" },
   { tab: "account", card: "My Plan", label: "My plan", kw: "subscription tier usage limits seats clients team members upgrade" },
+  { tab: "account", card: "Desktop notifications", label: "Desktop notifications", kw: "system alerts popups quote needed carrier due overdue bill windows mac notify" },
   { tab: "account", card: "Phone notifications", label: "Phone notifications", kw: "push alerts iphone bills due overdue form submissions inventory renew listings notify" },
   // Appearance
   { tab: "appearance", card: "Theme", label: "Theme", kw: "dark mode light mode colour scheme mono monochrome grayscale" },
@@ -822,6 +825,7 @@ function AccountTab() {
       </div>
       </div>
       <MyPlanCard />
+      <DesktopNotificationsCard />
       <PhoneNotificationsCard />
       <button onClick={() => window.dispatchEvent(new CustomEvent("replay-tour"))} className="text-[12px] text-muted hover:text-ink transition-colors">Replay the getting-started tour</button>
 
@@ -883,6 +887,29 @@ function MyPlanCard() {
       </div>
       {planLabel === "free" && <p className="text-[12px] text-muted mt-4">Paid plans with higher limits are coming soon.</p>}
     </div>
+  );
+}
+
+// R-460: whether this computer raises a system notification when a quote is asked for, a carrier is due or a
+// bill is overdue. Per device (it is this computer's alerts), on unless switched off. The bell still counts
+// either way. Shown to everyone, since a Logistics-only account gets alerts too.
+function DesktopNotificationsCard() {
+  const [on, setOn] = useState(() => { try { return desktopNoticesOn(localStorage); } catch { return true; } });
+  const flip = () => {
+    const next = !on;
+    setOn(next);
+    try { localStorage.setItem(DESKTOP_NOTIFY_KEY, next ? "1" : "0"); } catch { /* storage blocked: the choice holds until the app closes */ }
+  };
+  return (
+    <SettingCard icon={Bell} title="Desktop notifications" purpose="Show a system notification on this computer for what needs you." collapsible={false}>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-[13px] font-medium text-ink">Desktop notifications</div>
+          <div className="text-[11.5px] text-muted mt-0.5">A quote is needed, a load is ready to book, a carrier or a bill is due or overdue. The bell still counts when this is off.</div>
+        </div>
+        <ClauseSwitch on={on} onClick={flip} label="Desktop notifications" />
+      </div>
+    </SettingCard>
   );
 }
 
