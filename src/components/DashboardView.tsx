@@ -71,13 +71,16 @@ function CountUpInt({ value }: { value: number }) {
   return <>{Math.round(v).toLocaleString()}</>;
 }
 
-// Month-over-previous-month movement chip (only meaningful in monthly mode).
-function DeltaChip({ now, prev }: { now: number; prev: number }) {
+// R-482: this month so far against the average of every earlier month over the same
+// days (only meaningful in monthly mode).
+function DeltaChip({ now, prev, months }: { now: number; prev: number; months: number }) {
   if (!prev) return null;
   const pct = ((now - prev) / Math.abs(prev)) * 100;
   const up = pct >= 0;
+  const day = new Date().getDate();
+  const nth = day % 10 === 1 && day !== 11 ? "st" : day % 10 === 2 && day !== 12 ? "nd" : day % 10 === 3 && day !== 13 ? "rd" : "th";
   return (
-    <span title={`vs last month (${fmtAmount(prev)})`}
+    <span title={`vs the average of ${months} month${months !== 1 ? "s" : ""} by the ${day}${nth} (${fmtAmount(prev)})`}
       className={`inline-flex items-center gap-1 h-6 px-2 rounded-full text-[11px] font-semibold tabular-nums ${up ? "bg-success-bg text-success-ink" : "bg-danger-bg text-danger-ink"}`}>
       {up ? <TrendingUp size={12} strokeWidth={2} /> : <TrendingDown size={12} strokeWidth={2} />}
       {Math.abs(pct).toFixed(0)}%
@@ -221,7 +224,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
   // The setting only decides which line the cumulative chart draws.
   const trueNetEnabled = !!stats?.true_net_enabled;
   const heroProfitValue = heroProfit;
-  const heroProfitPrev  = stats?.profit_prev_month ?? 0;
+  const heroProfitPrev  = stats?.profit_same_day_avg ?? 0;
   const heroTrueNet     = heroRange === "month" ? (stats?.true_net_mtd ?? 0) : (stats?.true_net_all_time ?? 0);
   const heroShipping    = heroRange === "month" ? (stats?.shipping_mtd ?? 0) : (stats?.shipping_all_time ?? 0);
   const heroFees        = heroRange === "month" ? (stats?.fees_mtd ?? 0)     : (stats?.fees_all_time ?? 0);
@@ -282,7 +285,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                   <span className="text-[38px] font-bold text-ink tabular-nums leading-none tracking-tight">
                     <CountUpAmount value={heroRevenue} />
                   </span>
-                  {heroRange === "month" && <DeltaChip now={heroRevenue} prev={stats?.revenue_prev_month ?? 0} />}
+                  {heroRange === "month" && <DeltaChip now={heroRevenue} prev={stats?.revenue_same_day_avg ?? 0} months={stats?.same_day_months ?? 0} />}
                 </div>
                 <div className="text-[11.5px] text-faint mt-2.5">
                   deals closed{heroRange === "month" ? " this month" : ", all time"}
@@ -294,7 +297,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                   <span className={`text-[38px] font-bold tabular-nums leading-none tracking-tight ${heroProfitValue < 0 ? "text-danger-ink" : "text-ink"}`}>
                     <CountUpAmount value={heroProfitValue} />
                   </span>
-                  {heroRange === "month" && <DeltaChip now={heroProfitValue} prev={heroProfitPrev} />}
+                  {heroRange === "month" && <DeltaChip now={heroProfitValue} prev={heroProfitPrev} months={stats?.same_day_months ?? 0} />}
                 </div>
                 <div className="text-[11.5px] text-faint mt-2.5">
                   deals closed{heroRange === "month" ? " this month" : ", all time"}
@@ -306,7 +309,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                   <span className={`text-[38px] font-bold tabular-nums leading-none tracking-tight ${heroTrueNet < 0 ? "text-danger-ink" : "text-ink"}`}>
                     <CountUpAmount value={heroTrueNet} />
                   </span>
-                  {heroRange === "month" && <DeltaChip now={heroTrueNet} prev={stats?.true_net_prev_month ?? 0} />}
+                  {heroRange === "month" && <DeltaChip now={heroTrueNet} prev={stats?.true_net_same_day_avg ?? 0} months={stats?.same_day_months ?? 0} />}
                 </div>
                 <div className="text-[11.5px] text-faint mt-2.5 tabular-nums">
                   after {fmtAmount(heroShipping)} shipping and {fmtAmount(heroFees)} bank and wire fees

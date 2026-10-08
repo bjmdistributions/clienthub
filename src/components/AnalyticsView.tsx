@@ -617,6 +617,49 @@ export default function AnalyticsView() {
         </Card>
       )}
 
+      <Defer h={320}>
+      {/* ── Month by month ─────────────────────────────────────── */}
+      <Card title="Month by month" sub="Every month with a closed deal or an overhead payment">
+        {trend.length > 0 ? (
+          <div className="overflow-x-auto -mx-5 px-5">
+            <table className="w-full min-w-[720px] text-[12.5px]">
+              <thead>
+                <tr className="text-[11px] text-muted border-b border-line">
+                  <th className="text-left font-medium py-2 pr-3">Month</th>
+                  <th className="text-right font-medium py-2 px-3">Deals</th>
+                  <th className="text-right font-medium py-2 px-3">Revenue</th>
+                  <th className="text-right font-medium py-2 px-3">Profit</th>
+                  <th className="text-right font-medium py-2 px-3">Margin</th>
+                  <th className="text-right font-medium py-2 px-3">Shipping</th>
+                  <th className="text-right font-medium py-2 px-3">Fees</th>
+                  <th className="text-right font-medium py-2 pl-3">True net</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...trend].reverse().map((m) => (
+                  <tr key={m.month} className="border-b border-line-2 last:border-0 hover:bg-surface-2 transition-colors">
+                    <td className="py-2.5 pr-3 text-ink whitespace-nowrap">
+                      {m.label}
+                      {m.projected && <span className="ml-2"><StatusPill>In progress</StatusPill></span>}
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{m.count}</td>
+                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{fmtAmount(m.revenue)}</td>
+                    <td className="py-2.5 px-3 text-right tabular-nums font-medium"
+                      style={{ color: m.profit >= 0 ? CLR.emerald : CLR.rose }}>{signed(m.profit)}</td>
+                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{m.margin_pct.toFixed(1)}%</td>
+                    <td className="py-2.5 px-3 text-right text-muted tabular-nums">{fmtAmount(m.shipping)}</td>
+                    <td className="py-2.5 px-3 text-right text-muted tabular-nums">{fmtAmount(m.fees)}</td>
+                    <td className="py-2.5 pl-3 text-right tabular-nums font-medium"
+                      style={{ color: m.true_net >= 0 ? CLR.emerald : CLR.rose }}>{signed(m.true_net)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <Blank h={160} text="No months to show for this range" />}
+      </Card>
+      </Defer>
+
       {/* ── Primary trend ───────────────────────────────────────── */}
       <Card
         title="Revenue and profit by month"
@@ -1378,49 +1421,6 @@ export default function AnalyticsView() {
           </div>
         </Card>
       </div>
-      </Defer>
-
-      <Defer h={320}>
-      {/* ── Month by month ─────────────────────────────────────── */}
-      <Card title="Month by month" sub="Every month with a closed deal or an overhead payment">
-        {trend.length > 0 ? (
-          <div className="overflow-x-auto -mx-5 px-5">
-            <table className="w-full min-w-[720px] text-[12.5px]">
-              <thead>
-                <tr className="text-[11px] text-muted border-b border-line">
-                  <th className="text-left font-medium py-2 pr-3">Month</th>
-                  <th className="text-right font-medium py-2 px-3">Deals</th>
-                  <th className="text-right font-medium py-2 px-3">Revenue</th>
-                  <th className="text-right font-medium py-2 px-3">Profit</th>
-                  <th className="text-right font-medium py-2 px-3">Margin</th>
-                  <th className="text-right font-medium py-2 px-3">Shipping</th>
-                  <th className="text-right font-medium py-2 px-3">Fees</th>
-                  <th className="text-right font-medium py-2 pl-3">True net</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...trend].reverse().map((m) => (
-                  <tr key={m.month} className="border-b border-line-2 last:border-0 hover:bg-surface-2 transition-colors">
-                    <td className="py-2.5 pr-3 text-ink whitespace-nowrap">
-                      {m.label}
-                      {m.projected && <span className="ml-2"><StatusPill>In progress</StatusPill></span>}
-                    </td>
-                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{m.count}</td>
-                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{fmtAmount(m.revenue)}</td>
-                    <td className="py-2.5 px-3 text-right tabular-nums font-medium"
-                      style={{ color: m.profit >= 0 ? CLR.emerald : CLR.rose }}>{signed(m.profit)}</td>
-                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{m.margin_pct.toFixed(1)}%</td>
-                    <td className="py-2.5 px-3 text-right text-muted tabular-nums">{fmtAmount(m.shipping)}</td>
-                    <td className="py-2.5 px-3 text-right text-muted tabular-nums">{fmtAmount(m.fees)}</td>
-                    <td className="py-2.5 pl-3 text-right tabular-nums font-medium"
-                      style={{ color: m.true_net >= 0 ? CLR.emerald : CLR.rose }}>{signed(m.true_net)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : <Blank h={160} text="No months to show for this range" />}
-      </Card>
       </Defer>
 
       <Defer h={320}>
