@@ -19,6 +19,8 @@ export const freightTermsKey = (v: unknown): BolTerms =>
 
 /** The server answers a BOL's PDF here. The Logistics bridge allows only paths under /api/logistics. */
 export const bolPdfPath = (id: string): string => `/api/logistics/bols/${encodeURIComponent(id)}/pdf`;
+/** R-475: a load as a rate confirmation PDF for the carrier, printed by the server from what is saved. */
+export const rateConPath = (bookingId: string): string => `/api/logistics/bookings/${encodeURIComponent(bookingId)}/rate-confirmation`;
 
 // ─── reading and building a BOL's data ────────────────────────────────────
 

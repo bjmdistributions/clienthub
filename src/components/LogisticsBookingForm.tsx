@@ -22,6 +22,7 @@ import { canChangePaidOn, canEditCarriers, canPayCarriers, canRecordOn, carrierB
 import { can } from "../lib/permissions";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
 import { openLogisticsHit, startBolFromLoad } from "../lib/logisticsSearch";
+import { rateConPath } from "../lib/logisticsBols";
 import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
 import { CarrierFactsList, CarrierFillButton, CarrierHost, CarrierPicker, useCarriers } from "./LogisticsCarriers";
@@ -593,6 +594,7 @@ export default function LogisticsBookingForm({
   const [draft, setDraft] = useState<Draft>(() => toDraft(booking));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [rateBusy, setRateBusy] = useState(false);
   const startSection = (b: FreightBooking): LoadSection =>
     initialStep ?? firstSection(loadProgress(factsOf(b, {}, known), b.can_see_deal), b.can_see_deal);
   const [step, setStep] = useState<LoadSection>(() => startSection(booking));
@@ -636,6 +638,16 @@ export default function LogisticsBookingForm({
     onClose();
   };
   /** Leaving this page for another screen (a BOL, the invoice): unsaved typing is asked about first. */
+  /** R-475: the load as a rate confirmation for the carrier. The server prints what is saved, so changes are saved first. */
+  const exportRateCon = async () => {
+    if (dirty) { toast("Save first so your changes are on the rate confirmation", "error"); return; }
+    setRateBusy(true); setError("");
+    try {
+      const where = await api.logistics.saveDownload(rateConPath(booking.id));
+      if (where) toast("Rate confirmation saved");
+    } catch (e) { setError(String(e)); }
+    setRateBusy(false);
+  };
   const leaveFor = (go: () => void) => {
     if (dirty && !confirm(UNSAVED_LEAVE)) return;
     setUnsavedWork(false); // asked once: the shell must not ask again when `go` switches screens
@@ -1497,6 +1509,10 @@ export default function LogisticsBookingForm({
           <div className="max-w-[1120px] mx-auto w-full space-y-2">
             {error && <div className="text-[12px] text-danger-ink" role="alert">{error}</div>}
             <div className="flex items-center gap-2 flex-wrap">
+              <button type="button" onClick={exportRateCon} disabled={rateBusy} title="A PDF for the carrier: this load, the rate and where to send freight bills"
+                className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors disabled:opacity-50">
+                <FileText size={12} /> {rateBusy ? "Making the PDF..." : "Rate confirmation"}
+              </button>
               {/* While the team fills the freight in, the team adds the trucks (the logistics person could not fill a new one). */}
               {!freightLocked && (dealEdit || !isQuoteStage(booking.status)) && (
               <button type="button" onClick={addTruck}

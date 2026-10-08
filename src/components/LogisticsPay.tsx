@@ -240,6 +240,61 @@ export function LogisticsNumberingSetting() {
   );
 }
 
+/** R-475: what the rate confirmation prints: the email carriers send freight bills to (blank: the company email) and
+ *  our MC number (blank when the company has no broker authority). An admin's setting, kept on the server. */
+export function LogisticsRateConSetting() {
+  type Form = { email: string; mc: string };
+  const [base, setBase] = useState<Form | null>(null);
+  const [form, setForm] = useState<Form | null>(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      const s = await api.logistics.settings.get();
+      const f: Form = { email: s.freight_bills_email ?? "", mc: s.broker_mc ?? "" };
+      setBase(f); setForm(f); setErr("");
+    } catch (e) { setErr(String(e)); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!form || !base) {
+    return err
+      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
+      : <div className="text-[12.5px] text-muted">Loading...</div>;
+  }
+  const set = (p: Partial<Form>) => { setForm({ ...form, ...p }); setErr(""); };
+  const changed = form.email.trim() !== base.email || form.mc.trim() !== base.mc;
+  const save = async () => {
+    setBusy(true); setErr("");
+    try {
+      const s = await api.logistics.settings.save({ freight_bills_email: form.email.trim(), broker_mc: form.mc.trim() });
+      const f: Form = { email: s.freight_bills_email ?? form.email.trim(), mc: s.broker_mc ?? form.mc.trim() };
+      setBase(f); setForm(f); toast("Saved");
+    } catch (e) { setErr(String(e)); }
+    setBusy(false);
+  };
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-[13px] font-medium text-ink">Rate confirmations</div>
+        <div className="text-[12px] text-muted mt-0.5">Carriers send freight bills to the logistics email, and it prints on every rate confirmation. Left blank, the company email is used. Leave the MC number blank if the company has no broker authority.</div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-[12.5px] font-medium text-muted mb-1" htmlFor="rc-bills">Logistics email</label>
+          <input id="rc-bills" type="email" className={inp} value={form.email} maxLength={200} spellCheck={false} placeholder="logistics@yourcompany.com" onChange={(e) => set({ email: e.target.value })} />
+        </div>
+        <div>
+          <label className="block text-[12.5px] font-medium text-muted mb-1" htmlFor="rc-mc">MC number</label>
+          <input id="rc-mc" type="text" inputMode="numeric" className={inp} value={form.mc} maxLength={14} onChange={(e) => set({ mc: e.target.value })} />
+        </div>
+      </div>
+      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      <button type="button" onClick={save} disabled={!changed || busy}
+        className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40">{busy ? "Saving..." : "Save"}</button>
+    </div>
+  );
+}
+
 export function LogisticsPaySettingsForm() {
   const [s, setS] = useState<LogisticsPaySettings | null>(null);
   const [people, setPeople] = useState<Person[]>([]);

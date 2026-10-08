@@ -110,7 +110,7 @@ import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
 import NumberInput from "./NumberInput";
-import { LogisticsFreightSetting, LogisticsNumberingSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel } from "./LogisticsPay";
+import { LogisticsFreightSetting, LogisticsNumberingSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel, LogisticsRateConSetting } from "./LogisticsPay";
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
 import CrossDock from "./CrossDock";
@@ -5228,9 +5228,10 @@ function SplitsTab() {
         )}
       </SettingCard>
 
-      <SettingCard icon={Truck} title="Logistics" purpose="Who fills in the pallets, weight, dimensions and accessorials before a deal is sent to the logistics person, and how load and BOL numbers are made.">
+      <SettingCard icon={Truck} title="Logistics" purpose="Who fills in the pallets, weight, dimensions and accessorials before a deal is sent to the logistics person, how load and BOL numbers are made, and what a rate confirmation prints.">
         <LogisticsFreightSetting />
         <div className="border-t border-line mt-4 pt-4"><LogisticsNumberingSetting /></div>
+        <div className="border-t border-line mt-4 pt-4"><LogisticsRateConSetting /></div>
       </SettingCard>
 
       <SettingCard icon={Truck} title="Logistics pay" purpose="What happens to the shipping surplus: paid to the person doing logistics as a share (taken off the top with the rep's cut before the split), or only tracked in the Brief.">

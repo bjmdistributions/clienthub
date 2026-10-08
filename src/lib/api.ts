@@ -3327,6 +3327,9 @@ export interface LogisticsSettings {
   freight_by_team: boolean;
   /** R-459: load and BOL numbering, like the invoice numbers. Absent on an older server. */
   load_prefix?: string; load_next_number?: number; bol_prefix?: string; bol_next_number?: number;
+  /** R-475: what a rate confirmation prints: where carriers send freight bills (blank: the company email) and our MC
+   *  number (digits, blank when the company has none). Absent on an older server. */
+  freight_bills_email?: string; broker_mc?: string;
 }
 /** R-459: what the invoice-line route answers. */
 export interface FreightInvoiceLine {

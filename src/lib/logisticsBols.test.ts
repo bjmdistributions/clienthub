@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   FREIGHT_TERMS, NEW_BOL_FROM_LOAD_KEY, OPEN_BOL_KEY, UNIT_TYPES, blankBol, blankBolItem, bolChanged, bolForSave, bolHasData, bolMatches,
   bolPdfPath, bolPrefillOf, bolProblem, bolRecordOf, bolRouteLine, bolTotals, freightTermsKey, lowersCounter, normalBol, numberPreview,
-  numberingProblem, weightWord,
+  numberingProblem, rateConPath, weightWord,
 } from "./logisticsBols";
 
 // R-459 section 8: the BOLs we make. Invented names and figures throughout.
@@ -20,6 +20,9 @@ describe("the lists", () => {
   });
   it("addresses the PDF under /api/logistics, the only prefix the bridge passes", () => {
     expect(bolPdfPath("b_12")).toBe("/api/logistics/bols/b_12/pdf");
+  });
+  it("addresses the rate confirmation under /api/logistics too (R-475)", () => {
+    expect(rateConPath("fb_7")).toBe("/api/logistics/bookings/fb_7/rate-confirmation");
   });
   it("hands off through the two keys the screen reads", () => {
     expect(OPEN_BOL_KEY).toBe("bols_open_id");
