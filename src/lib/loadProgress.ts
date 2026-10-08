@@ -30,7 +30,7 @@ export interface ProgressFacts {
   delivered_at?: string;
   paid_amount?: number | null;
   /** R-470: Carrier paid is done only when the bank payment is linked (`paid`). Without it, it is worked out from
-   *  `paid_amount` and `bank_linked`, and a payment with no link is `marked`. */
+   *  `paid_amount` and `bank_linked`, and a payment with no link is `marked`. `part` (linked for less than the rate) is not done. */
   paid_state?: string | null;
   bank_linked?: string | null;
 }
@@ -71,7 +71,7 @@ function teamStages(b: ProgressFacts): { rows: Row[]; pastQuote: boolean; legacy
     { key: "booked", label: "Booked", done: done.booked, skipped: false, note: "" },
     { key: "pickup", label: "Picked up", done: done.pickup, skipped: false, note: "" },
     { key: "delivery", label: "Delivered", done: done.delivery, skipped: false, note: "" },
-    { key: "carrier", label: "Carrier paid", done: done.carrier, skipped: false, note: paidStateOf(b) === "marked" ? "Link the bank payment" : "" },
+    { key: "carrier", label: "Carrier paid", done: done.carrier, skipped: false, note: paidStateOf(b) === "marked" ? "Link the bank payment" : paidStateOf(b) === "part" ? "Link the rest" : "" },
   ];
   return { rows, pastQuote, legacy };
 }

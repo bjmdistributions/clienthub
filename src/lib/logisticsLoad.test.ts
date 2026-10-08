@@ -276,9 +276,10 @@ describe("the list groups", () => {
     expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paperwork: all }))).toBe("topay");
     expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 1500, paid_state: "paid", paperwork: all }))).toBe("delivered");
   });
-  it("keeps a load whose payment is only marked, or is a $0, in Carrier to be paid (R-470)", () => {
-    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 1500, paid_state: "marked", paperwork: all }))).toBe("topay");
-    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 0, paperwork: all }))).toBe("topay");
+  it("keeps a marked load, or a $0, out of Carrier to be paid, it waits in Pay carriers to be linked, and keeps a part-linked one in it (R-470)", () => {
+    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 1500, paid_state: "marked", paperwork: all }))).toBe("delivered");
+    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 0, paperwork: all }))).toBe("delivered");
+    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 300, paid_state: "part", paperwork: all }))).toBe("topay");
     expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 1500, bank_linked: "linked", paperwork: all }))).toBe("delivered");
   });
   it("does not call a rate missing, or a payment unpaid, when the viewer cannot see money", () => {
@@ -371,7 +372,45 @@ describe("R-470: a load is paid only when its bank payment is linked", () => {
   });
 
   it("does not claim a missing due date for someone who cannot see money", () => {
-    expect(paidView({ paid_amount: null, can_see_money: false }, today)).toMatchObject({ text: "Not paid yet", note: "" });
+    expect(paidView({ paid_state: "unpaid", paid_amount: null, can_see_money: false }, today)).toMatchObject({ text: "Not paid yet", note: "" });
+  });
+
+  it("says nothing at all about a payment the server withheld, never Not paid yet (C-1, P-5)", () => {
+    expect(paidStateOf({ paid_state: "", paid_amount: null })).toBe("hidden");
+    expect(paidStateOf({ paid_state: "", paid_amount: null, can_see_money: false })).toBe("hidden");
+    expect(paidStateOf({ paid_amount: null, can_see_money: false })).toBe("hidden");
+    expect(paidStateOf({ paid_amount: null })).toBe("unpaid");
+    expect(paidView({ paid_state: "", paid_amount: null, can_see_money: false }, today)).toMatchObject({ state: "hidden", text: "", note: "" });
+    expect(paidView({ paid_amount: null, can_see_money: false }, today).text).toBe("");
+  });
+
+  it("a recorded $0 or less is marked, never paid, whatever the link or the server says (P-1, P-3)", () => {
+    expect(paidStateOf({ paid_amount: 0, bank_linked: "linked" })).toBe("marked");
+    expect(paidStateOf({ paid_state: "paid", paid_amount: 0 })).toBe("marked");
+    expect(paidStateOf({ paid_state: "part", paid_amount: 0 })).toBe("marked");
+    expect(paidStateOf({ paid_amount: -5, bank_linked: "linked" })).toBe("marked");
+    expect(paidStateOf({ paid_amount: 0.01, bank_linked: "linked" })).toBe("paid");
+  });
+
+  it("a part-linked load says what is linked of the rate and to link the rest, and keeps its due date (R-470 partial)", () => {
+    expect(paidStateOf({ paid_state: "part", paid_amount: 300 })).toBe("part");
+    const v = paidView({ paid_state: "part", paid_amount: 300, quoted_cost: 800, pay_due_date: "2026-10-03" }, today);
+    expect(v).toMatchObject({ state: "part", tone: "warning", text: "Paid $300.00 of $800.00, link the rest", note: "Overdue since Oct 3", noteTone: "danger" });
+    expect(paidView({ paid_state: "part", paid_amount: 300 }, today).text).toBe("Paid $300.00, link the rest");
+  });
+
+  it("says only part of a marked payment is linked, with the marked day and method (C-3)", () => {
+    const v = paidView({ paid_state: "marked", paid_amount: 850, bank_linked: "partial", paid_at: "2026-10-03", paid_method: "wire" }, today);
+    expect(v.text).toBe("Marked paid $850.00, only part of it is linked to the bank");
+    expect(v.note).toBe(`Marked on ${fmtDayLabel("2026-10-03")} by Wire`);
+    expect(paidView({ paid_state: "marked", paid_amount: 850, paid_method: "Zelle" }, today).note).toBe("by Zelle");
+    expect(paidView({ paid_state: "marked", paid_amount: 850 }, today).note).toBe("");
+  });
+
+  it("shows the reference under Linked to the bank (C-3)", () => {
+    const v = paidView({ paid_state: "paid", paid_amount: 100, paid_note: "ref 4471" }, today);
+    expect(v.note).toBe("Linked to the bank · Reference ref 4471");
+    expect(paidView({ paid_state: "paid", paid_amount: 100, paid_note: "  " }, today).note).toBe("Linked to the bank");
   });
 
   it("warns amber on a payment that is marked but not linked", () => {
@@ -398,8 +437,9 @@ describe("R-470: a load is paid only when its bank payment is linked", () => {
 
   it("asks for the payment only on a delivered or moving load that is not paid", () => {
     expect(needsAmount({ status: "delivered", paid_amount: null })).toBe(true);
-    expect(needsAmount({ status: "delivered", paid_amount: 0 })).toBe(true);
-    expect(needsAmount({ status: "picked_up", paid_amount: 800, paid_state: "marked" })).toBe(true);
+    expect(needsAmount({ status: "delivered", paid_amount: 0 })).toBe(false);
+    expect(needsAmount({ status: "picked_up", paid_amount: 800, paid_state: "marked" })).toBe(false);
+    expect(needsAmount({ status: "delivered", paid_amount: 300, paid_state: "part" })).toBe(true);
     expect(needsAmount({ status: "delivered", paid_amount: 800, paid_state: "paid" })).toBe(false);
     expect(needsAmount({ status: "booked", paid_amount: null })).toBe(false);
     expect(needsAmount({ status: "delivered", paid_amount: null, can_see_money: false })).toBe(false);

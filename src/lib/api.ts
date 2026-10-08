@@ -3261,7 +3261,8 @@ export interface FreightBooking {
   /** null = not paid yet. R-470: a number here is shown as Paid only when `paid_state` says the bank payment is linked. */
   paid_amount: number | null;
   paid_at: string; paid_method: string; paid_note: string; notes: string;
-  /** R-470: unpaid, marked (a typed payment that is not linked to the bank, shown as a warning) or paid (linked).
+  /** R-470: unpaid, marked (a typed payment that is not linked to the bank, shown as a warning), part (linked, but for less
+   *  than the carrier rate) or paid (linked). "" = withheld from a viewer without the dollar switch.
    *  Absent on an older server and in the local copy: it is then worked out from `paid_amount` and `bank_linked`. */
   paid_state?: PaidState;
   created_by_name: string; updated_by_name: string; created_at: string; updated_at: string;
@@ -3331,8 +3332,10 @@ export interface LogisticsSettings {
 export interface FreightInvoiceLine {
   invoice_id: string; invoice_number: string; line: number; subtotal: number; tax: number; total: number;
 }
-/** R-470: a load is Paid only when its bank payment is linked. `marked` is a payment typed before this rule. */
-export type PaidState = "unpaid" | "marked" | "paid";
+/** R-470: a load is Paid only when its bank payment is linked. `marked` is a payment typed before this rule, `part` is a
+ *  load whose named bank links add up to less than the carrier rate (more can be linked), and `hidden` is a payment the
+ *  server withheld from a viewer without the dollar switch (the screen says nothing about it). */
+export type PaidState = "unpaid" | "marked" | "paid" | "part" | "hidden";
 /** R-459: how a carrier gets paid. Identical on every surface. */
 export type CarrierPayMethod = "zelle" | "wire" | "ach" | "credit_card" | "check" | "other" | "";
 /** R-459: one carrier in the directory. `last_rate` is null without the dollar switch. */

@@ -440,7 +440,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   // R-470: a load is paid only by linking its bank payment, from where the payment is seen. After a link, an unlink or an
   // undo the server's copy is read again at once; sync brings the local rows in a moment later.
   const paidControls = usePaidControls(() => refresh());
-  const payTarget = (b: FreightBooking) => ({ bookingId: b.id, label: `${b.carrier || "Carrier"}, ${loadNumber(b)}`, rate: b.quoted_cost });
+  const payTarget = (b: FreightBooking) => ({ bookingId: b.id, label: `${b.carrier || "Carrier"}, ${loadNumber(b)}`, rate: b.quoted_cost, linked: paidStateOf(b) === "part" ? b.paid_amount : null });
 
   const addTruck = async () => {
     const from = live[live.length - 1] ?? bookings[bookings.length - 1];
@@ -572,7 +572,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
                       </div>
                       <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap">
                         <PaidSummary b={b} today={localDay()} />
-                        <PaidButtons state={paidStateOf(b)} bankLinked={b.bank_linked} canLink={canRecordOn(b, canPay)} canChange={canChangePaidOn(b, canPay)}
+                        <PaidButtons state={paidStateOf(b)} bankLinked={b.bank_linked} amount={b.paid_amount} canLink={canRecordOn(b, canPay)} canChange={canChangePaidOn(b, canPay)}
                           target={payTarget(b)} controls={paidControls} />
                       </div>
                     </li>

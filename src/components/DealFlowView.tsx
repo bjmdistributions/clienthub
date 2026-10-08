@@ -2196,7 +2196,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         {(flow.logistics_unpaid ?? 0) > 0 && (
           <div className="mt-2.5 flex items-start gap-1.5 text-[11.5px] text-warning-ink">
             <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-            <span>Shipping has not been paid yet. Profit updates by itself when the amount paid is entered.</span>
+            <span>Shipping has not been paid yet. Profit updates by itself when the bank payment is linked.</span>
           </div>
         )}
         {refundTotal > 0.005 && (

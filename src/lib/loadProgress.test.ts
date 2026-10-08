@@ -91,6 +91,12 @@ describe("loadProgress, the team's eight stages", () => {
     expect(loadProgress(flow({ ...base, paid_amount: 850, paid_state: "paid" }), true)[7]).toMatchObject({ state: "done", note: "" });
   });
 
+  it("a part-linked carrier payment is not done and says to link the rest, and a withheld one says nothing", () => {
+    const base = { status: "delivered", shipping_charge: "invoice" as const, invoice_sent: true, deal_paid: true };
+    expect(loadProgress(flow({ ...base, paid_amount: 300, paid_state: "part" }), true)[7]).toMatchObject({ state: "current", note: "Link the rest" });
+    expect(loadProgress(flow({ ...base, paid_amount: null, paid_state: "" }), true)[7]).toMatchObject({ state: "current", note: "" });
+  });
+
   it("a typed payment with no link reads as marked when the copy has no paid_state, and linked reads as paid", () => {
     const base = { status: "delivered", shipping_charge: "invoice" as const, invoice_sent: true, deal_paid: true, paid_amount: 850 };
     expect(loadProgress(flow(base), true)[7].state).toBe("current");

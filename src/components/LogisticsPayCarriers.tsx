@@ -4,10 +4,10 @@ import { ChevronRight, FileText, Search } from "lucide-react";
 import { api, type CarrierPayResponse, type CarrierPayRow, type PaidState } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import {
-  OPEN_LOAD_KEY, UNDO_PAID_PATCH, carrierPayCandidates, encodeOpenLoad, linkAmountCheck, linkAmountStart, payDue, payMethodLabel,
+  OPEN_LOAD_KEY, UNDO_PAID_PATCH, carrierPayCandidates, encodeOpenLoad, linkAmountCheck, linkAmountStart, linkRateStart, payActions, payDue, payMethodLabel,
   toPaySummary, type BankCandidate,
 } from "../lib/logisticsCarriers";
-import { fmtDayLabel, paidView, type LoadStep, type PaidFacts, type PaidView } from "../lib/logisticsLoad";
+import { fmtDayLabel, paidStateOf, paidView, type LoadStep, type PaidFacts, type PaidView } from "../lib/logisticsLoad";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
 import { LogisticsModal, modalGhost, modalPrimary } from "./LogisticsCarriers";
 import NumberInput from "./NumberInput";
@@ -55,8 +55,9 @@ export function useCarrierPay(enabled: boolean) {
 
 // ─── Paid means linked to the bank (R-470) ────────────────────────────────
 
-/** The load a payment control acts on. `rate` is the carrier rate, for the amount a link opens with. */
-export interface PayTarget { bookingId: string; label: string; rate: number | null }
+/** The load a payment control acts on. `rate` is the carrier rate and `linked` what a part-linked load already has linked
+ *  to the bank, for the amount a link opens with (the rest of the rate). */
+export interface PayTarget { bookingId: string; label: string; rate: number | null; linked?: number | null }
 
 /** The bank rows that look like this payment (money out, with money left on it, around the pay day). Picking one
  *  asks for the amount to book on this load, then books it against the deal as shipping and marks the load paid.
@@ -79,7 +80,7 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
   }, [target.bookingId, q]);
 
   const pick = (c: BankCandidate) => {
-    const start = linkAmountStart(c, target.rate);
+    const start = linkAmountStart(c, linkRateStart(target.rate, target.linked));
     setPicked(c); setAmount(start == null ? "" : String(start)); setErr("");
   };
   const go = async () => {
@@ -112,7 +113,11 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
             <label className="block text-[12px] font-medium text-muted mb-1">Amount to link to this load</label>
             <NumberInput className={inp} value={amount} placeholder="0.00" autoFocus onValue={(_n, raw) => setAmount(raw)} />
             <div className="text-[11px] text-muted mt-1">
-              {[picked.free != null ? `${fmtAmount(picked.free)} free on this payment.` : "", target.rate != null ? `Carrier rate ${fmtAmount(target.rate)}.` : ""].filter(Boolean).join(" ")}
+              {[
+                picked.free != null ? `${fmtAmount(picked.free)} free on this payment.` : "",
+                target.rate != null ? `Carrier rate ${fmtAmount(target.rate)}.` : "",
+                target.linked != null && target.linked > 0.005 ? `${fmtAmount(target.linked)} already linked.` : "",
+              ].filter(Boolean).join(" ")}
               {" "}Linking books this amount on the deal as shipping and marks the load paid.
             </div>
           </div>
@@ -194,6 +199,7 @@ const TONE_TEXT: Record<PaidView["tone"], string> = {
 /** A load's payment in words: not paid yet and when it is due, marked paid but not linked, or paid and linked. */
 export function PaidSummary({ b, today, className = "" }: { b: PaidFacts; today: string; className?: string }) {
   const v = paidView(b, today);
+  if (!v.text) return null;
   return (
     <div className={`min-w-0 ${className}`}>
       <div className={`text-[13px] break-words ${TONE_TEXT[v.tone]} ${v.state === "unpaid" ? "" : "font-medium"}`}>{v.text}</div>
@@ -202,18 +208,20 @@ export function PaidSummary({ b, today, className = "" }: { b: PaidFacts; today:
   );
 }
 
-/** The buttons for a load's payment. Not paid: Link bank payment. Marked paid: Link bank payment and Undo (and Unlink when
- *  part of it is linked). Paid: Unlink. Nothing at all for someone who may not change payments. */
-export function PaidButtons({ state, bankLinked, canLink, canChange, target, controls }: {
-  state: PaidState; bankLinked?: string | null; canLink: boolean; canChange: boolean; target: PayTarget; controls: ReturnType<typeof usePaidControls>;
+/** The buttons for a load's payment. Not paid: Link bank payment. Part paid: Link bank payment (the rest) and Unlink. Marked
+ *  paid: Link bank payment and Undo, or Unlink instead of Undo once the bank carries some of it (a marked $0 is never
+ *  linked, so it always has Undo). Paid: Unlink. Nothing at all for someone who may not change payments. */
+export function PaidButtons({ state, bankLinked, amount, canLink, canChange, target, controls }: {
+  state: PaidState; bankLinked?: string | null; amount?: number | null; canLink: boolean; canChange: boolean; target: PayTarget; controls: ReturnType<typeof usePaidControls>;
 }) {
-  const linkBtn = canLink && state !== "paid" && (
+  const show = payActions(state, bankLinked, amount, canLink, canChange);
+  const linkBtn = show.link && (
     <button type="button" onClick={() => controls.link(target)} disabled={controls.busy} className={primaryBtn}>Link bank payment</button>
   );
-  const undoBtn = canChange && state === "marked" && (
+  const undoBtn = show.undo && (
     <button type="button" onClick={() => controls.undo(target)} disabled={controls.busy} className={ghostBtn}>Undo</button>
   );
-  const unlinkBtn = canChange && (state === "paid" || (state === "marked" && (bankLinked === "linked" || bankLinked === "partial"))) && (
+  const unlinkBtn = show.unlink && (
     <button type="button" onClick={() => controls.unlink(target)} disabled={controls.busy} className={ghostBtn}>Unlink</button>
   );
   if (!linkBtn && !undoBtn && !unlinkBtn) return null;
@@ -281,7 +289,9 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
   const file = useOpenFile();
   const controls = usePaidControls(reload);
   const today = localDay();
-  const targetOf = (r: CarrierPayRow): PayTarget => ({ bookingId: r.booking_id, label: `${r.carrier || "Carrier"}, ${r.load_number}`, rate: r.rate });
+  const targetOf = (r: CarrierPayRow): PayTarget => ({
+    bookingId: r.booking_id, label: `${r.carrier || "Carrier"}, ${r.load_number}`, rate: r.rate, linked: paidStateOf(r) === "part" ? r.paid_amount : null,
+  });
   const sum = useMemo(() => toPaySummary(data?.to_pay ?? [], today), [data, today]);
 
   if (data === null) {
@@ -289,7 +299,7 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
   }
   const toLink = data.to_link ?? [];
   const buttons = (r: CarrierPayRow, state: PaidState) => (
-    <PaidButtons state={state} bankLinked={r.bank_linked} canLink canChange target={targetOf(r)} controls={controls} />
+    <PaidButtons state={state} bankLinked={r.bank_linked} amount={r.paid_amount} canLink canChange target={targetOf(r)} controls={controls} />
   );
   return (
     <div className="space-y-5 min-w-0">
@@ -305,6 +315,7 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
         {data.to_pay.length === 0 && <div className="px-4 py-4 text-[12.5px] text-muted">No carrier is waiting to be paid.</div>}
         {data.to_pay.map((r) => {
           const due = payDue(r, today);
+          const state = paidStateOf(r);
           return (
             <div key={r.booking_id} className="flex items-center gap-3 px-4 py-3 min-w-0 flex-wrap">
               <Who r={r} onOpen={() => onOpenLoad(r.booking_id, "pay")} />
@@ -320,7 +331,8 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
                   : <StatusPill tone="warning">No carrier invoice</StatusPill>}
               </div>
               <span className="text-[14px] font-semibold tabular-nums text-ink w-24 text-right flex-shrink-0">{r.rate != null ? fmtAmount(r.rate) : "No rate"}</span>
-              {buttons(r, "unpaid")}
+              {state === "part" && <PaidSummary b={{ ...r, quoted_cost: r.rate, pay_due_date: "" }} today={today} className="max-w-[320px]" />}
+              {buttons(r, state)}
             </div>
           );
         })}
@@ -332,7 +344,7 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
         {toLink.map((r) => (
           <div key={r.booking_id} className="flex items-center gap-3 px-4 py-3 min-w-0 flex-wrap">
             <Who r={r} onOpen={() => onOpenLoad(r.booking_id, "pay")} />
-            <PaidSummary b={{ ...r, paid_state: "marked" }} today={today} className="max-w-[320px]" />
+            <PaidSummary b={{ ...r, paid_state: "marked", quoted_cost: r.rate }} today={today} className="max-w-[320px]" />
             {buttons(r, "marked")}
           </div>
         ))}
@@ -343,7 +355,7 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
         {data.paid.map((r) => (
           <div key={r.booking_id} className="flex items-center gap-3 px-4 py-3 min-w-0 flex-wrap">
             <Who r={r} onOpen={() => onOpenLoad(r.booking_id, "pay")} />
-            <PaidSummary b={{ ...r, paid_state: "paid" }} today={today} className="max-w-[320px]" />
+            <PaidSummary b={{ ...r, paid_state: "paid", quoted_cost: r.rate }} today={today} className="max-w-[320px]" />
             {buttons(r, "paid")}
           </div>
         ))}

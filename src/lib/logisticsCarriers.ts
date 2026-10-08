@@ -124,17 +124,42 @@ export const canSeePayDetails = (me: Perms | null | undefined): boolean =>
  *  nothing else. It is the only paid write left: a load becomes paid only by linking its bank payment. */
 export const UNDO_PAID_PATCH = { paid_amount: null } as const;
 
+/** Which payment buttons a load shows. Link: unpaid, part paid or marked (the team may link). Unlink: a linked load, a part-linked
+ *  one, or a marked one the bank carries some of. Undo: a marked load the bank carries none of, and always a marked $0 (a
+ *  $0 is never linked, so it never has Unlink). Nothing for a paid or withheld load beyond Unlink, and nothing without the right. */
+export function payActions(state: "unpaid" | "marked" | "paid" | "part" | "hidden", bankLinked: string | null | undefined, amount: number | null | undefined, canLink: boolean, canChange: boolean): { link: boolean; undo: boolean; unlink: boolean } {
+  const zero = amount != null && amount <= 0.005;
+  const bankHasIt = !zero && (bankLinked === "linked" || bankLinked === "partial");
+  return {
+    link: canLink && state !== "paid" && state !== "hidden",
+    undo: canChange && state === "marked" && !bankHasIt,
+    unlink: canChange && !zero && (state === "paid" || state === "part" || (state === "marked" && bankHasIt)),
+  };
+}
+
 /** The due word and tone for one row, off the local day (the server's `overdue` is its own clock). */
 export const payDue = (r: Pick<CarrierPayRow, "pay_due_date">, today: string): { label: string; tone: "danger" | "warning" | "neutral" } =>
   ({ label: dueLabel(r.pay_due_date, today), tone: dueTone(r.pay_due_date, today) });
 
-/** The rows still owed, counted for a section header: how many, how many are due today or late, and the
- *  rate they add up to (loads with no rate yet add nothing and are counted apart). */
-export function toPaySummary(rows: Pick<CarrierPayRow, "pay_due_date" | "rate">[], today: string): { count: number; late: number; total: number; noRate: number } {
+/** What a load in To pay still owes the carrier: the rate, less what is already linked when the load is `part` paid.
+ *  null with no rate. */
+export function owedOf(r: { rate: number | null; paid_amount?: number | null; paid_state?: string | null }): number | null {
+  if (r.rate == null) return null;
+  return r.paid_state === "part" && r.paid_amount != null ? Math.max(Math.round((r.rate - r.paid_amount) * 100) / 100, 0) : r.rate;
+}
+
+/** The amount a link opens with when the carrier rate is known: the rate, less what is already linked on a `part` load. */
+export const linkRateStart = (rate: number | null | undefined, linked: number | null | undefined): number | null =>
+  rate == null ? null : linked != null && linked > 0.005 ? Math.max(Math.round((rate - linked) * 100) / 100, 0) : rate;
+
+/** The rows still owed, counted for a section header: how many, how many are due today or late, and what they add up
+ *  to (the rate, less what a part-linked load already has linked; loads with no rate yet add nothing and are counted apart). */
+export function toPaySummary(rows: { pay_due_date: string; rate: number | null; paid_amount?: number | null; paid_state?: string | null }[], today: string): { count: number; late: number; total: number; noRate: number } {
   let late = 0, total = 0, noRate = 0;
   for (const r of rows) {
     if (payDue(r, today).tone === "danger") late++;
-    if (r.rate == null) noRate++; else total += r.rate;
+    const owed = owedOf(r);
+    if (owed == null) noRate++; else total += owed;
   }
   return { count: rows.length, late, total: Math.round(total * 100) / 100, noRate };
 }
@@ -206,33 +231,35 @@ export function linkAmountCheck(raw: string, free: number | null): { amount: num
 /** A name with everything but letters and digits dropped, so "Acme-Freight, Inc." and "acme freight inc" are one name. */
 export const squashName = (s: string): string => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-/** An MC or DOT number typed in a box: "MC 123456", "MC-123456", "DOT 7890" or bare digits. null for anything else. */
+/** An MC or DOT number typed in a box: "MC 123456", "MC-123456", "USDOT 7890", "DOT 7890" or bare digits. null for anything else. */
 export function typedNumber(typed: string): { kind: "mc" | "dot" | "any"; digits: string } | null {
-  const m = /^\s*(mc|dot)?[\s#:.-]*(\d[\d\s-]*)$/i.exec(typed || "");
+  const m = /^\s*(mc|usdot|dot)?[\s#:.-]*(\d[\d\s-]*)$/i.exec(typed || "");
   if (!m) return null;
   const digits = m[2].replace(/\D/g, "");
-  return digits.length >= 3 ? { kind: (m[1]?.toLowerCase() as "mc" | "dot" | undefined) ?? "any", digits } : null;
+  const word = m[1]?.toLowerCase();
+  return digits.length >= 3 ? { kind: word === "mc" ? "mc" : word ? "dot" : "any", digits } : null;
 }
 
-const digitsOf = (s: string): string => (s || "").replace(/\D/g, "");
+/** The digits of a number with leading zeros dropped, so "MC 0123456" and "123456" are one number. */
+const digitsOf = (s: string): string => (s || "").replace(/\D/g, "").replace(/^0+/, "");
 
-/** The saved carriers the typed text names: the same name (case, spaces and punctuation ignored) or the same MC or
- *  DOT number; failing both, a name that starts with the typed text (3 or more characters) or that the typed text
- *  starts with (a saved "Acme Freight" for "Acme Freight LLC"). The closest name first; nothing for fewer than 3 characters. */
+/** The saved carriers the typed text names, the same rules as the web: the same name (case, spaces and punctuation
+ *  ignored), or a saved name that starts with the typed text (3 or more characters), or the same MC or DOT number
+ *  (leading zeros and the "MC" / "DOT" / "USDOT" word ignored). All of them together, the exact names first, then the
+ *  saved order. The typed text is never longer than the match: a saved "Express" is not offered for "Express Freight". */
 export function carrierMatches(typed: string, list: FreightCarrier[] | null | undefined): FreightCarrier[] {
   const t = squashName(typed);
-  if (!list || t.length < 3) return [];
-  const exact = list.filter((c) => squashName(c.name) === t);
+  if (!list || !t) return [];
   const tn = typedNumber(typed);
-  const byNumber = tn
-    ? list.filter((c) => !exact.includes(c) && ((tn.kind !== "dot" && digitsOf(c.mc_number) === tn.digits) || (tn.kind !== "mc" && digitsOf(c.dot_number) === tn.digits)))
-    : [];
-  const sure = [...exact, ...byNumber];
-  if (sure.length > 0) return sure;
-  const gap = (c: FreightCarrier) => Math.abs(squashName(c.name).length - t.length);
-  return list
-    .filter((c) => { const n = squashName(c.name); return n.length >= 3 && (n.startsWith(t) || t.startsWith(n)); })
-    .sort((a, b) => gap(a) - gap(b) || a.name.localeCompare(b.name));
+  const want = tn ? digitsOf(tn.digits) : "";
+  const isExact = (c: FreightCarrier) => squashName(c.name) === t;
+  const hit = (c: FreightCarrier) => {
+    if (isExact(c)) return true;
+    if (t.length >= 3 && squashName(c.name).startsWith(t)) return true;
+    return want !== "" && ((tn!.kind !== "dot" && digitsOf(c.mc_number) === want) || (tn!.kind !== "mc" && digitsOf(c.dot_number) === want));
+  };
+  const out = list.filter(hit);
+  return [...out.filter(isExact), ...out.filter((c) => !isExact(c))];
 }
 
 export interface FillFacts { carrier: string; carrier_id: string; delivered_at: string; pay_due_date: string }

@@ -110,15 +110,22 @@ export const paidMethodWord = (m: string | null | undefined): string => {
 /** What a load's payment is. The server's `paid_state` wins. Without it (an older server, or the local copy of a
  *  load) a load is paid only when the bank link says so, and a payment with no link is `marked`: the screen
  *  never claims Paid on a figure somebody typed. */
-export function paidStateOf(b: { paid_state?: string | null; paid_amount?: number | null; bank_linked?: string | null }): PaidState {
-  if (b.paid_state === "unpaid" || b.paid_state === "marked" || b.paid_state === "paid") return b.paid_state;
+export function paidStateOf(b: { paid_state?: string | null; paid_amount?: number | null; bank_linked?: string | null; can_see_money?: boolean }): PaidState {
+  const s = b.paid_state;
+  // A recorded $0 (or less) is never a payment, whatever the link says: it is marked, to be undone.
+  if (b.paid_amount != null && b.paid_amount <= 0.005) return "marked";
+  if (s === "unpaid" || s === "marked" || s === "paid" || s === "part") return s;
+  // The server withheld the money from a viewer without the dollar switch: say nothing, never "Not paid yet".
+  if (b.paid_amount == null && (s === "" || (b.can_see_money === false && !s))) return "hidden";
   if (b.paid_amount == null) return "unpaid";
   return b.bank_linked === "linked" ? "paid" : "marked";
 }
 
 export interface PaidFacts {
   paid_state?: string | null; paid_amount?: number | null; bank_linked?: string | null;
-  paid_at?: string | null; paid_method?: string | null; pay_due_date?: string | null; can_see_money?: boolean;
+  paid_at?: string | null; paid_method?: string | null; paid_note?: string | null; pay_due_date?: string | null; can_see_money?: boolean;
+  /** The carrier rate: what a part-linked load still has to reach. */
+  quoted_cost?: number | null;
 }
 
 export interface PaidView {
@@ -138,6 +145,7 @@ export interface PaidView {
 export function paidView(b: PaidFacts, today: string, now?: Date): PaidView {
   const state = paidStateOf(b);
   const amount = b.paid_amount ?? null;
+  if (state === "hidden") return { state, tone: "neutral", text: "", note: "", noteTone: "neutral", zero: false };
   if (state === "unpaid") {
     const due = (b.pay_due_date || "").trim();
     const note = due ? dueLabel(due, today, now) : moneyHidden(b) ? "" : "No due date";
@@ -147,15 +155,28 @@ export function paidView(b: PaidFacts, today: string, now?: Date): PaidView {
     if (amount === 0) {
       return { state, tone: "danger", text: "A $0 payment is not a real payment. Undo it.", note: "", noteTone: "neutral", zero: true };
     }
+    const link = b.bank_linked === "partial" ? "only part of it is linked to the bank" : "not linked to the bank";
+    const day = (b.paid_at || "").trim() ? `Marked on ${fmtDayLabel(b.paid_at, now)}` : "";
+    const how = (b.paid_method || "").trim() ? `by ${paidMethodWord(b.paid_method)}` : "";
     return {
-      state, tone: "warning", note: "", noteTone: "neutral", zero: false,
-      text: amount == null ? "Marked paid, not linked to the bank" : `Marked paid ${fmtAmount(amount)}, not linked to the bank`,
+      state, tone: "warning", note: [day, how].filter(Boolean).join(" "), noteTone: "neutral", zero: false,
+      text: amount == null ? `Marked paid, ${link}` : `Marked paid ${fmtAmount(amount)}, ${link}`,
+    };
+  }
+  if (state === "part") {
+    const rate = b.quoted_cost ?? null;
+    const due = (b.pay_due_date || "").trim();
+    return {
+      state, tone: "warning", zero: false,
+      text: `${amount == null ? "Paid" : `Paid ${fmtAmount(amount)}`}${rate != null ? ` of ${fmtAmount(rate)}` : ""}, link the rest`,
+      note: due ? dueLabel(due, today, now) : "", noteTone: due ? dueTone(due, today) : "neutral",
     };
   }
   const bits = [amount == null ? "Paid" : `Paid ${fmtAmount(amount)}`];
   if ((b.paid_at || "").trim()) bits.push(`on ${fmtDayLabel(b.paid_at, now)}`);
   if ((b.paid_method || "").trim()) bits.push(`by ${paidMethodWord(b.paid_method)}`);
-  return { state, tone: "success", text: bits.join(" "), note: "Linked to the bank", noteTone: "success", zero: false };
+  const ref = (b.paid_note || "").trim();
+  return { state, tone: "success", text: bits.join(" "), note: ["Linked to the bank", ref ? `Reference ${ref}` : ""].filter(Boolean).join(" · "), noteTone: "success", zero: false };
 }
 
 // ─── days and times ───────────────────────────────────────────────────────
@@ -339,10 +360,11 @@ export const GROUPS: { key: GroupKey; title: string }[] = [
 export const isHot = (b: { urgent?: boolean; status: string }): boolean =>
   !!b.urgent && (b.status === "quote" || b.status === "requested" || b.status === "booked");
 
-/** Picked up or delivered and the carrier is not paid yet: no payment, or one that is not linked to the bank. A
- *  figure the server withheld is hidden, not missing. (The deal side still asks for it; the logistics list no longer does.) */
+/** Picked up or delivered and the carrier is still owed: nothing linked to a bank payment yet, or only part of the rate. A
+ *  marked payment (typed before R-470) waits in Pay carriers to be linked, so it is not this pill. A figure the server
+ *  withheld is hidden, not missing. (The deal side still asks for it; the logistics list no longer does.) */
 export const needsAmount = (b: { status: string; paid_amount: number | null; paid_state?: string | null; bank_linked?: string | null; can_see_money?: boolean }): boolean =>
-  !moneyHidden(b) && (b.status === "picked_up" || b.status === "delivered") && paidStateOf(b) !== "paid";
+  !moneyHidden(b) && (b.status === "picked_up" || b.status === "delivered") && (paidStateOf(b) === "unpaid" || paidStateOf(b) === "part");
 
 /** What a delivered load still lacks before the carrier can be paid: the proof of delivery, the
  *  carrier's invoice and the carrier rate. */
@@ -368,7 +390,9 @@ export function groupOf(b: Groupable): GroupKey | null {
     case "picked_up": return "way";
     default:
       if (missingPaperwork(b).length > 0) return "paperwork";
-      if (paidStateOf(b) !== "paid" && !moneyHidden(b)) return "topay";
+      // Carrier to be paid holds the loads still owed (nothing linked, or only part). A marked load waits in Pay carriers'
+      // "Link the bank payment" group, not here.
+      if ((paidStateOf(b) === "unpaid" || paidStateOf(b) === "part") && !moneyHidden(b)) return "topay";
       return "delivered";
   }
 }

@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import type { FreightCarrier, RateMatch, RatesResponse } from "./api";
 import {
   OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, canChangePaidOn, canEditCarriers, canPayCarriers, canRecordOn, canSeePayDetails, carrierByName, carrierFacts, carrierIds,
-  carrierMatches, carrierPayCandidates, encodeOpenLoad, fillOffers, fillPatch, fillWouldChange, filterCarriers, laneEnds, lastRate, linkAmountCheck, linkAmountStart,
-  normalName, offerSaveCarrier, parseOpenLoad, payDue, payMethodKey, payMethodLabel, queryText, rateOf, squashName, termsWord, toPaySummary, typedNumber,
+  carrierMatches, carrierPayCandidates, encodeOpenLoad, fillOffers, fillPatch, fillWouldChange, filterCarriers, laneEnds, lastRate, linkAmountCheck, linkAmountStart, linkRateStart,
+  normalName, offerSaveCarrier, owedOf, parseOpenLoad, payActions, payDue, payMethodKey, payMethodLabel, queryText, rateOf, squashName, termsWord, toPaySummary, typedNumber,
 } from "./logisticsCarriers";
 
 const carrier = (over: Partial<FreightCarrier> = {}): FreightCarrier => ({
@@ -175,6 +175,39 @@ describe("what is due", () => {
     ], today);
     expect(s).toEqual({ count: 4, late: 2, total: 2400.5, noRate: 1 });
   });
+  it("owes the rest of the rate on a part-linked load, and links the rest by default", () => {
+    expect(owedOf({ rate: 800, paid_amount: 300, paid_state: "part" })).toBe(500);
+    expect(owedOf({ rate: 800, paid_amount: null, paid_state: "unpaid" })).toBe(800);
+    expect(owedOf({ rate: 800, paid_amount: 900, paid_state: "part" })).toBe(0);
+    expect(owedOf({ rate: null, paid_amount: 300, paid_state: "part" })).toBeNull();
+    expect(toPaySummary([{ pay_due_date: "", rate: 800, paid_amount: 300, paid_state: "part" }, { pay_due_date: "", rate: 200 }], today)).toMatchObject({ total: 700, noRate: 0 });
+    expect(linkRateStart(800, 300)).toBe(500);
+    expect(linkRateStart(800, null)).toBe(800);
+    expect(linkRateStart(800, 0)).toBe(800);
+    expect(linkRateStart(null, 300)).toBeNull();
+  });
+});
+
+describe("which payment buttons a load shows (C-2, P-1, P-3, R-470 partial)", () => {
+  const acts = (state: Parameters<typeof payActions>[0], bank: string | null, amount: number | null, canLink = true, canChange = true) => payActions(state, bank, amount, canLink, canChange);
+  it("unpaid: Link only", () => expect(acts("unpaid", null, null)).toEqual({ link: true, undo: false, unlink: false }));
+  it("paid: Unlink only", () => expect(acts("paid", "linked", 800)).toEqual({ link: false, undo: false, unlink: true }));
+  it("part paid: Link the rest and Unlink", () => expect(acts("part", "partial", 300)).toEqual({ link: true, undo: false, unlink: true }));
+  it("marked and not in the bank: Link and Undo", () => expect(acts("marked", "none", 800)).toEqual({ link: true, undo: true, unlink: false }));
+  it("marked and partly or fully in the bank: Link and Unlink, never Undo", () => {
+    expect(acts("marked", "partial", 800)).toEqual({ link: true, undo: false, unlink: true });
+    expect(acts("marked", "linked", 800)).toEqual({ link: true, undo: false, unlink: true });
+  });
+  it("a marked $0 shows Link and Undo, never Unlink, even if the deal's links cover it", () => {
+    expect(acts("marked", "linked", 0)).toEqual({ link: true, undo: true, unlink: false });
+    expect(acts("marked", "none", 0)).toEqual({ link: true, undo: true, unlink: false });
+  });
+  it("withheld money shows nothing", () => expect(acts("hidden", "", null)).toEqual({ link: false, undo: false, unlink: false }));
+  it("a viewer who may not link or change sees none of it", () => {
+    expect(acts("unpaid", null, null, false, false)).toEqual({ link: false, undo: false, unlink: false });
+    expect(acts("marked", "none", 800, false, false)).toEqual({ link: false, undo: false, unlink: false });
+    expect(acts("paid", "linked", 800, true, false)).toEqual({ link: false, undo: false, unlink: false });
+  });
 });
 
 describe("the bank candidates", () => {
@@ -252,13 +285,14 @@ describe("recognising a saved carrier from what was typed (R-471)", () => {
 
   it("ignores case, spaces and punctuation in the name", () => {
     expect(squashName("  Ridge-way, FREIGHT. ")).toBe("ridgewayfreight");
-    expect(ids("ridgeway freight")).toEqual(["c1"]);
-    expect(ids("RIDGEWAY-FREIGHT")).toEqual(["c1"]);
+    expect(ids("ridgeway freight")).toEqual(["c1", "c2"]);
+    expect(ids("RIDGEWAY-FREIGHT")).toEqual(["c1", "c2"]);
     expect(ids("harbor  lines")).toEqual(["c3"]);
   });
 
-  it("an exact name wins over longer names that start with it", () => {
-    expect(ids("Ridgeway Freight")).toEqual(["c1"]);
+  it("an exact name comes first, then the longer names that start with it (the union)", () => {
+    expect(ids("Ridgeway Freight")).toEqual(["c1", "c2"]);
+    expect(ids("Ridgeway Freight Lines")).toEqual(["c2"]);
   });
 
   it("matches a start of 3 or more characters, best name first", () => {
@@ -266,16 +300,33 @@ describe("recognising a saved carrier from what was typed (R-471)", () => {
     expect(ids("harb")).toEqual(["c3"]);
   });
 
-  it("offers nothing under 3 characters", () => {
+  it("matches a start only from 3 characters, and an exact name at any length", () => {
     expect(ids("Ri")).toEqual([]);
-    expect(ids("A1")).toEqual([]);
+    expect(ids("A1")).toEqual(["c4"]);
     expect(ids("")).toEqual([]);
     expect(ids("  ")).toEqual([]);
   });
 
-  it("matches a saved name that the typed text starts with", () => {
-    expect(ids("Harbor Lines LLC")).toEqual(["c3"]);
-    expect(ids("Ridgeway Freight Lines Inc")).toEqual(["c2", "c1"]);
+  it("never matches a saved name that the typed text merely starts with (no reverse starts-with)", () => {
+    expect(ids("Harbor Lines LLC")).toEqual([]);
+    expect(ids("Ridgeway Freight Lines Inc")).toEqual([]);
+    expect(carrierMatches("Express Freight Lines", [carrier({ id: "e1", name: "Express" })])).toEqual([]);
+  });
+
+  it("is the union of the name rules and the number rule", () => {
+    const both = [carrier({ id: "n1", name: "Acme Transport", mc_number: "", dot_number: "" }), carrier({ id: "n2", name: "Other Haul", mc_number: "MC-555123", dot_number: "" })];
+    expect(carrierMatches("Acme", both).map((c) => c.id)).toEqual(["n1"]);
+    expect(carrierMatches("MC 555123", both).map((c) => c.id)).toEqual(["n2"]);
+  });
+
+  it("strips leading zeros from a number on both sides and accepts the USDOT word", () => {
+    const zero = [carrier({ id: "z1", name: "Zero Haul", mc_number: "MC 0123456", dot_number: "00778899" })];
+    expect(carrierMatches("MC 123456", zero).map((c) => c.id)).toEqual(["z1"]);
+    expect(carrierMatches("0123456", zero).map((c) => c.id)).toEqual(["z1"]);
+    expect(carrierMatches("USDOT 778899", zero).map((c) => c.id)).toEqual(["z1"]);
+    expect(carrierMatches("usdot 0778899", zero).map((c) => c.id)).toEqual(["z1"]);
+    expect(carrierMatches("USDOT 123456", zero)).toEqual([]);
+    expect(carrierMatches("MC 000", [carrier({ id: "e", name: "Blank", mc_number: "", dot_number: "" })])).toEqual([]);
   });
 
   it("matches an MC or a DOT number", () => {
@@ -308,6 +359,7 @@ describe("recognising a saved carrier from what was typed (R-471)", () => {
     expect(typedNumber("MC 123456")).toEqual({ kind: "mc", digits: "123456" });
     expect(typedNumber(`DOT${"#"}7788990`)).toEqual({ kind: "dot", digits: "7788990" });
     expect(typedNumber("123-456")).toEqual({ kind: "any", digits: "123456" });
+    expect(typedNumber("USDOT 7788990")).toEqual({ kind: "dot", digits: "7788990" });
     expect(typedNumber("12")).toBeNull();
     expect(typedNumber("Acme 123456")).toBeNull();
   });

@@ -540,7 +540,7 @@ function TrackedPanel({ t }: { t: LogisticsPayTracker }) {
         <div className="text-[11.5px] text-muted mt-1.5 tabular-nums">Charged {fmtAmount(tot.charged)}, paid to carriers {fmtAmount(tot.freight)}</div>
       </div>
       {loads.length === 0
-        ? <div className="text-[12.5px] text-muted py-3 text-center border border-line rounded-xl">Nothing tracked yet. A load counts once its amount paid is entered.</div>
+        ? <div className="text-[12.5px] text-muted py-3 text-center border border-line rounded-xl">Nothing tracked yet. A load counts once its bank payment is linked.</div>
         : <section className="border border-line rounded-xl px-4 divide-y divide-line">{loads.map((l) => <TrackedRow key={l.deal_flow_id} l={l} />)}</section>}
     </div>
   );
@@ -677,7 +677,7 @@ export function LogisticsPayTrackerPanel() {
             {pending.map((l) => (
               <div key={l.deal_flow_id} className="px-4 py-2.5 flex items-baseline justify-between gap-3 text-[12.5px]">
                 <span className="min-w-0 truncate text-ink-2">{l.invoice_number}{l.client_name ? ` for ${l.client_name}` : ""} · {l.booking_codes.join(", ")}</span>
-                <span className="text-muted flex-shrink-0">Charged {fmtAmount(l.charged)}, not counted until the amount paid is entered</span>
+                <span className="text-muted flex-shrink-0">Charged {fmtAmount(l.charged)}, not counted until the bank payment is linked</span>
               </div>
             ))}
           </div>

@@ -767,7 +767,7 @@ export default function LogisticsBookingForm({
   const reloadLoad = async () => {
     try { takeServerCopy(await api.logistics.get(booking.id)); } catch (e) { toast(String(e), "error"); }
   };
-  const payFor: PayTarget = { bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost };
+  const payFor: PayTarget = { bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost, linked: paidStateOf(booking) === "part" ? booking.paid_amount : null };
 
   // ── the gate (R-464) ────────────────────────────────────────────────────
   const gate = bookGate(factsOf(booking, {}, known));
@@ -1352,7 +1352,6 @@ export default function LogisticsBookingForm({
         {noMoney ? (
           <>
             <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Shipping amounts are hidden by your permissions.</p>
-            <dl className="rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px]">{paymentRow}</dl>
           </>
         ) : (
           <>
@@ -1374,7 +1373,7 @@ export default function LogisticsBookingForm({
               </div>
               {paymentRow}
             </dl>
-            <PaidButtons state={paidStateOf(booking)} bankLinked={booking.bank_linked} canLink={canLink} canChange={canChangePaid} target={payFor} controls={paidControls} />
+            <PaidButtons state={paidStateOf(booking)} bankLinked={booking.bank_linked} amount={booking.paid_amount} canLink={canLink} canChange={canChangePaid} target={payFor} controls={paidControls} />
           </>
         )}
       </Section>
