@@ -15,7 +15,7 @@ import { isRenewal } from "./renewals";
 
 // ─── the team's notices ───────────────────────────────────────────────────
 
-export const TEAM_NOTICE_KINDS = ["logistics_quote", "carrier_due", "carrier_overdue", "bill_due", "bill_overdue", "bill_paid", "logistics_pay_due"] as const;
+export const TEAM_NOTICE_KINDS = ["logistics_quote", "carrier_due", "carrier_overdue", "bill_due", "bill_overdue", "bill_paid", "logistics_pay_due", "logistics_bol"] as const;
 export type TeamNoticeKind = (typeof TEAM_NOTICE_KINDS)[number];
 export const isTeamNoticeKind = (k: string): k is TeamNoticeKind => (TEAM_NOTICE_KINDS as readonly string[]).includes(k);
 
@@ -38,7 +38,7 @@ export function canReadTeamNotices(me: Perms | null | undefined): boolean {
   return isAdmin(me) || can(me, "clients:view");
 }
 
-/** The unread notices of the seven kinds, newest first. Anything else the server sends is not listed here, and
+/** The unread notices of the eight kinds, newest first. Anything else the server sends is not listed here, and
  *  the admin-only kinds are kept only for an admin (the default keeps them out). */
 export function teamNoticesOf(list: readonly LeadNotification[] | null | undefined, admin = false): LeadNotification[] {
   return (list ?? [])
@@ -58,10 +58,17 @@ export function leadNoticesOf(list: readonly LeadNotification[] | null | undefin
     .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
 }
 
-/** R-477: the server's notices that ask something of you. They count on the bell and are the only ones that
- *  raise an operating-system alert. A paid bill and a supplier's details only tell you something. */
+/** R-477: the server's notices that ask something of you. They count on the bell. A paid bill and a supplier's
+ *  details only tell you something. */
 export const NEEDS_YOU_NOTICE_KINDS = ["bill_due", "bill_overdue", "carrier_due", "carrier_overdue", "logistics_quote", "logistics_pay_due"] as const;
 export const isNeedsYouKind = (k: string): boolean => (NEEDS_YOU_NOTICE_KINDS as readonly string[]).includes(k);
+
+/** R-478: the notices that raise an operating-system alert but do not count on the bell. A BOL uploaded to a load is
+ *  news the team wants to hear at once; nothing is owed for it, so the bell stays quiet. */
+export const ALERT_ONLY_NOTICE_KINDS = ["logistics_bol"] as const;
+/** Every notice that raises an alert: the ones that need you (they also count on the bell) and the alert-only ones. */
+export const ALERT_NOTICE_KINDS = [...NEEDS_YOU_NOTICE_KINDS, ...ALERT_ONLY_NOTICE_KINDS] as const;
+export const isAlertKind = (k: string): boolean => (ALERT_NOTICE_KINDS as readonly string[]).includes(k);
 
 export type NoticeTarget =
   | { to: "load"; id: string; step: LoadStep }
@@ -78,9 +85,10 @@ const payloadOf = (n: Pick<LeadNotification, "payload_json">): Record<string, un
 };
 const idIn = (o: Record<string, unknown>, key: string): string => (typeof o[key] === "string" ? (o[key] as string).trim() : "");
 
-/** Where Open goes. A quote notice opens its load on the Quote step, a carrier notice the load's Pay step,
- *  a bill notice the Bills screen (on the bill when the payload names one), a pay-day notice the logistics pay
- *  tracker. A notice whose payload names no load falls back to the screen that holds it. */
+/** Where Open goes. A quote notice opens its load on the Quote step, a carrier notice or a BOL upload the load's Pay
+ *  step (where the paperwork is), a bill notice the Bills screen (on the bill when the payload names one), a
+ *  pay-day notice the logistics pay tracker. A notice whose payload names no load falls back to the screen that
+ *  holds it. */
 export function noticeTarget(n: Pick<LeadNotification, "kind" | "payload_json">): NoticeTarget | null {
   const p = payloadOf(n);
   const load = idIn(p, "booking_id");
@@ -90,6 +98,8 @@ export function noticeTarget(n: Pick<LeadNotification, "kind" | "payload_json">)
     case "carrier_due":
     case "carrier_overdue":
       return load ? { to: "load", id: load, step: "pay" } : { to: "bill" };
+    case "logistics_bol":
+      return load ? { to: "load", id: load, step: "pay" } : { to: "logistics" };
     case "bill_due":
     case "bill_overdue":
     case "bill_paid": {
@@ -112,6 +122,7 @@ export const NOTICE_KIND_LABEL: Record<TeamNoticeKind, string> = {
   bill_overdue: "Bill overdue",
   bill_paid: "Bill paid",
   logistics_pay_due: "Pay day",
+  logistics_bol: "BOL uploaded",
 };
 
 /** The Bills screen opens a bill from another screen the same stash-then-switch way Invoices does. */
@@ -174,20 +185,29 @@ export function desktopNoticesOn(store: Store | null | undefined): boolean {
  *  raised once per device. On the first run (`seen` is null) only notices from the last two days are, so a
  *  new install does not announce the whole backlog; every notice in the list is marked seen either way.
  *  R-477: only the kinds that need you are raised. A paid bill only reports good news, so it is marked seen
- *  and never shown, and it does not use up a slot of the cap. */
+ *  and never shown, and it does not use up a slot of the cap.
+ *  R-478: a BOL uploaded to a load is raised too, though it does not count on the bell. It only takes the slots of
+ *  the cap that the notices that need you leave free, so a burst of uploads cannot crowd out an overdue carrier. A
+ *  BOL the signed-in person uploaded themselves (the payload's by_user is their id) is marked seen and not raised;
+ *  it stays in the shared list. */
 export function planTeamRaise(
-  list: readonly LeadNotification[], seen: readonly string[] | null, nowMs: number,
+  list: readonly LeadNotification[], seen: readonly string[] | null, nowMs: number, meId = "",
 ): { raise: LeadNotification[]; seen: string[] } {
   const known = new Set(seen ?? []);
   const fresh = list.filter((n) => !known.has(n.id));
   const eligible = fresh.filter((n) => {
-    if (!isNeedsYouKind(n.kind)) return false;
+    if (!isAlertKind(n.kind)) return false;
+    if (meId && idIn(payloadOf(n), "by_user") === meId) return false;
     if (seen !== null) return true;
     const t = Date.parse(n.created_at);
     return Number.isFinite(t) && nowMs - t <= FIRST_RUN_WINDOW_MS;
   });
-  eligible.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || ""));
-  return { raise: eligible.slice(-RAISE_CAP), seen: mergeSeen(seen, fresh.map((n) => n.id)) };
+  const oldestFirst = (a: LeadNotification, b: LeadNotification) => (a.created_at || "").localeCompare(b.created_at || "");
+  eligible.sort(oldestFirst);
+  const needs = eligible.filter((n) => isNeedsYouKind(n.kind)).slice(-RAISE_CAP);
+  const room = RAISE_CAP - needs.length;
+  const news = room > 0 ? eligible.filter((n) => !isNeedsYouKind(n.kind)).slice(-room) : [];
+  return { raise: [...needs, ...news].sort(oldestFirst), seen: mergeSeen(seen, fresh.map((n) => n.id)) };
 }
 
 // ─── the Logistics-only account's notices, worked out from its loads ──────
@@ -259,6 +279,7 @@ const ROW_INFO: Record<RowKind, { group: NoticeGroup; label: string; urgency: Ur
   carrier_due: { group: "logistics", label: NOTICE_KIND_LABEL.carrier_due, urgency: "needs" },
   logistics_pay_due: { group: "logistics", label: NOTICE_KIND_LABEL.logistics_pay_due, urgency: "needs" },
   logistics_quote: { group: "logistics", label: NOTICE_KIND_LABEL.logistics_quote, urgency: "needs" },
+  logistics_bol: { group: "logistics", label: NOTICE_KIND_LABEL.logistics_bol, urgency: "info" },
   pending_customer: { group: "customers", label: "To review", urgency: "needs" },
   client_delete: { group: "requests", label: "Delete request", urgency: "needs" },
   unsubscribe: { group: "requests", label: "Unsubscribed", urgency: "info" },

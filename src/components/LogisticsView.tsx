@@ -6,7 +6,7 @@ import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canPayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
   GROUPS, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, isNewToday, loadHaystack, loadNumber, missingPaperwork,
-  pickupNumberUnconfirmed, type GroupKey, type LoadStep,
+  pickupNumberUnconfirmed, rowLane, type GroupKey, type LoadStep,
 } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
@@ -48,6 +48,8 @@ function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: GroupKey; 
   const due = group === "topay" && b.can_see_deal ? b.pay_due_date || "" : null;
   // R-458: when it has to happen, the team's note and the files, readable without opening it.
   const dates = timingLine(b);
+  // R-478: where it goes, city and state, so the lane reads at a glance.
+  const lane = rowLane(b);
   const who = b.deal ? [b.deal.invoice_number, b.deal.client_name].filter(Boolean).join(" for ") : "";
   const note = b.request_note.trim().split("\n")[0];
   const files = b.files?.length ?? 0;
@@ -61,6 +63,7 @@ function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: GroupKey; 
           <span className="font-mono text-[12px] text-muted flex-shrink-0">{loadNumber(b)}</span>
           {route && <span className="text-[13.5px] font-medium text-ink truncate min-w-0">{route}</span>}
         </div>
+        {lane && <div className="text-[12px] text-muted mt-0.5 truncate">{lane}</div>}
         {(dates || who) && (
           <div className="text-[12px] text-muted mt-0.5 truncate">
             {dates}{dates && who ? " · " : ""}{who && <span className="text-ink-2">{who}</span>}

@@ -4,7 +4,7 @@ import {
   EQUIPMENT, GROUPS, LOAD_STEPS, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
-  pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, statusAfterActual, statusWord, stepDone, timeWord,
+  pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, rowLane, statusAfterActual, statusWord, stepDone, timeWord,
 } from "./logisticsLoad";
 
 // An invented load: every key a row carries, so a rule is tested on the whole shape.
@@ -307,6 +307,18 @@ describe("the lane", () => {
     expect(laneOf("9 Quay Rd, Newark, nj 07102-1234")).toEqual({ city: "Newark", state: "NJ" });
     expect(laneOf("dallas texas")).toEqual({ city: "dallas", state: "TX" });
   });
+  it("reads the address shapes the website reads: a ZIP or country after the state, a full state name, newlines (R-478)", () => {
+    const dallas = { city: "Dallas", state: "TX" };
+    expect(laneOf("1200 Industrial Blvd, Dallas, TX 75201, USA")).toEqual(dallas);
+    expect(laneOf("1200 Industrial Blvd, Dallas, TX 75201, United States")).toEqual(dallas);
+    expect(laneOf("Dallas, TX, 75201")).toEqual(dallas);
+    expect(laneOf("Dallas, Texas 75201")).toEqual(dallas);
+    expect(laneOf("12 Mill Rd, Dallas, Texas")).toEqual(dallas);
+    expect(laneOf("1200 Industrial Blvd\nDallas, TX 75201")).toEqual(dallas);
+    expect(laneOf("12 Mill Rd, Dallas TX 75201")).toEqual(dallas);
+    expect(laneOf("Reno, NV")).toEqual({ city: "Reno", state: "NV" });
+    expect(laneOf("12 Mill Rd")).toBeNull();
+  });
   it("gives nothing for text with no state", () => {
     expect(laneOf("Warehouse A")).toBeNull();
     expect(laneOf("")).toBeNull();
@@ -315,6 +327,48 @@ describe("the lane", () => {
     expect(laneLabel("12 Mill Rd, dallas, TX 75201", "9 Quay Rd, Newark, NJ 07102")).toBe("Dallas, TX to Newark, NJ");
     expect(laneLabel("", "9 Quay Rd, Newark, NJ")).toBe("Newark, NJ");
     expect(laneLabel("", "")).toBe("");
+  });
+});
+
+describe("the line under a load in the list (R-478)", () => {
+  const lane = (over: Partial<FreightBooking> = {}) => rowLane(mk(over));
+  it("reads From city and state to city and state", () => {
+    expect(lane({ pickup_address: "12 Mill Rd, dallas, TX 75201", delivery_address: "9 Quay Rd, Newark, NJ 07102" })).toBe("From Dallas, TX to Newark, NJ");
+    expect(lane({ pickup_address: "Dallas, TX", delivery_address: "dallas texas" })).toBe("From Dallas, TX to Dallas, TX");
+  });
+  it("counts the pickups after the first", () => {
+    const stop = { name: "", address: "5 Elm St, Reno, NV 89501", window: "", contact: "", phone: "", notes: "", dock: "", pickup_number: "", confirmed: false };
+    expect(lane({ pickup_address: "Dallas, TX", delivery_address: "Newark, NJ", extra_pickups: [stop] })).toBe("From Dallas, TX + 1 more to Newark, NJ");
+    expect(lane({ pickup_address: "Dallas, TX", delivery_address: "Newark, NJ", extra_pickups: [stop, stop, stop] })).toBe("From Dallas, TX + 3 more to Newark, NJ");
+    expect(lane({ pickup_address: "Dallas, TX", delivery_address: "Newark, NJ", extra_pickups: [] })).toBe("From Dallas, TX to Newark, NJ");
+  });
+  it("reads the same city and state the website does for the common address shapes (R-478)", () => {
+    const to = "9 Depot Rd, Newark, NJ 07102, USA";
+    expect(lane({ pickup_address: "1200 Industrial Blvd, Dallas, TX 75201, USA", delivery_address: to })).toBe("From Dallas, TX to Newark, NJ");
+    expect(lane({ pickup_address: "Dallas, TX, 75201", delivery_address: to })).toBe("From Dallas, TX to Newark, NJ");
+    expect(lane({ pickup_address: "Dallas, Texas 75201", delivery_address: to })).toBe("From Dallas, TX to Newark, NJ");
+    expect(lane({ pickup_address: "Reno, NV", delivery_address: to })).toBe("From Reno, NV to Newark, NJ");
+    expect(lane({ pickup_address: "1200 Industrial Blvd\nDallas, TX 75201", delivery_address: to })).toBe("From Dallas, TX to Newark, NJ");
+    // a street with no city and state stays as typed
+    expect(lane({ pickup_address: "1200 Industrial Blvd", delivery_address: to })).toBe("From 1200 Industrial Blvd to Newark, NJ");
+  });
+  it("keeps an address that is not a city and state as typed, on one line", () => {
+    expect(lane({ pickup_address: "Warehouse A", delivery_address: "Newark, NJ" })).toBe("From Warehouse A to Newark, NJ");
+    // a line break reads as a comma, the way the website's From/to line keeps it
+    expect(lane({ pickup_address: "  Bay 4\n  Test Yard  ", delivery_address: "Newark, NJ" })).toBe("From Bay 4, Test Yard to Newark, NJ");
+  });
+  it("an empty side reads a hyphen, and two empty sides give no line", () => {
+    expect(lane({ pickup_address: "", delivery_address: "Newark, NJ" })).toBe("From - to Newark, NJ");
+    expect(lane({ pickup_address: "Dallas, TX", delivery_address: "  " })).toBe("From Dallas, TX to -");
+    expect(lane({ pickup_address: "", delivery_address: "" })).toBe("");
+    expect(lane({ pickup_address: "", delivery_address: "", extra_pickups: [{ name: "", address: "Reno, NV", window: "", contact: "", phone: "", notes: "", dock: "", pickup_number: "", confirmed: false }] })).toBe("");
+  });
+  it("is nothing for a viewer without the address switch, whatever the names say", () => {
+    expect(lane({ pickup_address: "", delivery_address: "", pickup_name: "Birchwood", delivery_name: "Lantern Bay", can_see_addresses: false })).toBe("");
+    expect(lane({ pickup_address: "Dallas, TX", delivery_address: "Newark, NJ", can_see_addresses: false })).toBe("");
+  });
+  it("carries no em dash", () => {
+    expect(lane({ pickup_address: "", delivery_address: "Newark, NJ" })).not.toMatch(/[\u2014\u2013]/);
   });
 });
 

@@ -6,7 +6,7 @@
 
 import type { FreightBooking, FreightFile, FreightFileKind, FreightStatus, FreightStop, PaidState } from "./api";
 import { fmtAmount, localDay, parseLocalDay } from "./format";
-import { formatLocation, isStateCode, parseLocation } from "./location";
+import { formatLocation, parseLocation } from "./location";
 
 // ─── statuses (contract section 1) ────────────────────────────────────────
 
@@ -441,15 +441,17 @@ export function loadHaystack(b: FreightBooking): string {
 
 // ─── the lane (contract section 6) ────────────────────────────────────────
 
-/** The (city, state) of a free-text address: the last US two-letter state, optionally followed by a
- *  ZIP, and the comma segment before it as the city. Reads "Dallas TX" with no comma too. */
+/** The (city, state) of a free-text address, read the way the website's lgCityState reads it: newlines are commas, a
+ *  trailing ZIP or country (USA, United States) segment is dropped, a ZIP after the state is dropped, and the state
+ *  is a code or a full name ("TX", "Texas"). The comma segment before the state is the city; "Dallas TX" with no
+ *  comma reads too. */
 export function laneOf(address: string): { city: string; state: string } | null {
-  const parts = (address || "").split(",").map((p) => p.trim()).filter(Boolean);
-  const last = parts[parts.length - 1] ?? "";
-  const m = /^([A-Za-z]{2})(?:\s+\d{5}(?:-\d{4})?)?$/.exec(last);
-  if (m && isStateCode(m[1]) && parts.length >= 2) return { city: parts[parts.length - 2], state: m[1].toUpperCase() };
-  const loose = parseLocation(address);
-  return loose.state ? loose : null;
+  const parts = (address || "").replace(/\s*[\r\n]+\s*/g, ", ").split(",").map((p) => p.trim()).filter(Boolean);
+  while (parts.length > 1 && /^(\d{5}(-\d{4})?|usa?|united states( of america)?)$/i.test(parts[parts.length - 1])) parts.pop();
+  if (!parts.length) return null;
+  const end = parseLocation(parts[parts.length - 1].replace(/[\s,]*\d{5}(-\d{4})?$/, ""));
+  if (!end.state) return null;
+  return { city: end.city || (parts.length > 1 ? parts[parts.length - 2] : ""), state: end.state };
 }
 
 /** "Dallas, TX to Newark, NJ". One end alone reads as that end, none reads as empty. */
@@ -457,6 +459,22 @@ export function laneLabel(pickupAddress: string, deliveryAddress: string): strin
   const fmt = (a: string) => { const l = laneOf(a); return l ? formatLocation(l.city, l.state) : ""; };
   const from = fmt(pickupAddress), to = fmt(deliveryAddress);
   return from && to ? `${from} to ${to}` : from || to;
+}
+
+/** R-478: the line under a load in the list, "From Dallas, TX to Newark, NJ". A pickup with more behind it reads
+ *  "From Dallas, TX + 2 more to Newark, NJ". A place that does not read as a city and state stays as typed, on one
+ *  line; an empty side reads "-"; nothing at all gives no line. Addresses only: a viewer without the address switch
+ *  gets no line (names have their own switch, and the route above already shows them). */
+export function rowLane(b: { pickup_address: string; delivery_address: string; can_see_addresses: boolean; extra_pickups?: FreightStop[] }): string {
+  if (!b.can_see_addresses) return "";
+  const place = (a: string) => {
+    const l = laneOf(a);
+    return l ? formatLocation(l.city, l.state) : (a || "").replace(/\s*[\r\n]+\s*/g, ", ").replace(/\s+/g, " ").trim();
+  };
+  const from = place(b.pickup_address), to = place(b.delivery_address);
+  if (!from && !to) return "";
+  const more = stopsOf(b).length;
+  return `From ${from || "-"}${more > 0 ? ` + ${more} more` : ""} to ${to || "-"}`;
 }
 
 // ─── quote to invoice to book (contract section 7) ────────────────────────

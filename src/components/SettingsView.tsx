@@ -288,7 +288,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "account", label: "Your phone", kw: "contact number" },
   { tab: "account", label: "Replay the getting-started tour", kw: "onboarding walkthrough welcome tour" },
   { tab: "account", card: "My Plan", label: "My plan", kw: "subscription tier usage limits seats clients team members upgrade" },
-  { tab: "account", card: "Desktop notifications", label: "Desktop notifications", kw: "system alerts popups quote needed carrier due overdue bill pay day logistics pay windows mac notify" },
+  { tab: "account", card: "Desktop notifications", label: "Desktop notifications", kw: "system alerts popups quote needed carrier due overdue bill pay day logistics pay bol uploaded windows mac notify" },
   { tab: "account", card: "Phone notifications", label: "Phone notifications", kw: "push alerts iphone bills due overdue form submissions inventory renew listings notify" },
   // Appearance
   { tab: "appearance", card: "Theme", label: "Theme", kw: "dark mode light mode colour scheme mono monochrome grayscale" },
@@ -899,9 +899,9 @@ function MyPlanCard() {
   );
 }
 
-// R-460: whether this computer raises a system notification when a quote is asked for, a carrier is due or a
-// bill is overdue. Per device (it is this computer's alerts), on unless switched off. The bell still counts
-// either way. Shown to everyone, since a Logistics-only account gets alerts too.
+// R-460: whether this computer raises a system notification when a quote is asked for, a carrier is due, a
+// bill is overdue or (R-478) a BOL is uploaded. Per device (it is this computer's alerts), on unless switched
+// off. The bell counts what needs you either way. Shown to everyone, since a Logistics-only account gets alerts too.
 function DesktopNotificationsCard() {
   const [on, setOn] = useState(() => { try { return desktopNoticesOn(localStorage); } catch { return true; } });
   const flip = () => {
@@ -914,7 +914,7 @@ function DesktopNotificationsCard() {
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
           <div className="text-[13px] font-medium text-ink">Desktop notifications</div>
-          <div className="text-[11.5px] text-muted mt-0.5">A quote is needed, a load is ready to book, a carrier or a bill is due or overdue, or it is the day to pay logistics. The bell still counts when this is off.</div>
+          <div className="text-[11.5px] text-muted mt-0.5">A quote is needed, a load is ready to book, a carrier or a bill is due or overdue, a BOL is uploaded to a load, or it is the day to pay logistics. The bell still counts what needs you when this is off.</div>
         </div>
         <ClauseSwitch on={on} onClick={flip} label="Desktop notifications" />
       </div>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LeadNotification } from "./api";
 import {
-  ADMIN_NOTICE_KINDS, DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, PAY_TRACKER_KEY, PAY_TRACKER_SUB, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, RAISE_CAP, SEEN_CAP, canOpenTarget, canReadTeamNotices, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
+  ADMIN_NOTICE_KINDS, ALERT_ONLY_NOTICE_KINDS, ALERT_NOTICE_KINDS, NEEDS_YOU_NOTICE_KINDS, DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, PAY_TRACKER_KEY, PAY_TRACKER_SUB, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, RAISE_CAP, SEEN_CAP, canOpenTarget, canReadTeamNotices, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
   logisticsBellCount, mergeSeen, noticeTarget, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
   GROUP_LABEL, GROUP_ORDER, bellCountOf, bellTitle, canSeeGroup, compareRows, customerRow, dueDayOf, groupRows, leadNoticesOf, noticeRow, requestRow, whenWearsUrgency, whenWords,
   type NoticeLoad, type NoticeRow,
@@ -50,15 +50,16 @@ describe("who the server lets read the team notices (R-477)", () => {
 });
 
 describe("the list of team notices", () => {
-  it("keeps only the six kinds, unread, newest first", () => {
+  it("keeps only the team kinds, unread, newest first", () => {
     const list = [
       note("a", "carrier_due", { created_at: hoursAgo(5) }),
       note("b", "supply_lead"),
       note("c", "bill_overdue", { created_at: hoursAgo(2) }),
       note("d", "bill_paid", { status: "acknowledged" }),
       note("e", "logistics_quote", { created_at: hoursAgo(3) }),
+      note("f", "logistics_bol", { created_at: hoursAgo(4) }),
     ];
-    expect(teamNoticesOf(list).map((n) => n.id)).toEqual(["c", "e", "a"]);
+    expect(teamNoticesOf(list).map((n) => n.id)).toEqual(["c", "e", "f", "a"]);
     expect(teamNoticesOf(null)).toEqual([]);
   });
 });
@@ -115,6 +116,13 @@ describe("where a notice opens", () => {
     expect(noticeTarget({ kind: "logistics_quote", payload_json: '{"booking_id":"fb_1"}' })).toEqual({ to: "load", id: "fb_1", step: "quote" });
     expect(noticeTarget({ kind: "carrier_due", payload_json: '{"booking_id":"fb_2"}' })).toEqual({ to: "load", id: "fb_2", step: "pay" });
     expect(noticeTarget({ kind: "carrier_overdue", payload_json: '{"booking_id":"fb_3"}' })).toEqual({ to: "load", id: "fb_3", step: "pay" });
+  });
+  it("a BOL upload opens its load on the Pay step, or the Logistics screen with no load (R-478)", () => {
+    expect(noticeTarget({ kind: "logistics_bol", payload_json: '{"booking_id":"fb_4"}' })).toEqual({ to: "load", id: "fb_4", step: "pay" });
+    expect(noticeTarget({ kind: "logistics_bol", payload_json: "{}" })).toEqual({ to: "logistics" });
+    expect(noticeTarget({ kind: "logistics_bol", payload_json: null })).toEqual({ to: "logistics" });
+    expect(canOpenTarget(noticeTarget({ kind: "logistics_bol", payload_json: '{"booking_id":"fb_4"}' }), { permissions: ["deal_flow:view", "logistics:view"] })).toBe(true);
+    expect(canOpenTarget(noticeTarget({ kind: "logistics_bol", payload_json: '{"booking_id":"fb_4"}' }), { permissions: ["financials:view"] })).toBe(false);
   });
   it("a bill opens the Bills screen, on the bill when the payload names one", () => {
     expect(noticeTarget({ kind: "bill_due", payload_json: '{"bill_id":"b_9"}' })).toEqual({ to: "bill", id: "b_9" });
@@ -219,6 +227,42 @@ describe("raising the team's notices", () => {
     expect(plan.raise.map((n) => n.id)).toEqual(list.slice(-RAISE_CAP).map((n) => n.id));
     expect(plan.seen).toHaveLength(list.length);
   });
+  it("fills the cap with what needs you first; BOL uploads only take the room left, oldest first (R-478)", () => {
+    // an overdue carrier raised before a burst of BOL uploads must not be crowded out by them
+    const overdue = note("od", "carrier_overdue", { created_at: hoursAgo(5) });
+    const bols = Array.from({ length: RAISE_CAP }, (_, i) => note(`bol${i}`, "logistics_bol", { created_at: hoursAgo(4 - i * 0.5) }));
+    const plan = planTeamRaise([...bols, overdue], [], NOW);
+    expect(plan.raise).toHaveLength(RAISE_CAP);
+    expect(plan.raise.map((n) => n.id)).toEqual(["od", "bol1", "bol2", "bol3", "bol4"]);
+    // every fresh id is still marked seen, raised or not
+    for (const n of [overdue, ...bols]) expect(plan.seen).toContain(n.id);
+    // with room to spare every one is raised, oldest first
+    const few = planTeamRaise([bols[1], overdue, bols[0]], [], NOW);
+    expect(few.raise.map((n) => n.id)).toEqual(["od", "bol0", "bol1"]);
+    // a full set of needs-you notices leaves no room for a BOL
+    const bills = Array.from({ length: RAISE_CAP }, (_, i) => note(`b${i}`, "bill_overdue", { created_at: hoursAgo(20 - i) }));
+    const full = planTeamRaise([note("late", "logistics_bol", { created_at: hoursAgo(0.5) }), ...bills], [], NOW);
+    expect(full.raise.map((n) => n.id)).toEqual(bills.map((n) => n.id));
+    expect(full.seen).toContain("late");
+  });
+  it("does not raise a BOL upload for the person who uploaded it, but still marks it seen (R-478)", () => {
+    const mine = note("mine", "logistics_bol", { payload_json: '{"booking_id":"fb_1","by_user":"u_me"}' });
+    const theirs = note("theirs", "logistics_bol", { payload_json: '{"booking_id":"fb_2","by_user":"u_other"}' });
+    const none = note("none", "logistics_bol", { payload_json: '{"booking_id":"fb_3"}' });
+    const nopayload = note("nopayload", "logistics_bol");
+    const plan = planTeamRaise([mine, theirs, none, nopayload], [], NOW, "u_me");
+    expect(plan.raise.map((n) => n.id).sort()).toEqual(["none", "nopayload", "theirs"]);
+    expect(plan.seen).toEqual(expect.arrayContaining(["mine", "theirs", "none", "nopayload"]));
+    // the uploader's notice takes no slot of the cap
+    const others = Array.from({ length: RAISE_CAP }, (_, i) => note(`o${i}`, "logistics_bol", { created_at: hoursAgo(10 - i) }));
+    expect(planTeamRaise([...others, { ...mine, created_at: hoursAgo(0.1) }], [], NOW, "u_me").raise.map((n) => n.id)).toEqual(others.map((n) => n.id));
+    // the notice stays in the shared list, and the same notice raises for a different person
+    expect(teamNoticesOf([mine]).map((n) => n.id)).toEqual(["mine"]);
+    expect(planTeamRaise([mine], [], NOW, "u_other").raise.map((n) => n.id)).toEqual(["mine"]);
+    // no signed-in id raises everything, as before
+    expect(planTeamRaise([mine], [], NOW).raise.map((n) => n.id)).toEqual(["mine"]);
+    expect(planTeamRaise([mine], [], NOW, "").raise.map((n) => n.id)).toEqual(["mine"]);
+  });
 });
 
 const load = (id: string, status: string, over: Partial<NoticeLoad> = {}): NoticeLoad => ({ id, status, code: `L-${id}`, load_number: `LD-00${id}`, ...over });
@@ -279,7 +323,7 @@ describe("what a Logistics-only account is told", () => {
 
 describe("how a notice reads", () => {
   it("every kind has a label and a tone", () => {
-    for (const k of TEAM_NOTICE_KINDS) expect(NOTICE_KIND_LABEL[k]).toMatch(/^[A-Z][a-z]+( [a-z]+)*$/);
+    for (const k of TEAM_NOTICE_KINDS) expect(NOTICE_KIND_LABEL[k]).toMatch(/^[A-Z][A-Za-z]+( [a-z]+)*$/);
     expect(BILL_OPEN_KEY).toBe("bills_open_id");
   });
 });
@@ -301,6 +345,7 @@ describe("each kind's group, label and urgency", () => {
     ["carrier_due", "logistics", "Carrier due", "needs"],
     ["logistics_pay_due", "logistics", "Pay day", "needs"],
     ["logistics_quote", "logistics", "Quote ready", "needs"],
+    ["logistics_bol", "logistics", "BOL uploaded", "info"],
     ["supply_lead", "leads", "New lead", "needs"],
     ["supplier_profile", "leads", "Supplier details", "info"],
   ];
@@ -386,6 +431,11 @@ describe("the when of a row, worked out live", () => {
   });
   it("a quote reads from when it was raised, and a row with no time reads nothing", () => {
     expect(whenWords(row({ kind: "logistics_quote", createdAt: noon("2026-10-07") }), TODAY)).toBe("Yesterday");
+    // R-478: a BOL upload has no due day (its key is bol:<load>:<file>), so it reads from when it was uploaded
+    const bol = noticeRow(note("b", "logistics_bol", { entity_id: "bol:fb_4:ff_2", created_at: noon("2026-10-08") }))!;
+    expect(bol.dueDay).toBe("");
+    expect(whenWords(bol, TODAY)).toBe("Today");
+    expect(whenWords({ ...bol, createdAt: noon("2026-10-07") }, TODAY)).toBe("Yesterday");
     expect(whenWords(customerRow({ id: "c", name: "A" }), TODAY)).toBe("");
     expect(whenWords(customerRow({ id: "c", name: "A", created_at: "" }), TODAY)).toBe("");
     expect(whenWords(row({ kind: "supply_lead", createdAt: "not a time" }), TODAY)).toBe("");
@@ -531,12 +581,23 @@ describe("the bell counts only what needs you", () => {
       expect(bellCountOf({ pendingCustomers: 0, requests: [{ kind: k }], notices: [] }), k).toBe(needs ? 1 : 0);
     }
   });
-  it("an operating-system alert goes out for exactly the notices the bell counts", () => {
+  it("an operating-system alert goes out for the notices the bell counts, plus the alert-only kinds (R-478)", () => {
     for (const k of TEAM_NOTICE_KINDS) {
       const raised = planTeamRaise([note("x", k)], [], NOW).raise.length === 1;
       const counted = bellCountOf({ pendingCustomers: 0, requests: [], notices: [unread(k)] }) === 1;
-      expect(raised, k).toBe(counted);
+      const alertOnly = (ALERT_ONLY_NOTICE_KINDS as readonly string[]).includes(k);
+      expect(raised, k).toBe(counted || alertOnly);
+      // an alert-only kind never counts on the bell, and the bell kinds are all alerts
+      if (alertOnly) expect(counted, k).toBe(false);
     }
+    for (const k of NEEDS_YOU_NOTICE_KINDS) expect(ALERT_NOTICE_KINDS).toContain(k);
+    expect(ALERT_ONLY_NOTICE_KINDS.some((k) => (NEEDS_YOU_NOTICE_KINDS as readonly string[]).includes(k))).toBe(false);
+  });
+  it("a BOL upload is grey on the screen, raised as an alert and silent on the bell (R-478)", () => {
+    const r = noticeRow(note("b", "logistics_bol"))!;
+    expect([r.urgency, r.group, r.label]).toEqual(["info", "logistics", "BOL uploaded"]);
+    expect(planTeamRaise([note("b", "logistics_bol")], [], NOW).raise.map((n) => n.id)).toEqual(["b"]);
+    expect(bellCountOf({ pendingCustomers: 0, requests: [], notices: [unread("logistics_bol")] })).toBe(0);
   });
   it("the tooltip says how many need you, or just Notifications", () => {
     expect(bellTitle(0)).toBe("Notifications");

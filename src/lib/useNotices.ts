@@ -73,7 +73,7 @@ export function useNotices(me: Me | null | undefined): NoticeState {
     setLeads(leadNoticesOf(r, admin));
     const key = seenKey("team", userId);
     if (teamSeen.current === undefined) teamSeen.current = readSeen(store(), key);
-    const plan = planTeamRaise(list, teamSeen.current, Date.now());
+    const plan = planTeamRaise(list, teamSeen.current, Date.now(), userId);
     teamSeen.current = plan.seen;
     writeSeen(store(), key, plan.seen);
     raise(plan.raise.map((n) => ({ title: n.title, body: n.body })));
