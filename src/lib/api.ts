@@ -3258,9 +3258,12 @@ export interface FreightBooking {
   markup_default_pct?: number; markup_editable?: boolean;
   /** R-464: the server's answer to whether this caller may type the markup percent on this load. */
   can_set_markup?: boolean;
-  /** null = not paid yet. A number, zero included, is the exact amount the carrier charged. */
+  /** null = not paid yet. R-470: a number here is shown as Paid only when `paid_state` says the bank payment is linked. */
   paid_amount: number | null;
   paid_at: string; paid_method: string; paid_note: string; notes: string;
+  /** R-470: unpaid, marked (a typed payment that is not linked to the bank, shown as a warning) or paid (linked).
+   *  Absent on an older server and in the local copy: it is then worked out from `paid_amount` and `bank_linked`. */
+  paid_state?: PaidState;
   created_by_name: string; updated_by_name: string; created_at: string; updated_at: string;
   /** Redacted values come back empty, never dropped: these say why a field is empty. */
   can_see_names: boolean;
@@ -3302,13 +3305,15 @@ export interface FreightStop {
 export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "id" | "code" | "booked_at" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |
   "can_see_names" | "can_see_addresses" | "can_see_deal" | "can_see_money" | "tracking" | "deal" |
-  "shipping_billed" | "trucks_on_deal" | "freight_by_team" | "files" |
+  "shipping_billed" | "trucks_on_deal" | "freight_by_team" | "files" | "paid_amount" | "paid_at" | "paid_method" | "paid_note" | "paid_state" |
   "load_number" | "quoted_at" | "quoted_by_name" | "quote_invoiced_at" | "quote_invoiced_amount" | "sent_to_book_at" |
   "pickup_number_confirmed_at" | "pickup_number_confirmed_by" | "paperwork" | "bols" | "carrier_pay_method" | "deal_paid" | "bank_linked" |
   "invoice_sent" | "deal_invoice_number" | "shipping_charge" | "book_override_at" | "book_override_by" |
   "markup_amount" | "markup_by_name" | "markup_at" | "markup_default_pct" | "markup_editable" | "can_set_markup"
 >> & {
   today?: string;
+  /** R-470: the only payment write left is taking back a typed payment that was never linked to the bank. */
+  paid_amount?: null;
   /** R-459: tick or untick the pickup-number check. */
   pickup_number_confirmed?: boolean;
   /** R-464: "own" = we pay this shipping ourselves, "" = charge the customer instead. "invoice" is set only by the invoice-line route. */
@@ -3326,6 +3331,8 @@ export interface LogisticsSettings {
 export interface FreightInvoiceLine {
   invoice_id: string; invoice_number: string; line: number; subtotal: number; tax: number; total: number;
 }
+/** R-470: a load is Paid only when its bank payment is linked. `marked` is a payment typed before this rule. */
+export type PaidState = "unpaid" | "marked" | "paid";
 /** R-459: how a carrier gets paid. Identical on every surface. */
 export type CarrierPayMethod = "zelle" | "wire" | "ach" | "credit_card" | "check" | "other" | "";
 /** R-459: one carrier in the directory. `last_rate` is null without the dollar switch. */
@@ -3357,8 +3364,11 @@ export interface CarrierPayRow {
   status: FreightStatus; delivered_at: string; paperwork: { bol: boolean; pod: boolean; carrier_invoice: boolean };
   carrier_invoice_file_id: string; paid_amount: number | null; paid_at: string; paid_method: string; paid_note: string;
   bank_linked: "" | "linked" | "partial" | "none";
+  /** R-470: absent on an older server (read through paidStateOf). */
+  paid_state?: PaidState;
 }
-export interface CarrierPayResponse { to_pay: CarrierPayRow[]; paid: CarrierPayRow[] }
+/** R-470: `to_link` holds the loads marked paid but not linked to the bank. Absent on an older server. */
+export interface CarrierPayResponse { to_pay: CarrierPayRow[]; to_link?: CarrierPayRow[]; paid: CarrierPayRow[] }
 /** R-459: what the candidates route answers. The rows are read tolerantly (see carrierPayCandidates). */
 export type CarrierPayCandidatesResponse = Record<string, unknown>;
 /** R-459: a bill of lading we make. Every key is present on read. The numbers are kept as the text a
@@ -3932,10 +3942,15 @@ export const api = {
     /** R-459: pay carriers. Only someone who may pay (full deal access, money, deal edit, or an admin). */
     carrierPay: {
       list: (days = 60) => logisticsRequest<CarrierPayResponse>("GET", `/api/logistics/carrier-pay?days=${days}`),
-      candidates: (bookingId: string) =>
-        logisticsRequest<CarrierPayCandidatesResponse>("GET", `/api/logistics/carrier-pay/${encodeURIComponent(bookingId)}/candidates`),
-      link: (bookingId: string, txnId: string) =>
-        logisticsRequest<unknown>("POST", `/api/logistics/carrier-pay/${encodeURIComponent(bookingId)}/link`, { txn_id: txnId }),
+      /** R-470: `q` narrows the bank rows by an amount or words. */
+      candidates: (bookingId: string, q?: string) =>
+        logisticsRequest<CarrierPayCandidatesResponse>("GET", `/api/logistics/carrier-pay/${encodeURIComponent(bookingId)}/candidates${q && queryText(q) ? `?q=${queryText(q)}` : ""}`),
+      /** R-470: the only way a load becomes paid. Books `amount` (the server suggests one when it is left out) of the bank row. */
+      link: (bookingId: string, txnId: string, amount?: number) =>
+        logisticsRequest<unknown>("POST", `/api/logistics/carrier-pay/${encodeURIComponent(bookingId)}/link`, { txn_id: txnId, ...(amount != null ? { amount } : {}) }),
+      /** R-470: takes the bank payment off the load. The load goes back to To pay. */
+      unlink: (bookingId: string) =>
+        logisticsRequest<unknown>("POST", `/api/logistics/carrier-pay/${encodeURIComponent(bookingId)}/unlink`, {}),
     },
     /** R-459: the BOLs we make. Answers are read through lib/logisticsBols (normalBol, bolRecordOf), because a BOL's
      *  data comes back with every key present and the names and addresses a viewer may not see blanked. */

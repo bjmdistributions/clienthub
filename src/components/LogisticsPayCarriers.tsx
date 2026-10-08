@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronRight, FileText, Landmark } from "lucide-react";
-import { api, type CarrierPayRow } from "../lib/api";
+import { ChevronRight, FileText, Search } from "lucide-react";
+import { api, type CarrierPayResponse, type CarrierPayRow, type PaidState } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import {
-  OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, bankLinkNote, carrierPayCandidates, changePaidDefaults, encodeOpenLoad, markPaidDefaults, markPaidPatch, payDue, payMethodLabel,
-  toPaySummary, type BankCandidate, type MarkPaidForm,
+  OPEN_LOAD_KEY, UNDO_PAID_PATCH, carrierPayCandidates, encodeOpenLoad, linkAmountCheck, linkAmountStart, payDue, payMethodLabel,
+  toPaySummary, type BankCandidate,
 } from "../lib/logisticsCarriers";
-import { BANK_LINK_WORD, fmtDayLabel, paymentLine, type LoadStep } from "../lib/logisticsLoad";
+import { fmtDayLabel, paidView, type LoadStep, type PaidFacts, type PaidView } from "../lib/logisticsLoad";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
 import { LogisticsModal, modalGhost, modalPrimary } from "./LogisticsCarriers";
 import NumberInput from "./NumberInput";
@@ -15,10 +15,10 @@ import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 
 // R-459: paying the carriers, from the admin side. Logistics books the truck and files the paperwork; the
-// team marks a carrier paid here (the amount, the day, how, a reference), sees who has been paid, and ties
-// each payment to the bank transaction that moved the money, so every deal is tracked to the last dollar.
-// The same record and undo pattern as the logistics pay tracker, and the same rows feed the Bills screen's
-// "Carriers to pay" section. Only someone who may pay opens any of this; the server checks it too.
+// team sees who is owed and who has been paid here, and the only way a load becomes paid is by linking the bank
+// transaction that moved the money (R-470: nobody types an amount paid), so every deal is tracked to the last
+// dollar. The same rows feed the Bills screen's "Carriers to pay" section. Only someone who may pay opens any of
+// this; the server checks it too.
 
 const REFRESH_MS = 30_000;
 const inp =
@@ -33,19 +33,14 @@ export function openLoadInLogistics(bookingId: string, step?: LoadStep) {
   window.dispatchEvent(new CustomEvent("logistics-open-load"));
 }
 
-export function BankLinkPill({ state }: { state: string }) {
-  if (!state) return null;
-  return <StatusPill tone={state === "linked" ? "success" : state === "partial" ? "warning" : "neutral"}>{BANK_LINK_WORD[state] ?? state}</StatusPill>;
-}
-
 /** The rows, read now and again on a timer, on focus and when a sync lands. Nothing is asked unless `enabled`. */
 export function useCarrierPay(enabled: boolean) {
-  const [data, setData] = useState<{ to_pay: CarrierPayRow[]; paid: CarrierPayRow[] } | null>(null);
+  const [data, setData] = useState<CarrierPayResponse | null>(null);
   const [error, setError] = useState("");
   const reload = useCallback(async () => {
     if (!enabled) return;
     try { setData(await api.logistics.carrierPay.list(60)); setError(""); }
-    catch (e) { setError(String(e)); setData((d) => d ?? { to_pay: [], paid: [] }); }
+    catch (e) { setError(String(e)); setData((d) => d ?? { to_pay: [], to_link: [], paid: [] }); }
   }, [enabled]);
   useEffect(() => { reload(); }, [reload]);
   useEffect(() => {
@@ -58,127 +53,171 @@ export function useCarrierPay(enabled: boolean) {
   return { data, error, reload };
 }
 
-// ─── Mark paid ────────────────────────────────────────────────────────────
+// ─── Paid means linked to the bank (R-470) ────────────────────────────────
 
-export interface PayTarget {
-  bookingId: string; label: string; rate: number | null; payMethod: string; paidAmount?: number | null;
-  /** R-463: a payment already on record. With it the sheet is Change: it opens with what is on record. */
-  current?: { paid_amount: number | null; paid_at: string; paid_method: string; paid_note: string };
-  /** R-463: whether the bank payments linked to the deal cover this one, so Change can say so. */
-  bankLinked?: string;
-}
+/** The load a payment control acts on. `rate` is the carrier rate, for the amount a link opens with. */
+export interface PayTarget { bookingId: string; label: string; rate: number | null }
 
-/** Records the payment: the amount (the carrier rate to start), the day, how it was paid and a reference.
- *  R-463: with a payment on record (`target.current`) it is Change, so a wrong figure is fixed in one step. */
-export function MarkPaidSheet({ target, onClose, onDone }: { target: PayTarget; onClose: () => void; onDone: () => void }) {
-  const change = !!target.current;
-  const [f, setF] = useState<MarkPaidForm>(() => target.current
-    ? changePaidDefaults(target.current, localDay())
-    : markPaidDefaults({ rate: target.rate, pay_method: target.payMethod }, localDay()));
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const set = (patch: Partial<MarkPaidForm>) => setF((x) => ({ ...x, ...patch }));
-  const go = async () => {
-    const r = markPaidPatch(f);
-    if ("error" in r) { setErr(r.error); return; }
-    setBusy(true); setErr("");
-    try { await api.logistics.update(target.bookingId, r.patch); toast(change ? "Payment changed" : "Marked paid"); onDone(); }
-    catch (e) { setErr(String(e)); setBusy(false); }
-  };
-  const methods = PAY_METHODS.map((m) => m.label);
-  return (
-    <LogisticsModal title={change ? "Change payment" : "Mark paid"} sub={target.label} onClose={onClose}
-      footer={<>
-        <button onClick={onClose} className={modalGhost}>Cancel</button>
-        <button onClick={go} disabled={busy} className={modalPrimary}>{busy ? "Saving..." : change ? "Save payment" : "Mark paid"}</button>
-      </>}>
-      {change && bankLinkNote(target.bankLinked, target.paidAmount) && (
-        <p className="text-[12.5px] text-warning-ink bg-warning-bg border border-warning/30 rounded-lg px-3 py-2" role="status">{bankLinkNote(target.bankLinked, target.paidAmount)}</p>
-      )}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="min-w-0">
-          <label className="block text-[12px] font-medium text-muted mb-1">Amount paid</label>
-          <NumberInput className={inp} value={f.amount} placeholder="0.00" onValue={(_n, raw) => set({ amount: raw })} />
-        </div>
-        <div className="min-w-0">
-          <label className="block text-[12px] font-medium text-muted mb-1">Paid on</label>
-          <input type="date" className={inp} value={f.paidAt} onChange={(e) => set({ paidAt: e.target.value })} />
-        </div>
-        <div className="min-w-0">
-          <label className="block text-[12px] font-medium text-muted mb-1">Paid by</label>
-          <select className={inp} value={f.method} onChange={(e) => set({ method: e.target.value })}>
-            <option value="">Not set</option>
-            {methods.map((m) => <option key={m} value={m}>{m}</option>)}
-            {f.method && !methods.includes(f.method) && <option value={f.method}>{f.method}</option>}
-          </select>
-        </div>
-        <div className="min-w-0">
-          <label className="block text-[12px] font-medium text-muted mb-1">Reference</label>
-          <input className={inp} value={f.note} placeholder="Confirmation number" onChange={(e) => set({ note: e.target.value })} />
-        </div>
-      </div>
-      {!change && target.rate == null && <p className="text-[12px] text-muted">This load has no carrier rate yet, so type what was paid.</p>}
-      {err && <div className="text-[12px] text-danger-ink" role="alert">{err}</div>}
-    </LogisticsModal>
-  );
-}
-
-/** Undo a payment: asks first, then clears the amount. Returns whether it was undone. */
-export async function undoCarrierPaid(bookingId: string, label: string, paid?: number | null): Promise<boolean> {
-  if (!confirm(`Undo the payment${paid != null ? ` of ${fmtAmount(paid)}` : ""} for ${label}? The load shows as owed again.`)) return false;
-  try { await api.logistics.update(bookingId, UNDO_PAID_PATCH); toast("Payment undone"); return true; }
-  catch (e) { toast(String(e), "error"); return false; }
-}
-
-// ─── Link the bank payment ────────────────────────────────────────────────
-
-/** The bank transactions that look like this payment (money out for about the amount, around the day it was
- *  paid). Picking one books it against the deal as shipping, for what was paid on this load. */
+/** The bank rows that look like this payment (money out, with money left on it, around the pay day). Picking one
+ *  asks for the amount to book on this load, then books it against the deal as shipping and marks the load paid.
+ *  This is the only way a load becomes paid. */
 export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; onClose: () => void; onDone: () => void }) {
+  const [q, setQ] = useState("");
   const [rows, setRows] = useState<BankCandidate[] | null>(null);
   const [err, setErr] = useState("");
-  const [busy, setBusy] = useState("");
+  const [picked, setPicked] = useState<BankCandidate | null>(null);
+  const [amount, setAmount] = useState("");
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     let dead = false;
-    api.logistics.carrierPay.candidates(target.bookingId)
-      .then((r) => { if (!dead) setRows(carrierPayCandidates(r)); })
-      .catch((e) => { if (!dead) { setErr(String(e)); setRows([]); } });
-    return () => { dead = true; };
-  }, [target.bookingId]);
-  const link = async (c: BankCandidate) => {
-    setBusy(c.txnId); setErr("");
-    try { await api.logistics.carrierPay.link(target.bookingId, c.txnId); toast("Linked to the bank payment"); onDone(); }
-    catch (e) { setErr(String(e)); setBusy(""); }
+    const id = window.setTimeout(() => {
+      api.logistics.carrierPay.candidates(target.bookingId, q)
+        .then((r) => { if (!dead) { setRows(carrierPayCandidates(r)); setErr(""); } })
+        .catch((e) => { if (!dead) { setErr(String(e)); setRows((prev) => prev ?? []); } });
+    }, q.trim() ? 250 : 0);
+    return () => { dead = true; window.clearTimeout(id); };
+  }, [target.bookingId, q]);
+
+  const pick = (c: BankCandidate) => {
+    const start = linkAmountStart(c, target.rate);
+    setPicked(c); setAmount(start == null ? "" : String(start)); setErr("");
   };
+  const go = async () => {
+    if (!picked) return;
+    const r = linkAmountCheck(amount, picked.free);
+    if ("error" in r) { setErr(r.error); return; }
+    setBusy(true); setErr("");
+    try { await api.logistics.carrierPay.link(target.bookingId, picked.txnId, r.amount); toast("Linked to the bank payment"); onDone(); }
+    catch (e) { setErr(String(e)); setBusy(false); }
+  };
+
   return (
     <LogisticsModal title="Link bank payment" sub={target.label} wide onClose={onClose}
-      footer={<button onClick={onClose} className={modalPrimary}>Close</button>}>
-      <p className="text-[12.5px] text-muted">
-        Money that left the account for about {target.paidAmount != null ? fmtAmount(target.paidAmount) : "this amount"}, within a few days of the payment.
-        Linking it books the payment on the deal as shipping.
-      </p>
-      {rows === null ? <p className="text-[12.5px] text-muted">Looking...</p> : rows.length === 0 ? (
-        <p className="text-[12.5px] text-ink-2">{err ? "" : "No matching bank payment yet. It shows up here once the money leaves the account."}</p>
-      ) : (
-        <div className="rounded-lg border border-line divide-y divide-line">
-          {rows.map((c) => (
-            <div key={c.txnId} className="flex items-center gap-3 px-3 py-2.5 min-w-0">
-              <div className="min-w-0 flex-1">
-                <div className="text-[13px] text-ink truncate">{c.who || c.memo || "Bank payment"}</div>
-                <div className="text-[11.5px] text-muted truncate">{[fmtDayLabel(c.day), c.who && c.memo ? c.memo : "", c.reason].filter(Boolean).join(" · ")}</div>
-              </div>
-              {c.amount != null && <span className="text-[13px] tabular-nums text-ink flex-shrink-0">{fmtAmount(c.amount)}</span>}
-              <button onClick={() => link(c)} disabled={busy !== ""}
-                className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap">
-                {busy === c.txnId ? "Linking..." : "Link"}
-              </button>
+      footer={picked
+        ? <>
+            <button onClick={() => { setPicked(null); setErr(""); }} disabled={busy} className={modalGhost}>Back</button>
+            <button onClick={go} disabled={busy} className={modalPrimary}>{busy ? "Linking..." : "Link payment"}</button>
+          </>
+        : <button onClick={onClose} className={modalPrimary}>Close</button>}>
+      {picked ? (
+        <>
+          <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5 min-w-0">
+            <div className="flex items-baseline gap-3 min-w-0">
+              <div className="text-[13px] text-ink truncate min-w-0 flex-1">{picked.who || picked.memo || "Bank payment"}</div>
+              {picked.amount != null && <span className="text-[13px] tabular-nums text-ink flex-shrink-0">{fmtAmount(picked.amount)}</span>}
             </div>
-          ))}
-        </div>
+            <div className="text-[11.5px] text-muted truncate">{[fmtDayLabel(picked.day), picked.who && picked.memo ? picked.memo : ""].filter(Boolean).join(" · ")}</div>
+          </div>
+          <div className="min-w-0">
+            <label className="block text-[12px] font-medium text-muted mb-1">Amount to link to this load</label>
+            <NumberInput className={inp} value={amount} placeholder="0.00" autoFocus onValue={(_n, raw) => setAmount(raw)} />
+            <div className="text-[11px] text-muted mt-1">
+              {[picked.free != null ? `${fmtAmount(picked.free)} free on this payment.` : "", target.rate != null ? `Carrier rate ${fmtAmount(target.rate)}.` : ""].filter(Boolean).join(" ")}
+              {" "}Linking books this amount on the deal as shipping and marks the load paid.
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-[12.5px] text-muted">
+            Money that left the account in the last few months and is not fully booked yet. Pick the payment that went to this carrier.
+          </p>
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search an amount or words" aria-label="Search bank payments"
+              className={`${inp} pl-8`} />
+          </div>
+          {rows === null ? <p className="text-[12.5px] text-muted">Looking...</p> : rows.length === 0 ? (
+            <p className="text-[12.5px] text-ink-2">{err ? "" : q.trim() ? "No bank payment matches that." : "No bank payment to link yet. It shows up here once the money leaves the account."}</p>
+          ) : (
+            <div className="rounded-lg border border-line divide-y divide-line">
+              {rows.map((c) => (
+                <div key={c.txnId} className="flex items-center gap-3 px-3 py-2.5 min-w-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] text-ink truncate">{c.who || c.memo || "Bank payment"}</div>
+                    <div className="text-[11.5px] text-muted truncate">
+                      {[fmtDayLabel(c.day), c.who && c.memo ? c.memo : "", c.method, c.reason].filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    {c.amount != null && <div className="text-[13px] tabular-nums text-ink">{fmtAmount(c.amount)}</div>}
+                    {c.free != null && <div className="text-[11px] tabular-nums text-muted">{fmtAmount(c.free)} free on it</div>}
+                  </div>
+                  <button onClick={() => pick(c)}
+                    className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink hover:bg-surface-2 whitespace-nowrap">Choose</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
       {err && <div className="text-[12px] text-danger-ink" role="alert">{err}</div>}
     </LogisticsModal>
   );
+}
+
+/** What the payment controls on one screen share: the link picker, and Unlink and Undo with their questions.
+ *  `onChanged` runs after any of them changes the load, so the screen reads it again. */
+export function usePaidControls(onChanged: () => void) {
+  const [target, setTarget] = useState<PayTarget | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async (what: () => Promise<unknown>, done: string) => {
+    setBusy(true);
+    try { await what(); toast(done); onChanged(); }
+    catch (e) { toast(String(e), "error"); }
+    finally { setBusy(false); }
+  };
+  return {
+    busy,
+    open: target !== null,
+    link: (t: PayTarget) => setTarget(t),
+    unlink: async (t: PayTarget) => {
+      if (!confirm("Unlink this bank payment? The load goes back to To pay.")) return;
+      await run(() => api.logistics.carrierPay.unlink(t.bookingId), "Bank payment unlinked");
+    },
+    /** Takes back a payment somebody typed that was never linked. A linked one is refused by the server in its own words. */
+    undo: async (t: PayTarget) => {
+      if (!confirm(`Undo the payment on ${t.label}? The load goes back to To pay.`)) return;
+      await run(() => api.logistics.update(t.bookingId, UNDO_PAID_PATCH), "Payment undone");
+    },
+    sheet: target ? <LinkBankSheet target={target} onClose={() => setTarget(null)} onDone={() => { setTarget(null); onChanged(); }} /> : null,
+  };
+}
+
+const ghostBtn = "px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap";
+const primaryBtn = "bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12.5px] font-medium disabled:opacity-40 whitespace-nowrap";
+
+const TONE_TEXT: Record<PaidView["tone"], string> = {
+  neutral: "text-ink-2", warning: "text-warning-ink", danger: "text-danger-ink", success: "text-success-ink",
+};
+
+/** A load's payment in words: not paid yet and when it is due, marked paid but not linked, or paid and linked. */
+export function PaidSummary({ b, today, className = "" }: { b: PaidFacts; today: string; className?: string }) {
+  const v = paidView(b, today);
+  return (
+    <div className={`min-w-0 ${className}`}>
+      <div className={`text-[13px] break-words ${TONE_TEXT[v.tone]} ${v.state === "unpaid" ? "" : "font-medium"}`}>{v.text}</div>
+      {v.note && <div className={`text-[12px] break-words ${v.noteTone === "neutral" ? "text-muted" : TONE_TEXT[v.noteTone]}`}>{v.note}</div>}
+    </div>
+  );
+}
+
+/** The buttons for a load's payment. Not paid: Link bank payment. Marked paid: Link bank payment and Undo (and Unlink when
+ *  part of it is linked). Paid: Unlink. Nothing at all for someone who may not change payments. */
+export function PaidButtons({ state, bankLinked, canLink, canChange, target, controls }: {
+  state: PaidState; bankLinked?: string | null; canLink: boolean; canChange: boolean; target: PayTarget; controls: ReturnType<typeof usePaidControls>;
+}) {
+  const linkBtn = canLink && state !== "paid" && (
+    <button type="button" onClick={() => controls.link(target)} disabled={controls.busy} className={primaryBtn}>Link bank payment</button>
+  );
+  const undoBtn = canChange && state === "marked" && (
+    <button type="button" onClick={() => controls.undo(target)} disabled={controls.busy} className={ghostBtn}>Undo</button>
+  );
+  const unlinkBtn = canChange && (state === "paid" || (state === "marked" && (bankLinked === "linked" || bankLinked === "partial"))) && (
+    <button type="button" onClick={() => controls.unlink(target)} disabled={controls.busy} className={ghostBtn}>Unlink</button>
+  );
+  if (!linkBtn && !undoBtn && !unlinkBtn) return null;
+  return <div className="flex items-center gap-1.5 flex-wrap">{linkBtn}{undoBtn}{unlinkBtn}</div>;
 }
 
 // ─── a file on a load, opened in place ────────────────────────────────────
@@ -240,22 +279,18 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
   // A load was saved or closed from its page: read the rows again.
   useEffect(() => { if (rev) reload(); }, [rev, reload]);
   const file = useOpenFile();
-  const [pay, setPay] = useState<PayTarget | null>(null);
-  const [link, setLink] = useState<PayTarget | null>(null);
+  const controls = usePaidControls(reload);
   const today = localDay();
-  const targetOf = (r: CarrierPayRow): PayTarget => ({
-    bookingId: r.booking_id, label: `${r.carrier || "Carrier"}, ${r.load_number}`, rate: r.rate, payMethod: r.pay_method, paidAmount: r.paid_amount,
-  });
-  // R-463: a paid row changes through the same sheet, opened with what is on record.
-  const changeTargetOf = (r: CarrierPayRow): PayTarget => ({
-    ...targetOf(r), bankLinked: r.bank_linked,
-    current: { paid_amount: r.paid_amount, paid_at: r.paid_at, paid_method: r.paid_method, paid_note: r.paid_note },
-  });
+  const targetOf = (r: CarrierPayRow): PayTarget => ({ bookingId: r.booking_id, label: `${r.carrier || "Carrier"}, ${r.load_number}`, rate: r.rate });
   const sum = useMemo(() => toPaySummary(data?.to_pay ?? [], today), [data, today]);
 
   if (data === null) {
     return <div className="space-y-3" aria-busy="true"><div className="h-[120px] bg-surface-2 rounded-xl animate-pulse" /><div className="h-[120px] bg-surface-2 rounded-xl animate-pulse" /></div>;
   }
+  const toLink = data.to_link ?? [];
+  const buttons = (r: CarrierPayRow, state: PaidState) => (
+    <PaidButtons state={state} bankLinked={r.bank_linked} canLink canChange target={targetOf(r)} controls={controls} />
+  );
   return (
     <div className="space-y-5 min-w-0">
       {error && (
@@ -285,13 +320,22 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
                   : <StatusPill tone="warning">No carrier invoice</StatusPill>}
               </div>
               <span className="text-[14px] font-semibold tabular-nums text-ink w-24 text-right flex-shrink-0">{r.rate != null ? fmtAmount(r.rate) : "No rate"}</span>
-              <button type="button" onClick={() => setPay(targetOf(r))}
-                className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12.5px] font-medium whitespace-nowrap flex-shrink-0">
-                Mark paid
-              </button>
+              {buttons(r, "unpaid")}
             </div>
           );
         })}
+      </Group>
+
+      <Group title="Link the bank payment" count={toLink.length}
+        note={toLink.length > 0 ? "Marked paid before, but not tied to a bank payment" : undefined}>
+        {toLink.length === 0 && <div className="px-4 py-4 text-[12.5px] text-muted">Every paid load is linked to the bank.</div>}
+        {toLink.map((r) => (
+          <div key={r.booking_id} className="flex items-center gap-3 px-4 py-3 min-w-0 flex-wrap">
+            <Who r={r} onOpen={() => onOpenLoad(r.booking_id, "pay")} />
+            <PaidSummary b={{ ...r, paid_state: "marked" }} today={today} className="max-w-[320px]" />
+            {buttons(r, "marked")}
+          </div>
+        ))}
       </Group>
 
       <Group title="Paid" count={data.paid.length} note="Last 60 days">
@@ -299,24 +343,13 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
         {data.paid.map((r) => (
           <div key={r.booking_id} className="flex items-center gap-3 px-4 py-3 min-w-0 flex-wrap">
             <Who r={r} onOpen={() => onOpenLoad(r.booking_id, "pay")} />
-            <div className="text-[12.5px] text-ink-2 min-w-0 max-w-[320px] truncate">{paymentLine({ paid_amount: r.paid_amount, paid_at: r.paid_at, paid_method: r.paid_method, paid_note: r.paid_note })}</div>
-            <div className="flex items-center gap-1.5 flex-shrink-0">
-              <BankLinkPill state={r.bank_linked} />
-              <button type="button" onClick={() => setPay(changeTargetOf(r))}
-                className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Change</button>
-              {r.bank_linked !== "linked" && (
-                <button type="button" onClick={() => setLink(targetOf(r))}
-                  className="flex items-center gap-1 px-2.5 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 whitespace-nowrap"><Landmark size={12} /> Link bank payment</button>
-              )}
-              <button type="button" onClick={async () => { if (await undoCarrierPaid(r.booking_id, `${r.carrier || "the carrier"}, ${r.load_number}`, r.paid_amount)) reload(); }}
-                className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Undo</button>
-            </div>
+            <PaidSummary b={{ ...r, paid_state: "paid" }} today={today} className="max-w-[320px]" />
+            {buttons(r, "paid")}
           </div>
         ))}
       </Group>
 
-      {pay && <MarkPaidSheet target={pay} onClose={() => setPay(null)} onDone={() => { setPay(null); reload(); }} />}
-      {link && <LinkBankSheet target={link} onClose={() => setLink(null)} onDone={() => { setLink(null); reload(); }} />}
+      {controls.sheet}
       {file.node}
     </div>
   );
@@ -327,7 +360,7 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
 /** The top of the Bills screen: every carrier still owed, with when it is due and how it gets paid. A row opens
  *  the load on its Pay step. Nothing renders unless someone is owed, and nothing is asked of the server unless
  *  `canPay` (the carrier-pay routes are for the people who may pay). Pass `data` to share rows already read. */
-export function CarriersToPaySection({ canPay, data: given }: { canPay: boolean; data?: { to_pay: CarrierPayRow[]; paid: CarrierPayRow[] } | null }) {
+export function CarriersToPaySection({ canPay, data: given }: { canPay: boolean; data?: CarrierPayResponse | null }) {
   // R-464: the Bills screen reads the rows once and hands them to this section and to its month strip.
   const own = useCarrierPay(canPay && given === undefined);
   const data = given === undefined ? own.data : given;

@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import type { FreightCarrier, RateMatch, RatesResponse } from "./api";
 import {
-  OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, bankLinkNote, canEditCarriers, changePaidDefaults, canPayCarriers, canRecordOn, canSeePayDetails, carrierByName, carrierIds,
-  carrierPayCandidates, encodeOpenLoad, filterCarriers, laneEnds, lastRate, markPaidDefaults, markPaidPatch, normalName, offerSaveCarrier,
-  parseOpenLoad, payDue, payMethodKey, payMethodLabel, queryText, rateOf, termsWord, toPaySummary,
+  OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, canChangePaidOn, canEditCarriers, canPayCarriers, canRecordOn, canSeePayDetails, carrierByName, carrierFacts, carrierIds,
+  carrierMatches, carrierPayCandidates, encodeOpenLoad, fillOffers, fillPatch, fillWouldChange, filterCarriers, laneEnds, lastRate, linkAmountCheck, linkAmountStart,
+  normalName, offerSaveCarrier, parseOpenLoad, payDue, payMethodKey, payMethodLabel, queryText, rateOf, squashName, termsWord, toPaySummary, typedNumber,
 } from "./logisticsCarriers";
 
 const carrier = (over: Partial<FreightCarrier> = {}): FreightCarrier => ({
@@ -134,7 +134,7 @@ describe("who may pay carriers", () => {
     expect(canSeePayDetails(me(["deal_flow:view", "logistics:view"]))).toBe(false);
     expect(canSeePayDetails(me(["deal_flow:view", "deal_flow:edit"]))).toBe(false);
   });
-  it("offers Mark paid only on a booked, picked up or delivered load the viewer has the figures for", () => {
+  it("offers Link bank payment only on a booked, picked up or delivered load the viewer has the figures for", () => {
     const b = { status: "delivered" as const, can_see_deal: true, can_see_money: true };
     expect(canRecordOn(b, true)).toBe(true);
     expect(canRecordOn(b, false)).toBe(false);
@@ -143,27 +143,19 @@ describe("who may pay carriers", () => {
     expect(canRecordOn({ ...b, can_see_money: false }, true)).toBe(false);
     expect(canRecordOn({ ...b, can_see_deal: false }, true)).toBe(false);
   });
+  it("lets the team take a payment back on a load of any status, but not a viewer without the figures (R-470)", () => {
+    const b = { can_see_deal: true, can_see_money: true };
+    expect(canChangePaidOn(b, true)).toBe(true);
+    expect(canChangePaidOn(b, false)).toBe(false);
+    expect(canChangePaidOn({ ...b, can_see_money: false }, true)).toBe(false);
+    expect(canChangePaidOn({ ...b, can_see_deal: false }, true)).toBe(false);
+  });
 });
 
-describe("Mark paid", () => {
-  it("opens with the carrier rate, today and the carrier's method", () => {
-    expect(markPaidDefaults({ rate: 1320, pay_method: "zelle" }, "2026-10-06")).toEqual({ amount: "1320", paidAt: "2026-10-06", method: "Zelle", note: "" });
-    expect(markPaidDefaults({ rate: null, pay_method: "" }, "2026-10-06")).toEqual({ amount: "", paidAt: "2026-10-06", method: "", note: "" });
-  });
-  it("writes the four paid fields", () => {
-    const r = markPaidPatch({ amount: "$1,320.456", paidAt: "2026-10-06", method: " Zelle ", note: " ref 4471 " });
-    expect(r).toEqual({ patch: { paid_amount: 1320.46, paid_at: "2026-10-06", paid_method: "Zelle", paid_note: "ref 4471" } });
-  });
-  it("accepts zero, which is an exact figure, and refuses what is not a figure", () => {
-    expect("patch" in markPaidPatch({ amount: "0", paidAt: "2026-10-06", method: "", note: "" })).toBe(true);
-    expect(markPaidPatch({ amount: "", paidAt: "2026-10-06", method: "", note: "" })).toEqual({ error: "Add the amount paid." });
-    expect(markPaidPatch({ amount: "abc", paidAt: "2026-10-06", method: "", note: "" })).toEqual({ error: "The amount paid must be a number." });
-    expect(markPaidPatch({ amount: "-5", paidAt: "2026-10-06", method: "", note: "" })).toEqual({ error: "The amount paid cannot be less than zero." });
-    expect(markPaidPatch({ amount: "20000000", paidAt: "2026-10-06", method: "", note: "" })).toEqual({ error: "The amount paid is too large." });
-    expect(markPaidPatch({ amount: "10", paidAt: "", method: "", note: "" })).toEqual({ error: "Add the day it was paid." });
-  });
-  it("undoes by clearing the amount and nothing else", () => {
+describe("taking back a typed payment", () => {
+  it("undoes by clearing the amount and nothing else, and has no other paid write", () => {
     expect(UNDO_PAID_PATCH).toEqual({ paid_amount: null });
+    expect(Object.keys(UNDO_PAID_PATCH)).toEqual(["paid_amount"]);
   });
 });
 
@@ -186,21 +178,193 @@ describe("what is due", () => {
 });
 
 describe("the bank candidates", () => {
-  it("reads the rows of the suggestion shape", () => {
+  it("reads the rows of the R-470 shape", () => {
     const rows = carrierPayCandidates({ candidates: [
-      { txn_id: "t1", posted_at: "2026-10-05T00:00:00Z", amount: 1320, counterparty_name: "NORTHLINE FREIGHT", description: "ZELLE PAYMENT", reason: "amount matches" },
+      {
+        txn_id: "t1", posted_at: "2026-10-05T00:00:00Z", txn_amount: 2000, unlinked: 1320, counterparty_name: "NORTHLINE FREIGHT",
+        description: "ZELLE PAYMENT", method: "Zelle", reason: "amount matches", suggested_amount: 1320,
+      },
+    ] });
+    expect(rows).toEqual([
+      { txnId: "t1", day: "2026-10-05", amount: 2000, free: 1320, suggested: 1320, who: "NORTHLINE FREIGHT", memo: "ZELLE PAYMENT", method: "Zelle", reason: "amount matches" },
+    ]);
+  });
+  it("reads the older suggestion shape too, and drops a row with no transaction", () => {
+    const rows = carrierPayCandidates({ candidates: [
       { id: "t2", date: "2026-10-04", leg_amount: 1319.8, payee: "Northline", memo: "wire" },
       { amount: 5 },
     ] });
     expect(rows).toEqual([
-      { txnId: "t1", day: "2026-10-05", amount: 1320, who: "NORTHLINE FREIGHT", memo: "ZELLE PAYMENT", reason: "amount matches" },
-      { txnId: "t2", day: "2026-10-04", amount: 1319.8, who: "Northline", memo: "wire", reason: "" },
+      { txnId: "t2", day: "2026-10-04", amount: 1319.8, free: null, suggested: null, who: "Northline", memo: "wire", method: "", reason: "" },
     ]);
   });
   it("reads a bare list and an answer with nothing in it", () => {
     expect(carrierPayCandidates([{ txn_id: "t9", amount: 1 }]).map((r) => r.txnId)).toEqual(["t9"]);
     expect(carrierPayCandidates({})).toEqual([]);
     expect(carrierPayCandidates(null)).toEqual([]);
+  });
+});
+
+describe("the amount to link (R-470)", () => {
+  const row = (over: Partial<Parameters<typeof linkAmountStart>[0]> = {}) => ({ free: 2000, suggested: null, amount: 2000, ...over });
+  it("opens with the server's suggestion", () => {
+    expect(linkAmountStart(row({ suggested: 1320 }), 1500)).toBe(1320);
+  });
+  it("else the smaller of the money free and the carrier rate", () => {
+    expect(linkAmountStart(row(), 1320.456)).toBe(1320.46);
+    expect(linkAmountStart(row({ free: 900 }), 1320)).toBe(900);
+    expect(linkAmountStart(row(), null)).toBe(2000);
+    expect(linkAmountStart(row(), 0)).toBe(2000);
+  });
+  it("falls back to the row's amount when the free money is not known", () => {
+    expect(linkAmountStart(row({ free: null }), 1500)).toBe(1500);
+    expect(linkAmountStart(row({ free: null, amount: null }), 1500)).toBe(1500);
+    expect(linkAmountStart(row({ free: null, amount: null }), null)).toBeNull();
+  });
+  it("takes more than $0 and at most the money free", () => {
+    expect(linkAmountCheck("1,320.456", 2000)).toEqual({ amount: 1320.46 });
+    expect(linkAmountCheck("$2000", 2000)).toEqual({ amount: 2000 });
+    expect(linkAmountCheck("0.01", 2000)).toEqual({ amount: 0.01 });
+  });
+  it("refuses $0, a negative, a blank, text and too much, in plain sentences", () => {
+    expect(linkAmountCheck("0", 2000)).toEqual({ error: "The amount must be more than $0." });
+    expect(linkAmountCheck("0.00", 2000)).toEqual({ error: "The amount must be more than $0." });
+    expect(linkAmountCheck("0.004", 2000)).toEqual({ error: "The amount must be more than $0." });
+    expect(linkAmountCheck("-5", 2000)).toEqual({ error: "The amount must be more than $0." });
+    expect(linkAmountCheck("", 2000)).toEqual({ error: "Add the amount to link." });
+    expect(linkAmountCheck("abc", 2000)).toEqual({ error: "The amount must be a number." });
+    expect(linkAmountCheck("2000.01", 2000)).toEqual({ error: "The amount cannot be more than the $2,000.00 free on this payment." });
+    expect(linkAmountCheck("99999999", null)).toEqual({ error: "The amount is too large." });
+  });
+  it("does not cap the amount when the free money is not known", () => {
+    expect(linkAmountCheck("5000", null)).toEqual({ amount: 5000 });
+  });
+});
+
+describe("recognising a saved carrier from what was typed (R-471)", () => {
+  const list = [
+    carrier({ id: "c1", name: "Ridgeway Freight", mc_number: "MC-123456", dot_number: "7788990" }),
+    carrier({ id: "c2", name: "Ridgeway Freight Lines", mc_number: "", dot_number: "" }),
+    carrier({ id: "c3", name: "Harbor Lines", mc_number: "88123", dot_number: "4412", contact_name: " Dana Okoye ", phone: "555-0142", pay_method: "zelle", pay_terms_days: 30 }),
+    carrier({ id: "c4", name: "A1", mc_number: "", dot_number: "" }),
+  ];
+  const ids = (typed: string) => carrierMatches(typed, list).map((c) => c.id);
+
+  it("ignores case, spaces and punctuation in the name", () => {
+    expect(squashName("  Ridge-way, FREIGHT. ")).toBe("ridgewayfreight");
+    expect(ids("ridgeway freight")).toEqual(["c1"]);
+    expect(ids("RIDGEWAY-FREIGHT")).toEqual(["c1"]);
+    expect(ids("harbor  lines")).toEqual(["c3"]);
+  });
+
+  it("an exact name wins over longer names that start with it", () => {
+    expect(ids("Ridgeway Freight")).toEqual(["c1"]);
+  });
+
+  it("matches a start of 3 or more characters, best name first", () => {
+    expect(ids("Rid")).toEqual(["c1", "c2"]);
+    expect(ids("harb")).toEqual(["c3"]);
+  });
+
+  it("offers nothing under 3 characters", () => {
+    expect(ids("Ri")).toEqual([]);
+    expect(ids("A1")).toEqual([]);
+    expect(ids("")).toEqual([]);
+    expect(ids("  ")).toEqual([]);
+  });
+
+  it("matches a saved name that the typed text starts with", () => {
+    expect(ids("Harbor Lines LLC")).toEqual(["c3"]);
+    expect(ids("Ridgeway Freight Lines Inc")).toEqual(["c2", "c1"]);
+  });
+
+  it("matches an MC or a DOT number", () => {
+    expect(ids("MC 123456")).toEqual(["c1"]);
+    expect(ids(`mc${"#"}123456`)).toEqual(["c1"]);
+    expect(ids("123456")).toEqual(["c1"]);
+    expect(ids("DOT 4412")).toEqual(["c3"]);
+    expect(ids("4412")).toEqual(["c3"]);
+    expect(ids("MC 88123")).toEqual(["c3"]);
+  });
+
+  it("does not take a DOT number for an MC number or the other way round", () => {
+    expect(ids("MC 4412")).toEqual([]);
+    expect(ids("DOT 88123")).toEqual([]);
+  });
+
+  it("matches nothing for a name or number that is not saved", () => {
+    expect(ids("Quarry Haulers")).toEqual([]);
+    expect(ids("MC 999999")).toEqual([]);
+    expect(carrierMatches("Ridgeway", null)).toEqual([]);
+    expect(carrierMatches("Ridgeway", [])).toEqual([]);
+  });
+
+  it("returns two matches when two carriers share a name", () => {
+    const twins = [carrier({ id: "x1", name: "Twin Haul" }), carrier({ id: "x2", name: "twin  haul" })];
+    expect(carrierMatches("Twin Haul", twins).map((c) => c.id)).toEqual(["x1", "x2"]);
+  });
+
+  it("reads a typed number", () => {
+    expect(typedNumber("MC 123456")).toEqual({ kind: "mc", digits: "123456" });
+    expect(typedNumber(`DOT${"#"}7788990`)).toEqual({ kind: "dot", digits: "7788990" });
+    expect(typedNumber("123-456")).toEqual({ kind: "any", digits: "123456" });
+    expect(typedNumber("12")).toBeNull();
+    expect(typedNumber("Acme 123456")).toBeNull();
+  });
+
+  describe("pressing the button", () => {
+    const harbor = list[2];
+    it("sets the carrier and its id", () => {
+      expect(fillPatch(harbor, { delivered_at: "", pay_due_date: "" })).toEqual({ carrier: "Harbor Lines", carrier_id: "c3" });
+    });
+    it("sets the pay due date to the delivered day plus the terms, only when it is blank and delivered", () => {
+      expect(fillPatch(harbor, { delivered_at: "2026-10-01", pay_due_date: "" })).toEqual({ carrier: "Harbor Lines", carrier_id: "c3", pay_due_date: "2026-10-31" });
+      expect(fillPatch(harbor, { delivered_at: "2026-10-01", pay_due_date: "2026-10-20" }).pay_due_date).toBeUndefined();
+      expect(fillPatch(harbor, { delivered_at: "", pay_due_date: "" }).pay_due_date).toBeUndefined();
+      expect(fillPatch(list[0], { delivered_at: "2026-10-01", pay_due_date: "" }).pay_due_date).toBeUndefined();
+    });
+    it("counts a day carrying a time, and pay on delivery as the same day", () => {
+      expect(fillPatch(harbor, { delivered_at: "2026-10-01T09:00:00Z", pay_due_date: "" }).pay_due_date).toBe("2026-10-31");
+      expect(fillPatch(carrier({ id: "c9", name: "Cash Haul", pay_terms_days: 0 }), { delivered_at: "2026-10-01", pay_due_date: "" }).pay_due_date).toBe("2026-10-01");
+    });
+    it("rolls into the next month and year the way a calendar does", () => {
+      expect(fillPatch(harbor, { delivered_at: "2026-12-15", pay_due_date: "" }).pay_due_date).toBe("2027-01-14");
+    });
+  });
+
+  describe("when the button shows", () => {
+    const harbor = list[2];
+    const facts = { carrier: "harbor lines", carrier_id: "", delivered_at: "", pay_due_date: "" };
+    it("shows for a typed name that is not yet the saved carrier", () => {
+      expect(fillWouldChange(harbor, facts)).toBe(true);
+      expect(fillOffers("harbor lines", list, facts).map((c) => c.id)).toEqual(["c3"]);
+    });
+    it("goes away once the load carries that carrier by name and id", () => {
+      const done = { ...facts, carrier: "Harbor Lines", carrier_id: "c3" };
+      expect(fillWouldChange(harbor, done)).toBe(false);
+      expect(fillOffers("Harbor Lines", list, done)).toEqual([]);
+    });
+    it("stays when the load is delivered and the pay due date can still be filled", () => {
+      const done = { carrier: "Harbor Lines", carrier_id: "c3", delivered_at: "2026-10-01", pay_due_date: "" };
+      expect(fillWouldChange(harbor, done)).toBe(true);
+      expect(fillWouldChange(harbor, { ...done, pay_due_date: "2026-10-31" })).toBe(false);
+    });
+    it("shows both matches for a chooser", () => {
+      expect(fillOffers("Rid", list, { carrier: "Rid", carrier_id: "", delivered_at: "", pay_due_date: "" }).map((c) => c.id)).toEqual(["c1", "c2"]);
+    });
+    it("shows nothing for a name nobody saved", () => {
+      expect(fillOffers("Quarry Haulers", list, { ...facts, carrier: "Quarry Haulers" })).toEqual([]);
+    });
+  });
+
+  it("lists what a filled carrier shows on the load, leaving out what is empty", () => {
+    expect(carrierFacts(list[2])).toEqual([
+      { label: "MC and DOT", value: "MC 88123, DOT 4412" },
+      { label: "Contact", value: "Dana Okoye" },
+      { label: "Phone", value: "555-0142" },
+      { label: "How they get paid", value: "Paid by Zelle, Net 30" },
+    ]);
+    expect(carrierFacts(list[3])).toEqual([]);
   });
 });
 
@@ -217,37 +381,5 @@ describe("opening a load from another screen", () => {
     expect(parseOpenLoad(JSON.stringify({ step: "pay" }))).toBeNull();
     expect(parseOpenLoad("")).toBeNull();
     expect(parseOpenLoad(null)).toBeNull();
-  });
-});
-
-describe("R-463: changing a payment that was recorded wrong", () => {
-  it("opens with the amount, day, method and reference on record", () => {
-    expect(changePaidDefaults({ paid_amount: 8850, paid_at: "2026-10-03", paid_method: "Zelle", paid_note: "ref 4471" }, "2026-10-07"))
-      .toEqual({ amount: "8850", paidAt: "2026-10-03", method: "Zelle", note: "ref 4471" });
-  });
-
-  it("keeps a zero amount and falls back to today when the day is missing", () => {
-    expect(changePaidDefaults({ paid_amount: 0, paid_at: "", paid_method: "", paid_note: "" }, "2026-10-07"))
-      .toEqual({ amount: "0", paidAt: "2026-10-07", method: "", note: "" });
-  });
-
-  it("reads a method an older phone stored as a key, and a day that carries a time", () => {
-    expect(changePaidDefaults({ paid_amount: 850, paid_at: "2026-10-03T14:00:00Z", paid_method: "credit_card", paid_note: "" }, "2026-10-07"))
-      .toMatchObject({ paidAt: "2026-10-03", method: "Credit card" });
-  });
-
-  it("the fixed figure goes out through the same patch as Mark paid", () => {
-    const form = { ...changePaidDefaults({ paid_amount: 8850, paid_at: "2026-10-03", paid_method: "Zelle", paid_note: "" }, "2026-10-07"), amount: "850" };
-    const r = markPaidPatch(form);
-    expect("patch" in r && r.patch).toEqual({ paid_amount: 850, paid_at: "2026-10-03", paid_method: "Zelle", paid_note: "" });
-  });
-
-  it("says when the load is tied to a bank payment, and still lets the change through", () => {
-    expect(bankLinkNote("linked", 8850)).toBe("This load is linked to a bank payment of $8,850.00.");
-    expect(bankLinkNote("linked", null)).toBe("This load is linked to a bank payment.");
-    expect(bankLinkNote("partial", 8850)).toBe("This load is partly linked to a bank payment.");
-    expect(bankLinkNote("none", 8850)).toBe("");
-    expect(bankLinkNote("", 8850)).toBe("");
-    expect(bankLinkNote(undefined, 8850)).toBe("");
   });
 });

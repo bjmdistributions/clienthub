@@ -4,7 +4,7 @@
 // due labels, the lane, the equipment list and the send-invoice warning. The phone carries the
 // same rules in www/app.js, so a change here is a change there.
 
-import type { FreightBooking, FreightFile, FreightFileKind, FreightStatus, FreightStop } from "./api";
+import type { FreightBooking, FreightFile, FreightFileKind, FreightStatus, FreightStop, PaidState } from "./api";
 import { fmtAmount, localDay, parseLocalDay } from "./format";
 import { formatLocation, isStateCode, parseLocation } from "./location";
 
@@ -95,10 +95,6 @@ export const moneyHidden = (b: { can_see_money?: boolean }): boolean => b.can_se
 export const rateMissing = (b: { quoted_cost: number | null; can_see_money?: boolean }): boolean =>
   !moneyHidden(b) && b.quoted_cost == null;
 
-export const BANK_LINK_WORD: Record<string, string> = {
-  linked: "Linked to the bank", partial: "Partly linked to the bank", none: "Not linked to the bank",
-};
-
 const PAID_METHOD_WORDS: Record<string, string> = {
   zelle: "Zelle", wire: "Wire", ach: "ACH", credit_card: "Credit card", check: "Check", other: "Other",
 };
@@ -109,14 +105,57 @@ export const paidMethodWord = (m: string | null | undefined): string => {
   return PAID_METHOD_WORDS[t.toLowerCase()] ?? t;
 };
 
-/** "Paid $1,850.00 on Oct 6 by Zelle, ref 4471" or "Not paid yet". */
-export function paymentLine(b: { paid_amount: number | null; paid_at: string; paid_method: string; paid_note: string }): string {
-  if (b.paid_amount == null) return "Not paid yet";
-  const bits = [`Paid ${fmtAmount(b.paid_amount)}`];
-  if (b.paid_at) bits.push(`on ${fmtDayLabel(b.paid_at)}`);
-  if (b.paid_method) bits.push(`by ${paidMethodWord(b.paid_method)}`);
-  const head = bits.join(" ");
-  return b.paid_note.trim() ? `${head}, ${b.paid_note.trim()}` : head;
+// ─── paid means linked to the bank (R-470) ────────────────────────────────
+
+/** What a load's payment is. The server's `paid_state` wins. Without it (an older server, or the local copy of a
+ *  load) a load is paid only when the bank link says so, and a payment with no link is `marked`: the screen
+ *  never claims Paid on a figure somebody typed. */
+export function paidStateOf(b: { paid_state?: string | null; paid_amount?: number | null; bank_linked?: string | null }): PaidState {
+  if (b.paid_state === "unpaid" || b.paid_state === "marked" || b.paid_state === "paid") return b.paid_state;
+  if (b.paid_amount == null) return "unpaid";
+  return b.bank_linked === "linked" ? "paid" : "marked";
+}
+
+export interface PaidFacts {
+  paid_state?: string | null; paid_amount?: number | null; bank_linked?: string | null;
+  paid_at?: string | null; paid_method?: string | null; pay_due_date?: string | null; can_see_money?: boolean;
+}
+
+export interface PaidView {
+  state: PaidState;
+  tone: "neutral" | "warning" | "danger" | "success";
+  /** The sentence the load carries. */
+  text: string;
+  /** The small line under it: the due date while unpaid, the bank link once paid. */
+  note: string;
+  /** The tone of the note (a due date turns amber, then red). */
+  noteTone: "neutral" | "warning" | "danger" | "success";
+  /** A $0 payment, which is never a real one. */
+  zero: boolean;
+}
+
+/** The words every screen uses for a load's payment (the phone carries the same). */
+export function paidView(b: PaidFacts, today: string, now?: Date): PaidView {
+  const state = paidStateOf(b);
+  const amount = b.paid_amount ?? null;
+  if (state === "unpaid") {
+    const due = (b.pay_due_date || "").trim();
+    const note = due ? dueLabel(due, today, now) : moneyHidden(b) ? "" : "No due date";
+    return { state, tone: "neutral", text: "Not paid yet", note, noteTone: due ? dueTone(due, today) : "neutral", zero: false };
+  }
+  if (state === "marked") {
+    if (amount === 0) {
+      return { state, tone: "danger", text: "A $0 payment is not a real payment. Undo it.", note: "", noteTone: "neutral", zero: true };
+    }
+    return {
+      state, tone: "warning", note: "", noteTone: "neutral", zero: false,
+      text: amount == null ? "Marked paid, not linked to the bank" : `Marked paid ${fmtAmount(amount)}, not linked to the bank`,
+    };
+  }
+  const bits = [amount == null ? "Paid" : `Paid ${fmtAmount(amount)}`];
+  if ((b.paid_at || "").trim()) bits.push(`on ${fmtDayLabel(b.paid_at, now)}`);
+  if ((b.paid_method || "").trim()) bits.push(`by ${paidMethodWord(b.paid_method)}`);
+  return { state, tone: "success", text: bits.join(" "), note: "Linked to the bank", noteTone: "success", zero: false };
 }
 
 // ─── days and times ───────────────────────────────────────────────────────
@@ -146,7 +185,7 @@ export function timeWord(v: string | null | undefined): string {
 export const dayAndTime = (day: string | null | undefined, time: string | null | undefined, now?: Date): string =>
   [fmtDayLabel(day, now), timeWord(time)].filter(Boolean).join(", ");
 
-const addDays = (day: string, n: number): string => {
+export const addDays = (day: string, n: number): string => {
   const d = parseLocalDay(day);
   d.setDate(d.getDate() + n);
   return localDay(d);
@@ -247,6 +286,8 @@ export function firstStep(status: string): LoadStep {
 export interface StepFacts {
   status: string; carrier: string; picked_up_at: string; delivered_at: string;
   paid_amount: number | null | undefined; paperwork: Paperwork;
+  /** R-470: Pay is done only when the bank payment is linked. */
+  paid_state?: string | null; bank_linked?: string | null;
 }
 
 /** The done dots. Quote is done once it is quoted, or the load skipped quoting. */
@@ -257,7 +298,7 @@ export function stepDone(f: StepFacts): Record<LoadStep, boolean> {
     book: rank >= statusRank("booked") && f.carrier.trim() !== "",
     pickup: f.picked_up_at.trim() !== "",
     delivery: f.delivered_at.trim() !== "",
-    pay: f.paid_amount != null && f.paperwork.bol && f.paperwork.pod && f.paperwork.carrier_invoice,
+    pay: paidStateOf(f) === "paid" && f.paperwork.bol && f.paperwork.pod && f.paperwork.carrier_invoice,
   };
 }
 
@@ -298,10 +339,10 @@ export const GROUPS: { key: GroupKey; title: string }[] = [
 export const isHot = (b: { urgent?: boolean; status: string }): boolean =>
   !!b.urgent && (b.status === "quote" || b.status === "requested" || b.status === "booked");
 
-/** Picked up or delivered and nobody has recorded what the carrier charged yet. A figure the server
- *  withheld is hidden, not missing. (The deal side still asks for it; the logistics list no longer does.) */
-export const needsAmount = (b: { status: string; paid_amount: number | null; can_see_money?: boolean }): boolean =>
-  !moneyHidden(b) && (b.status === "picked_up" || b.status === "delivered") && b.paid_amount == null;
+/** Picked up or delivered and the carrier is not paid yet: no payment, or one that is not linked to the bank. A
+ *  figure the server withheld is hidden, not missing. (The deal side still asks for it; the logistics list no longer does.) */
+export const needsAmount = (b: { status: string; paid_amount: number | null; paid_state?: string | null; bank_linked?: string | null; can_see_money?: boolean }): boolean =>
+  !moneyHidden(b) && (b.status === "picked_up" || b.status === "delivered") && paidStateOf(b) !== "paid";
 
 /** What a delivered load still lacks before the carrier can be paid: the proof of delivery, the
  *  carrier's invoice and the carrier rate. */
@@ -314,7 +355,7 @@ export function missingPaperwork(b: { paperwork?: Paperwork; files?: FreightFile
   return out;
 }
 
-type Groupable = Parameters<typeof isHot>[0] & Parameters<typeof missingPaperwork>[0] & { paid_amount: number | null };
+type Groupable = Parameters<typeof isHot>[0] & Parameters<typeof missingPaperwork>[0] & { paid_amount: number | null; paid_state?: string | null; bank_linked?: string | null };
 
 export function groupOf(b: Groupable): GroupKey | null {
   if (b.status === "cancelled") return null;
@@ -327,7 +368,7 @@ export function groupOf(b: Groupable): GroupKey | null {
     case "picked_up": return "way";
     default:
       if (missingPaperwork(b).length > 0) return "paperwork";
-      if (b.paid_amount == null && !moneyHidden(b)) return "topay";
+      if (paidStateOf(b) !== "paid" && !moneyHidden(b)) return "topay";
       return "delivered";
   }
 }

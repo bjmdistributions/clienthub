@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, FileText, Paperclip, Plus, Truck, X } from "lucide-react";
 import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
-import { canPayCarriers, canRecordOn, laneEnds } from "../lib/logisticsCarriers";
-import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidMethodWord, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
+import { canChangePaidOn, canPayCarriers, canRecordOn, laneEnds } from "../lib/logisticsCarriers";
+import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidStateOf, paidView, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
 import { invoiceWasSent, loadProgress, withDealFacts } from "../lib/loadProgress";
 import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
 import { CarrierHost } from "./LogisticsCarriers";
-import { MarkPaidSheet, type PayTarget } from "./LogisticsPayCarriers";
+import { PaidButtons, PaidSummary, usePaidControls } from "./LogisticsPayCarriers";
 import { LoadTrackerCompact } from "./LoadTracker";
 import { RateCard } from "./LogisticsRates";
 import NumberInput from "./NumberInput";
@@ -383,7 +383,9 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   const [pay, setPay] = useState<DealLogisticsPay | null>(null);
   // R-464: whether the deal's invoice has gone out (the loads' tracker and the gate need it) and who may change a payment.
   const [invoiceSent, setInvoiceSent] = useState<boolean | undefined>(undefined);
-  const [changing, setChanging] = useState<PayTarget | null>(null);
+  // R-470: the server's word on each load's payment. The local copy does not know whether a payment is linked to the
+  // bank, and a load is Paid only when it is, so these fields are laid over the local copy.
+  const [fresh, setFresh] = useState<Record<string, FreightBooking>>({});
   const me = useSessionMe();
   const canPay = canPayCarriers(me);
 
@@ -391,6 +393,10 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
     try { setBookings(await api.listFreightBookings(flow.id)); }
     catch (e) { console.error(e); }
     setReady(true);
+    try {
+      const r = await api.logistics.list({ includeDone: true, dealFlowId: flow.id });
+      setFresh(Object.fromEntries(r.bookings.map((x) => [x.id, x])));
+    } catch { /* the local copy is shown, and a payment with no link reads as marked, never as paid */ }
   }, [flow.id]);
   useEffect(() => { loadBookings(); }, [loadBookings, flow.updated_at, flow.logistics_bookings, flow.logistics_paid]);
   useNetsyncApplied(loadBookings);
@@ -414,11 +420,14 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
 
   // R-459: a quote is a load asked about, not a truck. It shows here with its stage and is never counted
   // as a truck (the money rows below come from the deal, which leaves quotes out the same way).
-  const live = bookings.filter(isLiveTruck);
-  // R-463: "Shipping paid" is the sum of these, so each one is listed where the sum is read.
-  const paidLoads = live.filter((b) => b.paid_amount != null);
-  const quotes = bookings.filter((b) => isQuoteStage(b.status));
-  const cancelled = bookings.filter((b) => b.status === "cancelled");
+  const withPayment = (b: FreightBooking): FreightBooking => {
+    const f = fresh[b.id];
+    return f ? { ...b, paid_state: f.paid_state, bank_linked: f.bank_linked, paid_amount: f.paid_amount, paid_at: f.paid_at, paid_method: f.paid_method, paid_note: f.paid_note, pay_due_date: f.pay_due_date ?? b.pay_due_date } : b;
+  };
+  const shown = bookings.map(withPayment);
+  const live = shown.filter(isLiveTruck);
+  const quotes = shown.filter((b) => isQuoteStage(b.status));
+  const cancelled = shown.filter((b) => b.status === "cancelled");
   const typed = (flow.supplier_payments || []).filter((p) => p.category === "freight");
   const typedTotal = typed.filter((p) => !p.kept).reduce((s, p) => s + (p.amount || 0), 0);
   const mode = !!flow.shipping_mode;
@@ -428,23 +437,10 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   const gap = Math.abs(paid - linked);
   const complete = flow.stage === "complete";
 
-  // R-463: the payment on a load is fixed from where it was seen. The server's copy has the bank link, so it is asked for
-  // first; the local copy is enough when the server cannot be reached.
-  const startChange = async (b: FreightBooking) => {
-    let src = b;
-    try { src = await api.logistics.get(b.id); } catch { /* the local copy is enough */ }
-    setChanging({
-      bookingId: b.id, label: `${src.carrier || "Carrier"}, ${loadNumber(src)}`, rate: src.quoted_cost, payMethod: src.carrier_pay_method || "",
-      paidAmount: src.paid_amount, bankLinked: src.bank_linked ?? "",
-      current: { paid_amount: src.paid_amount, paid_at: src.paid_at, paid_method: src.paid_method, paid_note: src.paid_note },
-    });
-  };
-  const changed = async (id: string) => {
-    setChanging(null);
-    // The list reads the local copy, which sync updates in a moment: put the server's answer in now so the row is right at once.
-    try { const fresh = await api.logistics.get(id); setBookings((l) => l.map((x) => (x.id === id ? fresh : x))); } catch { /* sync brings it */ }
-    refresh();
-  };
+  // R-470: a load is paid only by linking its bank payment, from where the payment is seen. After a link, an unlink or an
+  // undo the server's copy is read again at once; sync brings the local rows in a moment later.
+  const paidControls = usePaidControls(() => refresh());
+  const payTarget = (b: FreightBooking) => ({ bookingId: b.id, label: `${b.carrier || "Carrier"}, ${loadNumber(b)}`, rate: b.quoted_cost });
 
   const addTruck = async () => {
     const from = live[live.length - 1] ?? bookings[bookings.length - 1];
@@ -483,8 +479,8 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
     const dates = timingLine(b);
     const nFiles = b.files?.length ?? 0;
     const money = [
-      b.paid_amount != null && `Amount paid ${fmtAmount(b.paid_amount)}${b.paid_at ? ` on ${fmtDay(b.paid_at)}` : ""}${b.paid_method ? ` with ${paidMethodWord(b.paid_method)}` : ""}`,
-      b.paid_amount == null && b.quoted_cost != null && `Carrier rate ${fmtAmount(b.quoted_cost)}`,
+      paidStateOf(b) !== "unpaid" && paidView(b, localDay()).text,
+      paidStateOf(b) === "unpaid" && b.quoted_cost != null && `Carrier rate ${fmtAmount(b.quoted_cost)}`,
       b.status === "quoted" && b.quote_amount != null && `Quote ${fmtAmount(b.quote_amount)}, ${(b.quote_invoiced_at || "").trim() ? "on the invoice" : "not on the invoice yet"}`,
     ].filter(Boolean).join(", ");
     return (
@@ -560,25 +556,25 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
 
           {ready && (quotes.length > 0 || live.length > 0) && <div className="space-y-2">{[...quotes, ...live].map(card)}</div>}
 
-          {(mode || paid > 0 || linked > 0 || quoted > 0 || charged.amount > 0.005) && (
+          {(mode || paid > 0 || linked > 0 || quoted > 0 || charged.amount > 0.005 || live.length > 0) && (
             <div className="rounded-xl bg-surface border border-line px-4 py-3 space-y-1.5">
               {charged.amount > 0.005 && (
                 <Row label="Charged to the customer for shipping" value={fmtAmount(pay?.charged ?? charged.amount)}
                   sub={(pay?.charged_source ?? charged.source) === "lines" ? "From the invoice's shipping line" : "From the invoice's shipping charge"} />
               )}
               <Row label="Shipping paid" value={fmtAmount(paid)} />
-              {paidLoads.length > 0 && (
-                <ul className="list-none m-0 pl-3 border-l-2 border-line space-y-1" aria-label="Shipping paid by load">
-                  {paidLoads.map((b) => (
-                    <li key={b.id} className="flex items-center gap-2 text-[12px] min-w-0">
-                      <span className="min-w-0 flex-1 truncate text-ink-2">
+              {live.length > 0 && (
+                <ul className="list-none m-0 pl-3 border-l-2 border-line space-y-2" aria-label="Shipping paid by load">
+                  {live.map((b) => (
+                    <li key={b.id} className="min-w-0 space-y-1">
+                      <div className="text-[12px] truncate text-ink-2">
                         <span className="font-mono text-muted">{loadNumber(b)}</span>{b.carrier ? `, ${b.carrier}` : ""}
-                      </span>
-                      <span className="tabular-nums text-ink flex-shrink-0">{fmtAmount(b.paid_amount ?? 0)}</span>
-                      {canRecordOn(b, canPay) && (
-                        <button type="button" onClick={() => startChange(b)}
-                          className="text-[11.5px] text-accent font-medium hover:underline flex-shrink-0">Change</button>
-                      )}
+                      </div>
+                      <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap">
+                        <PaidSummary b={b} today={localDay()} />
+                        <PaidButtons state={paidStateOf(b)} bankLinked={b.bank_linked} canLink={canRecordOn(b, canPay)} canChange={canChangePaidOn(b, canPay)}
+                          target={payTarget(b)} controls={paidControls} />
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -647,7 +643,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
         <SendSheet flow={flow} billed={chargedReady ? ((flow.shipping_billed ?? 0) > 0 ? (flow.shipping_billed as number) : charged.amount) : null}
           onClose={() => setSending(false)} onSent={() => { setSending(false); refresh(); }} />
       )}
-      {changing && <MarkPaidSheet target={changing} onClose={() => setChanging(null)} onDone={() => changed(changing.bookingId)} />}
+      {paidControls.sheet}
       {open && (
         <LogisticsBookingForm
           booking={open}

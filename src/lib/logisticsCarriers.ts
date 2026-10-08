@@ -7,8 +7,8 @@
 import type {
   CarrierPayMethod, CarrierPayRow, FreightCarrier, FreightBooking, RateMatch, RatesResponse,
 } from "./api";
-import { fmtAmount } from "./format";
-import { LOAD_STEPS, dueLabel, dueTone, fmtDayLabel, laneOf, paidMethodWord, type LoadStep } from "./logisticsLoad";
+import { fmtAmount, parseLocalDay } from "./format";
+import { LOAD_STEPS, addDays, dueLabel, dueTone, fmtDayLabel, laneOf, type LoadStep } from "./logisticsLoad";
 import { formatLocation } from "./location";
 import { can, isAdmin, isLogisticsOnly, type Perms } from "./permissions";
 
@@ -120,45 +120,8 @@ export const canEditCarriers = (me: Perms | null | undefined): boolean =>
 export const canSeePayDetails = (me: Perms | null | undefined): boolean =>
   !!me && (isAdmin(me) || can(me, "deal_flow:view_numbers") || !can(me, "deal_flow:view"));
 
-export interface MarkPaidForm { amount: string; paidAt: string; method: string; note: string }
-
-/** Mark paid opens with the carrier rate as the amount, today as the day, and how the carrier likes
- *  to be paid. Everything stays editable. */
-export function markPaidDefaults(r: { rate: number | null; pay_method: string }, today: string): MarkPaidForm {
-  return { amount: r.rate == null ? "" : String(r.rate), paidAt: today, method: payMethodLabel(r.pay_method) || "", note: "" };
-}
-
-/** R-463: Change opens the same sheet with what is on record, so a wrong figure is fixed in one step. The method
- *  may be stored as a key an older phone build wrote ("credit_card"), so it reads as its label. */
-export function changePaidDefaults(
-  p: { paid_amount: number | null; paid_at: string; paid_method: string; paid_note: string }, today: string,
-): MarkPaidForm {
-  return {
-    amount: p.paid_amount == null ? "" : String(p.paid_amount), paidAt: (p.paid_at || "").trim().slice(0, 10) || today,
-    method: paidMethodWord(p.paid_method), note: p.paid_note || "",
-  };
-}
-
-/** R-463: what the Change sheet says when the payment is tied to the bank. It still allows the change. "" when it is not. */
-export function bankLinkNote(state: string | null | undefined, amount: number | null | undefined): string {
-  if (state === "linked") return amount != null ? `This load is linked to a bank payment of ${fmtAmount(amount)}.` : "This load is linked to a bank payment.";
-  if (state === "partial") return "This load is partly linked to a bank payment.";
-  return "";
-}
-
-/** The PATCH that records the payment. null with a message when the figure cannot be used. */
-export function markPaidPatch(f: MarkPaidForm): { patch: { paid_amount: number; paid_at: string; paid_method: string; paid_note: string } } | { error: string } {
-  const t = f.amount.trim();
-  if (!t) return { error: "Add the amount paid." };
-  const n = Number(t.replace(/[$,\s]/g, ""));
-  if (!Number.isFinite(n)) return { error: "The amount paid must be a number." };
-  if (n < 0) return { error: "The amount paid cannot be less than zero." };
-  if (n > 10_000_000) return { error: "The amount paid is too large." };
-  if (!f.paidAt) return { error: "Add the day it was paid." };
-  return { patch: { paid_amount: Math.round(n * 100) / 100, paid_at: f.paidAt, paid_method: f.method.trim(), paid_note: f.note.trim() } };
-}
-
-/** Undo is the amount going back to nothing, and nothing else. */
+/** R-470: taking back a payment somebody typed (never linked to the bank) is the amount going back to nothing, and
+ *  nothing else. It is the only paid write left: a load becomes paid only by linking its bank payment. */
 export const UNDO_PAID_PATCH = { paid_amount: null } as const;
 
 /** The due word and tone for one row, off the local day (the server's `overdue` is its own clock). */
@@ -176,13 +139,23 @@ export function toPaySummary(rows: Pick<CarrierPayRow, "pay_due_date" | "rate">[
   return { count: rows.length, late, total: Math.round(total * 100) / 100, noRate };
 }
 
-/** Whether a booking is one the Pay step lets the team record a payment on. */
+/** Whether a booking is one the Pay step lets the team link a bank payment to. */
 export const canRecordOn = (b: Pick<FreightBooking, "status" | "can_see_deal" | "can_see_money">, canPay: boolean): boolean =>
   canPay && b.can_see_deal && b.can_see_money !== false && (b.status === "booked" || b.status === "picked_up" || b.status === "delivered");
 
+/** R-470: whether the team may take a payment back (Undo or Unlink). Any status: a payment on a load that was
+ *  cancelled afterwards still has to be fixable. */
+export const canChangePaidOn = (b: Pick<FreightBooking, "can_see_deal" | "can_see_money">, canPay: boolean): boolean =>
+  canPay && b.can_see_deal && b.can_see_money !== false;
+
 // ─── the bank candidates (contract section 9) ─────────────────────────────
 
-export interface BankCandidate { txnId: string; day: string; amount: number | null; who: string; memo: string; reason: string }
+/** One bank row offered for a load. `free` is the money on it no deal has claimed (what can still be linked) and
+ *  `suggested` is the amount the server would link. Either is null on an older server. */
+export interface BankCandidate {
+  txnId: string; day: string; amount: number | null; free: number | null; suggested: number | null;
+  who: string; memo: string; method: string; reason: string;
+}
 
 const str = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -197,10 +170,104 @@ export function carrierPayCandidates(resp: unknown): BankCandidate[] {
     const txnId = str(r.txn_id ?? r.id);
     if (!txnId) return [];
     return [{
-      txnId, day: str(r.posted_at ?? r.date ?? r.day).slice(0, 10), amount: num(r.amount) ?? num(r.leg_amount),
-      who: str(r.counterparty_name ?? r.counterparty ?? r.payee ?? r.name), memo: str(r.description ?? r.memo), reason: str(r.reason),
+      txnId, day: str(r.posted_at ?? r.date ?? r.day).slice(0, 10), amount: num(r.txn_amount) ?? num(r.amount) ?? num(r.leg_amount),
+      free: num(r.unlinked), suggested: num(r.suggested_amount),
+      who: str(r.counterparty_name ?? r.counterparty ?? r.payee ?? r.name), memo: str(r.description ?? r.memo), method: str(r.method), reason: str(r.reason),
     }];
   });
+}
+
+const cents = (n: number): number => Math.round(n * 100) / 100;
+
+/** The amount a pick opens with: the server's suggestion, else the smaller of the money free on the row and the
+ *  carrier rate (when there is a rate), else what is free. null when none of them is known. */
+export function linkAmountStart(c: Pick<BankCandidate, "free" | "suggested" | "amount">, rate: number | null | undefined): number | null {
+  if (c.suggested != null) return cents(c.suggested);
+  const free = c.free ?? c.amount;
+  if (free == null) return rate != null && rate > 0 ? cents(rate) : null;
+  return cents(rate != null && rate > 0 && rate < free ? rate : free);
+}
+
+/** The amount typed in the confirm step: more than $0 and at most the money free on the bank row. */
+export function linkAmountCheck(raw: string, free: number | null): { amount: number } | { error: string } {
+  const t = raw.trim();
+  if (!t) return { error: "Add the amount to link." };
+  const n = Number(t.replace(/[$,\s]/g, ""));
+  if (!Number.isFinite(n)) return { error: "The amount must be a number." };
+  const amount = cents(n);
+  if (amount <= 0) return { error: "The amount must be more than $0." };
+  if (free != null && amount > cents(free) + 0.001) return { error: `The amount cannot be more than the ${fmtAmount(free)} free on this payment.` };
+  if (amount > 10_000_000) return { error: "The amount is too large." };
+  return { amount };
+}
+
+// ─── fill from a saved carrier (R-471) ────────────────────────────────────
+
+/** A name with everything but letters and digits dropped, so "Acme-Freight, Inc." and "acme freight inc" are one name. */
+export const squashName = (s: string): string => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** An MC or DOT number typed in a box: "MC 123456", "MC-123456", "DOT 7890" or bare digits. null for anything else. */
+export function typedNumber(typed: string): { kind: "mc" | "dot" | "any"; digits: string } | null {
+  const m = /^\s*(mc|dot)?[\s#:.-]*(\d[\d\s-]*)$/i.exec(typed || "");
+  if (!m) return null;
+  const digits = m[2].replace(/\D/g, "");
+  return digits.length >= 3 ? { kind: (m[1]?.toLowerCase() as "mc" | "dot" | undefined) ?? "any", digits } : null;
+}
+
+const digitsOf = (s: string): string => (s || "").replace(/\D/g, "");
+
+/** The saved carriers the typed text names: the same name (case, spaces and punctuation ignored) or the same MC or
+ *  DOT number; failing both, a name that starts with the typed text (3 or more characters) or that the typed text
+ *  starts with (a saved "Acme Freight" for "Acme Freight LLC"). The closest name first; nothing for fewer than 3 characters. */
+export function carrierMatches(typed: string, list: FreightCarrier[] | null | undefined): FreightCarrier[] {
+  const t = squashName(typed);
+  if (!list || t.length < 3) return [];
+  const exact = list.filter((c) => squashName(c.name) === t);
+  const tn = typedNumber(typed);
+  const byNumber = tn
+    ? list.filter((c) => !exact.includes(c) && ((tn.kind !== "dot" && digitsOf(c.mc_number) === tn.digits) || (tn.kind !== "mc" && digitsOf(c.dot_number) === tn.digits)))
+    : [];
+  const sure = [...exact, ...byNumber];
+  if (sure.length > 0) return sure;
+  const gap = (c: FreightCarrier) => Math.abs(squashName(c.name).length - t.length);
+  return list
+    .filter((c) => { const n = squashName(c.name); return n.length >= 3 && (n.startsWith(t) || t.startsWith(n)); })
+    .sort((a, b) => gap(a) - gap(b) || a.name.localeCompare(b.name));
+}
+
+export interface FillFacts { carrier: string; carrier_id: string; delivered_at: string; pay_due_date: string }
+
+/** What pressing "Fill from <carrier>" sets: the carrier's name and id, and (only when the load is already delivered
+ *  and has no pay due date) the day it was delivered plus the carrier's terms. */
+export function fillPatch(c: FreightCarrier, f: Pick<FillFacts, "delivered_at" | "pay_due_date">): { carrier: string; carrier_id: string; pay_due_date?: string } {
+  const out: { carrier: string; carrier_id: string; pay_due_date?: string } = { carrier: c.name, carrier_id: c.id };
+  const delivered = (f.delivered_at || "").trim().slice(0, 10);
+  if (delivered && !(f.pay_due_date || "").trim() && c.pay_terms_days != null && !isNaN(parseLocalDay(delivered).getTime())) {
+    out.pay_due_date = addDays(delivered, c.pay_terms_days);
+  }
+  return out;
+}
+
+/** Whether pressing the button would change anything. Once the load carries this carrier by name and id, with the pay
+ *  due date set or nothing to set it from, the button goes away. */
+export function fillWouldChange(c: FreightCarrier, f: FillFacts): boolean {
+  const p = fillPatch(c, f);
+  return p.carrier !== f.carrier || p.carrier_id !== f.carrier_id || (p.pay_due_date !== undefined && p.pay_due_date !== f.pay_due_date);
+}
+
+/** The matches that pressing would change something for. The button shows when this is not empty. */
+export const fillOffers = (typed: string, list: FreightCarrier[] | null | undefined, f: FillFacts): FreightCarrier[] =>
+  carrierMatches(typed, list).filter((c) => fillWouldChange(c, f));
+
+/** What a filled carrier shows on the load: MC and DOT, contact, phone and how it gets paid. Empty ones are left out. */
+export function carrierFacts(c: FreightCarrier): { label: string; value: string }[] {
+  const paid = [payMethodLabel(c.pay_method) && `Paid by ${payMethodLabel(c.pay_method)}`, termsWord(c.pay_terms_days)].filter(Boolean).join(", ");
+  return [
+    { label: "MC and DOT", value: carrierIds(c) },
+    { label: "Contact", value: c.contact_name.trim() },
+    { label: "Phone", value: c.phone.trim() },
+    { label: "How they get paid", value: paid },
+  ].filter((x) => x.value);
 }
 
 // ─── opening a load or a carrier from another screen ──────────────────────

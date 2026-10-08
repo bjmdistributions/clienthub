@@ -7,7 +7,7 @@
 //   5 Booked, 6 Picked up, 7 Delivered, 8 Carrier paid.
 
 import { roundCents } from "./logisticsPay";
-import { isQuoteStage, statusRank } from "./logisticsLoad";
+import { isQuoteStage, paidStateOf, statusRank } from "./logisticsLoad";
 
 // ─── the tracker (stages) ─────────────────────────────────────────────────
 
@@ -29,6 +29,10 @@ export interface ProgressFacts {
   picked_up_at?: string;
   delivered_at?: string;
   paid_amount?: number | null;
+  /** R-470: Carrier paid is done only when the bank payment is linked (`paid`). Without it, it is worked out from
+   *  `paid_amount` and `bank_linked`, and a payment with no link is `marked`. */
+  paid_state?: string | null;
+  bank_linked?: string | null;
 }
 
 const has = (v: string | null | undefined): boolean => !!(v ?? "").trim();
@@ -50,7 +54,7 @@ function teamStages(b: ProgressFacts): { rows: Row[]; pastQuote: boolean; legacy
     booked: rank >= statusRank("booked"),
     pickup: has(b.picked_up_at) || rank >= statusRank("picked_up"),
     delivery: has(b.delivered_at) || rank >= statusRank("delivered"),
-    carrier: b.paid_amount != null,
+    carrier: paidStateOf(b) === "paid",
   };
   // A load already past quote with nothing on record for stages 1 to 4 is a load from before this flow:
   // those stages are muted, never missing work. A load that has some of it, or was booked early on purpose,
@@ -67,7 +71,7 @@ function teamStages(b: ProgressFacts): { rows: Row[]; pastQuote: boolean; legacy
     { key: "booked", label: "Booked", done: done.booked, skipped: false, note: "" },
     { key: "pickup", label: "Picked up", done: done.pickup, skipped: false, note: "" },
     { key: "delivery", label: "Delivered", done: done.delivery, skipped: false, note: "" },
-    { key: "carrier", label: "Carrier paid", done: done.carrier, skipped: false, note: "" },
+    { key: "carrier", label: "Carrier paid", done: done.carrier, skipped: false, note: paidStateOf(b) === "marked" ? "Link the bank payment" : "" },
   ];
   return { rows, pastQuote, legacy };
 }
@@ -245,9 +249,10 @@ export const markupEditable = (teamView: boolean, b: { markup_editable?: boolean
  *  team (his pay is the markup, so he cannot move it). The team can still re-quote. */
 export const quoteCostLocked = (status: string, dealEdit: boolean): boolean => !dealEdit && !isQuoteStage(status);
 
-/** What the carrier really cost: the amount paid once there is one, else the carrier rate. null while neither is known. */
-export function actualCost(b: { paid_amount?: number | null; quoted_cost?: number | null }): { amount: number; source: "paid" | "rate" } | null {
-  if (b.paid_amount != null) return { amount: b.paid_amount, source: "paid" };
+/** What the carrier really cost: the amount paid once the payment is linked to the bank (a typed or marked figure is
+ *  not trusted, a $0 least of all), else the carrier rate. null while neither is known. */
+export function actualCost(b: { paid_amount?: number | null; paid_state?: string | null; bank_linked?: string | null; quoted_cost?: number | null }): { amount: number; source: "paid" | "rate" } | null {
+  if (b.paid_amount != null && paidStateOf(b) === "paid") return { amount: b.paid_amount, source: "paid" };
   if (b.quoted_cost != null) return { amount: b.quoted_cost, source: "rate" };
   return null;
 }

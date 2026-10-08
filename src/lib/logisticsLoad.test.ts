@@ -3,7 +3,7 @@ import type { FreightBooking } from "./api";
 import {
   EQUIPMENT, GROUPS, LOAD_STEPS, QUOTE_WAITING_WARNING, STATUS_ORDER,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
-  isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, paidMethodWord, paperworkOf, paymentLine, pickStatus, statusAllowed, confirmToSend,
+  isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, statusAfterActual, statusWord, stepDone, timeWord,
 } from "./logisticsLoad";
 
@@ -182,11 +182,15 @@ describe("the stepper", () => {
     expect(d.delivery).toBe(false);
     expect(stepDone({ ...facts, delivered_at: "2026-10-08" }).delivery).toBe(true);
   });
-  it("marks Pay done only when paid and every paperwork kind is in", () => {
+  it("marks Pay done only when the bank payment is linked and every paperwork kind is in", () => {
     const all = { bol: true, pod: true, carrier_invoice: true };
-    expect(stepDone({ ...facts, paid_amount: 0, paperwork: all }).pay).toBe(true);
-    expect(stepDone({ ...facts, paid_amount: 1500, paperwork: { ...all, pod: false } }).pay).toBe(false);
+    expect(stepDone({ ...facts, paid_amount: 1500, paid_state: "paid", paperwork: all }).pay).toBe(true);
+    expect(stepDone({ ...facts, paid_amount: 1500, paid_state: "paid", paperwork: { ...all, pod: false } }).pay).toBe(false);
     expect(stepDone({ ...facts, paid_amount: null, paperwork: all }).pay).toBe(false);
+    // R-470: a payment somebody typed (or a $0) is not a paid load.
+    expect(stepDone({ ...facts, paid_amount: 0, paperwork: all }).pay).toBe(false);
+    expect(stepDone({ ...facts, paid_amount: 1500, paid_state: "marked", paperwork: all }).pay).toBe(false);
+    expect(stepDone({ ...facts, paid_amount: 1500, bank_linked: "linked", paperwork: all }).pay).toBe(true);
   });
 });
 
@@ -257,8 +261,8 @@ describe("the list groups", () => {
     expect(confirmToSend(true, false, false)).toBeUndefined();
   });
   it("reads a legacy pay method key as its label", () => {
-    expect(paymentLine({ paid_amount: 100, paid_at: "", paid_method: "credit_card", paid_note: "" })).toBe("Paid $100.00 by Credit card");
-    expect(paymentLine({ paid_amount: 100, paid_at: "", paid_method: "Zelle", paid_note: "" })).toBe("Paid $100.00 by Zelle");
+    expect(paidView({ paid_state: "paid", paid_amount: 100, paid_method: "credit_card" }, "2026-10-06").text).toBe("Paid $100.00 by Credit card");
+    expect(paidView({ paid_state: "paid", paid_amount: 100, paid_method: "Zelle" }, "2026-10-06").text).toBe("Paid $100.00 by Zelle");
     expect(paidMethodWord("wire")).toBe("Wire");
     expect(paidMethodWord("Cash app")).toBe("Cash app");
   });
@@ -270,8 +274,12 @@ describe("the list groups", () => {
   });
   it("then waits on the carrier being paid, then lands in Delivered", () => {
     expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paperwork: all }))).toBe("topay");
-    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 1500, paperwork: all }))).toBe("delivered");
-    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 0, paperwork: all }))).toBe("delivered");
+    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 1500, paid_state: "paid", paperwork: all }))).toBe("delivered");
+  });
+  it("keeps a load whose payment is only marked, or is a $0, in Carrier to be paid (R-470)", () => {
+    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 1500, paid_state: "marked", paperwork: all }))).toBe("topay");
+    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 0, paperwork: all }))).toBe("topay");
+    expect(groupOf(mk({ status: "delivered", quoted_cost: 1500, paid_amount: 1500, bank_linked: "linked", paperwork: all }))).toBe("delivered");
   });
   it("does not call a rate missing, or a payment unpaid, when the viewer cannot see money", () => {
     const hidden = mk({ status: "delivered", can_see_money: false, paperwork: all });
@@ -311,10 +319,10 @@ describe("the lane", () => {
 
 describe("paying and invoicing", () => {
   it("says what has been paid", () => {
-    expect(paymentLine({ paid_amount: null, paid_at: "", paid_method: "", paid_note: "" })).toBe("Not paid yet");
-    expect(paymentLine({ paid_amount: 1850, paid_at: "2026-10-06", paid_method: "Zelle", paid_note: "ref 4471" }))
-      .toBe(`Paid $1,850.00 on ${fmtDayLabel("2026-10-06")} by Zelle, ref 4471`);
-    expect(paymentLine({ paid_amount: 0, paid_at: "", paid_method: "", paid_note: "" })).toBe("Paid $0.00");
+    const today = "2026-10-06";
+    expect(paidView({ paid_amount: null }, today).text).toBe("Not paid yet");
+    expect(paidView({ paid_state: "paid", paid_amount: 1850, paid_at: "2026-10-06", paid_method: "Zelle" }, today).text)
+      .toBe(`Paid $1,850.00 on ${fmtDayLabel("2026-10-06")} by Zelle`);
   });
   it("warns when shipping on the invoice waits on a quote", () => {
     expect(quoteWaitingOnInvoice([{ status: "quote" }])).toBe(true);
@@ -333,5 +341,67 @@ describe("paying and invoicing", () => {
     expect(dealPaid({ deal_paid: true }, false)).toBe(false);
     expect(dealPaid({ deal_paid: true })).toBe(true);
     expect(dealPaid({})).toBe(false);
+  });
+});
+
+describe("R-470: a load is paid only when its bank payment is linked", () => {
+  const today = "2026-10-06";
+
+  it("reads the server's word first", () => {
+    expect(paidStateOf({ paid_state: "paid", paid_amount: null })).toBe("paid");
+    expect(paidStateOf({ paid_state: "marked", paid_amount: 100, bank_linked: "linked" })).toBe("marked");
+    expect(paidStateOf({ paid_state: "unpaid", paid_amount: 100 })).toBe("unpaid");
+  });
+
+  it("works it out when the copy does not carry it, and never calls a typed figure paid", () => {
+    expect(paidStateOf({ paid_amount: null })).toBe("unpaid");
+    expect(paidStateOf({ paid_amount: 0 })).toBe("marked");
+    expect(paidStateOf({ paid_amount: 850 })).toBe("marked");
+    expect(paidStateOf({ paid_amount: 850, bank_linked: "none" })).toBe("marked");
+    expect(paidStateOf({ paid_amount: 850, bank_linked: "partial" })).toBe("marked");
+    expect(paidStateOf({ paid_amount: 850, bank_linked: "linked" })).toBe("paid");
+    expect(paidStateOf({ paid_state: "nonsense", paid_amount: null })).toBe("unpaid");
+  });
+
+  it("says Not paid yet with the due date for an unpaid load", () => {
+    const v = paidView({ paid_state: "unpaid", paid_amount: null, pay_due_date: "2026-10-10" }, today);
+    expect(v).toMatchObject({ state: "unpaid", tone: "neutral", text: "Not paid yet", note: "Due Oct 10", noteTone: "warning", zero: false });
+    expect(paidView({ paid_amount: null, pay_due_date: "2026-10-03" }, today)).toMatchObject({ note: "Overdue since Oct 3", noteTone: "danger" });
+    expect(paidView({ paid_amount: null }, today).note).toBe("No due date");
+  });
+
+  it("does not claim a missing due date for someone who cannot see money", () => {
+    expect(paidView({ paid_amount: null, can_see_money: false }, today)).toMatchObject({ text: "Not paid yet", note: "" });
+  });
+
+  it("warns amber on a payment that is marked but not linked", () => {
+    expect(paidView({ paid_state: "marked", paid_amount: 850 }, today)).toMatchObject({
+      state: "marked", tone: "warning", text: "Marked paid $850.00, not linked to the bank", zero: false,
+    });
+    expect(paidView({ paid_state: "marked", paid_amount: null }, today).text).toBe("Marked paid, not linked to the bank");
+  });
+
+  it("says a $0 payment is not a real payment, in red", () => {
+    expect(paidView({ paid_state: "marked", paid_amount: 0 }, today)).toMatchObject({
+      state: "marked", tone: "danger", text: "A $0 payment is not a real payment. Undo it.", zero: true,
+    });
+    expect(paidView({ paid_amount: 0 }, today).zero).toBe(true);
+  });
+
+  it("says Paid with the amount, the day and the method once it is linked", () => {
+    const v = paidView({ paid_state: "paid", paid_amount: 1850, paid_at: "2026-10-06", paid_method: "Zelle" }, today);
+    expect(v).toMatchObject({ state: "paid", tone: "success", note: "Linked to the bank", noteTone: "success" });
+    expect(v.text).toBe(`Paid $1,850.00 on ${fmtDayLabel("2026-10-06")} by Zelle`);
+    expect(paidView({ paid_state: "paid", paid_amount: null }, today).text).toBe("Paid");
+    expect(paidView({ paid_state: "paid", paid_amount: 100, paid_at: "2026-10-06T14:00:00Z" }, today).text).toBe(`Paid $100.00 on ${fmtDayLabel("2026-10-06")}`);
+  });
+
+  it("asks for the payment only on a delivered or moving load that is not paid", () => {
+    expect(needsAmount({ status: "delivered", paid_amount: null })).toBe(true);
+    expect(needsAmount({ status: "delivered", paid_amount: 0 })).toBe(true);
+    expect(needsAmount({ status: "picked_up", paid_amount: 800, paid_state: "marked" })).toBe(true);
+    expect(needsAmount({ status: "delivered", paid_amount: 800, paid_state: "paid" })).toBe(false);
+    expect(needsAmount({ status: "booked", paid_amount: null })).toBe(false);
+    expect(needsAmount({ status: "delivered", paid_amount: null, can_see_money: false })).toBe(false);
   });
 });

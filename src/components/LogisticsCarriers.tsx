@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Plus, Search, Truck, X } from "lucide-react";
+import { ClipboardPaste, Plus, Search, Truck, X } from "lucide-react";
 import { api, type CarrierPayMethod, type FreightCarrier, type FreightCarrierDetail, type FreightCarrierInput } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
-  PAY_METHODS, canEditCarriers, canSeePayDetails, carrierByName, carrierIds, filterCarriers, offerSaveCarrier, payMethodLabel, termsWord,
+  PAY_METHODS, canEditCarriers, canSeePayDetails, carrierByName, carrierFacts, carrierIds, filterCarriers, offerSaveCarrier, payMethodLabel, termsWord,
 } from "../lib/logisticsCarriers";
 import { fmtDayLabel } from "../lib/logisticsLoad";
 import { useSessionMe } from "../lib/useSessionMe";
@@ -317,6 +317,70 @@ export function CarrierPicker({ value, carrierId, carriers, onType, onPick, onSa
         )}
       </div>
     </div>
+  );
+}
+
+// ─── fill from a saved carrier (R-471) ────────────────────────────────────
+
+/** Shown when the typed carrier is one we have saved. Nothing on the load changes until it is pressed. One match is a
+ *  button, "Fill from <name>"; two or more are a button that opens a small list to choose from. */
+export function CarrierFillButton({ offers, onFill }: { offers: FreightCarrier[]; onFill: (c: FreightCarrier) => void }) {
+  const [menu, setMenu] = useState(false);
+  const box = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const out = (e: MouseEvent) => { if (box.current && !box.current.contains(e.target as Node)) setMenu(false); };
+    // Capture and stop, so Escape closes only the list and not the page under it.
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setMenu(false); } };
+    document.addEventListener("mousedown", out);
+    window.addEventListener("keydown", key, true);
+    return () => { document.removeEventListener("mousedown", out); window.removeEventListener("keydown", key, true); };
+  }, [menu]);
+  useEffect(() => { if (offers.length < 2) setMenu(false); }, [offers.length]);
+  if (offers.length === 0) return null;
+  const btn = "flex items-center gap-1.5 px-3 h-8 rounded-lg border border-accent/40 text-[12.5px] font-medium text-accent hover:bg-accent/10 whitespace-nowrap max-w-full";
+  if (offers.length === 1) {
+    const c = offers[0];
+    return (
+      <button type="button" onClick={() => onFill(c)} className={btn}>
+        <ClipboardPaste size={13} className="flex-shrink-0" /><span className="truncate">Fill from {c.name}</span>
+      </button>
+    );
+  }
+  return (
+    <div ref={box} className="relative inline-block max-w-full">
+      <button type="button" onClick={() => setMenu((m) => !m)} aria-haspopup="listbox" aria-expanded={menu} className={btn}>
+        <ClipboardPaste size={13} className="flex-shrink-0" /><span className="truncate">Fill from a saved carrier ({offers.length})</span>
+      </button>
+      {menu && (
+        <ul role="listbox" aria-label="Saved carriers that match" className="absolute left-0 top-[calc(100%+4px)] z-20 min-w-[240px] max-w-[360px] max-h-56 overflow-y-auto rounded-lg border border-line bg-surface shadow-lg py-1">
+          {offers.map((c) => (
+            <li key={c.id} role="option" aria-selected={false}>
+              <button type="button" onClick={() => { setMenu(false); onFill(c); }} className="w-full text-left px-3 py-1.5 hover:bg-surface-2 min-w-0">
+                <span className="block text-[13px] text-ink truncate">{c.name}</span>
+                <span className="block text-[11.5px] text-muted truncate">{[carrierIds(c), payMethodLabel(c.pay_method)].filter(Boolean).join(", ") || "No numbers saved"}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** What a saved carrier adds to a load: MC and DOT, contact, phone and how it gets paid. */
+export function CarrierFactsList({ carrier }: { carrier: FreightCarrier }) {
+  const rows = carrierFacts(carrier);
+  if (rows.length === 0) return null;
+  return (
+    <dl className="grid grid-cols-1 min-[640px]:grid-cols-2 gap-x-4 gap-y-2 rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px]" aria-label={`${carrier.name} details`}>
+      {rows.map((r) => (
+        <div key={r.label} className="min-w-0">
+          <dt className="text-[11.5px] text-muted">{r.label}</dt>
+          <dd className="text-ink break-words">{r.value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 

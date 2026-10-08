@@ -73,12 +73,36 @@ describe("loadProgress, the team's eight stages", () => {
   });
 
   it("everything done leaves no current stage", () => {
-    const s = loadProgress(flow({ status: "delivered", shipping_charge: "invoice", invoice_sent: true, deal_paid: true, paid_amount: 1000 }), true);
+    const s = loadProgress(flow({ status: "delivered", shipping_charge: "invoice", invoice_sent: true, deal_paid: true, paid_amount: 1000, paid_state: "paid" }), true);
     expect(s.every((x) => x.state === "done")).toBe(true);
   });
 
-  it("a paid amount of zero is still paid", () => {
-    expect(loadProgress(flow({ status: "delivered", paid_amount: 0 }), true)[7].state).toBe("done");
+  it("a $0 payment is never a paid carrier (R-470)", () => {
+    const s = loadProgress(flow({ status: "delivered", paid_amount: 0 }), true);
+    expect(s[7].state).toBe("current");
+    expect(s[7].note).toBe("Link the bank payment");
+  });
+
+  it("Carrier paid is done only when the bank payment is linked (R-470)", () => {
+    const base = { status: "delivered", shipping_charge: "invoice" as const, invoice_sent: true, deal_paid: true };
+    expect(loadProgress(flow({ ...base, paid_amount: null }), true)[7]).toMatchObject({ state: "current", note: "" });
+    expect(loadProgress(flow({ ...base, paid_amount: 850, paid_state: "unpaid" }), true)[7]).toMatchObject({ state: "current", note: "" });
+    expect(loadProgress(flow({ ...base, paid_amount: 850, paid_state: "marked" }), true)[7]).toMatchObject({ state: "current", note: "Link the bank payment" });
+    expect(loadProgress(flow({ ...base, paid_amount: 850, paid_state: "paid" }), true)[7]).toMatchObject({ state: "done", note: "" });
+  });
+
+  it("a typed payment with no link reads as marked when the copy has no paid_state, and linked reads as paid", () => {
+    const base = { status: "delivered", shipping_charge: "invoice" as const, invoice_sent: true, deal_paid: true, paid_amount: 850 };
+    expect(loadProgress(flow(base), true)[7].state).toBe("current");
+    expect(loadProgress(flow({ ...base, bank_linked: "partial" }), true)[7].state).toBe("current");
+    expect(loadProgress(flow({ ...base, bank_linked: "linked" }), true)[7].state).toBe("done");
+  });
+
+  it("the logistics view shows the same Carrier paid stage", () => {
+    const base = { status: "delivered", paid_amount: 850 };
+    const last = (st: Stage[]) => st[st.length - 1];
+    expect(last(loadProgress(flow({ ...base, paid_state: "marked" }), false))).toMatchObject({ key: "carrier", state: "current", note: "Link the bank payment" });
+    expect(last(loadProgress(flow({ ...base, paid_state: "paid" }), false))).toMatchObject({ key: "carrier", state: "done" });
   });
 
   it("a legacy load past quote with no data shows stages one to four as skipped", () => {
@@ -153,7 +177,7 @@ describe("the sections", () => {
   });
 
   it("opens on Pay once everything is done", () => {
-    const s = loadProgress(flow({ status: "delivered", shipping_charge: "own", invoice_sent: true, deal_paid: true, paid_amount: 5 }), true);
+    const s = loadProgress(flow({ status: "delivered", shipping_charge: "own", invoice_sent: true, deal_paid: true, paid_amount: 5, paid_state: "paid" }), true);
     expect(firstSection(s, true)).toBe("pay");
   });
 });
@@ -312,9 +336,13 @@ describe("the markup", () => {
     for (const st of ["quote", "quoted", "requested", "booked", "delivered"]) expect(quoteCostLocked(st, true)).toBe(false);
   });
 
-  it("the actual cost is the amount paid, else the carrier rate", () => {
-    expect(actualCost({ paid_amount: 1040, quoted_cost: 1000 })).toEqual({ amount: 1040, source: "paid" });
-    expect(actualCost({ paid_amount: 0, quoted_cost: 1000 })).toEqual({ amount: 0, source: "paid" });
+  it("the actual cost is the amount paid once it is linked to the bank, else the carrier rate", () => {
+    expect(actualCost({ paid_amount: 1040, paid_state: "paid", quoted_cost: 1000 })).toEqual({ amount: 1040, source: "paid" });
+    expect(actualCost({ paid_amount: 1040, bank_linked: "linked", quoted_cost: 1000 })).toEqual({ amount: 1040, source: "paid" });
+    // R-470: a typed figure, a marked one or a $0 is never the actual cost.
+    expect(actualCost({ paid_amount: 0, quoted_cost: 1000 })).toEqual({ amount: 1000, source: "rate" });
+    expect(actualCost({ paid_amount: 1040, paid_state: "marked", quoted_cost: 1000 })).toEqual({ amount: 1000, source: "rate" });
+    expect(actualCost({ paid_amount: 1040, quoted_cost: null })).toBeNull();
     expect(actualCost({ paid_amount: null, quoted_cost: 1000 })).toEqual({ amount: 1000, source: "rate" });
     expect(actualCost({ paid_amount: null, quoted_cost: null })).toBeNull();
     expect(actualCost({})).toBeNull();
