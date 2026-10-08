@@ -366,6 +366,15 @@ export function pickupNumberUnconfirmed(
 // ─── the list (contract section 10) ───────────────────────────────────────
 
 export type GroupKey = "urgent" | "quotes" | "quoted" | "requested" | "booked" | "way" | "paperwork" | "topay" | "delivered";
+/** R-476: created in the last 24 hours and not cancelled, for New today at the top of the list. */
+export const isNewToday = (b: { created_at: string; status: string }, now: number = Date.now()): boolean => {
+  const t = Date.parse(b.created_at);
+  return !Number.isNaN(t) && now - t < 86_400_000 && b.status !== "cancelled";
+};
+
+/** R-476: the first word of the account's name, for "Hello, Robin". Blank when the account has no name. */
+export const firstName = (name: string | null | undefined): string => (name ?? "").trim().split(/\s+/)[0] ?? "";
+
 export const GROUPS: { key: GroupKey; title: string }[] = [
   { key: "urgent", title: "Urgent" },
   { key: "quotes", title: "Quotes to give" },

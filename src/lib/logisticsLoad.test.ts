@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { FreightBooking } from "./api";
 import {
-  EQUIPMENT, GROUPS, LOAD_STEPS, QUOTE_WAITING_WARNING, STATUS_ORDER,
+  EQUIPMENT, GROUPS, LOAD_STEPS, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, statusAfterActual, statusWord, stepDone, timeWord,
@@ -464,5 +464,22 @@ describe("R-475: how complete the rate confirmation is", () => {
     // Names hidden: an address alone places the stop; with no address it is missing.
     expect(rateConMissing({ ...full, can_see_names: false, pickup_address: "9 Depot Rd" })).toEqual([]);
     expect(rateConMissing({ ...full, can_see_names: false })).toEqual(["pickup location"]);
+  });
+});
+
+describe("R-476: the hello and New today", () => {
+  it("counts a load as new for 24 hours after it was created, never a cancelled one", () => {
+    const now = Date.parse("2026-10-08T18:00:00Z");
+    expect(isNewToday({ created_at: "2026-10-08T09:00:00Z", status: "quote" }, now)).toBe(true);
+    expect(isNewToday({ created_at: "2026-10-07T18:00:01Z", status: "booked" }, now)).toBe(true);
+    expect(isNewToday({ created_at: "2026-10-07T17:59:59Z", status: "booked" }, now)).toBe(false);
+    expect(isNewToday({ created_at: "2026-10-08T09:00:00Z", status: "cancelled" }, now)).toBe(false);
+    expect(isNewToday({ created_at: "", status: "quote" }, now)).toBe(false);
+  });
+  it("greets by the first word of the account's name", () => {
+    expect(firstName("Robin Testcase")).toBe("Robin");
+    expect(firstName("  Jordan  ")).toBe("Jordan");
+    expect(firstName("")).toBe("");
+    expect(firstName(undefined)).toBe("");
   });
 });

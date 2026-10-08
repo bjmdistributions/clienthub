@@ -5,8 +5,8 @@ import { localDay } from "../lib/format";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canPayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
-  GROUPS, dueLabel, dueTone, groupOf, isHot, isLogisticsSide, loadHaystack, loadNumber, missingPaperwork, pickupNumberUnconfirmed,
-  type GroupKey, type LoadStep,
+  GROUPS, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, isNewToday, loadHaystack, loadNumber, missingPaperwork,
+  pickupNumberUnconfirmed, type GroupKey, type LoadStep,
 } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
@@ -193,6 +193,11 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   }, [rows, doneRows, needle]);
 
   const shown = GROUPS.reduce((n, g) => n + grouped[g.key].length, 0);
+  // R-476: what came in during the last 24 hours, newest first, at the top of the list in the same rows.
+  const fresh = useMemo(() => (rows ?? []).filter(match).filter((b) => isNewToday(b)).sort((a, b) => b.created_at.localeCompare(a.created_at)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, needle]);
+  const hello = firstName(me?.display_name);
   const row = (b: FreightBooking) => <BookingRow key={b.id} b={b} group={groupOf(b) ?? "delivered"} onOpen={() => { setOpenStep(undefined); setOpen(b); }} />;
 
   if (rows === null) {
@@ -209,6 +214,11 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
     <div className="space-y-5 min-w-0">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0">
+          {/* R-476: the Bookings view opens on a large hello and the date, easy to read at a glance. */}
+          {view === "bookings" ? (<>
+            <h2 className="text-[26px] font-semibold text-ink tracking-tight">{hello ? `Hello, ${hello}` : "Hello"}</h2>
+            <p className="text-[15px] text-ink-2 mt-1">{new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}</p>
+          </>) : (<>
           <h2 className="text-[20px] font-semibold text-ink tracking-tight">Logistics</h2>
           <p className="text-[13px] text-muted mt-0.5">
             {logisticsOnly
@@ -218,6 +228,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
               : view === "pay" ? "What each carrier is owed, what has been paid, and the bank payment behind it."
               : "Every load, from the quote to the carrier being paid."}
           </p>
+          </>)}
         </div>
         {view === "bookings" && <div className="relative w-full max-w-[280px] min-w-[200px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
@@ -263,6 +274,12 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
           </div>
         </div>
       )}
+
+      <GroupCard title="New today" count={fresh.length}>
+        {fresh.length === 0
+          ? <div className="px-4 py-3 text-[13.5px] text-ink-2">{needle ? "Nothing new matches that." : "Nothing new in the last 24 hours."}</div>
+          : fresh.map(row)}
+      </GroupCard>
 
       {GROUPS.map((g) => grouped[g.key].length > 0 && (
         <GroupCard key={g.key} title={g.title} count={grouped[g.key].length} hot={g.key === "urgent"}>{grouped[g.key].map(row)}</GroupCard>
