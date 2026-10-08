@@ -11,7 +11,7 @@ import {
   FILE_KINDS, PAID_BANNER, STATUS_ORDER,
   dealPaid, equipmentOptions, fileKind, fileKindLabel, fmtDayLabel, isHot, isLogisticsSide,
   isQuoteStage, laneLabel, loadNumber, moneyHidden, needsAmount, paidStateOf, paperworkOf, pickStatus as pickStatusFields,
-  pickupNumberUnconfirmed, confirmToSend, statusAfterActual, statusAllowed, statusWord, timeWord, type LoadStep,
+  pickupNumberUnconfirmed, confirmToSend, rateConLine, rateConMissing, statusAfterActual, statusAllowed, statusWord, timeWord, type LoadStep,
 } from "../lib/logisticsLoad";
 import {
   BOOK_ANYWAY, BOOK_ANYWAY_CONFIRM, actualCost, bookGate, firstSection, loadProgress, markupEditable, markupPreview, quoteCostLocked, markupProblem, markupStart,
@@ -639,6 +639,8 @@ export default function LogisticsBookingForm({
   };
   /** Leaving this page for another screen (a BOL, the invoice): unsaved typing is asked about first. */
   /** R-475: the load as a rate confirmation for the carrier. The server prints what is saved, so changes are saved first. */
+  const rateConGaps = rateConMissing(booking);
+  const rateConReady = rateConGaps.length === 0;
   const exportRateCon = async () => {
     if (dirty) { toast("Save first so your changes are on the rate confirmation", "error"); return; }
     setRateBusy(true); setError("");
@@ -1445,6 +1447,20 @@ export default function LogisticsBookingForm({
                 </select>
               </div>
             </div>
+            {/* R-475: the rate confirmation, at the top in the colour of how complete it is (from what is saved: the PDF prints that). */}
+            <div role="status" className={`flex items-center gap-3 rounded-xl border px-3.5 py-2.5 ${rateConReady ? "bg-success-bg border-success/30" : "bg-warning-bg border-warning/30"}`}>
+              <FileText size={18} className={`flex-shrink-0 ${rateConReady ? "text-success-ink" : "text-warning-ink"}`} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">
+                  Rate confirmation <StatusPill tone={rateConReady ? "success" : "warning"}>{rateConReady ? "Ready" : "Not complete"}</StatusPill>
+                </div>
+                <div className={`text-[12px] mt-0.5 ${rateConReady ? "text-success-ink" : "text-warning-ink"}`}>{rateConLine(rateConGaps)}</div>
+              </div>
+              <button type="button" onClick={exportRateCon} disabled={rateBusy} title="A PDF for the carrier: this load, the rate and where to send freight bills"
+                className={`flex items-center gap-1.5 flex-shrink-0 ${btnPrimary}`}>
+                <FileText size={14} /> {rateBusy ? "Making the PDF..." : "Export PDF"}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1509,10 +1525,6 @@ export default function LogisticsBookingForm({
           <div className="max-w-[1120px] mx-auto w-full space-y-2">
             {error && <div className="text-[12px] text-danger-ink" role="alert">{error}</div>}
             <div className="flex items-center gap-2 flex-wrap">
-              <button type="button" onClick={exportRateCon} disabled={rateBusy} title="A PDF for the carrier: this load, the rate and where to send freight bills"
-                className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors disabled:opacity-50">
-                <FileText size={12} /> {rateBusy ? "Making the PDF..." : "Rate confirmation"}
-              </button>
               {/* While the team fills the freight in, the team adds the trucks (the logistics person could not fill a new one). */}
               {!freightLocked && (dealEdit || !isQuoteStage(booking.status)) && (
               <button type="button" onClick={addTruck}

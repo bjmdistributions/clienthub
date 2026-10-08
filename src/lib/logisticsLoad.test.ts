@@ -4,7 +4,7 @@ import {
   EQUIPMENT, GROUPS, LOAD_STEPS, QUOTE_WAITING_WARNING, STATUS_ORDER,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
-  pickupNumberUnconfirmed, quoteWaitingOnInvoice, statusAfterActual, statusWord, stepDone, timeWord,
+  pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, statusAfterActual, statusWord, stepDone, timeWord,
 } from "./logisticsLoad";
 
 // An invented load: every key a row carries, so a rule is tested on the whole shape.
@@ -443,5 +443,26 @@ describe("R-470: a load is paid only when its bank payment is linked", () => {
     expect(needsAmount({ status: "delivered", paid_amount: 800, paid_state: "paid" })).toBe(false);
     expect(needsAmount({ status: "booked", paid_amount: null })).toBe(false);
     expect(needsAmount({ status: "delivered", paid_amount: null, can_see_money: false })).toBe(false);
+  });
+});
+
+describe("R-475: how complete the rate confirmation is", () => {
+  const full = { carrier: "Fast Test Freight", quoted_cost: 1850, pickup_date: "2026-10-09", pickup_name: "Sunrise Test Supply", pickup_address: "",
+    delivery_name: "", delivery_address: "12 Test Way", can_see_names: true, can_see_addresses: true };
+  it("is ready with a carrier, a rate, both places and a pickup day", () => {
+    expect(rateConMissing(full)).toEqual([]);
+    expect(rateConLine([])).toBe("Ready to send to the carrier.");
+  });
+  it("names what is missing, in order", () => {
+    const empty = { ...full, carrier: " ", quoted_cost: null, pickup_date: "", pickup_name: "", delivery_address: "" };
+    expect(rateConMissing(empty)).toEqual(["carrier", "carrier rate", "pickup location", "delivery location", "pickup date"]);
+    expect(rateConLine(["carrier rate", "pickup date"])).toBe("Still missing: carrier rate, pickup date. It exports anyway, with those left blank.");
+  });
+  it("never counts what this viewer may not see as missing", () => {
+    expect(rateConMissing({ ...full, quoted_cost: null, can_see_money: false })).toEqual([]);
+    expect(rateConMissing({ ...full, pickup_name: "", delivery_address: "", can_see_names: false, can_see_addresses: false })).toEqual([]);
+    // Names hidden: an address alone places the stop; with no address it is missing.
+    expect(rateConMissing({ ...full, can_see_names: false, pickup_address: "9 Depot Rd" })).toEqual([]);
+    expect(rateConMissing({ ...full, can_see_names: false })).toEqual(["pickup location"]);
   });
 });

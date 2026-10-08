@@ -95,6 +95,29 @@ export const moneyHidden = (b: { can_see_money?: boolean }): boolean => b.can_se
 export const rateMissing = (b: { quoted_cost: number | null; can_see_money?: boolean }): boolean =>
   !moneyHidden(b) && b.quoted_cost == null;
 
+/** R-475: what the rate confirmation still lacks for the carrier, in the order the strip names them. A field this viewer
+ *  may not see is hidden, not missing (the PDF prints it blank either way). Empty means it is ready to send. */
+export function rateConMissing(b: {
+  carrier: string; quoted_cost: number | null; can_see_money?: boolean; pickup_date: string;
+  pickup_name: string; pickup_address: string; delivery_name: string; delivery_address: string;
+  can_see_names: boolean; can_see_addresses: boolean;
+}): string[] {
+  const t = (v: string | null | undefined) => (v ?? "").trim();
+  const sees = b.can_see_names || b.can_see_addresses;
+  const place = (name: string, address: string) => (b.can_see_names && !!t(name)) || (b.can_see_addresses && !!t(address));
+  const out: string[] = [];
+  if (!t(b.carrier)) out.push("carrier");
+  if (rateMissing(b)) out.push("carrier rate");
+  if (sees && !place(b.pickup_name, b.pickup_address)) out.push("pickup location");
+  if (sees && !place(b.delivery_name, b.delivery_address)) out.push("delivery location");
+  if (!t(b.pickup_date)) out.push("pickup date");
+  return out;
+}
+
+/** R-475: the strip's sentence under "Rate confirmation". */
+export const rateConLine = (missing: string[]): string =>
+  missing.length ? `Still missing: ${missing.join(", ")}. It exports anyway, with those left blank.` : "Ready to send to the carrier.";
+
 const PAID_METHOD_WORDS: Record<string, string> = {
   zelle: "Zelle", wire: "Wire", ach: "ACH", credit_card: "Credit card", check: "Check", other: "Other",
 };
