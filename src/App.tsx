@@ -92,12 +92,11 @@ import AuthView from "./components/AuthView";
 import LogisticsView from "./components/LogisticsView";
 import BolsView from "./components/BolsView";
 import { useAppStore } from "./lib/store";
-import { api, isUnavailable, Me } from "./lib/api";
+import { api, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
-import { canSeeTeamNotices } from "./lib/notices";
+import { bellCountOf, bellTitle, canSeeTeamNotices } from "./lib/notices";
 import { confirmLeaveUnsaved } from "./lib/unsavedWork";
-import { approvalsBellCount } from "./lib/renewals";
 import { useNotices } from "./lib/useNotices";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
@@ -461,7 +460,8 @@ export default function App() {
   // every render - a ref kept in sync near visible's own declaration is the bridge.
   const visibleRef = useRef<(id: Tab) => boolean>(() => false);
   const [orgName, setOrgName] = useState<string>("");
-  const [apCount, setApCount] = useState<number>(0);
+  // R-477: the approval queue's part of the bell, kept as what it holds so the bell can count only what needs you.
+  const [apQueue, setApQueue] = useState<{ pending: number; requests: { kind: string }[] }>({ pending: 0, requests: [] });
   // R-449: overdue bills, for the Bills row's count. Same people who can open the screen.
   const [billsOverdue, setBillsOverdue] = useState(0);
   const billsAllowed = !!me && !logisticsOnly && (isAdmin(me) || can(me, "financials:view"));
@@ -487,26 +487,17 @@ export default function App() {
     }
   }, [me, logisticsOnly]);
 
-  // Poll the notification queue for the bell badge. This MUST match exactly what
-  // the Notifications view shows when opened: pending customers awaiting review
-  // PLUS team requests that aren't plain new-customer adds. (A `client_add`
-  // request is already represented by its pending customer, so counting the raw
-  // approvals total double-counted it and made the bell read high — the "1 when
-  // nothing" bug.)
+  // Poll the approval queue for the bell badge: the pending customers and the requests. (A `client_add`
+  // request is already represented by its pending customer, so it is never counted on its own.) The server's
+  // notices, supplier leads among them, come from useNotices below, so they are read once, not again here.
+  // What counts is bellCountOf's rule (R-477): only what needs you.
   useEffect(() => {
-    if (!me?.is_admin) { setApCount(0); return; }
+    if (!me?.is_admin) { setApQueue({ pending: 0, requests: [] }); return; }
     const refresh = () => Promise.all([
       api.listApprovalRequests().catch(() => []),
       api.getPendingApprovals().catch(() => []),
-      // R-263 supplier leads — server-proxied (Pass 2). Adds to the badge only
-      // once available; stays unchanged (never crashes) while unavailable.
-      // Both supply_lead and supplier_profile count, matching the Notifications
-      // view's Supplier leads section.
-      api.listLeadNotifications(undefined, "unread"),
-    ]).then(([reqs, pend, leads]) => {
-      const leadCount = isUnavailable(leads) ? 0 : leads.filter((n) => n.kind === "supply_lead" || n.kind === "supplier_profile").length;
-      // R-466: every stale listing together is ONE item on the bell, not one per listing.
-      setApCount(approvalsBellCount(pend.length, reqs, leadCount));
+    ]).then(([reqs, pend]) => {
+      setApQueue({ pending: pend.length, requests: reqs.map((r) => ({ kind: r.kind })) });
     }).catch(() => {});
     refresh();
     const onChanged = () => refresh();
@@ -524,7 +515,7 @@ export default function App() {
   const notices = useNotices(me);
   // Everything waiting in the Notifications screen, and what the bell shows: for a Logistics-only account
   // that is the loads to quote or book, and the bell opens Logistics.
-  const apTotal = apCount + notices.team.length;
+  const apTotal = bellCountOf({ pendingCustomers: apQueue.pending, requests: apQueue.requests, notices: [...notices.team, ...notices.leads] });
   const bellShown = canSeeTeamNotices(me) || logisticsOnly;
   const bellCount = logisticsOnly ? notices.logisticsCount : apTotal;
   const bellTab: Tab = logisticsOnly ? "logistics" : "approvals";
@@ -789,7 +780,7 @@ export default function App() {
     { id: "clients", label: "Clients", icon: Users, children: [
       { id: "checkup", label: "Checkup", icon: ClipboardCheck },
       { id: "tiers",   label: "Tiers",   icon: Layers },
-      { id: "approvals", label: "Approvals", icon: Bell },
+      { id: "approvals", label: "Notifications", icon: Bell },
       { id: "portals", label: "Customer portals", icon: DoorOpen },
     ] },
     { id: "suppliers", label: "Suppliers", icon: Package },
@@ -1213,7 +1204,7 @@ export default function App() {
         {bellShown && (
           <button
             onClick={() => setTab(bellTab)}
-            title={bellCount > 0 ? (logisticsOnly ? `${bellCount} to quote or book` : `${bellCount} waiting for review`) : "Notifications"}
+            title={logisticsOnly && bellCount > 0 ? `${bellCount} to quote or book` : bellTitle(bellCount)}
             className="relative w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
             style={{ color: tab === bellTab ? "var(--accent-400)" : "#7A7A90" }}
             onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== bellTab) e.currentTarget.style.color = "var(--accent-400)"; }}

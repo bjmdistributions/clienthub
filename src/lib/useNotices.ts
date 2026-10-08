@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, isUnavailable, type FreightBooking, type LeadNotification, type Me } from "./api";
 import {
-  canSeeTeamNotices, desktopNoticesOn, logisticsBellCount, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
+  canReadTeamNotices, canSeeTeamNotices, desktopNoticesOn, leadNoticesOf, logisticsBellCount, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
 } from "./notices";
 import { isAdmin, isLogisticsOnly } from "./permissions";
 import { routeLabel } from "../components/LogisticsBookingForm";
@@ -29,6 +29,12 @@ function raise(items: { title: string; body: string }[]) {
 export interface NoticeState {
   /** The unread team notices, newest first. Empty for a person who does not see them. */
   team: LeadNotification[];
+  /** R-477: the unread supplier leads and supplier details, newest first. Admins only; empty for everyone else. */
+  leads: LeadNotification[];
+  /** R-477: the server's notices have been read once, whichever way it went. */
+  loaded: boolean;
+  /** R-477: the last read of the server's notices failed, so the lists above may be out of date. */
+  failed: boolean;
   /** A Logistics-only account's count of loads to quote plus loads to book. 0 for everyone else. */
   logisticsCount: number;
   /** Read again now (after an acknowledge or an open). */
@@ -39,10 +45,14 @@ export interface NoticeState {
 
 export function useNotices(me: Me | null | undefined): NoticeState {
   const teamOn = canSeeTeamNotices(me);
+  const canRead = canReadTeamNotices(me);
   const logisticsOnly = isLogisticsOnly(me);
   const admin = isAdmin(me);
   const userId = me?.id ?? "";
   const [team, setTeam] = useState<LeadNotification[]>([]);
+  const [leads, setLeads] = useState<LeadNotification[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
   const [logisticsCount, setLogisticsCount] = useState(0);
   // undefined = not read from storage yet; null = read, nothing stored (a first run)
   const teamSeen = useRef<string[] | null | undefined>(undefined);
@@ -52,17 +62,22 @@ export function useNotices(me: Me | null | undefined): NoticeState {
 
   const refreshTeam = useCallback(async () => {
     if (!teamOn) return;
+    // The server refuses this list to a role without the clients module; that is nothing to read, not a failed read.
+    if (!canRead) { setLoaded(true); setFailed(false); return; }
     const r = await api.listLeadNotifications(undefined, "unread").catch(() => null);
-    if (!r || isUnavailable(r)) return;
+    setLoaded(true);
+    if (!r || isUnavailable(r)) { setFailed(true); return; }
+    setFailed(false);
     const list = teamNoticesOf(r, admin);
     setTeam(list);
+    setLeads(leadNoticesOf(r, admin));
     const key = seenKey("team", userId);
     if (teamSeen.current === undefined) teamSeen.current = readSeen(store(), key);
     const plan = planTeamRaise(list, teamSeen.current, Date.now());
     teamSeen.current = plan.seen;
     writeSeen(store(), key, plan.seen);
     raise(plan.raise.map((n) => ({ title: n.title, body: n.body })));
-  }, [teamOn, userId, admin]);
+  }, [teamOn, canRead, userId, admin]);
 
   const refreshLogistics = useCallback(async () => {
     if (!logisticsOnly) return;
@@ -80,7 +95,7 @@ export function useNotices(me: Me | null | undefined): NoticeState {
   const refresh = useCallback(() => { refreshTeam(); refreshLogistics(); }, [refreshTeam, refreshLogistics]);
 
   useEffect(() => {
-    if (!teamOn) setTeam([]);
+    if (!teamOn) { setTeam([]); setLeads([]); setLoaded(false); setFailed(false); }
     if (!logisticsOnly) setLogisticsCount(0);
     if (!teamOn && !logisticsOnly) return;
     refresh();
@@ -99,6 +114,9 @@ export function useNotices(me: Me | null | undefined): NoticeState {
     };
   }, [teamOn, logisticsOnly, refresh]);
 
-  const drop = useCallback((id: string) => setTeam((l) => l.filter((n) => n.id !== id)), []);
-  return { team, logisticsCount, refresh, drop };
+  const drop = useCallback((id: string) => {
+    setTeam((l) => l.filter((n) => n.id !== id));
+    setLeads((l) => l.filter((n) => n.id !== id));
+  }, []);
+  return { team, leads, loaded, failed, logisticsCount, refresh, drop };
 }

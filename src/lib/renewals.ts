@@ -26,15 +26,6 @@ export function renewalTitle(a: Pick<RenewalRequest, "summary">): string {
   return (a.summary || "").replace(/^Renew or mark sold:\s*/i, "").trim() || "Listing";
 }
 
-/** The number on the bell for the approval queue: pending customers, team requests that are not a plain
- *  new-client add, supplier leads, and all the renewals together as ONE item. A new-client request is
- *  already represented by its pending customer, so it is not counted again. */
-export function approvalsBellCount(pendingCustomers: number, requests: readonly Pick<RenewalRequest, "kind">[], supplierLeads: number): number {
-  const teamRequests = requests.filter((a) => a.kind !== "client_add" && !isRenewal(a)).length;
-  const renewals = requests.some(isRenewal) ? 1 : 0;
-  return pendingCustomers + teamRequests + renewals + supplierLeads;
-}
-
 const day = (iso: string): string => (/^\d{4}-\d{2}-\d{2}/.test(iso || "") ? iso.slice(0, 10) : "");
 
 /** How long the listing has gone without a renewal, in words. `renewedAt` is the lot's last write (its renewal

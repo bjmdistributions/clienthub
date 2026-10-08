@@ -235,7 +235,7 @@ export default function AutomationLogView() {
       {/* Legend footer: the inbound flow, so users grasp what "pending" means */}
       <div className="flex items-center flex-wrap gap-2 text-[11.5px] text-muted bg-surface-2/50 border border-line-2 rounded-lg px-4 py-2.5">
         <span className="font-medium text-ink-2">How inbound works:</span>
-        <span className="flex items-center gap-1.5">Form / signup <ArrowRight size={12} className="text-faint" /> Pending lead <ArrowRight size={12} className="text-faint" /> you approve in <button onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "approvals" }))} className="text-accent hover:underline">Approvals</button></span>
+        <span className="flex items-center gap-1.5">Form / signup <ArrowRight size={12} className="text-faint" /> Pending lead <ArrowRight size={12} className="text-faint" /> you approve in <button onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "approvals" }))} className="text-accent hover:underline">Notifications</button></span>
       </div>
     </div>
   );

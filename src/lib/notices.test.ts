@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { LeadNotification } from "./api";
 import {
-  ADMIN_NOTICE_KINDS, DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, PAY_TRACKER_KEY, PAY_TRACKER_SUB, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, noticeTone, RAISE_CAP, SEEN_CAP, canOpenTarget, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
+  ADMIN_NOTICE_KINDS, DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, PAY_TRACKER_KEY, PAY_TRACKER_SUB, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, RAISE_CAP, SEEN_CAP, canOpenTarget, canReadTeamNotices, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
   logisticsBellCount, mergeSeen, noticeTarget, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
-  type NoticeLoad,
+  GROUP_LABEL, GROUP_ORDER, bellCountOf, bellTitle, canSeeGroup, compareRows, customerRow, dueDayOf, groupRows, leadNoticesOf, noticeRow, requestRow, whenWearsUrgency, whenWords,
+  type NoticeLoad, type NoticeRow,
 } from "./notices";
 
 const NOW = Date.parse("2026-10-07T12:00:00Z");
@@ -28,6 +29,23 @@ describe("who sees the team notices", () => {
     expect(canSeeTeamNotices({ permissions: ["clients:view"] })).toBe(false);
     expect(canSeeTeamNotices({ permissions: ["logistics:view", "logistics:edit"] })).toBe(false);
     expect(canSeeTeamNotices(null)).toBe(false);
+  });
+});
+
+describe("who the server lets read the team notices (R-477)", () => {
+  it("only an admin or someone with the clients module; the route is behind it", () => {
+    expect(canReadTeamNotices({ permissions: ["*"] })).toBe(true);
+    expect(canReadTeamNotices({ permissions: ["admin:manage"] })).toBe(true);
+    expect(canReadTeamNotices({ permissions: ["clients:view", "financials:view"] })).toBe(true);
+    expect(canReadTeamNotices({ permissions: ["financials:view", "financials:export", "financials:edit"] })).toBe(false);
+    expect(canReadTeamNotices({ permissions: ["deal_flow:view"] })).toBe(false);
+    expect(canReadTeamNotices({ permissions: [] })).toBe(false);
+    expect(canReadTeamNotices(null)).toBe(false);
+  });
+  it("a books-only role sees the bell but is refused the list, so its read is skipped, not failed", () => {
+    const accountant = { permissions: ["financials:view", "financials:export", "financials:edit"] };
+    expect(canSeeTeamNotices(accountant)).toBe(true);
+    expect(canReadTeamNotices(accountant)).toBe(false);
   });
 });
 
@@ -77,9 +95,9 @@ describe("the pay-day notice (R-464)", () => {
     expect(noticeTarget({ kind: "logistics_pay_due", payload_json: null })).toEqual({ to: "paytracker" });
     expect(noticeTarget({ kind: "logistics_pay_due", payload_json: "nope" })).toEqual({ to: "paytracker" });
   });
-  it("reads as a warning labelled Pay day, with the handoff keys named", () => {
+  it("reads as an amber Pay day, with the handoff keys named", () => {
     expect(NOTICE_KIND_LABEL.logistics_pay_due).toBe("Pay day");
-    expect(noticeTone("logistics_pay_due")).toBe("warning");
+    expect(noticeRow(payDay("p"))?.urgency).toBe("needs");
     expect(PAY_TRACKER_KEY).toBe("settings_team_sub");
     expect(PAY_TRACKER_SUB).toBe("payouts");
   });
@@ -182,6 +200,18 @@ describe("raising the team's notices", () => {
     const again = planTeamRaise(list, first.seen, NOW);
     expect(again.raise).toEqual([]);
   });
+  it("never raises a paid bill, still marks it seen, and it takes no slot of the cap (R-477)", () => {
+    const paid = note("paid", "bill_paid", { created_at: hoursAgo(1) });
+    const due = Array.from({ length: RAISE_CAP }, (_, i) => note(`d${i}`, "bill_due", { created_at: hoursAgo(20 - i) }));
+    const plan = planTeamRaise([paid, ...due], [], NOW);
+    expect(plan.raise.map((n) => n.id)).toEqual(due.map((n) => n.id));
+    expect(plan.seen).toContain("paid");
+    expect(planTeamRaise([paid], null, NOW).raise).toEqual([]);
+    // each kind that asks something of you is still raised
+    for (const k of ["logistics_quote", "carrier_due", "carrier_overdue", "bill_due", "bill_overdue", "logistics_pay_due"]) {
+      expect(planTeamRaise([note(k, k)], [], NOW).raise.map((n) => n.id)).toEqual([k]);
+    }
+  });
   it("raises oldest first and no more than the cap per poll, marking the rest seen", () => {
     const list = Array.from({ length: RAISE_CAP + 3 }, (_, i) => note(`n${i}`, "bill_overdue", { created_at: hoursAgo(20 - i) }));
     const plan = planTeamRaise(list, [], NOW);
@@ -250,11 +280,274 @@ describe("what a Logistics-only account is told", () => {
 describe("how a notice reads", () => {
   it("every kind has a label and a tone", () => {
     for (const k of TEAM_NOTICE_KINDS) expect(NOTICE_KIND_LABEL[k]).toMatch(/^[A-Z][a-z]+( [a-z]+)*$/);
-    expect(noticeTone("bill_overdue")).toBe("danger");
-    expect(noticeTone("carrier_overdue")).toBe("danger");
-    expect(noticeTone("carrier_due")).toBe("warning");
-    expect(noticeTone("bill_paid")).toBe("success");
-    expect(noticeTone("logistics_quote")).toBe("neutral");
     expect(BILL_OPEN_KEY).toBe("bills_open_id");
+  });
+});
+
+// ─── R-477: the Notifications screen ──────────────────────────────────────
+
+const TODAY = "2026-10-08";
+const noon = (day: string) => `${day}T12:00:00Z`;
+const row = (over: Partial<NoticeRow>): NoticeRow => ({
+  key: "k", group: "bills", kind: "bill_due", label: "Bill due", urgency: "needs", subject: "Warehouse rent", dueDay: "", createdAt: "", ...over,
+});
+
+describe("each kind's group, label and urgency", () => {
+  const table: [string, string, string, string][] = [
+    ["bill_overdue", "bills", "Bill overdue", "overdue"],
+    ["bill_due", "bills", "Bill due", "needs"],
+    ["bill_paid", "bills", "Bill paid", "info"],
+    ["carrier_overdue", "logistics", "Carrier overdue", "overdue"],
+    ["carrier_due", "logistics", "Carrier due", "needs"],
+    ["logistics_pay_due", "logistics", "Pay day", "needs"],
+    ["logistics_quote", "logistics", "Quote ready", "needs"],
+    ["supply_lead", "leads", "New lead", "needs"],
+    ["supplier_profile", "leads", "Supplier details", "info"],
+  ];
+  it.each(table)("%s is in %s, reads %s and is %s", (kind, group, label, urgency) => {
+    const r = noticeRow(note("x", kind));
+    expect([r?.group, r?.label, r?.urgency, r?.kind]).toEqual([group, label, urgency, kind]);
+  });
+  it("a pending customer, a deletion and an unsubscribe fit the same shape", () => {
+    const c = customerRow({ id: "c1", name: "Harbor Surplus", created_at: noon("2026-10-06") });
+    expect([c.group, c.label, c.urgency, c.subject, c.createdAt]).toEqual(["customers", "To review", "needs", "Harbor Surplus", noon("2026-10-06")]);
+    const del = requestRow({ id: "a1", kind: "client_delete", summary: "Delete client: Lakeside Discount Co", created_at: noon("2026-10-06") });
+    expect([del?.group, del?.label, del?.urgency, del?.subject]).toEqual(["requests", "Delete request", "needs", "Lakeside Discount Co"]);
+    const un = requestRow({ id: "a2", kind: "unsubscribe", summary: "pat@example.test unsubscribed from email", created_at: noon("2026-10-06") });
+    expect([un?.group, un?.label, un?.urgency, un?.subject]).toEqual(["requests", "Unsubscribed", "info", "pat@example.test"]);
+  });
+  it("kinds this screen does not list are not rows", () => {
+    expect(noticeRow(note("x", "call_request"))).toBeNull();
+    expect(noticeRow(note("x", "system"))).toBeNull();
+    expect(requestRow({ id: "a", kind: "client_add", summary: "New client", created_at: "" })).toBeNull();
+    expect(requestRow({ id: "a", kind: "listing_stale", summary: "Renew or mark sold: Box lot", created_at: "" })).toBeNull();
+  });
+  it("every row key is its own, so two sources never collide", () => {
+    expect(new Set([noticeRow(note("1", "bill_due"))!.key, customerRow({ id: "1", name: "A" }).key, requestRow({ id: "1", kind: "unsubscribe", summary: "", created_at: "" })!.key]).size).toBe(3);
+  });
+});
+
+describe("the subject and the day of a row", () => {
+  it("the subject is the server's, else the stored title (an older server)", () => {
+    expect(noticeRow(note("a", "bill_due", { subject: "  Warehouse rent ", title: "Warehouse rent is due tomorrow" }))?.subject).toBe("Warehouse rent");
+    expect(noticeRow(note("b", "bill_due", { title: "Warehouse rent is due tomorrow" }))?.subject).toBe("Warehouse rent is due tomorrow");
+    expect(noticeRow(note("c", "bill_due", { subject: "", title: "Insurance" }))?.subject).toBe("Insurance");
+  });
+  it("the day is the server's due_day", () => {
+    expect(dueDayOf({ kind: "bill_due", entity_id: "bill:b1:2026-10-12:due", due_day: "2026-10-11" })).toBe("2026-10-11");
+  });
+  it("an older server sends none, so the day is read from the entity key", () => {
+    expect(dueDayOf({ kind: "bill_due", entity_id: "bill:b1:2026-10-12:due" })).toBe("2026-10-12");
+    expect(dueDayOf({ kind: "bill_overdue", entity_id: "bill:b1:2026-10-05:overdue" })).toBe("2026-10-05");
+    expect(dueDayOf({ kind: "bill_paid", entity_id: "bill:b1:2026-10-01:paid" })).toBe("2026-10-01");
+    expect(dueDayOf({ kind: "carrier_overdue", entity_id: "carrier:fb_9:2026-10-03:overdue" })).toBe("2026-10-03");
+    expect(dueDayOf({ kind: "carrier_due", entity_id: "carrier:fb_9:2026-10-08:due" })).toBe("2026-10-08");
+    expect(dueDayOf({ kind: "logistics_pay_due", entity_id: "lpay:o1:2026-10-10" })).toBe("2026-10-10");
+  });
+  it("a junk or missing key and kinds without a day give none", () => {
+    expect(dueDayOf({ kind: "bill_due", entity_id: null })).toBe("");
+    expect(dueDayOf({ kind: "bill_due", entity_id: "bill:b1:soon:due", due_day: "later" })).toBe("");
+    expect(dueDayOf({ kind: "logistics_quote", entity_id: "quote:fb_1:2026-10-02T10:00:00Z" })).toBe("");
+    expect(dueDayOf({ kind: "supply_lead", entity_id: "lpay:o1:2026-10-10" })).toBe("");
+    expect(dueDayOf({ kind: "bill_due", entity_id: "lpay:o1:2026-10-10" })).toBe("");
+  });
+});
+
+describe("the when of a row, worked out live", () => {
+  it("an overdue row counts the days since its due day", () => {
+    expect(whenWords(row({ kind: "bill_overdue", dueDay: "2026-10-05" }), TODAY)).toBe("3 days overdue");
+    expect(whenWords(row({ kind: "carrier_overdue", dueDay: "2026-10-07" }), TODAY)).toBe("1 day overdue");
+    expect(whenWords(row({ kind: "bill_overdue", dueDay: TODAY }), TODAY)).toBe("Due today");
+  });
+  it("a due row reads today, tomorrow or the date", () => {
+    expect(whenWords(row({ kind: "bill_due", dueDay: TODAY }), TODAY)).toBe("Due today");
+    expect(whenWords(row({ kind: "carrier_due", dueDay: "2026-10-09" }), TODAY)).toBe("Due tomorrow");
+    expect(whenWords(row({ kind: "bill_due", dueDay: "2026-10-12" }), TODAY)).toBe("Due Oct 12");
+    expect(whenWords(row({ kind: "bill_due", dueDay: "2026-10-05" }), TODAY)).toBe("Due Oct 5");
+  });
+  it("a paid bill and a pay day name their date", () => {
+    expect(whenWords(row({ kind: "bill_paid", dueDay: "2026-10-05" }), TODAY)).toBe("Paid Oct 5");
+    expect(whenWords(row({ kind: "logistics_pay_due", dueDay: "2026-10-10" }), TODAY)).toBe("Pay day Oct 10");
+  });
+  it("it moves with the day, so a row never goes stale the way its stored title did", () => {
+    const r = row({ kind: "bill_due", dueDay: "2026-10-09" });
+    expect(whenWords(r, "2026-10-08")).toBe("Due tomorrow");
+    expect(whenWords(r, "2026-10-09")).toBe("Due today");
+    expect(whenWords(r, "2026-10-10")).toBe("Due Oct 9");
+  });
+  it("every other row reads from when it was raised", () => {
+    const at = (day: string) => row({ kind: "supply_lead", createdAt: noon(day) });
+    expect(whenWords(at("2026-10-08"), TODAY)).toBe("Today");
+    expect(whenWords(at("2026-10-07"), TODAY)).toBe("Yesterday");
+    expect(whenWords(at("2026-10-06"), TODAY)).toBe("2 days ago");
+    expect(whenWords(at("2026-10-02"), TODAY)).toBe("6 days ago");
+    expect(whenWords(at("2026-10-01"), TODAY)).toBe("Oct 1");
+    expect(whenWords(at("2026-08-20"), TODAY)).toBe("Aug 20");
+  });
+  it("a quote reads from when it was raised, and a row with no time reads nothing", () => {
+    expect(whenWords(row({ kind: "logistics_quote", createdAt: noon("2026-10-07") }), TODAY)).toBe("Yesterday");
+    expect(whenWords(customerRow({ id: "c", name: "A" }), TODAY)).toBe("");
+    expect(whenWords(customerRow({ id: "c", name: "A", created_at: "" }), TODAY)).toBe("");
+    expect(whenWords(row({ kind: "supply_lead", createdAt: "not a time" }), TODAY)).toBe("");
+  });
+  it("comes from the day on the row, not from words in the stored title", () => {
+    const r = noticeRow(note("p", "bill_due", { title: "Warehouse rent is due tomorrow", due_day: "2026-10-12" }))!;
+    expect(whenWords(r, TODAY)).toBe("Due Oct 12");
+  });
+});
+
+describe("the order of the screen", () => {
+  it("inside a group: red, then amber, then grey", () => {
+    const rows = [
+      row({ key: "paid", kind: "bill_paid", urgency: "info" }),
+      row({ key: "due", urgency: "needs" }),
+      row({ key: "late", kind: "bill_overdue", urgency: "overdue" }),
+    ];
+    expect(groupRows(rows)[0].rows.map((r) => r.key)).toEqual(["late", "due", "paid"]);
+  });
+  it("inside one colour: dated rows first, earliest day first; the rest newest first", () => {
+    const rows = [
+      row({ key: "undated-old", group: "logistics", kind: "logistics_quote", createdAt: noon("2026-10-01") }),
+      row({ key: "later", group: "logistics", kind: "carrier_due", dueDay: "2026-10-12", createdAt: noon("2026-10-02") }),
+      row({ key: "undated-new", group: "logistics", kind: "logistics_quote", createdAt: noon("2026-10-07") }),
+      row({ key: "sooner", group: "logistics", kind: "carrier_due", dueDay: "2026-10-09", createdAt: noon("2026-10-05") }),
+    ];
+    expect(groupRows(rows)[0].rows.map((r) => r.key)).toEqual(["sooner", "later", "undated-new", "undated-old"]);
+  });
+  it("a pending customer shows when it signed up and the newest sits first, like every other group", () => {
+    const old = customerRow({ id: "old", name: "Harbor Surplus", created_at: noon("2026-09-26") });
+    const fresh = customerRow({ id: "new", name: "Lakeside Discount Co", created_at: noon("2026-10-08") });
+    const mid = customerRow({ id: "mid", name: "Pine Street Liquidators", created_at: noon("2026-10-07") });
+    expect(whenWords(old, TODAY)).toBe("Sep 26");
+    expect(whenWords(mid, TODAY)).toBe("Yesterday");
+    expect(whenWords(fresh, TODAY)).toBe("Today");
+    // The server lists them oldest first; the screen does not keep that order.
+    expect(groupRows([old, mid, fresh])[0].rows.map((r) => r.key)).toEqual(["c:new", "c:mid", "c:old"]);
+  });
+  it("two rows on one day keep the newest first", () => {
+    const a = row({ key: "a", dueDay: "2026-10-09", createdAt: noon("2026-10-01") });
+    const b = row({ key: "b", dueDay: "2026-10-09", createdAt: noon("2026-10-05") });
+    expect([a, b].sort(compareRows).map((r) => r.key)).toEqual(["b", "a"]);
+  });
+  it("groups go by their most urgent row, and a tie keeps the fixed order", () => {
+    const rows = [
+      row({ key: "lead", group: "leads", kind: "supply_lead", urgency: "needs" }),
+      row({ key: "paid", group: "bills", kind: "bill_paid", urgency: "info" }),
+      row({ key: "late", group: "logistics", kind: "carrier_overdue", urgency: "overdue" }),
+      row({ key: "cust", group: "customers", kind: "pending_customer", urgency: "needs" }),
+      row({ key: "unsub", group: "requests", kind: "unsubscribe", urgency: "info" }),
+    ];
+    expect(groupRows(rows).map((g) => g.group)).toEqual(["logistics", "customers", "leads", "bills", "requests"]);
+    expect(GROUP_ORDER).toEqual(["bills", "logistics", "customers", "requests", "leads"]);
+  });
+  it("a group with nothing in it is left out, and the input is not reordered", () => {
+    const rows = [row({ key: "b", urgency: "info", kind: "bill_paid" }), row({ key: "a", urgency: "overdue", kind: "bill_overdue" })];
+    const g = groupRows(rows);
+    expect(g).toHaveLength(1);
+    expect(g[0].label).toBe(GROUP_LABEL.bills);
+    expect(rows.map((r) => r.key)).toEqual(["b", "a"]);
+    expect(groupRows([])).toEqual([]);
+  });
+  it("a group that could not load shows no rows, sits after the rest, and is never dropped", () => {
+    const rows = [
+      row({ key: "bill", group: "bills" }),
+      row({ key: "stale", group: "logistics", kind: "carrier_due" }),
+      row({ key: "cust", group: "customers", kind: "pending_customer", urgency: "info" }),
+    ];
+    const g = groupRows(rows, ["bills", "leads"]);
+    expect(g.map((x) => [x.group, x.failed, x.rows.length])).toEqual([["logistics", false, 1], ["customers", false, 1], ["bills", true, 0], ["leads", true, 0]]);
+    expect(groupRows([], ["customers"]).map((x) => [x.group, x.failed])).toEqual([["customers", true]]);
+  });
+  it("a failed read only complains about the groups this person has", () => {
+    // A read can only fail for someone the server lets read the list, so these hold the clients module.
+    const books = { permissions: ["clients:view", "financials:view"] };
+    const deals = { permissions: ["clients:view", "deal_flow:view"] };
+    const seen = (me: { permissions: string[] }) => (["bills", "logistics", "leads"] as const).map((g) => canSeeGroup(g, me));
+    expect(seen({ permissions: ["*"] })).toEqual([true, true, true]);
+    expect(seen(books)).toEqual([true, true, false]);
+    expect(seen(deals)).toEqual([false, true, false]);
+    expect(canSeeGroup("bills", null)).toBe(false);
+  });
+});
+
+describe("the colour of a row's when", () => {
+  it("an overdue row's when is written in the label's colour, and no other row's is", () => {
+    for (const k of [...TEAM_NOTICE_KINDS, "supply_lead", "supplier_profile"]) {
+      const r = noticeRow(note("x", k))!;
+      expect(whenWearsUrgency(r), k).toBe(k === "bill_overdue" || k === "carrier_overdue");
+    }
+    expect(whenWearsUrgency(customerRow({ id: "c", name: "A" }))).toBe(false);
+    for (const k of ["client_delete", "unsubscribe"]) expect(whenWearsUrgency(requestRow({ id: "a", kind: k, summary: "", created_at: "" })!), k).toBe(false);
+  });
+  it("it holds on the day an overdue kind falls due, when the words read Due today", () => {
+    const r = row({ kind: "bill_overdue", urgency: "overdue", dueDay: TODAY });
+    expect(whenWords(r, TODAY)).toBe("Due today");
+    expect(whenWearsUrgency(r)).toBe(true);
+    expect(whenWearsUrgency(row({ kind: "bill_due", urgency: "needs", dueDay: TODAY }))).toBe(false);
+  });
+});
+
+describe("the supplier leads list", () => {
+  it("is the unread supply_lead and supplier_profile notices, newest first, for an admin only", () => {
+    const list = [
+      note("a", "supply_lead", { created_at: hoursAgo(5) }),
+      note("b", "supplier_profile", { created_at: hoursAgo(2) }),
+      note("c", "supply_lead", { status: "acknowledged" }),
+      note("d", "bill_due"),
+    ];
+    expect(leadNoticesOf(list, true).map((n) => n.id)).toEqual(["b", "a"]);
+    expect(leadNoticesOf(list).map((n) => n.id)).toEqual([]);
+    expect(leadNoticesOf(null, true)).toEqual([]);
+  });
+});
+
+describe("the bell counts only what needs you", () => {
+  const unread = (kind: string, status: "unread" | "acknowledged" = "unread") => ({ kind, status });
+  it("counts customers, deletions, one for renewals, new leads and the notices that ask something", () => {
+    const requests = [{ kind: "client_delete" }, { kind: "client_delete" }, { kind: "listing_stale" }, { kind: "listing_stale" }, { kind: "client_add" }];
+    const notices = ["supply_lead", "bill_due", "bill_overdue", "carrier_due", "carrier_overdue", "logistics_quote", "logistics_pay_due"].map((k) => unread(k));
+    expect(bellCountOf({ pendingCustomers: 3, requests, notices })).toBe(3 + 2 + 1 + 7);
+  });
+  it("leaves out a paid bill, supplier details, an unsubscribe and anything already read", () => {
+    const requests = [{ kind: "unsubscribe" }, { kind: "unsubscribe" }, { kind: "client_add" }];
+    const notices = [unread("bill_paid"), unread("supplier_profile"), unread("bill_due", "acknowledged"), unread("supply_lead", "acknowledged"), unread("call_request")];
+    expect(bellCountOf({ pendingCustomers: 0, requests, notices })).toBe(0);
+  });
+  it("forty listings to renew add one, not forty", () => {
+    const requests = Array.from({ length: 40 }, () => ({ kind: "listing_stale" }));
+    expect(bellCountOf({ pendingCustomers: 0, requests, notices: [] })).toBe(1);
+  });
+  it("is nothing when nothing is waiting", () => {
+    expect(bellCountOf({ pendingCustomers: 0, requests: [], notices: [] })).toBe(0);
+  });
+  it("counts exactly the rows the screen marks red or amber, whichever source they came from", () => {
+    for (const k of [...TEAM_NOTICE_KINDS, "supply_lead", "supplier_profile"]) {
+      const needs = noticeRow(note("x", k))!.urgency !== "info";
+      expect(bellCountOf({ pendingCustomers: 0, requests: [], notices: [unread(k)] }), k).toBe(needs ? 1 : 0);
+    }
+    expect(bellCountOf({ pendingCustomers: 1, requests: [], notices: [] })).toBe(customerRow({ id: "c", name: "A" }).urgency !== "info" ? 1 : 0);
+    for (const k of ["client_delete", "unsubscribe"]) {
+      const needs = requestRow({ id: "a", kind: k, summary: "", created_at: "" })!.urgency !== "info";
+      expect(bellCountOf({ pendingCustomers: 0, requests: [{ kind: k }], notices: [] }), k).toBe(needs ? 1 : 0);
+    }
+  });
+  it("an operating-system alert goes out for exactly the notices the bell counts", () => {
+    for (const k of TEAM_NOTICE_KINDS) {
+      const raised = planTeamRaise([note("x", k)], [], NOW).raise.length === 1;
+      const counted = bellCountOf({ pendingCustomers: 0, requests: [], notices: [unread(k)] }) === 1;
+      expect(raised, k).toBe(counted);
+    }
+  });
+  it("the tooltip says how many need you, or just Notifications", () => {
+    expect(bellTitle(0)).toBe("Notifications");
+    expect(bellTitle(1)).toBe("1 needs you");
+    expect(bellTitle(7)).toBe("7 need you");
+  });
+});
+
+describe("no text on the screen carries an em dash", () => {
+  it("every label, group name and tooltip is plain", () => {
+    const words = [...Object.values(NOTICE_KIND_LABEL), ...Object.values(GROUP_LABEL), "To review", "Delete request", "Unsubscribed", "New lead", "Supplier details", bellTitle(0), bellTitle(1), bellTitle(4)];
+    for (const w of words) expect(w).not.toMatch(/[—–]/);
   });
 });

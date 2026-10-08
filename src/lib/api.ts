@@ -291,6 +291,10 @@ export interface LeadNotification {
   acknowledged_at: string | null;
   acknowledged_by: string | null;
   created_at: string;
+  /** R-477: what the notice is about, in plain words (the bill, the carrier and load, the supplier). Absent from an older server. */
+  subject?: string | null;
+  /** R-477: the day it is about (a bill's due day, a carrier's pay day, a pay date) as YYYY-MM-DD, or "". Absent from an older server. */
+  due_day?: string | null;
 }
 export interface LeadClick {
   id: string;

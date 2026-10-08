@@ -10245,6 +10245,12 @@ pub struct LeadNotification {
     pub acknowledged_at: Option<String>,
     pub acknowledged_by: Option<String>,
     pub created_at: String,
+    /// R-477: what the notice is about and the day it is about, worked out by the server when it lists
+    /// the notices. An older server sends neither, so both default to absent and pass through as sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_day: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

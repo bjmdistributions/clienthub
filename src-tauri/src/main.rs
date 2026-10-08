@@ -307,6 +307,31 @@ fn ensure_app_in_applications() {
 #[cfg(not(target_os = "macos"))]
 fn ensure_app_in_applications() {}
 
+/// R-477: the "Follow-ups Due" alert shows at most once per calendar day (Central) on this device. The day
+/// is kept in `device_state`, which never syncs, so each computer keeps its own.
+const FOLLOWUPS_ALERT_DAY_KEY: &str = "followups_alert_day";
+
+fn followups_shown_today(today: &str) -> bool {
+    let Ok(conn) = crate::db::pool().get() else { return false };
+    conn.query_row("SELECT value FROM device_state WHERE key=?1", [FOLLOWUPS_ALERT_DAY_KEY], |r| r.get::<_, String>(0))
+        .map(|d| d == today)
+        .unwrap_or(false)
+}
+
+fn remember_followups_shown(today: &str) {
+    if let Ok(conn) = crate::db::pool().get() {
+        let _ = conn.execute(
+            "INSERT INTO device_state (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [FOLLOWUPS_ALERT_DAY_KEY, today],
+        );
+    }
+}
+
+/// Past-due follow-ups count too, so the body never says "today".
+fn followups_alert_body(n: usize) -> String {
+    if n == 1 { "You have 1 follow-up due".to_string() } else { format!("You have {n} follow-ups due") }
+}
+
 fn main() {
     // Capture any panic to a log file so a launch crash is diagnosable instead of
     // a silent SIGABRT. Chains to the default hook so console output is preserved.
@@ -442,18 +467,20 @@ fn main() {
                     _ => {}
                 }
 
-                // 3. Fire a system notification if follow-ups are due today.
+                // 3. Fire a system notification if follow-ups are due, once per calendar day (R-477).
                 match due_followups().await {
                     Ok(clients) if !clients.is_empty() => {
-                        let _ = app_handle
-                            .notification()
-                            .builder()
-                            .title("Follow-ups Due")
-                            .body(format!(
-                                "You have {} follow-up(s) due today",
-                                clients.len()
-                            ))
-                            .show();
+                        let today = commands::central_today().format("%Y-%m-%d").to_string();
+                        if !followups_shown_today(&today) {
+                            let shown = app_handle
+                                .notification()
+                                .builder()
+                                .title("Follow-ups due")
+                                .body(followups_alert_body(clients.len()))
+                                .show()
+                                .is_ok();
+                            if shown { remember_followups_shown(&today); }
+                        }
                     }
                     Err(e) => tracing::warn!("due_followups failed: {}", e),
                     _ => {}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approvalsBellCount, isRenewal, renewalLine, renewalTitle, renewalsOf, sinceRenewed } from "./renewals";
+import { isRenewal, renewalLine, renewalTitle, renewalsOf, sinceRenewed } from "./renewals";
 
 const req = (id: string, kind: string, summary = "") => ({ id, kind, entity_id: `lot_${id}`, summary, created_at: "2026-10-01T10:00:00Z" });
 
@@ -23,21 +23,6 @@ describe("the renewal requests", () => {
     expect(renewalTitle({ summary: "Mixed lot" })).toBe("Mixed lot");
     expect(renewalTitle({ summary: "" })).toBe("Listing");
     expect(renewalTitle({ summary: "Renew or mark sold: " })).toBe("Listing");
-  });
-});
-
-describe("the bell counts renewals as one item", () => {
-  it("forty stale listings add one, not forty", () => {
-    const reqs = Array.from({ length: 40 }, (_, i) => req(String(i), "listing_stale"));
-    expect(approvalsBellCount(0, reqs, 0)).toBe(1);
-    expect(approvalsBellCount(2, reqs, 3)).toBe(6);
-  });
-  it("no renewals add nothing", () => {
-    expect(approvalsBellCount(0, [], 0)).toBe(0);
-  });
-  it("a new-client request is its pending customer, a deletion is its own item", () => {
-    const reqs = [req("a", "client_add"), req("b", "client_delete"), req("c", "client_delete"), req("d", "listing_stale"), req("e", "listing_stale")];
-    expect(approvalsBellCount(1, reqs, 0)).toBe(1 + 2 + 1);
   });
 });
 

@@ -53,7 +53,7 @@ function FlowIllustration() {
         <span className="text-[10px] font-medium text-muted mt-1 hidden sm:block">POST</span>
       </div>
       <div className="flex-1">
-        <MockWindow title="Ecliptr · Approvals">
+        <MockWindow title="Ecliptr · Notifications">
           <div className="flex items-center gap-2.5">
             <span className="w-9 h-9 rounded-full bg-success-bg text-success-ink flex items-center justify-center text-[13px] font-bold">JD</span>
             <div className="min-w-0">
@@ -118,7 +118,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
         <div className="text-[13px] font-semibold text-ink-2 mb-3">The flow</div>
         <FlowIllustration />
         <p className="text-[12px] text-muted mt-4 leading-relaxed">
-          Every submission becomes a <span className="text-ink-2 font-medium">pending lead</span> in your Approvals queue. Nothing is added to your client list until you approve it. Unknown fields are kept on the lead's record.
+          Every submission becomes a <span className="text-ink-2 font-medium">pending lead</span> in your Notifications. Nothing is added to your client list until you approve it. Unknown fields are kept on the lead's record.
         </p>
       </div>
 
@@ -228,7 +228,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
                 <>In Shopify admin, open <span className="text-ink-2">Online Store → Themes → Customize</span>.</>,
                 <>Add a <span className="text-ink-2">Custom Liquid</span> block to your contact page.</>,
                 <>Paste the HTML form snippet; keep the field <code className="text-ink-2 bg-surface-2 px-1 rounded">name</code> values as-is.</>,
-                <>Save. Test a submission: it lands in your <span className="text-ink-2">Approvals</span> queue.</>,
+                <>Save. Test a submission: it lands in your <span className="text-ink-2">Notifications</span>.</>,
               ].map((t, i) => (
                 <li key={i} className="flex gap-2.5 items-start text-[12px] text-muted">
                   <StepNum n={i + 1} /> <span className="mt-0.5 leading-relaxed">{t}</span>
@@ -248,7 +248,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
         <div className="space-y-2.5">
           <div className="flex items-start gap-2.5">
             <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">buyer</span>
-            <span className="text-[12px] text-muted leading-relaxed">A pending client in <span className="text-ink-2 font-medium">Approvals</span> (the default).</span>
+            <span className="text-[12px] text-muted leading-relaxed">A pending client in <span className="text-ink-2 font-medium">Notifications</span> (the default).</span>
           </div>
           <div className="flex items-start gap-2.5">
             <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">supplier</span>
