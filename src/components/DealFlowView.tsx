@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit, isResoldLine, allocateDealPayout, dealPayoutIncluded, dealPayoutRecipients,
+  type FreightBooking,
 } from "../lib/api";
 import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, isShippingLine, owedToSupplier } from "../lib/format";
 import { toast } from "./Toast";
@@ -15,9 +16,18 @@ import ResoldNote from "./ResoldNote";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import StatusPill from "./StatusPill";
 import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges, useDeliveredDeals } from "./FreightTracking";
-import DealShipping from "./DealShipping";
+import DealShipping, { MoveToLogistics } from "./DealShipping";
 import StepBar from "./StepBar";
+import { Seg } from "./bills/ui";
+import { openLoadInLogistics } from "./LogisticsPayCarriers";
 import { dealMatchesQuery } from "../lib/logisticsSearch";
+import { canPayCarriers } from "../lib/logisticsCarriers";
+import { loadNumber } from "../lib/logisticsLoad";
+import { useSessionMe } from "../lib/useSessionMe";
+import {
+  buyerLeg, canMoveDeal, canSeePayments, groupPayments, groupSummary, loadNumbersOf, money, paymentFiguresOf, supplierLeg,
+  type LegTone, type PaymentEntry, type PaymentLeg,
+} from "../lib/dealPayments";
 import { useNetsyncApplied, FreightStatusPill, AmountNeededPill } from "./LogisticsBookingForm";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
 
@@ -135,7 +145,13 @@ export default function DealFlowView() {
   const [search,       setSearch]       = useState("");
   const [drawerOpen,   setDrawerOpen]   = useState(false);
   const [syncing,      setSyncing]      = useState(false);
-  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean }>>({});
+  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean;
+    buyer_target?: number; buyer_paired?: number; buyer_left?: number; supplier_target?: number; supplier_paired?: number; supplier_left?: number }>>({});
+  // R-479: Pipeline (the lists below) or Payments (the same active deals, grouped by what payment is still needed).
+  const [view, setView] = useState<"pipeline" | "payments">("pipeline");
+  // R-479: loads made by "Move to Logistics" in this session, so the row shows its number before sync brings the load in.
+  const [moved, setMoved] = useState<Record<string, { id: string; number: string }>>({});
+  const me = useSessionMe();
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number; done: boolean }>>({});
   // Open by default — this is the answer to "what is live right now", not an
@@ -395,6 +411,19 @@ export default function DealFlowView() {
   }, [flows, refundMap, openNonce, loading]);
   const openRefundCount = refundAll.length - doneRefundCount;
 
+  // R-479: the Payments view is all dollars, so its switch shows only to whoever may see deal dollars.
+  const showPayments = canSeePayments(me);
+  const mode = showPayments ? view : "pipeline";
+  // A row on the Payments view opens its deal on Link financials. The card lives in the pipeline, so this goes back
+  // there and asks for the card the way another screen does (`openTarget`); a card in a folded group is unfolded by
+  // the effect above, and linking a payment reloads `recon`, so the Payments view is current when it is switched back.
+  const openOnLink = (f: DealFlow) => {
+    if (!f.invoice_number) return;
+    openTarget = { invoice: f.invoice_number, section: "link" };
+    setView("pipeline");
+    setOpenNonce((n) => n + 1);
+  };
+
   // Skeleton mirrors the real layout (header, search, deal cards) — and only on
   // first load, so refreshes after an action don't blank the whole view.
   if (loading && flows.length === 0) return (
@@ -501,8 +530,9 @@ export default function DealFlowView() {
         </div>
       )}
 
-      {/* Search */}
-      <div className="relative max-w-xs">
+      {/* Search, and the Pipeline | Payments switch (R-479) */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="relative max-w-xs flex-1 min-w-[220px]">
         <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
         <input
           type="text"
@@ -521,9 +551,13 @@ export default function DealFlowView() {
           </button>
         )}
       </div>
+      {showPayments && (
+        <Seg value={mode} onChange={setView} options={[{ value: "pipeline", label: "Pipeline" }, { value: "payments", label: "Payments" }]} />
+      )}
+      </div>
 
       {/* ── Delivered — ready to complete (R-318) ───────────────────────── */}
-      {arrived.length > 0 && (
+      {mode === "pipeline" && arrived.length > 0 && (
         <div className="bg-success-bg border border-success/30 rounded-xl overflow-hidden">
           <div className="flex items-center gap-2.5 px-5 py-3.5 flex-wrap">
             <PackageCheck size={15} className="text-success flex-shrink-0" />
@@ -546,7 +580,7 @@ export default function DealFlowView() {
       <UnlinkedShipments onChange={load} />
 
       {/* ── Waiting on pickup or delivery (R-154) ───────────────────────── */}
-      {(lane.length > 0 || noAnswer > 0) && (
+      {mode === "pipeline" && (lane.length > 0 || noAnswer > 0) && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
           <div {...barToggle(() => setLaneOpen(!laneOpen))}
             className="w-full flex items-center justify-between gap-3 px-5 py-3.5 cursor-pointer hover:bg-surface-2/40 transition-colors">
@@ -592,7 +626,11 @@ export default function DealFlowView() {
       )}
 
       {/* ── Active deals ──────────────────────────────────────────────── */}
-      {active.length === 0 ? (
+      {mode === "payments" ? (
+        <PaymentsView deals={active} recon={recon} invoices={invoices} searching={!!search}
+          canMove={canPayCarriers(me)} moved={moved} onOpen={openOnLink}
+          onMoved={(f, made) => { setMoved((m) => ({ ...m, [f.id]: { id: made.id, number: loadNumber(made) } })); load(); }} />
+      ) : active.length === 0 ? (
         <div className="bg-surface border border-line rounded-xl py-16 flex flex-col items-center">
           <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
             <CheckCircle2 size={18} />
@@ -725,6 +763,121 @@ function Stat({ label, value, clr = "text-ink" }: { label: string; value: string
     <div className="text-right">
       <div className="text-[12px] font-medium text-muted">{label}</div>
       <div className={`text-[13px] font-semibold tabular-nums ${clr}`}>{value}</div>
+    </div>
+  );
+}
+
+// ─── Payments view (R-479) ────────────────────────────────────────────────
+// The same active deals as the pipeline, grouped by what payment is still needed: nothing linked yet, waiting on the
+// buyer, the supplier to pay, or all linked. It reads the bank links only (`reconciliation_status_all`), the same truth as
+// the Link financials step, so a deal is never "All linked" here and flagged on the Completed drawer later. Shipping is
+// tracked in Logistics and is not part of any figure. The grouping rule and the wording live in lib/dealPayments.ts.
+const LEG_TONE: Record<LegTone, string> = { owed: "text-warning-ink", done: "text-success-ink", quiet: "text-muted" };
+
+function LegLine({ leg }: { leg: PaymentLeg }) {
+  return (
+    <div className={`text-[12.5px] leading-snug ${LEG_TONE[leg.tone]}`}>
+      {leg.text}
+      {leg.note && <span className="text-muted"> · {leg.note}</span>}
+    </div>
+  );
+}
+
+function PaymentsView({ deals, recon, invoices, searching, canMove, moved, onOpen, onMoved }: {
+  deals: DealFlow[]; recon: Record<string, Partial<Record<string, unknown>>>; invoices: Invoice[]; searching: boolean;
+  canMove: boolean; moved: Record<string, { id: string; number: string }>;
+  onOpen: (f: DealFlow) => void; onMoved: (f: DealFlow, made: FreightBooking) => void;
+}) {
+  const byId = new Map(invoices.map((i) => [i.id, i]));
+  // A draft invoice has nothing to be paid yet, so it would read "No payments yet" for as long as it stayed a draft.
+  const live = deals.filter((f) => (byId.get(f.invoice_id)?.status ?? "").toLowerCase() !== "draft");
+  const drafts = deals.length - live.length;
+  let unread = 0;
+  const entries: PaymentEntry<DealFlow>[] = [];
+  for (const f of live) {
+    const figures = paymentFiguresOf(recon[f.id]);
+    if (!figures) { unread += 1; continue; }
+    entries.push({ item: f, figures, since: byId.get(f.invoice_id)?.issue_date || f.created_at || "" });
+  }
+  const groups = groupPayments(entries).filter((g) => g.entries.length > 0);
+
+  // A load number opens the load in Logistics. The number is on the deal, the id is on the booking, so it is looked up.
+  const openLoad = async (f: DealFlow, ld: string) => {
+    const made = moved[f.id];
+    if (made && made.number === ld) { openLoadInLogistics(made.id); return; }
+    try {
+      const hit = (await api.listFreightBookings(f.id)).find((b) => (b.load_number || "").trim() === ld);
+      if (hit) openLoadInLogistics(hit.id);
+      else toast("That load has not reached this computer yet. Try again in a moment.", "error");
+    } catch (e) { toast(String(e), "error"); }
+  };
+
+  if (live.length === 0) {
+    return (
+      <div className="bg-surface border border-line rounded-xl py-16 flex flex-col items-center">
+        <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
+          <CheckCircle2 size={18} />
+        </div>
+        <div className="text-[13px] text-muted">
+          {searching ? "No active deals match your search" : drafts > 0 ? "Every active deal is still a draft" : "No active deals"}
+        </div>
+        {drafts > 0 && <div className="text-[11.5px] text-muted mt-1">{drafts} {drafts === 1 ? "draft" : "drafts"} not shown</div>}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      <p className="text-[11.5px] text-muted">
+        {live.length} active {live.length === 1 ? "deal" : "deals"}, grouped by what the bank links do not cover yet
+        {drafts > 0 ? ` · ${drafts} ${drafts === 1 ? "draft" : "drafts"} not shown` : ""}
+        {unread > 0 ? ` · ${unread} ${unread === 1 ? "deal is" : "deals are"} still loading payment figures` : ""}
+      </p>
+      {groups.map((g) => (
+        <section key={g.key} aria-label={g.title} className="bg-surface border border-line rounded-xl overflow-hidden">
+          <div className="flex items-baseline gap-x-3 gap-y-1 flex-wrap px-5 py-3.5 border-b border-line">
+            <h3 className="text-[13px] font-semibold text-ink">{g.title}</h3>
+            <span className="text-[11.5px] text-muted tabular-nums">{groupSummary(g)}</span>
+          </div>
+          <ul className="list-none m-0 p-0 divide-y divide-line">
+            {g.entries.map(({ item: f, figures }) => {
+              const loads = loadNumbersOf(f);
+              const made = moved[f.id];
+              if (made && !loads.includes(made.number)) loads.push(made.number);
+              const sup = primarySupplierLabel(f.supplier_payments);
+              return (
+                <li key={f.id} className="flex items-stretch">
+                  <button type="button" onClick={() => onOpen(f)} title="Open on Link financials"
+                    className="flex-1 min-w-0 flex items-start gap-3 pl-5 pr-3 py-3 text-left hover:bg-surface-2/40 transition-colors">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2 min-w-0">
+                        <span className="text-[12px] font-mono text-muted flex-shrink-0">{f.invoice_number}</span>
+                        <span className="text-[14px] text-ink truncate min-w-0">
+                          <span className="font-semibold">{f.client_name || "Unknown"}</span>
+                          {sup ? <span className="text-[12px] text-muted"> → {sup}</span> : null}
+                        </span>
+                      </div>
+                      <div className="mt-1 space-y-0.5">
+                        <LegLine leg={buyerLeg(figures, si(f.stage) >= si("payment_received"))} />
+                        <LegLine leg={supplierLeg(figures)} />
+                      </div>
+                    </div>
+                    <span className="text-[13px] font-semibold text-ink-2 tabular-nums flex-shrink-0" title="Invoice total">{money(f.invoice_total)}</span>
+                  </button>
+                  {/* A fixed column, so the totals line up whether the row has a button, a load number or neither. */}
+                  <div className="w-[168px] flex-shrink-0 flex items-center justify-end gap-3 flex-wrap pl-1 pr-5 py-2">
+                    {loads.length > 0 ? loads.map((ld) => (
+                      <button key={ld} type="button" onClick={() => openLoad(f, ld)} title="Open the load in Logistics"
+                        className="font-mono text-[12px] text-accent hover:underline">{ld}</button>
+                    )) : canMove && canMoveDeal(f) ? (
+                      <MoveToLogistics flow={f} onMoved={(made) => onMoved(f, made)} />
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
     </div>
   );
 }

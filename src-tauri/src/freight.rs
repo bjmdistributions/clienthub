@@ -1680,6 +1680,19 @@ mod pay_tests {
         assert_eq!((d.pay, d.rule, d.pending), (Some(85.0), "markup", false));
     }
 
+    /// R-479: a load added while it is already moving starts at a 0 markup. A stored 0 is markup
+    /// data, so the deal pays 0 on the markup rule and does not fall back to the surplus share.
+    #[test]
+    fn r479_a_zero_markup_load_pays_nothing_and_does_not_fall_back_to_the_surplus_rule() {
+        let _db = crate::db::init_test_store();
+        // Charged 1120 for the shipping, the carrier paid 700: the old rule would pay on the 420 surplus.
+        let id = seed("mk0", &lines("Shipping", 1.0, 1120.0), 0.0);
+        book(&id, "1", "delivered", "2026-10-01", Some(700.0), None);
+        set_markup(&id, "1", 700.0, 0.0);
+        let d = read(&id, &on()).unwrap();
+        assert_eq!((d.pay, d.rule, d.pending, d.markup), (Some(0.0), "markup", false, Some(0.0)));
+    }
+
     #[test]
     fn r465_two_trucks_add_up_over_the_booked_ones_only() {
         let _db = crate::db::init_test_store();
