@@ -1126,6 +1126,18 @@ export interface DealFlow {
   logistics_stage?: "" | "quote" | "quoted" | "requested" | "booked" | "picked_up" | "delivered";
   /** R-481: how many loads are at quoted, requested, booked or picked_up (a count, not money). */
   logistics_live_quoted?: number;
+  /** R-486: the next eight describe the least advanced live load (the one `logistics_stage` names), for the Deal Flow
+   *  shipping line. Days are `YYYY-MM-DD` or "". `logistics_quote` is null until the load is priced, and for a viewer
+   *  without deal numbers. `logistics_live_count` counts the loads not cancelled and not archived, a quote included.
+   *  Read them tolerantly: an older response has none of them. */
+  logistics_carrier?: string;
+  logistics_pickup_day?: string;
+  logistics_picked_up_day?: string;
+  logistics_delivery_day?: string;
+  logistics_delivered_day?: string;
+  logistics_asked_day?: string;
+  logistics_quote?: number | null;
+  logistics_live_count?: number;
   shipping_linked?: number;
   freight_typed?: number;
   /** True once the deal has a booking or a bank payment linked as shipping: the booking
@@ -4528,7 +4540,11 @@ export const api = {
       /** R-479: what the bank links cover on each leg. `left` is 0 once the leg is settled or marked as having no bank record. */
       buyer_target: number; buyer_paired: number; buyer_left: number; supplier_target: number; supplier_paired: number; supplier_left: number;
       /** R-479: a supplier goods line is marked "Didn't pay, kept it" (kept lines are not in the target). */
-      cost_kept?: boolean }[]>("reconciliation_status_all"),
+      cost_kept?: boolean;
+      /** R-486: what a viewer without deal numbers still needs to read. Not money, so never redacted. */
+      buyer_due?: boolean; supplier_due?: boolean; supplier_cost_missing?: boolean;
+      /** R-486: the supplier cost was entered and all of it kept, so there is nothing to pay. Not money, never redacted. */
+      supplier_kept?: boolean }[]>("reconciliation_status_all"),
   refundStatusAll: () =>
     invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number; done: boolean; done_at?: string | null }[]>("refund_status_all"),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),

@@ -4775,6 +4775,28 @@ macro_rules! ship_facts_cols {
     };
 }
 
+/// R-486: what the Deal Flow shipping line says about a deal's loads, over the deal alias `df`. Only `DF_JOIN` reads it
+/// (the money code does not), so it is its own text and not part of `ship_facts_cols!`. `logistics_pick` is one JSON
+/// object describing the least advanced live load, the same load `logistics_stage_rank` names: the live trucks first
+/// (requested, booked, picked_up, delivered), then a load still at quote, then one at quoted, and on a tie the earliest
+/// created. A live load is `archived = 0` and not cancelled, a quote and a delivered load included, so
+/// `logistics_live_count` is not `logistics_bookings`. The scheduled pickup and delivery dates are bare days already; the picked up and delivered stamps are cut to the day (ten characters). The creation time
+/// is kept whole as `asked_at` and `map_deal_flow_row` turns it into the Central calendar day with `central_day`, as the server does. `quote` is
+/// `quote_amount`, null until logistics prices the load. The clienthub-api twin (routes/deal_flows.rs DF_JOIN) says the same.
+macro_rules! ship_pick_cols {
+    () => {
+        concat!(
+            "(SELECT json_object('carrier', COALESCE(fb.carrier,''), 'pickup_day', COALESCE(fb.pickup_date,''), ",
+            "'picked_up_day', substr(COALESCE(fb.picked_up_at,''),1,10), 'delivery_day', COALESCE(fb.delivery_date,''), ",
+            "'delivered_day', substr(COALESCE(fb.delivered_at,''),1,10), 'asked_at', COALESCE(fb.created_at,''), ",
+            "'quote', fb.quote_amount) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled') ",
+            "ORDER BY CASE fb.status WHEN 'requested' THEN 1 WHEN 'booked' THEN 2 WHEN 'picked_up' THEN 3 WHEN 'delivered' THEN 4 WHEN 'quote' THEN 6 WHEN 'quoted' THEN 7 ELSE 5 END, ",
+            "fb.created_at, fb.id LIMIT 1) AS logistics_pick, ",
+            "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled')) AS logistics_live_count"
+        )
+    };
+}
+
 /// R-415: the two invoice columns the billed figure (what we charged the customer for shipping)
 /// is worked out from. Needs the invoice alias `i`. A query that leaves them out reads a billed
 /// figure of 0, which only matters to the shipping estimate.
@@ -5037,6 +5059,27 @@ pub struct DealFlow {
     /// one still asked. A count, not money.
     #[serde(default)]
     pub logistics_live_quoted: i64,
+    /// R-486: the next eight describe the least advanced live load (the one `logistics_stage` names; on a tie the
+    /// earliest created), for the Deal Flow shipping line. Days are `YYYY-MM-DD` or "". `logistics_quote` is the
+    /// quote amount or null. The desktop read has no redaction, so the screen shows the quote only to someone who may
+    /// see deal numbers (the server twin sends null to everyone else).
+    #[serde(default)]
+    pub logistics_carrier: String,
+    #[serde(default)]
+    pub logistics_pickup_day: String,
+    #[serde(default)]
+    pub logistics_picked_up_day: String,
+    #[serde(default)]
+    pub logistics_delivery_day: String,
+    #[serde(default)]
+    pub logistics_delivered_day: String,
+    #[serde(default)]
+    pub logistics_asked_day: String,
+    #[serde(default)]
+    pub logistics_quote: Option<f64>,
+    /// R-486: how many loads are live (not cancelled, not archived), quote stage and delivered included.
+    #[serde(default)]
+    pub logistics_live_count: i64,
     #[serde(default)]
     pub shipping_linked: f64,
     #[serde(default)]
@@ -5068,8 +5111,32 @@ pub struct PaymentReceivedInput {
     pub received_at: Option<String>,
 }
 
+/// R-486: the least advanced live load as `ship_pick_cols!` reads it. Tolerant like the other derived fields: a query
+/// that leaves the column out, or a null (no live load), reads as all empty.
+fn load_pick_from_row(r: &rusqlite::Row) -> Value {
+    r.get::<_, Option<String>>("logistics_pick").ok().flatten()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .unwrap_or(Value::Null)
+}
+
+/// R-486: a stored instant as its Central calendar day, the day a person in the office would say it happened. A quote
+/// asked at 8 pm Central is stored (UTC) on the next day, and the card read "Quote asked" a day late. A bare date, or
+/// anything that is not an RFC 3339 instant, is kept as its first ten characters (the same rule as `deal_export::day`).
+/// The clienthub-api twin (routes/deal_flows.rs `central_day`) is the same function.
+fn central_day(s: &str) -> String {
+    let s = s.trim();
+    if s.len() > 10 {
+        if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(s) {
+            return ts.with_timezone(&chrono_tz::America::Chicago).format("%Y-%m-%d").to_string();
+        }
+    }
+    s.chars().take(10).collect()
+}
+
 fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
     let sp_json: String = r.get("supplier_payments_json")?;
+    let pick = load_pick_from_row(r);
+    let pick_text = |k: &str| pick.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let supplier_payments: Vec<SupplierPayment> = serde_json::from_str(&sp_json).unwrap_or_default();
     // R-315: computed once here so list and detail reads agree.
     // R-438: floored at 0. An unpaid resold offset is negative, and it only ever cancels the
@@ -5131,6 +5198,14 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         logistics_quoted: facts.quoted,
         logistics_stage: facts.stage().to_string(),
         logistics_live_quoted: facts.live_quoted,
+        logistics_carrier: pick_text("carrier"),
+        logistics_pickup_day: pick_text("pickup_day"),
+        logistics_picked_up_day: pick_text("picked_up_day"),
+        logistics_delivery_day: pick_text("delivery_day"),
+        logistics_delivered_day: pick_text("delivered_day"),
+        logistics_asked_day: central_day(&pick_text("asked_at")),
+        logistics_quote: pick.get("quote").and_then(|v| v.as_f64()).map(r2),
+        logistics_live_count: r.get("logistics_live_count").unwrap_or(0),
         shipping_linked: facts.linked,
         freight_typed: facts.freight_typed,
         shipping_mode: facts.mode(),
@@ -5142,7 +5217,7 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
     })
 }
 
-const DF_JOIN: &str = concat!("SELECT df.*, i.number as invoice_number, i.client_id, i.total as invoice_total, c.name as client_name, ", ship_facts_cols!(), ", ", ship_billed_cols!(), ", ", deal_load_numbers_col!(), " FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id LEFT JOIN clients c ON i.client_id=c.id");
+const DF_JOIN: &str = concat!("SELECT df.*, i.number as invoice_number, i.client_id, i.total as invoice_total, c.name as client_name, ", ship_facts_cols!(), ", ", ship_billed_cols!(), ", ", deal_load_numbers_col!(), ", ", ship_pick_cols!(), " FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id LEFT JOIN clients c ON i.client_id=c.id");
 
 fn sync_invoice_stage(invoice_id: &str, stage: &str) -> Result<(), String> {
     let mut inv_cols = Map::new();
@@ -18898,6 +18973,18 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         // though its cost was entered and settled ("Didn't pay, kept it"). This tells the Payments view such a deal
         // from one with no cost at all. The goods test is `is_goods` without the kept clause. Not money, so no redaction.
         let cost_kept = payments.iter().any(|p| p.kept && p.category.as_deref().unwrap_or("supplier") == "supplier");
+        // R-486: what the Deal Flow "Still needed" line reads, as flags with no figure in them, so a viewer without
+        // `deal_flow:view_numbers` (the server zeroes the six amounts for them) still learns which payment is missing.
+        // Read from the rounded figures the screen reads: `buyer_due` is a cent or more left to link on the buyer leg,
+        // `supplier_due` the same on the supplier leg, `supplier_cost_missing` is the Payments view's `costNotEntered`
+        // (nothing expected, nothing linked, kept or marked as having no bank record). Same rule as the server twin.
+        let buyer_due = r2(buyer_left) > 0.005;
+        let supplier_due = r2(supplier_left) > 0.005;
+        let supplier_cost_missing = !no_supplier && !sp && !cost_kept && r2(supplier_target) <= 0.01;
+        // `supplier_kept`: the cost was entered and all of it kept ("Didn't pay, kept it"), so there is nothing to pay by
+        // choice. A viewer without deal numbers cannot work it out from the zeroed figures, and "Supplier paid" would be
+        // wrong for them.
+        let supplier_kept = cost_kept && r2(supplier_target) <= 0.01 && r2(supplier_paired) <= 0.01 && !supplier_due && !supplier_cost_missing;
         Ok(json!({
             "deal_flow_id": id,
             "payment_received_paired": pr,
@@ -18921,6 +19008,10 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
             "supplier_paired": r2(supplier_paired),
             "supplier_left": r2(supplier_left),
             "cost_kept": cost_kept,
+            "buyer_due": buyer_due,
+            "supplier_due": supplier_due,
+            "supplier_cost_missing": supplier_cost_missing,
+            "supplier_kept": supplier_kept,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -27967,6 +28058,193 @@ mod r400_shipping_tests {
         booking(&road, "6", "booked", None, None, 1);
         assert_eq!(live(&road), 3, "delivered, cancelled and archived loads are not counted");
         assert_eq!(read_df(&road).unwrap().logistics_stage, "requested", "the stage is unchanged");
+    }
+
+    /// R-486: one load with the columns the Deal Flow shipping line reads. The server twin's test (routes/deal_flows.rs
+    /// `shipping_money_tests`) builds the same loads (same carriers, dates, quote and creation times) and checks the
+    /// same values. `dates` is pickup_date, delivery_date, picked_up_at, delivered_at.
+    fn load_486(deal_id: &str, status: &str, archived: bool, created: &str, carrier: &str, dates: [&str; 4], quote: Option<f64>) {
+        let conn = pool().get().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM freight_bookings WHERE deal_flow_id=?1", [deal_id], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO freight_bookings (id, deal_flow_id, status, archived, created_at, updated_at, carrier, pickup_date, delivery_date, picked_up_at, delivered_at, quote_amount)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![format!("fb_{deal_id}_{}", n + 1), deal_id, status, archived as i64, created, carrier, dates[0], dates[1], dates[2], dates[3], quote],
+        ).unwrap();
+    }
+
+    /// The eight R-486 fields as they are on the row, in the order the spec lists them.
+    fn pick_486(id: &str) -> (String, String, String, String, String, String, Option<f64>, i64) {
+        let x = read_df(id).unwrap();
+        (x.logistics_carrier, x.logistics_pickup_day, x.logistics_picked_up_day, x.logistics_delivery_day,
+         x.logistics_delivered_day, x.logistics_asked_day, x.logistics_quote, x.logistics_live_count)
+    }
+
+    fn txt(x: &str) -> String { x.to_string() }
+
+    /// R-486: the fields describe the least advanced live load, the one `logistics_stage` names, and on a tie the
+    /// earliest created. A cancelled or archived load is not live. A load at quote or quoted is live and counts, but a
+    /// live truck is preferred over any of them. Same deal and loads as the server twin's test.
+    #[tokio::test]
+    async fn r486_the_card_fields_describe_the_least_advanced_live_load() {
+        let _db = crate::db::init_test_store();
+        let seed = |tag: &str| deal(tag, vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "payment_received");
+        // No load at all: empty, null and zero.
+        let none = seed("p486n");
+        assert_eq!(pick_486(&none), (txt(""), txt(""), txt(""), txt(""), txt(""), txt(""), None, 0));
+        // Loads that are not live say nothing either.
+        load_486(&none, "cancelled", false, "2026-09-01T10:00:00+00:00", "Gone Freight", ["2026-10-01", "2026-10-02", "", ""], Some(500.0));
+        load_486(&none, "booked", true, "2026-09-02T10:00:00+00:00", "Shelf Freight", ["2026-10-01", "2026-10-02", "", ""], Some(500.0));
+        assert_eq!(pick_486(&none), (txt(""), txt(""), txt(""), txt(""), txt(""), txt(""), None, 0));
+
+        // The shared deal: one delivered load, two picked up (the earlier created wins the tie), a cancelled one and an
+        // archived one that are not live.
+        let d = seed("p486d");
+        load_486(&d, "delivered", false, "2026-09-28T09:00:00+00:00", "Swift", ["2026-10-01", "2026-10-03", "2026-10-01", "2026-10-03"], Some(900.0));
+        load_486(&d, "picked_up", false, "2026-09-30T08:00:00+00:00", "Late Haul", ["2026-10-06", "2026-10-12", "2026-10-06", ""], Some(700.0));
+        load_486(&d, "picked_up", false, "2026-09-29T10:00:00+00:00", "Northline", ["2026-10-07", "2026-10-11", "2026-10-07T14:30:00", ""], Some(1240.5));
+        load_486(&d, "cancelled", false, "2026-09-01T10:00:00+00:00", "Gone Freight", ["2026-10-01", "2026-10-02", "", ""], Some(100.0));
+        load_486(&d, "requested", true, "2026-09-02T10:00:00+00:00", "Shelf Freight", ["2026-10-01", "2026-10-02", "", ""], Some(100.0));
+        assert_eq!(read_df(&d).unwrap().logistics_stage, "picked_up");
+        assert_eq!(
+            pick_486(&d),
+            (txt("Northline"), txt("2026-10-07"), txt("2026-10-07"), txt("2026-10-11"), txt(""), txt("2026-09-29"), Some(1240.5), 3),
+            "the earliest created of the two picked up loads, the day part of picked_up_at, three live loads"
+        );
+        // A load that has not moved as far wins from here on.
+        load_486(&d, "booked", false, "2026-10-02T12:00:00+00:00", "Coastal Lines", ["2026-10-13", "", "", ""], None);
+        assert_eq!(read_df(&d).unwrap().logistics_stage, "booked");
+        assert_eq!(pick_486(&d), (txt("Coastal Lines"), txt("2026-10-13"), txt(""), txt(""), txt(""), txt("2026-10-02"), None, 4));
+        load_486(&d, "requested", false, "2026-10-03T12:00:00+00:00", "", ["", "", "", ""], None);
+        assert_eq!(read_df(&d).unwrap().logistics_stage, "requested");
+        assert_eq!(pick_486(&d), (txt(""), txt(""), txt(""), txt(""), txt(""), txt("2026-10-03"), None, 5));
+        // Another deal never borrows them.
+        let other = seed("p486o");
+        assert_eq!(pick_486(&other), (txt(""), txt(""), txt(""), txt(""), txt(""), txt(""), None, 0));
+    }
+
+    /// R-486: the delivered load reads its delivered day, and the quote stages: a load asking for a price comes before
+    /// one already priced, and any live truck comes before both. Same deal and loads as the server twin's test.
+    #[tokio::test]
+    async fn r486_a_delivered_load_a_quote_and_a_priced_quote_read_their_own_days() {
+        let _db = crate::db::init_test_store();
+        let seed = |tag: &str| deal(tag, vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "payment_received");
+        let delivered = seed("p486v");
+        load_486(&delivered, "delivered", false, "2026-09-20T09:00:00+00:00", "Swift", ["2026-10-01", "2026-10-03", "2026-10-01", "2026-10-14T16:00:00"], None);
+        assert_eq!(read_df(&delivered).unwrap().logistics_stage, "delivered");
+        assert_eq!(
+            pick_486(&delivered),
+            (txt("Swift"), txt("2026-10-01"), txt("2026-10-01"), txt("2026-10-03"), txt("2026-10-14"), txt("2026-09-20"), None, 1)
+        );
+
+        // Asked and priced: the one still asking is the least advanced, and has no price yet.
+        let q = seed("p486q");
+        load_486(&q, "quoted", false, "2026-10-05T09:00:00+00:00", "", ["", "", "", ""], Some(1240.0));
+        load_486(&q, "quote", false, "2026-10-08T15:00:00+00:00", "", ["2026-10-20", "", "", ""], None);
+        assert_eq!(read_df(&q).unwrap().logistics_stage, "quote");
+        assert_eq!(pick_486(&q), (txt(""), txt("2026-10-20"), txt(""), txt(""), txt(""), txt("2026-10-08"), None, 2));
+        // Only the priced one left: its price and the day it was asked.
+        pool().get().unwrap().execute("UPDATE freight_bookings SET archived=1 WHERE deal_flow_id=?1 AND status='quote'", [&q]).unwrap();
+        assert_eq!(read_df(&q).unwrap().logistics_stage, "quoted");
+        assert_eq!(pick_486(&q), (txt(""), txt(""), txt(""), txt(""), txt(""), txt("2026-10-05"), Some(1240.0), 1));
+        // A live truck beside the quote is the one described, and its quote_amount is its own.
+        load_486(&q, "requested", false, "2026-10-09T09:00:00+00:00", "Swift", ["2026-10-13", "", "", ""], None);
+        assert_eq!(pick_486(&q), (txt("Swift"), txt("2026-10-13"), txt(""), txt(""), txt(""), txt("2026-10-09"), None, 2));
+    }
+
+    /// R-486: the day a quote was asked is the Central calendar day, not the UTC one: a quote asked at 8 pm Central on
+    /// Oct 8 is stored as 01:00 UTC on Oct 9 and must read Oct 8. Winter (UTC-6) and summer (UTC-5) both hold, and a
+    /// stamp that is not an RFC 3339 instant keeps its first ten characters. Same cases as the server twin's test.
+    #[tokio::test]
+    async fn r486_the_asked_day_is_the_central_day_not_the_utc_day() {
+        let _db = crate::db::init_test_store();
+        assert_eq!(central_day("2026-10-09T01:00:00+00:00"), "2026-10-08", "8 pm CDT on Oct 8");
+        assert_eq!(central_day("2026-10-09T04:59:59.123456+00:00"), "2026-10-08", "11:59 pm CDT, with fractional seconds");
+        assert_eq!(central_day("2026-10-09T05:00:00+00:00"), "2026-10-09", "midnight CDT is the new day");
+        assert_eq!(central_day("2026-12-10T05:30:00Z"), "2026-12-09", "11:30 pm CST");
+        assert_eq!(central_day("2026-12-10T06:00:00+00:00"), "2026-12-10");
+        assert_eq!(central_day("2026-10-09 01:00:00"), "2026-10-09", "not an RFC 3339 instant: first ten characters");
+        assert_eq!(central_day("2026-10-09"), "2026-10-09");
+        assert_eq!(central_day(""), "");
+        let d = deal("p486e", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "payment_received");
+        load_486(&d, "quote", false, "2026-10-09T01:00:00+00:00", "", ["", "", "", ""], None);
+        assert_eq!(read_df(&d).unwrap().logistics_asked_day, "2026-10-08", "the row carries the Central day");
+    }
+
+    /// R-486: an answer from before these fields existed still reads, as empty (the build 6 phone and a cached
+    /// response carry none of them).
+    #[tokio::test]
+    async fn r486_an_older_answer_without_the_fields_reads_as_empty() {
+        let _db = crate::db::init_test_store();
+        let id = deal("p486x", vec![line("a", "supplier", 6000.0, false)], "payment_received");
+        let mut v = serde_json::to_value(read_df(&id).unwrap()).unwrap();
+        for k in ["logistics_carrier", "logistics_pickup_day", "logistics_picked_up_day", "logistics_delivery_day", "logistics_delivered_day", "logistics_asked_day", "logistics_quote", "logistics_live_count"] {
+            assert!(v.as_object_mut().unwrap().remove(k).is_some(), "{k} is on the row");
+        }
+        let old: DealFlow = serde_json::from_value(v).unwrap();
+        assert_eq!((old.logistics_carrier.as_str(), old.logistics_quote, old.logistics_live_count), ("", None, 0));
+    }
+
+    /// R-486: three flags with no figure in them, so a viewer without deal numbers learns which payment is missing.
+    /// `buyer_due` and `supplier_due` are a leg with something left to link, `supplier_cost_missing` is the Payments
+    /// view's "cost not entered". The server twin asserts the same cases.
+    #[tokio::test]
+    async fn r486_the_status_carries_flags_for_what_each_deal_still_needs() {
+        let _db = crate::db::init_test_store();
+        let status = |id: &str| -> Value { futures::executor::block_on(reconciliation_status_all()).unwrap().into_iter().find(|v| v["deal_flow_id"] == id).unwrap() };
+        let flags = |id: &str| { let v = status(id); ["buyer_due", "supplier_due", "supplier_cost_missing"].map(|k| v[k].as_bool().unwrap_or_else(|| panic!("{k} missing"))) };
+        let kept_flag = |id: &str| status(id)["supplier_kept"].as_bool().unwrap_or_else(|| panic!("supplier_kept missing"));
+        let set_total = |id: &str, total: f64| { pool().get().unwrap().execute("UPDATE deal_flows SET total_supplier_cost=?2 WHERE id=?1", rusqlite::params![id, total]).unwrap(); };
+
+        // Nothing linked, the cost is in: both payments are needed.
+        let open = deal("f486_open", vec![line("a", "supplier", 7000.0, false)], "invoiced");
+        assert_eq!(flags(&open), [true, true, false]);
+        // The buyer has paid, the supplier has not.
+        let owe = deal("f486_owe", vec![line("a", "supplier", 7000.0, false)], "payment_received");
+        link(&owe, "buyer_payment", 10000.0);
+        assert_eq!(flags(&owe), [false, true, false]);
+        // Part paid on the buyer leg still counts as due.
+        let part = deal("f486_part", vec![line("a", "supplier", 7000.0, false)], "payment_received");
+        link(&part, "buyer_payment", 4000.0);
+        link(&part, "supplier_payment", 7000.0);
+        assert_eq!(flags(&part), [true, false, false]);
+        // Everything linked: nothing needed.
+        let full = deal("f486_full", vec![line("a", "supplier", 7000.0, true)], "supplier_paid");
+        link(&full, "buyer_payment", 10000.0);
+        link(&full, "supplier_payment", 7000.0);
+        assert_eq!(flags(&full), [false, false, false]);
+        // Within the 50 cent tolerance is done.
+        let near = deal("f486_near", vec![line("a", "supplier", 7000.0, true)], "supplier_paid");
+        link(&near, "buyer_payment", 9999.6);
+        link(&near, "supplier_payment", 7000.0);
+        assert_eq!(flags(&near), [false, false, false]);
+        // No cost entered: the buyer is due, the supplier has nothing to pay yet, and the cost is missing.
+        let nocost = deal("f486_nocost", vec![], "payment_received");
+        assert_eq!(flags(&nocost), [true, false, true]);
+        link(&nocost, "buyer_payment", 10000.0);
+        assert_eq!(flags(&nocost), [false, false, true], "a paid buyer with no cost entered still lacks the cost");
+        // A cost that was entered and kept is in: not missing, nothing to pay.
+        let mut kept = line("a", "supplier", 7000.0, false);
+        kept["kept"] = json!(true);
+        let kept_id = deal("f486_kept", vec![kept], "payment_received");
+        set_total(&kept_id, 0.0);
+        assert_eq!(flags(&kept_id), [true, false, false]);
+        assert!(kept_flag(&kept_id), "a cost that was all kept reads as kept, nothing to pay");
+        // Only a cost that was kept reads as kept: not one paid, not one owed, not one missing.
+        for id in [&open, &owe, &part, &full, &near, &nocost] { assert!(!kept_flag(id), "{id} is not kept"); }
+        // Marked as having no bank record on the supplier side: the cost is not missing.
+        let ack = deal("f486_ack", vec![], "invoiced");
+        set_deal_link_na(ack.clone(), false, true, None).await.unwrap();
+        assert_eq!(flags(&ack), [true, false, false]);
+        assert!(!kept_flag(&ack), "no bank record is not kept");
+        // Goods resold away: the supplier leg lives on the new deal, so it is not missing here.
+        let away = deal("f486_away", vec![], "payment_received");
+        pool().get().unwrap().execute(
+            "UPDATE deal_flows SET metadata=?1 WHERE id=?2",
+            rusqlite::params![json!({"resold_to": [{"to": "df-other", "at": "2026-09-12"}]}).to_string(), away],
+        ).unwrap();
+        assert_eq!(flags(&away), [true, false, false]);
+        assert!(!kept_flag(&away), "resold away is not kept");
     }
 
     /// R-460: a deal is found by the number of any truck on it. The Deal Flow read carries the load numbers of the
