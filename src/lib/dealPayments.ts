@@ -7,8 +7,8 @@ import { can, isAdmin, type Perms } from "./permissions";
 // and for the supplier). The website has the same rule in www/app.js, tested against the same cases.
 
 /** A deal is "owed" on a leg when more than a cent is still unlinked, and "linked" once more than a cent is. */
-const OWED = 0.005;
-const LINKED = 0.01;
+export const OWED = 0.005;
+export const LINKED = 0.01;
 
 /** What the group rule reads from one deal's status row. */
 export interface PaymentFigures {

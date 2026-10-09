@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback, useRef, type KeyboardEvent } from "react";
+import { useEffect, useState, useCallback, useRef, type KeyboardEvent, type ReactNode } from "react";
 import {
   Check, ChevronDown, ChevronRight, Search, Plus, X,
   AlertTriangle, RotateCcw, RefreshCw, Trash2,
   CheckCircle2, Truck, Package, FileDown, XCircle, PackageCheck,
+  Clock, Wallet, Send, CircleHelp, type LucideIcon,
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit, isResoldLine, allocateDealPayout, dealPayoutIncluded, dealPayoutRecipients,
@@ -24,6 +25,7 @@ import { dealMatchesQuery } from "../lib/logisticsSearch";
 import { canPayCarriers } from "../lib/logisticsCarriers";
 import { loadNumber } from "../lib/logisticsLoad";
 import { pipelineSplit } from "../lib/dealLane";
+import { SECTIONS as DEAL_SECTIONS, describeDeal, payFactsOf, type DealCtx, type DealDescription, type DealSection, type LineTone } from "../lib/dealSections";
 import { useSessionMe } from "../lib/useSessionMe";
 import {
   buyerLeg, canMoveDeal, canSeePayments, groupPayments, groupSummary, loadNumbersOf, money, paymentFiguresOf, supplierLeg,
@@ -113,16 +115,6 @@ function shipGate(f: DealFlow): { date: string; basis: "delivery" | "pickup" } |
 
 const basisWord = (b: "delivery" | "pickup") => (b === "delivery" ? "expected delivery" : "pickup");
 
-/** What orders the waiting lane: the next thing due to happen, which is the
- *  earliest date still ahead. Deliberately NOT the gate date — a deal whose truck
- *  leaves tomorrow but lands in a month belongs above one landing in three weeks.
- *  When every date has passed, the deal is overdue and sorts to the top on its
- *  own last date. Only ever called on a deal that has at least one date. */
-function nextDate(f: DealFlow): string {
-  const ds = [day(f.pickup_date), day(f.expected_delivery_date)].filter(Boolean).sort();
-  return ds.find((d) => daysUntil(d) >= 0) ?? ds[ds.length - 1];
-}
-
 // ─── What is paid and what is still due (R-303, R-401) ───────────────────
 // The card's pill is about the buyer only. Whether the supplier has been sent money is not
 // tracked on the deal any more (R-401): a deal has a supplier cost or it does not, and the
@@ -147,7 +139,8 @@ export default function DealFlowView() {
   const [drawerOpen,   setDrawerOpen]   = useState(false);
   const [syncing,      setSyncing]      = useState(false);
   const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean;
-    buyer_target?: number; buyer_paired?: number; buyer_left?: number; supplier_target?: number; supplier_paired?: number; supplier_left?: number; cost_kept?: boolean }>>({});
+    buyer_target?: number; buyer_paired?: number; buyer_left?: number; supplier_target?: number; supplier_paired?: number; supplier_left?: number; cost_kept?: boolean;
+    buyer_due?: boolean; supplier_due?: boolean; supplier_cost_missing?: boolean; supplier_kept?: boolean }>>({});
   // R-479: Pipeline (the lists below) or Payments (the same active deals, grouped by what payment is still needed).
   const [view, setView] = useState<"pipeline" | "payments">("pipeline");
   // R-479: loads made by "Move to Logistics" in this session, so the row shows its number before sync brings the load in.
@@ -155,9 +148,10 @@ export default function DealFlowView() {
   const me = useSessionMe();
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number; done: boolean }>>({});
-  // Open by default — this is the answer to "what is live right now", not an
+  // R-486: the six Pipeline sections, all open by default: this is the answer to "what is live right now", not an
   // archive somebody has to go looking for.
-  const [laneOpen, setLaneOpen] = useState(true);
+  const [sectionsOpen, setSectionsOpen] = useState<Record<DealSection, boolean>>(
+    () => Object.fromEntries(DEAL_SECTIONS.map((s) => [s.key, true])) as Record<DealSection, boolean>);
   // Closed by default (R-305, second pass): "theyre not important. my active ones are
   // the most important thing on the entire page."
   const [refundsOpen, setRefundsOpen] = useState(false);
@@ -357,30 +351,29 @@ export default function DealFlowView() {
   // then given a higher refund_owed, or whose refund payment later vanished — stopped
   // being anyone's problem while money was still owed. It comes back to the open list.
   const isRefundDone = (id: string) => !!refundMap[id]?.done && refundMap[id].remaining <= 0.01;
-  // ── The waiting lane (R-154) ────────────────────────────────────────────
-  // Pinned above everything else: the active deals that have a pickup or an
-  // expected delivery date and are not complete, soonest first. They are pulled
-  // OUT of the ordinary active list rather than shown twice, so the two counts
-  // stay mutually exclusive — the same rule the Refunds section follows.
-  // R-481: a deal with a live load at quoted, requested, booked or picked up also waits here with no date,
-  // after the dated ones (src/lib/dealLane.ts, the rule the website shares).
-  //
-  // ── Delivered — ready to complete (R-318) ───────────────────────────────
-  // Above even the waiting lane, because a delivered deal is not waiting for anything:
-  // it is waiting for Jack. Pulled out of the other two lists the same way, so the
-  // counts stay mutually exclusive, and it leaves the moment the deal is completed.
-  const { arrived, lane, unscheduled } = pipelineSplit(active, deliveredIds, nextDate);
-  const laneIds = new Set(lane.map((f) => f.id));
-  const overdueCount = lane.filter((f) => shipState(f).kind === "overdue").length;
+  // ── The six sections (R-486) ────────────────────────────────────────────
+  // Every active deal is in exactly one: Ready to complete, Delivered with payment still missing, On the way,
+  // Waiting on pickup, With Logistics, or Shipping not set up (src/lib/dealSections.ts, the rule the website shares).
+  // They are pulled out of one another rather than shown twice, so the counts stay mutually exclusive, the same rule
+  // the Refunds section follows. A deal leaves the moment it is completed. R-318: the delivered set is what the carrier
+  // says has landed. A buyer payment the stage says was received counts as paid even with no bank payment linked.
+  const today = localDay();
+  const numbers = canSeePayments(me);
+  const ctxOf = (f: DealFlow): DealCtx => ({
+    delivered: deliveredIds.has(f.id), today, numbers,
+    pay: payFactsOf(recon[f.id], si(f.stage) >= si("payment_received"), numbers),
+  });
+  const split = pipelineSplit(active, ctxOf);
+  const described = new Map(active.map((f) => [f.id, describeDeal(f, ctxOf(f))]));
 
   // This week — counted as EVENTS, not deals, because one deal can both pick up
-  // and land inside the window. Ships-direct deals have no pickup to count.
+  // and land inside the window. Ships-direct deals have no pickup to count. R-486: a load not yet picked up (or on the road)
+  // counts by its own day too, the one its card shows.
   const soon = (d?: string | null) => { const v = day(d); if (!v) return false; const n = daysUntil(v); return n >= 0 && n <= 7; };
-  const pickupsSoon    = active.filter((f) => !f.ships_direct && soon(f.pickup_date)).length;
-  const deliveriesSoon = active.filter((f) => !f.ships_direct && soon(f.expected_delivery_date)).length;
-  // Neither a date nor a ships-direct answer. Named out loud, or nobody fills it
-  // in and the whole feature is dead in a month.
-  const noAnswer = active.filter((f) => shipState(f).kind === "unset").length;
+  const pickupsSoon    = active.filter((f) => !f.ships_direct
+    && (soon(f.pickup_date) || ((f.logistics_stage === "requested" || f.logistics_stage === "booked") && soon(f.logistics_pickup_day)))).length;
+  const deliveriesSoon = active.filter((f) => !f.ships_direct
+    && (soon(f.expected_delivery_date) || (f.logistics_stage === "picked_up" && soon(f.logistics_delivery_day)))).length;
 
   // Whole-lot refunds only — see `isPartlyRefunded`.
   const refundAll   = flows.filter((f) => refundMap[f.id] && isFullyRefunded(f));
@@ -391,7 +384,7 @@ export default function DealFlowView() {
 
   // R-438: a deal asked for by name (a resold note, another screen) opens wherever it lives.
   // A card takes the request when it mounts, so a deal in a folded group (Refunds, Closed
-  // refunds, Completed, the waiting lane) needs its group unfolded first; its card then mounts
+  // refunds, Completed, a Pipeline section) needs its group unfolded first; its card then mounts
   // and opens. A request for a deal that is not on this screen is dropped, so it can never
   // open something later by surprise.
   useEffect(() => {
@@ -400,8 +393,8 @@ export default function DealFlowView() {
     if (!f) { if (flows.length) openTarget = null; return; }
     if (isFullyRefunded(f)) { setRefundsOpen(true); if (isRefundDone(f.id)) setClosedRefundsOpen(true); }
     else if (f.stage === "complete" || isPartlyRefunded(f)) setDrawerOpen(true);
-    else if (laneIds.has(f.id)) setLaneOpen(true);
-    else if (!active.some((x) => x.id === f.id)) openTarget = null;
+    else if (described.has(f.id)) { const sec = described.get(f.id)!.section; setSectionsOpen((o) => (o[sec] ? o : { ...o, [sec]: true })); }
+    else openTarget = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flows, refundMap, openNonce, loading]);
   const openRefundCount = refundAll.length - doneRefundCount;
@@ -469,6 +462,33 @@ export default function DealFlowView() {
     } catch (e: any) { toast(String(e), "error"); }
   };
 
+  // R-486: one Pipeline section, hidden when it is empty. Ready to complete keeps its success tint, and the two sections
+  // for loads that are late show how many are past their date.
+  const renderSection = ({ key, title }: { key: DealSection; title: string }) => {
+    const list = split[key];
+    if (list.length === 0) return null;
+    const late = key === "onTheWay" || key === "waitingPickup" ? list.filter((f) => described.get(f.id)?.shipping.tone === "danger").length : 0;
+    return (
+      <PipelineSection key={key} title={title} count={list.length} look={SECTION_LOOK[key]} open={sectionsOpen[key]}
+        onToggle={() => setSectionsOpen((o) => ({ ...o, [key]: !o[key] }))}
+        badge={late > 0 ? (
+          <StatusPill tone="danger"><AlertTriangle size={10} className="mr-1" />{late} past {late === 1 ? "its" : "their"} date</StatusPill>
+        ) : null}
+        note={key === "waitingPickup" ? (
+          // This week. Counted as events among active deals: one deal can both pick up and land inside the window,
+          // so these are not deal counts.
+          <div className="px-5 pb-3 -mt-1.5 text-[11.5px] text-muted">
+            Next 7 days: {pickupsSoon} pickup{pickupsSoon === 1 ? "" : "s"}, {deliveriesSoon} {deliveriesSoon === 1 ? "delivery" : "deliveries"}.
+          </div>
+        ) : null}>
+        {list.map((f, i) => (
+          <DealFlowCard key={`${f.id}:${openNonce}`} flow={f} onReload={load} refund={refundMap[f.id]} zebra={i % 2 === 1}
+            reconStatus={recon[f.id]} lines={described.get(f.id)} />
+        ))}
+      </PipelineSection>
+    );
+  };
+
   return (
     <div className="space-y-5">
       <style>{`
@@ -485,8 +505,8 @@ export default function DealFlowView() {
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Deal Flow</h2>
           <p className="text-[12px] text-muted mt-0.5">
             {active.length} active deal{active.length !== 1 ? "s" : ""}
-            {arrived.length > 0 ? `, ${arrived.length} delivered` : ""}
-            {lane.length > 0 ? `, ${lane.length} waiting on pickup or delivery` : ""}
+            {split.ready.length > 0 ? `, ${split.ready.length} ready to complete` : ""}
+            {split.paymentMissing.length > 0 ? `, ${split.paymentMissing.length} delivered with payment missing` : ""}
             {totalCompleted > 0 ? ` · ${totalCompleted} completed` : ""}
           </p>
         </div>
@@ -551,74 +571,12 @@ export default function DealFlowView() {
       )}
       </div>
 
-      {/* ── Delivered — ready to complete (R-318) ───────────────────────── */}
-      {mode === "pipeline" && arrived.length > 0 && (
-        <div className="bg-success-bg border border-success/30 rounded-xl overflow-hidden">
-          <div className="flex items-center gap-2.5 px-5 py-3.5 flex-wrap">
-            <PackageCheck size={15} className="text-success flex-shrink-0" />
-            <span className="text-[13px] font-semibold text-success-ink">
-              {arrived.length === 1 ? "Delivered: ready to complete" : `${arrived.length} delivered: ready to complete`}
-            </span>
-            <span className="text-[11.5px] text-success-ink/75 min-w-0">
-              The freight landed. Open the deal and run Review &amp; complete.
-            </span>
-          </div>
-          <div className="border-t border-success/25 bg-surface p-4 space-y-4">
-            {arrived.map((flow, i) => (
-              <DealFlowCard key={`${flow.id}:${openNonce}`} flow={flow} onReload={load} refund={refundMap[flow.id]} zebra={i % 2 === 1} reconStatus={recon[flow.id]} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Priority1 shipments that arrived by email and are not on a deal yet (R-277) */}
+      {/* Priority1 shipments that arrived by email and are not on a deal yet (R-277). Above the six sections so they run
+          on without a break (R-486). */}
       <UnlinkedShipments onChange={load} />
 
-      {/* ── Waiting on pickup or delivery (R-154) ───────────────────────── */}
-      {mode === "pipeline" && (lane.length > 0 || noAnswer > 0) && (
-        <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <div {...barToggle(() => setLaneOpen(!laneOpen))}
-            className="w-full flex items-center justify-between gap-3 px-5 py-3.5 cursor-pointer hover:bg-surface-2/40 transition-colors">
-            <div className="flex items-center gap-2.5 text-left min-w-0">
-              <Truck size={14} className="text-accent flex-shrink-0" />
-              <span className="text-[13px] font-semibold text-ink">Waiting on pickup or delivery</span>
-              <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{lane.length}</span>
-              {overdueCount > 0 && (
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-danger-ink bg-danger-bg px-2 py-0.5 rounded-full">
-                  <AlertTriangle size={10} /> {overdueCount} past {overdueCount === 1 ? "its" : "their"} date
-                </span>
-              )}
-            </div>
-            <span className="p-1 rounded-lg">
-              <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${laneOpen ? "rotate-180" : ""}`} />
-            </span>
-          </div>
-          {/* This week. Counted as events among active deals — one deal can both
-              pick up and land inside the window, so these are not deal counts. */}
-          <div className="px-5 pb-3 -mt-1.5 text-[11.5px] text-muted">
-            Next 7 days: {pickupsSoon} pickup{pickupsSoon === 1 ? "" : "s"}, {deliveriesSoon} {deliveriesSoon === 1 ? "delivery" : "deliveries"}.
-            {noAnswer > 0 && ` ${noAnswer} active deal${noAnswer === 1 ? " has" : "s have"} no date and no ships-direct answer.`}
-          </div>
-          {laneOpen && (
-            <div className="border-t border-line p-4 space-y-4">
-              {lane.length === 0 ? (
-                <p className="text-[12.5px] text-muted px-1 py-4">
-                  No deal has a pickup or delivery date set yet.
-                </p>
-              ) : (
-                <>
-                  <p className="text-[11.5px] text-muted px-1">
-                    Deals with a date set, or a truck with Logistics, that are not complete. Dated ones come first, soonest first.
-                  </p>
-                  {lane.map((f, i) => (
-                    <DealFlowCard key={`${f.id}:${openNonce}`} flow={f} onReload={load} refund={refundMap[f.id]} zebra={i % 2 === 1} reconStatus={recon[f.id]} />
-                  ))}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      {/* ── The six Pipeline sections (R-486) ───────────────────────────────────────── */}
+      {mode === "pipeline" && DEAL_SECTIONS.map(renderSection)}
 
       {/* ── Active deals ──────────────────────────────────────────────── */}
       {mode === "payments" ? (
@@ -635,27 +593,6 @@ export default function DealFlowView() {
               ? "No active deals match your search"
               : "No active deals. Deals appear automatically when invoices are sent"}
           </div>
-        </div>
-      ) : unscheduled.length > 0 ? (
-        <div className="space-y-4">
-          {/* Only labelled once the lane has taken some cards, so the two lists
-              visibly account for every active deal instead of one silently
-              shrinking. */}
-          {(lane.length > 0 || arrived.length > 0) && (
-            <p className="text-[11.5px] text-muted">
-              {unscheduled.length} other active deal{unscheduled.length === 1 ? "" : "s"}
-            </p>
-          )}
-          {unscheduled.map((flow, i) => (
-            <DealFlowCard
-              key={`${flow.id}:${openNonce}`}
-              flow={flow}
-              onReload={load}
-              refund={refundMap[flow.id]}
-              zebra={i % 2 === 1}
-              reconStatus={recon[flow.id]}
-            />
-          ))}
         </div>
       ) : null}
 
@@ -758,6 +695,69 @@ function Stat({ label, value, clr = "text-ink" }: { label: string; value: string
     <div className="text-right">
       <div className="text-[12px] font-medium text-muted">{label}</div>
       <div className={`text-[13px] font-semibold tabular-nums ${clr}`}>{value}</div>
+    </div>
+  );
+}
+
+// ─── A Pipeline section (R-486) ─────────────────────────────────────────────────────────────
+// The chrome the Waiting lane had (R-154), for all six: a bar that folds the cards under it, an icon, the title with its
+// count, and a quiet note. Ready to complete wears the success tint the delivered box had (R-318).
+const SECTION_LOOK: Record<DealSection, { Icon: LucideIcon; icon: string; success?: boolean }> = {
+  ready:          { Icon: PackageCheck, icon: "text-success", success: true },
+  paymentMissing: { Icon: Wallet,       icon: "text-warning-ink" },
+  onTheWay:       { Icon: Truck,        icon: "text-accent" },
+  waitingPickup:  { Icon: Clock,        icon: "text-accent" },
+  withLogistics:  { Icon: Send,         icon: "text-accent" },
+  notSetUp:       { Icon: CircleHelp,   icon: "text-muted" },
+};
+
+function PipelineSection({ title, count, look, open, onToggle, badge, note, children }: {
+  title: string; count: number; look: { Icon: LucideIcon; icon: string; success?: boolean }; open: boolean; onToggle: () => void;
+  badge: ReactNode; note: ReactNode; children: ReactNode;
+}) {
+  const { Icon, success } = look;
+  return (
+    <div className={`border rounded-xl overflow-hidden ${success ? "bg-success-bg border-success/30" : "bg-surface border-line"}`}>
+      <div {...barToggle(onToggle)}
+        className={`w-full flex items-center justify-between gap-3 px-5 py-3.5 cursor-pointer transition-colors ${success ? "" : "hover:bg-surface-2/40"}`}>
+        <div className="flex items-center gap-2.5 text-left min-w-0 flex-wrap">
+          <Icon size={14} className={`${look.icon} flex-shrink-0`} />
+          <span className={`text-[13px] font-semibold ${success ? "text-success-ink" : "text-ink"}`}>{title}</span>
+          <span className={`text-[13px] font-medium tabular-nums ${success ? "text-success-ink/75" : "text-muted"}`}>({count})</span>
+          {badge}
+        </div>
+        <span className="p-1 rounded-lg">
+          <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+        </span>
+      </div>
+      {note}
+      {open && (
+        <div className={`border-t p-4 space-y-4 ${success ? "border-success/25 bg-surface" : "border-line"}`}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── The two lines under a card's client and invoice (R-486) ────────────────────────────────
+// Where shipping stands, and what the deal still needs. The words come from lib/dealSections.ts; this only paints them.
+// The late part of the shipping line is in the danger tone, and the amounts on the still-needed line are medium weight.
+const LINE_TONE: Record<LineTone, string> = { ink: "text-ink", muted: "text-muted", success: "text-success-ink", danger: "text-danger-ink" };
+const AMOUNT = /(\$[\d,]+(?:\.\d{2})?)/;
+
+function DealLines({ lines }: { lines: DealDescription }) {
+  const { shipping, needed } = lines;
+  return (
+    <div className="mt-1 space-y-0.5">
+      <div className="text-[12.5px] leading-snug">
+        {shipping.parts.map((p, i) => <span key={i} className={LINE_TONE[p.tone]}>{p.text}</span>)}
+      </div>
+      {needed && (
+        <div className={`text-[12.5px] leading-snug ${LINE_TONE[needed.tone]}`}>
+          {needed.text.split(AMOUNT).map((t, i) => (i % 2 === 1 ? <span key={i} className="font-medium">{t}</span> : t))}
+        </div>
+      )}
     </div>
   );
 }
@@ -880,11 +880,12 @@ function PaymentsView({ deals, recon, invoices, searching, canMove, moved, onOpe
 // ─── Deal flow card ───────────────────────────────────────────────────────
 /** R-400: where the deal's trucks are. The least advanced live booking names the stage; once
  *  every truck is at least picked up and one has no amount paid yet, the word is the ask. */
-function ShippingPill({ flow }: { flow: DealFlow }) {
+function ShippingPill({ flow, askOnly }: { flow: DealFlow; askOnly?: boolean }) {
   const stage = flow.logistics_stage || "";
   const ask = (flow.logistics_unpaid ?? 0) > 0 && (stage === "picked_up" || stage === "delivered");
   if (ask) return <AmountNeededPill />;
-  return stage ? <FreightStatusPill status={stage} /> : null;
+  // R-486: on a Pipeline card the shipping line names the stage, so only the carrier ask stays.
+  return stage && !askOnly ? <FreightStatusPill status={stage} /> : null;
 }
 
 function invoiceStatusPill(status: string | undefined): { label: string; cls: string } {
@@ -926,8 +927,8 @@ const sIdx = (k: SectionKey) => SECTIONS.findIndex((s) => s.key === k);
 let openTarget: { invoice: string; section: SectionKey } | null = null;
 
 function DealFlowCard({
-  flow, onReload, zebra, refund, reconStatus,
-}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean } }) {
+  flow, onReload, zebra, refund, reconStatus, lines,
+}: { flow: DealFlow; onReload: () => void; zebra: boolean; lines?: DealDescription; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean } }) {
   // Collapsed by default, unless another screen asked for this deal on a step (R-401).
   const [wanted] = useState<SectionKey | null>(() => {
     if (openTarget && openTarget.invoice === flow.invoice_number) { const s = openTarget.section; openTarget = null; return s; }
@@ -1089,6 +1090,7 @@ function DealFlowCard({
               })()}
             </span>
           </div>
+          {lines && <DealLines lines={lines} />}
           {invItems.length > 0 && (
             <div className="text-[11px] text-muted truncate mt-0.5">
               {invItems.map((it) => it.qty > 1 ? `${it.qty}× ${it.description}` : it.description).join(" · ")}
@@ -1145,8 +1147,9 @@ function DealFlowCard({
             })()}
           </div>
           <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${invPill.cls}`}>{invPill.label}</span>
-          {/* Whether the buyer has paid (R-303, R-401), lit green once the money is in. */}
-          {!isComplete && (
+          {/* Whether the buyer has paid (R-303, R-401), lit green once the money is in. R-486: a Pipeline card's "Still needed"
+              line says it already, so the pill shows only where the card has no lines. */}
+          {!isComplete && !lines && (
             <span title={pay.title}
               className={`inline-flex items-center gap-1 text-[12.5px] font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${
                 pay.hasCost && pay.buyerIn ? "bg-success-bg text-success-ink"
@@ -1156,8 +1159,10 @@ function DealFlowCard({
             </span>
           )}
           {/* R-400: the shipping leg has its own pill, so it never doubles the payment labels */}
-          {(flow.logistics_bookings ?? 0) > 0 && <ShippingPill flow={flow} />}
-          {!isComplete && <ShipChip flow={flow} />}
+          {(flow.logistics_bookings ?? 0) > 0 && <ShippingPill flow={flow} askOnly={!!lines} />}
+          {/* R-486: a Pipeline card's shipping line already says where the freight is and when, so the date chip shows only
+              where the card has no lines. */}
+          {!isComplete && !lines && <ShipChip flow={flow} />}
           <FreightChip dealFlowId={flow.id} />
           {/* Completed deals: date + which payment link (if any) is potentially missing */}
           {isComplete && flow.completed_at && (
