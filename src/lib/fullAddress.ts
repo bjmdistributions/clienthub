@@ -36,9 +36,19 @@ export const addressNote = (addr: string | null | undefined): string | undefined
     ? "Write it as street, city, state ZIP with commas between: 9 Depot Rd, Reno, NV 89501."
     : undefined;
 
-/** The server numbers the extra pickups it was sent ("pickup 2" is the first one it got), but the sheet drops a blank
- *  row before sending and labels its rows by position ("Pickup 2" is the first row). `sent` holds the sheet index of
- *  each extra pickup that was sent, in order; the number in the server's sentence goes back to that row's label. A
+/** What an extra pickup can hold. The server drops a row with none of these filled in (logistics.rs `parse_stops`,
+ *  `STOP_FIELDS`) and numbers the rows it keeps from 2. */
+const STOP_TEXT = ["name", "address", "window", "contact", "phone", "notes", "dock", "pickup_number"] as const;
+
+/** The sheet index of each extra pickup the server keeps, in order, when every row is sent as it stands: a row with
+ *  nothing in it is dropped, so a blank row above an incomplete one moves that one's number up by one. */
+export function keptPickupRows(stops: ReadonlyArray<Partial<Record<(typeof STOP_TEXT)[number], string | null>>>): number[] {
+  return stops.map((_, i) => i).filter((i) => STOP_TEXT.some((k) => (stops[i][k] ?? "").trim() !== ""));
+}
+
+/** The server numbers the extra pickups it was sent ("pickup 2" is the first one it got), but a sheet drops a blank
+ *  row (or the server does) and labels its rows by position ("Pickup 2" is the first row). `sent` holds the sheet index
+ *  of each extra pickup that was kept, in order; the number in the server's sentence goes back to that row's label. A
  *  sentence with no pickup number ("the full pickup address", "the full delivery address") is returned as it is. */
 export function relabelPickupError(msg: string, sent: readonly number[]): string {
   return msg.replace(/\b(pickup) (\d+)\b/i, (whole, word: string, n: string) => {
@@ -46,3 +56,9 @@ export function relabelPickupError(msg: string, sent: readonly number[]): string
     return row === undefined ? whole : `${word} ${row + 2}`;
   });
 }
+
+/** For a form that sends every row as it stands. Only the address sentence counts the rows the server kept; its other
+ *  pickup sentences ("Pickup 3 address is too long") count the rows as sent, which are the sheet's own, so they are
+ *  returned as they are. */
+export const relabelAddressGap = (msg: string, kept: readonly number[]): string =>
+  /full address of pickup \d/i.test(msg) ? relabelPickupError(msg, kept) : msg;

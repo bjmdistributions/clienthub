@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ADDRESS_HINT, addressNote, isFullAddress, relabelPickupError } from "./fullAddress";
+import { ADDRESS_HINT, addressNote, isFullAddress, keptPickupRows, relabelAddressGap, relabelPickupError } from "./fullAddress";
 
 // R-483: invented addresses. The server's full_address is tested against the same cases.
 describe("isFullAddress", () => {
@@ -100,5 +100,33 @@ describe("relabelPickupError", () => {
   it("leaves a number the sheet did not send alone", () => {
     expect(relabelPickupError(sentence(5), [1])).toBe(sentence(5));
     expect(relabelPickupError(sentence(1), [1])).toBe(sentence(1));
+  });
+});
+
+// The booking form (Quote and Book steps) sends every row as it stands and the server drops a row with nothing in it,
+// then numbers the rest from 2. Invented rows.
+describe("keptPickupRows and relabelAddressGap", () => {
+  const blank = { name: "", address: "", window: "", contact: "", phone: "", notes: "", dock: "", pickup_number: "" };
+  const short = { ...blank, name: "Dock B", address: "2 Dock Rd, Reno" };
+  const sentence = (n: number) => `Add the full address of pickup ${n} with its ZIP code. ${NOTE}`;
+  it("a blank row above an incomplete one: the server's pickup 2 is the sheet's Pickup 3", () => {
+    const kept = keptPickupRows([blank, short]);
+    expect(kept).toEqual([1]);
+    expect(relabelAddressGap(sentence(2), kept)).toBe(sentence(3));
+  });
+  it("counts only what the server counts as something in a row", () => {
+    expect(keptPickupRows([{ ...blank, name: "   " }, { ...blank, window: "Before 4 pm" }, { ...blank, pickup_number: "PU-1" }, blank, { ...blank, dock: "4" }])).toEqual([1, 2, 4]);
+    expect(keptPickupRows([{ name: "A" }, {}])).toEqual([0]);
+    expect(keptPickupRows([])).toEqual([]);
+  });
+  it("with no blank row the number is unchanged", () => {
+    const kept = keptPickupRows([{ ...blank, name: "Dock A", address: "1 Dock Rd, Reno, NV 89501" }, short]);
+    expect(relabelAddressGap(sentence(3), kept)).toBe(sentence(3));
+  });
+  it("leaves the server's other pickup sentences alone, since they already count the sheet's rows", () => {
+    for (const m of ["Error: Pickup 3 address is too long. It can hold 500 characters.", "Pickup 3 must be a name, an address and its details.", "A truck can have at most 10 pickups."]) {
+      expect(relabelAddressGap(m, [1])).toBe(m);
+    }
+    expect(relabelAddressGap("Add the full pickup address with its ZIP code.", [1])).toBe("Add the full pickup address with its ZIP code.");
   });
 });

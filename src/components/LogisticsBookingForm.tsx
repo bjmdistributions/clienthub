@@ -23,7 +23,7 @@ import { can } from "../lib/permissions";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
 import { openLogisticsHit, startBolFromLoad } from "../lib/logisticsSearch";
 import { rateConPath } from "../lib/logisticsBols";
-import { ADDRESS_HINT, addressNote } from "../lib/fullAddress";
+import { ADDRESS_HINT, addressNote, keptPickupRows, relabelAddressGap } from "../lib/fullAddress";
 import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
 import { CarrierFactsList, CarrierFillButton, CarrierHost, CarrierPicker, useCarriers } from "./LogisticsCarriers";
@@ -766,13 +766,16 @@ export default function LogisticsBookingForm({
     }
     if (Object.keys(patch).length === 0) return;
     setSaving(true); setError("");
+    // The server drops a pickup row with nothing in it and numbers the rest from 2; someone who cannot see both names
+    // and addresses cannot add or remove rows, so the server keeps every row and the numbers already match.
+    const kept = booking.can_see_names && booking.can_see_addresses ? keptPickupRows(draft.stops) : draft.stops.map((_, i) => i);
     try {
       const saved = await api.logistics.update(booking.id, { ...(patch as FreightBookingPatch), today: localDay() });
       toast(opts?.status === "requested" ? "Sent to logistics" : opts?.withQuote && !full ? "Quote sent to your team" : "Saved");
       handedOver.current = null;
       onSaved(saved);
     } catch (e) {
-      setError(String(e));
+      setError(relabelAddressGap(String(e), kept));
     } finally {
       setSaving(false);
     }
