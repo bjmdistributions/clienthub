@@ -5,11 +5,12 @@ import { localDay } from "../lib/format";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canPayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
-  GROUPS, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, loadHaystack, loadNumber, missingPaperwork,
+  GROUPS, arrivesToday, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, loadHaystack, loadNumber, missingPaperwork,
   pickupNumberUnconfirmed, rowLane, splitNewToday, type GroupKey, type LoadStep,
 } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
+import LogisticsDeliveryChart from "./LogisticsDeliveryChart";
 import { YourPayCard } from "./LogisticsPay";
 import { CarriersView } from "./LogisticsCarriers";
 import { PayCarriersView } from "./LogisticsPayCarriers";
@@ -88,11 +89,23 @@ export function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: Gro
   );
 }
 
-function GroupCard({ title, count, children, hot }: { title: string; count: number; children: ReactNode; hot?: boolean }) {
+// R-487: each group's heading wears its state's colour (the Dashboard cards' and the delivery chart's), so the list
+// reads by colour: Apple system hues, a light wash behind the heading and the title in the matching ink.
+const GROUP_TONE: Partial<Record<GroupKey | "arriving" | "fresh", [string, string]>> = {
+  arriving: ["--c-chart-profit", "--c-chart-profit-ink"], fresh: ["--c-chart-1", "--c-chart-1"],
+  quotes: ["--c-chart-1", "--c-chart-1"], quoted: ["--c-chart-1", "--c-chart-1"], requested: ["--c-chart-1", "--c-chart-1"],
+  booked: ["--c-chart-3", "--c-chart-3"], way: ["--c-chart-2", "--c-chart-2-ink"],
+  paperwork: ["--c-chart-6", "--c-chart-caution-ink"], topay: ["--c-chart-6", "--c-chart-caution-ink"],
+  delivered: ["--c-chart-profit", "--c-chart-profit-ink"],
+};
+
+function GroupCard({ title, count, children, hot, tone }: { title: string; count: number; children: ReactNode; hot?: boolean; tone?: keyof typeof GROUP_TONE }) {
+  const t = !hot && tone ? GROUP_TONE[tone] : undefined;
   return (
     <section className={`bg-surface border rounded-xl overflow-hidden ${hot ? "border-danger-ink/30" : "border-line"}`}>
-      <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${hot ? "border-danger-ink/20 bg-danger-bg" : "border-line"}`}>
-        <h3 className={`text-[13px] font-semibold ${hot ? "text-danger-ink" : "text-ink"}`}>{title}</h3>
+      <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${hot ? "border-danger-ink/20 bg-danger-bg" : "border-line"}`}
+        style={t ? { background: `rgb(var(${t[0]}) / 0.10)` } : undefined}>
+        <h3 className={`text-[13px] font-semibold ${hot ? "text-danger-ink" : t ? "" : "text-ink"}`} style={t ? { color: `rgb(var(${t[1]}))` } : undefined}>{title}</h3>
         <StatusPill tone={hot ? "danger" : "neutral"}>{count}</StatusPill>
       </div>
       <div className="divide-y divide-line">{children}</div>
@@ -177,7 +190,12 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
 
   // R-476: what came in during the last 24 hours, newest first, at the top of the list in the same rows.
   // R-480: a load shows once. New today claims it, and the groups below are made from the rest.
-  const { fresh, rest } = useMemo(() => splitNewToday((rows ?? []).filter(match)),
+  // R-487: Arriving today (delivered today, or due to be delivered today) leads and claims its loads before New today.
+  const { arriving, fresh, rest } = useMemo(() => {
+    const all = (rows ?? []).filter(match);
+    const today = localDay();
+    return { arriving: all.filter((b) => arrivesToday(b, today)).sort(byPickup), ...splitNewToday(all.filter((b) => !arrivesToday(b, today))) };
+  },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, needle]);
 
@@ -200,7 +218,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, doneRows, needle]);
 
-  const shown = fresh.length + GROUPS.reduce((n, g) => n + grouped[g.key].length, 0);
+  const shown = arriving.length + fresh.length + GROUPS.reduce((n, g) => n + grouped[g.key].length, 0);
   const hello = firstName(me?.display_name);
   const row = (b: FreightBooking) => <BookingRow key={b.id} b={b} group={groupOf(b) ?? "delivered"} onOpen={() => { setOpenStep(undefined); setOpen(b); }} />;
 
@@ -259,6 +277,10 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         : view === "carriers" ? <CarriersView openId={carrierId} onHostClose={() => setCarrierId(undefined)} onOpenLoad={(id) => { setView("bookings"); openLoad(id); }} />
         : view === "pay" && canPay ? <PayCarriersView rev={payRev} onOpenLoad={(id, step) => openLoad(id, step)} /> : (<>
 
+      {/* R-487: what arrives today, then when the rest is expected, then the list. */}
+      {arriving.length > 0 && <GroupCard title="Arriving today" count={arriving.length} tone="arriving">{arriving.map(row)}</GroupCard>}
+      {!needle && <LogisticsDeliveryChart rows={rows} today={localDay()} renderRow={row} />}
+
       {/* R-401: his own pay, only when he is the one being paid. Nothing about what a customer was charged. */}
       <YourPayCard />
 
@@ -279,14 +301,14 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         </div>
       )}
 
-      <GroupCard title="New today" count={fresh.length}>
+      <GroupCard title="New today" count={fresh.length} tone="fresh">
         {fresh.length === 0
           ? <div className="px-4 py-3 text-[13.5px] text-ink-2">{needle ? "Nothing new matches that." : "Nothing new in the last 24 hours."}</div>
           : fresh.map(row)}
       </GroupCard>
 
       {GROUPS.map((g) => grouped[g.key].length > 0 && (
-        <GroupCard key={g.key} title={g.title} count={grouped[g.key].length} hot={g.key === "urgent"}>{grouped[g.key].map(row)}</GroupCard>
+        <GroupCard key={g.key} title={g.title} count={grouped[g.key].length} hot={g.key === "urgent"} tone={g.key}>{grouped[g.key].map(row)}</GroupCard>
       ))}
 
       <section className="bg-surface border border-line rounded-xl overflow-hidden">

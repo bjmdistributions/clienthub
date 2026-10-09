@@ -122,6 +122,7 @@
      green/red pair (those mean profit and loss and must keep meaning only that). */
   --c-chart-1: 0 122 255;    /* systemBlue    #007AFF */
   --c-chart-2: 48 176 199;   /* systemTeal    #30B0C7 */
+  --c-chart-2-ink: 0 113 164;   /* accessible teal #0071A4, for words in teal (R-487) */
   --c-chart-3: 88 86 214;    /* systemIndigo  #5856D6 */
   --c-chart-4: 255 45 85;    /* systemPink    #FF2D55 */
   --c-chart-5: 175 82 222;   /* systemPurple  #AF52DE */
@@ -212,6 +213,7 @@ html.dark {
      success/danger/chart-revenue: mono strips the accent, not meaning. */
   --c-chart-1:  10 132 255;  /* systemBlue    #0A84FF */
   --c-chart-2:  64 200 224;  /* systemTeal    #40C8E0 */
+  --c-chart-2-ink: 64 200 224;
   --c-chart-3:  94  92 230;  /* systemIndigo  #5E5CE6 */
   --c-chart-4: 255  55  95;  /* systemPink    #FF375F */
   --c-chart-5: 191  90 242;  /* systemPurple  #BF5AF2 */
@@ -1267,6 +1269,12 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   outline-offset: 1px;
   border-radius: 6px;
 }
+
+/* R-484: the Dashboard's load cards rise in one after another (the delay is set per card). `backwards`, not `both`,
+   so the hover lift is not pinned by the animation's last frame. */
+.dash-load { animation: dashLoadIn 0.26s cubic-bezier(0.16,1,0.3,1) backwards; }
+@keyframes dashLoadIn { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .dash-load { animation: none; } .dash-load:hover { transform: none; } }
 
 /* ── Liquid glass (R-319) ───────────────────────────────────────────────────
    Apple's material language, as ONE recipe: a translucent layer that samples

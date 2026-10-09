@@ -440,11 +440,50 @@ export function groupOf(b: Groupable): GroupKey | null {
 /** R-483: the Dashboard's two groups. Waiting on shipping is a booked or picked-up load; waiting to pay the carrier is a
  *  delivered load whose carrier is not paid (not linked, part linked, or only marked). A figure the server withheld
  *  says nothing either way, so that load stays out. */
-export function dashboardLoads<T extends Groupable & { status: string }>(list: T[]): { shipping: T[]; carrier: T[] } {
-  const shipping = list.filter((b) => b.status === "booked" || b.status === "picked_up");
+export function dashboardLoads<T extends Groupable & { status: string; delivery_date?: string; delivered_at?: string }>(
+  list: T[], today: string = localDay(),
+): { arriving: T[]; shipping: T[]; carrier: T[] } {
+  // R-487: Arriving today comes first and claims its loads, so a load shows once (R-480).
+  const arriving = list.filter((b) => arrivesToday(b, today));
+  const rest = list.filter((b) => !arrivesToday(b, today));
+  const shipping = rest.filter((b) => b.status === "booked" || b.status === "picked_up");
   const owed = (b: T) => { const st = paidStateOf(b); return st === "unpaid" || st === "part" || st === "marked"; };
-  const carrier = list.filter((b) => b.status === "delivered" && !moneyHidden(b) && owed(b));
-  return { shipping, carrier };
+  const carrier = rest.filter((b) => b.status === "delivered" && !moneyHidden(b) && owed(b));
+  return { arriving, shipping, carrier };
+}
+
+/** R-487: delivered today, or booked or on the way with its delivery expected today (the delivery day the load's
+ *  updates keep current). */
+export function arrivesToday(b: { status: string; delivery_date?: string; delivered_at?: string }, today: string): boolean {
+  if (b.status === "delivered") return (b.delivered_at || "").slice(0, 10) === today;
+  return (b.status === "booked" || b.status === "picked_up") && (b.delivery_date || "").slice(0, 10) === today;
+}
+
+/** R-487: the Logistics delivery chart. Each of the next `n` days from today holds the loads expected to deliver that
+ *  day, booked or on the way; today also holds what was delivered today. `late` is a booked or moving load whose
+ *  delivery day has passed; `undated` counts the ones with no delivery day yet. */
+export interface DeliveryDay<T> { day: string; booked: T[]; way: T[]; delivered: T[] }
+export function deliveryDays<T extends { status: string; delivery_date?: string; delivered_at?: string }>(
+  list: T[], today: string, n = 14,
+): { days: DeliveryDay<T>[]; late: T[]; undated: number } {
+  const moving = list.filter((b) => b.status === "booked" || b.status === "picked_up");
+  const dayOf = (b: T) => (b.delivery_date || "").slice(0, 10);
+  const days: DeliveryDay<T>[] = [];
+  const d0 = parseLocalDay(today);
+  for (let i = 0; i < n; i++) {
+    const day = localDay(new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() + i));
+    days.push({
+      day,
+      booked: moving.filter((b) => b.status === "booked" && dayOf(b) === day),
+      way: moving.filter((b) => b.status === "picked_up" && dayOf(b) === day),
+      delivered: i === 0 ? list.filter((b) => b.status === "delivered" && (b.delivered_at || "").slice(0, 10) === today) : [],
+    });
+  }
+  return {
+    days,
+    late: moving.filter((b) => dayOf(b) !== "" && dayOf(b) < today),
+    undated: moving.filter((b) => dayOf(b) === "").length,
+  };
 }
 
 /** Everything a person could type in the list's search box, of what this viewer can see. */
@@ -484,15 +523,43 @@ export function laneLabel(pickupAddress: string, deliveryAddress: string): strin
  *  line; an empty side reads "-"; nothing at all gives no line. Addresses only: a viewer without the address switch
  *  gets no line (names have their own switch, and the route above already shows them). */
 export function rowLane(b: { pickup_address: string; delivery_address: string; can_see_addresses: boolean; extra_pickups?: FreightStop[] }): string {
-  if (!b.can_see_addresses) return "";
+  const { from, to, more } = laneEnds(b);
+  if (!from && !to) return "";
+  return `From ${from || "-"}${more > 0 ? ` + ${more} more` : ""} to ${to || "-"}`;
+}
+
+/** The two ends of rowLane's line, for the Dashboard's cards (R-484): "" for a side the viewer may not see. */
+export function laneEnds(b: { pickup_address: string; delivery_address: string; can_see_addresses: boolean; extra_pickups?: FreightStop[] }): { from: string; to: string; more: number } {
+  if (!b.can_see_addresses) return { from: "", to: "", more: 0 };
   const place = (a: string) => {
     const l = laneOf(a);
     return l ? formatLocation(l.city, l.state) : (a || "").replace(/\s*[\r\n]+\s*/g, ", ").replace(/\s+/g, " ").trim();
   };
-  const from = place(b.pickup_address), to = place(b.delivery_address);
-  if (!from && !to) return "";
-  const more = stopsOf(b).length;
-  return `From ${from || "-"}${more > 0 ? ` + ${more} more` : ""} to ${to || "-"}`;
+  return { from: place(b.pickup_address), to: place(b.delivery_address), more: stopsOf(b).length };
+}
+
+/** R-484 round 2: one Dashboard card. The colour says the state: green arriving today (R-487), indigo booked, blue on
+ *  the way (teal, so it stays apart from indigo in the delivery chart), orange the carrier is owed, red the carrier is due today or overdue. `step` is how far along the three steps the load is. */
+export type CardTone = "green" | "indigo" | "teal" | "orange" | "red";
+export interface LoadCard { tone: CardTone; label: string; sub: string; steps: [string, string, string]; step: 1 | 2 | 3 }
+export function loadCard(b: Groupable & { status: string; pay_due_date?: string | null; delivery_date?: string; delivered_at?: string }, today: string): LoadCard {
+  // R-487: green for a load arriving today, full track once it is delivered.
+  if (arrivesToday(b, today)) {
+    const done = b.status === "delivered";
+    return { tone: "green", label: done ? "Delivered today" : "Arriving today", sub: "", steps: ["Booked", "Picked up", "Delivered"], step: done ? 3 : b.status === "picked_up" ? 2 : 1 };
+  }
+  if (b.status === "booked" || b.status === "picked_up") {
+    const moving = b.status === "picked_up";
+    return { tone: moving ? "teal" : "indigo", label: moving ? "On the way" : "Booked", sub: "", steps: ["Booked", "Picked up", "Delivered"], step: moving ? 2 : 1 };
+  }
+  const steps: [string, string, string] = ["Delivered", "Paperwork", "Paid"];
+  const missing = missingPaperwork(b);
+  if (missing.length > 0) return { tone: "orange", label: "Needs paperwork", sub: `Needs ${missing.join(", ").toLowerCase()}`, steps, step: 1 };
+  const due = b.pay_due_date || "";
+  const late = dueTone(due, today) === "danger";
+  const st = paidStateOf(b);
+  const label = st === "marked" ? "Link the payment" : st === "part" ? "Part paid" : late ? (daysUntil(due, today) === 0 ? "Due today" : "Overdue") : "Ready to pay";
+  return { tone: late ? "red" : "orange", label, sub: dueLabel(due, today), steps, step: 2 };
 }
 
 // ─── quote to invoice to book (contract section 7) ────────────────────────
