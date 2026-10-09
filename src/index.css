@@ -159,6 +159,10 @@
      (white on 0 113 227 is 4.7:1; on 0 122 255 it is 4.0:1). One value for every theme: against the dark surface it
      still reads as a shape. The dot, ring and tint stay on --c-step-now. */
   --c-step-now-fill:   0 113 227;
+  /* R-485: the Logistics map's markers sit on Google's roadmap, which stays light in every theme, so the pickup
+     marker's white fill and ink ring do not follow the theme the way --c-surface and --c-ink do. */
+  --c-map-paper:     255 255 255;
+  --c-map-ink:        21 23 28;
 }
 
 /* ── Dark theme tokens — MATTE BLACK (neutral zinc, no blue tint) ─ */

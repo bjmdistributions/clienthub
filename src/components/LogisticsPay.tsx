@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Check, ChevronRight, HandCoins } from "lucide-react";
 import {
-  api, type LogisticsPayDate, type LogisticsPayMine, type LogisticsPaySettings, type LogisticsPayTracker,
+  api, type LogisticsPayDate, type LogisticsSettings, type LogisticsPayMine, type LogisticsPaySettings, type LogisticsPayTracker,
   type LogisticsPayTrackerLine,
 } from "../lib/api";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
@@ -286,6 +286,78 @@ export function LogisticsRateConSetting() {
         <div>
           <label className="block text-[12.5px] font-medium text-muted mb-1" htmlFor="rc-mc">MC number</label>
           <input id="rc-mc" type="text" inputMode="numeric" className={inp} value={form.mc} maxLength={14} onChange={(e) => set({ mc: e.target.value })} />
+        </div>
+      </div>
+      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      <button type="button" onClick={save} disabled={!changed || busy}
+        className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40">{busy ? "Saving..." : "Save"}</button>
+    </div>
+  );
+}
+
+/** R-485: the two Google keys behind the delivered-freight map. The map key is public by nature (the browser loads
+ *  Google Maps with it) and is shown. The route key is a secret the server keeps and never answers: it shows only whether
+ *  one is saved, and a blank field keeps it. With no route key the server uses the map key for routes too. */
+export function LogisticsGoogleMapsSetting() {
+  const [base, setBase] = useState<{ mapKey: string; routeSet: boolean } | null>(null);
+  const [mapKey, setMapKey] = useState("");
+  const [routeKey, setRouteKey] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      const s = await api.logistics.settings.get();
+      const b = { mapKey: s.google_maps_key ?? "", routeSet: !!s.google_routes_key_set };
+      setBase(b); setMapKey(b.mapKey); setRouteKey(""); setErr("");
+    } catch (e) { setErr(String(e)); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!base) {
+    return err
+      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
+      : <div className="text-[12.5px] text-muted">Loading...</div>;
+  }
+  const changed = mapKey.trim() !== base.mapKey || routeKey.trim() !== "";
+  // Only what changed is sent, so an account that is shown a blank map key can never wipe the stored one by saving the route key.
+  const persist = async (body: Partial<LogisticsSettings>, done: string) => {
+    setBusy(true); setErr("");
+    try {
+      const s = await api.logistics.settings.save(body);
+      const b = {
+        mapKey: s.google_maps_key ?? (body.google_maps_key ?? base.mapKey),
+        routeSet: s.google_routes_key_set ?? (body.google_routes_key !== undefined ? body.google_routes_key !== "" : base.routeSet),
+      };
+      setBase(b); setMapKey(b.mapKey); setRouteKey(""); toast(done);
+    } catch (e) { setErr(String(e)); }
+    setBusy(false);
+  };
+  const save = () => {
+    const body: Partial<LogisticsSettings> = {};
+    if (mapKey.trim() !== base.mapKey) body.google_maps_key = mapKey.trim();
+    if (routeKey.trim()) body.google_routes_key = routeKey.trim();
+    persist(body, "Saved");
+  };
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-[13px] font-medium text-ink">Google Maps</div>
+        <div className="text-[12px] text-muted mt-0.5">Create these in Google Cloud. The map key needs the Maps JavaScript API. The route key needs the Routes API and stays on the server. If the route key is blank, the map key is used for both.</div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-[12.5px] font-medium text-muted mb-1" htmlFor="gm-map">Map key</label>
+          <input id="gm-map" type="text" className={inp} value={mapKey} maxLength={200} spellCheck={false} autoComplete="off" onChange={(e) => { setMapKey(e.target.value); setErr(""); }} />
+        </div>
+        <div>
+          <label className="block text-[12.5px] font-medium text-muted mb-1" htmlFor="gm-route">Route key</label>
+          <div className="flex items-center gap-2">
+            <input id="gm-route" type="password" className={inp} value={routeKey} maxLength={200} spellCheck={false} autoComplete="new-password"
+              placeholder={base.routeSet ? "Saved" : ""} onChange={(e) => { setRouteKey(e.target.value); setErr(""); }} />
+            {base.routeSet && (
+              <button type="button" disabled={busy} onClick={() => persist({ google_routes_key: "" }, "Route key cleared")}
+                className="h-9 px-3 rounded-lg border border-line text-[12px] font-medium text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-40 flex-shrink-0">Clear</button>
+            )}
+          </div>
         </div>
       </div>
       {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}

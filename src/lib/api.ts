@@ -3344,7 +3344,31 @@ export interface LogisticsSettings {
   /** R-475: what a rate confirmation prints: where carriers send freight bills (blank: the company email) and our MC
    *  number (digits, blank when the company has none). Absent on an older server. */
   freight_bills_email?: string; broker_mc?: string;
+  /** R-485: the Google Maps browser key the delivered-freight map loads with. Public by nature. The server answers
+   *  it blank to anyone who may not open the map. Absent on an older server. */
+  google_maps_key?: string;
+  /** R-485: whether a Google Routes server key is stored. The key itself is never answered. Absent on an older server. */
+  google_routes_key_set?: boolean;
+  /** R-485: write only. A value stores the Routes key and "" clears it; leave it out to keep what is stored. */
+  google_routes_key?: string;
 }
+/** R-485: how far back the delivered-freight map looks. */
+export type FreightMapRange = "30d" | "90d" | "year" | "all";
+/** R-485: where a load's road route stands. `ready` has a route, `pending` is still being fetched, `failed` has no road
+ *  route between its addresses, `no_key` means the company has no Google key yet. */
+export type FreightMapRouteState = "ready" | "pending" | "failed" | "no_key";
+/** R-485: one stop of a delivered load, labelled "City, ST". */
+export interface FreightMapStop { kind: "pickup" | "delivery"; label: string }
+/** R-485: a road route. `polyline` is a Google encoded polyline; `points` is one [lat, lng] per stop, in order. */
+export interface FreightMapRoute { polyline: string; miles: number; minutes: number; points: [number, number][] }
+/** R-485: one delivered load on the map. `route` is null unless `route_state` is "ready". */
+export interface FreightMapLoad {
+  id: string; load_number: string; day: string; carrier: string; from: string; to: string; lane: string;
+  stops: FreightMapStop[]; route_state: FreightMapRouteState; route: FreightMapRoute | null;
+}
+/** R-485: what /api/logistics/map answers. `key` is the Maps browser key ("" when none), `key_problem` is a sentence
+ *  when Google refused the key, `pending` counts routes still being fetched (ask again in a few seconds). */
+export interface FreightMapResponse { key: string; key_problem: string; pending: number; loads: FreightMapLoad[] }
 /** R-459: what the invoice-line route answers. */
 export interface FreightInvoiceLine {
   invoice_id: string; invoice_number: string; line: number; subtotal: number; tax: number; total: number;
@@ -3995,6 +4019,10 @@ export const api = {
       /** Only the keys present are written (the server keeps the rest), so a block saves its own keys and never another's. */
       save: (s: Partial<LogisticsSettings>) => logisticsRequest<LogisticsSettings>("PUT", "/api/logistics/settings", s),
     },
+    /** R-485: the delivered loads of a range with their road routes, for the map. `today` is the local day, which the
+     *  server reads for "this year". Needs access to load addresses; the server answers 403 otherwise. */
+    map: (range: FreightMapRange, today: string) =>
+      logisticsRequest<FreightMapResponse>("GET", `/api/logistics/map?range=${range}&today=${today}`),
     /** R-415: every deal with a booking, with what was charged, paid and left over. An admin, or a
      *  deal viewer with the dollar switch. `from` and `to` are days (YYYY-MM-DD), both optional. */
     shipments: (range?: { from?: string; to?: string }) => {

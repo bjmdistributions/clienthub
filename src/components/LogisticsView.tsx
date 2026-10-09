@@ -3,6 +3,7 @@ import { ChevronRight, Paperclip, Search, Truck } from "lucide-react";
 import { api, type FreightBooking, type Me } from "../lib/api";
 import { localDay } from "../lib/format";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
+import { canViewFreightMap } from "../lib/freightMap";
 import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canPayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
   GROUPS, arrivesToday, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, loadHaystack, loadNumber, missingPaperwork,
@@ -11,6 +12,8 @@ import {
 import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
 import LogisticsDeliveryChart from "./LogisticsDeliveryChart";
+import LogisticsMap from "./LogisticsMap";
+import { Seg } from "./bills/ui";
 import { YourPayCard } from "./LogisticsPay";
 import { CarriersView } from "./LogisticsCarriers";
 import { PayCarriersView } from "./LogisticsPayCarriers";
@@ -121,6 +124,9 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   // R-459: Carriers for everyone on this screen, Pay carriers for whoever may pay them.
   const canPay = canPayCarriers(me);
   const [view, setView] = useState<"bookings" | "carriers" | "pay" | "shipments">("bookings");
+  // R-485: Loads (the list below) or Map (the delivered freight on the road), for whoever may see load addresses.
+  const canMap = canViewFreightMap(me);
+  const [mode, setMode] = useState<"loads" | "map">("loads");
   const [carrierId, setCarrierId] = useState<string | undefined>(undefined);
   const [payRev, setPayRev] = useState(0);
   const [rows, setRows] = useState<FreightBooking[] | null>(null);
@@ -252,7 +258,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
           </p>
           </>)}
         </div>
-        {view === "bookings" && <div className="relative w-full max-w-[280px] min-w-[200px]">
+        {view === "bookings" && !(canMap && mode === "map") && <div className="relative w-full max-w-[280px] min-w-[200px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
           <input
             value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search load number, place, carrier, BOL or PRO"
@@ -262,20 +268,28 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         </div>}
       </div>
 
-      {views.length > 1 && (
-        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-surface-2 border border-line max-w-full overflow-x-auto" role="group" aria-label="Logistics view">
-          {views.map(([k, label]) => (
-            <button key={k} type="button" aria-pressed={view === k} onClick={() => { setView(k); if (k !== "carriers") setCarrierId(undefined); }}
-              className={`h-8 px-3.5 rounded-md text-[12.5px] whitespace-nowrap transition-colors ${view === k ? "bg-surface text-ink font-medium shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
-              {label}
-            </button>
-          ))}
+      {(views.length > 1 || (view === "bookings" && canMap)) && (
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          {views.length > 1 && (
+            <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-surface-2 border border-line max-w-full overflow-x-auto" role="group" aria-label="Logistics view">
+              {views.map(([k, label]) => (
+                <button key={k} type="button" aria-pressed={view === k} onClick={() => { setView(k); if (k !== "carriers") setCarrierId(undefined); }}
+                  className={`h-8 px-3.5 rounded-md text-[12.5px] whitespace-nowrap transition-colors ${view === k ? "bg-surface text-ink font-medium shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {view === "bookings" && canMap && (
+            <Seg value={mode} onChange={setMode} options={[{ value: "loads", label: "Loads" }, { value: "map", label: "Map" }]} />
+          )}
         </div>
       )}
 
       {view === "shipments" && canShipments ? <LogisticsShipments />
         : view === "carriers" ? <CarriersView openId={carrierId} onHostClose={() => setCarrierId(undefined)} onOpenLoad={(id) => { setView("bookings"); openLoad(id); }} />
-        : view === "pay" && canPay ? <PayCarriersView rev={payRev} onOpenLoad={(id, step) => openLoad(id, step)} /> : (<>
+        : view === "pay" && canPay ? <PayCarriersView rev={payRev} onOpenLoad={(id, step) => openLoad(id, step)} />
+        : canMap && mode === "map" ? <LogisticsMap me={me} /> : (<>
 
       {/* R-487: what arrives today, then when the rest is expected, then the list. */}
       {arriving.length > 0 && <GroupCard title="Arriving today" count={arriving.length} tone="arriving">{arriving.map(row)}</GroupCard>}
