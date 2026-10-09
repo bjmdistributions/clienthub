@@ -4697,13 +4697,15 @@ pub struct SupplierPaymentInput {
 /// the screen and the figures behind a completion can never be worked out two ways. A live
 /// booking is `archived = 0` and not cancelled and not a quote (R-459: `quote` and `quoted` rows
 /// are a question to logistics, never a truck, so they change no figure here). A deal whose only
-/// bookings are quote-stage reads `quote` or `quoted` in `logistics_stage_rank` (6, 7).
+/// bookings are quote-stage reads `quote` or `quoted` in `logistics_stage_rank` (6, 7). R-481: `logistics_live_quoted`
+/// counts the loads at quoted, requested, booked or picked_up, so a quoted load beside one still asked is seen.
 /// `freight_typed` is not here: it is summed from the parsed cost lines in Rust. The clienthub-api twin (routes/deal_flows.rs DF_JOIN) is kept
 /// identical in meaning.
 macro_rules! ship_facts_cols {
     () => {
         concat!(
             "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted')) AS logistics_bookings, ",
+            "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status IN ('quoted','requested','booked','picked_up')) AS logistics_live_quoted, ",
             "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NULL) AS logistics_unpaid, ",
             "(SELECT COALESCE(SUM(fb.paid_amount),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NOT NULL) AS logistics_paid, ",
             "(SELECT COALESCE(SUM(fb.quoted_cost),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NULL AND fb.quoted_cost IS NOT NULL) AS logistics_quoted, ",
@@ -4760,6 +4762,8 @@ pub struct ShipFacts {
     pub paid: f64,
     pub quoted: f64,
     pub stage_rank: i64,
+    /// R-481: the loads at quoted, requested, booked or picked_up (not archived, not cancelled, not still at quote).
+    pub live_quoted: i64,
     pub linked: f64,
     pub has_link: bool,
     /// R-459: the paid amount of the trucks the shipping links do not cover yet (`freight::shipping_link_rest`);
@@ -4856,6 +4860,7 @@ fn ship_facts_from_row(r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipF
         paid: r2(r.get::<_, f64>("logistics_paid").unwrap_or(0.0)),
         quoted: r2(r.get::<_, f64>("logistics_quoted").unwrap_or(0.0)),
         stage_rank: r.get("logistics_stage_rank").unwrap_or(0),
+        live_quoted: r.get("logistics_live_quoted").unwrap_or(0),
         linked,
         has_link,
         link_rest,
@@ -4969,6 +4974,11 @@ pub struct DealFlow {
     /// has only quote-stage bookings.
     #[serde(default)]
     pub logistics_stage: String,
+    /// R-481: how many of the deal's loads are at quoted, requested, booked or picked_up. The Pipeline's "Waiting on
+    /// pickup or delivery" list reads it, because `logistics_stage` (the least advanced load) hides a quoted load beside
+    /// one still asked. A count, not money.
+    #[serde(default)]
+    pub logistics_live_quoted: i64,
     #[serde(default)]
     pub shipping_linked: f64,
     #[serde(default)]
@@ -5062,6 +5072,7 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         logistics_paid: facts.paid,
         logistics_quoted: facts.quoted,
         logistics_stage: facts.stage().to_string(),
+        logistics_live_quoted: facts.live_quoted,
         shipping_linked: facts.linked,
         freight_typed: facts.freight_typed,
         shipping_mode: facts.mode(),
@@ -18801,6 +18812,10 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         // as the server twin, so both clients group a deal the same way.
         let buyer_left    = if no_buyer    || pr { 0.0 } else { (buyer_target    - buyer_paired).max(0.0) };
         let supplier_left = if no_supplier || sp { 0.0 } else { (supplier_target - supplier_paired).max(0.0) };
+        // R-479: kept lines never count as cost, so a deal whose only supplier lines are kept has a target of 0 even
+        // though its cost was entered and settled ("Didn't pay, kept it"). This tells the Payments view such a deal
+        // from one with no cost at all. The goods test is `is_goods` without the kept clause. Not money, so no redaction.
+        let cost_kept = payments.iter().any(|p| p.kept && p.category.as_deref().unwrap_or("supplier") == "supplier");
         Ok(json!({
             "deal_flow_id": id,
             "payment_received_paired": pr,
@@ -18823,6 +18838,7 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
             "supplier_target": r2(supplier_target),
             "supplier_paired": r2(supplier_paired),
             "supplier_left": r2(supplier_left),
+            "cost_kept": cost_kept,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -27693,6 +27709,44 @@ mod r400_shipping_tests {
         assert_eq!((s["payment_received_paired"].as_bool(), s["supplier_paid_paired"].as_bool(), s["has_financials"].as_bool()), (Some(false), Some(false), Some(true)));
     }
 
+    /// R-479: `cost_kept` tells a deal whose only supplier line is "Didn't pay, kept it" (target 0, but the cost was
+    /// entered and settled) from a deal with no cost at all. Only a kept goods line counts. The server twin asserts the
+    /// same cases.
+    #[tokio::test]
+    async fn cost_kept_is_true_only_when_a_goods_line_is_kept() {
+        let _db = crate::db::init_test_store();
+        let status = |id: &str| -> Value { futures::executor::block_on(reconciliation_status_all()).unwrap().into_iter().find(|v| v["deal_flow_id"] == id).unwrap() };
+        let kept_line = |id: &str, category: &str, amount: f64| -> Value { let mut l = line(id, category, amount, false); l["kept"] = json!(true); l };
+        // write_sp leaves kept lines out of total_supplier_cost, so the stored total is set the same way here.
+        let set_total = |id: &str, total: f64| { pool().get().unwrap().execute("UPDATE deal_flows SET total_supplier_cost=?2 WHERE id=?1", rusqlite::params![id, total]).unwrap(); };
+
+        // The only supplier line is kept: target 0, nothing left, and the cost is marked as kept.
+        let only = deal("k_only", vec![kept_line("a", "supplier", 7000.0)], "payment_received");
+        set_total(&only, 0.0);
+        let s = status(&only);
+        assert_eq!((s["supplier_target"].as_f64(), s["supplier_left"].as_f64(), s["cost_kept"].as_bool()), (Some(0.0), Some(0.0), Some(true)));
+        assert_eq!(s["supplier_paid_paired"], json!(false), "the existing flag is untouched");
+
+        // No cost at all: not kept.
+        let none = deal("k_none", vec![], "payment_received");
+        assert_eq!(status(&none)["cost_kept"], json!(false));
+
+        // A kept line beside a live one: kept is true and the live line still sets the target.
+        let mixed = deal("k_mixed", vec![kept_line("a", "supplier", 1000.0), line("b", "supplier", 6000.0, false)], "payment_received");
+        set_total(&mixed, 6000.0);
+        let m = status(&mixed);
+        assert_eq!((m["cost_kept"].as_bool(), m["supplier_target"].as_f64()), (Some(true), Some(6000.0)));
+
+        // A kept freight line is not goods: it does not mark the cost as kept.
+        let frt = deal("k_frt", vec![kept_line("a", "freight", 500.0)], "payment_received");
+        set_total(&frt, 0.0);
+        assert_eq!(status(&frt)["cost_kept"], json!(false));
+
+        // A live goods line is not kept.
+        let live = deal("k_live", vec![line("a", "supplier", 7000.0, false)], "payment_received");
+        assert_eq!(status(&live)["cost_kept"], json!(false));
+    }
+
     #[tokio::test]
     async fn payables_swap_the_typed_freight_for_the_booking_quote() {
         let _db = crate::db::init_test_store();
@@ -27805,6 +27859,32 @@ mod r400_shipping_tests {
         let arc = deal("q459c", vec![line("a", "supplier", 6000.0, false)], "invoiced");
         booking(&arc, "1", "quote", None, None, 1);
         assert_eq!(read_df(&arc).unwrap().logistics_stage, "");
+    }
+
+    /// R-481: `logistics_live_quoted` counts the loads at quoted, requested, booked or picked_up, so the Pipeline sees a
+    /// quoted load beside one still asked (`logistics_stage` reads "quote" for that deal). A load still at quote, a
+    /// delivered one, a cancelled one and an archived one are not counted. Same cases as the server twin's test.
+    #[tokio::test]
+    async fn r481_logistics_live_quoted_counts_the_loads_priced_or_on_the_road_and_not_one_still_asking() {
+        let _db = crate::db::init_test_store();
+        let live = |id: &str| read_df(id).unwrap().logistics_live_quoted;
+        let none = deal("l481n", vec![line("a", "supplier", 6000.0, false)], "invoiced");
+        assert_eq!(live(&none), 0, "no load");
+        let asked = deal("l481a", vec![line("a", "supplier", 6000.0, false)], "invoiced");
+        booking(&asked, "1", "quote", None, None, 0);
+        assert_eq!(live(&asked), 0, "a load still at quote is not counted");
+        // A quoted load beside an Add another truck copy still asked: the stage reads "quote", the count sees the priced one.
+        booking(&asked, "2", "quoted", None, None, 0);
+        assert_eq!(read_df(&asked).unwrap().logistics_stage, "quote", "the stage hides the quoted load");
+        assert_eq!(live(&asked), 1, "the count does not");
+        let road = deal("l481r", vec![line("a", "supplier", 6000.0, false)], "invoiced");
+        for (n, status) in [("1", "requested"), ("2", "booked"), ("3", "picked_up")] { booking(&road, n, status, None, None, 0); }
+        assert_eq!(live(&road), 3);
+        booking(&road, "4", "delivered", None, None, 0);
+        booking(&road, "5", "cancelled", None, None, 0);
+        booking(&road, "6", "booked", None, None, 1);
+        assert_eq!(live(&road), 3, "delivered, cancelled and archived loads are not counted");
+        assert_eq!(read_df(&road).unwrap().logistics_stage, "requested", "the stage is unchanged");
     }
 
     /// R-460: a deal is found by the number of any truck on it. The Deal Flow read carries the load numbers of the

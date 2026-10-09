@@ -17,6 +17,9 @@ export interface PaymentFigures {
   supplier_paid_paired: boolean;
   buyer_target: number; buyer_paired: number; buyer_left: number;
   supplier_target: number; supplier_paired: number; supplier_left: number;
+  /** A supplier goods line on the deal is marked "Didn't pay, kept it". Kept lines never count as cost, so the
+   *  target is 0 for a deal whose lines are all kept: this says the cost was entered and settled. */
+  cost_kept: boolean;
 }
 
 const KEYS = ["buyer_target", "buyer_paired", "buyer_left", "supplier_target", "supplier_paired", "supplier_left"] as const;
@@ -30,6 +33,7 @@ export function paymentFiguresOf(r: Partial<Record<string, unknown>> | null | un
     no_buyer_link: !!r.no_buyer_link,
     no_supplier_link: !!r.no_supplier_link,
     supplier_paid_paired: !!r.supplier_paid_paired,
+    cost_kept: !!r.cost_kept,
     buyer_target: r.buyer_target as number, buyer_paired: r.buyer_paired as number, buyer_left: r.buyer_left as number,
     supplier_target: r.supplier_target as number, supplier_paired: r.supplier_paired as number, supplier_left: r.supplier_left as number,
   };
@@ -45,10 +49,11 @@ export const PAYMENT_GROUPS: { key: PaymentGroup; title: string }[] = [
   { key: "linked", title: "All linked" },
 ];
 
-/** The supplier cost has not been entered: nothing is expected on that leg, and nothing was linked or marked as
- *  having no bank record. The deal cannot be called settled until the cost is in. */
+/** The supplier cost has not been entered: nothing is expected on that leg, and nothing was linked, kept or marked
+ *  as having no bank record. The deal cannot be called settled until the cost is in. A cost that was entered and then
+ *  kept is in. */
 export const costNotEntered = (r: PaymentFigures): boolean =>
-  !r.no_supplier_link && !r.supplier_paid_paired && r.supplier_target <= LINKED;
+  !r.no_supplier_link && !r.supplier_paid_paired && !r.cost_kept && r.supplier_target <= LINKED;
 
 /** Which group a deal belongs to. First match wins, so a deal is in exactly one:
  *   1. nothing owed on either leg and the cost is in: All linked;
@@ -103,6 +108,8 @@ export function supplierLeg(r: PaymentFigures): PaymentLeg {
     return { text, note: "", tone: "owed" };
   }
   if (r.supplier_paired > LINKED) return { text: `Supplier: ${money(r.supplier_paired)} linked`, note: "", tone: "done" };
+  // Same order as the website: a cost that was all kept reads as kept, ahead of the no-bank-record note.
+  if (r.cost_kept && r.supplier_target <= LINKED) return { text: "Supplier: kept, nothing to pay", note: "", tone: "quiet" };
   if (r.no_supplier_link) return { text: "Supplier: no bank record", note: "", tone: "quiet" };
   return { text: "Supplier: nothing to pay", note: "", tone: "quiet" };
 }

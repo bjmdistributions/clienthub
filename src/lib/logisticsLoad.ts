@@ -372,6 +372,14 @@ export const isNewToday = (b: { created_at: string; status: string }, now: numbe
   return !Number.isNaN(t) && now - t < 86_400_000 && b.status !== "cancelled";
 };
 
+/** R-480: a load shows once. New today claims every load created in the last 24 hours (newest first) and the groups
+ *  below are made from `rest`, which leaves those out. The order of `rest` is the order of `rows`. */
+export function splitNewToday<T extends { created_at: string; status: string }>(rows: readonly T[], now: number = Date.now()): { fresh: T[]; rest: T[] } {
+  const fresh = rows.filter((b) => isNewToday(b, now)).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const claimed = new Set<T>(fresh);
+  return { fresh, rest: rows.filter((b) => !claimed.has(b)) };
+}
+
 /** R-476: the first word of the account's name, for "Hello, Robin". Blank when the account has no name. */
 export const firstName = (name: string | null | undefined): string => (name ?? "").trim().split(/\s+/)[0] ?? "";
 

@@ -23,6 +23,7 @@ import { can } from "../lib/permissions";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
 import { openLogisticsHit, startBolFromLoad } from "../lib/logisticsSearch";
 import { rateConPath } from "../lib/logisticsBols";
+import { ADDRESS_HINT, addressNote } from "../lib/fullAddress";
 import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
 import { CarrierFactsList, CarrierFillButton, CarrierHost, CarrierPicker, useCarriers } from "./LogisticsCarriers";
@@ -867,13 +868,13 @@ export default function LogisticsBookingForm({
     return (
       <div className={g2}>
         {names ? t(`${p}_name`, "Name") : <Field label="Name">{hidden}</Field>}
-        {addrs ? t(`${p}_address`, "Address") : <Field label="Address">{hidden}</Field>}
+        {addrs ? t(`${p}_address`, "Address", { placeholder: ADDRESS_HINT, hint: addressNote(draft[`${p}_address`]) }) : <Field label="Address">{hidden}</Field>}
       </div>
     );
   };
   const stopInput = (i: number, k: keyof FreightStop, label: string, wide?: boolean) => (
-    <Field label={label} wide={wide}>
-      <input className={inp} value={String(draft.stops[i][k] ?? "")} onChange={(e) => setStop(i, k, e.target.value)} />
+    <Field label={label} wide={wide} hint={k === "address" ? addressNote(draft.stops[i].address) : undefined}>
+      <input className={inp} value={String(draft.stops[i][k] ?? "")} placeholder={k === "address" ? ADDRESS_HINT : undefined} onChange={(e) => setStop(i, k, e.target.value)} />
     </Field>
   );
 

@@ -150,6 +150,14 @@
   --c-info:          37 99 235;
   --c-info-bg:      239 246 255;
   --c-info-ink:      29 78 216;
+  /* R-480: the step a deal is on lights up Apple system blue in every theme, mono included, so it never reads like a
+     finished step (those fill with the accent, which is ink in mono). Same blue as the website's .stage-dot.active. */
+  --c-step-now:        0 122 255;
+  --c-on-step-now:   255 255 255;
+  /* The fill behind the white step number in StepBar: a shade deeper than --c-step-now so the 11px digit reaches 4.5:1
+     (white on 0 113 227 is 4.7:1; on 0 122 255 it is 4.0:1). One value for every theme: against the dark surface it
+     still reads as a shape. The dot, ring and tint stay on --c-step-now. */
+  --c-step-now-fill:   0 113 227;
 }
 
 /* ── Dark theme tokens — MATTE BLACK (neutral zinc, no blue tint) ─ */
@@ -229,6 +237,7 @@ html.dark {
   --c-info:          96 165 250;
   --c-info-bg:       23 37 64;
   --c-info-ink:     147 197 253;
+  --c-step-now:       10 132 255;
 }
 
 /* ── Mono (monochrome) theme — orthogonal to light/dark. It strips the accent

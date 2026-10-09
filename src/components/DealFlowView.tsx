@@ -23,6 +23,7 @@ import { openLoadInLogistics } from "./LogisticsPayCarriers";
 import { dealMatchesQuery } from "../lib/logisticsSearch";
 import { canPayCarriers } from "../lib/logisticsCarriers";
 import { loadNumber } from "../lib/logisticsLoad";
+import { pipelineSplit } from "../lib/dealLane";
 import { useSessionMe } from "../lib/useSessionMe";
 import {
   buyerLeg, canMoveDeal, canSeePayments, groupPayments, groupSummary, loadNumbersOf, money, paymentFiguresOf, supplierLeg,
@@ -146,7 +147,7 @@ export default function DealFlowView() {
   const [drawerOpen,   setDrawerOpen]   = useState(false);
   const [syncing,      setSyncing]      = useState(false);
   const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean;
-    buyer_target?: number; buyer_paired?: number; buyer_left?: number; supplier_target?: number; supplier_paired?: number; supplier_left?: number }>>({});
+    buyer_target?: number; buyer_paired?: number; buyer_left?: number; supplier_target?: number; supplier_paired?: number; supplier_left?: number; cost_kept?: boolean }>>({});
   // R-479: Pipeline (the lists below) or Payments (the same active deals, grouped by what payment is still needed).
   const [view, setView] = useState<"pipeline" | "payments">("pipeline");
   // R-479: loads made by "Move to Logistics" in this session, so the row shows its number before sync brings the load in.
@@ -361,22 +362,16 @@ export default function DealFlowView() {
   // expected delivery date and are not complete, soonest first. They are pulled
   // OUT of the ordinary active list rather than shown twice, so the two counts
   // stay mutually exclusive — the same rule the Refunds section follows.
+  // R-481: a deal with a live load at quoted, requested, booked or picked up also waits here with no date,
+  // after the dated ones (src/lib/dealLane.ts, the rule the website shares).
   //
   // ── Delivered — ready to complete (R-318) ───────────────────────────────
   // Above even the waiting lane, because a delivered deal is not waiting for anything:
   // it is waiting for Jack. Pulled out of the other two lists the same way, so the
   // counts stay mutually exclusive, and it leaves the moment the deal is completed.
-  const arrived    = active.filter((f) => deliveredIds.has(f.id));
-  const arrivedIds = new Set(arrived.map((f) => f.id));
-  const lane = active
-    .filter((f) => !arrivedIds.has(f.id))
-    .map((f) => ({ f, s: shipState(f) }))
-    .filter((x): x is { f: DealFlow; s: Extract<ShipState, { date: string }> } =>
-      x.s.kind === "scheduled" || x.s.kind === "overdue")
-    .sort((a, b) => nextDate(a.f).localeCompare(nextDate(b.f)));
-  const laneIds     = new Set(lane.map((x) => x.f.id));
-  const unscheduled = active.filter((f) => !laneIds.has(f.id) && !arrivedIds.has(f.id));
-  const overdueCount = lane.filter((x) => x.s.kind === "overdue").length;
+  const { arrived, lane, unscheduled } = pipelineSplit(active, deliveredIds, nextDate);
+  const laneIds = new Set(lane.map((f) => f.id));
+  const overdueCount = lane.filter((f) => shipState(f).kind === "overdue").length;
 
   // This week — counted as EVENTS, not deals, because one deal can both pick up
   // and land inside the window. Ships-direct deals have no pickup to count.
@@ -491,7 +486,7 @@ export default function DealFlowView() {
           <p className="text-[12px] text-muted mt-0.5">
             {active.length} active deal{active.length !== 1 ? "s" : ""}
             {arrived.length > 0 ? `, ${arrived.length} delivered` : ""}
-            {lane.length > 0 ? `, ${lane.length} waiting on a date` : ""}
+            {lane.length > 0 ? `, ${lane.length} waiting on pickup or delivery` : ""}
             {totalCompleted > 0 ? ` · ${totalCompleted} completed` : ""}
           </p>
         </div>
@@ -613,9 +608,9 @@ export default function DealFlowView() {
               ) : (
                 <>
                   <p className="text-[11.5px] text-muted px-1">
-                    Deals with a date set that are not complete, soonest first.
+                    Deals with a date set, or a truck with Logistics, that are not complete. Dated ones come first, soonest first.
                   </p>
-                  {lane.map(({ f }, i) => (
+                  {lane.map((f, i) => (
                     <DealFlowCard key={`${f.id}:${openNonce}`} flow={f} onReload={load} refund={refundMap[f.id]} zebra={i % 2 === 1} reconStatus={recon[f.id]} />
                   ))}
                 </>
@@ -1055,6 +1050,9 @@ function DealFlowCard({
 
   const invPill = invoiceStatusPill(invStatus);
   const locked  = isComplete && !editMode; // completed deals are read-only until "Edit" is pressed
+  // R-480: the blue dot is the step the deal is on. A collapsed card shows the deal's own step, whichever tab was last
+  // looked at; the open card shows the step being viewed, as its step bar does.
+  const here = isOpen ? section : firstOpen();
 
   return (
     <div ref={rootRef}
@@ -1065,14 +1063,15 @@ function DealFlowCard({
         className="w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-surface-2/40 transition-colors"
         onClick={() => setIsOpen((v) => !v)}
       >
-        {/* Section progress dots */}
+        {/* Section progress dots. R-480: the step the deal is on (`here`) is blue, open or not, so it never reads as a
+            finished step; finished steps keep the accent. */}
         <div className="flex items-center gap-1 flex-shrink-0">
           {SECTIONS.map((s) => (
             <div
               key={s.key}
               className={`rounded-full transition-all ${
-                done[s.key] ? "w-2.5 h-2.5 bg-accent"
-                : s.key === section && isOpen ? "w-2.5 h-2.5 bg-accent ring-2 ring-accent/20 ring-offset-1"
+                s.key === here ? "w-2.5 h-2.5 bg-step-now ring-2 ring-step-now/25"
+                : done[s.key] ? "w-2.5 h-2.5 bg-accent"
                 : "w-2 h-2 bg-surface-3"
               }`}
             />
@@ -1498,7 +1497,7 @@ function SectionNav({ current, done, flash, onGo, refundLabel, refundTone }: {
       <button
         onClick={() => onGo("refund")}
         className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-[12px] font-semibold flex-shrink-0 border transition-all ${
-          current === "refund" ? "border-accent bg-accent/10 text-accent ring-1 ring-accent/25"
+          current === "refund" ? "border-step-now bg-step-now/10 text-ink ring-1 ring-step-now/30"
           : refundTone === "danger" ? "border-danger text-danger-ink hover:bg-danger-bg"
           : refundTone === "warning" ? "border-warning text-warning-ink hover:bg-warning-bg"
           : "border-line text-muted hover:text-ink-2 hover:bg-surface-3"}`}

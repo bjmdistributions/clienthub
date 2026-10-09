@@ -6,7 +6,7 @@ import {
 
 // R-479: invented deals. A 10,000 invoice with 7,000 of supplier cost unless a case says otherwise.
 const fig = (over: Partial<PaymentFigures> = {}): PaymentFigures => ({
-  no_buyer_link: false, no_supplier_link: false, supplier_paid_paired: false,
+  no_buyer_link: false, no_supplier_link: false, supplier_paid_paired: false, cost_kept: false,
   buyer_target: 10000, buyer_paired: 0, buyer_left: 10000,
   supplier_target: 7000, supplier_paired: 0, supplier_left: 7000,
   ...over,
@@ -31,6 +31,10 @@ const GROUP_CASES: [string, PaymentFigures, PaymentGroup][] = [
   ["buyer none, no cost entered", fig({ supplier_target: 0, supplier_left: 0 }), "none"],
   ["no cost entered, supplier acknowledged", fig({ ...buyerDone, supplier_target: 0, supplier_left: 0, no_supplier_link: true }), "linked"],
   ["goods resold away: the supplier leg is settled with nothing linked", fig({ ...buyerDone, supplier_target: 0, supplier_left: 0, supplier_paid_paired: true }), "linked"],
+  ["sole supplier line kept, buyer fully linked: the cost is in and settled as kept", fig({ ...buyerDone, supplier_target: 0, supplier_left: 0, cost_kept: true }), "linked"],
+  ["sole supplier line kept, buyer part paid", fig({ ...buyerPart, supplier_target: 0, supplier_left: 0, cost_kept: true }), "buyer"],
+  ["sole supplier line kept, nothing linked yet", fig({ supplier_target: 0, supplier_left: 0, cost_kept: true }), "none"],
+  ["one line kept and one still owed: the live line decides", fig({ ...buyerDone, supplier_target: 6000, supplier_left: 6000, cost_kept: true }), "supplier"],
   ["overpaid buyer counts as done", fig({ buyer_paired: 10100, buyer_left: 0, ...supplierDone }), "linked"],
   ["half a cent left on the buyer is not owed", fig({ buyer_paired: 9999.995, buyer_left: 0.005, ...supplierDone }), "linked"],
   ["within the route's 50 cent tolerance the buyer's left is already 0", fig({ buyer_paired: 9999.6, buyer_left: 0, ...supplierDone }), "linked"],
@@ -56,6 +60,9 @@ describe("costNotEntered", () => {
     expect(costNotEntered(fig({ supplier_target: 0, supplier_left: 0, no_supplier_link: true }))).toBe(false);
     expect(costNotEntered(fig({ supplier_target: 0, supplier_left: 0, supplier_paid_paired: true }))).toBe(false);
   });
+  it("is false when the only cost was kept: it was entered, then settled as kept", () => {
+    expect(costNotEntered(fig({ supplier_target: 0, supplier_left: 0, cost_kept: true }))).toBe(false);
+  });
 });
 
 describe("the row wording", () => {
@@ -71,6 +78,13 @@ describe("the row wording", () => {
     expect(supplierLeg(fig(supplierDone))).toEqual({ text: "Supplier: $7,000 linked", note: "", tone: "done" });
     expect(supplierLeg(fig({ no_supplier_link: true, supplier_left: 0 }))).toEqual({ text: "Supplier: no bank record", note: "", tone: "quiet" });
     expect(supplierLeg(fig({ supplier_target: 0, supplier_left: 0 }))).toEqual({ text: "Supplier: cost not entered yet", note: "", tone: "owed" });
+  });
+  it("a cost that was all kept reads as kept, nothing to pay, and not as an owed line", () => {
+    expect(supplierLeg(fig({ supplier_target: 0, supplier_left: 0, cost_kept: true }))).toEqual({ text: "Supplier: kept, nothing to pay", note: "", tone: "quiet" });
+    // The website reads a kept cost ahead of the no-bank-record note.
+    expect(supplierLeg(fig({ supplier_target: 0, supplier_left: 0, cost_kept: true, no_supplier_link: true })).text).toBe("Supplier: kept, nothing to pay");
+    // A kept line beside a live one still owed: the live line shows, never "kept".
+    expect(supplierLeg(fig({ cost_kept: true }))).toEqual({ text: "Supplier: nothing linked, $7,000 to pay", note: "", tone: "owed" });
   });
   it("a goods leg resold away reads as nothing to pay", () => {
     expect(supplierLeg(fig({ supplier_target: 0, supplier_left: 0, supplier_paid_paired: true })).text).toBe("Supplier: nothing to pay");
@@ -131,6 +145,12 @@ describe("paymentFiguresOf", () => {
   it("reads a full status row", () => {
     const f = paymentFiguresOf({ buyer_target: 10000, buyer_paired: 0, buyer_left: 10000, supplier_target: 7000, supplier_paired: 0, supplier_left: 7000, no_buyer_link: false });
     expect(f && paymentGroupOf(f)).toBe("none");
+    expect(f?.cost_kept).toBe(false);
+  });
+  it("carries the kept flag, and reads an older answer without it as not kept", () => {
+    const six = { buyer_target: 10000, buyer_paired: 10000, buyer_left: 0, supplier_target: 0, supplier_paired: 0, supplier_left: 0 };
+    expect(paymentGroupOf(paymentFiguresOf({ ...six, cost_kept: true })!)).toBe("linked");
+    expect(paymentGroupOf(paymentFiguresOf(six)!)).toBe("supplier");
   });
   it("is null for a missing row or an older answer without the six keys, so it is never read as nothing owed", () => {
     expect(paymentFiguresOf(undefined)).toBeNull();

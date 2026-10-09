@@ -4,6 +4,7 @@ import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type Fr
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
 import { canChangePaidOn, canPayCarriers, canRecordOn, carrierByName, laneEnds } from "../lib/logisticsCarriers";
 import { CATCH_UP_STEPS, blankCatchUp, catchUpFields, catchUpProblem, dayLabel, type CatchUpForm } from "../lib/catchUpLoad";
+import { ADDRESS_HINT, addressNote, relabelPickupError } from "../lib/fullAddress";
 import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidStateOf, paidView, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
 import { invoiceWasSent, loadProgress, withDealFacts } from "../lib/loadProgress";
 import { useSessionMe } from "../lib/useSessionMe";
@@ -131,6 +132,13 @@ function CatchUpFields({ value, onChange, onOpenCarrier }: {
   );
 }
 
+/** R-483: under an address box that has something in it but not yet a street, city, state and ZIP. The server refuses a
+ *  load without them and says so; this says it before. */
+function AddressNote({ value }: { value: string }) {
+  const note = addressNote(value);
+  return note ? <div className="text-[11px] text-muted">{note}</div> : null;
+}
+
 function SendSheet({ flow, billed, moving, onClose, onSent }: {
   flow: DealFlow; billed: number | null; moving?: boolean; onClose: () => void; onSent: (made?: FreightBooking) => void;
 }) {
@@ -180,6 +188,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
     if (moving) { const problem = catchUpProblem(cu, localDay()); if (problem) { setErr(problem); return; } }
     if (missing) { setErr("Fill in the pallets, pallet dimensions and weight first."); return; }
     setBusy(true); setErr("");
+    // The sheet index of each extra pickup that is sent (a blank row is dropped); the server counts only those.
+    const sent = stops.map((_, i) => i).filter((i) => stops[i].name.trim() || stops[i].address.trim());
     try {
       // R-479: "Already moving" writes the load at its real step; its day and carrier come from the catch-up fields.
       const lead: FreightBookingPatch = moving ? catchUpFields(cu) : { status: "quote" as const, urgent, pickup_date: when.date };
@@ -187,7 +197,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
         ...lead,
         pickup_window: when.window.trim(),
         pickup_name: pickup.name, pickup_address: pickup.address,
-        extra_pickups: stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim(), window: x.window.trim() })).filter((x) => x.name || x.address),
+        extra_pickups: sent.map((i) => ({ ...stops[i], name: stops[i].name.trim(), address: stops[i].address.trim(), window: stops[i].window.trim() })),
         delivery_name: delivery.name, delivery_address: delivery.address,
         pallets: freight.pallets.trim(), pieces: freight.pieces.trim(), weight_lbs: freight.weight_lbs.trim(),
         freight_class: freight.freight_class.trim(), dimensions: freight.dimensions.trim(),
@@ -198,7 +208,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
       if (files.length) await uploadFiles(made.id, files);
       toast(moving ? `${loadNumber(made)} is with Logistics` : urgent ? "Quote asked as urgent" : "Quote asked");
       onSent(made);
-    } catch (e) { setErr(String(e)); }
+    } catch (e) { setErr(relabelPickupError(String(e), sent)); }
     setBusy(false);
   };
 
@@ -278,7 +288,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                   </select>
                 )}
                 <input className={inp} placeholder="Name" value={pickup.name} onChange={(e) => setPickup({ ...pickup, name: e.target.value })} />
-                <input className={inp} placeholder="Address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
+                <input className={inp} placeholder={ADDRESS_HINT} aria-label="Pickup address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
+                <AddressNote value={pickup.address} />
                 <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={when.window} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, window: v })); }} />
               </div>
               {stops.map((x, i) => (
@@ -289,7 +300,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                       className="text-[11.5px] text-muted hover:text-danger-ink px-1.5 h-6 rounded-md hover:bg-danger-bg transition-colors">Remove</button>
                   </div>
                   <input className={inp} placeholder="Name" aria-label={`Pickup ${i + 2} name`} value={x.name} onChange={(e) => setStop(i, { name: e.target.value })} />
-                  <input className={inp} placeholder="Address" aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
+                  <input className={inp} placeholder={ADDRESS_HINT} aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
+                  <AddressNote value={x.address} />
                   <input className={inp} placeholder="Time, like before 4 pm" aria-label={`Pickup ${i + 2} time`} value={x.window} onChange={(e) => setStop(i, { window: e.target.value })} />
                 </div>
               ))}
@@ -302,7 +314,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Delivery</div>
                 <input className={inp} placeholder="Name" value={delivery.name} onChange={(e) => setDelivery({ ...delivery, name: e.target.value })} />
-                <input className={inp} placeholder="Address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
+                <input className={inp} placeholder={ADDRESS_HINT} aria-label="Delivery address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
+                <AddressNote value={delivery.address} />
               </div>
               {lane && <RateCard by={lane} onOpenCarrier={setCarrierId} />}
               <div className="space-y-2">

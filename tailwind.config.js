@@ -38,6 +38,10 @@ export default {
         },
         // Foreground paired with the accent background — guaranteed legible per theme.
         'on-accent': 'rgb(var(--c-on-accent) / <alpha-value>)',
+        // R-480: the step a deal is on (Apple system blue in every theme) and the text on it.
+        'step-now':    'rgb(var(--c-step-now) / <alpha-value>)',
+        'step-now-fill': 'rgb(var(--c-step-now-fill) / <alpha-value>)',
+        'on-step-now': 'rgb(var(--c-on-step-now) / <alpha-value>)',
         success: {
           DEFAULT: 'rgb(var(--c-success) / <alpha-value>)',
           bg:      'rgb(var(--c-success-bg) / <alpha-value>)',
