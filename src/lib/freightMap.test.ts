@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { FreightMapLoad } from "./api";
 import {
-  DEFAULT_MAP_RANGE, canViewFreightMap, dayAtStep, dayLabel, durationText, groupLanes, headline, laneName, laneNote, laneState,
-  laneSummary, laneWeight, lineStyle, loadLine, loadsOnOrBefore, mapMarkers, mapProblem, markerRadius, milesText, parseMapRange,
-  partialPath, pluralLoads, replayDay, replayPlan, replayProgress, roadMiles, sliderDays, sliderReadout, statesOf, stepOfDay,
-  stopPoints, subLine, NOTHING_PICKED, NO_KEY_ADMIN, NO_KEY_OTHER, NO_LOADS, SCRIPT_FAILED,
+  DEFAULT_MAP_RANGE, canViewFreightMap, dayAtStep, dayLabel, decodePolyline, durationText, groupLanes, headline, laneName, laneNote,
+  laneState, laneSummary, laneWeight, lineStyle, loadLine, loadsOnOrBefore, mapMarkers, mapProblem, markerRadius, milesText,
+  parseMapRange, partialPath, pluralLoads, replayDay, replayPlan, replayProgress, roadMiles, sliderDays, sliderReadout, statesOf,
+  stepOfDay, stopPoints, subLine, waitingForRouteKey, KEY_REFUSED_OTHER, NOTHING_PICKED, NO_KEY_ADMIN, NO_KEY_OTHER, NO_LOADS,
+  SCRIPT_FAILED,
 } from "./freightMap";
 
 // Invented loads only: Birchwood and Lantern Bay are not real places, the carriers are made up, the numbers are small.
@@ -77,12 +78,14 @@ describe("lanes", () => {
     expect(laneState([load({ id: "1", route_state: "no_key", route: null })])).toBe("no_key");
   });
 
-  it("puts the not-found and finding notes under a lane with no line, and nothing under one with a line", () => {
+  it("puts the not-found, finding and waiting notes under a lane with no line, and nothing under one with a line", () => {
     const [bad] = groupLanes([failed("1")]);
     const [wait] = groupLanes([pending("1")]);
+    const [nokey] = groupLanes([load({ id: "1", route_state: "no_key", route: null })]);
     const [good] = groupLanes([load({ id: "1" })]);
     expect(laneNote(bad)).toBe("Route not found, check the addresses");
     expect(laneNote(wait)).toBe("Finding the route");
+    expect(laneNote(nokey)).toBe("Waiting for the route key");
     expect(laneNote(good)).toBe("");
   });
 });
@@ -199,31 +202,53 @@ describe("the words", () => {
 });
 
 describe("what stands in for the map", () => {
-  const base = { key: "k", keyProblem: "", loadCount: 3, admin: true, scriptFailed: false, browserKeyRefused: false };
+  const base = { waitingForKey: false, keyProblem: "", loadCount: 3, admin: true, scriptFailed: false };
+  const nokey = (id: string) => load({ id, route_state: "no_key", route: null });
+
   it("is nothing when all is well", () => {
     expect(mapProblem(base)).toBeNull();
   });
-  it("asks an admin for the key in Settings, and everyone else to ask an admin", () => {
-    expect(mapProblem({ ...base, key: "" })).toEqual({ text: NO_KEY_ADMIN, blocks: true });
-    expect(mapProblem({ ...base, key: "", admin: false })).toEqual({ text: NO_KEY_OTHER, blocks: true });
+
+  it("knows the company is waiting for a route key when a load is, and the server did not say the key was refused", () => {
+    expect(waitingForRouteKey([nokey("1"), load({ id: "2" })], "")).toBe(true);
+    expect(waitingForRouteKey([load({ id: "1" }), pending("2"), failed("3")], "")).toBe(false);
+    expect(waitingForRouteKey([nokey("1")], "OpenRouteService refused the route key. Check it in Settings.")).toBe(false);
+    expect(waitingForRouteKey([], "")).toBe(false);
   });
-  it("says so when nothing was delivered in the range, and when the script would not load", () => {
-    expect(mapProblem({ ...base, loadCount: 0 })).toEqual({ text: NO_LOADS, blocks: true });
-    expect(mapProblem({ ...base, scriptFailed: true })).toEqual({ text: SCRIPT_FAILED, blocks: true });
+
+  it("asks an admin for the free key over the map, and everyone else to ask an admin, without hiding the map", () => {
+    expect(mapProblem({ ...base, waitingForKey: true })).toEqual({ text: NO_KEY_ADMIN, blocks: false, onMap: true });
+    expect(mapProblem({ ...base, waitingForKey: true, admin: false })).toEqual({ text: NO_KEY_OTHER, blocks: false, onMap: true });
   });
-  it("shows an admin Google's refusal as given and still draws the map", () => {
-    const said = "Google refused the map key. Check it in Settings, and that the Routes API is turned on.";
-    expect(mapProblem({ ...base, keyProblem: said })).toEqual({ text: said, blocks: false });
-    expect(mapProblem({ ...base, keyProblem: said, admin: false })?.text).toBe("Ask an admin to check the Google Maps key.");
+
+  it("says so when nothing was delivered in the range, and when the map would not load", () => {
+    expect(mapProblem({ ...base, loadCount: 0 })).toEqual({ text: NO_LOADS, blocks: true, onMap: false });
+    expect(mapProblem({ ...base, scriptFailed: true })).toEqual({ text: SCRIPT_FAILED, blocks: true, onMap: false });
+    // Nothing delivered beats a missing key: there are no routes to wait for.
+    expect(mapProblem({ ...base, loadCount: 0, waitingForKey: true })?.text).toBe(NO_LOADS);
+    // And it beats a failed map library: a range with nothing to draw needs no map (the website says the same).
+    expect(mapProblem({ ...base, loadCount: 0, scriptFailed: true })).toEqual({ text: NO_LOADS, blocks: true, onMap: false });
   });
-  it("blocks the map when the browser refused the key", () => {
-    expect(mapProblem({ ...base, browserKeyRefused: true })?.blocks).toBe(true);
+
+  it("shows an admin the server's refusal as given in a banner and still draws the map", () => {
+    const said = "OpenRouteService refused the route key. Check it in Settings.";
+    expect(mapProblem({ ...base, keyProblem: said })).toEqual({ text: said, blocks: false, onMap: false });
+    expect(mapProblem({ ...base, keyProblem: said, admin: false })?.text).toBe(KEY_REFUSED_OTHER);
   });
+
   it("has the copy Jack approved", () => {
     expect(NOTHING_PICKED).toBe("Tap a line or a lane to see its loads.");
+    expect(NO_KEY_ADMIN).toBe("Add your free OpenRouteService key in Settings to draw the road routes.");
+    expect(NO_KEY_OTHER).toBe("Ask an admin to add the route key.");
+    expect(KEY_REFUSED_OTHER).toBe("Ask an admin to check the route key.");
+    expect(NO_LOADS).toBe("No loads delivered in this range.");
+    expect(SCRIPT_FAILED).toBe("The map could not load. Check your connection.");
   });
+
   it("uses no em dash in anything it shows", () => {
-    for (const s of [NOTHING_PICKED, NO_KEY_ADMIN, NO_KEY_OTHER, NO_LOADS, SCRIPT_FAILED]) expect(s).not.toContain("—");
+    for (const s of [NOTHING_PICKED, NO_KEY_ADMIN, NO_KEY_OTHER, KEY_REFUSED_OTHER, NO_LOADS, SCRIPT_FAILED, laneNote({ state: "no_key" })]) {
+      expect(s).not.toContain("\u2014");
+    }
   });
 });
 
@@ -331,6 +356,54 @@ describe("replay", () => {
     expect(replayDay(plan, 3600)).toBe("2026-10-04");
     expect(replayDay(plan, 8000)).toBe("2026-10-08");
     expect(replayDay([], 100)).toBeNull();
+  });
+});
+
+/** The encoder, so a round trip proves the decoder at both precisions. */
+function encodePolyline(points: [number, number][], precision = 5): string {
+  const f = 10 ** precision;
+  let out = "", pLat = 0, pLng = 0;
+  const put = (v: number) => {
+    let n = v < 0 ? ~(v << 1) : v << 1;
+    while (n >= 0x20) { out += String.fromCharCode((0x20 | (n & 0x1f)) + 63); n >>= 5; }
+    out += String.fromCharCode(n + 63);
+  };
+  for (const [la, lg] of points) {
+    const a = Math.round(la * f), b = Math.round(lg * f);
+    put(a - pLat); put(b - pLng); pLat = a; pLng = b;
+  }
+  return out;
+}
+
+describe("decoding a polyline", () => {
+  it("reads the example string Google documents for its encoding", () => {
+    // From Google's polyline algorithm page: three points, the last two with steps larger than one chunk.
+    expect(decodePolyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@")).toEqual([
+      { lat: 38.5, lng: -120.2 }, { lat: 40.7, lng: -120.95 }, { lat: 43.252, lng: -126.453 },
+    ]);
+  });
+
+  it("round-trips road-like points at precision 5 and precision 6", () => {
+    const pts: [number, number][] = [[39.52963, -119.8138], [39.54012, -119.75031], [36.15398, -95.99277], [32.77666, -96.79699], [-33.86882, 151.20929]];
+    expect(decodePolyline(encodePolyline(pts)).map((p) => [p.lat, p.lng])).toEqual(pts);
+    const fine: [number, number][] = [[39.529631, -119.813803], [32.776664, -96.796988]];
+    expect(decodePolyline(encodePolyline(fine, 6), 6).map((p) => [p.lat, p.lng])).toEqual(fine);
+  });
+
+  it("reads a long route in order", () => {
+    const pts: [number, number][] = [];
+    for (let k = 0; k <= 200; k++) pts.push([39.5 - k * 0.03, -119.8 + k * 0.11]);
+    const back = decodePolyline(encodePolyline(pts));
+    expect(back).toHaveLength(201);
+    expect(back[200].lat).toBeCloseTo(33.5, 5);
+    expect(back[200].lng).toBeCloseTo(-97.8, 5);
+  });
+
+  it("gives an empty path for an empty string and stops at the last whole point of a cut one", () => {
+    expect(decodePolyline("")).toEqual([]);
+    const whole = encodePolyline([[39.5, -119.8], [32.8, -96.8]]);
+    expect(decodePolyline(whole.slice(0, -3))).toHaveLength(1);
+    expect(decodePolyline(whole.slice(0, 5))).toEqual([]);
   });
 });
 

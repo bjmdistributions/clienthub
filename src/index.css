@@ -159,8 +159,8 @@
      (white on 0 113 227 is 4.7:1; on 0 122 255 it is 4.0:1). One value for every theme: against the dark surface it
      still reads as a shape. The dot, ring and tint stay on --c-step-now. */
   --c-step-now-fill:   0 113 227;
-  /* R-485: the Logistics map's markers sit on Google's roadmap, which stays light in every theme, so the pickup
-     marker's white fill and ink ring do not follow the theme the way --c-surface and --c-ink do. */
+  /* R-485: the Logistics map's pickup marker is a white dot with an ink ring and its arrows are white inside a blue ring, on
+     the light map and the dark one alike, so these two do not follow the theme the way --c-surface and --c-ink do. */
   --c-map-paper:     255 255 255;
   --c-map-ink:        21 23 28;
 }
@@ -1360,3 +1360,13 @@ html.matte .glass {
    .analytics-stage is affected. */
 .analytics-stage .text-success-ink { color: rgb(var(--c-chart-profit-ink)); }
 .analytics-stage .text-danger-ink  { color: rgb(var(--c-chart-loss-ink)); }
+
+/* R-485: MapLibre ships its controls white. On the Logistics map they take the page's surface, line and ink colours, so the
+   dark map is not framed in white. The attribution stays: the map's licence requires it, so it is only recoloured. */
+.freight-map .maplibregl-ctrl-group { background: rgb(var(--c-surface)); border: 1px solid rgb(var(--c-line-3)); box-shadow: none; }
+.freight-map .maplibregl-ctrl-group button + button { border-top: 1px solid rgb(var(--c-line)); }
+.freight-map .maplibregl-ctrl-attrib,
+.freight-map .maplibregl-ctrl-attrib.maplibregl-compact { background: rgb(var(--c-surface) / 0.88); color: rgb(var(--c-ink-2)); }
+.freight-map .maplibregl-ctrl-attrib a { color: rgb(var(--c-ink-2)); }
+html.dark .freight-map .maplibregl-ctrl-icon,
+html.dark .freight-map .maplibregl-ctrl-attrib-button { filter: invert(1); }

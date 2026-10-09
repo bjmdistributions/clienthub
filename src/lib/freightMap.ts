@@ -62,7 +62,7 @@ export function laneName(l: FreightMapLoad): string {
 }
 
 /** What a lane says about its routes: `ready` if any is drawn, else `pending` if any is still being found, else
- *  `failed` if any has no road route, else `no_key`. */
+ *  `failed` if any has no road route, else `no_key` (the company has no route key yet, or the key was refused). */
 export function laneState(loads: { route_state: FreightMapRouteState }[]): FreightMapRouteState {
   for (const s of ["ready", "pending", "failed"] as const) if (loads.some((l) => l.route_state === s)) return s;
   return "no_key";
@@ -102,6 +102,7 @@ export function groupLanes(loads: FreightMapLoad[]): MapLane[] {
 export function laneNote(lane: Pick<MapLane, "state">): string {
   if (lane.state === "failed") return "Route not found, check the addresses";
   if (lane.state === "pending") return "Finding the route";
+  if (lane.state === "no_key") return "Waiting for the route key";
   return "";
 }
 
@@ -224,21 +225,33 @@ export function loadLine(l: FreightMapLoad, today?: string): string {
 }
 
 export const NOTHING_PICKED = "Tap a line or a lane to see its loads.";
-export const NO_KEY_ADMIN = "Add your Google Maps key in Settings to see road routes.";
-export const NO_KEY_OTHER = "Ask an admin to add the Google Maps key.";
-export const KEY_REFUSED_OTHER = "Ask an admin to check the Google Maps key.";
-export const KEY_REFUSED_BROWSER = "Google refused the map key. Check it in Settings, and that the Maps JavaScript API is turned on.";
+export const NO_KEY_ADMIN = "Add your free OpenRouteService key in Settings to draw the road routes.";
+export const NO_KEY_OTHER = "Ask an admin to add the route key.";
+export const KEY_REFUSED_OTHER = "Ask an admin to check the route key.";
 export const NO_LOADS = "No loads delivered in this range.";
 export const SCRIPT_FAILED = "The map could not load. Check your connection.";
 
-/** The plain sentence that stands in for the map or sits above it. `blocks` means there is no map to show. */
-export function mapProblem(o: { key: string; keyProblem: string; loadCount: number; admin: boolean; scriptFailed: boolean; browserKeyRefused: boolean }):
-  { text: string; blocks: boolean } | null {
-  if (!o.key) return { text: o.admin ? NO_KEY_ADMIN : NO_KEY_OTHER, blocks: true };
-  if (o.browserKeyRefused) return { text: o.admin ? KEY_REFUSED_BROWSER : KEY_REFUSED_OTHER, blocks: true };
-  if (o.scriptFailed) return { text: SCRIPT_FAILED, blocks: true };
-  if (o.loadCount === 0) return { text: NO_LOADS, blocks: true };
-  if (o.keyProblem) return { text: o.admin ? o.keyProblem : KEY_REFUSED_OTHER, blocks: false };
+/** Whether the company still has no working route key: some load is waiting on one and the server did not say the key was
+ *  refused (a refusal has its own sentence, `key_problem`). The map itself needs no key, so this never hides it. */
+export function waitingForRouteKey(loads: { route_state: FreightMapRouteState }[], keyProblem: string): boolean {
+  return !keyProblem && loads.some((l) => l.route_state === "no_key");
+}
+
+export interface MapProblem {
+  text: string;
+  /** There is no map to show: this sentence stands in its place. */
+  blocks: boolean;
+  /** The map still draws and the sentence sits over it (with an Open settings button for an admin). Otherwise a banner above it. */
+  onMap: boolean;
+}
+
+/** The plain sentence that stands in for the map, sits over it or above it. `waitingForKey` is `waitingForRouteKey(...)`. */
+export function mapProblem(o: { waitingForKey: boolean; keyProblem: string; loadCount: number; admin: boolean; scriptFailed: boolean }): MapProblem | null {
+  // Nothing delivered needs no map, so a failed map library does not matter then. Same order as the website's FM.mapProblem.
+  if (o.loadCount === 0) return { text: NO_LOADS, blocks: true, onMap: false };
+  if (o.scriptFailed) return { text: SCRIPT_FAILED, blocks: true, onMap: false };
+  if (o.keyProblem) return { text: o.admin ? o.keyProblem : KEY_REFUSED_OTHER, blocks: false, onMap: false };
+  if (o.waitingForKey) return { text: o.admin ? NO_KEY_ADMIN : NO_KEY_OTHER, blocks: false, onMap: true };
   return null;
 }
 
@@ -253,7 +266,7 @@ export interface MapMarker {
 }
 
 /** Where each stop of a ready load sits: `points` holds one [lat, lng] per stop, in order, and the last stop is the
- *  delivery. A load with more stops than points (extra pickups past Google's limit) keeps the stops it has a point for. */
+ *  delivery. A load with more stops than points (extra pickups past the route's 50-stop limit) keeps the stops it has a point for. */
 export function stopPoints(l: FreightMapLoad): { kind: "pickup" | "delivery"; label: string; lat: number; lng: number }[] {
   const pts = l.route?.points ?? [];
   if (l.route_state !== "ready" || pts.length < 2 || l.stops.length < 2) return [];
@@ -324,6 +337,34 @@ export function replayDay(plan: ReplayStep[], t: number): string | null {
 // ── A path, partly drawn ─────────────────────────────────────────────────
 
 export interface LatLng { lat: number; lng: number }
+
+/** An encoded polyline as points. It is the encoding Google published and OpenRouteService answers with; `precision` is the
+ *  decimal places the coordinates were rounded to (5 for the routes the server stores). A string cut short ends the path
+ *  at the last whole point, and an empty or garbled one gives an empty path. */
+export function decodePolyline(encoded: string, precision = 5): LatLng[] {
+  const factor = 10 ** precision;
+  const out: LatLng[] = [];
+  let i = 0, lat = 0, lng = 0;
+  const next = (): number | null => {
+    let result = 0, shift = 0, b: number;
+    do {
+      if (i >= encoded.length || shift > 30) return null;
+      b = encoded.charCodeAt(i++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    return result & 1 ? ~(result >> 1) : result >> 1;
+  };
+  while (i < encoded.length) {
+    const dLat = next();
+    const dLng = next();
+    if (dLat === null || dLng === null) break;
+    lat += dLat;
+    lng += dLng;
+    out.push({ lat: lat / factor, lng: lng / factor });
+  }
+  return out;
+}
 
 const rad = (d: number) => (d * Math.PI) / 180;
 function metres(a: LatLng, b: LatLng): number {

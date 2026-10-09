@@ -3356,30 +3356,34 @@ export interface LogisticsSettings {
   /** R-475: what a rate confirmation prints: where carriers send freight bills (blank: the company email) and our MC
    *  number (digits, blank when the company has none). Absent on an older server. */
   freight_bills_email?: string; broker_mc?: string;
-  /** R-485: the Google Maps browser key the delivered-freight map loads with. Public by nature. The server answers
-   *  it blank to anyone who may not open the map. Absent on an older server. */
+  /** R-485: whether an OpenRouteService route key is stored. The key itself is never answered. Absent on an older server. */
+  routes_key_set?: boolean;
+  /** R-485: write only. A value stores the route key (trimmed) and "" clears it; leave it out to keep what is stored. */
+  routes_key?: string;
+  /** R-485, v0.16.153 only: the Google Maps browser key. A server on the free map answers it blank and ignores a write. */
   google_maps_key?: string;
-  /** R-485: whether a Google Routes server key is stored. The key itself is never answered. Absent on an older server. */
+  /** R-485, v0.16.153 only: a server on the free map answers false. */
   google_routes_key_set?: boolean;
-  /** R-485: write only. A value stores the Routes key and "" clears it; leave it out to keep what is stored. */
+  /** R-485, v0.16.153 only: a server on the free map ignores a write. */
   google_routes_key?: string;
 }
 /** R-485: how far back the delivered-freight map looks. */
 export type FreightMapRange = "30d" | "90d" | "year" | "all";
 /** R-485: where a load's road route stands. `ready` has a route, `pending` is still being fetched, `failed` has no road
- *  route between its addresses, `no_key` means the company has no Google key yet. */
+ *  route between its addresses, `no_key` means the company has no route key yet (or the server said the key was refused). */
 export type FreightMapRouteState = "ready" | "pending" | "failed" | "no_key";
 /** R-485: one stop of a delivered load, labelled "City, ST". */
 export interface FreightMapStop { kind: "pickup" | "delivery"; label: string }
-/** R-485: a road route. `polyline` is a Google encoded polyline; `points` is one [lat, lng] per stop, in order. */
+/** R-485: a road route. `polyline` is an encoded polyline at precision 5; `points` is one [lat, lng] per stop, in order. */
 export interface FreightMapRoute { polyline: string; miles: number; minutes: number; points: [number, number][] }
 /** R-485: one delivered load on the map. `route` is null unless `route_state` is "ready". */
 export interface FreightMapLoad {
   id: string; load_number: string; day: string; carrier: string; from: string; to: string; lane: string;
   stops: FreightMapStop[]; route_state: FreightMapRouteState; route: FreightMapRoute | null;
 }
-/** R-485: what /api/logistics/map answers. `key` is the Maps browser key ("" when none), `key_problem` is a sentence
- *  when Google refused the key, `pending` counts routes still being fetched (ask again in a few seconds). */
+/** R-485: what /api/logistics/map answers. `key` is always "" now (the free map needs no browser key; the field stays for
+ *  v0.16.153), `key_problem` is a sentence when the route service refused the route key, `pending` counts routes still
+ *  being fetched (ask again in a few seconds). */
 export interface FreightMapResponse { key: string; key_problem: string; pending: number; loads: FreightMapLoad[] }
 /** R-459: what the invoice-line route answers. */
 export interface FreightInvoiceLine {
