@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { FreightBooking } from "./api";
 import {
-  EQUIPMENT, GROUPS, LOAD_STEPS, dashboardLoads, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday,
+  EQUIPMENT, GROUPS, LOAD_STEPS, arrivesToday, dashboardLoads, deliveryDays, loadCard, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, rowLane, statusAfterActual, statusWord, stepDone, timeWord,
@@ -552,8 +552,77 @@ describe("the Dashboard's two groups (R-483)", () => {
       mk({ id: "hidden", status: "delivered", paid_amount: null, can_see_money: false }),
       mk({ id: "x", status: "cancelled" }),
     ];
-    const { shipping, carrier } = dashboardLoads(list);
+    const { shipping, carrier } = dashboardLoads(list, "2026-10-09");
     expect(shipping.map((b) => b.id)).toEqual(["bk", "pu"]);
     expect(carrier.map((b) => b.id)).toEqual(["unpaid", "part", "marked"]);
+  });
+});
+
+describe("the Dashboard's cards (R-484 round 2)", () => {
+  const T = "2026-10-09";
+  const paper = { bol: true, pod: true, carrier_invoice: true };
+  it("colours a load by where it is", () => {
+    expect(loadCard(mk({ status: "booked" }), T)).toMatchObject({ tone: "indigo", label: "Booked", step: 1 });
+    expect(loadCard(mk({ status: "picked_up" }), T)).toMatchObject({ tone: "teal", label: "On the way", step: 2 });
+  });
+  it("says what a delivered load still needs before the carrier is paid", () => {
+    expect(loadCard(mk({ status: "delivered" }), T)).toMatchObject({ tone: "orange", label: "Needs paperwork", step: 1 });
+    const ready = mk({ status: "delivered", paperwork: paper, quoted_cost: 1800, pay_due_date: "2026-10-20" });
+    expect(loadCard(ready, T)).toMatchObject({ tone: "orange", label: "Ready to pay", step: 2 });
+    expect(loadCard({ ...ready, pay_due_date: "2026-10-09" }, T)).toMatchObject({ tone: "red", label: "Due today" });
+    expect(loadCard({ ...ready, pay_due_date: "2026-10-02" }, T)).toMatchObject({ tone: "red", label: "Overdue" });
+    expect(loadCard({ ...ready, paid_amount: 500, paid_state: "marked" }, T)).toMatchObject({ label: "Link the payment" });
+    expect(loadCard({ ...ready, paid_amount: 500, paid_state: "part" }, T)).toMatchObject({ label: "Part paid" });
+  });
+});
+
+describe("arriving today (R-487)", () => {
+  const T = "2026-10-09";
+  it("is a load delivered today, or booked or on the way with its delivery due today", () => {
+    expect(arrivesToday(mk({ status: "picked_up", delivery_date: T }), T)).toBe(true);
+    expect(arrivesToday(mk({ status: "booked", delivery_date: T }), T)).toBe(true);
+    expect(arrivesToday(mk({ status: "delivered", delivered_at: T }), T)).toBe(true);
+    expect(arrivesToday(mk({ status: "delivered", delivered_at: "2026-10-08", delivery_date: T }), T)).toBe(false);
+    expect(arrivesToday(mk({ status: "picked_up", delivery_date: "2026-10-10" }), T)).toBe(false);
+    expect(arrivesToday(mk({ status: "quote", delivery_date: T }), T)).toBe(false);
+  });
+  it("leads the Dashboard and takes its loads out of the other groups", () => {
+    const list = [
+      mk({ id: "a", status: "picked_up", delivery_date: T }),
+      mk({ id: "b", status: "picked_up", delivery_date: "2026-10-11" }),
+      mk({ id: "c", status: "delivered", delivered_at: T, paid_state: "unpaid" }),
+      mk({ id: "d", status: "delivered", delivered_at: "2026-10-01", paid_state: "unpaid" }),
+    ];
+    const g = dashboardLoads(list, T);
+    expect(g.arriving.map((b) => b.id)).toEqual(["a", "c"]);
+    expect(g.shipping.map((b) => b.id)).toEqual(["b"]);
+    expect(g.carrier.map((b) => b.id)).toEqual(["d"]);
+    expect(loadCard(list[0], T)).toMatchObject({ tone: "green", label: "Arriving today", step: 2 });
+    expect(loadCard(list[2], T)).toMatchObject({ tone: "green", label: "Delivered today", step: 3 });
+  });
+});
+
+describe("the delivery chart (R-487)", () => {
+  const T = "2026-10-30";
+  it("puts each booked or moving load on its delivery day, across a month end, and keeps the late and undated apart", () => {
+    const list = [
+      mk({ id: "a", status: "picked_up", delivery_date: T }),
+      mk({ id: "b", status: "booked", delivery_date: "2026-11-02" }),
+      mk({ id: "c", status: "delivered", delivered_at: T }),
+      mk({ id: "d", status: "picked_up", delivery_date: "2026-10-28" }),
+      mk({ id: "e", status: "booked", delivery_date: "" }),
+      mk({ id: "f", status: "quote", delivery_date: T }),
+      mk({ id: "g", status: "booked", delivery_date: "2026-11-20" }),
+    ];
+    const r = deliveryDays(list, T, 14);
+    expect(r.days.length).toBe(14);
+    expect(r.days[0]).toMatchObject({ day: T });
+    expect(r.days[0].way.map((b) => b.id)).toEqual(["a"]);
+    expect(r.days[0].delivered.map((b) => b.id)).toEqual(["c"]);
+    expect(r.days[3].day).toBe("2026-11-02");
+    expect(r.days[3].booked.map((b) => b.id)).toEqual(["b"]);
+    expect(r.days[13].day).toBe("2026-11-12");
+    expect(r.late.map((b) => b.id)).toEqual(["d"]);
+    expect(r.undated).toBe(1);
   });
 });
