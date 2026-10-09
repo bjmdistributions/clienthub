@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import { Check } from "lucide-react";
 
 // The numbered step bar Deal Flow and the load page share: a dot per step, filled with a tick once
-// the step is done, the open one lit, every step one click away. It owns only the strip itself. What
+// the step is done, the open one lit blue (R-480: not the accent, which is ink in mono and read like a
+// finished step), every step one click away. It owns only the strip itself. What
 // a screen puts after the last step (Deal Flow's Refund button) goes in as children.
 
 export interface StepBarProps<K extends string> {
@@ -34,11 +35,11 @@ export default function StepBar<K extends string>({ steps, current, done, flash,
               title={s.label}
               aria-label={s.label}
               className={`flex items-center h-9 rounded-lg text-[12px] font-semibold transition-all ${compact ? "gap-1.5 px-2" : "gap-2 px-3"} ${
-                isCur ? "bg-accent/10 text-accent ring-1 ring-accent/25" : isDone ? "text-ink-2 hover:bg-surface-3" : "text-muted hover:bg-surface-3"
+                isCur ? "bg-step-now/10 text-ink ring-1 ring-step-now/30" : isDone ? "text-ink-2 hover:bg-surface-3" : "text-muted hover:bg-surface-3"
               }`}
             >
               <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold ${flash === s.key ? "df-pop " : ""}${
-                isDone ? "bg-accent text-on-accent" : isCur ? "bg-accent/15 text-accent ring-1 ring-accent/40" : "bg-surface-3 text-faint"
+                isCur ? "bg-step-now-fill text-on-step-now" : isDone ? "bg-accent text-on-accent" : "bg-surface-3 text-faint"
               }`}>
                 {isDone ? <Check size={13} strokeWidth={2.6} /> : i + 1}
               </span>

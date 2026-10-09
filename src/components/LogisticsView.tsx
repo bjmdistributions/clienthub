@@ -5,8 +5,8 @@ import { localDay } from "../lib/format";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canPayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
-  GROUPS, arrivesToday, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, isNewToday, loadHaystack, loadNumber, missingPaperwork,
-  pickupNumberUnconfirmed, rowLane, type GroupKey, type LoadStep,
+  GROUPS, arrivesToday, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, loadHaystack, loadNumber, missingPaperwork,
+  pickupNumberUnconfirmed, rowLane, splitNewToday, type GroupKey, type LoadStep,
 } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
@@ -188,18 +188,27 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   const needle = q.trim().toLowerCase();
   const match = (b: FreightBooking) => !needle || loadHaystack(b).includes(needle);
 
+  // R-476: what came in during the last 24 hours, newest first, at the top of the list in the same rows.
+  // R-480: a load shows once. New today claims it, and the groups below are made from the rest.
+  // R-487: Arriving today (delivered today, or due to be delivered today) leads and claims its loads before New today.
+  const { arriving, fresh, rest } = useMemo(() => {
+    const all = (rows ?? []).filter(match);
+    const today = localDay();
+    return { arriving: all.filter((b) => arrivesToday(b, today)).sort(byPickup), ...splitNewToday(all.filter((b) => !arrivesToday(b, today))) };
+  },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, needle]);
+
   const grouped = useMemo(() => {
     const g: Record<GroupKey, FreightBooking[]> = { urgent: [], quotes: [], quoted: [], requested: [], booked: [], way: [], paperwork: [], topay: [], delivered: [] };
-    for (const b of (rows ?? []).filter(match)) {
-      if (arrivesToday(b, localDay())) continue;   // R-487: Arriving today claims it, so it shows once
+    for (const b of rest) {
       const k = groupOf(b);
       if (k) g[k].push(b);
     }
     for (const k of ["urgent", "booked", "way"] as GroupKey[]) g[k].sort(byPickup);
     g.topay.sort(byDue);
     return g;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, needle]);
+  }, [rest]);
 
   // Whatever the include_done list has that the main one does not: cancelled bookings and
   // delivered-and-paid ones that have aged out.
@@ -209,15 +218,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, doneRows, needle]);
 
-  const shown = GROUPS.reduce((n, g) => n + grouped[g.key].length, 0);
-  // R-476: what came in during the last 24 hours, newest first, at the top of the list in the same rows.
-  const fresh = useMemo(() => (rows ?? []).filter(match).filter((b) => isNewToday(b) && !arrivesToday(b, localDay())).sort((a, b) => b.created_at.localeCompare(a.created_at)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, needle]);
-  // R-487: delivered today, or due to be delivered today, first thing on the page.
-  const arriving = useMemo(() => (rows ?? []).filter(match).filter((b) => arrivesToday(b, localDay())).sort(byPickup),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, needle]);
+  const shown = arriving.length + fresh.length + GROUPS.reduce((n, g) => n + grouped[g.key].length, 0);
   const hello = firstName(me?.display_name);
   const row = (b: FreightBooking) => <BookingRow key={b.id} b={b} group={groupOf(b) ?? "delivered"} onOpen={() => { setOpenStep(undefined); setOpen(b); }} />;
 

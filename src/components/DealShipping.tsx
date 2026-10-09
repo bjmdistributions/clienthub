@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, FileText, Paperclip, Plus, Truck, X } from "lucide-react";
-import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
+import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightBookingPatch, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
-import { canChangePaidOn, canPayCarriers, canRecordOn, laneEnds } from "../lib/logisticsCarriers";
+import { canChangePaidOn, canPayCarriers, canRecordOn, carrierByName, laneEnds } from "../lib/logisticsCarriers";
+import { CATCH_UP_STEPS, blankCatchUp, catchUpFields, catchUpProblem, dayLabel, type CatchUpForm } from "../lib/catchUpLoad";
+import { ADDRESS_HINT, addressNote, relabelPickupError } from "../lib/fullAddress";
 import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidStateOf, paidView, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
 import { invoiceWasSent, loadProgress, withDealFacts } from "../lib/loadProgress";
 import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
-import { CarrierHost } from "./LogisticsCarriers";
+import { CarrierHost, CarrierPicker, useCarriers } from "./LogisticsCarriers";
 import { PaidButtons, PaidSummary, usePaidControls } from "./LogisticsPayCarriers";
 import { LoadTrackerCompact } from "./LoadTracker";
 import { RateCard } from "./LogisticsRates";
@@ -48,9 +50,103 @@ function Row({ label, value, sub }: { label: string; value: ReactNode; sub?: str
 // R-459: the first send is a request for a quote ("Ask for a quote"): logistics answers with a price, the
 // team puts it on the invoice, and the load is sent to book from the load's page. R-464: every load starts
 // as a quote, so this sheet has the one button, and the load page holds the gate to booking.
-function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: number | null; onClose: () => void; onSent: () => void }) {
+// R-479: the same sheet in an "Already moving" mode (`moving`), for a load that was never sent and is already booked, picked
+// up or delivered. The team picks the step, the carrier and the carrier cost; the server writes the load at that step
+// (`catch_up`) and stamps it as a catch-up. The paperwork is left for the person doing logistics to fill in.
+
+/** The extra fields of "Already moving": the step, the carrier from the directory, what it costs and the markup, who pays
+ *  for the shipping, and the day for the step. The state lives in the sheet; this only draws it. */
+function CatchUpFields({ value, onChange, onOpenCarrier }: {
+  value: CatchUpForm; onChange: (patch: Partial<CatchUpForm>) => void; onOpenCarrier: (id: string) => void;
+}) {
+  const dir = useCarriers();
+  const today = localDay();
+  const setCarrier = (name: string) => {
+    const hit = dir.list && !dir.error ? carrierByName(name, dir.list) : null;
+    onChange({ carrier: name, carrierId: hit ? hit.id : "" });
+  };
+  const chips: [string, number][] = value.step === "booked" ? [["Today", 0], ["Tomorrow", 1]] : [["Today", 0], ["Yesterday", -1]];
+  const dayAt = (add: number) => { const d = new Date(); d.setDate(d.getDate() + add); return localDay(d); };
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <div className="text-[12px] font-medium text-ink-2">Where the load is</div>
+        <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="Step">
+          {CATCH_UP_STEPS.map((s) => {
+            const on = value.step === s.value;
+            return (
+              <button key={s.value} type="button" aria-pressed={on} onClick={() => onChange({ step: s.value, day: "" })}
+                className={`h-8 px-3 rounded-lg border text-[12px] transition-colors ${on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+                {s.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {value.step && (
+        <div className="space-y-2">
+          <div className="text-[12px] font-medium text-ink-2">{dayLabel(value.step)}</div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {chips.map(([label, add]) => {
+              const v = dayAt(add);
+              const on = value.day === v;
+              return (
+                <button key={label} type="button" aria-pressed={on} onClick={() => onChange({ day: on ? "" : v })}
+                  className={`h-8 px-3 rounded-lg border text-[12px] transition-colors ${on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+                  {label}
+                </button>
+              );
+            })}
+            <input type="date" className={`${inp} w-auto`} aria-label={dayLabel(value.step)} value={value.day}
+              max={value.step === "booked" ? undefined : today} onChange={(e) => onChange({ day: e.target.value })} />
+          </div>
+          <div className="text-[11px] text-muted">The day moves the deal's own dates.</div>
+        </div>
+      )}
+      <div className="space-y-2">
+        <div className="text-[12px] font-medium text-ink-2">Carrier</div>
+        <CarrierPicker value={value.carrier} carrierId={value.carrierId} carriers={dir.list} canEdit={false}
+          onType={setCarrier} onPick={(c) => onChange({ carrier: c.name, carrierId: c.id })} onSave={() => {}} onOpen={onOpenCarrier} />
+        {value.carrier.trim() && !value.carrierId && dir.list && (
+          <div className="text-[11px] text-muted">Pick a saved carrier so its payment terms apply.</div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="min-w-0">
+            <label className="block text-[12px] text-muted mb-1">Carrier cost (required)</label>
+            <NumberInput className={inp} value={value.cost} placeholder="0.00" onValue={(_n, raw) => onChange({ cost: raw })} />
+          </div>
+          <div className="min-w-0">
+            <label className="block text-[12px] text-muted mb-1">Markup (%)</label>
+            <NumberInput className={inp} value={value.markup} placeholder="0" onValue={(_n, raw) => onChange({ markup: raw })} />
+          </div>
+        </div>
+      </div>
+      <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${value.own ? "border-accent/40 bg-accent/5" : "border-line hover:bg-surface-2"}`}>
+        <input type="checkbox" checked={value.own} onChange={(e) => onChange({ own: e.target.checked })} className="w-4 h-4 mt-0.5 accent-accent" />
+        <span className="min-w-0">
+          <span className="block text-[13px] font-medium text-ink">We pay the shipping ourselves</span>
+          <span className="block text-[11.5px] text-muted">The customer is not charged for it. Set this now: it cannot be set once the load is booked.</span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
+/** R-483: under an address box that has something in it but not yet a street, city, state and ZIP. The server refuses a
+ *  load without them and says so; this says it before. */
+function AddressNote({ value }: { value: string }) {
+  const note = addressNote(value);
+  return note ? <div className="text-[11px] text-muted">{note}</div> : null;
+}
+
+function SendSheet({ flow, billed, moving, onClose, onSent }: {
+  flow: DealFlow; billed: number | null; moving?: boolean; onClose: () => void; onSent: (made?: FreightBooking) => void;
+}) {
   const [pre, setPre] = useState<FreightPrefill | null>(null);
+  const [cu, setCu] = useState<CatchUpForm>(blankCatchUp);
   const [err, setErr] = useState("");
+  // A refusal ("Pick the carrier.") is about the form as it was sent, so it goes once the form is changed.
+  const setCatchUp = (patch: Partial<CatchUpForm>) => { setCu((c) => ({ ...c, ...patch })); setErr(""); };
   const [pickup, setPickup] = useState({ name: "", address: "" });
   // R-452: more pickups on the same truck, one delivery.
   const [stops, setStops] = useState<FreightStop[]>([]);
@@ -89,14 +185,19 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
 
   const missing = byTeam && !(freight.pallets.trim() && freight.weight_lbs.trim() && freight.dimensions.trim());
   const send = async () => {
+    if (moving) { const problem = catchUpProblem(cu, localDay()); if (problem) { setErr(problem); return; } }
     if (missing) { setErr("Fill in the pallets, pallet dimensions and weight first."); return; }
     setBusy(true); setErr("");
+    // The sheet index of each extra pickup that is sent (a blank row is dropped); the server counts only those.
+    const sent = stops.map((_, i) => i).filter((i) => stops[i].name.trim() || stops[i].address.trim());
     try {
+      // R-479: "Already moving" writes the load at its real step; its day and carrier come from the catch-up fields.
+      const lead: FreightBookingPatch = moving ? catchUpFields(cu) : { status: "quote" as const, urgent, pickup_date: when.date };
       const made = await api.logistics.create(flow.id, {
-        status: "quote" as const,
-        urgent, pickup_date: when.date, pickup_window: when.window.trim(),
+        ...lead,
+        pickup_window: when.window.trim(),
         pickup_name: pickup.name, pickup_address: pickup.address,
-        extra_pickups: stops.map((x) => ({ ...x, name: x.name.trim(), address: x.address.trim(), window: x.window.trim() })).filter((x) => x.name || x.address),
+        extra_pickups: sent.map((i) => ({ ...stops[i], name: stops[i].name.trim(), address: stops[i].address.trim(), window: stops[i].window.trim() })),
         delivery_name: delivery.name, delivery_address: delivery.address,
         pallets: freight.pallets.trim(), pieces: freight.pieces.trim(), weight_lbs: freight.weight_lbs.trim(),
         freight_class: freight.freight_class.trim(), dimensions: freight.dimensions.trim(),
@@ -105,9 +206,9 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
       });
       // The booking exists now; a file that fails to upload says so and can be added on the booking.
       if (files.length) await uploadFiles(made.id, files);
-      toast(urgent ? "Quote asked as urgent" : "Quote asked");
-      onSent();
-    } catch (e) { setErr(String(e)); }
+      toast(moving ? `${loadNumber(made)} is with Logistics` : urgent ? "Quote asked as urgent" : "Quote asked");
+      onSent(made);
+    } catch (e) { setErr(relabelPickupError(String(e), sent)); }
     setBusy(false);
   };
 
@@ -123,15 +224,15 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
     <>
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
       <div
-        role="dialog" aria-modal="true" aria-label="Send to logistics"
+        role="dialog" aria-modal="true" aria-label={moving ? "Already moving" : "Send to logistics"}
         className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-lg max-h-[88vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
           <div className="min-w-0">
-            <h2 className="text-[16px] font-semibold text-ink">Send to logistics</h2>
+            <h2 className="text-[16px] font-semibold text-ink">{moving ? "Already moving" : "Send to logistics"}</h2>
             <p className="text-[12px] text-muted mt-0.5">
-              {flow.invoice_number ? `${flow.invoice_number}. ` : ""}{byTeam ? "Fill in the freight and ask for a quote. You send it to book from the load once it is on the invoice and the customer has paid." : "Ask for a quote. Logistics fills in the rest."}
+              {flow.invoice_number ? `${flow.invoice_number}. ` : ""}{moving ? "Send this deal to Logistics at the step the load is already at." : byTeam ? "Fill in the freight and ask for a quote. You send it to book from the load once it is on the invoice and the customer has paid." : "Ask for a quote. Logistics fills in the rest."}
             </p>
           </div>
           <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
@@ -146,6 +247,9 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                     : "The invoice has no shipping line."}
                 </div>
               )}
+              {moving && <CatchUpFields value={cu} onChange={setCatchUp} onOpenCarrier={setCarrierId} />}
+              {!moving && (
+              <>
               <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${urgent ? "border-danger-ink/30 bg-danger-bg" : "border-line hover:bg-surface-2"}`}>
                 <input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} className="w-4 h-4 mt-0.5 accent-danger" />
                 <span className="min-w-0">
@@ -171,6 +275,8 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                 </div>
                 <div className="text-[11px] text-muted">Leave it empty and logistics sets the day. The day moves the deal's pickup date.</div>
               </div>
+              </>
+              )}
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Pickup</div>
                 {options.length > 1 && (
@@ -182,7 +288,8 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                   </select>
                 )}
                 <input className={inp} placeholder="Name" value={pickup.name} onChange={(e) => setPickup({ ...pickup, name: e.target.value })} />
-                <input className={inp} placeholder="Address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
+                <input className={inp} placeholder={ADDRESS_HINT} aria-label="Pickup address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
+                <AddressNote value={pickup.address} />
                 <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={when.window} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, window: v })); }} />
               </div>
               {stops.map((x, i) => (
@@ -193,7 +300,8 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
                       className="text-[11.5px] text-muted hover:text-danger-ink px-1.5 h-6 rounded-md hover:bg-danger-bg transition-colors">Remove</button>
                   </div>
                   <input className={inp} placeholder="Name" aria-label={`Pickup ${i + 2} name`} value={x.name} onChange={(e) => setStop(i, { name: e.target.value })} />
-                  <input className={inp} placeholder="Address" aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
+                  <input className={inp} placeholder={ADDRESS_HINT} aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
+                  <AddressNote value={x.address} />
                   <input className={inp} placeholder="Time, like before 4 pm" aria-label={`Pickup ${i + 2} time`} value={x.window} onChange={(e) => setStop(i, { window: e.target.value })} />
                 </div>
               ))}
@@ -206,7 +314,8 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Delivery</div>
                 <input className={inp} placeholder="Name" value={delivery.name} onChange={(e) => setDelivery({ ...delivery, name: e.target.value })} />
-                <input className={inp} placeholder="Address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
+                <input className={inp} placeholder={ADDRESS_HINT} aria-label="Delivery address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
+                <AddressNote value={delivery.address} />
               </div>
               {lane && <RateCard by={lane} onOpenCarrier={setCarrierId} />}
               <div className="space-y-2">
@@ -269,19 +378,40 @@ function SendSheet({ flow, billed, onClose, onSent }: { flow: DealFlow; billed: 
             </>
           )}
         </div>
+        {/* R-479: the one thing to remember after a catch-up. The shipping leg stays 0 until the carrier's payment is linked. */}
+        {moving && <div className="px-5 py-2 text-[11.5px] text-muted border-t border-line">Link the carrier's payment once it goes out; until then this deal's profit leaves out the shipping.</div>}
         {/* Outside the scrolling body, so a refusal is never hidden below the fields. */}
         {err && <div className="px-5 py-2 text-[12px] text-danger-ink border-t border-line" role="alert">{err}</div>}
         <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
           <button onClick={onClose} className="px-4 h-9 rounded-lg text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
           <button onClick={send} disabled={busy || pre === null}
             className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
-            {busy ? "Sending..." : "Ask for a quote"}
+            {busy ? (moving ? "Moving..." : "Sending...") : moving ? "Move to Logistics" : "Ask for a quote"}
           </button>
         </div>
       </div>
     </div>
     {/* Beside the sheet, not inside it: a click on the card's backdrop must not close the sheet too. */}
     {carrierId && <CarrierHost id={carrierId} onClose={() => setCarrierId(null)} onChanged={() => {}} />}
+    </>
+  );
+}
+
+/** R-479: "Move to Logistics" for a deal whose load was never sent and is already moving. Opens the Send to
+ *  logistics sheet in its "Already moving" mode. `onMoved` gets the load the server made, so the caller can show its
+ *  number at once instead of waiting for sync. */
+export function MoveToLogistics({ flow, onMoved }: { flow: DealFlow; onMoved: (made: FreightBooking) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap transition-colors">
+        <Truck size={13} /> Move to Logistics
+      </button>
+      {open && (
+        <SendSheet flow={flow} billed={null} moving onClose={() => setOpen(false)}
+          onSent={(made) => { setOpen(false); if (made) onMoved(made); }} />
+      )}
     </>
   );
 }

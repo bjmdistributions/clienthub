@@ -1124,6 +1124,8 @@ export interface DealFlow {
   logistics_quoted?: number;
   /** Least advanced status among the live bookings, '' when there are none. */
   logistics_stage?: "" | "quote" | "quoted" | "requested" | "booked" | "picked_up" | "delivered";
+  /** R-481: how many loads are at quoted, requested, booked or picked_up (a count, not money). */
+  logistics_live_quoted?: number;
   shipping_linked?: number;
   freight_typed?: number;
   /** True once the deal has a booking or a bank payment linked as shipping: the booking
@@ -3330,6 +3332,9 @@ export type FreightBookingPatch = Partial<Omit<FreightBooking,
   shipping_charge?: "own" | "";
   /** R-464: send to book before the invoice is sent and paid. The server stamps who and when. */
   override?: boolean;
+  /** R-479: on a create only. The load is already moving: the server writes `status` (booked, picked_up or delivered)
+   *  in place of a quote, for the team only, and stamps it as a catch-up. Needs a carrier and a carrier cost. */
+  catch_up?: boolean;
 };
 /** R-415: the one Logistics setting. */
 export interface LogisticsSettings {
@@ -4519,7 +4524,11 @@ export const api = {
   dealReconciliation: (dealFlowId: string) =>
     invoke<DealReconciliation>("deal_reconciliation", { dealFlowId }),
   reconciliationStatusAll: () =>
-    invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_paid_paired?: boolean; no_shipping_link?: boolean; shipping_missing?: boolean }[]>("reconciliation_status_all"),
+    invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_paid_paired?: boolean; no_shipping_link?: boolean; shipping_missing?: boolean;
+      /** R-479: what the bank links cover on each leg. `left` is 0 once the leg is settled or marked as having no bank record. */
+      buyer_target: number; buyer_paired: number; buyer_left: number; supplier_target: number; supplier_paired: number; supplier_left: number;
+      /** R-479: a supplier goods line is marked "Didn't pay, kept it" (kept lines are not in the target). */
+      cost_kept?: boolean }[]>("reconciliation_status_all"),
   refundStatusAll: () =>
     invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number; done: boolean; done_at?: string | null }[]>("refund_status_all"),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),

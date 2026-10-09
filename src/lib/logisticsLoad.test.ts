@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { FreightBooking } from "./api";
 import {
-  EQUIPMENT, GROUPS, LOAD_STEPS, arrivesToday, dashboardLoads, deliveryDays, loadCard, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday,
+  EQUIPMENT, GROUPS, LOAD_STEPS, arrivesToday, dashboardLoads, deliveryDays, loadCard, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday, splitNewToday,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, rowLane, statusAfterActual, statusWord, stepDone, timeWord,
@@ -529,6 +529,25 @@ describe("R-476: the hello and New today", () => {
     expect(isNewToday({ created_at: "2026-10-07T17:59:59Z", status: "booked" }, now)).toBe(false);
     expect(isNewToday({ created_at: "2026-10-08T09:00:00Z", status: "cancelled" }, now)).toBe(false);
     expect(isNewToday({ created_at: "", status: "quote" }, now)).toBe(false);
+  });
+  it("R-480: a load shows once. New today claims the last 24 hours, newest first, and the groups are made from the rest", () => {
+    const now = Date.parse("2026-10-08T18:00:00Z");
+    const loads = [
+      mk({ id: "old-booked", status: "booked", created_at: "2026-10-01T09:00:00Z" }),
+      mk({ id: "new-quote", status: "quote", created_at: "2026-10-08T09:00:00Z" }),
+      mk({ id: "new-booked", status: "booked", created_at: "2026-10-08T15:30:00Z" }),
+      mk({ id: "new-cancelled", status: "cancelled", created_at: "2026-10-08T10:00:00Z" }),
+      mk({ id: "old-quote", status: "quote", created_at: "2026-10-05T09:00:00Z" }),
+    ];
+    const { fresh, rest } = splitNewToday(loads, now);
+    expect(fresh.map((b) => b.id)).toEqual(["new-booked", "new-quote"]);
+    expect(rest.map((b) => b.id)).toEqual(["old-booked", "new-cancelled", "old-quote"]);
+    // Nothing is in both lists and nothing is lost.
+    expect(new Set([...fresh, ...rest].map((b) => b.id)).size).toBe(loads.length);
+    // A new quote is not also in "Quotes to give", and a new booked load is not also in "Booked": the groups read `rest`.
+    expect(rest.some((b) => b.id === "new-quote" || b.id === "new-booked")).toBe(false);
+    expect(rest.filter((b) => groupOf(b) === "quotes").map((b) => b.id)).toEqual(["old-quote"]);
+    expect(splitNewToday([], now)).toEqual({ fresh: [], rest: [] });
   });
   it("greets by the first word of the account's name", () => {
     expect(firstName("Robin Testcase")).toBe("Robin");
