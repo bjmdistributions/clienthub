@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { FreightBooking } from "./api";
 import {
-  EQUIPMENT, GROUPS, LOAD_STEPS, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday,
+  EQUIPMENT, GROUPS, LOAD_STEPS, dashboardLoads, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, rowLane, statusAfterActual, statusWord, stepDone, timeWord,
@@ -535,5 +535,25 @@ describe("R-476: the hello and New today", () => {
     expect(firstName("  Jordan  ")).toBe("Jordan");
     expect(firstName("")).toBe("");
     expect(firstName(undefined)).toBe("");
+  });
+});
+
+describe("the Dashboard's two groups (R-483)", () => {
+  it("lists booked and picked-up loads as waiting on shipping, and delivered loads with the carrier unpaid as waiting to pay", () => {
+    const list = [
+      mk({ id: "q", status: "quote" }),
+      mk({ id: "r", status: "requested" }),
+      mk({ id: "bk", status: "booked" }),
+      mk({ id: "pu", status: "picked_up" }),
+      mk({ id: "unpaid", status: "delivered", paid_amount: null, paid_state: "unpaid" }),
+      mk({ id: "part", status: "delivered", paid_amount: 200, paid_state: "part" }),
+      mk({ id: "marked", status: "delivered", paid_amount: 500, paid_state: "marked" }),
+      mk({ id: "paid", status: "delivered", paid_amount: 500, paid_state: "paid", bank_linked: "linked" }),
+      mk({ id: "hidden", status: "delivered", paid_amount: null, can_see_money: false }),
+      mk({ id: "x", status: "cancelled" }),
+    ];
+    const { shipping, carrier } = dashboardLoads(list);
+    expect(shipping.map((b) => b.id)).toEqual(["bk", "pu"]);
+    expect(carrier.map((b) => b.id)).toEqual(["unpaid", "part", "marked"]);
   });
 });

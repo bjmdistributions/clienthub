@@ -13,6 +13,7 @@ import PendingReviewModal from "./PendingReviewModal";
 import { can, isAdmin } from "../lib/permissions";
 import StatusPill from "./StatusPill";
 import LeadBubbles from "./LeadBubbles";
+import DashboardLoads from "./DashboardLoads";
 
 interface Props {
   onNavigate: (t: any) => void;
@@ -318,6 +319,9 @@ export default function DashboardView({ onNavigate, me }: Props) {
             </div>
           </div>
         ))}
+
+        {/* R-483: the loads waiting on shipping and on the carrier's pay, right under the numbers. */}
+        <DashboardLoads />
 
         {/* ── Secondary counts — non-sensitive, everyone ──── */}
         {heroLoading ? (
