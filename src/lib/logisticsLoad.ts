@@ -437,6 +437,16 @@ export function groupOf(b: Groupable): GroupKey | null {
   }
 }
 
+/** R-483: the Dashboard's two groups. Waiting on shipping is a booked or picked-up load; waiting to pay the carrier is a
+ *  delivered load whose carrier is not paid (not linked, part linked, or only marked). A figure the server withheld
+ *  says nothing either way, so that load stays out. */
+export function dashboardLoads<T extends Groupable & { status: string }>(list: T[]): { shipping: T[]; carrier: T[] } {
+  const shipping = list.filter((b) => b.status === "booked" || b.status === "picked_up");
+  const owed = (b: T) => { const st = paidStateOf(b); return st === "unpaid" || st === "part" || st === "marked"; };
+  const carrier = list.filter((b) => b.status === "delivered" && !moneyHidden(b) && owed(b));
+  return { shipping, carrier };
+}
+
 /** Everything a person could type in the list's search box, of what this viewer can see. */
 export function loadHaystack(b: FreightBooking): string {
   return [

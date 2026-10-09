@@ -85,6 +85,64 @@ pub(crate) fn central_day_window(lo: chrono::NaiveDate, hi: chrono::NaiveDate) -
     }
 }
 
+/// R-482: the windows the Dashboard's "This month" percentages compare against - every
+/// earlier month since the first closed deal, each cut at today's day of the month (the
+/// 1st to the same day, a shorter month whole). The first month counts only if its first
+/// deal fell on or before that cut, so the month trading started does not read as a zero.
+pub(crate) fn same_day_windows(first_deal: chrono::NaiveDate, today: chrono::NaiveDate) -> Vec<CentralWindow> {
+    let first_month = first_deal.with_day(1).unwrap_or(first_deal);
+    let this_month = today.with_day(1).unwrap_or(today);
+    let mut out = Vec::new();
+    let mut lo = first_month;
+    while lo < this_month {
+        let next = lo.checked_add_months(chrono::Months::new(1)).unwrap_or(this_month);
+        let hi = (lo + chrono::Duration::days(i64::from(today.day()))).min(next);
+        if lo != first_month || first_deal < hi {
+            out.push(central_day_window(lo, hi));
+        }
+        lo = next;
+    }
+    out
+}
+
+#[cfg(test)]
+mod same_day_tests {
+    use super::*;
+
+    fn d(s: &str) -> chrono::NaiveDate { chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap() }
+    fn spans(first: &str, today: &str) -> Vec<(String, String)> {
+        same_day_windows(d(first), d(today)).into_iter().map(|w| (w.day_lo, w.day_hi)).collect()
+    }
+
+    #[test]
+    fn every_earlier_month_cut_at_todays_day() {
+        // Oct 8th: Aug and Sep each run the 1st up to (not including) the 9th.
+        assert_eq!(spans("2026-08-03", "2026-10-08"), vec![
+            ("2026-08-01".into(), "2026-08-09".into()),
+            ("2026-09-01".into(), "2026-09-09".into()),
+        ]);
+    }
+
+    #[test]
+    fn the_first_month_counts_only_if_trading_started_by_the_cut() {
+        // First deal on Aug 20th: Aug 1-8 was before trading began, so only Sep counts.
+        assert_eq!(spans("2026-08-20", "2026-10-08"), vec![("2026-09-01".into(), "2026-09-09".into())]);
+        // A deal on the cut day itself counts.
+        assert_eq!(spans("2026-09-08", "2026-10-08"), vec![("2026-09-01".into(), "2026-09-09".into())]);
+    }
+
+    #[test]
+    fn a_shorter_month_counts_whole() {
+        // Mar 31st against February: all of February, never into March.
+        assert_eq!(spans("2026-02-10", "2026-03-31"), vec![("2026-02-01".into(), "2026-03-01".into())]);
+    }
+
+    #[test]
+    fn no_earlier_month_means_no_average() {
+        assert!(spans("2026-10-02", "2026-10-08").is_empty());
+    }
+}
+
 // ============================================================
 //  Clients
 // ============================================================
@@ -13558,6 +13616,26 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let true_net_all_time = profit_all_time - shipping_all_time - fees_all_time;
     let true_net_enabled = read_setting("dashboard_true_net").map(|v| v == "1").unwrap_or(false);
 
+    // R-482 (Jack, 2026-10-08): the This month percentages compare this month so far with
+    // the average of every earlier month over the same days, not with all of last month.
+    let first_deal: Option<String> = conn.query_row(
+        &month_profit_sql("MIN(df.completed_at)", ""), rusqlite::params!["", "9999-12-31"], |r| r.get(0)
+    ).unwrap_or(None);
+    let same_day = first_deal
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d.get(..10).unwrap_or(""), "%Y-%m-%d").ok())
+        .map(|d| same_day_windows(d, central_today()))
+        .unwrap_or_default();
+    let avg_months = same_day.len();
+    let (mut rev_sum, mut profit_sum, mut true_net_sum) = (0.0, 0.0, 0.0);
+    for w in &same_day {
+        let p = profit_of(w);
+        rev_sum += rev_of(w);
+        profit_sum += p;
+        let hi = inclusive_hi(&w.day_hi);
+        true_net_sum += p - bank_overhead(&conn, "shipping", &w.day_lo, &hi) - bank_overhead(&conn, "fee", &w.day_lo, &hi);
+    }
+    let avg = |sum: f64| if avg_months == 0 { 0.0 } else { sum / avg_months as f64 };
+
     // Top suppliers by total paid — payments are stored as JSON in deal_flows
     let top_suppliers: Vec<Value> = {
         let mut stmt = conn.prepare(
@@ -13693,6 +13771,10 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         map.insert("true_net_prev_month".into(), json!(true_net_prev_month));
         map.insert("true_net_all_time".into(), json!(true_net_all_time));
         map.insert("true_net_enabled".into(), json!(true_net_enabled));
+        map.insert("revenue_same_day_avg".into(), json!(avg(rev_sum)));
+        map.insert("profit_same_day_avg".into(), json!(avg(profit_sum)));
+        map.insert("true_net_same_day_avg".into(), json!(avg(true_net_sum)));
+        map.insert("same_day_months".into(), json!(avg_months));
     }
     Ok(stats)
 }

@@ -40,7 +40,7 @@ const byDue = (a: FreightBooking, b: FreightBooking) => {
   return x.localeCompare(y) || a.created_at.localeCompare(b.created_at);
 };
 
-function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: GroupKey; onOpen: () => void }) {
+export function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: GroupKey; onOpen: () => void }) {
   const route = routeLabel(b);
   const today = localDay();
   // R-459: a load that waits on paperwork says which; the team sees when the carrier is due.

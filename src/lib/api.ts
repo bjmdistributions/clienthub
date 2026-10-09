@@ -1681,6 +1681,11 @@ export interface DashboardStats {
   fees_all_time: number;
   true_net_mtd: number;
   true_net_prev_month: number;
+  // R-482: the average of every earlier month over the same days (1st to today's day).
+  revenue_same_day_avg?: number;
+  profit_same_day_avg?: number;
+  true_net_same_day_avg?: number;
+  same_day_months?: number;
   true_net_all_time: number;
   true_net_enabled: boolean;
 }
