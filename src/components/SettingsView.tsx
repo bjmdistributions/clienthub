@@ -930,7 +930,8 @@ function DesktopNotificationsCard() {
 // reached (local-first, like My plan above).
 const PHONE_ROWS: { key: keyof PushPrefs; label: string; hint: string }[] = [
   { key: "bills", label: "Bills", hint: "A bill or a carrier is due soon or overdue, a bill has been paid, or it is the logistics pay day." },
-  { key: "bank", label: "Bank activity", hint: "Each new deposit or charge, with its amount." },
+  { key: "deals", label: "Deals completed", hint: "The money chime when a deal is completed." },
+  { key: "bank", label: "Bank activity", hint: "Each new deposit or charge, with its amount. A wire or Zelle coming in plays the money chime." },
   { key: "quotes", label: "Quotes from logistics", hint: "A quote is ready to put on the invoice, or a BOL was uploaded." },
   { key: "forms", label: "Form submissions", hint: "A new supplier lead, call request or storefront offer." },
   { key: "inventory", label: "Inventory", hint: "Listings that need renewing. Off until you turn it on." },

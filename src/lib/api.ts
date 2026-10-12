@@ -284,7 +284,9 @@ export interface LeadNotification {
   kind: "supply_lead" | "supplier_profile" | "call_request" | "system"
     | "logistics_quote" | "carrier_due" | "carrier_overdue" | "bill_due" | "bill_overdue" | "bill_paid" | "logistics_pay_due" | "logistics_bol"
     // R-493: a new bank row a Plaid sync brought in (title "New deposit" or "New charge", body the amount).
-    | "bank_txn";
+    | "bank_txn"
+    // R-496: a deal was completed (title "Deal completed", payload carries the deal and its invoice number).
+    | "deal_complete";
   title: string;
   body: string;
   payload_json: string | null;
@@ -4150,7 +4152,9 @@ export const api = {
     safe(invoke<LeadNotification[]>("list_lead_notifications", { kind, status })),
   ackLeadNotification: (id: string) => safe(invoke<void>("ack_lead_notification", { id })),
   /** R-460: one operating-system notification. The caller decides what is new and whether they are switched on. */
-  showDesktopNotification: (title: string, body: string) => safe(invoke<void>("show_desktop_notification", { title, body })),
+  showDesktopNotification: (title: string, body: string, chime = false) => safe(invoke<void>("show_desktop_notification", { title, body, chime })),
+  /** R-496: the money chime now, with no pop-up (the person who completes a deal hears it at once). */
+  playMoneyChime: () => safe(invoke<void>("play_money_chime")),
   listLeadClicks: (since?: string) => safe(invoke<LeadClick[]>("list_lead_clicks", { since })),
   // Show packing (R-271/R-272) — buyer bins for Whatnot-style live shows.
   showPacking: {

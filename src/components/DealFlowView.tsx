@@ -27,6 +27,7 @@ import { loadNumber } from "../lib/logisticsLoad";
 import { pipelineSplit } from "../lib/dealLane";
 import { SECTIONS as DEAL_SECTIONS, describeDeal, payFactsOf, type DealCtx, type DealDescription, type DealSection, type LineTone } from "../lib/dealSections";
 import { useSessionMe } from "../lib/useSessionMe";
+import { noteChimedDeal } from "../lib/notices";
 import {
   buyerLeg, canMoveDeal, canSeePayments, groupPayments, groupSummary, loadNumbersOf, money, paymentFiguresOf, supplierLeg,
   type LegTone, type PaymentEntry, type PaymentLeg,
@@ -2281,6 +2282,14 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
     if (Array.isArray(m.gate_overrides)) overrides = m.gate_overrides;
   } catch {}
 
+  // R-496: the money chime the moment this computer completes a deal; the server's notice for it is not raised again here.
+  const chimeCompleted = (id: string) => {
+    let st: Storage | null = null;
+    try { st = window.localStorage; } catch { /* storage blocked: the pop-up may chime once more later */ }
+    noteChimedDeal(st, id);
+    api.playMoneyChime().catch(() => {});
+  };
+
   // Only sent when the gate is actually blocking — an override recorded on a deal
   // that was never held would be a lie in the audit trail.
   const reasonArg = () => (gate && overrideOn ? overrideReason.trim() : null);
@@ -2290,6 +2299,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
     try {
       const result = await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded, reasonArg());
       if (result.is_loss && result.warning) toast(result.warning, "error");
+      chimeCompleted(flow.id);
       onReload();
     } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
@@ -2319,6 +2329,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         carrier: carrier || undefined, tracking_number: tracking || undefined, is_complete: true,
       });
       await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded, reasonArg());
+      chimeCompleted(flow.id);
       onReload();
     } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);

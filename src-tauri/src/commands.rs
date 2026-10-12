@@ -10687,8 +10687,9 @@ pub fn clip_notice_text(s: &str, max: usize) -> String {
 
 /// R-460: raise one operating-system notification (a quote asked for, a carrier due, a bill overdue).
 /// The screen decides what is new and whether the person switched them off; this only shows it.
+/// R-496: `chime` plays the money chime with it (a completed deal, a wire or Zelle in).
 #[tauri::command]
-pub fn show_desktop_notification(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+pub fn show_desktop_notification(app: tauri::AppHandle, title: String, body: String, chime: Option<bool>) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
     let title = clip_notice_text(&title, 80);
     if title.is_empty() { return Err("A notification needs a title.".into()); }
@@ -10697,7 +10698,43 @@ pub fn show_desktop_notification(app: tauri::AppHandle, title: String, body: Str
         .title(title)
         .body(clip_notice_text(&body, 240))
         .show()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if chime == Some(true) { money_chime(&app); }
+    Ok(())
+}
+
+/// R-496: play the money chime now, with no pop-up: the person who completes a deal hears it at once.
+#[tauri::command]
+pub fn play_money_chime(app: tauri::AppHandle) {
+    money_chime(&app);
+}
+
+/// R-496: the money chime, `ecliptr-money.wav` (an original sound, bundled from src-tauri/assets). macOS plays it with
+/// the system's `afplay`; Windows with winmm's PlaySoundW, asynchronously. Best-effort: a missing file or player is
+/// silence, never an error, and nothing here waits for the sound to end.
+fn money_chime(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Ok(dir) = app.path().resource_dir() else { return };
+    let file = dir.join("ecliptr-money.wav");
+    if !file.exists() { return; }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/afplay").arg(&file).spawn();
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "winmm")]
+        extern "system" {
+            fn PlaySoundW(psz_sound: *const u16, hmod: *mut std::ffi::c_void, fdw_sound: u32) -> i32;
+        }
+        const SND_ASYNC: u32 = 0x0001;
+        const SND_NODEFAULT: u32 = 0x0002;
+        const SND_FILENAME: u32 = 0x0002_0000;
+        let wide: Vec<u16> = file.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        // SND_ASYNC returns at once; the path buffer only has to live for the call.
+        unsafe { PlaySoundW(wide.as_ptr(), std::ptr::null_mut(), SND_ASYNC | SND_NODEFAULT | SND_FILENAME); }
+    }
 }
 
 #[tauri::command]
@@ -20754,7 +20791,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     item_imported += 1;
                     // R-493: the posted twin of a pending row was alerted as the pending row, so it is not news.
                     if pend.is_none() && date.to_string() >= alert_since {
-                        fresh_rows.push(json!({ "id": id, "amount": amount, "money_in": direction == "in" }));
+                        fresh_rows.push(json!({ "id": id, "amount": amount, "money_in": direction == "in", "rail": payment_rail(&desc) }));
                     }
                     // The normal same-page settle: the posted twin was just inserted, so
                     // move the pending row's booking onto it and retire the pending row as
@@ -21150,6 +21187,34 @@ pub async fn plaid_sync() -> Result<Value, String> {
         "held_reference_collision": held_reference_collision, // same reference as a BOOKED row — held, not imported
         "preparing": preparing, "results": results,
     }))
+}
+
+/// R-496: the payment rail a bank memo names, for the money chime: "zelle", "wire" (the word, Fedwire, or a wire's
+/// IMAD or TRN reference), or "" for anything else.
+pub(crate) fn payment_rail(desc: &str) -> &'static str {
+    let up = desc.to_uppercase();
+    if up.contains("ZELLE") { return "zelle"; }
+    if up.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w == "WIRE" || w == "FEDWIRE" || w == "WIRES")
+        || matches!(bank_txn_reference(desc), Some(("imad", _)) | Some(("trn", _)))
+    {
+        return "wire";
+    }
+    ""
+}
+
+#[cfg(test)]
+mod payment_rail_tests {
+    use super::payment_rail;
+    #[test]
+    fn wires_and_zelle_are_named_and_nothing_else_is() {
+        assert_eq!(payment_rail("Zelle payment from PAT EXAMPLE JPM99cjnk2kx"), "zelle");
+        assert_eq!(payment_rail("WIRE TYPE:WIRE IN DATE:261012 ORIG:INVENTED CO"), "wire");
+        assert_eq!(payment_rail("FEDWIRE CREDIT VIA: INVENTED BANK"), "wire");
+        assert_eq!(payment_rail("INCOMING TRANSFER IMAD: 20261012QMGFT012345678"), "wire");
+        assert_eq!(payment_rail("ORIG CO NAME:INVENTED PAYROLL ACH CREDIT"), "");
+        assert_eq!(payment_rail("WIREDCO STORE 1234"), "", "a word that only starts with WIRE is not a wire");
+        assert_eq!(payment_rail("Card purchase INVENTED SHOP"), "");
+    }
 }
 
 /// R-493: the gate `plaid_sync` holds for its whole pass.

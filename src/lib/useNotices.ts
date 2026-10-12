@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, isUnavailable, type FreightBooking, type LeadNotification, type Me } from "./api";
 import {
-  canReadTeamNotices, canSeeTeamNotices, desktopNoticesOn, leadNoticesOf, logisticsBellCount, planDerived, planTeamRaise, readSeen, seenKey, switchOf, switchOn, teamNoticesOf, writeSeen,
+  CHIMED_DEALS_KEY, canReadTeamNotices, canSeeTeamNotices, chimedHere, chimes, desktopNoticesOn, leadNoticesOf, logisticsBellCount, planDerived, planTeamRaise, readSeen, seenKey, switchOf, switchOn, teamNoticesOf, writeSeen,
 } from "./notices";
 import { pushApi } from "./billsApi";
 import { isAdmin, isLogisticsOnly } from "./permissions";
@@ -22,9 +22,9 @@ const store = (): Storage | null => { try { return window.localStorage; } catch 
 
 /** Raise one alert per item through the operating system, unless the person switched them off on this
  *  device. A failure to show one is never worth interrupting the poll for. */
-function raise(items: { title: string; body: string }[]) {
+function raise(items: { title: string; body: string; chime?: boolean }[]) {
   if (!desktopNoticesOn(store())) return;
-  for (const it of items) api.showDesktopNotification(it.title, it.body).catch(() => {});
+  for (const it of items) api.showDesktopNotification(it.title, it.body, !!it.chime).catch(() => {});
 }
 
 /** R-492: the person's switches (Settings, Notifications), read at most every five minutes. The same ones decide
@@ -91,7 +91,11 @@ export function useNotices(me: Me | null | undefined): NoticeState {
     teamSeen.current = plan.seen;
     writeSeen(store(), key, plan.seen);
     const prefs = plan.raise.length ? await noticePrefs() : null;
-    raise(plan.raise.filter((n) => switchOn(prefs, switchOf(n.kind))).map((n) => ({ title: n.title, body: n.body })));
+    // R-496: a deal this computer completed already chimed when it was completed.
+    const chimed = readSeen(store(), CHIMED_DEALS_KEY);
+    raise(plan.raise
+      .filter((n) => switchOn(prefs, switchOf(n.kind)) && !chimedHere(n, chimed))
+      .map((n) => ({ title: n.title, body: n.body, chime: chimes(n) })));
   }, [teamOn, canRead, userId, admin]);
 
   const refreshLogistics = useCallback(async () => {

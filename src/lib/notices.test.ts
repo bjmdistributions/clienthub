@@ -3,7 +3,7 @@ import type { LeadNotification } from "./api";
 import {
   ADMIN_NOTICE_KINDS, ALERT_ONLY_NOTICE_KINDS, ALERT_NOTICE_KINDS, NEEDS_YOU_NOTICE_KINDS, DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, PAY_TRACKER_KEY, PAY_TRACKER_SUB, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, RAISE_CAP, SEEN_CAP, canOpenTarget, canReadTeamNotices, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
   logisticsBellCount, mergeSeen, noticeTarget, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
-  GROUP_LABEL, GROUP_ORDER, bellCountOf, bellTitle, canSeeGroup, compareRows, customerRow, dueDayOf, groupRows, leadNoticesOf, noticeRow, requestRow, switchOf, switchOn, whenWearsUrgency, whenWords,
+  GROUP_LABEL, GROUP_ORDER, bellCountOf, bellTitle, canSeeGroup, chimedHere, chimes, compareRows, customerRow, dueDayOf, groupRows, leadNoticesOf, noticeRow, requestRow, switchOf, switchOn, whenWearsUrgency, whenWords,
   type NoticeLoad, type NoticeRow,
 } from "./notices";
 
@@ -621,7 +621,7 @@ describe("R-493: a new bank row", () => {
     expect(r.label).toBe("New deposit");
     expect(r.subject).toBe("$12,400.00");
     expect(r.urgency).toBe("info");
-    expect(GROUP_LABEL.bank).toBe("Bank");
+    expect(GROUP_LABEL.bank).toBe("Money");
   });
   it("raises an alert but never counts on the bell, and opens Financials for someone who reads the books", () => {
     expect(ALERT_ONLY_NOTICE_KINDS).toContain("bank_txn");
@@ -650,5 +650,31 @@ describe("R-492: the switches that decide a pop-up", () => {
     expect(switchOn({}, "bank")).toBe(true);
     expect(switchOn(null, "bank")).toBe(true);
     expect(switchOn({ bank: false }, null)).toBe(true);
+  });
+});
+
+describe("R-496: the money chime", () => {
+  const done = note("d1", "deal_complete", { title: "Deal completed", body: "INV-1042 is complete.", payload_json: JSON.stringify({ deal_flow_id: "df1", invoice_number: "INV-1042" }) });
+  const bank = (o: Record<string, unknown>) => note("b" + JSON.stringify(o).length, "bank_txn", { title: "New deposit", body: "$5,000.00", payload_json: JSON.stringify(o) });
+  it("plays for a completed deal and for money in by wire or Zelle, never for anything else", () => {
+    expect(chimes(done)).toBe(true);
+    expect(chimes(bank({ money_in: true, rail: "wire" }))).toBe(true);
+    expect(chimes(bank({ money_in: true, rail: "zelle" }))).toBe(true);
+    expect(chimes(bank({ money_in: true, rail: "" }))).toBe(false);
+    expect(chimes(bank({ money_in: false, rail: "wire" }))).toBe(false);
+    expect(chimes(note("x", "bill_overdue"))).toBe(false);
+  });
+  it("a completed deal is listed under Money as its invoice number, opens Deal Flow, and follows the Deals switch", () => {
+    const r = noticeRow(done)!;
+    expect([r.group, r.label, r.subject]).toEqual(["bank", "Deal completed", "INV-1042"]);
+    expect(noticeTarget(done)).toEqual({ to: "deal", invoice: "INV-1042" });
+    expect(switchOf("deal_complete")).toBe("deals");
+    expect(bellCountOf({ pendingCustomers: 0, requests: [], notices: [done] })).toBe(0);
+  });
+  it("is not raised again on the computer that completed the deal", () => {
+    expect(chimedHere(done, ["df1"])).toBe(true);
+    expect(chimedHere(done, ["other"])).toBe(false);
+    expect(chimedHere(done, null)).toBe(false);
+    expect(chimedHere(bank({ money_in: true, rail: "wire" }), ["df1"])).toBe(false);
   });
 });
