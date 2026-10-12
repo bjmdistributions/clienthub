@@ -996,6 +996,7 @@ fn main() {
             list_lead_notifications,
             ack_lead_notification,
             show_desktop_notification,
+            play_money_chime,
             list_lead_clicks,
             list_resolved_approval_requests,
             backfill_inventory_photos,

@@ -276,6 +276,8 @@ export interface PushPrefs {
   quotes?: boolean;
   /** R-493: a new bank transaction. */
   bank?: boolean;
+  /** R-496: a deal was completed. */
+  deals?: boolean;
 }
 
 export interface PushPrefsResponse {

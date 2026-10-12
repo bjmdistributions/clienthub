@@ -85,6 +85,11 @@ function openTarget(t: NoticeTarget) {
   if (t.to === "logistics") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "logistics" })); return; }
   if (t.to === "paytracker") { openPayTracker(); return; }
   if (t.to === "bank") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "financials" })); return; }
+  if (t.to === "deal") {
+    try { localStorage.setItem("dealflow_invoice_filter", t.invoice); } catch { /* storage blocked: Deal Flow just opens */ }
+    window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
+    return;
+  }
   try { if (t.id) localStorage.setItem(BILL_OPEN_KEY, t.id); } catch { /* storage blocked: Bills just opens */ }
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "bills" }));
   setTimeout(() => window.dispatchEvent(new CustomEvent("bills-open")), 100);
