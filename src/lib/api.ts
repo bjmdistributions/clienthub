@@ -2932,6 +2932,29 @@ export interface TakeoverSuggestion {
   from_category: string;
   from_pending: boolean;
 }
+/** R-497: a row the bank retracted that is still on the books, with the posted copies that
+ *  match it. `cancelled`: no posted copy arrived within ten days, so the bank cancelled it. */
+export interface RetractedMatch {
+  id: string;
+  date: string;
+  amount: number;
+  description: string;
+  category: string;
+  booked: boolean;
+  automatic: boolean;
+}
+export interface RetractedRow {
+  id: string;
+  date: string;
+  amount: number;
+  direction: "in" | "out";
+  description: string;
+  account: string;
+  category: string;
+  booked: boolean;
+  cancelled: boolean;
+  matches: RetractedMatch[];
+}
 export interface PlaidSyncSummary {
   imported: number;
   removed: number;
@@ -4532,6 +4555,9 @@ export const api = {
     invoke<{ removed?: boolean; kept_both?: boolean; over_allocated?: string[] }>("resolve_near_duplicate", { keepId, extraId, same }),
   takeOverBooking: (fromId: string, toId: string) =>
     invoke<{ moved: boolean; over_allocated: string[] }>("take_over_booking", { fromId, toId }),
+  // R-497: every row the bank retracted, with its matching posted copies; remove a cancelled one.
+  listRetracted: () => invoke<RetractedRow[]>("list_retracted"),
+  removeCancelledTxn: (id: string) => invoke<{ removed: boolean; deals: number }>("remove_cancelled_txn", { id }),
   dedupeBankTxns: (dryRun: boolean, aggressive = false) =>
     invoke<DedupeResult>("dedupe_bank_txns", { dryRun, aggressive }),
   /** Delete hand-picked bank transactions. Booked rows are skipped, not silently removed. */

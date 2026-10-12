@@ -17599,6 +17599,88 @@ pub async fn take_over_booking(from_id: String, to_id: String) -> Result<Value, 
     }
 }
 
+/// R-497: every row the bank retracted that is still on the books, each with the posted copies
+/// that match it (`bank_dedup::retracted_rows`), for the Retracted by bank list and filter.
+#[tauri::command]
+pub async fn list_retracted() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let rows = load_dedup_rows(&conn)?;
+    let aliases = account_alias_map();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let by_id: std::collections::HashMap<&str, &crate::bank_dedup::TxnRow> = rows.iter().map(|r| (r.id.as_str(), r)).collect();
+    let day = |d: &str| d.chars().take(10).collect::<String>();
+    Ok(crate::bank_dedup::retracted_rows(&rows, &aliases, &today).into_iter().filter_map(|r| {
+        let f = by_id.get(r.id.as_str())?;
+        let matches: Vec<Value> = r.matches.iter().filter_map(|t| {
+            let to = by_id.get(t.to_id.as_str())?;
+            Some(json!({
+                "id": t.to_id, "date": day(&to.date), "amount": to.amount, "description": to.desc,
+                "category": to.category, "booked": to.reviewed || to.linked, "automatic": t.automatic,
+            }))
+        }).collect();
+        Some(json!({
+            "id": r.id, "date": day(&f.date), "amount": f.amount, "direction": f.dir, "description": f.desc,
+            "account": f.account, "category": f.category, "booked": f.reviewed || f.linked,
+            "cancelled": r.cancelled, "matches": matches,
+        }))
+    }).collect())
+}
+
+/// R-497: remove a row the bank cancelled — retracted, and no posted copy arrived inside the
+/// pairing window. Its deal links go with it: the money never moved. A refund, loan, purchase,
+/// expense or bill payment tied to it refuses, since a person has to move those. Backed up
+/// first (allocations inline), deleted through the oplog.
+#[tauri::command]
+pub async fn remove_cancelled_txn(id: String) -> Result<Value, String> {
+    if !crate::employees::session_is_privileged() {
+        return Err("Only an admin can remove transactions.".into());
+    }
+    let now = Utc::now().to_rfc3339();
+    let mut touched: std::collections::HashSet<String> = std::collections::HashSet::new();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let rows = load_dedup_rows(&conn)?;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let offered = crate::bank_dedup::retracted_rows(&rows, &account_alias_map(), &today)
+            .iter().any(|r| r.id == id && r.cancelled);
+        if !offered {
+            return Err("Nothing was changed: your bank has not cancelled that one (it may have a posted copy now).".into());
+        }
+        let blocked: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=?1) \
+                 OR EXISTS(SELECT 1 FROM loan WHERE bank_txn_id=?1) \
+                 OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=?1) \
+                 OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=?1) \
+                 OR EXISTS(SELECT 1 FROM bill_payments WHERE bank_txn_id=?1)",
+            [&id], |r| r.get(0)).unwrap_or(1);
+        if blocked != 0 {
+            return Err("Nothing was changed: a refund, loan, purchase, expense or bill payment is linked to it. Unlink that first.".into());
+        }
+        let rj: String = conn.query_row(BANK_TXN_BACKUP_SQL, [&id], |r| r.get(0))
+            .map_err(|e| format!("Nothing was changed: could not back the row up ({e})"))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) VALUES (?1,?2,'','bank_cancelled',?3)",
+            rusqlite::params![id, rj, now])
+            .map_err(|e| format!("Nothing was changed: could not back the row up ({e})"))?;
+        let allocs: Vec<(String, String)> = conn
+            .prepare("SELECT id, deal_flow_id FROM bank_allocation WHERE bank_txn_id=?1")
+            .and_then(|mut st| st.query_map([&id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map(|it| it.filter_map(|x| x.ok()).collect()))
+            .map_err(|e| e.to_string())?;
+        for (aid, deal) in allocs {
+            // Invariant 4: oplog first, so the link does not come back on the next pull.
+            sync::record_delete("bank_allocation", &aid).map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM bank_allocation WHERE id=?1", [&aid]).map_err(|e| e.to_string())?;
+            touched.insert(deal);
+        }
+        sync::record_delete("bank_txn", &id).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM bank_txn WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    }
+    for d in &touched { let _ = resync_completed_deal(d); }
+    crate::netsync::push_now();
+    Ok(json!({ "removed": true, "deals": touched.len() }))
+}
+
 /// R-456: every bank row as the near-duplicate rule reads it.
 fn near_dup_rows(conn: &rusqlite::Connection) -> Result<Vec<crate::bank_near_dup::NdRow>, String> {
     let sql = format!(

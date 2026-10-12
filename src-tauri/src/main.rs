@@ -1162,6 +1162,8 @@ fn main() {
             set_auto_book_enabled,
             undo_auto_booking,
             take_over_booking,
+            list_retracted,
+            remove_cancelled_txn,
             list_near_duplicates,
             resolve_near_duplicate,
             delete_bank_txns,

@@ -7,7 +7,7 @@ import {
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
   Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, ShippingSplit, BankPersonCandidate, ReconciliationMissingDeal,
-  TakeoverSuggestion, TieOutRow,
+  TakeoverSuggestion, TieOutRow, RetractedRow,
 } from "../lib/api";
 import StatusPill from "./StatusPill";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
@@ -20,6 +20,7 @@ import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
 import AccountantChanges from "./AccountantChanges";
 import NearDuplicates from "./NearDuplicates";
+import RetractedRows from "./RetractedRows";
 import { parseAmount } from "../lib/format";
 
 // Backend errors arrive as raw Rust strings and were shown to the user verbatim,
@@ -961,7 +962,7 @@ export default function FinancialsView() {
   // "none" (nobody), or "client:ID" / "supplier:ID" for one party.
   const [personFilter, setPersonFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<
-    "all" | "unclassified" | "unallocated_in" | "unallocated_out"
+    "all" | "unclassified" | "unallocated_in" | "unallocated_out" | "retracted"
   >("all");
   // The Ledger is a tax-year view by default (R-145): each year's transactions stand
   // alone, because the books are read per tax year. Custom from/to stays available.
@@ -1088,6 +1089,8 @@ export default function FinancialsView() {
   // R-289: posted rows that can take over a booked copy the bank retracted or hasn't posted.
   const [takeovers, setTakeovers] = useState<Map<string, TakeoverSuggestion[]>>(new Map());
   const [takingOver, setTakingOver] = useState<string | null>(null);
+  // R-497: rows the bank retracted, each with the posted copies that match it.
+  const [retracted, setRetracted] = useState<RetractedRow[]>([]);
   // R-288 phase 3: booking from history.
   const [autoBookOn, setAutoBookOn] = useState<boolean | null>(null);
   const [autoBookedOpen, setAutoBookedOpen] = useState(false);
@@ -1185,6 +1188,7 @@ export default function FinancialsView() {
       for (const s of list) m.set(s.to_id, [...(m.get(s.to_id) || []), s]);
       setTakeovers(m);
     }).catch(() => {});
+    api.listRetracted().then(setRetracted).catch(() => {});
   };
 
   // R-314: reloaded after "Tie to a deal" or "Not deal money" so a row that was
@@ -2326,6 +2330,15 @@ export default function FinancialsView() {
     return !!p && personKey(p) === personFilter;
   }, [personFilter, personOf]);
 
+  // R-497: every retracted row and every posted copy matching one, and the retracted row a
+  // posted copy matches (for its "Posted copy" pill).
+  const retractedIds = useMemo(() => new Set(retracted.flatMap((r) => [r.id, ...r.matches.map((m) => m.id)])), [retracted]);
+  const postedCopyOf = useMemo(() => {
+    const m = new Map<string, RetractedRow>();
+    for (const r of retracted) for (const x of r.matches) m.set(x.id, r);
+    return m;
+  }, [retracted]);
+
   // Shared filters — everything except direction + search. Reused by the combined
   // list and both split panes so all three stay consistent.
   // `bypass` = a search term is active: an exact-amount / payee lookup should span
@@ -2339,7 +2352,10 @@ export default function FinancialsView() {
   // choosing it would actually show. Counting over anything wider is how a filter
   // ends up claiming "3 wires" over a list of one.
   const passesBase = useCallback((t: BankTxn, bypass = false, skip?: "method" | "person") => {
-    if (!bypass) {
+    // R-497: the retracted rows and their posted copies, whatever the queue or tax year.
+    const retractedView = statusFilter === "retracted";
+    if (retractedView && !retractedIds.has(t.id)) return false;
+    if (!bypass && !retractedView) {
       if (queue === "todo" && t.reviewed) return false;
       if (queue === "booked" && !t.reviewed) return false;
     }
@@ -2350,13 +2366,13 @@ export default function FinancialsView() {
     if (statusFilter === "unclassified" && (t.category || "") !== "") return false;
     if (statusFilter === "unallocated_in" && !(t.direction === "in" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
     if (statusFilter === "unallocated_out" && !(t.direction === "out" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
-    if (!bypass) {
+    if (!bypass && !retractedView) {
       const d = (t.posted_at || "").slice(0, 10);
       if (fromDate && d < fromDate) return false;
       if (toDate && d > toDate) return false;
     }
     return true;
-  }, [queue, acctFilter, catFilter, statusFilter, fromDate, toDate, passesMethod, passesPerson]);
+  }, [queue, acctFilter, catFilter, statusFilter, fromDate, toDate, passesMethod, passesPerson, retractedIds]);
 
   // R-288: every keystroke in a search box ran five full passes over the ledger (18
   // memo patterns per row in the method counts). The lists read a deferred copy, so
@@ -3120,6 +3136,11 @@ export default function FinancialsView() {
                               Retracted by bank
                             </StatusPill>
                           )}
+                          {postedCopyOf.has(t.id) && (
+                            <StatusPill title={`The posted copy of ${fmtAmount(postedCopyOf.get(t.id)!.amount)} "${postedCopyOf.get(t.id)!.description}" from ${postedCopyOf.get(t.id)!.date}, which your bank retracted. Swap moves that booking here.`}>
+                              Posted copy
+                            </StatusPill>
+                          )}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -3398,7 +3419,7 @@ export default function FinancialsView() {
       const named = peopleInLedger.rows.find(({ person }) => personKey(person) === personFilter)?.person.name;
       out.push({ key: "person", label: personFilter === "linked" ? "Linked to someone" : personFilter === "none" ? "Not linked" : named || "Person", clear: () => setPersonFilter("all") });
     }
-    if (statusFilter !== "all") out.push({ key: "status", label: statusFilter === "unclassified" ? "Uncategorized" : statusFilter === "unallocated_in" ? "Needs a deal (in)" : "Needs a deal (out)", clear: () => setStatusFilter("all") });
+    if (statusFilter !== "all") out.push({ key: "status", label: statusFilter === "unclassified" ? "Uncategorized" : statusFilter === "unallocated_in" ? "Needs a deal (in)" : statusFilter === "retracted" ? "Retracted by bank" : "Needs a deal (out)", clear: () => setStatusFilter("all") });
     if (taxYearValue === "custom") out.push({ key: "dates", label: `${fromDate || "…"} to ${toDate || "…"}`, clear: () => { setFromDate(`${new Date().getFullYear()}-01-01`); setToDate(`${new Date().getFullYear()}-12-31`); } });
     if (splitView) out.push({ key: "split", label: "Split in and out", clear: () => setSplitView(false) });
     return out;
@@ -3527,6 +3548,11 @@ export default function FinancialsView() {
       {/* Cash — free cash and loans together; the best-designed screens stay as they are. */}
       {/* R-456: a payment on the books twice, flagged where the money is booked and searched. */}
       {(tab === "tobook" || tab === "ledger") && <NearDuplicates reloadKey={txns} onChanged={() => { refreshAll(false); }} />}
+      {/* R-497: every row the bank retracted, beside the posted copy that replaced it. */}
+      {(tab === "tobook" || tab === "ledger") && (
+        <RetractedRows rows={retracted} onChanged={() => { refreshAll(false); }}
+          onShow={() => { setTab("ledger"); setStatusFilter("retracted"); }} />
+      )}
       {tab === "cash" && (
         <div className="space-y-4">
           <div className="flex items-center gap-1">
@@ -4741,6 +4767,7 @@ export default function FinancialsView() {
                       <option value="unclassified">Uncategorized</option>
                       <option value="unallocated_in">Needs a deal (in)</option>
                       <option value="unallocated_out">Needs a deal (out)</option>
+                      <option value="retracted">Retracted by bank ({retracted.length})</option>
                     </select>
                   </label>
                   {/* The date inputs stay for odd ranges; touching them flips the tax

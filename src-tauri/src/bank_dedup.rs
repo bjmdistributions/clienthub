@@ -116,7 +116,8 @@ pub struct Takeover {
 /// amount within 30% (card holds settle for a different amount: tips, hotel incidentals).
 ///
 /// Automatic only when the retracted copy and the posted copy match to the cent within seven
-/// days and each is the other's ONLY candidate. That is safe even when it is wrong about which
+/// days on the same account (its label, or its last four digits when the account was renamed
+/// or a second device labels it differently: R-497) and each is the other's ONLY candidate. That is safe even when it is wrong about which
 /// charge is which: the bank has already said the retracted row does not exist, so retiring it
 /// removes no real money — the worst case is its category landing on the posted charge, which is
 /// reported and visible. Everything else is a one-click chip for a person.
@@ -152,7 +153,7 @@ pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec
             if !same_amount && ((tr.amount - fr.amount).abs() > fr.amount * 0.30 || f_words.is_disjoint(&merchant_words(&tr.desc))) {
                 continue;
             }
-            let exact = same_label && metas[f].retracted && same_amount && gap <= 7;
+            let exact = (same_label || same_mask) && metas[f].retracted && same_amount && gap <= 7;
             by_from.entry(f).or_default().push((t, exact));
             by_to.entry(t).or_default().push((f, exact));
         }
@@ -195,6 +196,30 @@ pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec
         }
     }
     out
+}
+
+/// One row the bank retracted that is still on the books (R-497), with every posted copy that
+/// could take over its booking.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Retracted {
+    pub id: String,
+    /// From `takeover_pairs`: the posted copies, automatic or for a person to confirm.
+    pub matches: Vec<Takeover>,
+    /// No posted copy, and today is past the far edge of the pairing window (ten days after
+    /// the row's date), so none can arrive: the bank cancelled the charge outright.
+    pub cancelled: bool,
+}
+
+/// R-497 — "how do i ensure that that is actually the case". Every retracted row, each with
+/// the posted copies that match it, or marked cancelled once no copy can still arrive. `today`
+/// is `YYYY-MM-DD`.
+pub fn retracted_rows(rows: &[TxnRow], aliases: &HashMap<String, String>, today: &str) -> Vec<Retracted> {
+    let pairs = takeover_pairs(rows, aliases);
+    rows.iter().filter(|r| meta(&r.raw_json).retracted).map(|r| {
+        let matches: Vec<Takeover> = pairs.iter().filter(|t| t.from_id == r.id).cloned().collect();
+        let cancelled = matches.is_empty() && signed_day_gap(today, &r.date).is_some_and(|g| g > 10);
+        Retracted { id: r.id.clone(), matches, cancelled }
+    }).collect()
 }
 
 /// The words in a memo that can name a merchant: letters only, four or more, minus the words
@@ -1096,6 +1121,42 @@ mod tests {
             raw(row("post60", card, "2026-08-24", 60.0, "out", "X", "", "2026-08-24T00:00:00Z"), "pa_1", false, false),
         ];
         assert!(takeover_pairs(&v, &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_renamed_account_still_carries_automatically() {
+        // R-497: same last four, different label (renamed, or another device's link).
+        let v = vec![
+            raw(booked(row("pend", "BUSINESS CARD \u{00b7}\u{00b7}3456", "2026-10-01", 42.10, "out", "APPLE.COM/BILL", "", "2026-10-01T00:00:00Z"), "software"), "pa_1", true, true),
+            raw(row("post", "INK BUSINESS \u{00b7}\u{00b7}3456", "2026-10-03", 42.10, "out", "APPLE.COM/US CA", "", "2026-10-03T00:00:00Z"), "pa_2", false, false),
+        ];
+        let p = takeover_pairs(&v, &HashMap::new());
+        assert_eq!(p.len(), 1);
+        assert!(p[0].automatic);
+    }
+
+    #[test]
+    fn a_retracted_row_lists_its_matches_or_reads_cancelled_after_the_window() {
+        let card = "BUSINESS CARD \u{00b7}\u{00b7}3456";
+        let v = vec![
+            // A posted copy at a different amount: a match for a person to confirm.
+            raw(booked(row("hold", card, "2026-09-20", 400.0, "out", "HOTEL FRONT DESK", "", "2026-09-20T00:00:00Z"), "travel"), "pa_1", true, true),
+            raw(row("final", card, "2026-09-23", 432.18, "out", "HOTEL FRONT DESK", "", "2026-09-23T00:00:00Z"), "pa_1", false, false),
+            // No posted copy, eleven days on: cancelled.
+            raw(booked(row("gone", card, "2026-09-30", 75.0, "out", "SUPPLIER", "", "2026-09-30T00:00:00Z"), "payment"), "pa_1", true, true),
+            // No posted copy yet, five days on: still waiting.
+            raw(booked(row("wait", card, "2026-10-06", 19.0, "out", "PARKING", "", "2026-10-06T00:00:00Z"), "travel"), "pa_1", true, true),
+            // Pending, not retracted: not listed.
+            raw(booked(row("pnd", card, "2026-10-10", 9.0, "out", "COFFEE", "", "2026-10-10T00:00:00Z"), "meals"), "pa_1", true, false),
+        ];
+        let r = retracted_rows(&v, &HashMap::new(), "2026-10-11");
+        let by: HashMap<&str, &Retracted> = r.iter().map(|x| (x.id.as_str(), x)).collect();
+        assert_eq!(r.len(), 3);
+        assert_eq!(by["hold"].matches.len(), 1);
+        assert_eq!(by["hold"].matches[0].to_id, "final");
+        assert!(!by["hold"].cancelled);
+        assert!(by["gone"].matches.is_empty() && by["gone"].cancelled);
+        assert!(by["wait"].matches.is_empty() && !by["wait"].cancelled);
     }
 
     /// The live book, read-only: `ECLIPTR_DEDUP_DB=<path to a COPY> cargo test --bin clienthub
