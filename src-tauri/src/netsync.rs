@@ -302,6 +302,45 @@ pub async fn publish_bank_balance(bank: f64, card: f64) {
         .await;
 }
 
+/// R-493: the bank rows a Plaid sync just brought in (`{ id, amount, money_in }`), so the server raises a notice
+/// per row and a phone push. Best-effort: a lost report costs an alert, never a row.
+pub async fn report_bank_activity(txns: Vec<serde_json::Value>) {
+    let cfg = match config() { Some(c) => c, None => return };
+    let url = format!("{}/api/bank/activity", cfg.url.trim_end_matches('/'));
+    for chunk in txns.chunks(50) {
+        let _ = http().post(&url).bearer_auth(&cfg.token).json(&serde_json::json!({ "txns": chunk })).send().await;
+    }
+}
+
+/// R-493: name the Plaid items this desktop holds to the server's doorbell, so Plaid's webhook rings are kept for
+/// them. True when the server took the list.
+pub async fn register_doorbell(item_ids: &[String]) -> bool {
+    let Some(cfg) = config() else { return false };
+    let url = format!("{}/api/bank/doorbell", cfg.url.trim_end_matches('/'));
+    matches!(
+        http().post(&url).bearer_auth(&cfg.token).json(&serde_json::json!({ "item_ids": item_ids })).send().await,
+        Ok(r) if r.status().is_success()
+    )
+}
+
+/// R-493: when each of this org's Plaid items last rang, as (item id, rang at). None when the server could not say.
+pub async fn doorbell_rings() -> Option<Vec<(String, String)>> {
+    let cfg = config()?;
+    let url = format!("{}/api/bank/doorbell", cfg.url.trim_end_matches('/'));
+    let resp = http().get(&url).bearer_auth(&cfg.token).timeout(Duration::from_secs(10)).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    Some(
+        v.get("rings")?
+            .as_array()?
+            .iter()
+            .filter_map(|r| Some((r.get("item_id")?.as_str()?.to_string(), r.get("rang_at")?.as_str()?.to_string())))
+            .collect(),
+    )
+}
+
 /// The last-known bank/card balance a connected device published for this org, if
 /// any: (bank, card, as_of_rfc3339). None when nothing's been published or the
 /// server is unreachable — the caller then falls back to its own manual figure.

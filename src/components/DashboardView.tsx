@@ -14,6 +14,7 @@ import { can, isAdmin } from "../lib/permissions";
 import StatusPill from "./StatusPill";
 import LeadBubbles from "./LeadBubbles";
 import DashboardLoads from "./DashboardLoads";
+import { isNoiseItem, parseLineItems } from "../lib/itemSearch";
 
 interface Props {
   onNavigate: (t: any) => void;
@@ -559,11 +560,17 @@ export default function DashboardView({ onNavigate, me }: Props) {
               </div>
             ) : (
               <div className="divide-y divide-line-2">
-                {recentInvoices.map((inv) => (
-                  <button key={inv.id} onClick={() => onNavigate("invoices")}
+                {recentInvoices.map((inv) => {
+                  // R-490/R-491: what each one is for, as on the Invoices screen and the phone's Home; a row opens its invoice.
+                  const goods = parseLineItems(inv.line_items_json).map((it) => (it.description || "").trim()).filter((d) => d && !isNoiseItem(d));
+                  return (
+                  <button key={inv.id} onClick={() => { try { localStorage.setItem("invoices_open_id", inv.id); } catch { /* storage blocked: Invoices just opens */ } onNavigate("invoices"); }}
                     className="w-full flex items-center gap-3 px-5 py-2.5 text-left hover:bg-surface-2/40 transition-colors">
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-medium text-ink truncate">{clientName(inv.client_id)}</div>
+                      {goods.length > 0 && (
+                        <div className="text-[12.5px] text-ink-2 truncate">{goods.slice(0, 2).join(", ")}{goods.length > 2 ? ` and ${goods.length - 2} more` : ""}</div>
+                      )}
                       <div className="text-[11px] text-muted truncate">
                         <span className="font-mono">{inv.number}</span>
                         <span className="text-faint"> · due {inv.due_date.slice(0, 10)}</span>
@@ -574,7 +581,8 @@ export default function DashboardView({ onNavigate, me }: Props) {
                       <CompactAmount value={inv.total} />
                     </span>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

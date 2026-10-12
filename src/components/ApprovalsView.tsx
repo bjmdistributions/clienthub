@@ -84,6 +84,7 @@ function openTarget(t: NoticeTarget) {
   if (t.to === "load") { openLoadInLogistics(t.id, t.step); return; }
   if (t.to === "logistics") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "logistics" })); return; }
   if (t.to === "paytracker") { openPayTracker(); return; }
+  if (t.to === "bank") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "financials" })); return; }
   try { if (t.id) localStorage.setItem(BILL_OPEN_KEY, t.id); } catch { /* storage blocked: Bills just opens */ }
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "bills" }));
   setTimeout(() => window.dispatchEvent(new CustomEvent("bills-open")), 100);
@@ -97,7 +98,7 @@ const BTN_SOLID = "bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 round
 const BTN_LINE = "border border-line text-ink-2 hover:bg-surface-3 px-4 h-9 rounded-lg text-[13px] font-medium";
 // The buttons keep one width inside a group, so the "when" column lines up whichever buttons a row has.
 // One width for every group (the widest, Approve and Reject), so the when column is one straight line down the screen.
-const BUTTONS_W: Record<NoticeGroup, string> = { bills: "w-[172px]", logistics: "w-[172px]", leads: "w-[172px]", customers: "w-[172px]", requests: "w-[172px]" };
+const BUTTONS_W: Record<NoticeGroup, string> = { bills: "w-[172px]", logistics: "w-[172px]", bank: "w-[172px]", leads: "w-[172px]", customers: "w-[172px]", requests: "w-[172px]" };
 
 /** A row plus whatever it was made from, so its buttons know what to act on. */
 type Item = NoticeRow & { n?: LeadNotification; c?: Client; a?: ApprovalRequest };

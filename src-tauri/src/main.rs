@@ -552,7 +552,7 @@ fn main() {
                 });
             }
 
-            // Plaid bank feed: pull once ~30s after startup, then every 20 minutes.
+            // Plaid bank feed: pull once ~30s after startup, then every 10 minutes (R-493, was 20).
             // Best-effort — plaid_sync errors when no banks are connected or keys are
             // missing, so we just log and keep looping. This also backfills Plaid's
             // progressively-extracted history without the user clicking Sync.
@@ -562,12 +562,47 @@ fn main() {
                     Ok(v) => tracing::info!("plaid auto-sync: imported {}", v.get("imported").and_then(|n| n.as_i64()).unwrap_or(0)),
                     Err(e) => tracing::warn!("plaid auto-sync failed: {}", e),
                 }
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1200));
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
                 loop {
                     interval.tick().await;
                     match commands::plaid_sync().await {
                         Ok(v) => tracing::info!("plaid auto-sync: imported {}", v.get("imported").and_then(|n| n.as_i64()).unwrap_or(0)),
                         Err(e) => tracing::warn!("plaid auto-sync failed: {}", e),
+                    }
+                }
+            });
+
+            // R-493: the Plaid doorbell. Plaid rings the server the moment it has new transactions for an item (the
+            // webhook each item names); once a minute this asks the server whether an item this desktop holds rang
+            // since the last look, and syncs at once if one did. The 10-minute pull above is the backup for a missed
+            // ring. The first pass names this desktop's items to the server and points each item's webhook there.
+            tauri::async_runtime::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+                // The items last named to the server; a bank linked later is named on the next pass.
+                let mut registered: Vec<String> = Vec::new();
+                let mut last_seen = chrono::Utc::now().to_rfc3339();
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    let Some(cfg) = netsync::config() else { continue };
+                    let items = commands::plaid_doorbell_items();
+                    if items.is_empty() { continue; }
+                    let ids: Vec<String> = items.iter().map(|(id, _, _)| id.clone()).collect();
+                    if registered != ids && netsync::register_doorbell(&ids).await {
+                        let hook = format!("{}/api/bank/doorbell/ring", cfg.url.trim_end_matches('/'));
+                        for (id, token, env) in &items {
+                            if !registered.contains(id) { plaid::webhook_update(token, env, &hook).await; }
+                        }
+                        registered = ids.clone();
+                    }
+                    let Some(rings) = netsync::doorbell_rings().await else { continue };
+                    let newest = rings.into_iter().filter(|(id, _)| ids.contains(id)).map(|(_, at)| at).max();
+                    if let Some(at) = newest.filter(|at| *at > last_seen) {
+                        last_seen = at;
+                        match commands::plaid_sync().await {
+                            Ok(v) => tracing::info!("plaid doorbell sync: imported {}", v.get("imported").and_then(|n| n.as_i64()).unwrap_or(0)),
+                            Err(e) => tracing::warn!("plaid doorbell sync failed: {}", e),
+                        }
                     }
                 }
             });

@@ -272,6 +272,10 @@ export interface PushPrefs {
   /** R-450: a booking sent to Logistics, as a push and as an email. Absent on an older server. */
   logistics?: boolean;
   logistics_email?: boolean;
+  /** R-459: a quote from logistics is ready, or a BOL was uploaded. */
+  quotes?: boolean;
+  /** R-493: a new bank transaction. */
+  bank?: boolean;
 }
 
 export interface PushPrefsResponse {

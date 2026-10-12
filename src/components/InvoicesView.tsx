@@ -503,11 +503,20 @@ export default function InvoicesView() {
               // R-234: when a search is running, show WHICH goods matched, with
               // what they fetched. That is the whole point of searching by item.
               const hits = searching ? matchingItems(parseLineItems(inv.line_items_json), qTokens) : [];
+              // R-490: what the invoice is for, under the client, on every row. Freight is a charge, not an item.
+              const goods = parseLineItems(inv.line_items_json).map((it) => (it.description || "").trim()).filter((d) => d && !isNoiseItem(d));
               return (
                 <Fragment key={inv.id}>
                 <tr className={`border-b border-line-2 last:border-0 hover:bg-surface-2 cursor-pointer transition-colors ${rowIdx % 2 === 1 ? "bg-surface-2/40" : ""} ${voided ? "opacity-55" : ""}`} onClick={() => openDetail(inv.id)}>
                   <td className="px-4 py-3 font-mono text-[11px] text-muted">{inv.number}</td>
-                  <td className="px-4 py-3 text-[13px] font-medium text-ink">{clientName(inv.client_id)}</td>
+                  <td className="px-4 py-3 max-w-[320px]">
+                    <div className="text-[13px] font-medium text-ink truncate">{clientName(inv.client_id)}</div>
+                    {goods.length > 0 && (
+                      <div className="text-[12.5px] text-ink-2 truncate mt-0.5" title={goods.join(", ")}>
+                        {goods.slice(0, 2).join(", ")}{goods.length > 2 ? ` and ${goods.length - 2} more` : ""}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.issue_date.slice(0, 10)}</td>
                   <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.due_date.slice(0, 10)}</td>
                   <td className={`px-4 py-3 text-[13px] font-semibold text-ink tabular-nums ${voided ? "line-through" : ""}`}>{fmtAmount(inv.total)}</td>

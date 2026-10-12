@@ -3,7 +3,7 @@ import type { LeadNotification } from "./api";
 import {
   ADMIN_NOTICE_KINDS, ALERT_ONLY_NOTICE_KINDS, ALERT_NOTICE_KINDS, NEEDS_YOU_NOTICE_KINDS, DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, PAY_TRACKER_KEY, PAY_TRACKER_SUB, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, RAISE_CAP, SEEN_CAP, canOpenTarget, canReadTeamNotices, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
   logisticsBellCount, mergeSeen, noticeTarget, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
-  GROUP_LABEL, GROUP_ORDER, bellCountOf, bellTitle, canSeeGroup, compareRows, customerRow, dueDayOf, groupRows, leadNoticesOf, noticeRow, requestRow, whenWearsUrgency, whenWords,
+  GROUP_LABEL, GROUP_ORDER, bellCountOf, bellTitle, canSeeGroup, compareRows, customerRow, dueDayOf, groupRows, leadNoticesOf, noticeRow, requestRow, switchOf, switchOn, whenWearsUrgency, whenWords,
   type NoticeLoad, type NoticeRow,
 } from "./notices";
 
@@ -488,7 +488,7 @@ describe("the order of the screen", () => {
       row({ key: "unsub", group: "requests", kind: "unsubscribe", urgency: "info" }),
     ];
     expect(groupRows(rows).map((g) => g.group)).toEqual(["logistics", "customers", "leads", "bills", "requests"]);
-    expect(GROUP_ORDER).toEqual(["bills", "logistics", "customers", "requests", "leads"]);
+    expect(GROUP_ORDER).toEqual(["bills", "logistics", "bank", "customers", "requests", "leads"]);
   });
   it("a group with nothing in it is left out, and the input is not reordered", () => {
     const rows = [row({ key: "b", urgency: "info", kind: "bill_paid" }), row({ key: "a", urgency: "overdue", kind: "bill_overdue" })];
@@ -610,5 +610,45 @@ describe("no text on the screen carries an em dash", () => {
   it("every label, group name and tooltip is plain", () => {
     const words = [...Object.values(NOTICE_KIND_LABEL), ...Object.values(GROUP_LABEL), "To review", "Delete request", "Unsubscribed", "New lead", "Supplier details", bellTitle(0), bellTitle(1), bellTitle(4)];
     for (const w of words) expect(w).not.toMatch(/[—–]/);
+  });
+});
+
+describe("R-493: a new bank row", () => {
+  const dep = note("b1", "bank_txn", { title: "New deposit", body: "$12,400.00", created_at: hoursAgo(1) });
+  it("is listed in its own Bank group as the amount under New deposit, for your information", () => {
+    const r = noticeRow(dep)!;
+    expect(r.group).toBe("bank");
+    expect(r.label).toBe("New deposit");
+    expect(r.subject).toBe("$12,400.00");
+    expect(r.urgency).toBe("info");
+    expect(GROUP_LABEL.bank).toBe("Bank");
+  });
+  it("raises an alert but never counts on the bell, and opens Financials for someone who reads the books", () => {
+    expect(ALERT_ONLY_NOTICE_KINDS).toContain("bank_txn");
+    expect(bellCountOf({ pendingCustomers: 0, requests: [], notices: [dep] })).toBe(0);
+    expect(planTeamRaise([dep], [], NOW).raise.map((n) => n.id)).toEqual(["b1"]);
+    expect(noticeTarget(dep)).toEqual({ to: "bank" });
+    expect(canOpenTarget({ to: "bank" }, { permissions: ["financials:view"] } as never)).toBe(true);
+    expect(canOpenTarget({ to: "bank" }, { permissions: ["deal_flow:view"] } as never)).toBe(false);
+    expect(canSeeGroup("bank", { permissions: ["deal_flow:view"] } as never)).toBe(false);
+  });
+});
+
+describe("R-492: the switches that decide a pop-up", () => {
+  it("map each kind to the same switch the phone uses", () => {
+    expect(switchOf("bill_overdue")).toBe("bills");
+    expect(switchOf("carrier_due")).toBe("bills");
+    expect(switchOf("logistics_pay_due")).toBe("bills");
+    expect(switchOf("logistics_quote")).toBe("quotes");
+    expect(switchOf("logistics_bol")).toBe("quotes");
+    expect(switchOf("bank_txn")).toBe("bank");
+    expect(switchOf("supply_lead")).toBeNull();
+  });
+  it("count a switch as on unless it is stored off, and a failed read keeps every alert", () => {
+    expect(switchOn({ bank: false }, "bank")).toBe(false);
+    expect(switchOn({ bank: true }, "bank")).toBe(true);
+    expect(switchOn({}, "bank")).toBe(true);
+    expect(switchOn(null, "bank")).toBe(true);
+    expect(switchOn({ bank: false }, null)).toBe(true);
   });
 });

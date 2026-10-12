@@ -116,6 +116,7 @@ import { GoogleCloudGuide } from "./GoogleCloudGuide";
 import CrossDock from "./CrossDock";
 import { pushApi, type PushPrefs, type PushPrefsResponse } from "../lib/billsApi";
 import { DESKTOP_NOTIFY_KEY, PAY_TRACKER_KEY, desktopNoticesOn } from "../lib/notices";
+import { noticePrefsChanged } from "../lib/useNotices";
 
 // Opens the matching section of the website setup guide in the browser.
 function GuideLink({ section }: { section: string }) {
@@ -289,7 +290,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "account", label: "Replay the getting-started tour", kw: "onboarding walkthrough welcome tour" },
   { tab: "account", card: "My Plan", label: "My plan", kw: "subscription tier usage limits seats clients team members upgrade" },
   { tab: "account", card: "Desktop notifications", label: "Desktop notifications", kw: "system alerts popups quote needed carrier due overdue bill pay day logistics pay bol uploaded windows mac notify" },
-  { tab: "account", card: "Phone notifications", label: "Phone notifications", kw: "push alerts iphone bills due overdue form submissions inventory renew listings notify" },
+  { tab: "account", card: "Notifications", label: "Notifications", kw: "push alerts iphone phone bills due overdue form submissions inventory renew listings bank deposit charge activity quotes logistics booking notify which" },
   // Appearance
   { tab: "appearance", card: "Theme", label: "Theme", kw: "dark mode light mode colour scheme mono monochrome grayscale" },
   { tab: "appearance", card: "Accent Color", label: "Accent colour", kw: "accent color orange indigo blue emerald teal violet amber rose swatch brand colour" },
@@ -915,7 +916,7 @@ function DesktopNotificationsCard() {
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
           <div className="text-[13px] font-medium text-ink">Desktop notifications</div>
-          <div className="text-[11.5px] text-muted mt-0.5">A quote is needed, a load is ready to book, a carrier or a bill is due or overdue, a BOL is uploaded to a load, or it is the day to pay logistics. The bell still counts what needs you when this is off.</div>
+          <div className="text-[11.5px] text-muted mt-0.5">Pop-ups on this computer for what you switched on under Notifications. The bell still counts what needs you when this is off.</div>
         </div>
         <ClauseSwitch on={on} onClick={flip} label="Desktop notifications" />
       </div>
@@ -923,15 +924,17 @@ function DesktopNotificationsCard() {
   );
 }
 
-// R-448: which phone notifications the signed-in person gets. The server keeps the choice per
-// person, so the same switches show on the phone. Only the categories this person's permissions
-// allow are listed, and nothing shows at all when the server cannot be reached (local-first, like
-// My plan above).
+// R-448: which notifications the signed-in person gets. The server keeps the choice per person, so the same
+// switches show on the phone. R-492: they decide this computer's pop-ups too, so one choice covers both. Only the
+// categories this person's permissions allow are listed, and nothing shows at all when the server cannot be
+// reached (local-first, like My plan above).
 const PHONE_ROWS: { key: keyof PushPrefs; label: string; hint: string }[] = [
-  { key: "bills", label: "Bills", hint: "A bill is due soon, is overdue, or has been paid." },
+  { key: "bills", label: "Bills", hint: "A bill or a carrier is due soon or overdue, a bill has been paid, or it is the logistics pay day." },
+  { key: "bank", label: "Bank activity", hint: "Each new deposit or charge, with its amount." },
+  { key: "quotes", label: "Quotes from logistics", hint: "A quote is ready to put on the invoice, or a BOL was uploaded." },
   { key: "forms", label: "Form submissions", hint: "A new supplier lead, call request or storefront offer." },
   { key: "inventory", label: "Inventory", hint: "Listings that need renewing. Off until you turn it on." },
-  { key: "logistics", label: "New logistics bookings", hint: "A booking is sent to Logistics." },
+  { key: "logistics", label: "Logistics: quotes and bookings", hint: "A load needs a quote, or its quote was accepted and it is ready to book." },
   { key: "logistics_email", label: "Email me new bookings", hint: "The same, by email, even without the app." },
 ];
 
@@ -946,13 +949,13 @@ function PhoneNotificationsCard() {
     const next = !r.prefs[key];
     setBusy(key);
     setR({ ...r, prefs: { ...r.prefs, [key]: next } });
-    try { setR(await pushApi.set({ [key]: next })); } catch (e) {
+    try { setR(await pushApi.set({ [key]: next })); noticePrefsChanged(); } catch (e) {
       setR(r);
       toast(String(e), "error");
     } finally { setBusy(""); }
   };
   return (
-    <SettingCard icon={Smartphone} title="Phone notifications" purpose="Choose what Ecliptr tells you about on your iPhone, and for Logistics, by email." collapsible={false}>
+    <SettingCard icon={Smartphone} title="Notifications" purpose="Choose what Ecliptr tells you about, on your iPhone and in this computer's pop-ups." collapsible={false}>
       <div className="divide-y divide-line-2">
         {rows.map((row) => (
           <div key={row.key} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">

@@ -960,8 +960,9 @@ function DealFlowCard({
     : (settled ? "part" : "part-owed");
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
   const [invItems,  setInvItems]  = useState<{ description: string; qty: number; rate: number; amount: number }[]>([]);
-  const [invMeta,   setInvMeta]   = useState<{ subtotal: number; tax: number; total: number; number: string } | null>(null);
-  const [showInvoice, setShowInvoice] = useState(false);
+  const [invMeta,   setInvMeta]   = useState<{ subtotal: number; tax: number; total: number; number: string; issued: string; due: string } | null>(null);
+  // R-489: Schedule and Freight fold into one line until opened.
+  const [showSched, setShowSched] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [reconLinked, setReconLinked] = useState(false);
 
@@ -1029,7 +1030,7 @@ function DealFlowCard({
     api.getInvoice(flow.invoice_id)
       .then((inv) => {
         setInvStatus(inv.status);
-        setInvMeta({ subtotal: inv.subtotal ?? 0, tax: inv.tax ?? 0, total: inv.total ?? 0, number: inv.number ?? "" });
+        setInvMeta({ subtotal: inv.subtotal ?? 0, tax: inv.tax ?? 0, total: inv.total ?? 0, number: inv.number ?? "", issued: inv.issue_date ?? "", due: inv.due_date ?? "" });
         try {
           const li: any[] = JSON.parse(inv.line_items_json || "[]");
           setInvItems(li.map((it: any) => ({ description: it.description, qty: it.qty, rate: it.rate ?? 0, amount: it.amount ?? 0 })));
@@ -1091,9 +1092,10 @@ function DealFlowCard({
             </span>
           </div>
           {lines && <DealLines lines={lines} />}
-          {invItems.length > 0 && (
-            <div className="text-[11px] text-muted truncate mt-0.5">
-              {invItems.map((it) => it.qty > 1 ? `${it.qty}× ${it.description}` : it.description).join(" · ")}
+          {/* R-489: what was sold, at reading size; freight and shipping lines are charges, not goods. */}
+          {invItems.some((it) => !isShippingLine(it.description)) && (
+            <div className="text-[13px] text-ink-2 truncate mt-0.5">
+              {invItems.filter((it) => !isShippingLine(it.description)).map((it) => it.qty > 1 ? `${it.qty}× ${it.description}` : it.description).join(" · ")}
             </div>
           )}
         </div>
@@ -1184,7 +1186,8 @@ function DealFlowCard({
               <CheckCircle2 size={10} /> Reconciled
             </span>
           )}
-          <button
+          {/* R-489: shown when there is a refund to read; a deal without one starts it from the Refund step. */}
+          {refundState !== null && <button
             onClick={(e) => { e.stopPropagation(); setIsOpen(true); go("refund"); }}
             title={refund ? `${fmtAmount(refundPaid)} of ${fmtAmount(refundOwed)} refunded` : undefined}
             className={
@@ -1202,7 +1205,7 @@ function DealFlowCard({
               : refundState === "part-owed" ? `Partial refund owed ${fmtAmount(refundLeft)}`
               : refundState === "full-owed" ? `Refund owed ${fmtAmount(refundLeft)}`
               : "Refund"}
-          </button>
+          </button>}
           <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
         </div>
       </button>
@@ -1242,11 +1245,68 @@ function DealFlowCard({
             </div>
           )}
 
-          {/* Schedule — a property of the deal, not one of the money steps,
-              so it sits above the switcher and is always on screen once the
-              card is open rather than buried inside a step. */}
-          <ShippingStrip flow={flow} onReload={onReload} locked={locked} />
-          <FreightPanel dealFlowId={flow.id} locked={locked} onReload={onReload} />
+          {/* R-489: the invoice at a glance, first: what was sold, the total, whether the buyer has paid. */}
+          {invItems.length > 0 && (
+            <div className="mx-5 mt-4 rounded-xl border border-line bg-surface">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 pt-3">
+                <span className="text-[14px] font-semibold text-ink">Invoice <span className="font-mono">{invMeta?.number || flow.invoice_number}</span></span>
+                <span className={`text-[12px] font-medium px-2 py-0.5 rounded-full ${invPill.cls}`}>{invPill.label}</span>
+                {invMeta && (invMeta.issued || invMeta.due) && (
+                  <span className="text-[12.5px] text-muted">
+                    {[invMeta.issued && `Issued ${parseLocalDay(invMeta.issued.slice(0, 10)).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+                      invMeta.due && `due ${parseLocalDay(invMeta.due.slice(0, 10)).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`].filter(Boolean).join(", ")}
+                  </span>
+                )}
+                <button onClick={() => {
+                    try { localStorage.setItem("invoices_open_id", flow.invoice_id); } catch { /* storage blocked: Invoices just opens */ }
+                    window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
+                  }}
+                  className="ml-auto text-[12.5px] font-medium px-3 h-8 rounded-lg border border-line text-ink-2 hover:bg-surface-2 transition-colors">
+                  Open invoice
+                </button>
+              </div>
+              <table className="w-full text-[13px] mt-2">
+                <tbody>
+                  {invItems.map((it, i) => (
+                    <tr key={i} className="border-t border-line-2">
+                      <td className="pl-4 py-2 w-16 tabular-nums text-muted">{it.qty} ×</td>
+                      <td className="py-2 text-ink">{it.description}</td>
+                      <td className="py-2 text-right tabular-nums text-muted w-24">{fmtAmount(it.rate)}</td>
+                      <td className="pr-4 py-2 text-right tabular-nums font-medium text-ink w-28">{fmtAmount(it.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="border-t border-line-2 px-4 py-2.5 flex flex-wrap items-baseline justify-end gap-x-5 gap-y-1 text-[13px]">
+                {!isComplete && (
+                  <span className={pay.hasCost && pay.buyerIn ? "text-success-ink font-medium" : "text-warning-ink font-medium"} title={pay.title}>
+                    {pay.buyerIn ? "Buyer paid" : pay.label}
+                  </span>
+                )}
+                {invMeta && invMeta.tax > 0.005 && <span className="text-muted">Tax <span className="tabular-nums text-ink-2">{fmtAmount(invMeta.tax)}</span></span>}
+                <span className="text-muted">Total <span className="tabular-nums font-semibold text-ink">{fmtAmount(invMeta?.total ?? flow.invoice_total)}</span></span>
+              </div>
+            </div>
+          )}
+
+          {/* R-489: Schedule and Freight, one line that says where the deal stands until it is opened. They used to be
+              two always-open panels of fields and help text above the steps. */}
+          <div className="mx-5 mt-3">
+            <button onClick={() => setShowSched((v) => !v)} aria-expanded={showSched}
+              className="w-full flex items-center gap-2 py-2 text-left">
+              <ChevronRight size={14} className={`text-muted flex-shrink-0 transition-transform ${showSched ? "rotate-90" : ""}`} />
+              <span className="text-[13px] font-semibold text-ink flex-shrink-0">Schedule and freight</span>
+              <span className="text-[12.5px] text-muted truncate min-w-0">
+                {flow.ships_direct ? "Ships direct"
+                  : [flow.pickup_date && `Pickup ${parseLocalDay(flow.pickup_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+                     flow.expected_delivery_date && `delivery ${parseLocalDay(flow.expected_delivery_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`].filter(Boolean).join(", ") || "No dates set"}
+              </span>
+            </button>
+          </div>
+          {showSched && <>
+            <ShippingStrip flow={flow} onReload={onReload} locked={locked} />
+            <FreightPanel dealFlowId={flow.id} locked={locked} onReload={onReload} />
+          </>}
 
           {/* Section switcher — always visible, click any step */}
           <div className="border-t border-line">
@@ -1268,39 +1328,6 @@ function DealFlowCard({
               >
                 {editMode ? "Done editing" : "Edit"}
               </button>
-            </div>
-          )}
-
-          {/* Invoice breakdown — reference, collapsed by default */}
-          {invItems.length > 0 && (
-            <div className="px-5 pt-2">
-              <button onClick={() => setShowInvoice((v) => !v)}
-                className="flex items-center gap-1.5 text-[11.5px] text-muted hover:text-ink-2 transition-colors">
-                <ChevronRight size={12} className={`transition-transform ${showInvoice ? "rotate-90" : ""}`} />
-                Invoice breakdown{invMeta?.number ? ` · ${invMeta.number}` : ""}
-              </button>
-              {showInvoice && (
-                <table className="w-full text-[12px] mt-2">
-                  <thead>
-                    <tr className="text-muted">
-                      <th className="text-left font-semibold py-1">Description</th>
-                      <th className="text-right font-semibold py-1 w-12">Qty</th>
-                      <th className="text-right font-semibold py-1 w-20">Rate</th>
-                      <th className="text-right font-semibold py-1 w-24">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {invItems.map((it, i) => (
-                      <tr key={i} className="border-t border-line-2">
-                        <td className="py-1.5 text-ink-2">{it.description}</td>
-                        <td className="py-1.5 text-right tabular-nums text-muted">{it.qty}</td>
-                        <td className="py-1.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>
-                        <td className="py-1.5 text-right tabular-nums font-medium text-ink">{fmtAmount(it.amount)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
             </div>
           )}
 
@@ -1522,9 +1549,6 @@ function SectionRefund({ flow, onReload }: { flow: DealFlow; onReload: () => voi
     <div className="space-y-4">
       <div className="min-w-0">
         <div className="text-[14px] font-semibold text-ink">Refund</div>
-        <div className="text-[12px] text-muted mt-0.5">
-          What is owed back to the buyer, what has gone out, and anything the supplier owes us.
-        </div>
       </div>
       <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
     </div>
@@ -1754,7 +1778,6 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
     <div className="space-y-4">
       <div>
         <div className="text-[14px] font-semibold text-ink">Supplier &amp; cost</div>
-        <div className="text-[12px] text-muted mt-0.5">What you're paying for the goods. Shipping is on its own step.</div>
         {/* R-315: the two figures side by side, so a glance never confuses a cost
             Jack pays himself with money actually owed to the supplier. */}
         {existingPayments.length > 0 && (
@@ -2021,10 +2044,6 @@ function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: 
     <div className="space-y-4">
       <div>
         <div className="text-[14px] font-semibold text-ink">Link financials</div>
-        <div className="text-[12px] text-muted mt-0.5">
-          Pair the real bank transactions to this deal: buyer payment, supplier payment, shipping payment, wire fees, refunds.
-          Anything you link here (or from Bank statements) is what the recorded profit is built from.
-        </div>
       </div>
 
       <ReconciliationPanel flow={flow} onChange={onReload} />
@@ -2108,11 +2127,6 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
     <div className="space-y-4">
       <div>
         <div className="text-[14px] font-semibold text-ink">Profit from financials</div>
-        <div className="text-[12px] text-muted mt-0.5">
-          {anyLinked
-            ? "Derived from the bank transactions you linked. This is what gets recorded and shown in analytics."
-            : "No bank transactions linked yet. Until you link some, the recorded profit uses the figures you entered."}
-        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2">

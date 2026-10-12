@@ -104,7 +104,7 @@ pub async fn create_link_token() -> Result<String> {
         "language": "en"
     });
     if let Some(cfg) = crate::netsync::config() {
-        body["webhook"] = json!(format!("{}/api/plaid/webhook", cfg.url.trim_end_matches('/')));
+        body["webhook"] = json!(format!("{}/api/bank/doorbell/ring", cfg.url.trim_end_matches('/')));  // R-493: the server's doorbell
     }
     let v = post("/link/token/create", body).await?;
     v.get("link_token").and_then(|t| t.as_str()).map(String::from)
@@ -127,7 +127,7 @@ pub async fn create_hosted_link() -> Result<(String, String)> {
         "hosted_link": {}
     });
     if let Some(cfg) = crate::netsync::config() {
-        body["webhook"] = json!(format!("{}/api/plaid/webhook", cfg.url.trim_end_matches('/')));
+        body["webhook"] = json!(format!("{}/api/bank/doorbell/ring", cfg.url.trim_end_matches('/')));  // R-493: the server's doorbell
     }
     let v = post("/link/token/create", body).await?;
     let token = v.get("link_token").and_then(|t| t.as_str()).map(String::from)
@@ -192,6 +192,12 @@ pub async fn transactions_sync(access_token: &str, cursor: &str, env: &str) -> R
 pub async fn transactions_refresh(access_token: &str, env: &str) -> Result<()> {
     let _ = post_raw_env("/transactions/refresh", json!({ "access_token": access_token }), env).await;
     Ok(())
+}
+
+/// R-493: point an item's webhook at this server's doorbell. Items linked before a server was connected carry no
+/// webhook, so Plaid never rang for them. Best-effort, like the refresh above.
+pub async fn webhook_update(access_token: &str, env: &str, url: &str) {
+    let _ = post_raw_env("/item/webhook/update", json!({ "access_token": access_token, "webhook": url }), env).await;
 }
 
 /// Best-effort: tell Plaid to forget an item when the user disconnects a bank.

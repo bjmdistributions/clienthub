@@ -20241,6 +20241,13 @@ pub async fn plaid_remove_item(id: String) -> Result<(), String> {
 /// ledger (dedup on Plaid's transaction_id; cursor-based incremental sync).
 #[tauri::command]
 pub async fn plaid_sync() -> Result<Value, String> {
+    // R-493: one sync at a time, whoever asks (the timer, the doorbell, Sync now, Refresh from bank). Two passes
+    // reading the same cursor would each import the same page.
+    let _gate = plaid_gate().lock().await;
+    // R-493: a row new to the books raises a bank alert, but not history a fresh link back-fills: only rows
+    // posted on or after this day.
+    let alert_since = (chrono::Local::now().date_naive() - chrono::Duration::days(3)).format("%Y-%m-%d").to_string();
+    let mut fresh_rows: Vec<Value> = Vec::new();
     // R-256: every row this sync imports is stamped at or after this instant, which is
     // how the rule pass at the end knows which rows it may re-tag.
     let rules_since = Utc::now().to_rfc3339();
@@ -20745,6 +20752,10 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         break;
                     }
                     item_imported += 1;
+                    // R-493: the posted twin of a pending row was alerted as the pending row, so it is not news.
+                    if pend.is_none() && date.to_string() >= alert_since {
+                        fresh_rows.push(json!({ "id": id, "amount": amount, "money_in": direction == "in" }));
+                    }
                     // The normal same-page settle: the posted twin was just inserted, so
                     // move the pending row's booking onto it and retire the pending row as
                     // ONE operation — no instant exists in which both rows carry allocations.
@@ -21109,6 +21120,10 @@ pub async fn plaid_sync() -> Result<Value, String> {
         );
     }
     if imported > 0 || amended > 0 { crate::bank_backup::spawn_auto_backup(); } // mirror new activity to the safety-log sheet
+    // R-493: the server raises one notice per new row and a phone push; this desktop's pop-up follows from the notice.
+    if !fresh_rows.is_empty() {
+        tokio::spawn(crate::netsync::report_bank_activity(fresh_rows));
+    }
     Ok(json!({
         "imported": imported, "removed": removed, "amended": amended,
         "over_allocated": amended_over_allocated,
@@ -21135,6 +21150,22 @@ pub async fn plaid_sync() -> Result<Value, String> {
         "held_reference_collision": held_reference_collision, // same reference as a BOOKED row — held, not imported
         "preparing": preparing, "results": results,
     }))
+}
+
+/// R-493: the gate `plaid_sync` holds for its whole pass.
+fn plaid_gate() -> &'static tokio::sync::Mutex<()> {
+    static GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// R-493: the Plaid items this desktop holds, as (item id, access token, env), for the doorbell. Items with no
+/// item id (linked before it was stored) are left out: they still sync on the timer.
+pub fn plaid_doorbell_items() -> Vec<(String, String, String)> {
+    let Ok(conn) = pool().get() else { return Vec::new() };
+    let Ok(mut st) = conn.prepare("SELECT COALESCE(item_id,''), access_token, env FROM plaid_items") else { return Vec::new() };
+    st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+        .map(|rows| rows.filter_map(|r| r.ok()).filter(|(id, _, _)| !id.is_empty()).collect())
+        .unwrap_or_default()
 }
 
 /// Force a full re-pull: reset every bank's sync cursor to the start, then sync.

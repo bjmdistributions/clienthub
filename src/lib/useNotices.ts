@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, isUnavailable, type FreightBooking, type LeadNotification, type Me } from "./api";
 import {
-  canReadTeamNotices, canSeeTeamNotices, desktopNoticesOn, leadNoticesOf, logisticsBellCount, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
+  canReadTeamNotices, canSeeTeamNotices, desktopNoticesOn, leadNoticesOf, logisticsBellCount, planDerived, planTeamRaise, readSeen, seenKey, switchOf, switchOn, teamNoticesOf, writeSeen,
 } from "./notices";
+import { pushApi } from "./billsApi";
 import { isAdmin, isLogisticsOnly } from "./permissions";
 import { routeLabel } from "../components/LogisticsBookingForm";
 
@@ -25,6 +26,19 @@ function raise(items: { title: string; body: string }[]) {
   if (!desktopNoticesOn(store())) return;
   for (const it of items) api.showDesktopNotification(it.title, it.body).catch(() => {});
 }
+
+/** R-492: the person's switches (Settings, Notifications), read at most every five minutes. The same ones decide
+ *  the phone's pushes, so turning Bank activity off quiets both. A failed read keeps every alert on. */
+let prefsAt = 0;
+let prefsCache: Record<string, boolean> | null = null;
+async function noticePrefs(): Promise<Record<string, boolean> | null> {
+  if (Date.now() - prefsAt < 5 * 60_000) return prefsCache;
+  prefsAt = Date.now();
+  try { prefsCache = (await pushApi.get()).prefs as unknown as Record<string, boolean>; } catch { prefsCache = null; }
+  return prefsCache;
+}
+/** Settings calls this after a switch changes, so the next poll reads it. */
+export function noticePrefsChanged() { prefsAt = 0; }
 
 export interface NoticeState {
   /** The unread team notices, newest first. Empty for a person who does not see them. */
@@ -76,7 +90,8 @@ export function useNotices(me: Me | null | undefined): NoticeState {
     const plan = planTeamRaise(list, teamSeen.current, Date.now(), userId);
     teamSeen.current = plan.seen;
     writeSeen(store(), key, plan.seen);
-    raise(plan.raise.map((n) => ({ title: n.title, body: n.body })));
+    const prefs = plan.raise.length ? await noticePrefs() : null;
+    raise(plan.raise.filter((n) => switchOn(prefs, switchOf(n.kind))).map((n) => ({ title: n.title, body: n.body })));
   }, [teamOn, canRead, userId, admin]);
 
   const refreshLogistics = useCallback(async () => {
@@ -89,7 +104,9 @@ export function useNotices(me: Me | null | undefined): NoticeState {
     const plan = planDerived(bookings, derivedSeen.current, (b) => routeLabel(b as FreightBooking));
     derivedSeen.current = plan.seen;
     writeSeen(store(), key, plan.seen);
-    raise(plan.raise.map((n) => ({ title: n.title, body: n.body })));
+    // R-494: a Logistics person's quote and booking alerts follow their Logistics switch.
+    const prefs = plan.raise.length ? await noticePrefs() : null;
+    if (switchOn(prefs, "logistics")) raise(plan.raise.map((n) => ({ title: n.title, body: n.body })));
   }, [logisticsOnly, userId]);
 
   const refresh = useCallback(() => { refreshTeam(); refreshLogistics(); }, [refreshTeam, refreshLogistics]);
