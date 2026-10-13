@@ -35,6 +35,8 @@ describe("isFullAddress", () => {
     "1200 Hwy 50 Carson City NV 89701",
     "9 Depot Rd Suite 4 Reno NV 89501",
     "9 Depot Rd\nReno NV 89501",
+    "9 Depot Rd Dock B Reno NV 89501",
+    "9 Depot Rd NW Reno NV 89501",
   ];
   for (const a of full) it(`is full: ${JSON.stringify(a)}`, () => expect(isFullAddress(a)).toBe(true));
 
@@ -54,6 +56,8 @@ describe("isFullAddress", () => {
     ["1200 Park Ave NV 10001", "a street ending in a street word, no city", "city"],
     ["9 Depot Rd Suite 4 NV 89501", "a suite is not a city", "city"],
     ["9 Depot Rd #4 NV 89501", "a unit number is not a city", "city"],
+    ["9 Depot Rd NW NV 89501", "a direction is not a city", "city"],
+    ["9 Depot Rd Dock B NV 89501", "the word after a unit is part of the unit", "city"],
     ["Depot Rd Reno NV 89501", "no street number and no comma", "street"],
     ["89001", "only a ZIP", "state"],
     ["9 Depot Rd, Warehouse City, USA", "a country in place of state and ZIP", "zip"],

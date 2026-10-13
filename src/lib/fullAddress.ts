@@ -21,8 +21,10 @@ const STREET_ENDS = new Set([
   "tpke", "turnpike", "loop", "plz", "plaza", "expy", "expressway", "fwy", "freeway", "rte", "route", "xing",
   "crossing", "sq", "square", "aly", "alley",
 ]);
-/** R-502: words that name a unit inside a building, never a city ("Suite 4", "Dock B"). */
-const UNIT_WORDS = new Set(["suite", "ste", "unit", "apt", "bldg", "building", "fl", "floor", "dock", "door", "rm", "room"]);
+/** R-502: words that belong to the street when they sit between it and the city: a unit ("Suite 4", "Dock B") or a
+ *  direction ("Rd NW"). Never a city. The word right after a unit word ("B" in "Dock B") is part of the unit. */
+const UNIT_NAMES = ["suite", "ste", "unit", "apt", "bldg", "building", "fl", "floor", "dock", "door", "rm", "room"];
+const UNIT_WORDS = new Set([...UNIT_NAMES, "n", "s", "e", "w", "ne", "nw", "se", "sw"]);
 
 const word = (w: string) => w.replace(/\.+$/, "").toLowerCase();
 // resolveState reads a plain object, so "constructor" would come back as a function; only a string is a state.
@@ -31,8 +33,9 @@ const isState = (s: string) => typeof resolveState(s) === "string";
 /** What an address lacks to get a freight rate, or undefined when it has a street, a city, a US state and a 5 digit
  *  ZIP (or ZIP+4). The ZIP ends the address, the state is the one to three words just before it (code or full name,
  *  any case, comma or not), and what is left is the street and the city: two parts when a comma or new line splits
- *  them, else the street starts with its number and ends with a street word ("Rd") and the city follows it
- *  ("9 Depot Rd Reno NV 89501"). A country after the ZIP ("USA") and a full stop after a word do not matter. */
+ *  them, else the street starts with its number and runs to its street word ("Rd") and any unit, number or direction
+ *  after it ("Rd Suite 4", "Hwy 50"), and the city is what follows ("9 Depot Rd Reno NV 89501"). A country after the
+ *  ZIP ("USA") and a full stop after a word do not matter. The server's `read_address` is the same rule. */
 export function addressLack(addr: string | null | undefined): AddressLack | undefined {
   let parts = (addr ?? "").split(/[,\r\n]/).map((p) => p.trim().split(/\s+/).filter(Boolean)).filter((p) => p.length > 0);
   if (parts.length === 0) return "empty";
@@ -53,8 +56,11 @@ export function addressLack(addr: string | null | undefined): AddressLack | unde
   if (!/\d/.test(w[0])) return "street";
   let end = -1;
   w.forEach((x, i) => { if (STREET_ENDS.has(word(x))) end = i; });
-  const city = end >= 0 && w.slice(end + 1).some((x) => !/\d/.test(x) && !x.startsWith("#") && !UNIT_WORDS.has(word(x)));
-  return city ? undefined : "city";
+  if (end < 0) return "city";
+  const unit = (i: number) => /\d/.test(w[i]) || w[i].startsWith("#") || UNIT_WORDS.has(word(w[i])) || UNIT_NAMES.includes(word(w[i - 1]));
+  let cut = end + 1;
+  for (let i = end + 1; i < w.length; i++) if (unit(i)) cut = i + 1;
+  return cut < w.length ? undefined : "city";
 }
 
 /** A full address: `addressLack` finds nothing missing. */
