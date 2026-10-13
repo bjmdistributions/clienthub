@@ -647,24 +647,24 @@ html[data-accent="slate"] { --c-accent:51 65 85; --c-accent-hover:30 41 59;
   --accent-glow:rgba(51,65,85,.38); --accent-tint:rgba(51,65,85,.16); --shadow-indigo:0 4px 20px rgba(51,65,85,.22),0 1px 4px rgba(51,65,85,.12); }
 html.dark[data-accent="slate"] { --c-accent:203 213 225; --c-accent-hover:226 232 240; }
 
-/* ── Mono = monochrome. Forces the accent regardless of the selected color
+/* ── Mono = monochrome. Forces the accent to grey regardless of the selected color
    (placed after the data-accent blocks + uses [data-accent] specificity so it always
    wins). Applies in BOTH light and dark mono. Semantic success/warning/danger stay —
-   color only when it's useful. R-507 (2026-10-13): mono's one highlight is Apple teal,
-   the colour of a load on its way, the same as the phone. Dark-mono → systemTeal #40C8E0
-   with dark ink on it (9.7:1); light-mono → the accessible teal ink #0071A4 with white on it (5.4:1). ── */
+   color only when it's useful. Dark-mono → near-white accent on black; light-mono →
+   near-black accent on white. (R-507 tried a teal highlight here and it came back out:
+   mono's chrome stays grey, teal is for meaning.) ── */
 html.matte.dark, html.matte.dark[data-accent] {
-  --c-accent: 64 200 224; --c-accent-hover: 47 179 202; --c-on-accent: 17 17 19;
+  --c-accent: 232 232 236; --c-accent-hover: 200 200 206; --c-on-accent: 17 17 19;
   --c-accent-fill: initial; --c-accent-fill-hover: initial; /* back to the accent itself */
-  --accent-50:#0B2227; --accent-100:#10323A; --accent-400:#2591A5; --accent-500:#2FB3CA; --accent-600:#40C8E0; --accent-700:#7FDAEA;
-  --accent-glow:rgba(64,200,224,.30); --accent-tint:rgba(64,200,224,.14);
-  --color-primary:#40C8E0; --color-primary-hover:#2FB3CA; --color-primary-light:#10323A; --color-primary-glow:rgba(64,200,224,.18);
+  --accent-50:#161618; --accent-100:#202024; --accent-400:#8A8A92; --accent-500:#C8C8CE; --accent-600:#E8E8EC; --accent-700:#F4F4F6;
+  --accent-glow:rgba(255,255,255,.10); --accent-tint:rgba(255,255,255,.07);
+  --color-primary:#E8E8EC; --color-primary-hover:#C8C8CE; --color-primary-light:#202024; --color-primary-glow:rgba(255,255,255,.10);
 }
 html.matte:not(.dark), html.matte:not(.dark)[data-accent] {
-  --c-accent: 0 113 164; --c-accent-hover: 0 95 138; --c-on-accent: 255 255 255;
-  --accent-50:#E6F4F8; --accent-100:#CCE8F1; --accent-400:#30B0C7; --accent-500:#0089B8; --accent-600:#0071A4; --accent-700:#005F8A;
-  --accent-glow:rgba(0,113,164,.18); --accent-tint:rgba(0,113,164,.08);
-  --color-primary:#0071A4; --color-primary-hover:#005F8A; --color-primary-light:#E6F4F8; --color-primary-glow:rgba(0,113,164,.12);
+  --c-accent: 24 24 27; --c-accent-hover: 39 39 42; --c-on-accent: 255 255 255;
+  --accent-50:#F4F4F5; --accent-100:#E4E4E7; --accent-400:#71717A; --accent-500:#3F3F46; --accent-600:#27272A; --accent-700:#18181B;
+  --accent-glow:rgba(0,0,0,.14); --accent-tint:rgba(0,0,0,.06);
+  --color-primary:#18181B; --color-primary-hover:#27272A; --color-primary-light:#F4F4F5; --color-primary-glow:rgba(0,0,0,.12);
 }
 
 /* ── Accent-aware active state (Settings nav rail, theme toggle).

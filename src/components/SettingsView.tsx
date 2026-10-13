@@ -1101,7 +1101,7 @@ function AppearanceTab() {
         <span className="flex-1 min-w-0">
           <span className={`block text-[13px] font-semibold ${matte ? "text-ink" : "text-ink-2"}`}>Mono</span>
           <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
-            Black and white with a teal highlight; pure black in dark, clean white in light.
+            Monochrome, strips accent color; pure black in dark, clean white/black in light.
           </span>
         </span>
         <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${matte ? "bg-accent" : "bg-surface-3"}`}>
