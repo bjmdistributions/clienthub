@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ADDRESS_HINT, addressNote, isFullAddress, keptPickupRows, relabelAddressGap, relabelPickupError } from "./fullAddress";
+import { ADDRESS_EXAMPLE, ADDRESS_HINT, addressLack, addressNote, isFullAddress, keptPickupRows, relabelAddressGap, relabelPickupError } from "./fullAddress";
 
 // R-483: invented addresses. The server's full_address is tested against the same cases.
 describe("isFullAddress", () => {
@@ -20,36 +20,61 @@ describe("isFullAddress", () => {
     "1 Main St, Charleston, West Virginia 25301",
     "1 Main St, Washington, District of Columbia 20001",
     "1 Main St, San Juan, PR 00901",
+    // R-502: the ways people write an address that R-483 refused (the server's list, case for case).
+    "9 Depot Rd, Warehouse City NV 89001",
+    "9 Depot Rd, Reno NV 89501",
+    "9 Depot Rd, Reno nv 89501",
+    "9 Depot Rd Warehouse City NV 89001",
+    "9 Depot Rd. Reno NV 89501",
+    "9 Depot Rd, Reno, NV 89501.",
+    "9 Depot Rd, Reno Nevada 89501",
+    "1 Main St, Charleston West Virginia 25301",
+    "1 Main St Washington District of Columbia 20001",
+    "9 Depot Rd, Reno NV, 89501",
+    "9 Depot Rd, Reno NV 89501, USA",
+    "1200 Hwy 50 Carson City NV 89701",
+    "9 Depot Rd Suite 4 Reno NV 89501",
+    "9 Depot Rd\nReno NV 89501",
   ];
   for (const a of full) it(`is full: ${JSON.stringify(a)}`, () => expect(isFullAddress(a)).toBe(true));
 
   const notFull = [
-    ["", "empty"],
-    ["   ", "blank"],
-    ["Warehouse City, NV 89001", "no street"],
-    ["9 Depot Rd, Warehouse City, NV", "no ZIP"],
-    ["9 Depot Rd, Warehouse City, NV 8900", "a ZIP of four digits"],
-    ["9 Depot Rd, Warehouse City, NV 89001-12", "a short ZIP+4"],
-    ["9 Depot Rd, Warehouse City, XX 89001", "not a state"],
-    ["9 Depot Rd, Warehouse City 89001", "no state"],
-    ["9 Depot Rd NV 89001", "one part"],
-    ["89001", "only a ZIP"],
-    ["9 Depot Rd, Warehouse City, USA", "a country in place of state and ZIP"],
-    [",,", "only separators"],
-    ["NV 89001", "only a state and ZIP"],
-    ["USA", "only a country"],
-    ["Warehouse City, NV, 89001", "no street, state and ZIP as two parts"],
-    ["9 Depot Rd, Warehouse City, 89001", "a ZIP with no state"],
-    ["9 Depot Rd, 89001", "a street and a ZIP"],
-    ["9 Depot Rd, Warehouse City, NV 890011", "a ZIP of six digits"],
-    ["9 Depot Rd, Warehouse City, Nevadaa 89001", "a misspelt state"],
-    ["9 Depot Rd Warehouse City NV 89001", "no commas"],
-    ["9 Depot Rd, Warehouse City NV 89001", "no comma before the state"],
-    ["9 Depot Rd, Warehouse City, NV, USA", "a state and a country, no ZIP"],
-    ["9 Depot Rd, Warehouse City, NV 89001, Mexico", "another country"],
-    ["9 Depot Rd, Warehouse City, constructor 89001", "a word that is not a state, even one every object has"],
+    ["", "empty", "empty"],
+    ["   ", "blank", "empty"],
+    [",,", "only separators", "empty"],
+    ["Warehouse City, NV 89001", "no street", "street"],
+    ["Reno NV 89501", "a city alone", "street"],
+    ["9 Depot Rd, Warehouse City, NV", "no ZIP", "zip"],
+    ["9 Depot Rd, Warehouse City, NV 8900", "a ZIP of four digits", "zip"],
+    ["9 Depot Rd, Warehouse City, NV 89001-12", "a short ZIP+4", "zip"],
+    ["9 Depot Rd, Warehouse City, XX 89001", "not a state", "state"],
+    ["9 Depot Rd, Warehouse City 89001", "no state", "state"],
+    ["9 Depot Rd NV 89001", "a street and no city", "city"],
+    ["9 Depot Rd, NV 89001", "a street and no city, with a comma", "city"],
+    ["1200 Park Ave NV 10001", "a street ending in a street word, no city", "city"],
+    ["9 Depot Rd Suite 4 NV 89501", "a suite is not a city", "city"],
+    ["9 Depot Rd #4 NV 89501", "a unit number is not a city", "city"],
+    ["Depot Rd Reno NV 89501", "no street number and no comma", "street"],
+    ["89001", "only a ZIP", "state"],
+    ["9 Depot Rd, Warehouse City, USA", "a country in place of state and ZIP", "zip"],
+    ["NV 89001", "only a state and ZIP", "street"],
+    ["USA", "only a country", "zip"],
+    ["Warehouse City, NV, 89001", "no street, state and ZIP as two parts", "street"],
+    ["9 Depot Rd, Warehouse City, 89001", "a ZIP with no state", "state"],
+    ["9 Depot Rd, 89001", "a street and a ZIP", "state"],
+    ["9 Depot Rd, Warehouse City, NV 890011", "a ZIP of six digits", "zip"],
+    ["9 Depot Rd, Warehouse City, Nevadaa 89001", "a misspelt state", "state"],
+    ["9 Depot Rd, Warehouse City, NV, USA", "a state and a country, no ZIP", "zip"],
+    ["9 Depot Rd, Warehouse City, NV 89001, Mexico", "another country", "zip"],
+    ["12 Test Way, Testville", "a street and a city only", "zip"],
+    ["9 Depot Rd, Warehouse City, constructor 89001", "a word that is not a state, even one every object has", "state"],
   ] as const;
-  for (const [a, why] of notFull) it(`is not full: ${why}`, () => expect(isFullAddress(a)).toBe(false));
+  for (const [a, why, lack] of notFull) {
+    it(`is not full: ${why}`, () => {
+      expect(isFullAddress(a)).toBe(false);
+      expect(addressLack(a)).toBe(lack);
+    });
+  }
 
   it("reads a missing value as not full", () => {
     expect(isFullAddress(null)).toBe(false);
@@ -57,20 +82,20 @@ describe("isFullAddress", () => {
   });
 });
 
-const NOTE = "Write it as street, city, state ZIP with commas between: 9 Depot Rd, Reno, NV 89501.";
+const NOTE = "Like 9 Depot Rd, Reno, NV 89501.";
 
 describe("addressNote", () => {
-  it("says nothing for an empty box or a full address, and asks for the rest of a half typed one", () => {
+  it("says nothing for an empty box or a full address, and names the missing part of a half typed one", () => {
     expect(addressNote("")).toBeUndefined();
     expect(addressNote("9 Depot Rd, Warehouse City, NV 89001")).toBeUndefined();
-    expect(addressNote("Warehouse City, NV")).toBe(NOTE);
+    expect(addressNote("9 Depot Rd, Reno NV 89501")).toBeUndefined();
+    expect(addressNote("Warehouse City, NV")).toBe(`Needs its 5-digit ZIP code at the end. ${NOTE}`);
+    expect(addressNote("9 Depot Rd, Reno, 89501")).toBe(`Needs its state, just before the ZIP code. ${NOTE}`);
+    expect(addressNote("9 Depot Rd, NV 89501")).toBe(`Needs its city. ${NOTE}`);
+    expect(addressNote("Reno, NV 89501")).toBe(`Needs its street and number. ${NOTE}`);
   });
-  it("always carries the worked example, so an address with all four parts but no commas says what to change", () => {
-    for (const a of ["9 Depot Rd, Warehouse City NV 89001", "9 Depot Rd Warehouse City NV 89001", "Warehouse City, NV 89001", "9 Depot Rd"]) {
-      expect(addressNote(a)).toBe(NOTE);
-    }
-    expect(NOTE).toContain("commas");
-    expect(NOTE).toContain("9 Depot Rd, Reno, NV 89501");
+  it("ends with the server's worked example, which passes the rule", () => {
+    expect(ADDRESS_EXAMPLE).toBe(NOTE);
     expect(isFullAddress("9 Depot Rd, Reno, NV 89501")).toBe(true);
   });
   it("names the shape the boxes ask for", () => {
@@ -118,6 +143,12 @@ describe("keptPickupRows and relabelAddressGap", () => {
     expect(keptPickupRows([{ ...blank, name: "   " }, { ...blank, window: "Before 4 pm" }, { ...blank, pickup_number: "PU-1" }, blank, { ...blank, dock: "4" }])).toEqual([1, 2, 4]);
     expect(keptPickupRows([{ name: "A" }, {}])).toEqual([0]);
     expect(keptPickupRows([])).toEqual([]);
+  });
+  it("R-502: the sentences that name the missing part are relabelled the same way", () => {
+    const kept = keptPickupRows([blank, short]);
+    for (const m of [`The address of pickup 2 needs its city. ${NOTE}`, "Your team needs to finish the address of pickup 2 (its city) before this can go on."]) {
+      expect(relabelAddressGap(m, kept)).toBe(m.replace("pickup 2", "pickup 3"));
+    }
   });
   it("with no blank row the number is unchanged", () => {
     const kept = keptPickupRows([{ ...blank, name: "Dock A", address: "1 Dock Rd, Reno, NV 89501" }, short]);

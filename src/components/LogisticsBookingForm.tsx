@@ -12,6 +12,7 @@ import {
   dealPaid, equipmentOptions, fileKind, fileKindLabel, fmtDayLabel, isHot, isLogisticsSide,
   isQuoteStage, laneLabel, loadNumber, moneyHidden, needsAmount, paidStateOf, paperworkOf, pickStatus as pickStatusFields,
   pickupNumberUnconfirmed, confirmToSend, rateConLine, rateConMissing, statusAfterActual, statusAllowed, statusWord, timeWord, type LoadStep,
+  GAP_CARRIER, QUOTE_STAGE_DAYS_LOGISTICS, actualDayGap, daysToAsk, moveBackAsk, needsCarrier, pastDay, stepForRefusal,
 } from "../lib/logisticsLoad";
 import {
   BOOK_ANYWAY, BOOK_ANYWAY_CONFIRM, actualCost, bookGate, firstSection, loadProgress, markupEditable, markupPreview, quoteCostLocked, markupProblem, markupStart,
@@ -541,6 +542,65 @@ const g2 = "grid grid-cols-1 min-[976px]:grid-cols-2 gap-3";
 const btnPrimary = "bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap";
 const btnGhost = "px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap";
 
+/** R-502: "Mark as on the way" and "Mark as delivered". A status is never moved on with a day made up for it (it used
+ *  to take today, which stamped a load that was logged afterwards with the day it was typed in), so this asks for the
+ *  real day or days. Nothing is written here: OK puts the status and the days on the draft and Save sends them. */
+function ActualDaysSheet({ to, askPickup, askDelivery, pickup0, delivery0, pickedUpAt, today, onClose, onDone }: {
+  to: FreightStatus; askPickup: boolean; askDelivery: boolean; pickup0: string; delivery0: string;
+  /** The pickup day the draft holds when it is not asked, so a delivery before it is still caught. */
+  pickedUpAt: string; today: string;
+  onClose: () => void; onDone: (days: { picked_up_at?: string; delivered_at?: string }) => void;
+}) {
+  const [pickup, setPickup] = useState(pickup0);
+  const [delivery, setDelivery] = useState(delivery0);
+  const title = to === "delivered" ? "Mark as delivered" : "Mark as on the way";
+  const problem = actualDayGap({ picked_up_at: askPickup ? pickup : pickedUpAt, delivered_at: askDelivery ? delivery : "" }, today);
+  const ready = (!askPickup || pickup !== "") && (!askDelivery || delivery !== "") && !problem;
+  // Esc closes this sheet and never reaches the page under it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const day = "border border-line px-3 h-11 rounded-lg text-[15px] w-full bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <form role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => { e.preventDefault(); if (ready) onDone({ ...(askPickup ? { picked_up_at: pickup } : {}), ...(askDelivery ? { delivered_at: delivery } : {}) }); }}
+        className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+        <div className="flex items-start justify-between px-5 pt-5 pb-3 border-b border-line">
+          <div className="min-w-0">
+            <h2 className="text-[17px] font-semibold text-ink">{title}</h2>
+            <p className="text-[14px] text-muted mt-0.5">Pick the real day, even if it was a while ago.</p>
+          </div>
+          <button type="button" onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          {askPickup && (
+            <div>
+              <label className="block text-[14px] font-medium text-ink mb-1.5" htmlFor="actual-day-pickup">Day it was picked up</label>
+              <input id="actual-day-pickup" className={day} type="date" value={pickup} max={today} autoFocus onChange={(e) => setPickup(e.target.value)} />
+            </div>
+          )}
+          {askDelivery && (
+            <div>
+              <label className="block text-[14px] font-medium text-ink mb-1.5" htmlFor="actual-day-delivery">Day it was delivered</label>
+              <input id="actual-day-delivery" className={day} type="date" value={delivery} max={today} autoFocus={!askPickup} onChange={(e) => setDelivery(e.target.value)} />
+            </div>
+          )}
+          {problem && <div className="text-[14px] text-danger-ink" role="alert">{problem}</div>}
+        </div>
+        <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
+          <button type="button" onClick={onClose} className="px-4 h-10 rounded-lg text-[14px] text-ink-2 hover:bg-surface-2">Cancel</button>
+          <button type="submit" disabled={!ready}
+            className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-10 rounded-lg text-[14px] font-medium disabled:opacity-40 whitespace-nowrap">OK</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 /** One fact of the flow on the Invoice section: a tick or an empty ring, the fact in words, and what can be done about it. */
 function FlowRow({ done, title, children, actions }: { done: boolean; title: string; children: ReactNode; actions?: ReactNode }) {
   return (
@@ -606,6 +666,8 @@ export default function LogisticsBookingForm({
   const [invoiceSheet, setInvoiceSheet] = useState(false);
   const [onInvoice, setOnInvoice] = useState<FreightInvoiceLine | null>(null);
   const [choosing, setChoosing] = useState(false);
+  // R-502: the sheet that asks for the pickup and delivery days when a status needs them.
+  const [dayAsk, setDayAsk] = useState<{ to: FreightStatus; pickup: boolean; delivery: boolean } | null>(null);
   const base = useMemo(() => toDraft(booking), [booking]);
   const baseRef = useRef(base);
   baseRef.current = base;
@@ -632,7 +694,7 @@ export default function LogisticsBookingForm({
   const noMoney = moneyHidden(booking);
   const dirty = (Object.keys(base) as (keyof Draft)[]).some((k) => draftChanged(base, draft, k));
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }));
-  const sheetOpen = !!(carrierHost || paidControls.open || invoiceSheet);
+  const sheetOpen = !!(carrierHost || paidControls.open || invoiceSheet || dayAsk);
 
   const tryClose = () => {
     if (dirty && !confirm("You have changes that are not saved. Leave without saving them?")) return;
@@ -681,14 +743,25 @@ export default function LogisticsBookingForm({
     onSaved(b);
   };
 
+  const actualsOf = (d: Draft) => ({ delivered_at: d.delivered_at, delivered_time: d.delivered_time, picked_up_at: d.picked_up_at, picked_up_time: d.picked_up_time });
   const pickStatus = (s: FreightStatus) => {
-    setDraft((d) => ({
-      ...d,
-      ...pickStatusFields({ delivered_at: d.delivered_at, picked_up_at: d.picked_up_at, picked_up_time: d.picked_up_time }, s, localDay()),
-    }));
+    const from = draft.status;
+    if (s === from) return;
+    // R-502: a load is not moved on to Booked or later with no carrier or broker on it. The Book step is where it is added.
+    if (needsCarrier(from, s, draft)) { setError(GAP_CARRIER); setStep("book"); return; }
+    // R-502: moving back takes the days with it, and cancelling a booked load is not a slip of the mouse: ask first.
+    const ask = moveBackAsk(from, s, actualsOf(draft));
+    if (ask && !confirm(ask)) return;
+    // R-502: On the way and Delivered are not given a day made up for them: ask for the real one.
+    const need = daysToAsk(from, s, draft);
+    if (need.pickup || need.delivery) { setDayAsk({ to: s, ...need }); return; }
+    setDraft((d) => ({ ...d, ...pickStatusFields(actualsOf(d), s) }));
   };
   /** An actual day is filled in or cleared: the status follows it before Save, the way the server reads it. */
   const dealEdit = can(me, "deal_flow:edit");
+  // R-502: a quote has not moved, so the server takes no pickup or delivery day on it, and a Logistics-only person
+  // cannot send it to book. The two days stay shut for them until the team does.
+  const dayLocked = !dealEdit && isQuoteStage(booking.status);
   const setActual = (field: "picked_up_at" | "delivered_at", v: string) =>
     setDraft((d) => ({
       ...d, [field]: v,
@@ -775,7 +848,11 @@ export default function LogisticsBookingForm({
       handedOver.current = null;
       onSaved(saved);
     } catch (e) {
-      setError(relabelAddressGap(String(e), kept));
+      const msg = relabelAddressGap(String(e), kept);
+      setError(msg);
+      // R-502: land on the step whose box the sentence is about (an address on Quote, where this person may type it).
+      const to = stepForRefusal(msg, booking.can_see_addresses);
+      if (to) setStep(to);
     } finally {
       setSaving(false);
     }
@@ -933,10 +1010,31 @@ export default function LogisticsBookingForm({
   );
 
   // R-469: where the truck picks up and delivers is on the Quote step too. The team (deal editors) types the names and
-  // addresses there, the logistics person only reads them (each half per his own name and address switches). It is the
+  // addresses there, the logistics person reads the names (each half per his own name and address switches). It is the
   // same draft as the Book step, so the two places stay in step.
+  // R-502: an address is fixable where a refusal about it appears. Anyone who can see addresses types the pickup, the
+  // extra pickups' and the delivery address here (the server takes address writes from anyone with that switch); the
+  // names, and adding or removing a pickup, stay with the rule above.
   const routeEdit = full && dealEdit;
   const routeStopEdit = routeEdit && stopEdit;
+  const addrEdit = booking.can_see_addresses;
+  const nameRead = (name: string) => (
+    <Field label="Name">
+      {booking.can_see_names
+        ? <p className="py-2 text-[13px] text-ink break-words">{name || "-"}</p>
+        : <p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={11} />Hidden by your permissions</p>}
+    </Field>
+  );
+  const routePlace = (p: "pickup" | "delivery") => {
+    if (routeEdit) return placeBlock(p);
+    if (!addrEdit) return placeRead(draft[`${p}_name`], draft[`${p}_address`]);
+    return (
+      <div className={g2}>
+        {nameRead(draft[`${p}_name`])}
+        {t(`${p}_address`, "Address", { placeholder: ADDRESS_HINT, hint: addressNote(draft[`${p}_address`]) })}
+      </div>
+    );
+  };
   const contactLine = (contact: string, phone: string) => {
     const c = [contact.trim(), phone.trim()].filter(Boolean).join(", ");
     return c ? <p className="text-[12px] text-muted break-words">{c}</p> : null;
@@ -949,7 +1047,7 @@ export default function LogisticsBookingForm({
       <div className="space-y-4">
         <div className="min-w-0">
           {routeLabelText(draft.stops.length ? "Pickup 1" : "Pickup")}
-          {routeEdit ? placeBlock("pickup") : placeRead(draft.pickup_name, draft.pickup_address)}
+          {routePlace("pickup")}
           {contactLine(draft.pickup_contact, draft.pickup_phone)}
         </div>
         {draft.stops.map((x, i) => (
@@ -957,7 +1055,9 @@ export default function LogisticsBookingForm({
             {routeLabelText(`Pickup ${i + 2}`)}
             {routeStopEdit
               ? <div className={g2}>{stopInput(i, "name", "Name")}{stopInput(i, "address", "Address")}</div>
-              : placeRead(x.name, x.address)}
+              : addrEdit
+                ? <div className={g2}>{nameRead(x.name)}{stopInput(i, "address", "Address")}</div>
+                : placeRead(x.name, x.address)}
             {contactLine(x.contact, x.phone)}
             {routeStopEdit && (
               <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: d.stops.filter((_, j) => j !== i) }))}
@@ -975,7 +1075,7 @@ export default function LogisticsBookingForm({
         )}
         <div className="min-w-0">
           {routeLabelText("Delivery")}
-          {routeEdit ? placeBlock("delivery") : placeRead(draft.delivery_name, draft.delivery_address)}
+          {routePlace("delivery")}
           {contactLine(draft.delivery_contact, draft.delivery_phone)}
         </div>
       </div>
@@ -1158,7 +1258,7 @@ export default function LogisticsBookingForm({
     <div className="space-y-6">
       {atQuote && (
         <p className="text-[12px] text-muted">
-          {full ? "Fill in the booking details any time. They are stored here and sent to logistics when you send the load to book." : "Your team sends the load to book. You can read what is here."}
+          {full ? "Fill in the booking details any time. They are stored here and sent to logistics when you send the load to book." : "Your team sends the load to book. You can still fix an address or add details here."}
         </p>
       )}
       <Section title={draft.stops.length ? "Pickup 1" : "Pickup"}>
@@ -1294,7 +1394,7 @@ export default function LogisticsBookingForm({
           <div className="min-w-0 space-y-3">
             <div className="text-[12px] font-medium text-ink-2">Actual</div>
             <Field label="Date" hint="Filling this in moves the load to On the way.">
-              <input className={inp} type="date" value={draft.picked_up_at} onChange={(e) => setActual("picked_up_at", e.target.value)} />
+              <input className={inp} type="date" value={draft.picked_up_at} max={localDay()} disabled={dayLocked} onChange={(e) => setActual("picked_up_at", e.target.value)} />
             </Field>
             {t("picked_up_time", "Time", { type: "time" })}
           </div>
@@ -1320,7 +1420,7 @@ export default function LogisticsBookingForm({
           <div className="min-w-0 space-y-3">
             <div className="text-[12px] font-medium text-ink-2">Actual</div>
             <Field label="Date" hint="Filling this in moves the load to Delivered.">
-              <input className={inp} type="date" value={draft.delivered_at} onChange={(e) => setActual("delivered_at", e.target.value)} />
+              <input className={inp} type="date" value={draft.delivered_at} max={localDay()} disabled={dayLocked} onChange={(e) => setActual("delivered_at", e.target.value)} />
             </Field>
             {t("delivered_time", "Time", { type: "time" })}
           </div>
@@ -1451,6 +1551,7 @@ export default function LogisticsBookingForm({
                 </select>
               </div>
             </div>
+            {dayLocked && <p className="text-[13px] text-ink-2 text-right" role="status">{QUOTE_STAGE_DAYS_LOGISTICS}</p>}
             {/* R-475: the rate confirmation, at the top in the colour of how complete it is (from what is saved: the PDF prints that). */}
             <div role="status" className={`flex items-center gap-3 rounded-xl border px-3.5 py-2.5 ${rateConReady ? "bg-success-bg border-success/30" : "bg-warning-bg border-warning/30"}`}>
               <FileText size={18} className={`flex-shrink-0 ${rateConReady ? "text-success-ink" : "text-warning-ink"}`} />
@@ -1560,6 +1661,16 @@ export default function LogisticsBookingForm({
           onSaved={(c) => { if (!carrierHost.id) pickCarrier(c); }} />
       )}
       {paidControls.sheet}
+      {dayAsk && (
+        <ActualDaysSheet
+          to={dayAsk.to} askPickup={dayAsk.pickup} askDelivery={dayAsk.delivery}
+          pickup0={draft.picked_up_at || pastDay(draft.pickup_date, localDay())}
+          delivery0={draft.delivered_at || pastDay(draft.delivery_date, localDay())}
+          pickedUpAt={draft.picked_up_at} today={localDay()}
+          onClose={() => setDayAsk(null)}
+          onDone={(days) => { setDayAsk(null); setDraft((d) => ({ ...d, ...pickStatusFields(actualsOf(d), dayAsk.to), ...days })); }}
+        />
+      )}
       {invoiceSheet && (
         <InvoiceLineSheet
           booking={booking}

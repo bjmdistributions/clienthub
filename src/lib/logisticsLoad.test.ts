@@ -5,6 +5,7 @@ import {
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, rowLane, statusAfterActual, statusWord, stepDone, timeWord,
+  actualDayGap, daysToAsk, moveBackAsk, needsCarrier, pastDay, statusRank, stepForRefusal, stepGap, QUOTE_STAGE_DAYS_LOGISTICS,
 } from "./logisticsLoad";
 
 // An invented load: every key a row carries, so a rule is tested on the whole shape.
@@ -110,7 +111,7 @@ describe("days, times and due labels", () => {
 });
 
 describe("the actual dates move the status", () => {
-  const blank = { delivered_at: "", picked_up_at: "", picked_up_time: "" };
+  const blank = { delivered_at: "", delivered_time: "", picked_up_at: "", picked_up_time: "" };
   it("a pickup day moves To book and Booked to On the way", () => {
     expect(statusAfterActual("requested", "picked_up_at", "2026-10-06")).toBe("picked_up");
     expect(statusAfterActual("booked", "picked_up_at", "2026-10-06")).toBe("picked_up");
@@ -132,21 +133,160 @@ describe("the actual dates move the status", () => {
     expect(statusAfterActual("booked", "delivered_at", "2026-10-08")).toBe("delivered");
     expect(statusAfterActual("cancelled", "delivered_at", "2026-10-08")).toBe("cancelled");
   });
-  it("picking Delivered fills today, picking On the way fills the pickup day", () => {
-    expect(pickStatus(blank, "delivered", "2026-10-06")).toMatchObject({ status: "delivered", delivered_at: "2026-10-06" });
-    expect(pickStatus({ ...blank, delivered_at: "2026-10-05" }, "delivered", "2026-10-06").delivered_at).toBe("2026-10-05");
-    expect(pickStatus(blank, "picked_up", "2026-10-06")).toMatchObject({ status: "picked_up", picked_up_at: "2026-10-06" });
+  it("R-502: picking Delivered or On the way never fills a day (it used to fill today)", () => {
+    expect(pickStatus(blank, "delivered")).toEqual({ ...blank, status: "delivered" });
+    expect(pickStatus({ ...blank, delivered_at: "2026-10-05" }, "delivered").delivered_at).toBe("2026-10-05");
+    expect(pickStatus(blank, "picked_up")).toEqual({ ...blank, status: "picked_up" });
+    expect(pickStatus({ ...blank, picked_up_at: "2026-10-04" }, "picked_up").picked_up_at).toBe("2026-10-04");
   });
-  it("going back to To book or Booked clears what was picked up and delivered", () => {
-    const was = { delivered_at: "2026-10-08", picked_up_at: "2026-10-06", picked_up_time: "09:30" };
-    expect(pickStatus(was, "booked", "2026-10-09")).toEqual({ status: "booked", delivered_at: "", picked_up_at: "", picked_up_time: "" });
-    expect(pickStatus(was, "requested", "2026-10-09").picked_up_at).toBe("");
-    expect(pickStatus(was, "picked_up", "2026-10-09")).toMatchObject({ picked_up_at: "2026-10-06", delivered_at: "" });
+  it("R-502: going back to To book or Booked clears what was picked up and delivered, times too", () => {
+    const was = { delivered_at: "2026-10-08", delivered_time: "14:00", picked_up_at: "2026-10-06", picked_up_time: "09:30" };
+    expect(pickStatus(was, "booked")).toEqual({ status: "booked", ...blank });
+    expect(pickStatus(was, "requested").picked_up_at).toBe("");
+    expect(pickStatus(was, "requested").delivered_time).toBe("");
+  });
+  it("R-502: going back from Delivered to On the way clears the delivery day and time and keeps the pickup", () => {
+    const was = { delivered_at: "2026-10-08", delivered_time: "14:00", picked_up_at: "2026-10-06", picked_up_time: "09:30" };
+    expect(pickStatus(was, "picked_up")).toEqual({ status: "picked_up", delivered_at: "", delivered_time: "", picked_up_at: "2026-10-06", picked_up_time: "09:30" });
   });
   it("leaves the days alone for a quote or a cancel", () => {
-    const was = { delivered_at: "2026-10-08", picked_up_at: "2026-10-06", picked_up_time: "09:30" };
-    expect(pickStatus(was, "cancelled", "2026-10-09")).toEqual({ ...was, status: "cancelled" });
-    expect(pickStatus(was, "quote", "2026-10-09")).toEqual({ ...was, status: "quote" });
+    const was = { delivered_at: "2026-10-08", delivered_time: "14:00", picked_up_at: "2026-10-06", picked_up_time: "09:30" };
+    expect(pickStatus(was, "cancelled")).toEqual({ ...was, status: "cancelled" });
+    expect(pickStatus(was, "quote")).toEqual({ ...was, status: "quote" });
+  });
+});
+
+describe("R-502: a step forward needs its fact", () => {
+  const have = { carrier: "Northline Freight", broker: "", picked_up_at: "2026-10-01", delivered_at: "2026-10-02" };
+  const none = { carrier: "", broker: "", picked_up_at: "", delivered_at: "" };
+  it("ranks the statuses the way the server does, cancelled before them all", () => {
+    expect(STATUS_ORDER.filter((s) => s !== "cancelled").map(statusRank)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(statusRank("cancelled")).toBe(-1);
+  });
+  it("Booked needs a carrier or a broker, with the server's sentence", () => {
+    const carrierSentence = "Add the carrier on the Book step before marking it booked.";
+    expect(stepGap("requested", "booked", none)).toBe(carrierSentence);
+    expect(stepGap("requested", "booked", { ...none, carrier: "Northline Freight" })).toBeUndefined();
+    expect(stepGap("requested", "booked", { ...none, broker: "Harbor Brokers" })).toBeUndefined();
+    expect(stepGap("requested", "booked", { ...none, carrier: "  " })).toBe(carrierSentence);
+  });
+  it("On the way needs the pickup day, Delivered needs the delivery day", () => {
+    expect(stepGap("booked", "picked_up", { ...have, picked_up_at: "" })).toBe("Add the day it was picked up on the Pickup step.");
+    expect(stepGap("booked", "picked_up", have)).toBeUndefined();
+    expect(stepGap("picked_up", "delivered", { ...have, delivered_at: "" })).toBe("Add the day it was delivered on the Delivery step.");
+    expect(stepGap("picked_up", "delivered", have)).toBeUndefined();
+  });
+  it("a jump of several steps needs each fact, in the order of the steps", () => {
+    expect(stepGap("requested", "delivered", none)).toBe("Add the carrier on the Book step before marking it booked.");
+    expect(stepGap("requested", "delivered", { ...none, carrier: "Northline Freight" })).toBe("Add the day it was picked up on the Pickup step.");
+    expect(stepGap("requested", "delivered", { ...none, carrier: "Northline Freight", picked_up_at: "2026-10-01" })).toBe("Add the day it was delivered on the Delivery step.");
+    expect(stepGap("quoted", "picked_up", { ...none, carrier: "Northline Freight" })).toBe("Add the day it was picked up on the Pickup step.");
+    expect(stepGap("requested", "delivered", have)).toBeUndefined();
+  });
+  it("going back, staying put and an early step are never refused", () => {
+    expect(stepGap("delivered", "booked", none)).toBeUndefined();
+    expect(stepGap("picked_up", "requested", none)).toBeUndefined();
+    expect(stepGap("booked", "booked", none)).toBeUndefined();
+    expect(stepGap("quote", "requested", none)).toBeUndefined();
+    expect(stepGap("booked", "cancelled", none)).toBeUndefined();
+  });
+  it("reopening a cancelled load as Booked needs a carrier", () => {
+    expect(stepGap("cancelled", "booked", none)).toBe("Add the carrier on the Book step before marking it booked.");
+    expect(stepGap("cancelled", "booked", { ...none, carrier: "Northline Freight" })).toBeUndefined();
+    expect(stepGap("cancelled", "requested", none)).toBeUndefined();
+  });
+  it("a load already on the way is delivered without a pickup day: that step was passed earlier", () => {
+    expect(stepGap("picked_up", "delivered", { ...none, delivered_at: "2026-10-02" })).toBeUndefined();
+    expect(stepGap("picked_up", "delivered", none)).toBe("Add the day it was delivered on the Delivery step.");
+  });
+  it("only a move from below Booked asks for the carrier, and the form can ask the same question", () => {
+    expect(needsCarrier("requested", "picked_up", none)).toBe(true);
+    expect(needsCarrier("booked", "picked_up", none)).toBe(false);
+    expect(needsCarrier("quoted", "requested", none)).toBe(false);
+    expect(needsCarrier("delivered", "booked", none)).toBe(false);
+  });
+});
+
+describe("R-502: asking for the days", () => {
+  it("On the way asks for the pickup day when the load has none", () => {
+    expect(daysToAsk("booked", "picked_up", { picked_up_at: "" })).toEqual({ pickup: true, delivery: false });
+    expect(daysToAsk("booked", "picked_up", { picked_up_at: "2026-10-01" })).toEqual({ pickup: false, delivery: false });
+  });
+  it("Delivered always asks for the delivery day, and the pickup day when it has not been on the way and has none", () => {
+    expect(daysToAsk("booked", "delivered", { picked_up_at: "" })).toEqual({ pickup: true, delivery: true });
+    expect(daysToAsk("booked", "delivered", { picked_up_at: "2026-10-01" })).toEqual({ pickup: false, delivery: true });
+    expect(daysToAsk("picked_up", "delivered", { picked_up_at: "" })).toEqual({ pickup: false, delivery: true });
+    expect(daysToAsk("cancelled", "delivered", { picked_up_at: "" })).toEqual({ pickup: true, delivery: true });
+  });
+  it("a move back, a cancel or an early step asks for nothing", () => {
+    expect(daysToAsk("delivered", "picked_up", { picked_up_at: "" })).toEqual({ pickup: false, delivery: false });
+    expect(daysToAsk("booked", "cancelled", { picked_up_at: "" })).toEqual({ pickup: false, delivery: false });
+    expect(daysToAsk("requested", "booked", { picked_up_at: "" })).toEqual({ pickup: false, delivery: false });
+  });
+  it("the appointment day is the first answer only once it has come", () => {
+    expect(pastDay("2026-10-05", "2026-10-06")).toBe("2026-10-05");
+    expect(pastDay("2026-10-06", "2026-10-06")).toBe("2026-10-06");
+    expect(pastDay("2026-10-07", "2026-10-06")).toBe("");
+    expect(pastDay("", "2026-10-06")).toBe("");
+    expect(pastDay(undefined, "2026-10-06")).toBe("");
+  });
+  it("judges the days like the server: not after today, delivery not before pickup", () => {
+    expect(actualDayGap({ picked_up_at: "2026-10-05", delivered_at: "" }, "2026-10-04")).toBe("The pickup day cannot be after today.");
+    expect(actualDayGap({ picked_up_at: "", delivered_at: "2026-10-09" }, "2026-10-04")).toBe("The delivery day cannot be after today.");
+    expect(actualDayGap({ picked_up_at: "2026-10-03", delivered_at: "2026-10-02" }, "2026-10-04")).toBe("The delivery day cannot be before the pickup day.");
+    expect(actualDayGap({ picked_up_at: "2026-10-02", delivered_at: "2026-10-02" }, "2026-10-04")).toBe("");
+    expect(actualDayGap({ picked_up_at: "", delivered_at: "" }, "2026-10-04")).toBe("");
+  });
+});
+
+describe("R-502: asking before a move back or a cancel", () => {
+  const now = new Date(2026, 9, 12);
+  const moved = { delivered_at: "2026-10-02", delivered_time: "14:00", picked_up_at: "2026-10-01", picked_up_time: "09:30" };
+  it("back from Delivered to On the way names the delivery day it clears", () => {
+    expect(moveBackAsk("delivered", "picked_up", moved, now)).toBe("Move this load back? This clears the delivery day Oct 2.");
+  });
+  it("back to To book or Booked names both days", () => {
+    expect(moveBackAsk("delivered", "booked", moved, now)).toBe("Move this load back? This clears the pickup day Oct 1 and the delivery day Oct 2.");
+    expect(moveBackAsk("picked_up", "requested", { ...moved, delivered_at: "" }, now)).toBe("Move this load back? This clears the pickup day Oct 1.");
+  });
+  it("a move back with nothing to clear asks nothing", () => {
+    expect(moveBackAsk("delivered", "booked", { delivered_at: "", delivered_time: "", picked_up_at: "", picked_up_time: "" }, now)).toBe("");
+    expect(moveBackAsk("delivered", "picked_up", { ...moved, delivered_at: "" }, now)).toBe("");
+  });
+  it("cancelling a booked, moving or delivered load asks, and says what it already did (cancel keeps the days)", () => {
+    expect(moveBackAsk("booked", "cancelled", { ...moved, picked_up_at: "", delivered_at: "" }, now)).toBe("Cancel this load?");
+    expect(moveBackAsk("picked_up", "cancelled", { ...moved, delivered_at: "" }, now)).toBe("Cancel this load? It was picked up Oct 1.");
+    expect(moveBackAsk("delivered", "cancelled", moved, now)).toBe("Cancel this load? It was picked up Oct 1 and delivered Oct 2.");
+  });
+  it("cancelling a load that is not booked yet, and a move forward, ask nothing", () => {
+    expect(moveBackAsk("requested", "cancelled", moved, now)).toBe("");
+    expect(moveBackAsk("quote", "cancelled", moved, now)).toBe("");
+    expect(moveBackAsk("booked", "delivered", moved, now)).toBe("");
+    expect(moveBackAsk("picked_up", "picked_up", moved, now)).toBe("");
+  });
+  it("back to a quote stage asks nothing (the days stay, as pickStatus leaves them)", () => {
+    expect(moveBackAsk("delivered", "quoted", moved, now)).toBe("");
+  });
+});
+
+describe("R-502: a refused save lands on the box to fix", () => {
+  it("sends the carrier to Book, the days to Pickup and Delivery", () => {
+    expect(stepForRefusal("Add the carrier on the Book step before marking it booked.", true)).toBe("book");
+    expect(stepForRefusal("Add the day it was picked up on the Pickup step.", true)).toBe("pickup");
+    expect(stepForRefusal("Add the day it was delivered on the Delivery step.", true)).toBe("delivery");
+    expect(stepForRefusal("The pickup day cannot be after today.", true)).toBe("pickup");
+    expect(stepForRefusal("The delivery day cannot be after today.", true)).toBe("delivery");
+    expect(stepForRefusal("The delivery day cannot be before the pickup day.", true)).toBe("delivery");
+  });
+  it("sends an address to Quote when it can be fixed there, else to Book", () => {
+    expect(stepForRefusal("The delivery address needs its city. Like 9 Depot Rd, Reno, NV 89501.", true)).toBe("quote");
+    expect(stepForRefusal("The address of pickup 2 needs its street and number. Like 9 Depot Rd, Reno, NV 89501.", true)).toBe("quote");
+    expect(stepForRefusal("Your team needs to finish the delivery address (its city) before this can go on.", false)).toBe("book");
+  });
+  it("leaves the person where they are for the quote-stage sentences and anything else", () => {
+    expect(stepForRefusal("Send this load to book before adding the day it was picked up or delivered.", true)).toBeUndefined();
+    expect(stepForRefusal(QUOTE_STAGE_DAYS_LOGISTICS, true)).toBeUndefined();
+    expect(stepForRefusal("Could not reach the server.", true)).toBeUndefined();
   });
 });
 

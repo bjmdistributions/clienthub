@@ -262,17 +262,113 @@ export function dueTone(due: string | null | undefined, today: string): "danger"
 
 // ─── how the actual dates move the status (contract section 1) ────────────
 
-export interface Actuals { delivered_at: string; picked_up_at: string; picked_up_time: string }
+export interface Actuals { delivered_at: string; delivered_time: string; picked_up_at: string; picked_up_time: string }
 
-/** A person picks a status by hand. Delivered asks for the day it landed, and today is the usual
- *  answer. On the way asks for the day it left. Back to To book or Booked, nothing has been picked up
- *  or delivered, so those days clear (the server clears them the same way). Anything else leaves them. */
-export function pickStatus(cur: Actuals, to: FreightStatus, today: string): Actuals & { status: FreightStatus } {
+/** A person picks a status by hand. R-502: it never makes a day up (it used to fill today, which stamped a load that
+ *  was logged afterwards with the day it was typed in); the form asks for the day when a status needs one. Back from
+ *  Delivered, the delivery day and time clear; back to To book or Booked, the pickup day and time clear as well
+ *  (the server clears them the same way). Anything else leaves them. */
+export function pickStatus(cur: Actuals, to: FreightStatus): Actuals & { status: FreightStatus } {
   const out = { ...cur, status: to };
-  if (to === "delivered") out.delivered_at = cur.delivered_at || today;
-  else if (to === "picked_up") { out.picked_up_at = cur.picked_up_at || today; out.delivered_at = ""; }
-  else if (to === "requested" || to === "booked") { out.picked_up_at = ""; out.picked_up_time = ""; out.delivered_at = ""; }
+  if (to === "picked_up") { out.delivered_at = ""; out.delivered_time = ""; }
+  else if (to === "requested" || to === "booked") { out.picked_up_at = ""; out.picked_up_time = ""; out.delivered_at = ""; out.delivered_time = ""; }
   return out;
+}
+
+/** R-502: the days a pick of `to` has to ask for, on a load that is `from` now. Only a move forward asks. On the way
+ *  needs the day it was picked up (unless it has one); Delivered always needs the day it was delivered, and the pickup
+ *  day too when the load has not been on the way yet and has none (a load already on the way passed that step). */
+export function daysToAsk(from: string, to: string, cur: Pick<Actuals, "picked_up_at">): { pickup: boolean; delivery: boolean } {
+  const f = statusRank(from), t = statusRank(to);
+  return {
+    pickup: t > f && t >= statusRank("picked_up") && f < statusRank("picked_up") && !cur.picked_up_at.trim(),
+    delivery: t > f && t === statusRank("delivered"),
+  };
+}
+
+/** R-502: the load's appointment day as the first answer for an actual day, only once it has come: a day ahead has not
+ *  happened. */
+export function pastDay(day: string | null | undefined, today: string): string {
+  const d = (day || "").slice(0, 10);
+  return d && d <= today ? d : "";
+}
+
+/** R-502: the question to ask before a pick that takes days away or cancels a load that was booked, or "" when there
+ *  is nothing to ask. Back to an earlier live status names the days it clears (the same ones `pickStatus` clears).
+ *  Cancelling leaves the days where they are, so it only says what the load already did. */
+export function moveBackAsk(from: string, to: string, cur: Actuals, now?: Date): string {
+  const f = statusRank(from), t = statusRank(to);
+  if (to === "cancelled") {
+    if (f < statusRank("booked")) return "";
+    const did = [
+      cur.picked_up_at.trim() && `picked up ${fmtDayLabel(cur.picked_up_at, now)}`,
+      cur.delivered_at.trim() && `delivered ${fmtDayLabel(cur.delivered_at, now)}`,
+    ].filter(Boolean).join(" and ");
+    return did ? `Cancel this load? It was ${did}.` : "Cancel this load?";
+  }
+  if (f < statusRank("picked_up") || t < statusRank("requested") || t >= f) return "";
+  const next = pickStatus(cur, to as FreightStatus);
+  const clears = [
+    cur.picked_up_at.trim() && !next.picked_up_at && `the pickup day ${fmtDayLabel(cur.picked_up_at, now)}`,
+    cur.delivered_at.trim() && !next.delivered_at && `the delivery day ${fmtDayLabel(cur.delivered_at, now)}`,
+  ].filter(Boolean);
+  return clears.length ? `Move this load back? This clears ${clears.join(" and ")}.` : "";
+}
+
+/** R-502: the sentences the server refuses a step with (clienthub-api routes/logistics.rs `step_gap`,
+ *  `actual_day_gap`), word for word. */
+export const GAP_CARRIER = "Add the carrier on the Book step before marking it booked.";
+export const GAP_PICKED_UP = "Add the day it was picked up on the Pickup step.";
+export const GAP_DELIVERED = "Add the day it was delivered on the Delivery step.";
+export const GAP_PICKUP_AFTER_TODAY = "The pickup day cannot be after today.";
+export const GAP_DELIVERY_AFTER_TODAY = "The delivery day cannot be after today.";
+export const GAP_DELIVERY_BEFORE_PICKUP = "The delivery day cannot be before the pickup day.";
+/** What a Logistics-only person is told on a load that is still a quote (the team sends it to book first). */
+export const QUOTE_STAGE_DAYS_LOGISTICS = "Your team has to send this load to book before it can be picked up or delivered. Tell them it already moved.";
+
+export interface StepGapFacts { carrier: string; broker: string; picked_up_at: string; delivered_at: string }
+
+/** R-502: a move forward into Booked or later, from below Booked, with neither a carrier nor a broker on the load. */
+export function needsCarrier(from: string, to: string, f: Pick<StepGapFacts, "carrier" | "broker">): boolean {
+  return statusRank(to) >= statusRank("booked") && statusRank(to) > statusRank(from) && statusRank(from) < statusRank("booked")
+    && !f.carrier.trim() && !f.broker.trim();
+}
+
+/** R-502: what a load must hold to move forward, judged on the values it will have after the save (`facts`), the way the
+ *  server judges it. Each step the move enters needs its own fact: Booked the carrier (or the broker), On the way the day
+ *  it was picked up, Delivered the day it was delivered. A jump of several steps needs each of them; a step already
+ *  passed is not asked again (a load on the way before actual days were kept is delivered without a pickup day).
+ *  Going back, cancelling and staying put are never refused here. The sentence, or undefined when nothing is missing. */
+export function stepGap(from: string, to: string, facts: StepGapFacts): string | undefined {
+  const f = statusRank(from), t = statusRank(to);
+  if (t < statusRank("booked") || t <= f) return undefined;
+  if (needsCarrier(from, to, facts)) return GAP_CARRIER;
+  if (f < statusRank("picked_up") && t >= statusRank("picked_up") && !facts.picked_up_at.trim()) return GAP_PICKED_UP;
+  if (t === statusRank("delivered") && !facts.delivered_at.trim()) return GAP_DELIVERED;
+  return undefined;
+}
+
+/** R-502: the server's day checks on the days a save writes: not after `today`, and a delivery not before its pickup.
+ *  The sentence, or "" when the days are fine. A day that is empty is not judged. */
+export function actualDayGap(days: { picked_up_at: string; delivered_at: string }, today: string): string {
+  const p = days.picked_up_at.trim(), d = days.delivered_at.trim();
+  if (p && p > today) return GAP_PICKUP_AFTER_TODAY;
+  if (d && d > today) return GAP_DELIVERY_AFTER_TODAY;
+  if (p && d && d < p) return GAP_DELIVERY_BEFORE_PICKUP;
+  return "";
+}
+
+/** R-502: the step a refusal sentence points at, so a failed save lands on the box to fix: the carrier on Book, the
+ *  pickup day on Pickup, the delivery day on Delivery, an address on Quote when the person may edit addresses there,
+ *  else on Book. undefined leaves the person where they are (the quote-stage sentences: the team sends it to book). */
+export function stepForRefusal(msg: string, addressOnQuote: boolean): LoadStep | undefined {
+  const m = msg.toLowerCase();
+  if (m.includes("send this load to book")) return undefined;
+  if (m.includes("book step") || m.includes("carrier")) return "book";
+  if (m.includes("pickup step") || m.includes("picked up") || m.includes("pickup day cannot")) return "pickup";
+  if (m.includes("delivery step") || m.includes("delivered") || m.includes("delivery day cannot")) return "delivery";
+  if (/\baddress\b/.test(m)) return addressOnQuote ? "quote" : "book";
+  return undefined;
 }
 
 /** The pickup-number check to send with a save, or undefined to leave it as it is. A changed number clears the
