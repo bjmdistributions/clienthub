@@ -12,7 +12,7 @@ import {
   dealPaid, equipmentOptions, fileKind, fileKindLabel, fmtDayLabel, isHot, isLogisticsSide,
   isQuoteStage, laneLabel, loadNumber, moneyHidden, needsAmount, paidStateOf, paperworkOf, pickStatus as pickStatusFields,
   pickupNumberUnconfirmed, confirmToSend, rateConLine, rateConMissing, statusAfterActual, statusAllowed, statusWord, timeWord, type LoadStep,
-  GAP_CARRIER, QUOTE_STAGE_DAYS_LOGISTICS, actualDayGap, daysToAsk, moveBackAsk, needsCarrier, pastDay, stepForRefusal,
+  QUOTE_STAGE_DAYS, actualDayGap, atQuoteStage, daysToAsk, moveBackAsk, pastDay, skipAsk, statusRank, stepForRefusal,
 } from "../lib/logisticsLoad";
 import {
   BOOK_ANYWAY, BOOK_ANYWAY_CONFIRM, actualCost, bookGate, firstSection, loadProgress, markupEditable, markupPreview, quoteCostLocked, markupProblem, markupStart,
@@ -537,6 +537,9 @@ function factsOf(
   }, known);
 }
 
+/** R-506: a status past the quote stage: To book, Booked, On the way or Delivered (Cancelled is nowhere, so it is not). */
+const pastQuote = (status: string): boolean => statusRank(status) >= statusRank("requested");
+
 /** Two columns from about 760 px of page (the sidebar is 216), one below. */
 const g2 = "grid grid-cols-1 min-[976px]:grid-cols-2 gap-3";
 const btnPrimary = "bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap";
@@ -544,7 +547,8 @@ const btnGhost = "px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 
 
 /** R-502: "Mark as on the way" and "Mark as delivered". A status is never moved on with a day made up for it (it used
  *  to take today, which stamped a load that was logged afterwards with the day it was typed in), so this asks for the
- *  real day or days. Nothing is written here: OK puts the status and the days on the draft and Save sends them. */
+ *  real day or days. Nothing is written here: OK puts the status and the days on the draft and Save sends them.
+ *  R-506: a day may be left empty (nobody is stuck on a day they do not know): OK sets the status and only the days filled. */
 function ActualDaysSheet({ to, askPickup, askDelivery, pickup0, delivery0, pickedUpAt, today, onClose, onDone }: {
   to: FreightStatus; askPickup: boolean; askDelivery: boolean; pickup0: string; delivery0: string;
   /** The pickup day the draft holds when it is not asked, so a delivery before it is still caught. */
@@ -555,7 +559,7 @@ function ActualDaysSheet({ to, askPickup, askDelivery, pickup0, delivery0, picke
   const [delivery, setDelivery] = useState(delivery0);
   const title = to === "delivered" ? "Mark as delivered" : "Mark as on the way";
   const problem = actualDayGap({ picked_up_at: askPickup ? pickup : pickedUpAt, delivered_at: askDelivery ? delivery : "" }, today);
-  const ready = (!askPickup || pickup !== "") && (!askDelivery || delivery !== "") && !problem;
+  const ready = !problem;
   // Esc closes this sheet and never reaches the page under it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
@@ -567,12 +571,13 @@ function ActualDaysSheet({ to, askPickup, askDelivery, pickup0, delivery0, picke
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
       <form role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}
-        onSubmit={(e) => { e.preventDefault(); if (ready) onDone({ ...(askPickup ? { picked_up_at: pickup } : {}), ...(askDelivery ? { delivered_at: delivery } : {}) }); }}
+        onSubmit={(e) => { e.preventDefault(); if (ready) onDone({ ...(askPickup && pickup ? { picked_up_at: pickup } : {}), ...(askDelivery && delivery ? { delivered_at: delivery } : {}) }); }}
         className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
         <div className="flex items-start justify-between px-5 pt-5 pb-3 border-b border-line">
           <div className="min-w-0">
             <h2 className="text-[17px] font-semibold text-ink">{title}</h2>
             <p className="text-[14px] text-muted mt-0.5">Pick the real day, even if it was a while ago.</p>
+            <p className="text-[14px] text-muted mt-0.5">Leave a day empty if you do not know it.</p>
           </div>
           <button type="button" onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
         </div>
@@ -668,6 +673,9 @@ export default function LogisticsBookingForm({
   const [choosing, setChoosing] = useState(false);
   // R-502: the sheet that asks for the pickup and delivery days when a status needs them.
   const [dayAsk, setDayAsk] = useState<{ to: FreightStatus; pickup: boolean; delivery: boolean } | null>(null);
+  // R-506: the person said yes to moving a quote-stage load past the quote stage with part of the booking gate skipped.
+  // The next save that carries the new status sends `override`; it clears on a save, a move back to the quote stage, or another load.
+  const [skipOk, setSkipOk] = useState(false);
   const base = useMemo(() => toDraft(booking), [booking]);
   const baseRef = useRef(base);
   baseRef.current = base;
@@ -679,7 +687,7 @@ export default function LogisticsBookingForm({
   // replaces it only on a save, so a background refresh never wipes what is being typed.
   useEffect(() => {
     if (handedOver.current === booking) return;
-    setDraft(toDraft(booking)); setError("");
+    setDraft(toDraft(booking)); setError(""); setSkipOk(false);
   }, [booking]);
   // Another load opened: start on the section its current stage points at.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -747,21 +755,29 @@ export default function LogisticsBookingForm({
   const pickStatus = (s: FreightStatus) => {
     const from = draft.status;
     if (s === from) return;
-    // R-502: a load is not moved on to Booked or later with no carrier or broker on it. The Book step is where it is added.
-    if (needsCarrier(from, s, draft)) { setError(GAP_CARRIER); setStep("book"); return; }
+    // R-506: no step is a hard stop. A missing carrier or day does not stop a move (the rate confirmation strip says what
+    // is missing). A load saved at the quote stage that is moved past it asks once what that skips from the booking gate,
+    // then lets it through; the save sends `override` with the status. Declining leaves the status. It is asked again only
+    // when the draft has been back at the quote stage.
+    if (pastQuote(s) && atQuoteStage(booking) && !(skipOk && pastQuote(from))) {
+      const skipped = skipAsk(s, gate.missing, !dealEdit);
+      if (skipped && !confirm(skipped)) return;
+      setSkipOk(!!skipped);
+    }
     // R-502: moving back takes the days with it, and cancelling a booked load is not a slip of the mouse: ask first.
     const ask = moveBackAsk(from, s, actualsOf(draft));
     if (ask && !confirm(ask)) return;
     // R-502: On the way and Delivered are not given a day made up for them: ask for the real one.
     const need = daysToAsk(from, s, draft);
     if (need.pickup || need.delivery) { setDayAsk({ to: s, ...need }); return; }
+    if (!pastQuote(s)) setSkipOk(false);
     setDraft((d) => ({ ...d, ...pickStatusFields(actualsOf(d), s) }));
   };
   /** An actual day is filled in or cleared: the status follows it before Save, the way the server reads it. */
   const dealEdit = can(me, "deal_flow:edit");
-  // R-502: a quote has not moved, so the server takes no pickup or delivery day on it, and a Logistics-only person
-  // cannot send it to book. The two days stay shut for them until the team does.
-  const dayLocked = !dealEdit && isQuoteStage(booking.status);
+  // R-502: a quote has not moved, so the server takes no pickup or delivery day on it. R-506: that holds for everyone, so
+  // the two days stay shut while the saved load is at the quote stage; On the way and Delivered in Status ask for the days.
+  const dayLocked = atQuoteStage(booking);
   const setActual = (field: "picked_up_at" | "delivered_at", v: string) =>
     setDraft((d) => ({
       ...d, [field]: v,
@@ -814,7 +830,8 @@ export default function LogisticsBookingForm({
     for (const k of TEXT_KEYS) if (draft[k] !== base[k] && !hiddenPlaceKey(k, booking)) patch[k] = draft[k];
     if (draft.status !== base.status) patch.status = draft.status;
     if (opts?.status) patch.status = opts.status;
-    if (opts?.override) patch.override = true;
+    // R-506: a quote-stage load moved past the quote stage after the person said yes to what it skips.
+    if (opts?.override || (skipOk && atQuoteStage(booking) && pastQuote(String(patch.status ?? "")))) patch.override = true;
     // The server works the markup and the quote out from the cost and the percent. A percent the person may not
     // type is never sent: the server uses the default for it.
     if (draft.cost !== base.cost || draft.pct !== base.pct || opts?.withQuote) {
@@ -846,6 +863,7 @@ export default function LogisticsBookingForm({
       const saved = await api.logistics.update(booking.id, { ...(patch as FreightBookingPatch), today: localDay() });
       toast(opts?.status === "requested" ? "Sent to logistics" : opts?.withQuote && !full ? "Quote sent to your team" : "Saved");
       handedOver.current = null;
+      setSkipOk(false);
       onSaved(saved);
     } catch (e) {
       const msg = relabelAddressGap(String(e), kept);
@@ -1551,7 +1569,7 @@ export default function LogisticsBookingForm({
                 </select>
               </div>
             </div>
-            {dayLocked && <p className="text-[13px] text-ink-2 text-right" role="status">{QUOTE_STAGE_DAYS_LOGISTICS}</p>}
+            {dayLocked && <p className="text-[13px] text-ink-2 text-right" role="status">{QUOTE_STAGE_DAYS}</p>}
             {/* R-475: the rate confirmation, at the top in the colour of how complete it is (from what is saved: the PDF prints that). */}
             <div role="status" className={`flex items-center gap-3 rounded-xl border px-3.5 py-2.5 ${rateConReady ? "bg-success-bg border-success/30" : "bg-warning-bg border-warning/30"}`}>
               <FileText size={18} className={`flex-shrink-0 ${rateConReady ? "text-success-ink" : "text-warning-ink"}`} />

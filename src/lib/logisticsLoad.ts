@@ -7,6 +7,7 @@
 import type { FreightBooking, FreightFile, FreightFileKind, FreightStatus, FreightStop, PaidState } from "./api";
 import { fmtAmount, localDay, parseLocalDay } from "./format";
 import { formatLocation, parseLocation } from "./location";
+import type { GateKey } from "./loadProgress";
 
 // ─── statuses (contract section 1) ────────────────────────────────────────
 
@@ -315,37 +316,36 @@ export function moveBackAsk(from: string, to: string, cur: Actuals, now?: Date):
   return clears.length ? `Move this load back? This clears ${clears.join(" and ")}.` : "";
 }
 
-/** R-502: the sentences the server refuses a step with (clienthub-api routes/logistics.rs `step_gap`,
- *  `actual_day_gap`), word for word. */
-export const GAP_CARRIER = "Add the carrier on the Book step before marking it booked.";
-export const GAP_PICKED_UP = "Add the day it was picked up on the Pickup step.";
-export const GAP_DELIVERED = "Add the day it was delivered on the Delivery step.";
+/** R-502: the sentences the server still refuses a save with on the actual days (clienthub-api routes/logistics.rs
+ *  `actual_day_gap`), word for word. R-506: it no longer refuses a step for a missing carrier or a missing day, so those
+ *  sentences and the checks that mirrored them are gone. */
 export const GAP_PICKUP_AFTER_TODAY = "The pickup day cannot be after today.";
 export const GAP_DELIVERY_AFTER_TODAY = "The delivery day cannot be after today.";
 export const GAP_DELIVERY_BEFORE_PICKUP = "The delivery day cannot be before the pickup day.";
-/** What a Logistics-only person is told on a load that is still a quote (the team sends it to book first). */
-export const QUOTE_STAGE_DAYS_LOGISTICS = "Your team has to send this load to book before it can be picked up or delivered. Tell them it already moved.";
+/** R-506: what any editor is told on a load that is still at the quote stage and has an actual day typed on it. The
+ *  server refuses a day there; the days are asked for when On the way or Delivered is picked, so the two day boxes stay shut. */
+export const QUOTE_STAGE_DAYS = "Pick On the way or Delivered in Status to log a load that already moved. It asks for the days.";
 
-export interface StepGapFacts { carrier: string; broker: string; picked_up_at: string; delivered_at: string }
+/** R-506: a load whose saved status is still at the quote stage: a quote, a quoted load, or a cancelled load that never
+ *  went to book (no booked day, never sent to book). Moving it past the quote stage is the move the booking gate judges. */
+export const atQuoteStage = (b: { status: string; booked_at?: string; sent_to_book_at?: string }): boolean =>
+  isQuoteStage(b.status) || (b.status === "cancelled" && !(b.booked_at ?? "").trim() && !(b.sent_to_book_at ?? "").trim());
 
-/** R-502: a move forward into Booked or later, from below Booked, with neither a carrier nor a broker on the load. */
-export function needsCarrier(from: string, to: string, f: Pick<StepGapFacts, "carrier" | "broker">): boolean {
-  return statusRank(to) >= statusRank("booked") && statusRank(to) > statusRank(from) && statusRank(from) < statusRank("booked")
-    && !f.carrier.trim() && !f.broker.trim();
-}
+/** What skipping each booking-gate item reads as, in plain words (the keys are `bookGate`'s). */
+const SKIPPED_WORDS: Record<GateKey, string> = {
+  quote: "no quote yet", charge: "shipping not on the invoice yet", sent: "invoice not sent", paid: "customer not paid",
+};
 
-/** R-502: what a load must hold to move forward, judged on the values it will have after the save (`facts`), the way the
- *  server judges it. Each step the move enters needs its own fact: Booked the carrier (or the broker), On the way the day
- *  it was picked up, Delivered the day it was delivered. A jump of several steps needs each of them; a step already
- *  passed is not asked again (a load on the way before actual days were kept is delivered without a pickup day).
- *  Going back, cancelling and staying put are never refused here. The sentence, or undefined when nothing is missing. */
-export function stepGap(from: string, to: string, facts: StepGapFacts): string | undefined {
-  const f = statusRank(from), t = statusRank(to);
-  if (t < statusRank("booked") || t <= f) return undefined;
-  if (needsCarrier(from, to, facts)) return GAP_CARRIER;
-  if (f < statusRank("picked_up") && t >= statusRank("picked_up") && !facts.picked_up_at.trim()) return GAP_PICKED_UP;
-  if (t === statusRank("delivered") && !facts.delivered_at.trim()) return GAP_DELIVERED;
-  return undefined;
+/** R-506: the question to ask once before a quote-stage load is moved past the quote stage to `to`, naming what the move
+ *  skips (`missing`: the booking gate's missing items). "" when nothing is skipped, so nothing is asked. On the way and
+ *  Delivered log a load that already moved; To book and Booked are booking it anyway. A Logistics-only person is told the
+ *  team will see it. */
+export function skipAsk(to: string, missing: GateKey[], logisticsOnly: boolean): string {
+  if (!missing.length) return "";
+  const lead = statusRank(to) >= statusRank("picked_up") ? "Log this load as already moving?" : "Book anyway?";
+  // A Logistics-only person cannot see the invoice or the payment (they read as not done), so he is not told they are skipped.
+  if (logisticsOnly) return `${lead} Your team will see you logged it.`;
+  return `${lead} This skips: ${missing.map((k) => SKIPPED_WORDS[k]).join(", ")}.`;
 }
 
 /** R-502: the server's day checks on the days a save writes: not after `today`, and a delivery not before its pickup.
@@ -360,10 +360,11 @@ export function actualDayGap(days: { picked_up_at: string; delivered_at: string 
 
 /** R-502: the step a refusal sentence points at, so a failed save lands on the box to fix: the carrier on Book, the
  *  pickup day on Pickup, the delivery day on Delivery, an address on Quote when the person may edit addresses there,
- *  else on Book. undefined leaves the person where they are (the quote-stage sentences: the team sends it to book). */
+ *  else on Book. undefined leaves the person where they are (the quote-stage sentences). R-506: the sentence about a day
+ *  on a load that stayed at the quote stage names "Delivered", so it is checked before the days. */
 export function stepForRefusal(msg: string, addressOnQuote: boolean): LoadStep | undefined {
   const m = msg.toLowerCase();
-  if (m.includes("send this load to book")) return undefined;
+  if (m.includes("send this load to book") || m.includes("in status to log a load")) return undefined;
   if (m.includes("book step") || m.includes("carrier")) return "book";
   if (m.includes("pickup step") || m.includes("picked up") || m.includes("pickup day cannot")) return "pickup";
   if (m.includes("delivery step") || m.includes("delivered") || m.includes("delivery day cannot")) return "delivery";
@@ -380,14 +381,16 @@ export function confirmToSend(numberChanged: boolean, was: boolean, now: boolean
 }
 
 /** Whether a status may be picked on a load that is `from` now. The team (deal_flow:edit) may pick any.
- *  Without it the server refuses `quote` always, `quoted` unless the load is a quote already, and every
- *  other status while the load is a quote or quoted (the team sends it to book). The current status is
- *  always listed. */
+ *  Without it the server refuses `quote` always and `quoted` unless the load is a quote already. R-506: a quote or
+ *  quoted load may be moved on to To book, Booked, On the way or Delivered by a Logistics-only person too (the form asks
+ *  what that skips and the save says so with `override`); only Cancelled stays shut to him while the load is a quote.
+ *  The current status is always listed. */
 export function statusAllowed(to: FreightStatus, from: string, dealEdit: boolean): boolean {
   if (dealEdit || to === from) return true;
   if (to === "quote") return false;
   if (to === "quoted") return isQuoteStage(from);
-  return !isQuoteStage(from);
+  if (to === "cancelled") return !isQuoteStage(from);
+  return true;
 }
 
 /** A person fills in an actual day. The pickup day moves To book or Booked to On the way, and the

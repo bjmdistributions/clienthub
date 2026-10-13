@@ -5,7 +5,7 @@ import {
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, rowLane, statusAfterActual, statusWord, stepDone, timeWord,
-  actualDayGap, daysToAsk, moveBackAsk, needsCarrier, pastDay, statusRank, stepForRefusal, stepGap, QUOTE_STAGE_DAYS_LOGISTICS,
+  actualDayGap, atQuoteStage, daysToAsk, moveBackAsk, pastDay, skipAsk, statusRank, stepForRefusal, QUOTE_STAGE_DAYS,
 } from "./logisticsLoad";
 
 // An invented load: every key a row carries, so a rule is tested on the whole shape.
@@ -156,54 +156,46 @@ describe("the actual dates move the status", () => {
   });
 });
 
-describe("R-502: a step forward needs its fact", () => {
-  const have = { carrier: "Northline Freight", broker: "", picked_up_at: "2026-10-01", delivered_at: "2026-10-02" };
-  const none = { carrier: "", broker: "", picked_up_at: "", delivered_at: "" };
+describe("R-502: the status order", () => {
   it("ranks the statuses the way the server does, cancelled before them all", () => {
     expect(STATUS_ORDER.filter((s) => s !== "cancelled").map(statusRank)).toEqual([0, 1, 2, 3, 4, 5]);
     expect(statusRank("cancelled")).toBe(-1);
   });
-  it("Booked needs a carrier or a broker, with the server's sentence", () => {
-    const carrierSentence = "Add the carrier on the Book step before marking it booked.";
-    expect(stepGap("requested", "booked", none)).toBe(carrierSentence);
-    expect(stepGap("requested", "booked", { ...none, carrier: "Northline Freight" })).toBeUndefined();
-    expect(stepGap("requested", "booked", { ...none, broker: "Harbor Brokers" })).toBeUndefined();
-    expect(stepGap("requested", "booked", { ...none, carrier: "  " })).toBe(carrierSentence);
+});
+
+describe("R-506: moving a quote-stage load past the quote stage asks, then lets it through", () => {
+  it("a quote, a quoted load and a cancelled load that never went to book are at the quote stage", () => {
+    expect(atQuoteStage({ status: "quote" })).toBe(true);
+    expect(atQuoteStage({ status: "quoted" })).toBe(true);
+    expect(atQuoteStage({ status: "cancelled", booked_at: "", sent_to_book_at: "" })).toBe(true);
+    expect(atQuoteStage({ status: "cancelled" })).toBe(true);
   });
-  it("On the way needs the pickup day, Delivered needs the delivery day", () => {
-    expect(stepGap("booked", "picked_up", { ...have, picked_up_at: "" })).toBe("Add the day it was picked up on the Pickup step.");
-    expect(stepGap("booked", "picked_up", have)).toBeUndefined();
-    expect(stepGap("picked_up", "delivered", { ...have, delivered_at: "" })).toBe("Add the day it was delivered on the Delivery step.");
-    expect(stepGap("picked_up", "delivered", have)).toBeUndefined();
+  it("a cancelled load that was booked or sent to book, and any later status, are not", () => {
+    expect(atQuoteStage({ status: "cancelled", booked_at: "2026-10-01T09:00:00Z" })).toBe(false);
+    expect(atQuoteStage({ status: "cancelled", sent_to_book_at: "2026-10-01T09:00:00Z" })).toBe(false);
+    expect(atQuoteStage({ status: "requested" })).toBe(false);
+    expect(atQuoteStage({ status: "delivered", booked_at: "" })).toBe(false);
   });
-  it("a jump of several steps needs each fact, in the order of the steps", () => {
-    expect(stepGap("requested", "delivered", none)).toBe("Add the carrier on the Book step before marking it booked.");
-    expect(stepGap("requested", "delivered", { ...none, carrier: "Northline Freight" })).toBe("Add the day it was picked up on the Pickup step.");
-    expect(stepGap("requested", "delivered", { ...none, carrier: "Northline Freight", picked_up_at: "2026-10-01" })).toBe("Add the day it was delivered on the Delivery step.");
-    expect(stepGap("quoted", "picked_up", { ...none, carrier: "Northline Freight" })).toBe("Add the day it was picked up on the Pickup step.");
-    expect(stepGap("requested", "delivered", have)).toBeUndefined();
+  it("asks nothing when nothing is skipped", () => {
+    expect(skipAsk("booked", [], false)).toBe("");
+    expect(skipAsk("picked_up", [], true)).toBe("");
   });
-  it("going back, staying put and an early step are never refused", () => {
-    expect(stepGap("delivered", "booked", none)).toBeUndefined();
-    expect(stepGap("picked_up", "requested", none)).toBeUndefined();
-    expect(stepGap("booked", "booked", none)).toBeUndefined();
-    expect(stepGap("quote", "requested", none)).toBeUndefined();
-    expect(stepGap("booked", "cancelled", none)).toBeUndefined();
+  it("To book and Booked ask Book anyway and name what is skipped, in the gate's order", () => {
+    expect(skipAsk("requested", ["sent", "paid"], false)).toBe("Book anyway? This skips: invoice not sent, customer not paid.");
+    expect(skipAsk("booked", ["quote", "charge", "sent", "paid"], false))
+      .toBe("Book anyway? This skips: no quote yet, shipping not on the invoice yet, invoice not sent, customer not paid.");
   });
-  it("reopening a cancelled load as Booked needs a carrier", () => {
-    expect(stepGap("cancelled", "booked", none)).toBe("Add the carrier on the Book step before marking it booked.");
-    expect(stepGap("cancelled", "booked", { ...none, carrier: "Northline Freight" })).toBeUndefined();
-    expect(stepGap("cancelled", "requested", none)).toBeUndefined();
+  it("On the way and Delivered ask to log a load that already moved", () => {
+    expect(skipAsk("picked_up", ["paid"], false)).toBe("Log this load as already moving? This skips: customer not paid.");
+    expect(skipAsk("delivered", ["quote"], false)).toBe("Log this load as already moving? This skips: no quote yet.");
   });
-  it("a load already on the way is delivered without a pickup day: that step was passed earlier", () => {
-    expect(stepGap("picked_up", "delivered", { ...none, delivered_at: "2026-10-02" })).toBeUndefined();
-    expect(stepGap("picked_up", "delivered", none)).toBe("Add the day it was delivered on the Delivery step.");
+  it("tells a Logistics-only person that the team will see it", () => {
+    // A Logistics-only person cannot see the invoice or the payment, so the question does not list them.
+    expect(skipAsk("delivered", ["sent", "paid"], true)).toBe("Log this load as already moving? Your team will see you logged it.");
+    expect(skipAsk("booked", ["paid"], true)).toBe("Book anyway? Your team will see you logged it.");
   });
-  it("only a move from below Booked asks for the carrier, and the form can ask the same question", () => {
-    expect(needsCarrier("requested", "picked_up", none)).toBe(true);
-    expect(needsCarrier("booked", "picked_up", none)).toBe(false);
-    expect(needsCarrier("quoted", "requested", none)).toBe(false);
-    expect(needsCarrier("delivered", "booked", none)).toBe(false);
+  it("the sentence for a day on a load that stayed at the quote stage is the server's, and leaves the person where they are", () => {
+    expect(QUOTE_STAGE_DAYS).toBe("Pick On the way or Delivered in Status to log a load that already moved. It asks for the days.");
   });
 });
 
@@ -285,7 +277,9 @@ describe("R-502: a refused save lands on the box to fix", () => {
   });
   it("leaves the person where they are for the quote-stage sentences and anything else", () => {
     expect(stepForRefusal("Send this load to book before adding the day it was picked up or delivered.", true)).toBeUndefined();
-    expect(stepForRefusal(QUOTE_STAGE_DAYS_LOGISTICS, true)).toBeUndefined();
+    // R-506: the sentence names "Delivered", which must not send the person to the Delivery step.
+    expect(stepForRefusal(QUOTE_STAGE_DAYS, true)).toBeUndefined();
+    expect(stepForRefusal(QUOTE_STAGE_DAYS, false)).toBeUndefined();
     expect(stepForRefusal("Could not reach the server.", true)).toBeUndefined();
   });
 });
@@ -388,9 +382,12 @@ describe("the list groups", () => {
     expect(isHot({ status: "quote", urgent: true })).toBe(true);
   });
   it("lists only the statuses the server lets a viewer without deal edit pick", () => {
-    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quote", false))).toEqual(["quote", "quoted"]);
-    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quoted", false))).toEqual(["quoted"]);
+    // R-506: a quote-stage load can be moved on to To book, Booked, On the way or Delivered; he still cannot pick Quote
+    // asked, Quoted only comes from a quote stage, and Cancelled stays shut while it is a quote.
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quote", false))).toEqual(["quote", "quoted", "requested", "booked", "picked_up", "delivered"]);
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quoted", false))).toEqual(["quoted", "requested", "booked", "picked_up", "delivered"]);
     expect(STATUS_ORDER.filter((s) => statusAllowed(s, "booked", false))).toEqual(["requested", "booked", "picked_up", "delivered", "cancelled"]);
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "cancelled", false))).toEqual(["requested", "booked", "picked_up", "delivered", "cancelled"]);
     expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quote", true))).toEqual(STATUS_ORDER);
   });
   it("sends a pickup number check that was ticked again after the number changed", () => {
