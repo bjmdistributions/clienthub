@@ -93,12 +93,12 @@ export function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: Gro
 }
 
 // R-487: each group's heading wears its state's colour (the Dashboard cards' and the delivery chart's), so the list
-// reads by colour: Apple system hues, a light wash behind the heading and the title in the matching ink.
+// reads by colour (R-507: teal while a load ships, green once delivered and while the carrier is owed): Apple system hues, a light wash behind the heading and the title in the matching ink.
 const GROUP_TONE: Partial<Record<GroupKey | "arriving" | "fresh", [string, string]>> = {
-  arriving: ["--c-chart-profit", "--c-chart-profit-ink"], fresh: ["--c-chart-1", "--c-chart-1"],
+  arriving: ["--c-chart-2", "--c-chart-2-ink"], fresh: ["--c-chart-1", "--c-chart-1"],
   quotes: ["--c-chart-1", "--c-chart-1"], quoted: ["--c-chart-1", "--c-chart-1"], requested: ["--c-chart-1", "--c-chart-1"],
-  booked: ["--c-chart-3", "--c-chart-3"], way: ["--c-chart-2", "--c-chart-2-ink"],
-  paperwork: ["--c-chart-6", "--c-chart-caution-ink"], topay: ["--c-chart-6", "--c-chart-caution-ink"],
+  booked: ["--c-chart-2", "--c-chart-2-ink"], way: ["--c-chart-2", "--c-chart-2-ink"],
+  paperwork: ["--c-chart-profit", "--c-chart-profit-ink"], topay: ["--c-chart-profit", "--c-chart-profit-ink"],
   delivered: ["--c-chart-profit", "--c-chart-profit-ink"],
 };
 

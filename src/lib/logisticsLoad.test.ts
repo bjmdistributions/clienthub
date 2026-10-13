@@ -717,14 +717,14 @@ describe("the Dashboard's two groups (R-483)", () => {
 describe("the Dashboard's cards (R-484 round 2)", () => {
   const T = "2026-10-09";
   const paper = { bol: true, pod: true, carrier_invoice: true };
-  it("colours a load by where it is", () => {
-    expect(loadCard(mk({ status: "booked" }), T)).toMatchObject({ tone: "indigo", label: "Booked", step: 1 });
+  it("colours a load by where it is: teal while it ships (R-507)", () => {
+    expect(loadCard(mk({ status: "booked" }), T)).toMatchObject({ tone: "teal", label: "Booked", step: 1 });
     expect(loadCard(mk({ status: "picked_up" }), T)).toMatchObject({ tone: "teal", label: "On the way", step: 2 });
   });
   it("says what a delivered load still needs before the carrier is paid", () => {
-    expect(loadCard(mk({ status: "delivered" }), T)).toMatchObject({ tone: "orange", label: "Needs paperwork", step: 1 });
+    expect(loadCard(mk({ status: "delivered" }), T)).toMatchObject({ tone: "green", label: "Needs paperwork", step: 1 });
     const ready = mk({ status: "delivered", paperwork: paper, quoted_cost: 1800, pay_due_date: "2026-10-20" });
-    expect(loadCard(ready, T)).toMatchObject({ tone: "orange", label: "Ready to pay", step: 2 });
+    expect(loadCard(ready, T)).toMatchObject({ tone: "green", label: "Ready to pay", step: 2 });
     expect(loadCard({ ...ready, pay_due_date: "2026-10-09" }, T)).toMatchObject({ tone: "red", label: "Due today" });
     expect(loadCard({ ...ready, pay_due_date: "2026-10-02" }, T)).toMatchObject({ tone: "red", label: "Overdue" });
     expect(loadCard({ ...ready, paid_amount: 500, paid_state: "marked" }, T)).toMatchObject({ label: "Link the payment" });
@@ -753,8 +753,8 @@ describe("arriving today (R-487)", () => {
     expect(g.arriving.map((b) => b.id)).toEqual(["a", "c"]);
     expect(g.shipping.map((b) => b.id)).toEqual(["b"]);
     expect(g.carrier.map((b) => b.id)).toEqual(["d"]);
-    expect(loadCard(list[0], T)).toMatchObject({ tone: "green", label: "Arriving today", step: 2 });
-    expect(loadCard(list[2], T)).toMatchObject({ tone: "green", label: "Delivered today", step: 3 });
+    expect(loadCard(list[0], T)).toMatchObject({ tone: "teal", label: "Arriving today", step: 2 });
+    expect(loadCard(list[2], T)).toMatchObject({ tone: "teal", label: "Delivered today", step: 3 });
   });
 });
 

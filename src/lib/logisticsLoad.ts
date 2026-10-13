@@ -637,28 +637,29 @@ export function laneEnds(b: { pickup_address: string; delivery_address: string; 
   return { from: place(b.pickup_address), to: place(b.delivery_address), more: stopsOf(b).length };
 }
 
-/** R-484 round 2: one Dashboard card. The colour says the state: green arriving today (R-487), indigo booked, blue on
- *  the way (teal, so it stays apart from indigo in the delivery chart), orange the carrier is owed, red the carrier is due today or overdue. `step` is how far along the three steps the load is. */
-export type CardTone = "green" | "indigo" | "teal" | "orange" | "red";
+/** R-484 round 2: one Dashboard card. The colour says the state: teal while the load ships (booked, on the way,
+ *  arriving today), green the carrier is owed, red the carrier is due today or overdue (R-507, 2026-10-13: Jack's pick,
+ *  the teal of a load on its way). `step` is how far along the three steps the load is. */
+export type CardTone = "green" | "teal" | "red";
 export interface LoadCard { tone: CardTone; label: string; sub: string; steps: [string, string, string]; step: 1 | 2 | 3 }
 export function loadCard(b: Groupable & { status: string; pay_due_date?: string | null; delivery_date?: string; delivered_at?: string }, today: string): LoadCard {
-  // R-487: green for a load arriving today, full track once it is delivered.
+  // R-487: a load arriving today leads, full track once it is delivered.
   if (arrivesToday(b, today)) {
     const done = b.status === "delivered";
-    return { tone: "green", label: done ? "Delivered today" : "Arriving today", sub: "", steps: ["Booked", "Picked up", "Delivered"], step: done ? 3 : b.status === "picked_up" ? 2 : 1 };
+    return { tone: "teal", label: done ? "Delivered today" : "Arriving today", sub: "", steps: ["Booked", "Picked up", "Delivered"], step: done ? 3 : b.status === "picked_up" ? 2 : 1 };
   }
   if (b.status === "booked" || b.status === "picked_up") {
     const moving = b.status === "picked_up";
-    return { tone: moving ? "teal" : "indigo", label: moving ? "On the way" : "Booked", sub: "", steps: ["Booked", "Picked up", "Delivered"], step: moving ? 2 : 1 };
+    return { tone: "teal", label: moving ? "On the way" : "Booked", sub: "", steps: ["Booked", "Picked up", "Delivered"], step: moving ? 2 : 1 };
   }
   const steps: [string, string, string] = ["Delivered", "Paperwork", "Paid"];
   const missing = missingPaperwork(b);
-  if (missing.length > 0) return { tone: "orange", label: "Needs paperwork", sub: `Needs ${missing.join(", ").toLowerCase()}`, steps, step: 1 };
+  if (missing.length > 0) return { tone: "green", label: "Needs paperwork", sub: `Needs ${missing.join(", ").toLowerCase()}`, steps, step: 1 };
   const due = b.pay_due_date || "";
   const late = dueTone(due, today) === "danger";
   const st = paidStateOf(b);
   const label = st === "marked" ? "Link the payment" : st === "part" ? "Part paid" : late ? (daysUntil(due, today) === 0 ? "Due today" : "Overdue") : "Ready to pay";
-  return { tone: late ? "red" : "orange", label, sub: dueLabel(due, today), steps, step: 2 };
+  return { tone: late ? "red" : "green", label, sub: dueLabel(due, today), steps, step: 2 };
 }
 
 // ─── quote to invoice to book (contract section 7) ────────────────────────

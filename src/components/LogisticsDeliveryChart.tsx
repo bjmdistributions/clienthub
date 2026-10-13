@@ -5,14 +5,15 @@ import { parseLocalDay } from "../lib/format";
 import { deliveryDays } from "../lib/logisticsLoad";
 
 // R-487: when loads are expected to be delivered, the next 14 days, one bar per day. Each bar stacks what is coming
-// that day: delivered (today only, green), on the way (teal), booked (indigo), the same colours as the Dashboard's
+// that day: delivered (today only, green), on the way (teal), booked (light teal), the same colours as the Dashboard's
 // cards. Loads whose delivery day has passed stand in their own red Late column on the left. A bar opens its loads
 // under the chart, in the list's own rows (`renderRow`).
 
 const SEG = [
   { key: "delivered", label: "Delivered", color: "var(--c-chart-profit)" },
   { key: "way", label: "On the way", color: "var(--c-chart-2)" },
-  { key: "booked", label: "Booked", color: "var(--c-chart-3)" },
+  // R-507: teal while a load ships; booked is the same teal at 45% so the two still stack apart (it reads as rgb(... / 0.45)).
+  { key: "booked", label: "Booked", color: "var(--c-chart-2) / 0.45" },
 ] as const;
 const LATE = "var(--c-chart-loss)";
 const PLOT_H = 120;

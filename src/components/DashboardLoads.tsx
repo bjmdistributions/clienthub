@@ -7,9 +7,9 @@ import { routeLabel, timingLine } from "./LogisticsBookingForm";
 import { openLoadInLogistics } from "./LogisticsPayCarriers";
 
 // R-484: what is going on with the freight, right under the Dashboard's numbers. Round 2 (Jack, 2026-10-09: "square
-// grid view ... more life"): each load is a square card whose colour says where it is (indigo booked, teal on the
-// way, orange the carrier is owed, red the carrier is due today or overdue), with the route as the headline and a
-// three-step track. R-487: Arriving today (green) leads; a card opens its deal on the Shipping step, and Load opens
+// grid view ... more life"): each load is a square card whose colour says where it is (teal while it ships, green the
+// carrier is owed, red the carrier is due today or overdue; R-507), with the route as the headline and a
+// three-step track. R-487: Arriving today leads; a card opens its deal on the Shipping step, and Load opens
 // the load (a load with no deal the viewer may see opens the load). Nothing shows when neither group has a load, or when the server does not
 // let this person see Logistics.
 
@@ -21,9 +21,7 @@ const byDue = (a: FreightBooking, b: FreightBooking) =>
 // Apple system colours (the chart tokens): the fill for the wash, the track and the icon; the -ink for words.
 const TONE: Record<CardTone, { fill: string; ink: string }> = {
   green: { fill: "var(--c-chart-profit)", ink: "var(--c-chart-profit-ink)" },
-  indigo: { fill: "var(--c-chart-3)", ink: "var(--c-chart-3)" },
   teal: { fill: "var(--c-chart-2)", ink: "var(--c-chart-2-ink)" },
-  orange: { fill: "var(--c-chart-caution)", ink: "var(--c-chart-caution-ink)" },
   red: { fill: "var(--c-chart-loss)", ink: "var(--c-chart-loss-ink)" },
 };
 
