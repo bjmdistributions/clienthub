@@ -1182,8 +1182,10 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
             [&inv.1],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
+        // R-504: a deal completed or marked paid, or paid by its linked bank payments, stamps PAID, not OVERDUE.
+        let status = if invoice_is_paid(&conn, invoice_id, &inv.9, inv.7) { "paid".to_string() } else { inv.9 };
         (
-            inv.0, inv.1, inv.2, inv.3, inv.4, inv.5, inv.6, inv.7, inv.8, inv.9,
+            inv.0, inv.1, inv.2, inv.3, inv.4, inv.5, inv.6, inv.7, inv.8, status,
             cli.0, cli.1, cli.2, cli.3,
         )
     };
@@ -1212,6 +1214,46 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
     )?;
 
     Ok(pdf_path.to_string_lossy().to_string())
+}
+
+/// R-504: whether the invoice PDF stamps PAID, by the customer portal's rule (server `customer_portal::payment_of`):
+/// the invoice marked paid, its deal completed or moved past payment, or `buyer_payment` bank links on every flow of
+/// the invoice reaching the total (else the deal's gross) less 50 cents. Jack: a deal "marked paid and completed"
+/// must not print OVERDUE.
+fn stamp_paid(status: &str, total: f64, complete: bool, stage: &str, gross: f64, linked: f64) -> bool {
+    let target = if total > 0.01 { total } else { gross };
+    status == "paid"
+        || complete
+        || matches!(stage, "payment_received" | "paid" | "supplier_paid" | "complete" | "completed")
+        || (target > 0.01 && linked >= target - 0.5)
+}
+
+fn invoice_is_paid(conn: &rusqlite::Connection, invoice_id: &str, status: &str, total: f64) -> bool {
+    let (complete, stage, gross): (i64, String, f64) = conn
+        .query_row(
+            "SELECT COALESCE(i.is_complete,0), COALESCE(df.stage,''), COALESCE(df.gross_revenue,0)
+             FROM invoices i
+             LEFT JOIN deal_flows df ON df.id = (
+                 SELECT d.id FROM deal_flows d WHERE d.invoice_id=i.id AND COALESCE(d.archived,0)=0
+                 ORDER BY CASE d.stage WHEN 'complete' THEN 4 WHEN 'completed' THEN 4 WHEN 'supplier_paid' THEN 3
+                                       WHEN 'payment_received' THEN 2 WHEN 'paid' THEN 2 ELSE 1 END DESC,
+                          d.created_at DESC LIMIT 1)
+             WHERE i.id=?1",
+            [invoice_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap_or((0, String::new(), 0.0));
+    let linked: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id
+                    JOIN deal_flows df ON df.id=a.deal_flow_id
+             WHERE a.role='buyer_payment' AND df.invoice_id=?1",
+            [invoice_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+    let complete = complete != 0 || stage == "complete" || stage == "completed";
+    stamp_paid(status, total, complete, &stage, gross, linked)
 }
 
 /// Render a SAMPLE invoice PDF using the current company_info + invoice_template
@@ -1697,5 +1739,21 @@ mod send_guard_tests {
     fn lettre_is_where_invalid_input_came_from() {
         let err = "".parse::<lettre::message::Mailbox>().unwrap_err().to_string();
         assert_eq!(err, "Invalid input", "the exact text the toast showed");
+    }
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::stamp_paid;
+
+    /// R-504: the stamp follows what Deal Flow says, not only the invoice row's status.
+    #[test]
+    fn a_completed_or_marked_paid_deal_stamps_paid() {
+        assert!(stamp_paid("sent", 250.0, true, "invoiced", 0.0, 0.0), "completed");
+        assert!(stamp_paid("draft", 250.0, false, "payment_received", 0.0, 0.0), "marked paid");
+        assert!(stamp_paid("sent", 250.0, false, "invoiced", 0.0, 249.6), "bank links cover it, 50 cent tolerance");
+        assert!(stamp_paid("paid", 250.0, false, "", 0.0, 0.0), "the invoice row says paid");
+        assert!(!stamp_paid("sent", 250.0, false, "invoiced", 0.0, 100.0), "part paid stays unpaid");
+        assert!(!stamp_paid("sent", 250.0, false, "", 0.0, 0.0), "nothing linked, no deal");
     }
 }

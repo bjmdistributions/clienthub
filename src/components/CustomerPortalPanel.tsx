@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Copy, DoorOpen, ExternalLink, Mail } from "lucide-react";
 import { api, CustomerPortalAccess, isUnavailable } from "../lib/api";
-import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 
 // R-290 customer portal — one client's access to portal.ecliptr.app: who can sign in,
@@ -95,7 +94,7 @@ export default function CustomerPortalPanel({
   return (
     <div className={card ? "bg-surface border border-line rounded-2xl px-5 py-4 min-w-0" : bare ? "" : "mt-4 pt-4 border-t border-line-2"}>
       {!bare && (
-        <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-2">
           {card
             ? <div className="flex items-center gap-2 text-[13px] font-semibold text-ink"><DoorOpen size={14} className="text-muted" />Customer portal</div>
             : <p className="text-[12.5px] font-medium text-muted">Customer portal</p>}
@@ -105,18 +104,17 @@ export default function CustomerPortalPanel({
         </div>
       )}
 
+      {/* R-504: each fact on its own line and the buttons on a row of their own. Beside three no-wrap buttons in the
+          profile's narrow side column, a flex-1 line shrank to one word per line. */}
       {data.accounts.map((a) => (
-        <div key={a.id} className="flex items-center gap-3 py-2 border-b border-line-2 last:border-b-0">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-[13px] text-ink truncate">{a.email}</span>
-              {a.status === "suspended" ? <StatusPill tone="warning">Suspended</StatusPill> : <StatusPill tone="success">Can sign in</StatusPill>}
-            </div>
-            <div className="text-[11.5px] text-muted">
-              {a.last_login_at ? `Last signed in ${portalDate(a.last_login_at)}` : "Has not signed in yet"}
-            </div>
+        <div key={a.id} className="py-2.5 border-b border-line-2 last:border-b-0">
+          <div className="text-[13px] text-ink [overflow-wrap:anywhere]">
+            <span className="font-semibold">{a.email}</span> {a.status === "suspended" ? "is suspended and cannot sign in" : "can sign in"}
           </div>
-          <button
+          <div className="text-[11.5px] text-muted">
+            {a.last_login_at ? `Last signed in ${portalDate(a.last_login_at)}` : "Has not signed in yet"}
+          </div>
+          <div className="mt-2"><button
             disabled={busy}
             onClick={() => {
               const next = a.status === "suspended" ? "active" : "suspended";
@@ -126,35 +124,38 @@ export default function CustomerPortalPanel({
             className={quiet}
           >
             {a.status === "suspended" ? "Reactivate" : "Suspend"}
-          </button>
+          </button></div>
         </div>
       ))}
 
       {data.invite && !inviting && (
-        <div className="flex flex-wrap items-center gap-2 py-2">
-          <div className="min-w-0 flex-1 text-[12.5px] text-ink-2">
-            Invite open{data.invite.email ? ` for ${data.invite.email}` : ""}, expires {portalDate(data.invite.expires_at)}
+        <div className="py-2.5">
+          <div className="text-[13px] text-ink [overflow-wrap:anywhere]">
+            Invite sent{data.invite.email ? <> to <span className="font-semibold">{data.invite.email}</span></> : ""}
           </div>
+          <div className="text-[11.5px] text-muted">Not signed up yet. The link expires {portalDate(data.invite.expires_at)}.</div>
+          <div className="flex flex-wrap gap-2 mt-2">
           <button disabled={busy} onClick={() => copy(data.invite!.link)} className={quiet}><Copy size={13} />Copy link</button>
           <button disabled={busy} onClick={() => { setEmail(data.invite!.email || email); setInviting(true); }} className={quiet}><Mail size={13} />Send again</button>
           <button disabled={busy} onClick={() => { if (confirm("Revoke this invite link? It stops working straight away.")) run(() => api.customerPortalRevokeInvite(clientId)); }}
             className={`${btn} text-danger-ink hover:bg-danger-bg`}>Revoke</button>
+          </div>
         </div>
       )}
 
       {showForm ? (
         <div className="py-1">
           {!hasAccess && !data.invite && (
-            <p className="text-[12.5px] text-ink-2 mb-2">Give {first} a login to see their invoices, deals, shipping and how to pay.</p>
+            <p className="text-[12.5px] text-ink-2 mb-2">No login yet. Give {first} a login to see what they owe, what they have paid and what is complete.</p>
           )}
-          <div className="flex flex-wrap items-center gap-2">
-            <input
+          <input
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="Email to send the invite to"
               type="email"
-              className="border border-line px-3 h-8 rounded-lg text-[12.5px] bg-surface text-ink flex-1 min-w-[180px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
-            />
+            className="w-full border border-line px-3 h-8 rounded-lg text-[12.5px] bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+          />
+          <div className="flex flex-wrap items-center gap-2 mt-2">
             <button disabled={busy || !email.includes("@")} onClick={() => invite(true)} className={primary}><Mail size={13} />Email invite</button>
             <button disabled={busy} onClick={() => invite(false)} className={quiet}><Copy size={13} />Copy link</button>
             {inviting && <button onClick={() => setInviting(false)} className={`${btn} text-muted hover:text-ink`}>Cancel</button>}
