@@ -91,7 +91,6 @@ import GettingStarted from "./components/GettingStarted";
 import AuthView from "./components/AuthView";
 import LogisticsView from "./components/LogisticsView";
 import BolsView from "./components/BolsView";
-import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
@@ -426,9 +425,12 @@ export default function App() {
   }, []);
 
   const [draftCount, setDraftCount] = useState(0);
-  const { aiOnline, checkAi } = useAppStore();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  // R-511 DG-14: the footer's light is the server, not the local AI model (that status lives on the AI
+  // settings card). `auth` is what the netsync loop last saw: ok, offline (unreachable) or auth_lost.
+  const [net, setNet] = useState<{ auth: "ok" | "auth_lost" | "offline"; pending_push: number; last_pull_at: string } | null>(null);
+  const [syncFailed, setSyncFailed] = useState<string | null>(null);
   const [quickLogOpen, setQuickLogOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -657,11 +659,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, navCollapsed, navH, apTotal, draftCount, billsOverdue, railPins]);
 
+  const pollNet = () => {
+    api.netsyncStatus()
+      .then((st) => setNet({ auth: st.auth, pending_push: st.pending_push, last_pull_at: st.last_pull_at }))
+      .catch(() => setNet(null));
+  };
   useEffect(() => {
-    checkAi();
-    const id = setInterval(checkAi, 30000);
+    pollNet();
+    const id = setInterval(pollNet, 30000);
     return () => clearInterval(id);
-  }, [checkAi]);
+  }, []);
 
   useEffect(() => {
     api.syncStatus().then((s) => setLastSync(s.last_applied)).catch(() => {});
@@ -758,14 +765,24 @@ export default function App() {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const n = await api.syncReplay();
+      await api.syncReplay();
       const s = await api.syncStatus();
       setLastSync(s.last_applied);
-      if (n > 0) console.log(`Synced ${n} events`);
+      setSyncFailed(null);
+    } catch (e) {
+      // R-511 DG-14: a failed manual sync used to stop the spinner and say nothing.
+      setSyncFailed(String(e));
+      toast(`Sync failed: ${String(e)}`, "error");
     } finally {
       setSyncing(false);
+      pollNet();
     }
   };
+  // The server light's word and colour. No answer at all (the command failed) reads as unreachable.
+  const netOk = !!net && net.auth === "ok" && !syncFailed;
+  const netWord = syncFailed ? "sync failed" : !net || net.auth === "offline" ? "unreachable" : net.auth === "auth_lost" ? "sign in again" : net.pending_push > 0 ? `${net.pending_push} waiting` : "connected";
+  const netColor = netOk ? "var(--rail-ok)" : !net || net.auth === "offline" || syncFailed ? "var(--rail-bad)" : "var(--rail-hot)";
+  const netTitle = `Server: ${netWord}${net?.last_pull_at ? `, last pull ${new Date(net.last_pull_at).toLocaleTimeString()}` : ""}`;
 
   // Consolidated sidebar: workflow mains, each expandable to reveal its sub-items
   // (Jack's "drop down on a main category"), plus a bottom utility zone. Every id
@@ -1372,10 +1389,8 @@ export default function App() {
         <div className={`${navCollapsed ? "px-1.5" : "px-3"} py-3 flex-shrink-0`} style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
           {navCollapsed ? (
             <div className="flex flex-col items-center gap-1.5">
-              <span className="py-0.5" title={`Ollama ${aiOnline ? "online" : "offline"}`}>
-                {aiOnline
-                  ? <Wifi size={12} className="text-success-ink" />
-                  : <WifiOff size={12} className="text-danger-ink" />}
+              <span className="py-0.5" title={netTitle} style={{ color: netColor }}>
+                {netOk ? <Wifi size={12} /> : <WifiOff size={12} />}
               </span>
               {!logisticsOnly && <button
                 onClick={handleSync}
@@ -1423,16 +1438,12 @@ export default function App() {
             </div>
           ) : (
             <div className="space-y-1">
-              {!logisticsOnly && <div className="flex items-center justify-between px-1.5 py-0.5">
+              {!logisticsOnly && <div className="flex items-center justify-between px-1.5 py-0.5" title={netTitle}>
                 <span className="flex items-center gap-2 text-[11px]" style={{ color: "var(--rail-text-dim)" }}>
-                  {aiOnline
-                    ? <Wifi size={11} className="text-success-ink" />
-                    : <WifiOff size={11} className="text-danger-ink" />}
-                  Ollama
+                  <span style={{ color: netColor }}>{netOk ? <Wifi size={11} /> : <WifiOff size={11} />}</span>
+                  Server
                 </span>
-                <span className={`text-[11px] font-medium ${aiOnline ? "text-success-ink" : "text-danger-ink"}`}>
-                  {aiOnline ? "online" : "offline"}
-                </span>
+                <span className="text-[11px] font-medium" style={{ color: netColor }}>{netWord}</span>
               </div>}
               {!logisticsOnly && <button
                 onClick={handleSync}
