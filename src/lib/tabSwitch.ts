@@ -3,10 +3,11 @@
 // filters, selection, scroll and drawer in it. A click on the screen's own row (sidebar, rail, bell, shortcut)
 // asks nothing and changes nothing.
 //
-// A handoff is a navigate-tab event: one screen stashes a value (invoices_prefill, invoices_open_id,
-// dealflow_invoice_filter, suppliers_open_id, the globe client) and the destination reads it in its mount
-// effect. When the destination is the screen already open, the event still has to remount it or the stash is
-// never read, so a handoff takes the same path as a different screen: ask about unsaved typing, then remount.
+// A handoff is a navigate-tab event, or the onNavigate prop of Dashboard, Quotes and Manifest: one screen stashes
+// a value (invoices_prefill, invoices_open_id, dealflow_invoice_filter, suppliers_open_id, the globe client) and
+// the destination reads it in its mount effect. When the destination is the screen already open (a split pane),
+// the jump still has to remount it or the stash is never read, so a handoff takes the same path as a different
+// screen: ask about unsaved typing, then remount.
 
 export type TabSwitch = "stay" | "refused" | "switch";
 

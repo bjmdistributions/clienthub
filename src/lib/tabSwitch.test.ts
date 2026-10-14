@@ -37,10 +37,11 @@ describe("tabSwitchAction", () => {
   });
 });
 
-// A navigate-tab event is how one screen hands work to another: it stashes a value in localStorage and the
-// destination reads it in its mount effect (invoices_prefill, invoices_open_id, dealflow_invoice_filter,
-// suppliers_open_id, the globe client). When the destination is the screen already open the event has to
-// remount it or the stash is never read, so only a click on the screen's own row is a no-op.
+// A navigate-tab event (or the onNavigate prop of Dashboard, Quotes and Manifest) is how one screen hands work to
+// another: it stashes a value in localStorage and the destination reads it in its mount effect (invoices_prefill,
+// invoices_open_id, dealflow_invoice_filter, suppliers_open_id, the globe client). When the destination is the screen
+// already open (a split pane) the jump has to remount it or the stash is never read, so only a click on the screen's
+// own row is a no-op.
 describe("tabSwitchAction for a handoff", () => {
   it("remounts the screen already open, so the stash left for it is read", () => {
     const ask = vi.fn(() => true);
@@ -77,9 +78,18 @@ describe("App.tsx wiring for tabSwitchAction", () => {
     expect(appSource.match(/\btabSwitchAction\(/g)).toHaveLength(1);
   });
 
-  it("only the navigate-tab listener passes handoff, so every click on a row, the bell or a shortcut stays a no-op on its own screen", () => {
-    expect(appSource.match(/\bsetTab\([^()]*,\s*true\)/g)).toEqual(["setTab(detail, true)"]);
+  it("only the navigate-tab listener and the three screens' onNavigate props pass handoff, so every click on a row, the bell or a shortcut stays a no-op on its own screen", () => {
+    expect(appSource.match(/\bsetTab\([^()]*,\s*true\)/g)).toEqual(["setTab(detail, true)", "setTab(to, true)", "setTab(to, true)", "setTab(to, true)"]);
     expect(appSource).toMatch(/if \(detail && visibleRef\.current\(detail\)\) setTab\(detail, true\);/);
+  });
+
+  it("hands no screen a bare setTab: Dashboard, Quotes and Manifest stash a value and jump", () => {
+    // DashboardView's recent-invoice row stashes invoices_open_id and calls onNavigate("invoices"); with Invoices open in
+    // the other split pane a bare setTab said "stay", Invoices never reread the stash, and the next mount opened a stale drawer.
+    expect(appSource).not.toMatch(/onNavigate=\{setTab\}/);
+    for (const name of ["DashboardView", "QuotesView", "ManifestView"]) {
+      expect(appSource).toContain(`<${name} onNavigate={(to) => setTab(to, true)}`);
+    }
   });
 });
 

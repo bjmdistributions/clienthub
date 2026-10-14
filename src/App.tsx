@@ -212,8 +212,8 @@ export default function App() {
   useEffect(() => { tabRef.current = tab; }, [tab]);
   const setTab = (t: Tab, handoff = false) => {
     // DG-02: a click on the screen already open keeps it as it is (no remount, nothing asked); only a menu closes.
-    // A handoff (a navigate-tab event, which has just stashed something for that screen to read when it mounts)
-    // still remounts it.
+    // A handoff (a navigate-tab event, or the onNavigate prop of Dashboard, Quotes and Manifest, which stash a value
+    // such as invoices_open_id and then jump) still remounts it: the destination reads that value when it mounts.
     // R-464: a full-page form with unsaved typing is asked about before the screen is switched away from it.
     const action = tabSwitchAction(tabRef.current, t, confirmLeaveUnsaved, handoff);
     if (action === "stay") { setFlyout(null); return; }
@@ -1168,7 +1168,7 @@ export default function App() {
   // can be dropped into either the single main area or a split pane.
   const paneContent = (t: Tab) => {
     if (!visible(t)) return null;
-    if (t === "dashboard") return <Suspense fallback={paneFallback}><DashboardView onNavigate={setTab} me={me} /></Suspense>;
+    if (t === "dashboard") return <Suspense fallback={paneFallback}><DashboardView onNavigate={(to) => setTab(to, true)} me={me} /></Suspense>;
     if (t === "globe") return <Suspense fallback={globeFallback}><GlobeView me={me} /></Suspense>;
     if (t === "notes") return <NotesView me={me?.display_name || ""} />;
     if (t === "approvals") return <ApprovalsView me={me} notices={notices} />;
@@ -1186,7 +1186,7 @@ export default function App() {
             {t === "documents"  && <DocumentsView />}
             {t === "receivables" && <ReceivablesView />}
             {t === "payables"   && <PayablesView />}
-            {t === "quotes"     && <QuotesView onNavigate={setTab} />}
+            {t === "quotes"     && <QuotesView onNavigate={(to) => setTab(to, true)} />}
             {t === "releaseletter" && <ReleaseLetterView />}
             {t === "clientreceipt" && <ClientStatementView />}
             {t === "dealflow"   && <DealFlowView />}
@@ -1196,7 +1196,7 @@ export default function App() {
             {t === "inventory"  && <InventoryView />}
             {t === "warehouse"  && <WarehouseView />}
             {t === "renewals"   && <RenewalsView />}
-            {t === "manifest"   && <ManifestView onNavigate={setTab} />}
+            {t === "manifest"   && <ManifestView onNavigate={(to) => setTab(to, true)} />}
             {t === "lotengine"  && <LotEngineView me={me} />}
             {t === "showpacking" && <ShowPackingView me={me} />}
             {t === "sheetcopy"  && <SheetCopyView />}
