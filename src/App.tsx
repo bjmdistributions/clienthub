@@ -80,6 +80,7 @@ import ClientStatementView from "./components/ClientStatementView";
 import FinancialsView from "./components/FinancialsView";
 import { ApprovalsView } from "./components/ApprovalsView";
 import CheckupView from "./components/CheckupView";
+import { PaneBoundary } from "./components/ErrorBoundary";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
 import { ToastHost, toast } from "./components/Toast";
@@ -1183,6 +1184,13 @@ export default function App() {
     );
   };
 
+  // R-511 DG-01: a screen that throws while rendering stops at its own pane instead of taking the whole app
+  // down. Keyed on the screen id, so opening another screen mounts a fresh boundary. Back to Dashboard moves
+  // this pane (the main one, or the split one) to the Dashboard.
+  const guardedPane = (t: Tab, onBack: () => void) => (
+    <PaneBoundary key={t} onBack={onBack}>{paneContent(t)}</PaneBoundary>
+  );
+
   // Auth gates everything: not signed in → sign-in screen (accounts are made on
   // the website). Onboarding is only considered once signed in, and only if the
   // account genuinely hasn't completed it — never on a fresh reinstall.
@@ -1618,7 +1626,7 @@ export default function App() {
             {/* Left pane — driven by the sidebar nav */}
             <section className="min-w-0 overflow-auto pane-container" style={{ width: `${splitRatio * 100}%`, background: paneBg(tab) }}>
               {tab !== "globe" && <UpdateNotification />}
-              <div key={`l-${pageKey}`} className="page-enter h-full">{paneContent(tab)}</div>
+              <div key={`l-${pageKey}`} className="page-enter h-full">{guardedPane(tab, () => setTab("dashboard"))}</div>
             </section>
 
             {/* Draggable divider */}
@@ -1658,7 +1666,7 @@ export default function App() {
                   <X size={14} />
                 </button>
               </div>
-              <div key={`r-${splitTab}`} className="page-enter">{paneContent(splitTab)}</div>
+              <div key={`r-${splitTab}`} className="page-enter">{guardedPane(splitTab, () => setSplit("dashboard"))}</div>
             </section>
           </div>
         ) : (
@@ -1666,7 +1674,7 @@ export default function App() {
             {/* Outside the keyed page, as in split view: a tab click must not remount it (R-409). */}
             {tab !== "globe" && <UpdateNotification />}
             <div key={pageKey} className="page-enter h-full">
-              {paneContent(tab)}
+              {guardedPane(tab, () => setTab("dashboard"))}
             </div>
           </div>
         )}
