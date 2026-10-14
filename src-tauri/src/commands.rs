@@ -1735,14 +1735,17 @@ pub async fn export_tax_year_pnl_csv(year: i32, output_path: String) -> Result<u
     let conn = pool().get().map_err(|e| e.to_string())?;
     let lo = format!("{}-01-01", year);
     let hi = format!("{}-01-01", year + 1);
-    let mut stmt = conn.prepare(
+    // R-518: a row the bank withdrew (kept for a person to resolve, R-497) is not money that moved; its posted
+    // copy, when there is one, is counted on its own. Counting both put one charge in the year twice.
+    let mut stmt = conn.prepare(&format!(
         "SELECT COALESCE(category,''), direction, SUM(amount) FROM bank_txn \
-         WHERE posted_at >= ?1 AND posted_at < ?2 GROUP BY COALESCE(category,''), direction"
+         WHERE posted_at >= ?1 AND posted_at < ?2 AND {} GROUP BY COALESCE(category,''), direction",
+        crate::bank_flags::counted("bank_txn"))
     ).map_err(|e| e.to_string())?;
     let rows: Vec<(String, String, f64)> = stmt.query_map([&lo, &hi], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     let txn_count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM bank_txn WHERE posted_at >= ?1 AND posted_at < ?2",
+        &format!("SELECT COUNT(*) FROM bank_txn WHERE posted_at >= ?1 AND posted_at < ?2 AND {}", crate::bank_flags::counted("bank_txn")),
         [&lo, &hi], |r| r.get(0),
     ).unwrap_or(0);
 
@@ -13506,12 +13509,13 @@ fn month_profit_sql(select: &str, extra: &str) -> String {
 /// 'in' shipping row is a carrier refund). `lo`/`hi` are calendar-day bounds against
 /// `date(t.posted_at)`, `''` = unbounded — the same convention `get_analytics_range`
 /// binds its own date predicates with. Every `bank_txn` row counts, booked or not, same
-/// population `export_tax_year_pnl_csv` uses. Shared by `dashboard_stats`,
+/// population `export_tax_year_pnl_csv` uses, except a row the bank withdrew (R-518). Shared by `dashboard_stats`,
 /// `get_analytics_range` and `get_monthly_profit` so the rule lives in one place.
-const BANK_OVERHEAD_SQL: &str =
+const BANK_OVERHEAD_SQL: &str = concat!(
     "SELECT COALESCE(SUM(CASE WHEN direction='out' THEN rem ELSE -rem END),0) FROM ( \
         SELECT t.direction, t.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=t.id),0) AS rem \
-        FROM bank_txn t WHERE t.category=?1 AND (?2='' OR date(t.posted_at)>=?2) AND (?3='' OR date(t.posted_at)<=?3))";
+        FROM bank_txn t WHERE t.category=?1 AND (?2='' OR date(t.posted_at)>=?2) AND (?3='' OR date(t.posted_at)<=?3) AND ",
+    crate::bank_counted_sql!("t"), ")");
 
 fn bank_overhead(conn: &rusqlite::Connection, category: &str, lo: &str, hi: &str) -> f64 {
     conn.query_row(BANK_OVERHEAD_SQL, rusqlite::params![category, lo, hi], |r| r.get(0)).unwrap_or(0.0)
@@ -13520,15 +13524,16 @@ fn bank_overhead(conn: &rusqlite::Connection, category: &str, lo: &str, hi: &str
 /// Same rule as `BANK_OVERHEAD_SQL`, bucketed by `strftime(fmt, t.posted_at)` (`"%Y-%m"`
 /// for a monthly series, `"%Y-%m-%d"` for a daily one) so the monthly/cumulative charts
 /// can merge overhead onto their profit buckets. Returns bucket -> (shipping, fees).
-const BANK_OVERHEAD_BUCKET_SQL: &str =
+const BANK_OVERHEAD_BUCKET_SQL: &str = concat!(
     "SELECT strftime(?1, b.posted_at) AS bucket, b.category, \
             COALESCE(SUM(CASE WHEN b.direction='out' THEN b.rem ELSE -b.rem END),0) \
      FROM ( \
         SELECT t.posted_at, t.category, t.direction, \
                t.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=t.id),0) AS rem \
         FROM bank_txn t WHERE t.category IN ('shipping','fee') \
-          AND (?2='' OR date(t.posted_at)>=?2) AND (?3='' OR date(t.posted_at)<=?3) \
-     ) b GROUP BY bucket, b.category";
+          AND (?2='' OR date(t.posted_at)>=?2) AND (?3='' OR date(t.posted_at)<=?3) AND ",
+    crate::bank_counted_sql!("t"), " \
+     ) b GROUP BY bucket, b.category");
 
 fn bank_overhead_by_bucket(conn: &rusqlite::Connection, fmt: &str, lo: &str, hi: &str) -> std::collections::BTreeMap<String, (f64, f64)> {
     let mut map: std::collections::BTreeMap<String, (f64, f64)> = std::collections::BTreeMap::new();
@@ -15300,7 +15305,9 @@ pub async fn analytics_reconciliation(start_date: String, end_date: String) -> R
     // all time the two windows are the same book and this block ties exactly. Over a
     // narrow range they legitimately do not, and the residual is where that shows up —
     // the UI says which date each side is using rather than letting it read as a defect.
-    let win = "(?1='' OR date(t.posted_at)>=?1) AND (?2='' OR date(t.posted_at)<=?2)";
+    // R-518: a row the bank withdrew is not bank money. Every bank-side term below reads this window, so the
+    // three-way split still adds back to bank net; a deal still counting a withdrawn row shows in the residual.
+    let win = format!("(?1='' OR date(t.posted_at)>=?1) AND (?2='' OR date(t.posted_at)<=?2) AND {}", crate::bank_flags::counted("t"));
     let (money_in, money_out): (f64, f64) = conn.query_row(
         &format!("SELECT COALESCE(SUM(CASE WHEN t.direction='in' THEN t.amount ELSE 0 END),0), \
                          COALESCE(SUM(CASE WHEN t.direction='out' THEN t.amount ELSE 0 END),0) \
@@ -15934,13 +15941,13 @@ mod bank_overhead_tests {
         conn.execute_batch(r#"
             CREATE TABLE bank_txn (id TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '',
               direction TEXT NOT NULL DEFAULT 'out', amount REAL NOT NULL DEFAULT 0,
-              posted_at TEXT NOT NULL DEFAULT '');
+              posted_at TEXT NOT NULL DEFAULT '', raw_json TEXT NOT NULL DEFAULT '');
             CREATE TABLE bank_allocation (id TEXT PRIMARY KEY, bank_txn_id TEXT NOT NULL DEFAULT '',
               amount REAL NOT NULL DEFAULT 0);
 
-            INSERT INTO bank_txn VALUES ('out_1','shipping','out',100,'2026-08-05');
-            INSERT INTO bank_txn VALUES ('in_1','shipping','in',20,'2026-08-06');
-            INSERT INTO bank_txn VALUES ('alloc_1','shipping','out',50,'2026-08-07');
+            INSERT INTO bank_txn (id,category,direction,amount,posted_at) VALUES ('out_1','shipping','out',100,'2026-08-05');
+            INSERT INTO bank_txn (id,category,direction,amount,posted_at) VALUES ('in_1','shipping','in',20,'2026-08-06');
+            INSERT INTO bank_txn (id,category,direction,amount,posted_at) VALUES ('alloc_1','shipping','out',50,'2026-08-07');
             INSERT INTO bank_allocation VALUES ('a1','alloc_1',50);
         "#).unwrap();
         conn
@@ -17460,7 +17467,9 @@ pub async fn list_bank_txns_by_ids(ids: Vec<String>) -> Result<Vec<Value>, Strin
 #[tauri::command]
 pub async fn list_tie_out_backlog() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let sql = "SELECT bt.id, bt.posted_at, bt.direction, bt.amount, bt.description,
+    // R-518: not a row the bank withdrew. It is resolved under Retracted by bank, and listing it here asked for
+    // money that never moved to be tied to a deal.
+    let sql = concat!("SELECT bt.id, bt.posted_at, bt.direction, bt.amount, bt.description,
                       bt.counterparty_name, bt.account_id, bt.category, bt.reviewed,
                       COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated,
                       COALESCE(bt.tie_out_hidden, 0)
@@ -17469,7 +17478,8 @@ pub async fn list_tie_out_backlog() -> Result<Vec<Value>, String> {
                  AND COALESCE(bt.category,'') NOT IN ('internal_transfer','card_payment','fee','merchant_fees',
                                                        'owner_draw','owner_contribution','loan_received','loan_repayment')
                  AND UPPER(bt.description) NOT LIKE '%FEE%'
-               ORDER BY bt.posted_at DESC, bt.created_at DESC";
+                 AND ", crate::bank_counted_sql!("bt"), "
+               ORDER BY bt.posted_at DESC, bt.created_at DESC");
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -18117,8 +18127,10 @@ pub async fn bank_txn_summary() -> Result<Value, String> {
     let one = |sql: &str| -> f64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0.0) };
     let total = one("SELECT COUNT(*) FROM bank_txn");
     let reviewed = one("SELECT COUNT(*) FROM bank_txn WHERE reviewed=1");
-    let sum_in = one("SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE direction='in'");
-    let sum_out = one("SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE direction='out'");
+    // R-518: money in and out leave out a row the bank withdrew; its posted copy is counted on its own.
+    let counted = crate::bank_flags::counted("bank_txn");
+    let sum_in = one(&format!("SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE direction='in' AND {counted}"));
+    let sum_out = one(&format!("SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE direction='out' AND {counted}"));
     // Money-in transactions not yet fully tied to a deal. Excludes internal transfers
     // AND loan-tagged money, which is classified and will never carry an allocation —
     // counting it left a backlog figure that could not be worked down. This matches
@@ -18139,15 +18151,15 @@ pub async fn bank_txn_summary() -> Result<Value, String> {
                                                         'customer_refund','supplier_refund','cash_in','cash_out') \
                           AND COALESCE(bt.counterparty_type,'') != 'loan'";
     let unallocated_in = one(&format!(
-        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND {}
+        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND {} AND {}
            AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
-        not_deal_money,
+        not_deal_money, crate::bank_flags::counted("bt"),
     ));
     // Money-out not yet tied to a deal (supplier payments / refunds out to reconcile).
     let unallocated_out = one(&format!(
-        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='out' AND {}
+        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='out' AND {} AND {}
            AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
-        not_deal_money,
+        not_deal_money, crate::bank_flags::counted("bt"),
     ));
     // Not yet classified at all (no category) — the raw cleanup backlog.
     let unclassified = one("SELECT COUNT(*) FROM bank_txn WHERE COALESCE(category,'')=''");
@@ -22132,21 +22144,22 @@ pub async fn financials_overview() -> Result<Value, String> {
     // repayment: the money had already left `bank_balance` above, yet the full
     // principal was still deducted here until somebody remembered to click Apply on
     // the Loans tab — so free cash read low by the repaid amount, indefinitely.
+    // R-518: a repayment the bank withdrew did not repay anything.
     let loan_outstanding: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(
+        concat!("SELECT COALESCE(SUM(
              CASE WHEN principal - MAX(
                  set_aside,
                  COALESCE((SELECT SUM(bt.amount) FROM bank_txn bt
                            WHERE bt.counterparty_type='loan' AND bt.counterparty_id=loan.id
-                             AND bt.direction='out'), 0)
+                             AND bt.direction='out' AND ", crate::bank_counted_sql!("bt"), "), 0)
              ) > 0
              THEN principal - MAX(
                  set_aside,
                  COALESCE((SELECT SUM(bt.amount) FROM bank_txn bt
                            WHERE bt.counterparty_type='loan' AND bt.counterparty_id=loan.id
-                             AND bt.direction='out'), 0)
+                             AND bt.direction='out' AND ", crate::bank_counted_sql!("bt"), "), 0)
              )
-             ELSE 0 END),0) FROM loan WHERE status='open'",
+             ELSE 0 END),0) FROM loan WHERE status='open'"),
         [], |r| r.get(0)).unwrap_or(0.0);
 
     // Reserves are TARGETS, not deductions (Jack's call, 2026-08-10). They are derived
@@ -22193,12 +22206,13 @@ pub async fn financials_overview() -> Result<Value, String> {
     // counterparty_type='loan' and never gets an allocation, so it tripped this alert
     // permanently — a red flag on the Overview screen that could never be cleared.
     let stale_unallocated: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in'
+        concat!("SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in'
            AND COALESCE(bt.category,'') IN ('','receipt','payment','merchandise','shipping','customs',
                                             'customer_refund','supplier_refund','cash_in','cash_out')
            AND COALESCE(bt.counterparty_type,'') != 'loan'
            AND bt.posted_at != '' AND bt.posted_at <= date('now','-7 days')
-           AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
+           AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01
+           AND ", crate::bank_counted_sql!("bt")),
         [], |r| r.get(0)).unwrap_or(0);
 
     // Actuals reconciled from the bank feed via allocations (totals by role), so the
@@ -22265,11 +22279,11 @@ pub async fn list_loans() -> Result<Vec<Value>, String> {
         // outstanding is measured against the GREATER of the manual set-aside and what
         // the bank feed shows repaid, so the Loans card and Free Cash cannot disagree
         // and no manual "Apply" click is needed for the books to be right.
-        "SELECT id,name,lender,principal,set_aside,received_at,bank_txn_id,status,paid_at,note,
+        concat!("SELECT id,name,lender,principal,set_aside,received_at,bank_txn_id,status,paid_at,note,
                 COALESCE((SELECT SUM(bt.amount) FROM bank_txn bt
                           WHERE bt.counterparty_type='loan' AND bt.counterparty_id=loan.id
-                            AND bt.direction='out'), 0) AS repaid
-         FROM loan ORDER BY received_at DESC, created_at DESC",
+                            AND bt.direction='out' AND ", crate::bank_counted_sql!("bt"), "), 0) AS repaid
+         FROM loan ORDER BY received_at DESC, created_at DESC"),
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
         let principal: f64 = r.get(3)?;
@@ -23476,7 +23490,8 @@ pub async fn apply_loan_repayments_to_set_aside(loan_id: String) -> Result<f64, 
     let repaid: f64 = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.query_row(
-            "SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE counterparty_type='loan' AND counterparty_id=?1 AND direction='out'",
+            concat!("SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE counterparty_type='loan' AND counterparty_id=?1 AND direction='out' AND ",
+                    crate::bank_counted_sql!("bank_txn")),
             [&loan_id], |r| r.get(0)).unwrap_or(0.0)
     };
     let set_aside = (repaid * 100.0).round() / 100.0;
@@ -27110,6 +27125,28 @@ mod r518_bank_health_tests {
         let c = pool().get().unwrap();
         c.execute("DELETE FROM plaid_items WHERE id LIKE 'r518_%'", []).unwrap();
         c.execute("DELETE FROM settings WHERE key='plaid_health'", []).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod r518_counted_once_tests {
+    use super::{bank_overhead, bank_overhead_by_month};
+
+    // R-518: a card charge booked while pending, withdrawn by the bank and kept (rtr), and its posted copy.
+    // True net subtracted both.
+    #[test]
+    fn a_withdrawn_row_leaves_true_net_overhead() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            CREATE TABLE bank_txn (id TEXT PRIMARY KEY, category TEXT, direction TEXT, amount REAL, posted_at TEXT, raw_json TEXT);
+            CREATE TABLE bank_allocation (bank_txn_id TEXT, amount REAL);
+            INSERT INTO bank_txn VALUES ('pend','shipping','out',480,'2026-10-02','{"pnd":true,"rtr":"2026-10-04T10:00:00Z"}');
+            INSERT INTO bank_txn VALUES ('post','shipping','out',480,'2026-10-04','{"pnd":false}');
+            INSERT INTO bank_txn VALUES ('blank','shipping','out',20,'2026-10-05','');
+        "#).unwrap();
+        assert_eq!(bank_overhead(&conn, "shipping", "", ""), 500.0, "the posted copy and the plain row count; the withdrawn one does not");
+        let m = bank_overhead_by_month(&conn, "", "");
+        assert_eq!(m.get("2026-10").map(|x| x.0), Some(500.0));
     }
 }
 

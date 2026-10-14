@@ -33,9 +33,24 @@ pub fn settled(alias: &str) -> String {
     format!("NOT ({}) AND NOT ({})", pending(alias), retracted(alias))
 }
 
+/// `counted(alias)` as a string literal, for SQL that is a `const` built with `concat!`. The alias is a literal too:
+/// `concat!("... WHERE ", bank_counted_sql!("t"), " AND ...")`.
+#[macro_export]
+macro_rules! bank_counted_sql {
+    ($a:literal) => {
+        concat!("NOT (CASE WHEN json_valid(", $a, ".raw_json) THEN json_extract(", $a, ".raw_json,'$.rtr') END IS NOT NULL)")
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_literal_form_is_the_same_test() {
+        assert_eq!(crate::bank_counted_sql!("t"), counted("t"));
+        assert_eq!(crate::bank_counted_sql!("bt"), counted("bt"));
+    }
 
     fn eval(raw: &str, sql: String) -> bool {
         let c = rusqlite::Connection::open_in_memory().unwrap();
