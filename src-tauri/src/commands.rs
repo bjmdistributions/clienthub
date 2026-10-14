@@ -21686,6 +21686,8 @@ pub async fn financials_overview() -> Result<Value, String> {
     // the deal isn't complete (never ours — ring-fenced). Netted per deal against any
     // supplier-payment the user has already allocated from the bank feed (actuals),
     // clamped at 0 so an over-allocation on one deal can't erase another's payable.
+    // R-511 FD-02: an allocation carries no line id, so a linked wire first pays the lines already
+    // marked paid and only what is left over comes off the unpaid ones.
     //
     // R-400: on a deal that ships through Logistics the booking replaces its typed freight lines,
     // so those lines leave the goods part and the quotes of its live unpaid bookings (less any
@@ -21696,9 +21698,13 @@ pub async fn financials_overview() -> Result<Value, String> {
                FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp
               WHERE COALESCE(json_extract(sp.value,'$.paid'),0) != 1
                 AND NOT (COALESCE(json_extract(sp.value,'$.category'),'')='freight' AND ", ship_mode_sql!(), "))
-            - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
-                 WHERE a.deal_flow_id=df.id AND a.role='supplier_payment'
-                   AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
+            - MAX(0,
+                (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
+                  WHERE a.deal_flow_id=df.id AND a.role='supplier_payment'
+                    AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
+              - (SELECT COALESCE(SUM(CAST(json_extract(pp.value,'$.amount') AS REAL)),0)
+                   FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) pp
+                  WHERE COALESCE(json_extract(pp.value,'$.paid'),0) = 1))
          )),0)
          FROM deal_flows df
          WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
@@ -28249,6 +28255,38 @@ mod r400_shipping_tests {
         assert_eq!(owed().await - base, 6700.0);
         set_paid(&id, "1", 700.0);
         assert_eq!(owed().await - base, 6000.0, "paid: only the goods are still owed");
+    }
+
+    /// R-511 FD-02: Free cash took every supplier wire linked to a deal off only the deal's unpaid
+    /// lines, so a paid line's own wire ate the unpaid line beside it (an allocation has no line id).
+    /// A wire is the payment of the lines already marked paid first; only what is left over comes
+    /// off the unpaid ones. The per-deal clamp stays, so one over-linked deal never erases another.
+    #[tokio::test]
+    async fn fd02_a_paid_lines_own_wire_does_not_hide_the_unpaid_line_beside_it() {
+        let _db = crate::db::init_test_store();
+        let owed = || async { financials_overview().await.unwrap()["supplier_payables"].as_f64().unwrap() };
+        let base = owed().await;
+
+        // Line A 10,000 marked paid with its 10,000 wire linked; line B 5,000 unpaid: B is still owed.
+        let a = deal("fd02a", vec![line("a", "supplier", 10000.0, true), line("b", "supplier", 5000.0, false)], "payment_received");
+        assert_eq!(owed().await - base, 5000.0, "no wire yet: the unpaid line is owed");
+        link(&a, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 5000.0, "the wire paid line A, not line B");
+
+        // A wire bigger than the paid lines: the 2,000 over what is marked paid pays into B.
+        let b = deal("fd02b", vec![line("a", "supplier", 10000.0, true), line("b", "supplier", 5000.0, false)], "payment_received");
+        link(&b, "supplier_payment", 12000.0);
+        assert_eq!(owed().await - base, 5000.0 + 3000.0, "only the 2,000 over the paid line comes off B");
+
+        // Nothing marked paid: the wire is B's payment, as before.
+        let c = deal("fd02c", vec![line("b", "supplier", 5000.0, false)], "payment_received");
+        link(&c, "supplier_payment", 5000.0);
+        assert_eq!(owed().await - base, 5000.0 + 3000.0, "a fully wired unpaid line owes nothing");
+
+        // Over-linked: clamped at 0 on its own deal, the other deals' payables stand.
+        let d = deal("fd02d", vec![line("a", "supplier", 10000.0, true), line("b", "supplier", 5000.0, false)], "payment_received");
+        link(&d, "supplier_payment", 30000.0);
+        assert_eq!(owed().await - base, 5000.0 + 3000.0, "an over-linked deal owes nothing and takes nothing from the others");
     }
 
     /// R-459: a booking still at `quote` or `quoted` is a question to logistics, not a truck. It
