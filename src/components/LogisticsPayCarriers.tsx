@@ -133,7 +133,7 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
               className={`${inp} pl-8`} />
           </div>
           {rows === null ? <p className="text-[12.5px] text-muted">Looking...</p> : rows.length === 0 ? (
-            <p className="text-[12.5px] text-ink-2">{err ? "" : q.trim() ? "No bank payment matches that." : "No bank payment to link yet. It shows up here once the money leaves the account."}</p>
+            <p className="text-[12.5px] text-ink-2">{err ? "" : q.trim() ? "No bank payment matches that." : "No bank payment to link yet. It shows up here once the money leaves the account, and a payment still pending at the bank once it posts."}</p>
           ) : (
             <div className="rounded-lg border border-line divide-y divide-line">
               {rows.map((c) => (
@@ -146,7 +146,7 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
                   </div>
                   <div className="text-right flex-shrink-0">
                     {c.amount != null && <div className="text-[13px] tabular-nums text-ink">{fmtAmount(c.amount)}</div>}
-                    {c.free != null && <div className="text-[11px] tabular-nums text-muted">{fmtAmount(c.free)} free on it</div>}
+                    {c.free != null && <div className="text-[11px] tabular-nums text-muted">{fmtAmount(c.free)} {c.linked ? "on this deal" : "free on it"}</div>}
                   </div>
                   <button onClick={() => pick(c)}
                     className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink hover:bg-surface-2 whitespace-nowrap">Choose</button>

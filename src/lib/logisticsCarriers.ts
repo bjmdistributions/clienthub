@@ -180,6 +180,8 @@ export const canChangePaidOn = (b: Pick<FreightBooking, "can_see_deal" | "can_se
 export interface BankCandidate {
   txnId: string; day: string; amount: number | null; free: number | null; suggested: number | null;
   who: string; memo: string; method: string; reason: string;
+  /** R-508: already linked to this load's deal as shipping (on Financials); linking makes it this load's own. */
+  linked: boolean;
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -198,6 +200,7 @@ export function carrierPayCandidates(resp: unknown): BankCandidate[] {
       txnId, day: str(r.posted_at ?? r.date ?? r.day).slice(0, 10), amount: num(r.txn_amount) ?? num(r.amount) ?? num(r.leg_amount),
       free: num(r.unlinked), suggested: num(r.suggested_amount),
       who: str(r.counterparty_name ?? r.counterparty ?? r.payee ?? r.name), memo: str(r.description ?? r.memo), method: str(r.method), reason: str(r.reason),
+      linked: r.linked_to_deal === true,
     }];
   });
 }

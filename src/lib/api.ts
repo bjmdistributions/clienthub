@@ -3896,8 +3896,11 @@ export const api = {
   /** `overrideReason` is required only when the R-154 gate blocks — completing
    *  before the expected delivery (or, unset, the pickup) date. It is recorded on
    *  the deal with who overrode it and when. */
-  completeDealFlow: (id: string, shippingStatus?: string | null, completedDate?: string | null, payoutIncluded?: boolean, overrideReason?: string | null) =>
-    invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate, payoutIncluded, overrideReason }),
+  completeDealFlow: (id: string, shippingStatus?: string | null, completedDate?: string | null, payoutIncluded?: boolean, overrideReason?: string | null, carrierReason?: string | null) =>
+    invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate, payoutIncluded, overrideReason, carrierReason }),
+  /** R-509: mark a deal done while a load's carrier is unpaid; it completes when the carrier payment is linked. */
+  holdDealForCarrier: (id: string, completedDate?: string | null, payoutIncluded?: boolean, overrideReason?: string | null) =>
+    invoke<{ held: boolean; loads: string[]; message: string }>("hold_deal_for_carrier", { id, completedDate, payoutIncluded, overrideReason }),
   uncompleteDealFlow: (id: string) => invoke<void>("uncomplete_deal_flow", { id }),
   recalcDealFromBank: (id: string) => invoke<any>("recalc_deal_from_bank", { id }),
   cleanupOrphanAllocations: () => invoke<number>("cleanup_orphan_allocations"),

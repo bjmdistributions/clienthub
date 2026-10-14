@@ -25,7 +25,7 @@ import { dealMatchesQuery } from "../lib/logisticsSearch";
 import { canPayCarriers } from "../lib/logisticsCarriers";
 import { loadNumber } from "../lib/logisticsLoad";
 import { pipelineSplit } from "../lib/dealLane";
-import { SECTIONS as DEAL_SECTIONS, describeDeal, payFactsOf, type DealCtx, type DealDescription, type DealSection, type LineTone } from "../lib/dealSections";
+import { SECTIONS as DEAL_SECTIONS, carrierHold, describeDeal, payFactsOf, type DealCtx, type DealDescription, type DealSection, type LineTone } from "../lib/dealSections";
 import { useSessionMe } from "../lib/useSessionMe";
 import { noteChimedDeal } from "../lib/notices";
 import {
@@ -2208,6 +2208,16 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const [overrideReason, setOverrideReason] = useState("");
   const overrideReady = overrideReason.trim().length > 0;
   const gateBlocks    = !!gate && !(overrideOn && overrideReady);
+  // R-509: a load whose carrier is not paid yet. Complete becomes "Mark done" (it completes by itself once the carrier
+  // payment is linked) unless no carrier is paid, which needs a reason like the date override.
+  const carrierDue = (flow.logistics_unpaid ?? 0) > 0;
+  const held = carrierHold(flow);
+  const [noCarrier, setNoCarrier] = useState(false);
+  const [carrierWhy, setCarrierWhy] = useState("");
+  const holdMode = carrierDue && !noCarrier;
+  const carrierBlocks = carrierDue && noCarrier && carrierWhy.trim().length === 0;
+  const dueLoads = (flow.load_numbers || "").trim().split(/\s+/).filter(Boolean);
+  const dueText = dueLoads.length ? `${dueLoads.join(", ")} ${dueLoads.length > 1 ? "have" : "has"}` : "A load on this deal has";
   const todayStr = localDay();
   const [completedDate, setCompletedDate] = useState(todayStr);
   const [payoutIncluded, setPayoutIncluded] = useState(true);
@@ -2293,11 +2303,24 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   // Only sent when the gate is actually blocking — an override recorded on a deal
   // that was never held would be a lie in the audit trail.
   const reasonArg = () => (gate && overrideOn ? overrideReason.trim() : null);
+  const carrierArg = () => (carrierDue && noCarrier ? carrierWhy.trim() : null);
+
+  // R-509: marked done. The hold rides the deal's sync to the server, which completes it when the carrier is paid.
+  const runHold = async () => {
+    setSaving(true);
+    try {
+      const r = await api.holdDealForCarrier(flow.id, completedDate || null, payoutIncluded, reasonArg());
+      toast(r.message);
+      api.netsyncSyncNow().catch(() => {});
+      onReload();
+    } catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
 
   const runComplete = async () => {
     setSaving(true);
     try {
-      const result = await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded, reasonArg());
+      const result = await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded, reasonArg(), carrierArg());
       if (result.is_loss && result.warning) toast(result.warning, "error");
       chimeCompleted(flow.id);
       onReload();
@@ -2313,6 +2336,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       const ok = confirm(`Warning: This deal is at a loss.\n\nRevenue: ${fmtAmount(recRev)}\nCosts: ${fmtAmount(recCost)}\nLoss: ${fmtAmount(recNet)}\n\nMark complete anyway?`);
       if (!ok) return;
     }
+    if (holdMode) { runHold(); return; }
     setShipHold("asking");
   };
 
@@ -2328,7 +2352,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       await api.saveInvoiceShipping(flow.invoice_id, {
         carrier: carrier || undefined, tracking_number: tracking || undefined, is_complete: true,
       });
-      await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded, reasonArg());
+      await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded, reasonArg(), carrierArg());
       chimeCompleted(flow.id);
       onReload();
     } catch (e: any) { toast(String(e), "error"); }
@@ -2438,13 +2462,14 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       {overrides.length > 0 && (
         <div className="rounded-lg border border-warning bg-warning-bg/50 px-3 py-2.5">
           <div className="text-[12px] font-medium text-warning-ink mb-1.5">
-            Completed before its {overrides.length === 1 ? "date" : "dates"}
+            {overrides.some((o: any) => o.basis === "carrier") ? "Completed with an override" : `Completed before its ${overrides.length === 1 ? "date" : "dates"}`}
           </div>
           <div className="space-y-1">
             {overrides.map((o: any, i: number) => (
               <div key={i} className="text-[11.5px] text-ink-2">
                 <span className="font-medium">{o.by || "Unknown"}</span>
                 {o.at ? ` · ${new Date(o.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
+                {o.basis === "carrier" ? " · no carrier paid" : ""}
                 {o.blocked_until ? ` · held until ${dayLabel(o.blocked_until)}` : ""}
                 {o.reason ? ` · ${o.reason}` : ""}
               </div>
@@ -2516,19 +2541,52 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
               )}
             </div>
           )}
+          {carrierDue && (
+            <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5 space-y-2">
+              <div className="flex items-start gap-2 text-[12.5px] text-ink-2">
+                <Truck size={14} className="mt-0.5 flex-shrink-0" />
+                <span>
+                  {held
+                    ? "Marked done. It completes by itself when the carrier payment is linked."
+                    : `${dueText} no carrier payment linked yet. Mark the deal done and it completes by itself once the payment is linked.`}
+                </span>
+              </div>
+              {!noCarrier ? (
+                <button type="button" onClick={() => setNoCarrier(true)}
+                  className="text-[11.5px] font-medium text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-3 transition-colors">
+                  No carrier to pay
+                </button>
+              ) : (
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-medium text-ink-2">Why is no carrier paid?</label>
+                  <input className={inp} value={carrierWhy} autoFocus placeholder="The buyer sent their own truck"
+                    onChange={(e) => setCarrierWhy(e.target.value)} />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-muted">Saved on the deal with your name and the time.</span>
+                    <button type="button" onClick={() => { setNoCarrier(false); setCarrierWhy(""); }}
+                      className="text-[11px] text-muted hover:text-ink-2 px-2 h-7 rounded-lg hover:bg-surface-3 transition-colors">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <button type="button" onClick={() => setMoneyLinked((v) => !v)}
             className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-colors ${moneyLinked ? "border-success bg-success-bg" : "border-line bg-surface hover:border-accent/40"}`}>
             {moneyLinked ? <CheckCircle2 size={16} className="text-success-ink flex-shrink-0" /> : <AlertTriangle size={16} className="text-warning-ink flex-shrink-0" />}
             <span className={`text-[12.5px] leading-snug ${moneyLinked ? "text-success-ink font-medium" : "text-ink-2"}`}>
-              This is all the money that will ever be linked to this deal
+              {holdMode ? "Everything but the carrier payment is linked to this deal" : "This is all the money that will ever be linked to this deal"}
             </span>
           </button>
-          <button onClick={handleCompleteClick} disabled={saving || !moneyLinked || gateBlocks}
+          <button onClick={handleCompleteClick} disabled={saving || !moneyLinked || gateBlocks || carrierBlocks || (holdMode && held)}
             title={gateBlocks ? `Held until ${dayLabel(gate!.date)}, override above with a reason`
-              : !moneyLinked ? "Confirm all money is linked first" : undefined}
+              : !moneyLinked ? "Confirm all money is linked first"
+              : carrierBlocks ? "Say why no carrier is paid first" : undefined}
             className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[14px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
             {gateBlocks ? `Complete deal: held until ${dayLabel(gate!.date)}`
               : !moneyLinked ? "Complete deal: confirm money linked above"
+              : holdMode ? (held ? "Marked done: waiting for the carrier payment" : "Mark done: completes when the carrier is paid")
               : `Complete deal: record ${fmtAmount(recNet)} profit`}
           </button>
         </div>

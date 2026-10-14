@@ -46,6 +46,11 @@ export interface DealShipFacts {
   logistics_asked_day?: string;
   /** The quote amount, null until priced, and null for a viewer without deal numbers. */
   logistics_quote?: number | null;
+  /** R-509: live loads whose carrier is not paid yet. */
+  logistics_unpaid?: number;
+  /** R-509: marked done, waiting for the carrier payment. A row without it is read from `metadata.carrier_hold`. */
+  carrier_hold?: boolean;
+  metadata?: string | null;
 }
 
 /** What is still unpaid on a deal, as the screen needs it. `buyerLeft` and `supplierLeft` are dollars, and are null for
@@ -118,6 +123,19 @@ const liveCount = (f: DealShipFacts): number =>
 
 const missingAny = (p: PayFacts | null): boolean => !p || p.buyerDue || p.supplierDue || p.costMissing;
 
+/** R-509: a live load's carrier is not paid yet. */
+const carrierDue = (f: DealShipFacts): boolean => (Number(f.logistics_unpaid) || 0) > 0;
+/** R-509: the deal was marked done and waits for the carrier payment. */
+export function carrierHold(f: DealShipFacts): boolean {
+  if (typeof f.carrier_hold === "boolean") return f.carrier_hold;
+  try {
+    const m = f.metadata ? JSON.parse(f.metadata) : null;
+    return !!(m && m.carrier_hold && typeof m.carrier_hold === "object");
+  } catch {
+    return false;
+  }
+}
+
 /** The deal has several live loads and the least advanced is not delivered. The delivered set (`ctx.delivered`) is filled
  *  when ANY booking has landed, so it cannot say the whole deal has: the deal is described by the load still to go. */
 const loadBehind = (f: DealShipFacts): boolean => {
@@ -138,7 +156,8 @@ function shippingDone(f: DealShipFacts, ctx: Pick<DealCtx, "delivered" | "today"
 
 /** The section a deal is in. */
 export function sectionOf(f: DealShipFacts, ctx: Pick<DealCtx, "delivered" | "today" | "pay">): DealSection {
-  if (shippingDone(f, ctx)) return missingAny(ctx.pay) ? "paymentMissing" : "ready";
+  // R-509: a deal whose carrier is not paid yet is not ready to complete.
+  if (shippingDone(f, ctx)) return missingAny(ctx.pay) || carrierDue(f) ? "paymentMissing" : "ready";
   switch (stageOf(f)) {
     case "picked_up": return "onTheWay";
     case "requested": case "booked": return "waitingPickup";
@@ -256,7 +275,10 @@ export function stillNeededLine(f: DealShipFacts, ctx: DealCtx): Line | null {
   if (pay?.buyerDue) need.push(pay.buyerLeft !== null ? `buyer payment ${money(pay.buyerLeft)}` : "buyer payment");
   if (pay?.supplierDue) need.push(pay.supplierLeft !== null ? `supplier payment ${money(pay.supplierLeft)}` : "supplier payment");
   if (pay?.costMissing) need.push("supplier cost");
+  if (carrierDue(f) && shippingDone(f, ctx)) need.push("carrier payment");
   if (section === "notSetUp") need.push("shipping");
+  // R-509: marked done, and the carrier payment is all it waits for.
+  if (need.length === 1 && need[0] === "carrier payment" && carrierHold(f)) return one("Marked done. It completes when the carrier payment is linked.", "ink");
   if (need.length > 0) return one(`Still needed: ${need.join(", ")}`, "ink");
   if (!pay) return section === "paymentMissing" ? one("Payment status not available", "muted") : null;
   return one(`Buyer paid. ${pay.supplierKept ? "Supplier kept, nothing to pay." : "Supplier paid."}`, "muted");

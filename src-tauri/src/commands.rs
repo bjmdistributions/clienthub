@@ -5821,7 +5821,7 @@ pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Res
 }
 
 #[tauri::command]
-pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, completed_date: Option<String>, payout_included: Option<bool>, override_reason: Option<String>) -> Result<Value, String> {
+pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, completed_date: Option<String>, payout_included: Option<bool>, override_reason: Option<String>, carrier_reason: Option<String>) -> Result<Value, String> {
     let df = read_df(&id)?;
     if df.stage != "supplier_paid" && df.stage != "payment_received" && df.stage != "invoiced" { return Err("Can only complete after payment is received".into()); }
 
@@ -5847,6 +5847,25 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
                 }))
             }
         },
+    };
+
+    // R-509: a deal whose freight goes through Logistics does not complete while a load's carrier is unpaid (the server
+    // holds the same rule). The screen offers "Mark done" (`hold_deal_for_carrier`) or a reason no carrier is paid.
+    let carrier_entry: Option<Value> = {
+        let unpaid = unpaid_load_codes(&id)?;
+        if unpaid.is_empty() {
+            None
+        } else {
+            match carrier_reason.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+                None => return Err(format!(
+                    "The carrier for {} is not paid yet. Mark the deal done to complete it when the carrier payment is linked, or say why no carrier is paid.",
+                    unpaid.join(", "))),
+                Some(why) => {
+                    let (by_id, by) = actor_identity();
+                    Some(json!({ "at": Utc::now().to_rfc3339(), "by": by, "by_id": by_id, "basis": "carrier", "loads": unpaid, "reason": why }))
+                }
+            }
+        }
     };
 
     let split = read_profit_split()?;
@@ -5927,6 +5946,7 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
         .and_then(|v| v.get("gate_overrides").and_then(|a| a.as_array()).cloned())
         .unwrap_or_default();
     if let Some(entry) = gate_entry { gate_overrides.push(entry); }
+    if let Some(entry) = carrier_entry { gate_overrides.push(entry); }
     // R-438: completing overwrites only the completion keys and keeps everything else the deal
     // carries (a resold move's record, a closed refund, the "no bank record" acknowledgements).
     // It used to write a fresh blob, which erased the resold record a reconciliation and an undo
@@ -5938,6 +5958,8 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     meta.insert("payout_recipients".into(), json!(breakdown));
     meta.insert("bank_snapshot".into(), bank_snapshot);
     if gate_overrides.is_empty() { meta.remove("gate_overrides"); } else { meta.insert("gate_overrides".into(), Value::Array(gate_overrides)); }
+    // R-509: completed, so it no longer waits for a carrier payment.
+    meta.remove("carrier_hold");
     // R-401: the logistics pay kept for the panels that show it as its own row (the server does too).
     match logistics_cut {
         Some(p) => { meta.insert("logistics_pay".into(), json!(p)); }
@@ -6405,6 +6427,68 @@ fn write_deal_metadata(id: &str, meta: Map<String, Value>) -> Result<(), String>
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("UPDATE deal_flows SET metadata=?1 WHERE id=?2", rusqlite::params![mj, id]).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// R-509: the deal's live loads whose carrier is not paid yet (no payment recorded), as their codes. The same rule as
+/// the server's `unpaid_load_codes` and the deal list's `logistics_unpaid`.
+fn unpaid_load_codes(deal_id: &str) -> Result<Vec<String>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut st = conn
+        .prepare(
+            "SELECT id, COALESCE(load_number,'') FROM freight_bookings WHERE deal_flow_id=?1 AND COALESCE(archived,0)=0 \
+               AND status NOT IN ('cancelled','quote','quoted') AND paid_amount IS NULL ORDER BY created_at, id",
+        )
+        .map_err(|e| e.to_string())?;
+    let codes = st
+        .query_map([deal_id], |r| Ok(crate::freight::booking_code_of(&r.get::<_, String>(0)?, &r.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(codes)
+}
+
+/// R-509: marks a deal done while a load's carrier is unpaid. Nothing is recorded: the deal keeps its stage and the
+/// choices made now (the day, the payout, a date override) wait in `metadata.carrier_hold`. The server completes it
+/// with them once the carrier payment is linked (`complete_held_if_ready`), and the completed deal syncs back here.
+#[tauri::command]
+pub async fn hold_deal_for_carrier(id: String, completed_date: Option<String>, payout_included: Option<bool>, override_reason: Option<String>) -> Result<Value, String> {
+    let df = read_df(&id)?;
+    if df.stage != "supplier_paid" && df.stage != "payment_received" && df.stage != "invoiced" { return Err("Can only complete after payment is received".into()); }
+    let unpaid = unpaid_load_codes(&id)?;
+    if unpaid.is_empty() { return Err("Every carrier on this deal is paid. Complete it instead.".into()); }
+    // The date gate still applies to the moment it was marked done, the same as completing.
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let reason = override_reason.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let (by_id, by) = actor_identity();
+    let gate_entry: Value = match shipping_gate(df.ships_direct, df.pickup_date.as_deref(), df.expected_delivery_date.as_deref(), &today) {
+        None => Value::Null,
+        Some((date, basis)) => match reason {
+            None => return Err(format!(
+                "This deal's {} date is {}. It has not arrived yet. Complete it on or after that date, or override with a reason.",
+                basis, date)),
+            Some(reason) => json!({ "at": Utc::now().to_rfc3339(), "by": by, "by_id": by_id, "blocked_until": date, "basis": basis, "reason": reason }),
+        },
+    };
+    let mut meta = deal_metadata(&df);
+    meta.insert("carrier_hold".into(), json!({
+        "at": Utc::now().to_rfc3339(), "by": by, "by_id": by_id, "loads": unpaid,
+        "completed_date": completed_date.unwrap_or_default(), "payout_included": payout_included.unwrap_or(false),
+        "shipping_status": "none", "gate": gate_entry,
+    }));
+    let meta_json = serde_json::to_string(&Value::Object(meta)).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("metadata".into(), Value::String(meta_json.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET metadata=?1, updated_at=?2 WHERE id=?3", rusqlite::params![meta_json, now, id]).map_err(|e| e.to_string())?;
+    }
+    Ok(json!({
+        "held": true, "loads": unpaid,
+        "message": format!("Marked done. It completes when the carrier payment for {} is linked.", unpaid.join(", ")),
+    }))
 }
 
 fn deal_metadata(d: &DealFlow) -> Map<String, Value> {
@@ -27583,7 +27667,7 @@ mod r400_shipping_tests {
     }
 
     async fn complete(id: &str) {
-        complete_deal_flow(id.to_string(), None, None, None, None).await.unwrap();
+        complete_deal_flow(id.to_string(), None, None, None, None, None).await.unwrap();
     }
 
     #[tokio::test]
@@ -27855,7 +27939,7 @@ mod r400_shipping_tests {
         pool().get().unwrap().execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('profit_split_json', '[{\"name\":\"Partner A\",\"pct\":60,\"is_business\":false,\"kind\":\"person\"},{\"name\":\"Business\",\"pct\":40,\"is_business\":true,\"kind\":\"business\"}]')", [],
         ).unwrap();
-        complete_deal_flow(id.clone(), None, None, Some(true), None).await.unwrap();
+        complete_deal_flow(id.clone(), None, None, Some(true), None, None).await.unwrap();
         let amounts = |id: &str| -> Vec<f64> {
             let meta: String = pool().get().unwrap().query_row("SELECT metadata FROM deal_flows WHERE id=?1", [id], |r| r.get(0)).unwrap();
             let v: Value = serde_json::from_str(&meta).unwrap();
@@ -28587,7 +28671,7 @@ mod r401_pay_tests {
         put("profit_split_json", SPLIT);
         put("logistics_pay", RULE);
         let id = deal("snap");
-        complete_deal_flow(id.clone(), None, None, Some(true), None).await.unwrap();
+        complete_deal_flow(id.clone(), None, None, Some(true), None, None).await.unwrap();
         // Net is 10,000 - 6,000 - 350 = 3,650. Charged 500, paid 350: the logistics pay is 150,
         // so 3,500 is split 60/40. net_profit itself is unchanged.
         let net: f64 = pool().get().unwrap().query_row("SELECT net_profit FROM deal_flows WHERE id=?1", [&id], |r| r.get(0)).unwrap();
@@ -28614,7 +28698,8 @@ mod r401_pay_tests {
         put("logistics_pay", RULE);
         let id = deal("quote");
         pool().get().unwrap().execute("UPDATE freight_bookings SET paid_amount=NULL, quoted_cost=NULL WHERE id=?1", [format!("fb_{id}")]).unwrap();
-        complete_deal_flow(id.clone(), None, None, Some(true), None).await.unwrap();
+        // R-509: completing with the carrier unpaid now needs its reason.
+        complete_deal_flow(id.clone(), None, None, Some(true), None, Some("Completed before the carrier was paid".into())).await.unwrap();
         assert_eq!(amounts(&id), vec![2400.0, 1600.0], "pay pending: nothing is taken off yet");
         pool().get().unwrap().execute("UPDATE freight_bookings SET quoted_cost=320 WHERE id=?1", [format!("fb_{id}")]).unwrap();
         assert!(!resync_completed_deal_if_changed(&id).unwrap(), "a quote alone leaves the pay pending, so nothing moved");
@@ -28645,7 +28730,7 @@ mod r401_pay_tests {
             ).unwrap();
             conn.execute("INSERT OR REPLACE INTO deal_reps (deal_flow_id, lead_rep_id) VALUES (?1, 'st-r401')", [&id]).unwrap();
         }
-        complete_deal_flow(id.clone(), None, None, Some(true), None).await.unwrap();
+        complete_deal_flow(id.clone(), None, None, Some(true), None, None).await.unwrap();
         let p = deal_flow_payout(id.clone()).await.unwrap();
         // Net 3,650: the rep's 10% is 365 and the logistics pay is 150, so 3,135 is left to split.
         assert_eq!(p["rep_cut"], json!(365.0));
@@ -28891,14 +28976,14 @@ mod r435_resold_tests {
         let a = deal("a", 10000.0, vec![supplier_line(8000.0)]);
         link(&a, "a_in", "buyer_payment", 10000.0);
         link(&a, "a_sup", "supplier_payment", 8000.0);
-        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(a.clone(), None, None, None, None, None).await.unwrap();
         pool().get().unwrap().execute(
             "INSERT INTO refunds (id, deal_flow_id, amount, created_at, updated_at) VALUES ('rf-r435', ?1, 10000, '2026-09-12', '2026-09-12')",
             [&a]).unwrap();
         // Resold to B for 9,000 with no cost of its own.
         let b = deal("b", 9000.0, vec![]);
         link(&b, "b_in", "buyer_payment", 9000.0);
-        complete_deal_flow(b.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(b.clone(), None, None, None, None, None).await.unwrap();
         assert_eq!(books(&a), (0.0, 8000.0, -8000.0));
         assert_eq!(books(&b), (9000.0, 0.0, 9000.0));
 
@@ -28920,10 +29005,10 @@ mod r435_resold_tests {
         let a = deal("pa", 10000.0, vec![supplier_line(8000.0)]);
         link(&a, "pa_in", "buyer_payment", 10000.0);
         link(&a, "pa_sup", "supplier_payment", 8000.0);
-        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(a.clone(), None, None, None, None, None).await.unwrap();
         let b = deal("pb", 6000.0, vec![]);
         link(&b, "pb_in", "buyer_payment", 6000.0);
-        complete_deal_flow(b.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(b.clone(), None, None, None, None, None).await.unwrap();
 
         move_resold_cost(a.clone(), b.clone(), 5000.0, None).await.unwrap();
 
@@ -28991,12 +29076,12 @@ mod r438_refund_close_tests {
         let a = deal(&format!("{tag}a"), 10000.0, vec![line(8000.0, true)], "supplier_paid");
         link(&a, &format!("{tag}a_in"), "buyer_payment", 10000.0);
         link(&a, &format!("{tag}a_sup"), "supplier_payment", 8000.0);
-        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(a.clone(), None, None, None, None, None).await.unwrap();
         set_owed(&a, 10000.0);
         refund(&a, 10000.0);
         let b = deal(&format!("{tag}b"), 9000.0, vec![], "supplier_paid");
         link(&b, &format!("{tag}b_in"), "buyer_payment", 9000.0);
-        complete_deal_flow(b.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(b.clone(), None, None, None, None, None).await.unwrap();
         (a, b)
     }
 
@@ -29166,9 +29251,9 @@ mod r438_review_tests {
         let b = deal("kb", 9000.0, vec![], "payment_received");
         link(&b, "kb_in", "buyer_payment", 9000.0);
         move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
-        complete_deal_flow(b.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(b.clone(), None, None, None, None, None).await.unwrap();
         assert!(has_live_resold(read_df(&b).unwrap().metadata.as_deref().unwrap(), "resold_from"));
-        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(a.clone(), None, None, None, None, None).await.unwrap();
         assert!(has_live_resold(read_df(&a).unwrap().metadata.as_deref().unwrap(), "resold_to"));
         let ra = reconciliation_status_all().await.unwrap().into_iter().find(|v| v["deal_flow_id"] == a.as_str()).unwrap();
         assert_eq!(ra["supplier_paid_paired"], json!(true));
@@ -29181,7 +29266,7 @@ mod r438_review_tests {
         let a = deal("cr", 10000.0, vec![line(8000.0, true, "X")], "supplier_paid");
         link(&a, "cr_in", "buyer_payment", 10000.0);
         set_refund_done(a.clone(), true).await.unwrap();
-        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(a.clone(), None, None, None, None, None).await.unwrap();
         let m = deal_metadata(&read_df(&a).unwrap());
         assert_eq!(m.get("refund_done"), Some(&json!(true)));
     }
@@ -29193,7 +29278,7 @@ mod r438_review_tests {
         let a = deal("bp", 10000.0, vec![line(8000.0, false, "X")], "supplier_paid");
         link(&a, "bp_in", "buyer_payment", 10000.0);
         link(&a, "bp_sup", "supplier_payment", 8000.0);
-        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(a.clone(), None, None, None, None, None).await.unwrap();
         let b = deal("bpb", 9000.0, vec![], "payment_received");
         let r = move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
         assert_eq!(r["moved_bank"], json!(8000.0));
@@ -29311,7 +29396,7 @@ mod r438_followup_tests {
         link(&a, "um_in", "buyer_payment", 10000.0);
         let b = deal("umb", 9000.0, vec![], "payment_received");
         move_resold_cost(a.clone(), b.clone(), 8000.0, None).await.unwrap();
-        complete_deal_flow(a.clone(), None, None, None, None).await.unwrap();
+        complete_deal_flow(a.clone(), None, None, None, None, None).await.unwrap();
         let before = read_df(&a).unwrap();
         let offset = before.supplier_payments.iter().find(|p| p.amount < 0.0).unwrap().id.clone();
         assert_eq!(unmark_supplier_payment_paid(a.clone(), offset).await.unwrap_err(), RESOLD_LINE_LOCKED);
@@ -29814,5 +29899,73 @@ mod r456_near_duplicate_tests {
         pool().get().unwrap().execute("INSERT INTO refunds (id, deal_flow_id, amount, created_at, updated_at, bank_txn_id) VALUES ('rf_r452', 'df_x', 800.29, 't', 't', ?1)", [&extra]).unwrap();
         assert!(resolve_near_duplicate(keep, extra.clone(), true).await.unwrap_err().contains("Nothing was changed"));
         assert!(!crate::sync::is_tombstoned("bank_txn", &extra));
+    }
+}
+
+#[cfg(test)]
+mod r509_carrier_hold_tests {
+    use super::*;
+
+    /// A deal ready to complete (bought, sold and paid), with one delivered load whose carrier is `paid` or not.
+    fn deal(tag: &str, paid: Option<f64>) -> String {
+        let id = format!("df-r509-{tag}");
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r509', 'Sample buyer', '2026-10-01', '2026-10-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r509', ?2, '2026-10-01', '2026-10-30', '[]', 5000, 5000, '2026-10-01')",
+            rusqlite::params![format!("inv-r509-{tag}"), format!("INV-R509-{tag}")],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount)
+             VALUES (?1, ?2, 'supplier_paid', '2026-10-01', '2026-10-01', '[]', 0, 5000)",
+            rusqlite::params![id, format!("inv-r509-{tag}")],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO freight_bookings (id, deal_flow_id, status, load_number, paid_amount, quoted_cost, archived, created_at, updated_at)
+             VALUES (?1, ?2, 'delivered', ?3, ?4, 900, 0, '2026-10-02', '2026-10-02')",
+            rusqlite::params![format!("fb_r509{tag}"), id, format!("LD-09{tag}"), paid],
+        ).unwrap();
+        id
+    }
+
+    fn stage_meta(id: &str) -> (String, Value) {
+        let (stage, meta): (String, String) = pool().get().unwrap()
+            .query_row("SELECT stage, COALESCE(metadata,'{}') FROM deal_flows WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        (stage, serde_json::from_str(&meta).unwrap_or(json!({})))
+    }
+
+    #[tokio::test]
+    async fn an_unpaid_carrier_holds_completion_until_a_reason_is_given() {
+        let _db = crate::db::init_test_store();
+        let id = deal("1", None);
+        let err = complete_deal_flow(id.clone(), None, None, None, None, None).await.unwrap_err();
+        assert!(err.contains("LD-091") && err.contains("not paid yet"), "{err}");
+        assert_eq!(stage_meta(&id).0, "supplier_paid");
+        complete_deal_flow(id.clone(), None, None, None, None, Some("The buyer sent their own truck".into())).await.unwrap();
+        let (stage, meta) = stage_meta(&id);
+        assert_eq!(stage, "complete");
+        let o = meta["gate_overrides"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!((o["basis"].as_str(), o["reason"].as_str()), (Some("carrier"), Some("The buyer sent their own truck")));
+    }
+
+    #[tokio::test]
+    async fn marked_done_waits_with_its_choices_and_a_paid_carrier_completes_as_before() {
+        let _db = crate::db::init_test_store();
+        let id = deal("2", None);
+        let r = hold_deal_for_carrier(id.clone(), Some("2026-10-12".into()), Some(true), None).await.unwrap();
+        assert_eq!(r["held"], true);
+        let (stage, meta) = stage_meta(&id);
+        assert_eq!(stage, "supplier_paid", "still open while it waits");
+        assert_eq!(meta["carrier_hold"]["loads"], json!(["LD-092"]));
+        assert_eq!(meta["carrier_hold"]["completed_date"], "2026-10-12");
+        assert_eq!(meta["carrier_hold"]["payout_included"], true);
+        // A deal whose carrier is paid completes with no question, and a completion clears any hold.
+        let paid = deal("3", Some(900.0));
+        assert!(hold_deal_for_carrier(paid.clone(), None, None, None).await.unwrap_err().contains("Complete it instead"));
+        complete_deal_flow(paid.clone(), None, None, None, None, None).await.unwrap();
+        assert_eq!(stage_meta(&paid).0, "complete");
+        complete_deal_flow(id.clone(), None, None, None, None, Some("Paid in cash, no bank row".into())).await.unwrap();
+        assert!(stage_meta(&id).1.get("carrier_hold").is_none());
     }
 }

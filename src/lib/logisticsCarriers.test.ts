@@ -219,7 +219,7 @@ describe("the bank candidates", () => {
       },
     ] });
     expect(rows).toEqual([
-      { txnId: "t1", day: "2026-10-05", amount: 2000, free: 1320, suggested: 1320, who: "NORTHLINE FREIGHT", memo: "ZELLE PAYMENT", method: "Zelle", reason: "amount matches" },
+      { txnId: "t1", day: "2026-10-05", amount: 2000, free: 1320, suggested: 1320, who: "NORTHLINE FREIGHT", memo: "ZELLE PAYMENT", method: "Zelle", reason: "amount matches", linked: false },
     ]);
   });
   it("reads the older suggestion shape too, and drops a row with no transaction", () => {
@@ -228,8 +228,12 @@ describe("the bank candidates", () => {
       { amount: 5 },
     ] });
     expect(rows).toEqual([
-      { txnId: "t2", day: "2026-10-04", amount: 1319.8, free: null, suggested: null, who: "Northline", memo: "wire", method: "", reason: "" },
+      { txnId: "t2", day: "2026-10-04", amount: 1319.8, free: null, suggested: null, who: "Northline", memo: "wire", method: "", reason: "", linked: false },
     ]);
+  });
+  it("marks a payment already linked to the deal on Financials (R-508)", () => {
+    const rows = carrierPayCandidates({ candidates: [{ txn_id: "t3", txn_amount: 700, unlinked: 700, linked_to_deal: true }, { txn_id: "t4", linked_to_deal: "yes" }] });
+    expect(rows.map((r) => [r.txnId, r.linked, r.free])).toEqual([["t3", true, 700], ["t4", false, null]]);
   });
   it("reads a bare list and an answer with nothing in it", () => {
     expect(carrierPayCandidates([{ txn_id: "t9", amount: 1 }]).map((r) => r.txnId)).toEqual(["t9"]);

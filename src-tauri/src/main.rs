@@ -801,6 +801,7 @@ fn main() {
             unmark_supplier_payment_paid,
             set_supplier_payment_kept,
             complete_deal_flow,
+            hold_deal_for_carrier,
             recalc_deal_from_bank,
             cleanup_orphan_allocations,
             scan_data_integrity,
