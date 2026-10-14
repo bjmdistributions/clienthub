@@ -433,9 +433,9 @@ const moneyValue = (raw: string): number | null => {
 export function Field({ label, hint, children, wide }: { label: string; hint?: string; children: ReactNode; wide?: boolean }) {
   return (
     <div className={`min-w-0 ${wide ? "col-span-full" : ""}`}>
-      <label className="block text-[12px] font-medium text-muted mb-1">{label}</label>
+      <label className="block text-[13px] font-medium text-muted mb-1">{label}</label>
       {children}
-      {hint && <div className="text-[11px] text-muted mt-1">{hint}</div>}
+      {hint && <div className="text-[12px] text-muted mt-1">{hint}</div>}
     </div>
   );
 }
@@ -443,7 +443,7 @@ export function Field({ label, hint, children, wide }: { label: string; hint?: s
 export function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-3">
-      <h4 className="text-[13px] font-semibold text-ink">{title}</h4>
+      <h4 className="text-[14px] font-semibold text-ink">{title}</h4>
       {children}
     </section>
   );
