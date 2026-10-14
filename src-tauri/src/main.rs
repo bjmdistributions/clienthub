@@ -48,6 +48,8 @@ mod deal_files;
 mod warehouse;
 mod warehouse_core;
 mod pallet_fit;
+mod case_core;
+mod warehouse_loads;
 mod books;
 mod customer_portal;
 mod template;
@@ -1305,6 +1307,14 @@ fn main() {
             warehouse::remove_warehouse_pallet,
             warehouse::set_order_passcode,
             warehouse::warehouse_pallet_labels,
+            warehouse_loads::list_warehouse_loads,
+            warehouse_loads::read_load_manifest,
+            warehouse_loads::get_warehouse_load,
+            warehouse_loads::create_warehouse_load,
+            warehouse_loads::update_warehouse_load,
+            warehouse_loads::add_warehouse_load_line,
+            warehouse_loads::save_warehouse_case,
+            warehouse_loads::remove_warehouse_case,
             // Bills (R-449)
             bills::bills_list,
             bills::bills_alerts,

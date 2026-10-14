@@ -4,6 +4,7 @@ import { queryText } from "./logisticsCarriers";
 import { bolPdfPath } from "./logisticsBols";
 import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
 import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, PalletSpec, WarehousePallet } from "./palletFit";
+import type { CaseLine, LoadDetail, LoadLine, LoadSummary, ManifestRead, NewLine } from "./deliveries";
 
 // R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
 // are server-proxied and don't exist until Pass 2. Every wrapper below routes
@@ -3880,6 +3881,18 @@ export const api = {
   removeWarehousePallet: (id: string) => invoke<WarehousePallet[]>("remove_warehouse_pallet", { id }),
   setOrderPasscode: (invoiceId: string, passcode: string) => invoke<WarehousePallet[]>("set_order_passcode", { invoiceId, passcode }),
   warehousePalletLabels: (ids: string[]) => invoke<string>("warehouse_pallet_labels", { ids }),
+  // R-519: a delivery read from its manifest, and the cases received onto its pallets (case_core.rs)
+  listWarehouseLoads: () => invoke<LoadSummary[]>("list_warehouse_loads"),
+  readLoadManifest: (path: string) => invoke<ManifestRead>("read_load_manifest", { path }),
+  getWarehouseLoad: (id: string) => invoke<LoadDetail>("get_warehouse_load", { id }),
+  createWarehouseLoad: (name: string, source: string, lines: LoadLine[]) => invoke<LoadDetail>("create_warehouse_load", { name, source, lines }),
+  updateWarehouseLoad: (id: string, patch: { name?: string; notes?: string; archived?: boolean }) =>
+    invoke<LoadDetail>("update_warehouse_load", { id, name: patch.name ?? null, notes: patch.notes ?? null, archived: patch.archived ?? null }),
+  addWarehouseLoadLine: (id: string, line: NewLine) => invoke<LoadDetail>("add_warehouse_load_line", { id, line }),
+  /** A new case (with `copies` identical ones), or a change to one saved when caseId is given. Answers without the lines. */
+  saveWarehouseCase: (loadId: string, c: { caseId?: string | null; pallet: number; contents: CaseLine[]; notes?: string; copies?: number }) =>
+    invoke<LoadDetail>("save_warehouse_case", { loadId, caseId: c.caseId ?? null, pallet: c.pallet, contents: c.contents, notes: c.notes ?? null, copies: c.copies ?? null }),
+  removeWarehouseCase: (loadId: string, caseId: string) => invoke<LoadDetail>("remove_warehouse_case", { loadId, caseId }),
   warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
   warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
     invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),

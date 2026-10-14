@@ -2458,4 +2458,38 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE deal_flows ADD COLUMN files TEXT NOT NULL DEFAULT '[]';
         "#,
     ),
+    (
+        114,
+        // R-519: a delivery coming in, its manifest as read (case_core::LoadLine in lines_json),
+        // and every case received, one row each so two devices receiving at once never overwrite
+        // each other. Removed rows are archived. Synced (sync.rs ALLOWED_TABLES, netsync
+        // SNAPSHOT_TABLES) and mirrored in clienthub-api schema.sql, which must be deployed
+        // first. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        CREATE TABLE IF NOT EXISTS warehouse_loads (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            source TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            lines_json TEXT DEFAULT '[]',
+            archived INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE TABLE IF NOT EXISTS warehouse_cases (
+            id TEXT PRIMARY KEY,
+            load_id TEXT NOT NULL,
+            pallet INTEGER DEFAULT 1,
+            number INTEGER DEFAULT 1,
+            contents_json TEXT DEFAULT '[]',
+            notes TEXT DEFAULT '',
+            archived INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_warehouse_cases_load ON warehouse_cases(load_id);
+        "#,
+    ),
 ];

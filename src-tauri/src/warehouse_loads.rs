@@ -1,0 +1,403 @@
+//! A delivery coming in, and every case received onto its pallets (R-519).
+//!
+//! One `warehouse_loads` row per delivery, its manifest as read in `lines_json`, and one
+//! `warehouse_cases` row per case, so two devices receiving at once never overwrite each other.
+//! Reading a manifest, checking a case and every count are `case_core.rs`, byte-identical on
+//! the server (clienthub-api `routes/case_core.rs`, behind `routes/warehouse_loads.rs`): this
+//! file is only storage, sync and the Tauri commands. Removed rows are archived, never deleted.
+
+use crate::case_core::{self as core, Case, CaseLine, LoadLine, ManifestRead, Tally, Totals};
+use crate::db::pool;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+
+const LOADS: &str = "warehouse_loads";
+const CASES: &str = "warehouse_cases";
+
+#[derive(Debug, Serialize)]
+pub struct LoadHead {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub notes: String,
+    pub archived: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Left out when a case is saved (the lines did not change).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines: Option<Vec<LoadLine>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LoadDetail {
+    pub load: LoadHead,
+    pub cases: Vec<Case>,
+    pub tally: Tally,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LoadSummary {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub notes: String,
+    pub archived: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub totals: Totals,
+}
+
+struct LoadRow {
+    head: LoadHead,
+    lines: Vec<LoadLine>,
+}
+
+const LOAD_COLS: &str = "id, name, COALESCE(source,''), COALESCE(notes,''), COALESCE(lines_json,'[]'), COALESCE(archived,0), created_at, updated_at";
+
+fn map_load(r: &rusqlite::Row) -> rusqlite::Result<LoadRow> {
+    let lines: String = r.get(4)?;
+    Ok(LoadRow {
+        head: LoadHead {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            source: r.get(2)?,
+            notes: r.get(3)?,
+            archived: r.get::<_, i64>(5)? != 0,
+            created_at: r.get(6)?,
+            updated_at: r.get(7)?,
+            lines: None,
+        },
+        lines: serde_json::from_str(&lines).unwrap_or_default(),
+    })
+}
+
+fn load(conn: &rusqlite::Connection, id: &str) -> Result<LoadRow, String> {
+    conn.query_row(&format!("SELECT {LOAD_COLS} FROM warehouse_loads WHERE id = ?1"), [id], map_load)
+        .map_err(|_| "That delivery is no longer there.".to_string())
+}
+
+fn cases(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Case>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, COALESCE(pallet,1), COALESCE(number,1), COALESCE(contents_json,'[]'), COALESCE(notes,''), created_at, updated_at \
+             FROM warehouse_cases WHERE load_id = ?1 AND COALESCE(archived,0) = 0 ORDER BY pallet, number, created_at",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([load_id], |r| {
+            let contents: String = r.get(3)?;
+            Ok(Case {
+                id: r.get(0)?,
+                pallet: r.get(1)?,
+                number: r.get(2)?,
+                contents: serde_json::from_str(&contents).unwrap_or_default(),
+                notes: r.get(4)?,
+                created_at: r.get(5)?,
+                updated_at: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+fn detail(conn: &rusqlite::Connection, id: &str, with_lines: bool) -> Result<LoadDetail, String> {
+    let LoadRow { mut head, lines } = load(conn, id)?;
+    let cs = cases(conn, id)?;
+    let tally = core::tally(&lines, &cs);
+    if with_lines {
+        head.lines = Some(lines);
+    }
+    Ok(LoadDetail { load: head, cases: cs, tally })
+}
+
+fn json_str<T: Serialize>(v: &T) -> Value {
+    Value::String(serde_json::to_string(v).unwrap_or_else(|_| "[]".into()))
+}
+
+fn to_sql(v: &Value) -> rusqlite::types::Value {
+    match v {
+        Value::String(s) => rusqlite::types::Value::Text(s.clone()),
+        Value::Number(n) => n.as_i64().map(rusqlite::types::Value::Integer)
+            .unwrap_or_else(|| rusqlite::types::Value::Real(n.as_f64().unwrap_or(0.0))),
+        Value::Bool(b) => rusqlite::types::Value::Integer(*b as i64),
+        _ => rusqlite::types::Value::Null,
+    }
+}
+
+/// Write the columns and record them for sync.
+fn write(conn: &rusqlite::Connection, table: &str, id: &str, cols: Map<String, Value>, create: bool) -> Result<(), String> {
+    let keys: Vec<&String> = cols.keys().collect();
+    let params: Vec<rusqlite::types::Value> = cols.values().map(to_sql).collect();
+    if create {
+        let sql = format!(
+            "INSERT INTO {table} (id, {}) VALUES (?1, {})",
+            keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", "),
+            (2..=keys.len() + 1).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ")
+        );
+        let mut all = vec![rusqlite::types::Value::Text(id.to_string())];
+        all.extend(params);
+        conn.execute(&sql, rusqlite::params_from_iter(all.iter())).map_err(|e| e.to_string())?;
+    } else {
+        let sets: Vec<String> = keys.iter().enumerate().map(|(i, k)| format!("{k}=?{}", i + 1)).collect();
+        let sql = format!("UPDATE {table} SET {} WHERE id=?{}", sets.join(", "), keys.len() + 1);
+        let mut all = params;
+        all.push(rusqlite::types::Value::Text(id.to_string()));
+        conn.execute(&sql, rusqlite::params_from_iter(all.iter())).map_err(|e| e.to_string())?;
+    }
+    crate::sync::record_upsert(table, id, cols).map_err(|e| e.to_string())
+}
+
+fn now() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+// ---------------------------------------------------------------------------------------
+
+/// Every delivery, newest first, with its totals.
+#[tauri::command]
+pub async fn list_warehouse_loads() -> Result<Vec<LoadSummary>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(&format!("SELECT {LOAD_COLS} FROM warehouse_loads ORDER BY created_at DESC"))
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<LoadRow> = stmt.query_map([], map_load).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let mut out = Vec::new();
+    for r in rows {
+        let totals = core::tally(&r.lines, &cases(&conn, &r.head.id)?).totals;
+        let h = r.head;
+        out.push(LoadSummary { id: h.id, name: h.name, source: h.source, notes: h.notes, archived: h.archived, created_at: h.created_at, updated_at: h.updated_at, totals });
+    }
+    Ok(out)
+}
+
+/// A manifest read for the preview. Nothing is saved.
+#[tauri::command]
+pub async fn read_load_manifest(path: String) -> Result<ManifestRead, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Could not read the file: {e}"))?;
+    let tabs = core::read_tabs(&path, &bytes)?;
+    Ok(core::read_manifest(&tabs))
+}
+
+#[tauri::command]
+pub async fn get_warehouse_load(id: String) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    detail(&conn, &id, true)
+}
+
+#[tauri::command]
+pub async fn create_warehouse_load(name: String, source: String, lines: Vec<LoadLine>) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Give the delivery a name.".into());
+    }
+    let lines = core::clean_lines(lines)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let t = now();
+    let mut cols = Map::new();
+    cols.insert("name".into(), json!(name));
+    cols.insert("source".into(), json!(source.trim()));
+    cols.insert("notes".into(), json!(""));
+    cols.insert("lines_json".into(), json_str(&lines));
+    cols.insert("archived".into(), json!(0));
+    cols.insert("created_at".into(), json!(t));
+    cols.insert("updated_at".into(), json!(t));
+    write(&conn, LOADS, &id, cols, true)?;
+    detail(&conn, &id, true)
+}
+
+/// Rename a delivery, note it, remove it (archived, never deleted) or bring it back.
+#[tauri::command]
+pub async fn update_warehouse_load(id: String, name: Option<String>, notes: Option<String>, archived: Option<bool>) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    load(&conn, &id)?;
+    let mut cols = Map::new();
+    if let Some(n) = name {
+        let n = n.trim().to_string();
+        if n.is_empty() {
+            return Err("Give the delivery a name.".into());
+        }
+        cols.insert("name".into(), json!(n));
+    }
+    if let Some(n) = notes {
+        cols.insert("notes".into(), json!(n.trim()));
+    }
+    if let Some(a) = archived {
+        cols.insert("archived".into(), json!(a as i64));
+    }
+    cols.insert("updated_at".into(), json!(now()));
+    write(&conn, LOADS, &id, cols, false)?;
+    detail(&conn, &id, true)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NewLine {
+    #[serde(default)]
+    pub brand: String,
+    #[serde(default)]
+    pub group: String,
+    #[serde(default)]
+    pub style: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub cost: f64,
+    #[serde(default)]
+    pub msrp: f64,
+    #[serde(default)]
+    pub sizes: String,
+}
+
+/// A style that came off the truck but is not on the manifest.
+#[tauri::command]
+pub async fn add_warehouse_load_line(id: String, line: NewLine) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    if line.style.trim().is_empty() {
+        return Err("Type the style.".into());
+    }
+    let sizes = core::parse_sizes(&line.sizes);
+    if sizes.is_empty() {
+        return Err("Type its sizes, for example 6, 7, 8, 9.".into());
+    }
+    let l = load(&conn, &id)?;
+    if l.head.archived {
+        return Err("This delivery was removed. Bring it back first.".into());
+    }
+    let mut lines = l.lines;
+    lines.push(LoadLine {
+        id: format!("h{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+        brand: line.brand,
+        group: line.group,
+        style: line.style,
+        color: line.color,
+        description: line.description,
+        color_name: String::new(),
+        cost: line.cost,
+        msrp: line.msrp,
+        sizes,
+        sheet_total: 0,
+        source: "Added by hand".into(),
+    });
+    let lines = core::clean_lines(lines)?;
+    let mut cols = Map::new();
+    cols.insert("lines_json".into(), json_str(&lines));
+    cols.insert("updated_at".into(), json!(now()));
+    write(&conn, LOADS, &id, cols, false)?;
+    detail(&conn, &id, true)
+}
+
+/// Save a case: a new one (and as many identical copies as asked), or a change to one saved.
+#[tauri::command]
+pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, pallet: i64, contents: Vec<CaseLine>, notes: Option<String>, copies: Option<i64>) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    if !(1..=999).contains(&pallet) {
+        return Err("Pallet numbers run from 1 to 999.".into());
+    }
+    let copies = copies.unwrap_or(1);
+    if !(1..=core::MAX_COPIES).contains(&copies) {
+        return Err(format!("Save between 1 and {} cases at once.", core::MAX_COPIES));
+    }
+    let l = load(&conn, &load_id)?;
+    if l.head.archived {
+        return Err("This delivery was removed. Bring it back first.".into());
+    }
+    let contents = core::clean_contents(&l.lines, &contents)?;
+    let notes = notes.unwrap_or_default().trim().to_string();
+    let mut have = cases(&conn, &load_id)?;
+    let t = now();
+    match case_id.as_deref().filter(|s| !s.is_empty()) {
+        Some(cid) => {
+            let old = have.iter().find(|c| c.id == cid).cloned().ok_or("That case is no longer there.")?;
+            let mut cols = Map::new();
+            if old.pallet != pallet {
+                cols.insert("pallet".into(), json!(pallet));
+                cols.insert("number".into(), json!(core::next_number(&have, pallet, cid)));
+            }
+            cols.insert("contents_json".into(), json_str(&contents));
+            cols.insert("notes".into(), json!(notes));
+            cols.insert("updated_at".into(), json!(t));
+            write(&conn, CASES, cid, cols, false)?;
+        }
+        None => {
+            for _ in 0..copies {
+                let number = core::next_number(&have, pallet, "");
+                let cid = uuid::Uuid::new_v4().to_string();
+                let mut cols = Map::new();
+                cols.insert("load_id".into(), json!(load_id));
+                cols.insert("pallet".into(), json!(pallet));
+                cols.insert("number".into(), json!(number));
+                cols.insert("contents_json".into(), json_str(&contents));
+                cols.insert("notes".into(), json!(notes));
+                cols.insert("archived".into(), json!(0));
+                cols.insert("created_at".into(), json!(t));
+                cols.insert("updated_at".into(), json!(t));
+                write(&conn, CASES, &cid, cols, true)?;
+                have.push(Case { id: cid, pallet, number, ..Default::default() });
+            }
+        }
+    }
+    detail(&conn, &load_id, false)
+}
+
+/// A case taken off (archived, never deleted). The others keep their numbers: they may be
+/// written on the boxes.
+#[tauri::command]
+pub async fn remove_warehouse_case(load_id: String, case_id: String) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    if !cases(&conn, &load_id)?.iter().any(|c| c.id == case_id) {
+        return Err("That case is no longer there.".into());
+    }
+    let mut cols = Map::new();
+    cols.insert("archived".into(), json!(1));
+    cols.insert("updated_at".into(), json!(now()));
+    write(&conn, CASES, &case_id, cols, false)?;
+    detail(&conn, &load_id, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(id: &str, style: &str, sizes: &[(&str, i64)]) -> LoadLine {
+        LoadLine {
+            id: id.into(),
+            brand: "Acme".into(),
+            style: style.into(),
+            cost: 10.0,
+            sizes: sizes.iter().map(|(s, q)| core::SizeQty { size: s.to_string(), qty: *q }).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// A delivery saved, cases added (three copies, one moved, one removed), a style added by
+    /// hand, and every count read back from the stored rows.
+    #[tokio::test]
+    async fn a_delivery_receives_cases_onto_pallets() {
+        let _db = crate::db::init_test_store();
+        let d = create_warehouse_load("Truck".into(), "t.xlsx".into(), vec![line("a", "K1", &[("7", 4), ("8", 2)]), line("b", "K2", &[("S", 3)])]).await.unwrap();
+        let id = d.load.id.clone();
+        assert_eq!(d.tally.totals.expected, 9);
+        let c = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }, CaseLine { line_id: "b".into(), size: "S".into(), pairs: 1 }];
+        let d = save_warehouse_case(id.clone(), None, 1, c.clone(), None, Some(3)).await.unwrap();
+        assert!(d.load.lines.is_none());
+        assert_eq!(d.cases.iter().map(|x| (x.pallet, x.number)).collect::<Vec<_>>(), vec![(1, 1), (1, 2), (1, 3)]);
+        assert_eq!(d.tally.totals.received, 9);
+        let moved = d.cases[1].id.clone();
+        let d = save_warehouse_case(id.clone(), Some(moved.clone()), 2, c.clone(), Some("dented".into()), None).await.unwrap();
+        let m = d.cases.iter().find(|x| x.id == moved).unwrap();
+        assert_eq!((m.pallet, m.number, m.notes.as_str()), (2, 1, "dented"));
+        let d = remove_warehouse_case(id.clone(), d.cases[0].id.clone()).await.unwrap();
+        assert_eq!(d.cases.len(), 2);
+        assert_eq!(d.tally.totals.received, 6);
+        assert!(save_warehouse_case(id.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "12".into(), pairs: 1 }], None, None).await.is_err());
+        let d = add_warehouse_load_line(id.clone(), NewLine { style: "X9".into(), sizes: "5, 6".into(), brand: "Acme".into(), group: String::new(), color: String::new(), description: String::new(), cost: 0.0, msrp: 0.0 }).await.unwrap();
+        assert_eq!(d.load.lines.as_ref().unwrap().len(), 3);
+        let d = update_warehouse_load(id.clone(), None, None, Some(true)).await.unwrap();
+        assert!(d.load.archived);
+        assert!(save_warehouse_case(id.clone(), None, 1, c, None, None).await.is_err());
+        let all = list_warehouse_loads().await.unwrap();
+        assert!(all.iter().any(|x| x.id == id && x.totals.cases == 2));
+    }
+}

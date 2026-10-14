@@ -16,6 +16,7 @@ import WarehouseImport from "./WarehouseImport";
 import ProductScreen, { CountsGrid, Seg } from "./WarehouseProduct";
 import WarehouseMap from "./WarehouseMap";
 import WarehouseOrders from "./WarehouseOrders";
+import WarehouseDeliveries from "./WarehouseDeliveries";
 import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0, newId, plural } from "./warehouseUi";
 
 const BAR = { background: "rgb(var(--c-chart-1))" };
@@ -34,10 +35,14 @@ export default function WarehouseView() {
   const [pasting, setPasting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [view, setView] = useState<"products" | "map" | "pallets">(() => {
-    try { const v = localStorage.getItem("warehouse_view"); return v === "map" || v === "pallets" ? v : "products"; } catch { return "products"; }
+  const [view, setView] = useState<"products" | "map" | "pallets" | "deliveries">(() => {
+    try { const v = localStorage.getItem("warehouse_view"); return v === "map" || v === "pallets" || v === "deliveries" ? v : "products"; } catch { return "products"; }
   });
-  const pickView = (v: "products" | "map" | "pallets") => { setView(v); setOpenId(null); try { localStorage.setItem("warehouse_view", v); } catch { /* ignore */ } };
+  const pickView = (v: "products" | "map" | "pallets" | "deliveries") => { setView(v); setOpenId(null); try { localStorage.setItem("warehouse_view", v); } catch { /* ignore */ } };
+  // R-519: a sheet dropped on Deliveries is a manifest, not a stock sheet.
+  const [dropped, setDropped] = useState<{ path: string; n: number } | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const openRef = useRef<string | null>(null);
   openRef.current = openId;
   const busyRef = useRef(false);
@@ -86,7 +91,8 @@ export default function WarehouseView() {
         else if (p.type === "drop") {
           setDragging(false);
           const file = p.paths.find((x) => SHEET_RE.test(x));
-          if (file) openSheet(file);
+          if (file && viewRef.current === "deliveries") setDropped((d) => ({ path: file, n: (d?.n ?? 0) + 1 }));
+          else if (file) openSheet(file);
           else if (p.paths.length) toast("Drop a spreadsheet: Excel or CSV.", "error");
         }
       })
@@ -189,7 +195,7 @@ export default function WarehouseView() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Seg size="md" value={view} onChange={pickView} options={[{ key: "products", label: "Products" }, { key: "map", label: "Map" }, { key: "pallets", label: "Pallets" }]} />
+          <Seg size="md" value={view} onChange={pickView} options={[{ key: "products", label: "Products" }, { key: "map", label: "Map" }, { key: "pallets", label: "Pallets" }, { key: "deliveries", label: "Deliveries" }]} />
           {view === "products" && <>
             {importButtons}
             <button onClick={() => setEditing("new")} className={WH_BTN_PRIMARY}><Plus size={14} /> Add product</button>
@@ -197,7 +203,7 @@ export default function WarehouseView() {
         </div>
       </div>
 
-      {view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <WarehouseMap items={items || []} /> : <>
+      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <WarehouseMap items={items || []} /> : <>
       {items === null ? (
         <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
           {[0, 1].map((i) => <div key={i} className="h-[112px] bg-surface-2 rounded-xl animate-pulse" />)}
