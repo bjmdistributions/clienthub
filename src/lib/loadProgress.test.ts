@@ -119,9 +119,15 @@ describe("loadProgress, the team's eight stages", () => {
     expect(sent[4].state).toBe("current");
   });
 
-  it("a cancelled load is not past anything", () => {
+  it("a cancelled load stops where it stopped: nothing is current, the rest is passed over, and the stage it was on says so", () => {
     const s = loadProgress({ status: "cancelled" }, true);
-    expect(s.filter((x) => x.state === "skipped")).toHaveLength(0);
+    expect(s.filter((x) => x.state === "current")).toHaveLength(0);
+    expect(s.every((x) => x.state === "skipped")).toBe(true);
+    expect(s[0].note).toBe("Cancelled");
+    const booked = loadProgress({ status: "cancelled", quote_amount: 900, shipping_charge: "invoice", invoice_sent: true, deal_paid: true }, true);
+    expect(booked.slice(0, 4).every((x) => x.state === "done")).toBe(true);
+    expect(booked[4].state).toBe("skipped");
+    expect(booked[4].note).toBe("Cancelled");
   });
 
   it("a load from before this flow that has some data keeps what it has and skips the rest", () => {
