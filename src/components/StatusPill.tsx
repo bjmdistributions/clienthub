@@ -20,7 +20,7 @@ const TONES: Record<Tone, string> = {
   neutral: "text-muted bg-surface-2 border-line",
   // R-507 / R-511: teal is the shipping colour (Booked, On the way) and blue is the step a thing is on
   // (a quote asked or given). Both are meaning colours, so they hold under mono as well.
-  shipping: "text-ship-ink bg-ship/12 border-ship/30",
+  shipping: "text-ship-ink bg-ship/10 border-ship/30",
   step:     "text-step-now bg-step-now/10 border-step-now/25",
 };
 
