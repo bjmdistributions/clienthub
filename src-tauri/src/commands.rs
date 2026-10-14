@@ -21717,8 +21717,12 @@ pub async fn financials_overview() -> Result<Value, String> {
     // the deal isn't complete (never ours — ring-fenced). Netted per deal against any
     // supplier-payment the user has already allocated from the bank feed (actuals),
     // clamped at 0 so an over-allocation on one deal can't erase another's payable.
-    // R-511 FD-02: an allocation carries no line id, so a linked wire first pays the lines already
-    // marked paid and only what is left over comes off the unpaid ones.
+    // R-511 FD-02: an allocation carries no line id, so a linked wire first pays the goods lines
+    // already marked paid (the same goods rule as move_resold_cost: supplier category, not kept) and
+    // only what is left over comes off the unpaid ones. Freight and partner lines marked paid are not
+    // counted, so they cannot soak up a wire linked for an unflagged goods line. A goods line marked
+    // paid without a wire (card or cash) still shadows a wire linked for a sibling line, as in R-443's
+    // max(flagged paid, linked): the two cannot be told apart without a line id on the allocation.
     //
     // R-400: on a deal that ships through Logistics the booking replaces its typed freight lines,
     // so those lines leave the goods part and the quotes of its live unpaid bookings (less any
@@ -21735,7 +21739,9 @@ pub async fn financials_overview() -> Result<Value, String> {
                     AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
               - (SELECT COALESCE(SUM(CAST(json_extract(pp.value,'$.amount') AS REAL)),0)
                    FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) pp
-                  WHERE COALESCE(json_extract(pp.value,'$.paid'),0) = 1))
+                  WHERE COALESCE(json_extract(pp.value,'$.paid'),0) = 1
+                    AND COALESCE(json_extract(pp.value,'$.kept'),0) != 1
+                    AND COALESCE(json_extract(pp.value,'$.category'),'supplier') = 'supplier'))
          )),0)
          FROM deal_flows df
          WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
@@ -28422,6 +28428,49 @@ mod r400_shipping_tests {
         let d = deal("fd02d", vec![line("a", "supplier", 10000.0, true), line("b", "supplier", 5000.0, false)], "payment_received");
         link(&d, "supplier_payment", 30000.0);
         assert_eq!(owed().await - base, 5000.0 + 3000.0, "an over-linked deal owes nothing and takes nothing from the others");
+    }
+
+    /// R-511 FD-02 review: the wire pays the lines already marked paid that are GOODS, and only
+    /// those (the rule move_resold_cost uses). A paid freight or partner line, or a typed freight
+    /// line on a deal that ships through Logistics, is not what the supplier wire was linked for, so
+    /// it must not soak up a wire meant for an unflagged goods line and bring back phantom debt.
+    #[tokio::test]
+    async fn fd02_only_paid_goods_lines_take_the_wire_first() {
+        let _db = crate::db::init_test_store();
+        let owed = || async { financials_overview().await.unwrap()["supplier_payables"].as_f64().unwrap() };
+        let base = owed().await;
+
+        // Goods 10,000 not marked paid but wired in full; a 500 freight line marked paid: nothing owed.
+        let f = deal("fd02e", vec![line("a", "supplier", 10000.0, false), line("f", "freight", 500.0, true)], "payment_received");
+        link(&f, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 0.0, "a paid freight line is not a payment toward the goods");
+
+        // The same with a 3,000 partner cut marked paid.
+        let p = deal("fd02f", vec![line("a", "supplier", 10000.0, false), line("p", "partner", 3000.0, true)], "payment_received");
+        link(&p, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 0.0, "a paid partner cut is not a payment toward the goods");
+
+        // A deal that ships through Logistics (a shipping link): its typed freight is replaced by the
+        // booking, so a paid freight line there is no payment toward the goods either.
+        let s = deal("fd02g", vec![line("a", "supplier", 10000.0, false), line("f", "freight", 1500.0, true)], "payment_received");
+        link(&s, "supplier_payment", 10000.0);
+        link(&s, "shipping", 1500.0);
+        assert_eq!(owed().await - base, 0.0, "a paid typed freight line on a shipped deal is not a payment toward the goods");
+
+        // The legacy wire that carried the goods and the freight together still clears both.
+        let l = deal("fd02h", vec![line("a", "supplier", 6000.0, false), line("f", "freight", 500.0, true)], "payment_received");
+        link(&l, "supplier_payment", 6500.0);
+        assert_eq!(owed().await - base, 0.0, "goods and freight paid in one wire owe nothing");
+
+        // Paid goods wired in full beside an unpaid partner cut: the wire paid the goods, the cut is still owed.
+        let o = deal("fd02i", vec![line("a", "supplier", 10000.0, true), line("p", "partner", 3000.0, false)], "payment_received");
+        link(&o, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 3000.0, "the wire paid the paid goods line, not the unpaid partner cut");
+
+        // The other stage Free cash counts: a supplier_paid deal nets the same way.
+        let sp = deal("fd02j", vec![line("a", "supplier", 10000.0, true), line("b", "supplier", 5000.0, false)], "supplier_paid");
+        link(&sp, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 3000.0 + 5000.0, "a supplier_paid deal nets the same way");
     }
 
     /// R-459: a booking still at `quote` or `quoted` is a question to logistics, not a truck. It
