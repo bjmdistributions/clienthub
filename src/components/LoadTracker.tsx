@@ -46,11 +46,11 @@ export function LoadTracker({ stages, onGo }: { stages: Stage[]; onGo: (key: Sta
               <span className={`w-[27px] h-[27px] rounded-full flex items-center justify-center text-[11.5px] font-semibold tabular-nums ${NODE[s.state]}`}>
                 {s.state === "done" ? <Check size={14} strokeWidth={2.8} /> : i + 1}
               </span>
-              <span className={`text-[12px] leading-tight text-center whitespace-nowrap ${
+              <span className={`text-[13px] leading-tight text-center whitespace-nowrap ${
                 s.state === "current" ? "font-semibold text-ink" : s.state === "done" ? "text-ink-2" : s.state === "skipped" ? "text-faint" : "text-muted"}`}>
                 {s.label}
               </span>
-              {s.note && <span className="text-[11px] leading-tight text-muted text-center max-w-[120px]">{s.note}</span>}
+              {s.note && <span className="text-[12px] leading-tight text-muted text-center max-w-[130px]">{s.note}</span>}
             </button>
           </li>
         );

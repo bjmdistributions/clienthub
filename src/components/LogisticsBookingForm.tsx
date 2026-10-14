@@ -51,14 +51,16 @@ import { toast } from "./Toast";
 
 // ─── shared words and shapes ──────────────────────────────────────────────
 
-const STATUS_TONE: Record<FreightStatus, "warning" | "accent" | "success" | "neutral"> = {
-  quote: "warning", quoted: "accent", requested: "warning", booked: "accent", picked_up: "accent", delivered: "success", cancelled: "neutral",
+// R-507: teal while a load ships, green once delivered; a load waiting on its next step (quote asked, quoted,
+// to book) is the step blue. Orange is not a load state (R-511 LD-12).
+const STATUS_TONE: Record<FreightStatus, "step" | "shipping" | "success" | "neutral"> = {
+  quote: "step", quoted: "step", requested: "step", booked: "shipping", picked_up: "shipping", delivered: "success", cancelled: "neutral",
 };
 
 export { STATUS_ORDER, isHot, needsAmount };
 
-export function FreightStatusPill({ status, logistics }: { status: string; logistics?: boolean }) {
-  return <StatusPill tone={STATUS_TONE[status as FreightStatus] ?? "neutral"}>{statusWord(status, logistics)}</StatusPill>;
+export function FreightStatusPill({ status, logistics, size = "md" }: { status: string; logistics?: boolean; size?: "sm" | "md" }) {
+  return <StatusPill size={size} tone={STATUS_TONE[status as FreightStatus] ?? "neutral"}>{statusWord(status, logistics)}</StatusPill>;
 }
 
 export function AmountNeededPill() {
