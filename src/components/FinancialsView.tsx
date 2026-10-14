@@ -22,6 +22,7 @@ import AccountantChanges from "./AccountantChanges";
 import NearDuplicates from "./NearDuplicates";
 import RetractedRows from "./RetractedRows";
 import { parseAmount } from "../lib/format";
+import { tieAmount } from "../lib/tieAmount";
 
 // Backend errors arrive as raw Rust strings and were shown to the user verbatim,
 // often prefixed "Error:" by String(e). Strip the noise and never render an empty
@@ -1946,12 +1947,11 @@ export default function FinancialsView() {
     try {
       const r: string = candidate?.role ?? (t.direction === "out" ? "supplier_payment" : "buyer_payment");
       // A supplier leg is one cut of a deal: tie at most that leg's amount so a
-      // multi-leg wire leaves its remainder allocatable elsewhere. Buyer ties keep
-      // the full remainder (the pre-existing behaviour, over-invoice confirm aside).
-      // A shipping leg is capped the same way (R-400).
-      const amt = (r === "supplier_payment" || r === "shipping") && candidate && candidate.leg_amount > 0
-        ? Math.min(t.unallocated, candidate.leg_amount)
-        : t.unallocated;
+      // multi-leg wire leaves its remainder allocatable elsewhere. A shipping leg is
+      // capped the same way (R-400), and so is a buyer payment (FD-05): a wire that
+      // covers two invoices must not land whole on the first. The rule lives in
+      // tieAmount; a buyer remainder over the leg is tied to the leg and left unbooked.
+      const { amount: amt, book: fullyTied } = tieAmount(r, t.unallocated, candidate?.leg_amount);
       const note = r === "supplier_payment" && candidate?.supplier_name ? candidate.supplier_name : "";
       await api.allocateBankTxn(t.id, d.id, amt, r, note);
       // R-150 phase 4: stamp the supplier/client identity on the txn so profiles
@@ -1971,7 +1971,6 @@ export default function FinancialsView() {
       // one-click tie was followed by a second, redundant click on Book and the
       // row's own subline said so: "Tied to a deal — book it". A partial tie
       // still leaves the row in the queue, because the rest is still unfiled.
-      const fullyTied = amt + 0.005 >= t.unallocated;
       let booked = false;
       if (fullyTied && !t.reviewed) {
         try {
