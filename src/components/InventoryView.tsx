@@ -15,6 +15,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 import NumberInput from "./NumberInput";
 import { FromPicker, useSendFromOptions } from "./FromPicker";
 
@@ -298,7 +299,7 @@ export default function InventoryView() {
   const copyStoreLink = (lotId?: string) => {
     if (!storeUrl) return;
     const link = lotId ? `${storeUrl}?lot=${lotId}` : storeUrl;
-    navigator.clipboard.writeText(link).then(() => toast("Link copied")).catch(() => {});
+    copyText(link).then((ok) => { if (ok) toast("Link copied"); else toast(COPY_FAILED, "error"); });
   };
   // Open the product's storefront listing in the browser (the buyer-facing page).
   const openStoreLink = (lotId?: string) => {

@@ -4,6 +4,21 @@ interface State {
   error: Error | null;
 }
 
+/** The two keys App.tsx reopens on launch (the main screen and the split pane's). */
+const STORED_SCREEN_KEYS = ["clienthub_last_tab", "clienthub_split_tab"];
+
+/** Reload for the root fallback. The app reopens its last screen on launch, so reloading with the
+ *  stored screen left in place reopens the screen that just crashed, forever. Forget both screens
+ *  first (layout settings stay) and open on the Dashboard. A blocked store must not stop the reload. */
+function reloadFromDashboard() {
+  try {
+    for (const key of STORED_SCREEN_KEYS) localStorage.removeItem(key);
+  } catch {
+    // Nothing stored that we can reach; reloading is still the way out.
+  }
+  window.location.reload();
+}
+
 /** Catches render-time exceptions so one bad component shows a recoverable message
  *  instead of unmounting the whole tree to a blank white screen (the only recovery
  *  used to be killing and relaunching the app). Inline styles so the fallback still
@@ -63,7 +78,7 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
             fixes it.
           </p>
           <button
-            onClick={() => window.location.reload()}
+            onClick={reloadFromDashboard}
             style={{
               background: "#FF6520",
               color: "#fff",
@@ -94,6 +109,69 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
             >
               {this.state.error.message}
             </pre>
+          )}
+        </div>
+      </div>
+    );
+  }
+}
+
+/** One boundary per screen (R-511 DG-01). A render error in a screen stops at its pane: the sidebar,
+ *  the bell and every other screen keep working, and the person can go somewhere else. App.tsx keys it
+ *  on the screen id, so opening another screen mounts a fresh boundary and clears the error. It draws
+ *  nothing around its children while healthy, so the layout is the same with or without it.
+ *
+ *  onBack is left out when there is nowhere better to go (the screen is the Dashboard itself, or the
+ *  account is held to Logistics): the fallback then offers Try again alone. The fallback paints its own
+ *  theme surface: the Globe's pane is forced dark (#0a0a14) in every theme, and theme text on it was
+ *  unreadable in a light theme. */
+export class PaneBoundary extends React.Component<{ children: React.ReactNode; onBack?: () => void }, State> {
+  state: State = { error: null };
+
+  static getDerivedStateFromError(error: Error): State {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("Screen error:", error, info.componentStack);
+  }
+
+  render() {
+    const { error } = this.state;
+    const { onBack } = this.props;
+    if (!error) return this.props.children;
+    return (
+      <div
+        className="h-full min-h-[320px] flex items-center justify-center p-7"
+        style={{ background: "var(--t-bg)" }}
+      >
+        <div className="max-w-[420px] text-center">
+          <h2 className="text-[18px] font-semibold tracking-tight text-ink">This screen hit an error</h2>
+          <p className="mt-2 text-[13px] leading-relaxed text-muted">
+            {onBack
+              ? "Your data is safe, and the rest of Ecliptr still works. Go back to the Dashboard, or try this screen again."
+              : "Your data is safe, and the rest of Ecliptr still works. Try this screen again, or open another screen."}
+          </p>
+          <div className="mt-5 flex items-center justify-center gap-2">
+            {onBack && (
+              <button
+                onClick={onBack}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium"
+              >
+                Back to Dashboard
+              </button>
+            )}
+            <button
+              onClick={() => this.setState({ error: null })}
+              className="border border-line text-ink-2 hover:bg-surface-3 px-4 h-9 rounded-lg text-[13px] font-medium"
+            >
+              Try again
+            </button>
+          </div>
+          {error.message && (
+            <p className="mt-5 max-h-[96px] overflow-auto whitespace-pre-wrap break-words text-[11.5px] text-muted">
+              {error.message}
+            </p>
           )}
         </div>
       </div>

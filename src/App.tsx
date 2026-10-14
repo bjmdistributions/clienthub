@@ -80,6 +80,7 @@ import ClientStatementView from "./components/ClientStatementView";
 import FinancialsView from "./components/FinancialsView";
 import { ApprovalsView } from "./components/ApprovalsView";
 import CheckupView from "./components/CheckupView";
+import { PaneBoundary } from "./components/ErrorBoundary";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
 import { ToastHost, toast } from "./components/Toast";
@@ -96,6 +97,7 @@ import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
 import { bellCountOf, bellTitle, canSeeTeamNotices } from "./lib/notices";
 import { confirmLeaveUnsaved } from "./lib/unsavedWork";
+import { tabSwitchAction, tabToShow } from "./lib/tabSwitch";
 import { useNotices } from "./lib/useNotices";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
@@ -203,9 +205,19 @@ export default function App() {
   // survivors still need anchoring and clamping. Click to open rather than hover: a
   // hover menu on a narrow rail is hard to hit on a trackpad, and Jack asked for click.
   const [flyout, setFlyout] = useState<{ id: string; top: number } | null>(null);
-  const setTab = (t: Tab) => {
+  // The screen on show, for setTab. The navigate-tab and shortcut listeners are mounted once ([] deps) and keep the
+  // first render's setTab, so it cannot read `tab` from its own closure; this ref is kept current instead.
+  const tabRef = useRef<Tab>(tab);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
+  const setTab = (t: Tab, handoff = false) => {
+    // DG-02: a click on the screen already open keeps it as it is (no remount, nothing asked); only a menu closes.
+    // A handoff (a navigate-tab event, or the onNavigate prop of Dashboard, Quotes and Manifest, which stash a value
+    // such as invoices_open_id and then jump) still remounts it: the destination reads that value when it mounts.
     // R-464: a full-page form with unsaved typing is asked about before the screen is switched away from it.
-    if (!confirmLeaveUnsaved()) return;
+    const action = tabSwitchAction(tabRef.current, t, confirmLeaveUnsaved, handoff);
+    if (action === "stay") { setFlyout(null); return; }
+    if (action === "refused") return;
+    tabRef.current = t;
     setTabState(t);
     setPageKey(k => k + 1);
     setFlyout(null);
@@ -451,6 +463,9 @@ export default function App() {
   // and whatever else lands later). Gates the Show packing tab; the server is the
   // authoritative check on every route.
   const [entitlements, setEntitlements] = useState<Record<string, boolean>>({});
+  // DG-03: true once the plan, entitlement and superadmin answers above have arrived (or failed) for the person signed in.
+  // Until then visible() hides the screens that ride them, so a remembered one is not judged yet.
+  const [accessSettled, setAccessSettled] = useState(false);
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   // R-400: an account that holds only Logistics permissions gets the Logistics screen and
@@ -483,10 +498,11 @@ export default function App() {
     return () => window.removeEventListener("replay-tour", replay);
   }, []);
   useEffect(() => {
-    if (me && !logisticsOnly) {
-      api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); setEntitlements(p.entitlements || {}); }).catch(() => { setSuperadmin(false); setPlan(null); setEntitlements({}); });
-      api.localIsSuperadmin().then(setLocalSuper).catch(() => setLocalSuper(false));
-    }
+    if (!me || logisticsOnly) { setAccessSettled(false); return; }
+    Promise.all([
+      api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); setEntitlements(p.entitlements || {}); }).catch(() => { setSuperadmin(false); setPlan(null); setEntitlements({}); }),
+      api.localIsSuperadmin().then(setLocalSuper).catch(() => setLocalSuper(false)),
+    ]).then(() => setAccessSettled(true));
   }, [me, logisticsOnly]);
 
   // Poll the approval queue for the bell badge: the pending customers and the requests. (A `client_add`
@@ -563,9 +579,10 @@ export default function App() {
 
   const signOut = async () => {
     try { await api.employeeLogout(); } catch {}
-    // R-400: the next person to sign in on this device starts on the Dashboard, not on the
-    // Logistics screen the last account was held to.
-    if (logisticsOnly) setTabState("dashboard");
+    // R-400, DG-03: the next person to sign in on this device starts on the Dashboard, not on the screen the
+    // last account was held to or left open. The stored last screen is per device, so it goes for every role.
+    try { localStorage.removeItem("clienthub_last_tab"); } catch { /* a blocked store has nothing to forget */ }
+    setTabState("dashboard");
     setMe(null);
   };
 
@@ -726,7 +743,8 @@ export default function App() {
       // this role's sidebar hides. Route it through the same visible() gate the
       // sidebar itself uses - via a ref, since this effect mounts once and visible
       // is a fresh function every render.
-      if (detail && visibleRef.current(detail)) setTab(detail);
+      if (detail && visibleRef.current(detail)) setTab(detail, true);
+      else if (detail) toast("That screen is not available to your account", "error");
     };
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement?.tagName || "").toLowerCase();
@@ -880,6 +898,23 @@ export default function App() {
     ...NAV.flatMap((n) => [{ id: n.id, label: n.label, icon: n.icon } as NavKid, ...(n.children || [])]),
     ...UTILITY,
   ].filter((t) => visible(t.id));
+
+  // DG-03: the remembered screen (and the split pane's) is read off this device's disk, which belongs to no one person.
+  // A role that cannot open it, a role changed since, or an id that no longer exists would paint an empty pane with no
+  // row lit, so the Dashboard opens instead. Not written back: the next sign-in on this device reads what was stored.
+  // A Logistics-only account has no Dashboard and is sent to its own screen by the lock above.
+  useEffect(() => {
+    if (!me || logisticsOnly || !accessSettled) return;
+    const openable = flatTabs.map((t) => t.id);
+    const shown = tabToShow(tab, openable, "dashboard");
+    if (shown !== tab) { setTabState(shown); setPageKey((k) => k + 1); }
+    if (splitTab) {
+      const shownSplit = tabToShow(splitTab, openable, "dashboard");
+      if (shownSplit !== splitTab) setSplitTabState(shownSplit);
+    }
+    // flatTabs is rebuilt every render; what it holds only changes with the inputs listed (and accessSettled says they are in)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me, logisticsOnly, accessSettled, tab, splitTab]);
 
   // A group is open when the user opened it, or the active tab lives inside it.
   const parentOfActive = NAV.find((n) => n.children?.some((c) => c.id === tab))?.id ?? null;
@@ -1150,7 +1185,7 @@ export default function App() {
   // can be dropped into either the single main area or a split pane.
   const paneContent = (t: Tab) => {
     if (!visible(t)) return null;
-    if (t === "dashboard") return <Suspense fallback={paneFallback}><DashboardView onNavigate={setTab} me={me} /></Suspense>;
+    if (t === "dashboard") return <Suspense fallback={paneFallback}><DashboardView onNavigate={(to) => setTab(to, true)} me={me} /></Suspense>;
     if (t === "globe") return <Suspense fallback={globeFallback}><GlobeView me={me} /></Suspense>;
     if (t === "notes") return <NotesView me={me?.display_name || ""} />;
     if (t === "approvals") return <ApprovalsView me={me} notices={notices} />;
@@ -1168,7 +1203,7 @@ export default function App() {
             {t === "documents"  && <DocumentsView />}
             {t === "receivables" && <ReceivablesView />}
             {t === "payables"   && <PayablesView />}
-            {t === "quotes"     && <QuotesView onNavigate={setTab} />}
+            {t === "quotes"     && <QuotesView onNavigate={(to) => setTab(to, true)} />}
             {t === "releaseletter" && <ReleaseLetterView />}
             {t === "clientreceipt" && <ClientStatementView />}
             {t === "dealflow"   && <DealFlowView />}
@@ -1178,7 +1213,7 @@ export default function App() {
             {t === "inventory"  && <InventoryView />}
             {t === "warehouse"  && <WarehouseView />}
             {t === "renewals"   && <RenewalsView />}
-            {t === "manifest"   && <ManifestView onNavigate={setTab} />}
+            {t === "manifest"   && <ManifestView onNavigate={(to) => setTab(to, true)} />}
             {t === "lotengine"  && <LotEngineView me={me} />}
             {t === "showpacking" && <ShowPackingView me={me} />}
             {t === "sheetcopy"  && <SheetCopyView />}
@@ -1199,6 +1234,15 @@ export default function App() {
       </div>
     );
   };
+
+  // R-511 DG-01: a screen that throws while rendering stops at its own pane instead of taking the whole app
+  // down. Keyed on the screen id, so opening another screen mounts a fresh boundary. Back to Dashboard moves
+  // this pane (the main one, or the split one) to the Dashboard. It is not offered on the Dashboard itself (a
+  // split pane already on it would not change state, so the button would do nothing) or to a Logistics-only
+  // account (the lock above sends it straight back to the screen that crashed).
+  const guardedPane = (t: Tab, onBack: () => void) => (
+    <PaneBoundary key={t} onBack={t === "dashboard" || logisticsOnly ? undefined : onBack}>{paneContent(t)}</PaneBoundary>
+  );
 
   // Auth gates everything: not signed in → sign-in screen (accounts are made on
   // the website). Onboarding is only considered once signed in, and only if the
@@ -1629,7 +1673,7 @@ export default function App() {
             {/* Left pane — driven by the sidebar nav */}
             <section className="min-w-0 overflow-auto pane-container" style={{ width: `${splitRatio * 100}%`, background: paneBg(tab) }}>
               {tab !== "globe" && <UpdateNotification />}
-              <div key={`l-${pageKey}`} className="page-enter h-full">{paneContent(tab)}</div>
+              <div key={`l-${pageKey}`} className="page-enter h-full">{guardedPane(tab, () => setTab("dashboard"))}</div>
             </section>
 
             {/* Draggable divider */}
@@ -1669,7 +1713,7 @@ export default function App() {
                   <X size={14} />
                 </button>
               </div>
-              <div key={`r-${splitTab}`} className="page-enter">{paneContent(splitTab)}</div>
+              <div key={`r-${splitTab}`} className="page-enter">{guardedPane(splitTab, () => setSplit("dashboard"))}</div>
             </section>
           </div>
         ) : (
@@ -1677,7 +1721,7 @@ export default function App() {
             {/* Outside the keyed page, as in split view: a tab click must not remount it (R-409). */}
             {tab !== "globe" && <UpdateNotification />}
             <div key={pageKey} className="page-enter h-full">
-              {paneContent(tab)}
+              {guardedPane(tab, () => setTab("dashboard"))}
             </div>
           </div>
         )}

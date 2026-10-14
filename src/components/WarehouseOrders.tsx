@@ -9,6 +9,7 @@ import { api, type Client, type Invoice } from "../lib/api";
 import { byOrder, manifestUrl, palletBoxes, palletUnits, type NewPallet, type PalletLine, type WarehousePallet } from "../lib/palletFit";
 import type { WarehouseItem } from "../lib/warehouse";
 import { toast } from "./Toast";
+import { copyText } from "../lib/clipboard";
 import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0, rgba, teamColor } from "./warehouseUi";
 
 const PalletView3D = lazy(() => import("./PalletView3D"));
@@ -177,7 +178,8 @@ export default function WarehouseOrders({ items }: { items: WarehouseItem[] }) {
     setCodeFor(null);
     toast(code.trim() ? "Passcode set: send it to your customer with the order." : "Passcode removed. Anyone with a label can open it.");
   });
-  const copy = (text: string, what: string) => { navigator.clipboard.writeText(text).then(() => toast(`${what} copied`)).catch(() => toast(text)); };
+  // A failed copy shows the text itself, so the passcode or link can still be read off the toast.
+  const copy = (text: string, what: string) => { copyText(text).then((ok) => toast(ok ? `${what} copied` : text)); };
 
   return (
     <div className="space-y-4">

@@ -3,6 +3,7 @@ import { api, Client, RecurringInvoice, RecurringInvoiceInput, LineItem } from "
 import { fmtAmount, parseAmount } from "../lib/format";
 import NumberInput from "./NumberInput";
 import { Plus, X, Trash2, Pause, Play, Edit2 } from "lucide-react";
+import { useSubmit } from "../lib/useSubmit";
 
 const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
@@ -16,6 +17,7 @@ export default function RecurringView() {
   const [frequency, setFrequency] = useState("monthly");
   const [taxRate, setTaxRate] = useState(0);
   const [items, setItems] = useState<LineItem[]>([{ description: "", qty: 1, rate: 0, amount: 0 }]);
+  const { busy, run } = useSubmit();
 
   const load = async () => {
     setTemplates(await api.listRecurringInvoices());
@@ -46,10 +48,12 @@ export default function RecurringView() {
   const save = async () => {
     if (!clientId || !templateName.trim()) return;
     const input: RecurringInvoiceInput = { client_id: clientId, template_name: templateName.trim(), frequency, tax_rate: taxRate, line_items: items };
-    if (editing) await api.updateRecurringInvoice(editing.id, input);
-    else await api.createRecurringInvoice(input);
-    setShowForm(false);
-    load();
+    await run(async () => {
+      if (editing) await api.updateRecurringInvoice(editing.id, input);
+      else await api.createRecurringInvoice(input);
+      setShowForm(false);
+      load();
+    });
   };
 
   const toggle = async (t: RecurringInvoice) => {
@@ -202,7 +206,7 @@ export default function RecurringView() {
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setShowForm(false)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
-              <button onClick={save} disabled={!clientId || !templateName.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
+              <button onClick={save} disabled={busy || !clientId || !templateName.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
                 {editing ? "Save" : "Create"}
               </button>
             </div>

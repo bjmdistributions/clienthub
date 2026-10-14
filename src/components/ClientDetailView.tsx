@@ -14,6 +14,7 @@ import CreditPanel from "./CreditPanel";
 import PersonPayments from "./PersonPayments";
 import PersonPickerModal, { PersonRef } from "./PersonPicker";
 import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 import {
   ArrowLeft,
   ArrowRight,
@@ -1753,7 +1754,7 @@ function CopyEmail({ email }: { email: string }) {
   return (
     <button
       onClick={async () => {
-        await navigator.clipboard.writeText(email);
+        if (!(await copyText(email))) { toast(COPY_FAILED, "error"); return; }
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
       }}

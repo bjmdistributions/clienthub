@@ -9,6 +9,7 @@ import PersonPayments from "./PersonPayments";
 import PersonPickerModal, { PersonRef } from "./PersonPicker";
 import { PartyLinkPanel, StatTile, atMs, dedupeByInvoice } from "./ClientDetailView";
 import { toast } from "./Toast";
+import { useSubmit } from "../lib/useSubmit";
 
 const emptyInput: SupplierInput = {
   name: "",
@@ -95,7 +96,7 @@ export default function SuppliersView() {
   const [activity,      setActivity]      = useState(0);
   const [sortKey,       setSortKey]       = useState<SortKey>("total_paid");
   const [sortAsc,       setSortAsc]       = useState(false);
-  const [saving,        setSaving]        = useState(false);
+  const { busy: saving, run: runSave } = useSubmit();
   const [open,          setOpen]          = useState(false);
 
   // ── The party link (R-175) ───────────────────────────────────────────────
@@ -371,8 +372,7 @@ export default function SuppliersView() {
 
   const save = async () => {
     if (!input.name.trim()) return;
-    setSaving(true);
-    try {
+    await runSave(async () => {
       if (selected) await api.updateSupplier(selected.id, input);
       else          await api.createSupplier(input);
       const rows = await api.listSuppliers();
@@ -384,9 +384,7 @@ export default function SuppliersView() {
       } else {
         closePanel();
       }
-    } finally {
-      setSaving(false);
-    }
+    });
   };
 
   // Reopen/Delete/payout-toggle inside a breakdown → refresh supplier totals + its deals.

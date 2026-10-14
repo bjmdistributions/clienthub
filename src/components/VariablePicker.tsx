@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from "react";
+import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 
 export const VARIABLES: { token: string; label: string }[] = [
   { token: "{first_name}", label: "Client's first name" },
@@ -63,8 +65,8 @@ export default function VariablePicker({ onSelect }: VariablePickerProps) {
 /// A visible reference of the personalization variables — click any to copy it.
 export function VariableReference() {
   const [copied, setCopied] = useState<string | null>(null);
-  const copy = (token: string) => {
-    navigator.clipboard.writeText(token).catch(() => {});
+  const copy = async (token: string) => {
+    if (!(await copyText(token))) { toast(COPY_FAILED, "error"); return; }
     setCopied(token);
     setTimeout(() => setCopied((c) => (c === token ? null : c)), 1200);
   };

@@ -106,6 +106,9 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
+import { saveOrRevert, saveFailedMessage } from "../lib/saveOrRevert";
+import { useSubmit } from "../lib/useSubmit";
 import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
@@ -1475,7 +1478,12 @@ function InboxRow({ ib }: { ib: EmailInbox }) {
     } catch (e: any) { setSt({ status: "fail", message: String(e) }); }
     finally { setLinking(false); refreshLink(); }
   };
-  const remove = async () => { if (!confirm("Remove this inbox?")) return; await api.deleteEmailInbox(ib.id).catch(() => {}); window.dispatchEvent(new CustomEvent("email-inboxes-changed")); };
+  const remove = async () => {
+    if (!confirm("Remove this inbox?")) return;
+    try { await api.deleteEmailInbox(ib.id); }
+    catch (e) { toast(saveFailedMessage("remove the inbox", e), "error"); return; }
+    window.dispatchEvent(new CustomEvent("email-inboxes-changed"));
+  };
   return (
     <div className="border border-line rounded-xl px-3.5 py-3">
       <div className="flex items-center justify-between gap-2">
@@ -1800,7 +1808,10 @@ function InboxCard() {
   };
   const add = async () => {
     if (!form.host || !form.user) return;
-    await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password, scope: form.scope, readFromNow: form.readFromNow }).catch(() => {});
+    // R-511 DG-10: a refused add leaves the form open with everything typed, password included.
+    try {
+      await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password, scope: form.scope, readFromNow: form.readFromNow });
+    } catch (e) { toast(saveFailedMessage("add the inbox", e), "error"); return; }
     setForm({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "", scope: admin ? "org" : "me", readFromNow: true });
     setProvider("gmail"); setAdding(false); load();
   };
@@ -3441,7 +3452,8 @@ function AutomationTab() {
   const [copied,   setCopied]   = useState(false);
   const leadFormUrl = "https://ecliptr.app/signup";
   const copyLeadLink = async () => {
-    try { await navigator.clipboard.writeText(leadFormUrl); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ }
+    if (!(await copyText(leadFormUrl))) { toast(COPY_FAILED, "error"); return; }
+    setCopied(true); setTimeout(() => setCopied(false), 1500);
   };
 
   const load = () => api.listSignupRules().then(setRules).catch(console.error);
@@ -3811,7 +3823,7 @@ function IntakeSourceCard({ source, fields, onChange }: { source: any; fields: {
     setSavedMsg(true); setTimeout(() => setSavedMsg(false), 2000); onChange();
   };
   const del = () => {
-    if (confirmDel) { api.deleteIntakeSource(source.id).then(onChange).catch(() => {}); }
+    if (confirmDel) { api.deleteIntakeSource(source.id).then(onChange).catch((e) => toast(saveFailedMessage("remove the source", e), "error")); }
     else { setConfirmDel(true); setTimeout(() => setConfirmDel(false), 3000); }
   };
 
@@ -3823,7 +3835,7 @@ function IntakeSourceCard({ source, fields, onChange }: { source: any; fields: {
       </div>
       <div className="flex items-center gap-2">
         <input readOnly value={source.url} className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2.5 text-[12px] text-ink" />
-        <button onClick={() => navigator.clipboard?.writeText(source.url)} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors shrink-0">Copy URL</button>
+        <button onClick={() => copyText(source.url).then((ok) => { if (ok) toast("Copied"); else toast(COPY_FAILED, "error"); })} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors shrink-0">Copy URL</button>
       </div>
       {incoming.length === 0 ? (
         <div className="text-[12.5px] text-muted bg-surface-2 border border-line rounded-lg p-3 leading-relaxed">
@@ -3997,7 +4009,7 @@ function FacebookTab() {
           <li>Add the <strong className="text-ink-2">Facebook Login</strong> product. Under its settings, add this exact <strong className="text-ink-2">Valid OAuth Redirect URI</strong>:
             <div className="flex items-center gap-2 mt-1.5">
               <input readOnly value={redirect} className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2.5 text-[12px] text-ink" />
-              <button onClick={() => { navigator.clipboard?.writeText(redirect); toast("Copied"); }} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
+              <button onClick={() => copyText(redirect).then((ok) => { if (ok) toast("Copied"); else toast(COPY_FAILED, "error"); })} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
             </div>
           </li>
           <li>In <strong className="text-ink-2">App settings → Basic</strong>, copy the <strong className="text-ink-2">App ID</strong> and <strong className="text-ink-2">App secret</strong> into the fields above and save.</li>
@@ -4042,7 +4054,7 @@ function ShopifyTab() {
           <div className="text-[12.5px] font-medium text-muted mb-1.5">Webhook URL</div>
           <div className="flex items-center gap-2">
             <input readOnly value={url} className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[12px] text-ink" />
-            <button onClick={() => navigator.clipboard?.writeText(url)} className="px-3 h-9 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
+            <button onClick={() => copyText(url).then((ok) => { if (ok) toast("Copied"); else toast(COPY_FAILED, "error"); })} className="px-3 h-9 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
           </div>
         </div>
         <div>
@@ -4345,7 +4357,11 @@ function StorefrontTab() {
     catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
-  const copy = () => { if (cfg.url) { navigator.clipboard.writeText(cfg.url); setCopied(true); setTimeout(() => setCopied(false), 1500); } };
+  const copy = async () => {
+    if (!cfg.url) return;
+    if (!(await copyText(cfg.url))) { toast(COPY_FAILED, "error"); return; }
+    setCopied(true); setTimeout(() => setCopied(false), 1500);
+  };
 
   const inpCls = "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40";
   const Toggle = ({ on, onClick }: { on: boolean; onClick: () => void }) => (
@@ -5568,6 +5584,9 @@ function PayoutsPanel() {
   );
 }
 
+// R-511 DG-10: the report callback for saveOrRevert on the Settings panels.
+const toastError = (m: string) => toast(m, "error");
+
 function ApprovalPolicyPanel() {
   const [add, setAdd] = useState(false);
   const [del, setDel] = useState(false);
@@ -5582,10 +5601,17 @@ function ApprovalPolicyPanel() {
     }).catch(() => {});
     api.getDashboardPrefs().then((p) => setTrueNet(!!p.true_net)).catch(() => {});
   }, []);
-  const saveVis = async (v: string) => { setVis(v); await api.setCheckupVisibility(v).catch(() => {}); setSaved(true); setTimeout(() => setSaved(false), 1500); };
+  // A refused save puts the switch back and says so; "Saved" shows only when it landed.
+  const saveVis = async (v: string) => {
+    const prev = vis;
+    setVis(v);
+    if (!(await saveOrRevert(() => api.setCheckupVisibility(v), () => setVis(prev), toastError, "save checkup visibility"))) return;
+    setSaved(true); setTimeout(() => setSaved(false), 1500);
+  };
   const save = async (nextAdd: boolean, nextDel: boolean) => {
+    const prevAdd = add, prevDel = del;
     setAdd(nextAdd); setDel(nextDel);
-    await api.setApprovalPolicy(nextAdd, nextDel).catch(() => {});
+    if (!(await saveOrRevert(() => api.setApprovalPolicy(nextAdd, nextDel), () => { setAdd(prevAdd); setDel(prevDel); }, toastError, "save the approval policy"))) return;
     setSaved(true); setTimeout(() => setSaved(false), 1500);
   };
   // R-313: dashboard true-net preference — an open DashboardView refreshes itself off
@@ -5593,7 +5619,7 @@ function ApprovalPolicyPanel() {
   const toggleTrueNet = async () => {
     const next = !trueNet;
     setTrueNet(next);
-    await api.setDashboardPrefs(next).catch(() => {});
+    if (!(await saveOrRevert(() => api.setDashboardPrefs(next), () => setTrueNet(!next), toastError, "save the dashboard setting"))) return;
     window.dispatchEvent(new CustomEvent("dashboard-prefs-change"));
     setSaved(true); setTimeout(() => setSaved(false), 1500);
   };
@@ -5663,7 +5689,13 @@ function PeoplePanel() {
   useEffect(() => { api.plaidListItems().then((items) => setPlaidBankCount(items.length)).catch(() => setPlaidBankCount(null)); }, []);
   const [rp, setRp] = useState<any>(null);
   useEffect(() => { api.getRepPayoutSettings().then(setRp).catch(() => {}); }, []);
-  const saveRp = (fields: any) => { setRp((p: any) => ({ ...(p || {}), ...fields })); api.setRepPayoutSettings(fields).catch(() => {}); };
+  // R-511 DG-10: a refused save puts the previous settings back. customDays is the call's
+  // argument; the loaded settings (and the input's key below) carry it as custom_days.
+  const saveRp = async (fields: any) => {
+    const prev = rp;
+    setRp((p: any) => ({ ...(p || {}), ...fields, ...(fields.customDays != null ? { custom_days: fields.customDays } : {}) }));
+    await saveOrRevert(() => api.setRepPayoutSettings(fields), () => setRp(prev), toastError, "save the payout settings");
+  };
 
   // Per-row save feedback so a role/status change is never ambiguous (and any
   // failure is shown inline instead of silently swallowed).
@@ -5752,7 +5784,7 @@ function PeoplePanel() {
                 <option value="custom">Custom</option>
               </select>
               {rp.period === "custom" && (
-                <input type="text" inputMode="numeric" defaultValue={rp.custom_days || 14} onBlur={(e) => saveRp({ customDays: parseCount(e.target.value, 14) || 14 })}
+                <input key={rp.custom_days} type="text" inputMode="numeric" defaultValue={rp.custom_days || 14} onBlur={(e) => saveRp({ customDays: parseCount(e.target.value, 14) || 14 })}
                   className="w-16 border border-line px-2 h-8 rounded-lg text-[12px]" />
               )}
               <span className="text-muted ml-auto text-[11px]">Completed deals only.</span>
@@ -6134,16 +6166,19 @@ function BillingTab() {
   const [wh, setWh] = useState("");
   const [showKeys, setShowKeys] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
+  const { busy, run } = useSubmit();
 
   const load = () => api.getStripeConfig().then(setConfig).catch(() => {});
   useEffect(() => { load(); }, []);
 
   const save = async () => {
     if (!pk || !sk) return;
-    await api.saveStripeKeys(pk, sk, wh);
-    setSaved("Keys saved");
-    setTimeout(() => setSaved(null), 2000);
-    load();
+    await run(async () => {
+      await api.saveStripeKeys(pk, sk, wh);
+      setSaved("Keys saved");
+      setTimeout(() => setSaved(null), 2000);
+      load();
+    });
   };
 
   return (
@@ -6180,7 +6215,7 @@ function BillingTab() {
       )}
 
       <div className="flex items-center gap-2">
-        <button onClick={save} disabled={!showKeys || !pk || !sk} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Save keys</button>
+        <button onClick={save} disabled={busy || !showKeys || !pk || !sk} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Save keys</button>
         {config?.configured && (
           <button onClick={async () => { await api.deleteStripeKeys(); setPk(""); setSk(""); setWh(""); load(); }} className="text-[12px] text-danger-ink hover:text-danger-ink">Clear keys</button>
         )}

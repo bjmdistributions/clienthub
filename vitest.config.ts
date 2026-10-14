@@ -14,6 +14,10 @@ import { defineConfig } from "vitest/config";
 // helpers import nothing but types, so the manual-chunks config and the react plugin
 // are irrelevant here; if a test ever needs them, use `mergeConfig` instead of
 // copying anything across.
+//
+// One exception: src/components/ErrorBoundary.test.ts mounts the real error boundaries with react-dom on a
+// few dozen lines of fake DOM, because a boundary cannot be tested any other way. It is tied to react-dom 18.x.
+// Keep it to boundaries; anything that needs more of a DOM than that should wait for jsdom.
 export default defineConfig({
   test: {
     environment: "node",

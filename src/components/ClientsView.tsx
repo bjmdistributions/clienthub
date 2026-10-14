@@ -8,6 +8,7 @@ import PendingReviewModal from "./PendingReviewModal";
 import TierBadge from "./TierBadge";
 import ReliabilityBadge from "./ReliabilityBadge";
 import StatusPill from "./StatusPill";
+import { useSubmit } from "../lib/useSubmit";
 
 // What the client's most-recent touch was — icon + label + accent per kind, so
 // Invoice / Quote / Newsletter read distinctly in the list. (api.clientLastActivity)
@@ -108,6 +109,7 @@ export default function ClientsView() {
   // Client-side "never emailed" filter — reads the first_contact flag.
   const [fcOnly, setFcOnly]                 = useState(false);
   const [loadError, setLoadError]           = useState<string | null>(null);
+  const del = useSubmit();
   const tierDropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -310,10 +312,12 @@ export default function ClientsView() {
   const handleDelete = async (id: string) => {
     const name = clients.find((c) => c.id === id)?.name || "this client";
     if (confirm(`Delete ${name}? This will also delete all their interactions. This cannot be undone.`)) {
-      await api.deleteClient(id);
-      applyFilter(filter);
-      loadAll();
-      loadMissingInfo();
+      await del.run(async () => {
+        await api.deleteClient(id);
+        applyFilter(filter);
+        loadAll();
+        loadMissingInfo();
+      });
     }
   };
 
@@ -982,8 +986,8 @@ export default function ClientsView() {
                         className="flex items-center justify-center w-8 h-7 text-faint hover:text-accent-hover hover:bg-accent/10 transition-colors">
                         <Edit2 size={13} />
                       </button>
-                      <button onClick={() => handleDelete(c.id)} title="Delete"
-                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors">
+                      <button onClick={() => handleDelete(c.id)} disabled={del.busy} title="Delete"
+                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-danger-ink hover:bg-danger-bg disabled:opacity-40 transition-colors">
                         <Trash2 size={13} />
                       </button>
                     </div>
@@ -1039,7 +1043,7 @@ export default function ClientsView() {
 
 function ClientForm({
   initial, categories, onSave, onCancel,
-}: { initial: Client | null; categories: Category[]; onSave: (input: ClientInput) => void; onCancel: () => void; }) {
+}: { initial: Client | null; categories: Category[]; onSave: (input: ClientInput) => Promise<unknown>; onCancel: () => void; }) {
   const [form, setForm] = useState<ClientInput>({
     name: initial?.name ?? "", email: initial?.email ?? "", phone: initial?.phone ?? "",
     company: initial?.company ?? "", notes: initial?.notes ?? "",
@@ -1051,6 +1055,7 @@ function ClientForm({
   });
 
   const set = (k: keyof ClientInput, v: string | boolean | null) => setForm({ ...form, [k]: v });
+  const { busy, run } = useSubmit();
 
   return (
     <div className="bg-surface border border-line rounded-xl p-6 mb-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
@@ -1127,7 +1132,7 @@ function ClientForm({
           className="px-4 h-9 text-[13px] text-muted hover:text-ink border border-line rounded-lg hover:bg-surface-2 transition-colors">
           Cancel
         </button>
-        <button onClick={() => onSave(form)} disabled={!form.name.trim()}
+        <button onClick={() => run(() => onSave(form))} disabled={busy || !form.name.trim()}
           className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
           Save
         </button>

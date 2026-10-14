@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Copy, DoorOpen, ExternalLink, Mail } from "lucide-react";
 import { api, CustomerPortalAccess, isUnavailable } from "../lib/api";
 import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 
 // R-290 customer portal — one client's access to portal.ecliptr.app: who can sign in,
 // the open invite, suspend or reactivate, and a read-only preview of exactly what they
@@ -48,6 +49,8 @@ export default function CustomerPortalPanel({
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState(clientEmail || "");
   const [inviting, setInviting] = useState(false);
+  // Set when the clipboard refused the invite link, so the link is shown to select by hand.
+  const [linkShown, setLinkShown] = useState(false);
 
   const load = useCallback(async () => {
     const res = await api.customerPortalClient(clientId);
@@ -61,6 +64,7 @@ export default function CustomerPortalPanel({
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
+    setLinkShown(false);
     try {
       await fn();
       await load();
@@ -72,9 +76,13 @@ export default function CustomerPortalPanel({
     }
   };
 
+  // Never throws: the invite already exists on the server, so a clipboard refusal must not skip
+  // the reload that shows it. On a refusal the link is shown in a box to select by hand.
   const copy = async (text: string) => {
-    await navigator.clipboard.writeText(text);
-    toast("Invite link copied");
+    const ok = await copyText(text);
+    setLinkShown(!ok);
+    if (ok) toast("Invite link copied");
+    else toast(COPY_FAILED, "error");
   };
 
   const invite = (send: boolean) => run(async () => {
@@ -140,6 +148,15 @@ export default function CustomerPortalPanel({
           <button disabled={busy} onClick={() => { if (confirm("Revoke this invite link? It stops working straight away.")) run(() => api.customerPortalRevokeInvite(clientId)); }}
             className={`${btn} text-danger-ink hover:bg-danger-bg`}>Revoke</button>
           </div>
+          {linkShown && (
+            <input
+              readOnly
+              value={data.invite.link}
+              aria-label="Invite link"
+              onFocus={(e) => e.currentTarget.select()}
+              className="w-full mt-2 border border-line px-3 h-8 rounded-lg text-[12px] bg-surface-2 text-ink-2 font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+            />
+          )}
         </div>
       )}
 
