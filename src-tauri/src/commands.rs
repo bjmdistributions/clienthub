@@ -4076,41 +4076,67 @@ fn shipped_deal_metadata(conn: &rusqlite::Connection, flow_id: &str) -> Result<S
     serde_json::to_string(&Value::Object(meta)).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn save_invoice_shipping(invoice_id: String, info: ShippingInfo) -> Result<(), String> {
+/// The values `save_invoice_shipping` writes onto the invoice: what the caller
+/// sent laid over what the invoice already holds. Split out, with
+/// `write_invoice_shipping`, so a test runs the exact statements the command runs.
+///
+/// Merge-on-write for every column. An omitted field means "leave the invoice's
+/// own value alone", not "write NULL / 0 over it": this wrote the shipping charge
+/// as 0 and blanked carrier and tracking whenever "Confirm delivery & complete"
+/// sent only the flag, which dropped the floor under an unpaid truck (the buyer's
+/// charge lived only in `shipping_charged`). The two dates were merged first: R-154
+/// moved the deal's real pickup and delivery dates onto `deal_flows`, so the deal
+/// card stopped sending them, and these columns are never re-derivable once
+/// blanked. An explicit `Some("")` still clears a text column and an explicit
+/// `Some(0.0)` is still a zero.
+///
+/// `is_complete` here means "set the flag"; false means "leave it as it is".
+fn merge_invoice_shipping(conn: &rusqlite::Connection, invoice_id: &str, info: &ShippingInfo) -> ShippingInfo {
     let has_shipping = info.carrier.as_deref().map_or(false, |s| !s.is_empty())
         && info.tracking_number.as_deref().map_or(false, |s| !s.is_empty())
         && info.pickup_date.as_deref().map_or(false, |s| !s.is_empty());
-    let is_complete = info.is_complete || has_shipping;
+    let (cur_carrier, cur_tracking, cur_charged, cur_pickup, cur_delivery): (Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>) = conn
+        .query_row("SELECT carrier, tracking_number, shipping_charged, pickup_date, delivery_date FROM invoices WHERE id=?1",
+            [invoice_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .unwrap_or((None, None, None, None, None));
+    ShippingInfo {
+        carrier: info.carrier.clone().or(cur_carrier),
+        tracking_number: info.tracking_number.clone().or(cur_tracking),
+        shipping_charged: info.shipping_charged.or(cur_charged),
+        pickup_date: info.pickup_date.clone().or(cur_pickup),
+        delivery_date: info.delivery_date.clone().or(cur_delivery),
+        is_complete: info.is_complete || has_shipping,
+    }
+}
 
-    // Merge-on-write for the two date columns. R-154 moved the deal's real pickup
-    // and delivery dates onto `deal_flows`, so the deal card stopped sending these
-    // — and an omitted field must mean "leave the invoice's own value alone", not
-    // "write NULL over it". Writing NULL over an unshown field is the narrow-form
-    // data loss, and these columns are never re-derivable once blanked. An explicit
-    // `Some("")` still clears, so a caller that means it can still say so.
-    let (cur_pickup, cur_delivery): (Option<String>, Option<String>) = {
+fn write_invoice_shipping(conn: &rusqlite::Connection, invoice_id: &str, w: &ShippingInfo) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE invoices SET carrier=?1, tracking_number=?2, shipping_charged=?3, pickup_date=?4, delivery_date=?5, is_complete=CASE WHEN ?6 THEN 1 ELSE is_complete END WHERE id=?7",
+        rusqlite::params![w.carrier, w.tracking_number, w.shipping_charged, w.pickup_date, w.delivery_date, w.is_complete as i64, invoice_id],
+    )
+}
+
+#[tauri::command]
+pub async fn save_invoice_shipping(invoice_id: String, info: ShippingInfo) -> Result<(), String> {
+    let w = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT pickup_date, delivery_date FROM invoices WHERE id=?1",
-            [&invoice_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((None, None))
+        merge_invoice_shipping(&conn, &invoice_id, &info)
     };
-    let pickup_date = info.pickup_date.clone().or(cur_pickup);
-    let delivery_date = info.delivery_date.clone().or(cur_delivery);
+    let is_complete = w.is_complete;
 
+    // The synced event carries only what this call actually sets, so an unsent
+    // column is not restamped over another device's newer value.
     let mut cols = Map::new();
-    cols.insert("carrier".into(), to_value(info.carrier.clone()));
-    cols.insert("tracking_number".into(), to_value(info.tracking_number.clone()));
-    cols.insert("shipping_charged".into(), json!(info.shipping_charged.unwrap_or(0.0)));
-    cols.insert("pickup_date".into(), to_value(pickup_date.clone()));
-    cols.insert("delivery_date".into(), to_value(delivery_date.clone()));
-    cols.insert("is_complete".into(), json!(is_complete));
+    if info.carrier.is_some() { cols.insert("carrier".into(), to_value(w.carrier.clone())); }
+    if info.tracking_number.is_some() { cols.insert("tracking_number".into(), to_value(w.tracking_number.clone())); }
+    if info.shipping_charged.is_some() { cols.insert("shipping_charged".into(), json!(w.shipping_charged)); }
+    cols.insert("pickup_date".into(), to_value(w.pickup_date.clone()));
+    cols.insert("delivery_date".into(), to_value(w.delivery_date.clone()));
+    if is_complete { cols.insert("is_complete".into(), json!(true)); }
     sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
 
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE invoices SET carrier=?1, tracking_number=?2, shipping_charged=?3, pickup_date=?4, delivery_date=?5, is_complete=?6 WHERE id=?7",
-        rusqlite::params![info.carrier, info.tracking_number, info.shipping_charged.unwrap_or(0.0), pickup_date, delivery_date, is_complete as i64, invoice_id],
-    ).map_err(|e| e.to_string())?;
+    write_invoice_shipping(&conn, &invoice_id, &w).map_err(|e| e.to_string())?;
     if is_complete {
         let flow_id: Option<String> = conn.query_row("SELECT id FROM deal_flows WHERE invoice_id=?1", [&invoice_id], |r| r.get(0)).ok();
         if let Some(flow_id) = flow_id {
@@ -27306,6 +27332,110 @@ mod shipping_metadata_tests {
         conn.execute("INSERT INTO deal_flows (id, metadata) VALUES ('df1', NULL)", []).unwrap();
         let out: Value = serde_json::from_str(&shipped_deal_metadata(&conn, "df1").unwrap()).unwrap();
         assert_eq!(out["shipping_status"], "shipped");
+    }
+}
+
+#[cfg(test)]
+mod shipping_save_tests {
+    use super::{merge_invoice_shipping, write_invoice_shipping, ShippingInfo};
+
+    type Row = (Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>, i64);
+
+    /// One invoice holding what a delivered load holds: the customer shipping
+    /// charge, the carrier and tracking, both dates, not yet flagged complete.
+    fn invoice() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE invoices (id TEXT PRIMARY KEY, carrier TEXT, tracking_number TEXT,
+               shipping_charged REAL DEFAULT 0, pickup_date TEXT, delivery_date TEXT, is_complete INTEGER DEFAULT 0);
+             INSERT INTO invoices (id, carrier, tracking_number, shipping_charged, pickup_date, delivery_date, is_complete)
+               VALUES ('inv1', 'XPO', 'T-1001', 450.0, '2026-10-01', '2026-10-05', 0);",
+        ).unwrap();
+        conn
+    }
+
+    fn none() -> ShippingInfo {
+        ShippingInfo { carrier: None, tracking_number: None, shipping_charged: None, pickup_date: None, delivery_date: None, is_complete: false }
+    }
+
+    fn save(conn: &rusqlite::Connection, info: ShippingInfo) {
+        let w = merge_invoice_shipping(conn, "inv1", &info);
+        write_invoice_shipping(conn, "inv1", &w).unwrap();
+    }
+
+    fn row(conn: &rusqlite::Connection) -> Row {
+        conn.query_row(
+            "SELECT carrier, tracking_number, shipping_charged, pickup_date, delivery_date, is_complete FROM invoices WHERE id='inv1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        ).unwrap()
+    }
+
+    fn s(v: &str) -> Option<String> { Some(v.to_string()) }
+
+    #[test]
+    fn flagging_complete_alone_leaves_the_other_five_columns() {
+        let conn = invoice();
+        save(&conn, ShippingInfo { is_complete: true, ..none() });
+        assert_eq!(row(&conn), (s("XPO"), s("T-1001"), Some(450.0), s("2026-10-01"), s("2026-10-05"), 1));
+    }
+
+    #[test]
+    fn the_confirm_delivery_call_keeps_the_shipping_charge() {
+        // Carrier and tracking and the flag, no charge: what DealFlowView sends.
+        let conn = invoice();
+        save(&conn, ShippingInfo { carrier: s("Estes"), tracking_number: s("E-77"), is_complete: true, ..none() });
+        assert_eq!(row(&conn), (s("Estes"), s("E-77"), Some(450.0), s("2026-10-01"), s("2026-10-05"), 1));
+    }
+
+    #[test]
+    fn a_sent_charge_replaces_and_an_explicit_zero_is_a_zero() {
+        let conn = invoice();
+        save(&conn, ShippingInfo { shipping_charged: Some(125.5), ..none() });
+        assert_eq!(row(&conn).2, Some(125.5));
+        save(&conn, ShippingInfo { shipping_charged: Some(0.0), ..none() });
+        assert_eq!(row(&conn).2, Some(0.0));
+    }
+
+    #[test]
+    fn an_explicit_empty_string_still_clears_a_text_column() {
+        let conn = invoice();
+        save(&conn, ShippingInfo { carrier: s(""), tracking_number: s(""), ..none() });
+        assert_eq!(row(&conn), (s(""), s(""), Some(450.0), s("2026-10-01"), s("2026-10-05"), 0));
+    }
+
+    #[test]
+    fn a_null_charge_stays_null_when_omitted() {
+        let conn = invoice();
+        conn.execute("UPDATE invoices SET shipping_charged=NULL WHERE id='inv1'", []).unwrap();
+        save(&conn, ShippingInfo { is_complete: true, ..none() });
+        assert_eq!(row(&conn).2, None);
+    }
+
+    #[test]
+    fn a_save_that_is_not_complete_never_unflags_a_complete_invoice() {
+        let conn = invoice();
+        conn.execute("UPDATE invoices SET is_complete=1 WHERE id='inv1'", []).unwrap();
+        save(&conn, ShippingInfo { carrier: s("Estes"), ..none() });
+        assert_eq!(row(&conn).5, 1, "is_complete=false means leave it, not write 0");
+        // And a never-completed invoice stays that way.
+        let fresh = invoice();
+        save(&fresh, ShippingInfo { carrier: s("Estes"), ..none() });
+        assert_eq!(row(&fresh).5, 0);
+    }
+
+    #[test]
+    fn carrier_tracking_and_pickup_together_still_flag_it_complete() {
+        let conn = invoice();
+        save(&conn, ShippingInfo { carrier: s("Estes"), tracking_number: s("E-77"), pickup_date: s("2026-10-02"), ..none() });
+        assert_eq!(row(&conn).5, 1);
+    }
+
+    #[test]
+    fn a_missing_invoice_is_not_an_error() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE invoices (id TEXT PRIMARY KEY, carrier TEXT, tracking_number TEXT, shipping_charged REAL, pickup_date TEXT, delivery_date TEXT, is_complete INTEGER);").unwrap();
+        let w = merge_invoice_shipping(&conn, "nope", &ShippingInfo { is_complete: true, ..none() });
+        assert_eq!(write_invoice_shipping(&conn, "nope", &w).unwrap(), 0);
     }
 }
 

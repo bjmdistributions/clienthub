@@ -2348,10 +2348,19 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       // Carrier and tracking only. The deal's pickup / delivery dates live on
       // `deal_flows` since R-154 and are edited on the card — writing them here
       // too would leave two copies to disagree. `invoices.pickup_date` /
-      // `delivery_date` still exist and keep whatever they already hold.
-      await api.saveInvoiceShipping(flow.invoice_id, {
-        carrier: carrier || undefined, tracking_number: tracking || undefined, is_complete: true,
-      });
+      // `delivery_date` still exist and keep whatever they already hold, and so do
+      // the shipping charge and any carrier / tracking left blank here: an omitted
+      // field is left alone by the save.
+      //
+      // The invoice is NOT flagged complete here. This used to send `is_complete:
+      // true` before completing, so a refusal from the completion gate left the
+      // invoice flagged complete on an open deal. `completeDealFlow` flags it itself
+      // once it has succeeded.
+      if (carrier || tracking) {
+        await api.saveInvoiceShipping(flow.invoice_id, {
+          carrier: carrier || undefined, tracking_number: tracking || undefined, is_complete: false,
+        });
+      }
       await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded, reasonArg(), carrierArg());
       chimeCompleted(flow.id);
       onReload();
