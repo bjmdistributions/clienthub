@@ -4768,10 +4768,12 @@ pub struct SupplierPaymentInput {
     pub notes: Option<String>,
     #[serde(default)]
     pub category: Option<String>,
+    /// R-511 FD-08: omitted means unchanged on an edit (and not billed on an add).
     #[serde(default)]
-    pub supplier_billed: bool,
+    pub supplier_billed: Option<bool>,
     /// R-324. When present the backend computes `amount` from it, so a stored partner
-    /// cut can never disagree with the basis stored beside it.
+    /// cut can never disagree with the basis stored beside it. R-511 FD-08: omitted on an
+    /// edit keeps the line's stored split.
     #[serde(default)]
     pub split: Option<PartnerSplit>,
 }
@@ -5647,7 +5649,7 @@ pub async fn add_supplier_payment(id: String, input: SupplierPaymentInput) -> Re
         paid_at: None,
         category: input.category,
         kept: false,
-        supplier_billed: input.supplier_billed,
+        supplier_billed: input.supplier_billed.unwrap_or(false),
         split: input.split,
     });
 
@@ -5666,9 +5668,11 @@ pub async fn update_supplier_payment(id: String, payment_id: String, input: Supp
     let old_amount = p.amount;
 
     // R-324: an edited partner line re-derives its cut from the edited basis, the same
-    // rule `add_supplier_payment` applies, so the two paths cannot drift.
+    // rule `add_supplier_payment` applies, so the two paths cannot drift. R-511 FD-08: an edit
+    // that sends no split keeps the stored one (and so its derived cut), never erases it.
+    let split = input.split.clone().or_else(|| p.split.clone());
     let mut new_amount = input.amount;
-    if let Some(sp) = input.split.as_ref() {
+    if let Some(sp) = split.as_ref() {
         new_amount = sp.cut();
         p.quantity = Some(sp.units);
         p.unit_price = Some(if sp.units > 0.0 { r2(new_amount / sp.units) } else { new_amount });
@@ -5684,9 +5688,10 @@ pub async fn update_supplier_payment(id: String, payment_id: String, input: Supp
     p.supplier_id = input.supplier_id.clone();
     p.method = input.method;
     p.notes = input.notes;
-    p.category = input.category;
-    p.supplier_billed = input.supplier_billed;
-    p.split = input.split;
+    // R-511 FD-08: merge on write. An omitted category, supplier_billed or split is left as it is.
+    if input.category.is_some() { p.category = input.category; }
+    if let Some(billed) = input.supplier_billed { p.supplier_billed = billed; }
+    p.split = split;
 
     p.amount = new_amount;
     if (old_amount - new_amount).abs() > 0.001 {
@@ -28064,7 +28069,7 @@ mod r400_shipping_tests {
         assert_eq!(books(&id).0, 6800.0);
         let input = SupplierPaymentInput {
             supplier_name: "Sample supplier".into(), supplier_id: None, amount: 6100.0, quantity: None, unit_price: None,
-            method: None, notes: None, category: Some("supplier".into()), supplier_billed: false, split: None,
+            method: None, notes: None, category: Some("supplier".into()), supplier_billed: None, split: None,
         };
         update_supplier_payment(id.clone(), "a".into(), input).await.unwrap();
         let b = books(&id);
@@ -28075,7 +28080,7 @@ mod r400_shipping_tests {
         complete(&linked).await;
         let input = SupplierPaymentInput {
             supplier_name: "Sample supplier".into(), supplier_id: None, amount: 6200.0, quantity: None, unit_price: None,
-            method: None, notes: None, category: Some("supplier".into()), supplier_billed: false, split: None,
+            method: None, notes: None, category: Some("supplier".into()), supplier_billed: None, split: None,
         };
         update_supplier_payment(linked.clone(), "a".into(), input).await.unwrap();
         assert_eq!(books(&linked).0, 5900.0);
@@ -30221,5 +30226,154 @@ mod r511_refund_relink_tests {
         let bank: Option<String> = pool().get().unwrap().query_row("SELECT bank_txn_id FROM refunds WHERE id=?1", [&refund], |r| r.get(0)).unwrap();
         assert_eq!(bank.as_deref(), Some("txn_r511_fin"));
         assert_eq!(counted(&id), 500.0, "the refund is counted once, on the allocation");
+    }
+}
+
+/// R-511 FD-08: editing a cost line used to overwrite `supplier_billed` and `split` with whatever
+/// the caller sent, and a caller that sent neither (the completed-deal screen) wrote `false` and
+/// nothing. The input is built from JSON here, the way the front end sends it.
+#[cfg(test)]
+mod r511_fd08_tests {
+    use super::*;
+
+    fn billed_freight() -> Value {
+        json!({
+            "id": "fr", "supplier_name": "Sample supplier", "supplier_id": null, "amount": 500.0,
+            "original_amount": null, "price_changed": false, "quantity": 1.0, "unit_price": 500.0,
+            "method": null, "notes": null, "paid": true, "paid_at": null, "category": "freight",
+            "kept": false, "supplier_billed": true
+        })
+    }
+
+    fn partner() -> Value {
+        json!({
+            "id": "pt", "supplier_name": "Sample partner", "supplier_id": null, "amount": 375.0,
+            "original_amount": 375.0, "price_changed": false, "quantity": 1000.0, "unit_price": 0.375,
+            "method": null, "notes": null, "paid": true, "paid_at": null, "category": "partner",
+            "kept": false, "supplier_billed": false,
+            "split": { "units": 1000.0, "sale_unit_price": 7.0, "basis_unit_cost": 6.25, "share_pct": 50.0 }
+        })
+    }
+
+    fn supplier() -> Value {
+        json!({
+            "id": "su", "supplier_name": "Sample supplier", "supplier_id": null, "amount": 6000.0,
+            "original_amount": null, "price_changed": false, "quantity": null, "unit_price": null,
+            "method": null, "notes": null, "paid": true, "paid_at": null, "category": "supplier",
+            "kept": false, "supplier_billed": false
+        })
+    }
+
+    fn insert_deal(tag: &str, stage: &str, lines: Vec<Value>) -> String {
+        let id = format!("df-r511-fd08-{tag}");
+        let total: f64 = lines.iter().map(|l| l["amount"].as_f64().unwrap()).sum();
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r511-fd08', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r511-fd08', ?2, '2026-09-01', '2026-09-30', '[]', 10000, 10000, '2026-09-01')",
+            rusqlite::params![format!("inv-r511-fd08-{tag}"), format!("INV-R511-FD08-{tag}")],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount)
+             VALUES (?1, ?2, ?3, '2026-09-01', '2026-09-01', ?4, ?5, 10000)",
+            rusqlite::params![id, format!("inv-r511-fd08-{tag}"), stage, Value::Array(lines).to_string(), total],
+        ).unwrap();
+        id
+    }
+
+    /// A completed deal with a supplier line, a billed freight line and a partner line.
+    async fn completed_deal(tag: &str) -> String {
+        let id = insert_deal(tag, "supplier_paid", vec![supplier(), billed_freight(), partner()]);
+        complete_deal_flow(id.clone(), None, None, None, None, None).await.unwrap();
+        id
+    }
+
+    fn input(v: Value) -> SupplierPaymentInput {
+        serde_json::from_value(v).expect("the front end's input shape")
+    }
+
+    fn line_of(deal: &str, pid: &str) -> SupplierPayment {
+        read_df(deal).unwrap().supplier_payments.into_iter().find(|p| p.id == pid).unwrap()
+    }
+
+    #[tokio::test]
+    async fn editing_only_the_amount_of_a_billed_freight_line_keeps_it_billed() {
+        let _db = crate::db::init_test_store();
+        let id = completed_deal("billed").await;
+        assert!(line_of(&id, "fr").owed_to_supplier(), "fixture: the freight line is supplier money");
+        // The completed-deal screen used to send no supplier_billed at all.
+        update_supplier_payment(id.clone(), "fr".into(), input(json!({
+            "supplier_name": "Sample supplier", "supplier_id": null, "amount": 650.0,
+            "quantity": null, "unit_price": null, "method": null, "notes": null, "category": "freight"
+        }))).await.unwrap();
+        let fr = line_of(&id, "fr");
+        assert_eq!(fr.amount, 650.0, "the amount took");
+        assert!(fr.supplier_billed, "an omitted supplier_billed means unchanged");
+        assert!(fr.owed_to_supplier(), "so the line still groups under the supplier in Payables");
+    }
+
+    #[tokio::test]
+    async fn an_explicit_supplier_billed_still_changes_the_line_either_way() {
+        let _db = crate::db::init_test_store();
+        let id = completed_deal("explicit").await;
+        update_supplier_payment(id.clone(), "fr".into(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 500.0, "category": "freight", "supplier_billed": false
+        }))).await.unwrap();
+        assert!(!line_of(&id, "fr").supplier_billed, "an explicit false un-bills the line");
+        update_supplier_payment(id.clone(), "fr".into(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 500.0, "category": "freight", "supplier_billed": true
+        }))).await.unwrap();
+        assert!(line_of(&id, "fr").supplier_billed, "an explicit true bills it");
+    }
+
+    #[tokio::test]
+    async fn editing_a_partner_line_keeps_its_split_and_its_derived_cut() {
+        let _db = crate::db::init_test_store();
+        let id = completed_deal("split").await;
+        // No split sent, a typed amount that is not the cut: the split stays and the cut stays derived.
+        update_supplier_payment(id.clone(), "pt".into(), input(json!({
+            "supplier_name": "Sample partner", "amount": 999.0, "quantity": 1000.0, "unit_price": 0.999,
+            "notes": "Agreed on a call", "category": "partner"
+        }))).await.unwrap();
+        let pt = line_of(&id, "pt");
+        let sp = pt.split.expect("the split survives an edit that does not send one");
+        assert_eq!((sp.units, sp.sale_unit_price, sp.basis_unit_cost, sp.share_pct), (1000.0, 7.0, 6.25, 50.0));
+        assert_eq!(pt.amount, 375.0, "the amount is still the cut the split works out to");
+        assert_eq!(pt.notes.as_deref(), Some("Agreed on a call"), "the rest of the edit took");
+        // A split sent with the edit replaces the stored one and the amount follows it.
+        update_supplier_payment(id.clone(), "pt".into(), input(json!({
+            "supplier_name": "Sample partner", "amount": 1.0, "category": "partner",
+            "split": { "units": 1000.0, "sale_unit_price": 7.0, "basis_unit_cost": 6.0, "share_pct": 50.0 }
+        }))).await.unwrap();
+        let pt = line_of(&id, "pt");
+        assert_eq!(pt.amount, 500.0);
+        assert_eq!(pt.split.unwrap().basis_unit_cost, 6.0);
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_omits_the_category_keeps_the_stored_one() {
+        let _db = crate::db::init_test_store();
+        let id = completed_deal("category").await;
+        update_supplier_payment(id.clone(), "fr".into(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 600.0
+        }))).await.unwrap();
+        let fr = line_of(&id, "fr");
+        assert_eq!(fr.category.as_deref(), Some("freight"));
+        assert!(fr.supplier_billed);
+    }
+
+    #[tokio::test]
+    async fn adding_a_line_without_supplier_billed_is_still_not_billed() {
+        let _db = crate::db::init_test_store();
+        let id = insert_deal("add", "invoiced", vec![]);
+        let pid = add_supplier_payment(id.clone(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 200.0, "category": "freight"
+        }))).await.unwrap();
+        assert!(!line_of(&id, &pid).supplier_billed);
+        let pid = add_supplier_payment(id.clone(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 200.0, "category": "freight", "supplier_billed": true
+        }))).await.unwrap();
+        assert!(line_of(&id, &pid).supplier_billed);
     }
 }

@@ -82,6 +82,10 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
         method:        p.method ?? null,
         notes:         p.notes ?? null,
         category:      p.category ?? null,
+        // R-511 FD-08: the edit sends back what the line already is, so changing the amount cannot un-bill
+        // a freight line or erase a partner split.
+        supplier_billed: p.supplier_billed ?? false,
+        split:         p.split ?? null,
       };
       await api.updateSupplierPayment(flow.id, p.id, input);
       toast("Supplier cost updated");
@@ -289,7 +293,8 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
                 ) : (
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <span className={`text-[13px] font-semibold tabular-nums ${flow.shipping_mode && p.category === "freight" ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</span>
-                    {!isResoldLine(p) && (
+                    {/* A partner line's amount is worked out from its split, so it is not retyped here. */}
+                    {!isResoldLine(p) && !p.split && (
                       <button type="button" onClick={() => startEdit(p)} disabled={saving} title="Edit cost"
                         className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors">
                         <Pencil size={12} />
