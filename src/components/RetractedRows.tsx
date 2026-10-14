@@ -88,7 +88,11 @@ export default function RetractedRows({ rows, onChanged, onShow }: {
                 <span className="text-[11px] text-muted">
                   {r.matches.length
                     ? r.matches.some((m) => m.automatic) ? "Your bank posted it again. It swaps on the next bank sync." : "Your bank posted it again."
-                    : r.cancelled ? "No posted copy in 10 days, so your bank cancelled it." : "Waiting for your bank's posted copy."}
+                    : r.cancelled
+                      // R-518: the code knows only that nothing matched (amount within 30%, same account, a shared
+                      // memo word, within 10 days), not that the bank cancelled the charge.
+                      ? "No matching posted copy found in 10 days. If the money shows in To book under another name, book it there first."
+                      : "Waiting for your bank's posted copy."}
                 </span>
               </div>
               <div className="flex gap-2 flex-col sm:flex-row">
@@ -115,7 +119,7 @@ export default function RetractedRows({ rows, onChanged, onShow }: {
               </div>
             </div>
           ))}
-          <div className="text-[10.5px] text-muted">
+          <div className="text-[11px] text-muted">
             Swap moves the booking and deal links onto the posted copy and removes the retracted row. Remove takes the row and its deal links off the books.
             Both write a backup first. A row tied to a refund, loan, expense or bill is never removed: move that link first.
           </div>
