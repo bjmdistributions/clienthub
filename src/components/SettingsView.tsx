@@ -108,6 +108,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "./Toast";
 import { copyText, COPY_FAILED } from "../lib/clipboard";
 import { saveOrRevert, saveFailedMessage } from "../lib/saveOrRevert";
+import { useSubmit } from "../lib/useSubmit";
 import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
@@ -6167,16 +6168,19 @@ function BillingTab() {
   const [wh, setWh] = useState("");
   const [showKeys, setShowKeys] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
+  const { busy, run } = useSubmit();
 
   const load = () => api.getStripeConfig().then(setConfig).catch(() => {});
   useEffect(() => { load(); }, []);
 
   const save = async () => {
     if (!pk || !sk) return;
-    await api.saveStripeKeys(pk, sk, wh);
-    setSaved("Keys saved");
-    setTimeout(() => setSaved(null), 2000);
-    load();
+    await run(async () => {
+      await api.saveStripeKeys(pk, sk, wh);
+      setSaved("Keys saved");
+      setTimeout(() => setSaved(null), 2000);
+      load();
+    });
   };
 
   return (
@@ -6213,7 +6217,7 @@ function BillingTab() {
       )}
 
       <div className="flex items-center gap-2">
-        <button onClick={save} disabled={!showKeys || !pk || !sk} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Save Keys</button>
+        <button onClick={save} disabled={busy || !showKeys || !pk || !sk} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Save Keys</button>
         {config?.configured && (
           <button onClick={async () => { await api.deleteStripeKeys(); setPk(""); setSk(""); setWh(""); load(); }} className="text-[12px] text-danger-ink hover:text-danger-ink">Clear Keys</button>
         )}
