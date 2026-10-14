@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, Me } from "../lib/api";
 
 // Accounts are created on the website — the desktop only ever signs in. A
@@ -14,8 +14,8 @@ const FORGOT_URL = "https://ecliptr.app/forgot";
 const SWITCH_PREFIX = "__SWITCH_WORKSPACE__:";
 
 /**
- * Full-screen animated Ecliptr sign-in. On success it returns the signed-in
- * `Me` to the app.
+ * Full-screen Ecliptr sign-in: the mark on a still, near-black ground (no glow, no
+ * motion; R-511 DG-28). On success it returns the signed-in `Me` to the app.
  */
 export default function AuthView({
   onAuthed,
@@ -28,43 +28,6 @@ export default function AuthView({
   const [busy, setBusy] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const starRef = useRef<HTMLCanvasElement | null>(null);
-
-  // Parallax twinkling starfield behind the eclipse.
-  useEffect(() => {
-    const cv = starRef.current;
-    const ctx = cv?.getContext("2d");
-    if (!cv || !ctx) return;
-    const DPR = Math.min(window.devicePixelRatio || 1, 2);
-    let w = 0, h = 0, stars: { x: number; y: number; z: number; r: number; t: number }[] = [], raf = 0, last = 0;
-    const resize = () => {
-      w = cv.width = cv.offsetWidth * DPR;
-      h = cv.height = cv.offsetHeight * DPR;
-      const n = Math.max(70, Math.min(200, Math.floor((cv.offsetWidth * cv.offsetHeight) / 9000)));
-      stars = Array.from({ length: n }, () => ({ x: Math.random() * w, y: Math.random() * h, z: Math.random() * 0.85 + 0.15, r: Math.random() * 1.3 + 0.2, t: Math.random() * 6.28 }));
-    };
-    resize();
-    window.addEventListener("resize", resize);
-    const frame = (ts: number) => {
-      const dt = Math.min(0.05, (ts - last) / 1000 || 0);
-      last = ts;
-      ctx.clearRect(0, 0, w, h);
-      for (const s of stars) {
-        s.x -= s.z * 9 * dt * DPR;
-        if (s.x < 0) { s.x = w; s.y = Math.random() * h; }
-        s.t += dt * 2.2;
-        ctx.globalAlpha = (0.55 + 0.45 * Math.sin(s.t)) * s.z;
-        ctx.fillStyle = s.z > 0.7 ? "#dfeaff" : "#a9c2ff";
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, s.r * DPR, 0, 6.2832);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-      raf = requestAnimationFrame(frame);
-    };
-    raf = requestAnimationFrame(frame);
-    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
-  }, []);
 
   // R-433: a workspace switch restarted the app; finish the sign-in it carried over.
   useEffect(() => {
@@ -121,10 +84,7 @@ export default function AuthView({
   const inp = "w-full h-11 px-3.5 rounded-xl text-[14px] bg-white/5 border border-white/12 text-white placeholder-white/35 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-white/25 transition";
 
   return (
-    <div className="fixed inset-0 overflow-hidden flex items-center justify-center" style={{ background: "#0A0A0B" }}>
-      {/* Animated eclipse / space background */}
-      <canvas ref={starRef} className="auth-stars" />
-      <div className="auth-aurora" />
+    <div className="fixed inset-0 overflow-hidden flex items-center justify-center" style={{ background: "radial-gradient(70% 50% at 50% 0%, #17171A 0%, #0A0A0B 65%)" }}>
 
       <div className="relative z-10 w-full max-w-[380px] px-6 animate-auth-rise">
         <div className="flex flex-col items-center text-center mb-7">
@@ -136,7 +96,7 @@ export default function AuthView({
           <p className="text-[13px] text-white/55 mt-1.5 max-w-[300px]">Sign in to your workspace.</p>
         </div>
 
-        <div className="space-y-3">
+        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (!busy) submit(); }}>
           <input className={inp} type="email" autoCapitalize="off" placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} disabled={busy} />
           <div className="relative">
             <input
@@ -145,7 +105,6 @@ export default function AuthView({
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !busy) submit(); }}
               disabled={busy}
               style={{ paddingRight: 56 }}
             />
@@ -175,7 +134,7 @@ export default function AuthView({
           )}
 
           <button
-            onClick={submit}
+            type="submit"
             disabled={busy}
             className="w-full h-11 rounded-xl text-[14px] font-semibold text-[#0A0A0B] transition-all duration-150 disabled:opacity-60 hover:-translate-y-px flex items-center justify-center gap-2"
             style={{ background: "#F4F2EF", boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}
@@ -183,11 +142,11 @@ export default function AuthView({
             {busy && <span className="w-3.5 h-3.5 rounded-full border-2 border-black/25 border-t-black animate-spin" />}
             {restoring ? "Restoring your account…" : busy ? "Signing in…" : "Sign in"}
           </button>
-        </div>
+        </form>
 
         <p className="text-center text-[12px] text-white/45 mt-6">
           Don't have an account?{" "}
-          <button onClick={openRegister} className="group inline-flex items-center gap-1 text-[#FFA45C]/90 hover:text-[#FFC08F] font-medium transition-colors">
+          <button onClick={openRegister} className="group inline-flex items-center gap-1 text-accent hover:text-accent-hover font-medium transition-colors">
             Sign up at ecliptr.app
             <span className="transition-transform group-hover:translate-x-0.5">→</span>
           </button>
@@ -196,26 +155,11 @@ export default function AuthView({
 
       <style>{`
         @keyframes authRise { from { opacity: 0; transform: translateY(14px) scale(0.98); } to { opacity: 1; transform: none; } }
-        .animate-auth-rise { animation: authRise 0.5s cubic-bezier(0.16,1,0.3,1); }
+        .animate-auth-rise { animation: authRise 0.2s cubic-bezier(0.16,1,0.3,1); }
         .auth-logo-tile {
           width: 64px; height: 64px; border-radius: 15px; display: flex; align-items: center; justify-content: center;
           /* The mark carries its own dark tile; float it on a neutral shadow, no tint (R-424). */
           box-shadow: 0 18px 44px rgba(0,0,0,0.55);
-          animation: logoFloat 4s ease-in-out infinite;
-        }
-        @keyframes logoFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
-        .auth-stars { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; }
-        .auth-aurora {
-          position: absolute; inset: -20%; z-index: 0; filter: blur(70px); opacity: 0.55;
-          background:
-            radial-gradient(38% 38% at 25% 30%, rgba(255,255,255,0.12), transparent 70%),
-            radial-gradient(34% 34% at 78% 28%, rgba(124,58,237,0.45), transparent 70%),
-            radial-gradient(40% 40% at 60% 80%, rgba(13,148,136,0.40), transparent 70%);
-          animation: auroraDrift 16s ease-in-out infinite alternate;
-        }
-        @keyframes auroraDrift {
-          0%   { transform: translate3d(0,0,0) rotate(0deg) scale(1); }
-          100% { transform: translate3d(2%, -3%, 0) rotate(8deg) scale(1.1); }
         }
       `}</style>
     </div>
