@@ -68,6 +68,8 @@ window.__FIXTURE = (cmd: string) => {
     // DashboardView, so null is the honest "no data" value and an empty array is not.
     case "get_receivables_aging":
     case "get_payables_aging":    return null;
+    // R-449 bills: `alertRow` reads `.items` off the answer, so the list default would crash the Dashboard.
+    case "bills_alerts":          return null;
     case "dashboard_stats":       return {};
     // Everything else is a list. An empty one is enough to keep a screen quiet.
     default: return [];
