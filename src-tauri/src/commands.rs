@@ -7817,8 +7817,10 @@ pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<Str
     // validates direction (money out) + exclusivity and books it into Financials.
     // It fails cleanly, before any refund row is written, if the txn can't take it.
     if let Some(ref t) = txn {
-        allocate_bank_txn(t.clone(), deal_flow_id.clone(), amt, "refund_out".to_string(),
-            reason.clone().unwrap_or_else(|| "Refund".into()), None).await?;
+        // No re-link here: this refund's own row is written below, and an earlier unlinked
+        // refund of the same amount is a different refund that must keep its own state.
+        allocate_bank_txn_inner(t.clone(), deal_flow_id.clone(), amt, "refund_out".to_string(),
+            reason.clone().unwrap_or_else(|| "Refund".into()), None, false).await?;
     }
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -18209,6 +18211,17 @@ pub async fn allocate_bank_txn(
     bank_txn_id: String, deal_flow_id: String, amount: f64, role: String, note: String,
     allow_split: Option<bool>,
 ) -> Result<String, String> {
+    allocate_bank_txn_inner(bank_txn_id, deal_flow_id, amount, role, note, allow_split, true).await
+}
+
+/// `allocate_bank_txn` with the refund re-link switchable. The re-link (a lone unlinked refund
+/// of the same amount takes the new transaction) is the Financials booking path's correction
+/// after an unlink. `create_refund` passes false: it links the transaction before its own
+/// refunds row exists, so the re-link could only ever grab a DIFFERENT refund (R-511 FD-01).
+async fn allocate_bank_txn_inner(
+    bank_txn_id: String, deal_flow_id: String, amount: f64, role: String, note: String,
+    allow_split: Option<bool>, relink_refund: bool,
+) -> Result<String, String> {
     let (txn_amount, allocated, direction): (f64, f64, String) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.query_row(
@@ -18280,7 +18293,7 @@ pub async fn allocate_bank_txn(
     // that correction, and without this the refund would then be counted by BOTH arms
     // — permanently double — instead of once. Re-link it here, before the recalc below
     // reads the deal's numbers. Runs before `resync_completed_deal` for that reason.
-    if role == "refund_out" {
+    if role == "refund_out" && relink_refund {
         let refund_ids: Vec<String> = {
             let conn = pool().get().map_err(|e| e.to_string())?;
             let mut stmt = conn.prepare(
@@ -29967,5 +29980,78 @@ mod r509_carrier_hold_tests {
         assert_eq!(stage_meta(&paid).0, "complete");
         complete_deal_flow(id.clone(), None, None, None, None, Some("Paid in cash, no bank row".into())).await.unwrap();
         assert!(stage_meta(&id).1.get("carrier_hold").is_none());
+    }
+}
+
+/// R-511 FD-01: `create_refund` writes the bank allocation BEFORE its own `refunds` row, and
+/// `allocate_bank_txn` re-links a lone unlinked refund of the same amount to the new transaction
+/// (the correction path after an unlink). Called from `create_refund` that re-link grabbed an
+/// earlier cash refund of the same amount, so two refunds carried one transaction id and the
+/// counted-once readers saw one refund. Only the Financials booking path may re-link.
+#[cfg(test)]
+mod r511_refund_relink_tests {
+    use super::*;
+
+    fn deal(tag: &str) -> String {
+        let id = format!("df-r511-{tag}");
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r511', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r511', ?2, '2026-09-01', '2026-09-30', '[]', 5000, 5000, '2026-09-01')",
+            rusqlite::params![format!("inv-r511-{tag}"), format!("INV-R-{tag}")]).unwrap();
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount, metadata)
+             VALUES (?1, ?2, 'payment_received', '2026-09-01', '2026-09-01', '[]', 0, 5000, '{}')",
+            rusqlite::params![id, format!("inv-r511-{tag}")]).unwrap();
+        id
+    }
+    fn wire_out(txn: &str, amount: f64) {
+        pool().get().unwrap().execute(
+            "INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, '2026-10-05', ?2, 'out')",
+            rusqlite::params![txn, amount]).unwrap();
+    }
+    /// The counted-once total, read through DF_REFUNDS_SQL the way the books do.
+    fn counted(id: &str) -> f64 {
+        pool().get().unwrap().query_row(
+            &format!("SELECT {DF_REFUNDS_SQL} FROM deal_flows df WHERE df.id=?1"), [id], |r| r.get(0)).unwrap()
+    }
+    fn refunded(id: &str) -> f64 {
+        futures::executor::block_on(refund_status_all()).unwrap().into_iter()
+            .find(|v| v["deal_flow_id"] == id).unwrap()["refunded"].as_f64().unwrap()
+    }
+    fn carrying(txn: &str) -> i64 {
+        pool().get().unwrap().query_row("SELECT COUNT(*) FROM refunds WHERE bank_txn_id=?1", [txn], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_bank_paid_refund_does_not_take_over_an_earlier_cash_refund_of_the_same_amount() {
+        let _db = crate::db::init_test_store();
+        let id = deal("two");
+        // First refund: cash, no bank row.
+        let cash = create_refund(id.clone(), 500.0, Some("cash".into()), None, None, None, Some("Paid in cash".into()), None).await.unwrap();
+        // Second refund, the same amount, paid by a wire linked to it.
+        wire_out("txn_r511_wire", 500.0);
+        let wired = create_refund(id.clone(), 500.0, Some("wire".into()), None, None, None, Some("Wire".into()), Some("txn_r511_wire".into())).await.unwrap();
+        assert_eq!(counted(&id), 1000.0, "both refunds are counted once");
+        assert_eq!(refunded(&id), 1000.0);
+        assert_eq!(carrying("txn_r511_wire"), 1, "exactly one refund row carries the transaction");
+        let bank_of = |rid: &str| -> Option<String> { pool().get().unwrap().query_row("SELECT bank_txn_id FROM refunds WHERE id=?1", [rid], |r| r.get(0)).unwrap() };
+        assert_eq!(bank_of(&cash), None, "the cash refund stays cash");
+        assert_eq!(bank_of(&wired).as_deref(), Some("txn_r511_wire"));
+    }
+
+    /// The Financials booking path still re-links: unlinking a workspace refund's transaction and
+    /// pairing the right one afterwards puts the refund back on the allocation arm, once.
+    #[tokio::test]
+    async fn pairing_a_transaction_in_financials_still_relinks_the_one_unlinked_refund() {
+        let _db = crate::db::init_test_store();
+        let id = deal("fin");
+        let refund = create_refund(id.clone(), 500.0, None, None, None, None, Some("Refund".into()), None).await.unwrap();
+        wire_out("txn_r511_fin", 500.0);
+        allocate_bank_txn("txn_r511_fin".into(), id.clone(), 500.0, "refund_out".into(), String::new(), None).await.unwrap();
+        let bank: Option<String> = pool().get().unwrap().query_row("SELECT bank_txn_id FROM refunds WHERE id=?1", [&refund], |r| r.get(0)).unwrap();
+        assert_eq!(bank.as_deref(), Some("txn_r511_fin"));
+        assert_eq!(counted(&id), 500.0, "the refund is counted once, on the allocation");
     }
 }
