@@ -107,6 +107,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "./Toast";
 import { copyText, COPY_FAILED } from "../lib/clipboard";
+import { saveOrRevert, saveFailedMessage } from "../lib/saveOrRevert";
 import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
@@ -1478,7 +1479,12 @@ function InboxRow({ ib }: { ib: EmailInbox }) {
     } catch (e: any) { setSt({ status: "fail", message: String(e) }); }
     finally { setLinking(false); refreshLink(); }
   };
-  const remove = async () => { if (!confirm("Remove this inbox?")) return; await api.deleteEmailInbox(ib.id).catch(() => {}); window.dispatchEvent(new CustomEvent("email-inboxes-changed")); };
+  const remove = async () => {
+    if (!confirm("Remove this inbox?")) return;
+    try { await api.deleteEmailInbox(ib.id); }
+    catch (e) { toast(saveFailedMessage("remove the inbox", e), "error"); return; }
+    window.dispatchEvent(new CustomEvent("email-inboxes-changed"));
+  };
   return (
     <div className="border border-line rounded-xl px-3.5 py-3">
       <div className="flex items-center justify-between gap-2">
@@ -1803,7 +1809,10 @@ function InboxCard() {
   };
   const add = async () => {
     if (!form.host || !form.user) return;
-    await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password, scope: form.scope, readFromNow: form.readFromNow }).catch(() => {});
+    // R-511 DG-10: a refused add leaves the form open with everything typed, password included.
+    try {
+      await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password, scope: form.scope, readFromNow: form.readFromNow });
+    } catch (e) { toast(saveFailedMessage("add the inbox", e), "error"); return; }
     setForm({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "", scope: admin ? "org" : "me", readFromNow: true });
     setProvider("gmail"); setAdding(false); load();
   };
@@ -3815,7 +3824,7 @@ function IntakeSourceCard({ source, fields, onChange }: { source: any; fields: {
     setSavedMsg(true); setTimeout(() => setSavedMsg(false), 2000); onChange();
   };
   const del = () => {
-    if (confirmDel) { api.deleteIntakeSource(source.id).then(onChange).catch(() => {}); }
+    if (confirmDel) { api.deleteIntakeSource(source.id).then(onChange).catch((e) => toast(saveFailedMessage("remove the source", e), "error")); }
     else { setConfirmDel(true); setTimeout(() => setConfirmDel(false), 3000); }
   };
 
@@ -5576,6 +5585,9 @@ function PayoutsPanel() {
   );
 }
 
+// R-511 DG-10: the report callback for saveOrRevert on the Settings panels.
+const toastError = (m: string) => toast(m, "error");
+
 function ApprovalPolicyPanel() {
   const [add, setAdd] = useState(false);
   const [del, setDel] = useState(false);
@@ -5590,10 +5602,17 @@ function ApprovalPolicyPanel() {
     }).catch(() => {});
     api.getDashboardPrefs().then((p) => setTrueNet(!!p.true_net)).catch(() => {});
   }, []);
-  const saveVis = async (v: string) => { setVis(v); await api.setCheckupVisibility(v).catch(() => {}); setSaved(true); setTimeout(() => setSaved(false), 1500); };
+  // A refused save puts the switch back and says so; "Saved" shows only when it landed.
+  const saveVis = async (v: string) => {
+    const prev = vis;
+    setVis(v);
+    if (!(await saveOrRevert(() => api.setCheckupVisibility(v), () => setVis(prev), toastError, "save checkup visibility"))) return;
+    setSaved(true); setTimeout(() => setSaved(false), 1500);
+  };
   const save = async (nextAdd: boolean, nextDel: boolean) => {
+    const prevAdd = add, prevDel = del;
     setAdd(nextAdd); setDel(nextDel);
-    await api.setApprovalPolicy(nextAdd, nextDel).catch(() => {});
+    if (!(await saveOrRevert(() => api.setApprovalPolicy(nextAdd, nextDel), () => { setAdd(prevAdd); setDel(prevDel); }, toastError, "save the approval policy"))) return;
     setSaved(true); setTimeout(() => setSaved(false), 1500);
   };
   // R-313: dashboard true-net preference — an open DashboardView refreshes itself off
@@ -5601,7 +5620,7 @@ function ApprovalPolicyPanel() {
   const toggleTrueNet = async () => {
     const next = !trueNet;
     setTrueNet(next);
-    await api.setDashboardPrefs(next).catch(() => {});
+    if (!(await saveOrRevert(() => api.setDashboardPrefs(next), () => setTrueNet(!next), toastError, "save the dashboard setting"))) return;
     window.dispatchEvent(new CustomEvent("dashboard-prefs-change"));
     setSaved(true); setTimeout(() => setSaved(false), 1500);
   };
@@ -5671,7 +5690,13 @@ function PeoplePanel() {
   useEffect(() => { api.plaidListItems().then((items) => setPlaidBankCount(items.length)).catch(() => setPlaidBankCount(null)); }, []);
   const [rp, setRp] = useState<any>(null);
   useEffect(() => { api.getRepPayoutSettings().then(setRp).catch(() => {}); }, []);
-  const saveRp = (fields: any) => { setRp((p: any) => ({ ...(p || {}), ...fields })); api.setRepPayoutSettings(fields).catch(() => {}); };
+  // R-511 DG-10: a refused save puts the previous settings back. customDays is the call's
+  // argument; the loaded settings (and the input's key below) carry it as custom_days.
+  const saveRp = async (fields: any) => {
+    const prev = rp;
+    setRp((p: any) => ({ ...(p || {}), ...fields, ...(fields.customDays != null ? { custom_days: fields.customDays } : {}) }));
+    await saveOrRevert(() => api.setRepPayoutSettings(fields), () => setRp(prev), toastError, "save the payout settings");
+  };
 
   // Per-row save feedback so a role/status change is never ambiguous (and any
   // failure is shown inline instead of silently swallowed).
@@ -5760,7 +5785,7 @@ function PeoplePanel() {
                 <option value="custom">Custom</option>
               </select>
               {rp.period === "custom" && (
-                <input type="text" inputMode="numeric" defaultValue={rp.custom_days || 14} onBlur={(e) => saveRp({ customDays: parseCount(e.target.value, 14) || 14 })}
+                <input key={rp.custom_days} type="text" inputMode="numeric" defaultValue={rp.custom_days || 14} onBlur={(e) => saveRp({ customDays: parseCount(e.target.value, 14) || 14 })}
                   className="w-16 border border-line px-2 h-8 rounded-lg text-[12px]" />
               )}
               <span className="text-muted ml-auto text-[11px]">Completed deals only.</span>
