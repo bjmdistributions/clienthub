@@ -305,16 +305,16 @@ pub async fn publish_bank_balance(bank: f64, card: f64) {
         .await;
 }
 
-/// R-518: when this device last pulled its banks and each bank's health, for the phone and the website (which hold
-/// no Plaid link). Names, times and error text only. Sent to the same endpoint as the balance, without balance
-/// fields, which the server leaves untouched when they are absent.
-pub async fn publish_bank_health(last_sync: Option<String>, banks: Vec<serde_json::Value>) {
+/// R-518: the balance, plus when this device last pulled its banks and each bank's health, for the phone and the
+/// website (which hold no Plaid link). Names, times and error text only. The balance numbers are always in the same
+/// body, so a server that predates the health keys stores the balance as before and ignores the rest.
+pub async fn publish_bank_balance_and_health(bank: f64, card: f64, last_sync: Option<String>, banks: Vec<serde_json::Value>) {
     let cfg = match config() { Some(c) => c, None => return };
     let url = format!("{}/api/bank-balance", cfg.url.trim_end_matches('/'));
     let _ = http()
         .post(&url)
         .bearer_auth(&cfg.token)
-        .json(&serde_json::json!({ "pulled_at": last_sync, "banks": banks }))
+        .json(&serde_json::json!({ "bank_balance": bank, "card_balance": card, "pulled_at": last_sync, "banks": banks }))
         .send()
         .await;
 }

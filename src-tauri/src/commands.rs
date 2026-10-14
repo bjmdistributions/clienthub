@@ -21401,14 +21401,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // This used to happen ONLY when a human opened Financials or Analytics on this
     // machine, so the "synced · as of" figure everyone else trusted could be days old
     // even though this device had just pulled fresh balances.
-    {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        let (b, c, any) = plaid_balances(&conn);
-        drop(conn);
-        if any {
-            tokio::spawn(async move { crate::netsync::publish_bank_balance(b, c.max(0.0)).await; });
-        }
-    }
+    // R-518: published below, once this pass is recorded, so the balance and each bank's health travel together.
     if !retracted_kept.is_empty() {
         tracing::warn!(
             "plaid_sync: the bank retracted {} transaction(s) that hold booked work and no posted replacement was identified — NOTHING was deleted, they are still in the ledger: {}",
@@ -21494,7 +21487,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         ("retracted_kept", &retracted_text),
         ("held_reference_collision", &held_text),
     ], &now);
-    publish_plaid_health();
+    publish_balance_and_health();
     Ok(json!({
         "imported": imported, "removed": removed, "amended": amended,
         "over_allocated": amended_over_allocated,
@@ -21683,10 +21676,13 @@ pub async fn plaid_health_dismiss() -> Result<(), String> {
     Ok(())
 }
 
-/// R-518: the health the phone and the website show, published with the balance (names and errors only: the
-/// token never leaves this device). Best-effort.
-fn publish_plaid_health() {
+/// R-518: the balance, with the health the phone and the website show (names and errors only: the token never
+/// leaves this device). One POST carrying both, and only when there is a balance: a server older than deploy-245
+/// reads a POST without balance numbers as a $0 balance, and ignores the health keys it does not know. Best-effort.
+fn publish_balance_and_health() {
     let Ok(conn) = pool().get() else { return };
+    let (bal, card, any) = plaid_balances(&conn);
+    if !any { return; }
     let h = plaid_health_load(&conn);
     let banks: Vec<Value> = conn.prepare("SELECT id, COALESCE(institution,'') FROM plaid_items ORDER BY created_at")
         .and_then(|mut st| st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
@@ -21702,7 +21698,7 @@ fn publish_plaid_health() {
         .collect();
     let last_sync: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='plaid_last_sync'", [], |r| r.get(0)).ok();
     drop(conn);
-    tokio::spawn(async move { crate::netsync::publish_bank_health(last_sync, banks).await; });
+    tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks).await; });
 }
 
 /// R-518: pull when the window comes to the front and this device has not pulled for five minutes, so a PC that
