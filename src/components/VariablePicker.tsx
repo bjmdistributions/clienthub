@@ -41,7 +41,7 @@ export default function VariablePicker({ onSelect }: VariablePickerProps) {
       {open && (
         <div className="absolute z-50 left-0 mt-1 w-[320px] bg-surface border border-line rounded-lg shadow-lg py-1">
           <div className="px-3 py-1.5 text-[12.5px] font-medium text-muted border-b border-line">
-            Insert Variable
+            Insert variable
           </div>
           {VARIABLES.map((v) => (
             <button

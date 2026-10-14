@@ -287,12 +287,12 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "account", label: "Your title", kw: "job title role" },
   { tab: "account", label: "Your phone", kw: "contact number" },
   { tab: "account", label: "Replay the getting-started tour", kw: "onboarding walkthrough welcome tour" },
-  { tab: "account", card: "My Plan", label: "My plan", kw: "subscription tier usage limits seats clients team members upgrade" },
+  { tab: "account", card: "My plan", label: "My plan", kw: "subscription tier usage limits seats clients team members upgrade" },
   { tab: "account", card: "Desktop notifications", label: "Desktop notifications", kw: "system alerts popups quote needed carrier due overdue bill pay day logistics pay bol uploaded windows mac notify" },
   { tab: "account", card: "Notifications", label: "Notifications", kw: "push alerts iphone phone bills due overdue form submissions inventory renew listings bank deposit charge activity quotes logistics booking notify which" },
   // Appearance
   { tab: "appearance", card: "Theme", label: "Theme", kw: "dark mode light mode colour scheme mono monochrome grayscale" },
-  { tab: "appearance", card: "Accent Color", label: "Accent colour", kw: "accent color orange indigo blue emerald teal violet amber rose swatch brand colour" },
+  { tab: "appearance", card: "Accent colour", label: "Accent colour", kw: "accent color orange indigo blue emerald teal violet amber rose swatch brand colour" },
   { tab: "appearance", card: "Sidebar", label: "Collapse the sidebar on narrow windows", kw: "sidebar rail narrow window responsive" },
   // Company
   { tab: "company", card: "Business details", label: "Company name", kw: "business name letterhead" },
@@ -355,7 +355,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "automation", card: "Follow-up rules", label: "Follow-up rules", kw: "drip reminder trigger no order no contact overdue invoice stale deal cadence nudge" },
   // Connections
   { tab: "sheets", label: "Google account", kw: "oauth client id client secret gcp connect google spreadsheets" },
-  { tab: "sheets", card: "Sheet Setup", label: "Sheet URL and column mapping", kw: "google sheet columns first name last name header rows lead intake" },
+  { tab: "sheets", card: "Sheet setup", label: "Sheet URL and column mapping", kw: "google sheet columns first name last name header rows lead intake" },
   { tab: "sheets", card: "Sync approvals back to the sheet", label: "Write-back to the sheet", kw: "writeback push clients approved lead" },
   { tab: "sheets", card: "Sync", label: "Sync the sheet now", kw: "pull manual sync auto sync" },
   { tab: "sheets", label: "Sheet sync history", kw: "log errors duplicates skipped new clients" },
@@ -887,7 +887,7 @@ function MyPlanCard() {
   return (
     <div className="bg-surface border border-line rounded-xl p-6">
       <div className="flex items-center justify-between mb-4">
-        <SectionLabel>My Plan</SectionLabel>
+        <SectionLabel>My plan</SectionLabel>
         <StatusPill tone="accent">{pretty}</StatusPill>
       </div>
       <div className="space-y-3">
@@ -1020,7 +1020,7 @@ function AppearanceTab() {
 
   return (
     <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
-      <SectionLabel>Accent Color</SectionLabel>
+      <SectionLabel>Accent colour</SectionLabel>
       <p className="text-[12px] text-muted mb-3 mt-0.5">
         {matte
           ? "Mono is on. Accent colors are disabled while the interface is monochrome. Turn Mono off to choose an accent."
@@ -1243,7 +1243,7 @@ function WhatsAppTab() {
         Customize the message used when you share inventory to WhatsApp. The business name is pulled from your Company settings.
       </p>
 
-      <Field label="Message Template">
+      <Field label="Message template">
         <textarea ref={templateRef} className={ta} rows={10} value={s.template} onChange={(e) => set("template", e.target.value)} spellCheck={false} />
       </Field>
       <VarHint field="template" vars={["{business_name}", "{lot_list}", "{footer}", "{phone}"]} />
@@ -1256,10 +1256,10 @@ function WhatsAppTab() {
       </div>
 
       <div className="grid grid-cols-2 gap-4 mt-5">
-        <Field label="Footer Text">
+        <Field label="Footer text">
           <input className={inp} value={s.footer} onChange={(e) => set("footer", e.target.value)} placeholder="Reply to claim or for more info" />
         </Field>
-        <Field label="Business Phone">
+        <Field label="Business phone">
           <input className={inp} value={s.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+1 555 123 4567" />
         </Field>
       </div>
@@ -2271,7 +2271,7 @@ function CompanyTab() {
     <div className="max-w-2xl space-y-4">
     <SettingCard icon={Building2} title="Business details" purpose="Appears on every PDF invoice and across the app.">
 
-      <Field label="Company Logo">
+      <Field label="Company logo">
         <div className="flex items-center gap-4">
           {info.logo_path ? (
             <div className="relative group">
@@ -3608,7 +3608,7 @@ function AutomationTab() {
           </div>
           <div className="flex justify-end gap-2">
             <button onClick={() => setShowForm(false)} className="text-[13px] text-muted hover:text-ink transition-colors">Cancel</button>
-            <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">Save Rule</button>
+            <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">Save rule</button>
           </div>
         </div>
       )}
@@ -3643,7 +3643,7 @@ function AutomationTab() {
           <button onClick={() => { setEditingFu(null); setFuForm({ name: "", trigger_type: "no_order", trigger_value: 30, action_type: "email", email_subject: "", email_body: "" }); setShowFuForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1">
             <Plus size={12} /> Add Rule
           </button>
-          <button onClick={() => api.processFollowupRules().then(loadFu).catch(alert)} className="text-[12px] text-muted hover:text-ink-2 px-2 py-1 rounded hover:bg-surface-2">Run Now</button>
+          <button onClick={() => api.processFollowupRules().then(loadFu).catch(alert)} className="text-[12px] text-muted hover:text-ink-2 px-2 py-1 rounded hover:bg-surface-2">Run now</button>
         </div>
 
         {showFuForm && (
@@ -3675,11 +3675,11 @@ function AutomationTab() {
             {isEmailAction && (
               <>
                 <div>
-                  <label className="block text-[12.5px] font-medium text-muted mb-1.5">Email Subject</label>
+                  <label className="block text-[12.5px] font-medium text-muted mb-1.5">Email subject</label>
                   <input ref={fuSubjectRef} className={inp} value={fuForm.email_subject} onChange={(e) => setFuForm({ ...fuForm, email_subject: e.target.value })} onFocus={() => { fuLastFocused.current = "subject"; }} placeholder="Just checking in" />
                 </div>
                 <div>
-                  <label className="block text-[12.5px] font-medium text-muted mb-1.5">Email Body</label>
+                  <label className="block text-[12.5px] font-medium text-muted mb-1.5">Email body</label>
                   <textarea ref={fuBodyRef} className={inp + " h-20 resize-none"} value={fuForm.email_body} onChange={(e) => setFuForm({ ...fuForm, email_body: e.target.value })} onFocus={() => { fuLastFocused.current = "body"; }} placeholder="Hi {first_name}, hope things are going well..." />
                   <div className="mt-1">
                     <VariablePicker onSelect={insertFuVariable} />
@@ -3716,7 +3716,7 @@ function AutomationTab() {
 
         {fuLog.length > 0 && (
           <div className="mt-4 border-t border-line-2 pt-4">
-            <p className="text-[12.5px] font-medium text-muted mb-2">Recent Activity</p>
+            <p className="text-[12.5px] font-medium text-muted mb-2">Recent activity</p>
             <div className="space-y-1 max-h-40 overflow-y-auto">
               {fuLog.slice(0, 20).map((l) => (
                 <div key={l.id} className="text-[11px] text-muted flex items-center gap-2">
@@ -3945,7 +3945,7 @@ function FacebookTab() {
         </div>
 
         {st?.connected ? (
-          <button onClick={disconnect} className="px-3 h-9 border border-line rounded-lg text-[12.5px] hover:bg-surface-2 transition-colors">Disconnect Page</button>
+          <button onClick={disconnect} className="px-3 h-9 border border-line rounded-lg text-[12.5px] hover:bg-surface-2 transition-colors">Disconnect page</button>
         ) : (
           <>
             <div>
@@ -4944,7 +4944,7 @@ function SheetsTab() {
 
       {/* Setup */}
       <div className="bg-surface border border-line rounded-xl p-5">
-        <SectionLabel>Sheet Setup</SectionLabel>
+        <SectionLabel>Sheet setup</SectionLabel>
         <div className="space-y-3 mt-3">
           <Field label="Google Sheet URL">
             <input className={inp} placeholder="https://docs.google.com/spreadsheets/d/..." value={config.sheet_url ?? ""} onChange={(e) => setConfig({ ...config, sheet_url: e.target.value })} />
@@ -5102,7 +5102,7 @@ function SheetsTab() {
       {/* Sync log */}
       <div className="bg-surface border border-line rounded-xl overflow-x-auto">
         <div className="px-5 py-3 border-b border-line-2">
-          <span className="text-[12.5px] font-medium text-muted">Sync History</span>
+          <span className="text-[12.5px] font-medium text-muted">Sync history</span>
         </div>
         {log.length === 0 ? (
           <div className="text-center text-[13px] text-muted py-8">No syncs yet</div>
@@ -5371,7 +5371,7 @@ function BackupTab() {
 
   return (
     <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
-      <h3 className="text-[14px] font-semibold text-ink mb-1">Database Backup</h3>
+      <h3 className="text-[14px] font-semibold text-ink mb-1">Database backup</h3>
       <p className="text-[12px] text-muted mb-5">Automatic daily backups. Restore if something goes wrong.</p>
 
       <div className="space-y-3 mb-5">
@@ -6180,9 +6180,9 @@ function BillingTab() {
       )}
 
       <div className="flex items-center gap-2">
-        <button onClick={save} disabled={!showKeys || !pk || !sk} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Save Keys</button>
+        <button onClick={save} disabled={!showKeys || !pk || !sk} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Save keys</button>
         {config?.configured && (
-          <button onClick={async () => { await api.deleteStripeKeys(); setPk(""); setSk(""); setWh(""); load(); }} className="text-[12px] text-danger-ink hover:text-danger-ink">Clear Keys</button>
+          <button onClick={async () => { await api.deleteStripeKeys(); setPk(""); setSk(""); setWh(""); load(); }} className="text-[12px] text-danger-ink hover:text-danger-ink">Clear keys</button>
         )}
         {saved && <span className="text-[12px] text-success-ink font-medium">{saved}</span>}
       </div>

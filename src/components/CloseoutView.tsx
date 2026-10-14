@@ -296,7 +296,7 @@ function DealBreakdown({
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
           <div className="px-4 py-2.5 border-b border-line-2">
             <p className="text-[12.5px] font-medium text-muted">
-              Supplier Payments
+              Supplier payments
             </p>
           </div>
           <div className="divide-y divide-line-2">
@@ -346,7 +346,7 @@ function DealBreakdown({
       {flow.net_profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending) && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3">
           <p className="text-[12.5px] font-medium text-muted mb-3">
-            Profit Split
+            Profit split
           </p>
           <div className="flex flex-wrap gap-4 text-center">
             <LogisticsPayCell pay={logiPay} big />
@@ -365,7 +365,7 @@ function DealBreakdown({
       {/* Backlog date editor */}
       <div className="bg-surface border border-line rounded-xl px-4 py-3">
         <p className="text-[12.5px] font-medium text-muted mb-2">
-          Completed Date
+          Completed date
         </p>
         <div className="flex items-center gap-2">
           <input
@@ -397,7 +397,7 @@ function DealBreakdown({
           className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
                      px-3 h-8 border border-line rounded-lg hover:bg-surface-2 transition-colors"
         >
-          <RotateCcw size={12} /> Reopen Deal
+          <RotateCcw size={12} /> Reopen deal
         </button>
         <button
           onClick={handleDelete}
