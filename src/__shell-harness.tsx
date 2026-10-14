@@ -59,6 +59,7 @@ window.__FIXTURE = (cmd: string) => {
                clients: 812, client_limit: null, is_superadmin: role === "admin" };
     case "local_is_superadmin":   return role === "admin";
     case "sync_status":           return { last_applied: "2026-09-01T13:04:00Z", pending: 0 };
+    case "netsync_status":        return { connected: true, url: "https://ecliptr.app", pending_push: 0, pull_cursor: 1, auth: "ok", last_pull_at: "2026-09-01T13:04:00Z", last_push_at: "2026-09-01T13:04:00Z", invariants: [], invariants_at: "" };
     case "get_pending_approvals": return pendingClients;
     case "list_approval_requests": return requests;
     case "list_drafts":           return Array.from({ length: draftCount }, (_, i) => ({ id: `d_${i}`, status: "pending" }));

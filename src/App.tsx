@@ -780,8 +780,8 @@ export default function App() {
   };
   // The server light's word and colour. No answer at all (the command failed) reads as unreachable.
   const netOk = !!net && net.auth === "ok" && !syncFailed;
-  const netWord = syncFailed ? "sync failed" : !net || net.auth === "offline" ? "unreachable" : net.auth === "auth_lost" ? "sign in again" : net.pending_push > 0 ? `${net.pending_push} waiting` : "connected";
-  const netColor = netOk ? "var(--rail-ok)" : !net || net.auth === "offline" || syncFailed ? "var(--rail-bad)" : "var(--rail-hot)";
+  const netWord = syncFailed ? "sync failed" : net?.auth === "auth_lost" ? "sign in again" : net?.auth !== "ok" ? "unreachable" : net.pending_push > 0 ? `${net.pending_push} waiting` : "connected";
+  const netColor = netOk ? "var(--rail-ok)" : net?.auth === "auth_lost" && !syncFailed ? "var(--rail-hot)" : "var(--rail-bad)";
   const netTitle = `Server: ${netWord}${net?.last_pull_at ? `, last pull ${new Date(net.last_pull_at).toLocaleTimeString()}` : ""}`;
 
   // Consolidated sidebar: workflow mains, each expandable to reveal its sub-items
