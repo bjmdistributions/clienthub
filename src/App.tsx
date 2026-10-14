@@ -210,10 +210,12 @@ export default function App() {
   // first render's setTab, so it cannot read `tab` from its own closure; this ref is kept current instead.
   const tabRef = useRef<Tab>(tab);
   useEffect(() => { tabRef.current = tab; }, [tab]);
-  const setTab = (t: Tab) => {
-    // DG-02: a request for the screen already open keeps it as it is (no remount, nothing asked); only a menu closes.
+  const setTab = (t: Tab, handoff = false) => {
+    // DG-02: a click on the screen already open keeps it as it is (no remount, nothing asked); only a menu closes.
+    // A handoff (a navigate-tab event, which has just stashed something for that screen to read when it mounts)
+    // still remounts it.
     // R-464: a full-page form with unsaved typing is asked about before the screen is switched away from it.
-    const action = tabSwitchAction(tabRef.current, t, confirmLeaveUnsaved);
+    const action = tabSwitchAction(tabRef.current, t, confirmLeaveUnsaved, handoff);
     if (action === "stay") { setFlyout(null); return; }
     if (action === "refused") return;
     tabRef.current = t;
@@ -729,7 +731,7 @@ export default function App() {
       // this role's sidebar hides. Route it through the same visible() gate the
       // sidebar itself uses - via a ref, since this effect mounts once and visible
       // is a fresh function every render.
-      if (detail && visibleRef.current(detail)) setTab(detail);
+      if (detail && visibleRef.current(detail)) setTab(detail, true);
     };
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement?.tagName || "").toLowerCase();
