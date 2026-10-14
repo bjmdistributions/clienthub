@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseAmount, parseCount } from "./format";
+import { parseAmount, parseCount, fmtAmount } from "./format";
 
 // R-206. A figure pasted out of a spreadsheet, an email or a bank statement arrives
 // with commas and a dollar sign. Every one of these used to reach `parseFloat` as an
@@ -51,5 +51,13 @@ describe("parseCount", () => {
     expect(parseCount("-3.7")).toBe(-3);
     expect(parseCount("")).toBe(0);
     expect(parseCount("", 587)).toBe(587);
+  });
+});
+
+describe("fmtAmount sign (R-511 FD-20)", () => {
+  it("puts the minus before the dollar", () => {
+    expect(fmtAmount(-1200)).toBe("-$1,200.00");
+    expect(fmtAmount(1200)).toBe("$1,200.00");
+    expect(fmtAmount(-0.001)).toBe("$0.00");
   });
 });

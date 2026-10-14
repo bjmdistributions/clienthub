@@ -963,7 +963,7 @@ export default function ClientsView() {
                     (bt?.total_profit ?? 0) < 0 ? "text-danger-ink" : "text-ink"
                   }`}>
                     {bt && bt.total_profit !== 0
-                      ? <>{bt.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(bt.total_profit))}</>
+                      ? <>{fmtAmount(bt.total_profit)}</>
                       : <span className="text-faint">–</span>}
                   </td>
                   <td className="px-4 py-3 text-right text-[13px] text-muted tabular-nums">
