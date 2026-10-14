@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, DashboardStats, Client, Invoice, ReceivablesAging, PayablesAging, Me } from "../lib/api";
-import { fmtCompactCurrency, fmtFullAmount, fmtAmount, localMonth } from "../lib/format";
+import { fmtCompactCurrency, fmtAmount, localMonth } from "../lib/format";
 import { billsApi, type BillsAlerts } from "../lib/billsApi";
 import { alertRow } from "../lib/billsFormat";
 import {
@@ -35,7 +35,7 @@ const invStatusLabel = (s: string): string => {
 };
 
 function CompactAmount({ value }: { value: number }) {
-  const full = fmtFullAmount(value);
+  const full = fmtAmount(value);
   const compact = fmtCompactCurrency(value);
   if (full === compact) return <>{compact}</>;
   return (
@@ -521,7 +521,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                   <YAxis tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Satoshi" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
                     contentStyle={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)", borderRadius: 10, color: "var(--t-tx1)", fontSize: 12, fontFamily: "Satoshi", boxShadow: "var(--shadow-panel)" }}
-                    formatter={(v: any) => [fmtFullAmount(Number(v) || 0), chartMetric === "revenue" ? "Revenue" : (trueNetEnabled ? "True net" : "Profit")]}
+                    formatter={(v: any) => [fmtAmount(Number(v) || 0), chartMetric === "revenue" ? "Revenue" : (trueNetEnabled ? "True net" : "Profit")]}
                     cursor={{ stroke: "var(--t-b3)", strokeWidth: 1 }}
                   />
                   <Line type="monotone" dataKey={chartMetric === "revenue" ? "revenue" : (trueNetEnabled ? "trueNet" : "profit")}

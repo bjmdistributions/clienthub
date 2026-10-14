@@ -28,7 +28,7 @@ export default function TierBadge({ tier, size = "md" }: TierBadgeProps) {
       }}
       className={`inline-flex items-center rounded-full font-semibold leading-none whitespace-nowrap ${
         size === "sm"
-          ? "px-2 py-[3px] text-[9px]"
+          ? "px-2 py-[3px] text-[10.5px]"
           : "px-2.5 py-[5px] text-[11px]"
       }`}
     >

@@ -293,7 +293,7 @@ export default function ClientsView() {
   if (filter.rep) chips.push({ label: `Rep: ${filter.rep}`, key: "rep" });
   if (filter.source) chips.push({ label: `Source: ${filter.source}`, key: "source" });
   if (filter.lead_status) {
-    const statusLabels: Record<string, string> = { active_not_dormant: "Active (not dormant)", prospect: "Prospect", hot_lead: "Hot Lead", active_customer: "Active Customer", inactive: "Dormant" };
+    const statusLabels: Record<string, string> = { active_not_dormant: "Active (not dormant)", prospect: "Prospect", hot_lead: "Hot lead", active_customer: "Active customer", inactive: "Dormant" };
     chips.push({ label: `Status: ${statusLabels[filter.lead_status] || filter.lead_status}`, key: "lead_status" });
   }
 
@@ -488,13 +488,13 @@ export default function ClientsView() {
             onClick={runCleanup}
             className="text-[12px] px-3 py-2 border border-line text-ink-2 rounded-lg hover:bg-surface-2 hover:border-line-3 transition-colors"
           >
-            Clean Duplicates
+            Clean duplicates
           </button>
           <button
             onClick={() => { setEditing(null); setShowForm(true); }}
             className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
           >
-            <Plus size={14} /> New Client
+            <Plus size={14} /> New client
           </button>
         </div>
       </div>
@@ -503,8 +503,8 @@ export default function ClientsView() {
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
         {[
           { label: "Total Clients",    value: summaryStats.total,                      color: "text-ink" },
-          { label: "Active Customers", value: summaryStats.active,                     color: "text-success-ink" },
-          { label: "Hot Leads",        value: summaryStats.hotLeads,                   color: "text-danger-ink" },
+          { label: "Active customers", value: summaryStats.active,                     color: "text-success-ink" },
+          { label: "Hot leads",        value: summaryStats.hotLeads,                   color: "text-danger-ink" },
           { label: "Total Revenue",    value: fmtAmount(summaryStats.revenue),          color: "text-ink" },
         ].map((s) => (
           <div key={s.label} className="bg-surface border border-line rounded-xl px-4 py-3.5">
@@ -644,7 +644,7 @@ export default function ClientsView() {
           onChange={(e) => updateFilter({ category: e.target.value || undefined })}
           className="border border-line h-10 px-3 rounded-lg text-[13px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent bg-surface min-w-[140px] transition-colors"
         >
-          <option value="">All Categories</option>
+          <option value="">All categories</option>
           <option value="__none__">No category</option>
           {allCategories.map((c) => <option key={c.id} value={c.label}>{c.label}</option>)}
         </select>
@@ -654,7 +654,7 @@ export default function ClientsView() {
             onChange={(e) => updateFilter({ rep: e.target.value || undefined })}
             className="border border-line h-10 px-3 rounded-lg text-[13px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent bg-surface min-w-[140px] transition-colors"
           >
-            <option value="">All Reps</option>
+            <option value="">All reps</option>
             {reps.map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
         )}
@@ -665,7 +665,7 @@ export default function ClientsView() {
             onChange={(e) => updateFilter({ source: e.target.value || undefined })}
             className="border border-line h-10 px-3 rounded-lg text-[13px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent bg-surface min-w-[140px] transition-colors"
           >
-            <option value="">All Sources</option>
+            <option value="">All sources</option>
             {sources.map((s) => <option key={s.name} value={s.name}>{s.name} ({s.count})</option>)}
           </select>
         )}
@@ -742,13 +742,13 @@ export default function ClientsView() {
               <option value="">Any status</option>
               <option value="active_not_dormant">Active (not dormant)</option>
               <option value="prospect">Prospect</option>
-              <option value="hot_lead">Hot Lead</option>
-              <option value="active_customer">Active Customer</option>
+              <option value="hot_lead">Hot lead</option>
+              <option value="active_customer">Active customer</option>
               <option value="inactive">Dormant only</option>
             </select>
           </div>
           <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Last Contact</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Last contact</label>
             <select value={filter.stale_days ?? ""} onChange={(e) => updateFilter({ stale_days: e.target.value ? Number(e.target.value) : undefined })}
               className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
               <option value="">Any time</option>
@@ -758,7 +758,7 @@ export default function ClientsView() {
             </select>
           </div>
           <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Missing Info</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Missing info</label>
             <select value={filter.missing ?? ""} onChange={(e) => updateFilter({ missing: e.target.value || undefined })}
               className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
               <option value="">Any</option>
@@ -819,8 +819,8 @@ export default function ClientsView() {
           <select className="border border-line-3 h-8 px-2 rounded-md text-[12px] bg-surface" value="" onChange={(e) => { if (e.target.value) handleBulkLeadStatus(e.target.value); }}>
             <option value="">Status...</option>
             <option value="prospect">Prospect</option>
-            <option value="hot_lead">Hot Lead</option>
-            <option value="active_customer">Active Customer</option>
+            <option value="hot_lead">Hot lead</option>
+            <option value="active_customer">Active customer</option>
             <option value="inactive">Dormant</option>
           </select>
           <button onClick={handleBulkEmail} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-surface border border-accent/20 text-accent hover:bg-accent/10">
@@ -963,7 +963,7 @@ export default function ClientsView() {
                     (bt?.total_profit ?? 0) < 0 ? "text-danger-ink" : "text-ink"
                   }`}>
                     {bt && bt.total_profit !== 0
-                      ? <>{bt.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(bt.total_profit))}</>
+                      ? <>{fmtAmount(bt.total_profit)}</>
                       : <span className="text-faint">–</span>}
                   </td>
                   <td className="px-4 py-3 text-right text-[13px] text-muted tabular-nums">
@@ -1054,10 +1054,10 @@ function ClientForm({
 
   return (
     <div className="bg-surface border border-line rounded-xl p-6 mb-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
-      <h3 className="text-[14px] font-semibold text-ink mb-5">{initial ? "Edit Client" : "New Client"}</h3>
+      <h3 className="text-[14px] font-semibold text-ink mb-5">{initial ? "Edit client" : "New client"}</h3>
 
       <div className="mb-5">
-        <div className="text-[12.5px] font-medium text-muted mb-3">Basic Info</div>
+        <div className="text-[12.5px] font-medium text-muted mb-3">Basic info</div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name *"><input className={inp} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <Field label="Company"><input className={inp} value={form.company ?? ""} onChange={(e) => set("company", e.target.value)} /></Field>
@@ -1075,11 +1075,11 @@ function ClientForm({
           {/* One vocabulary, the underscore set the stats and the filters read.
               The spaced spellings this form used to write ("hot lead", "active
               customer") were a second vocabulary that matched nothing. */}
-          <Field label="Lead Status">
+          <Field label="Lead status">
             <select className={inp} value={form.lead_status ?? "prospect"} onChange={(e) => set("lead_status", e.target.value)}>
               <option value="prospect">Prospect</option>
-              <option value="hot_lead">Hot Lead</option>
-              <option value="active_customer">Active Customer</option>
+              <option value="hot_lead">Hot lead</option>
+              <option value="active_customer">Active customer</option>
               <option value="inactive">Dormant</option>
             </select>
           </Field>
@@ -1092,7 +1092,7 @@ function ClientForm({
         <div className="text-[12.5px] font-medium text-muted mb-3">Address</div>
         <div className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
-            <Field label="Street Address"><input className={inp} value={form.street_address ?? ""} onChange={(e) => set("street_address", e.target.value)} /></Field>
+            <Field label="Street address"><input className={inp} value={form.street_address ?? ""} onChange={(e) => set("street_address", e.target.value)} /></Field>
           </div>
           <Field label="City"><input className={inp} value={form.city ?? ""} onChange={(e) => set("city", e.target.value)} /></Field>
           <div className="grid grid-cols-2 gap-3">
@@ -1111,7 +1111,7 @@ function ClientForm({
 
       <div className="mb-5">
         <div className="text-[12.5px] font-medium text-muted mb-3">Notes & Follow-up</div>
-        <Field label="Internal Notes">
+        <Field label="Internal notes">
           <textarea rows={3} className={inp + " py-2"} placeholder="Private notes about this client"
             value={form.notes ?? ""} onChange={(e) => set("notes", e.target.value)} />
         </Field>

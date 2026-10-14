@@ -91,7 +91,6 @@ import GettingStarted from "./components/GettingStarted";
 import AuthView from "./components/AuthView";
 import LogisticsView from "./components/LogisticsView";
 import BolsView from "./components/BolsView";
-import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
@@ -173,7 +172,7 @@ const NAV_AUTO_KEY = "clienthub_nav_auto";
  *  never reorders it on its own, because at this width the row's position is the
  *  only thing about it that survives a glance. */
 const RAIL_PINS_KEY = "clienthub_rail_pins";
-const DEFAULT_PINS = ["dashboard", "clients", "suppliers", "inventory", "invoices", "financials"];
+const DEFAULT_PINS = ["dashboard", "dealflow", "clients", "suppliers", "inventory", "invoices", "financials"];
 
 /** Collapsed rail row heights, in px, kept here because the fit calculation below
  *  has to agree with the markup exactly - a rail that miscounts either scrolls
@@ -190,7 +189,7 @@ const RAIL_SEP = 13;   // h-[11px] + the 2px space-y gap
 /** Shared class for the account flyout's rows. */
 const RAIL_MENU_ROW =
   "w-full flex items-center gap-2.5 px-2.5 h-8 rounded-lg text-[13px] tracking-tight " +
-  "text-[#8A8A9A] hover:text-white hover:bg-white/[0.06] transition-colors";
+  "text-[color:var(--rail-text-dim)] hover:text-white hover:bg-white/[0.06] transition-colors";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() => {
@@ -426,9 +425,12 @@ export default function App() {
   }, []);
 
   const [draftCount, setDraftCount] = useState(0);
-  const { aiOnline, checkAi } = useAppStore();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  // R-511 DG-14: the footer's light is the server, not the local AI model (that status lives on the AI
+  // settings card). `auth` is what the netsync loop last saw: ok, offline (unreachable) or auth_lost.
+  const [net, setNet] = useState<{ auth: "ok" | "auth_lost" | "offline"; pending_push: number; last_pull_at: string } | null>(null);
+  const [syncFailed, setSyncFailed] = useState<string | null>(null);
   const [quickLogOpen, setQuickLogOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -657,11 +659,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, navCollapsed, navH, apTotal, draftCount, billsOverdue, railPins]);
 
+  const pollNet = () => {
+    api.netsyncStatus()
+      .then((st) => setNet({ auth: st.auth, pending_push: st.pending_push, last_pull_at: st.last_pull_at }))
+      .catch(() => setNet(null));
+  };
   useEffect(() => {
-    checkAi();
-    const id = setInterval(checkAi, 30000);
+    pollNet();
+    const id = setInterval(pollNet, 30000);
     return () => clearInterval(id);
-  }, [checkAi]);
+  }, []);
 
   useEffect(() => {
     api.syncStatus().then((s) => setLastSync(s.last_applied)).catch(() => {});
@@ -758,14 +765,24 @@ export default function App() {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const n = await api.syncReplay();
+      await api.syncReplay();
       const s = await api.syncStatus();
       setLastSync(s.last_applied);
-      if (n > 0) console.log(`Synced ${n} events`);
+      setSyncFailed(null);
+    } catch (e) {
+      // R-511 DG-14: a failed manual sync used to stop the spinner and say nothing.
+      setSyncFailed(String(e));
+      toast(`Sync failed: ${String(e)}`, "error");
     } finally {
       setSyncing(false);
+      pollNet();
     }
   };
+  // The server light's word and colour. No answer at all (the command failed) reads as unreachable.
+  const netOk = !!net && net.auth === "ok" && !syncFailed;
+  const netWord = syncFailed ? "sync failed" : net?.auth === "auth_lost" ? "sign in again" : net?.auth !== "ok" ? "unreachable" : net.pending_push > 0 ? `${net.pending_push} waiting` : "connected";
+  const netColor = netOk ? "var(--rail-ok)" : net?.auth === "auth_lost" && !syncFailed ? "var(--rail-hot)" : "var(--rail-bad)";
+  const netTitle = `Server: ${netWord}${net?.last_pull_at ? `, last pull ${new Date(net.last_pull_at).toLocaleTimeString()}` : ""}`;
 
   // Consolidated sidebar: workflow mains, each expandable to reveal its sub-items
   // (Jack's "drop down on a main category"), plus a bottom utility zone. Every id
@@ -882,7 +899,7 @@ export default function App() {
         className={`relative w-full flex items-center gap-2.5 ${
           navCollapsed ? "justify-center px-0" : isChild ? "pl-8 pr-2" : "px-2.5"
         } ${navCollapsed ? "h-8" : "h-9"} rounded-lg text-[13px] tracking-tight transition-all duration-150 ${
-          active ? "text-white font-medium" : "text-[#6B6B7A] hover:text-white/80"
+          active ? "text-white font-medium" : "text-[color:var(--rail-text)] hover:text-white/80"
         }`}
         style={active ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
       >
@@ -890,30 +907,30 @@ export default function App() {
         {!navCollapsed && item.label}
         {item.id === "newsletter" && draftCount > 0 && (
           navCollapsed
-            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full" style={{ background: "#FCD34D" }} />
+            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full" style={{ background: "var(--rail-hot)" }} />
             : <span className="ml-auto text-[10px] font-bold rounded-full px-1.5 leading-5"
-                style={{ background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }}>
+                style={{ background: "var(--rail-hot-bg)", color: "var(--rail-hot)", border: "1px solid var(--rail-hot-line)" }}>
                 {draftCount}
               </span>
         )}
         {item.id === "approvals" && apTotal > 0 && (
           navCollapsed
-            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-red-500" />
-            : <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-[color:var(--rail-badge)]" />
+            : <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center">
                 {apTotal > 9 ? "9+" : apTotal}
               </span>
         )}
         {item.id === "bills" && billsOverdue > 0 && (
           navCollapsed
-            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-red-500" />
-            : <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-[color:var(--rail-badge)]" />
+            : <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center">
                 {billsOverdue > 9 ? "9+" : billsOverdue}
               </span>
         )}
         {/* Bills is the only child of Financials, so while that group is closed its overdue count
             shows on the parent row (left of the chevron). Open the group and the child carries it. */}
         {!navCollapsed && item.id === "financials" && !isGroupOpen(item as NavNode) && billsOverdue > 0 && visible("bills") && (
-          <span className="ml-auto mr-6 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+          <span className="ml-auto mr-6 min-w-[16px] h-4 px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center">
             {billsOverdue > 9 ? "9+" : billsOverdue}
           </span>
         )}
@@ -946,10 +963,10 @@ export default function App() {
     n > 0 ? (
       <span
         className={`absolute top-1 right-1.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold leading-[15px] text-center ${
-          id === "newsletter" ? "" : "bg-red-500 text-white"
+          id === "newsletter" ? "" : "bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)]"
         }`}
         style={id === "newsletter"
-          ? { background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }
+          ? { background: "var(--rail-hot-bg)", color: "var(--rail-hot)", border: "1px solid var(--rail-hot-line)" }
           : undefined}
       >
         {n > 9 ? "9+" : n}
@@ -969,7 +986,7 @@ export default function App() {
         onClick={() => setTab(item.id)}
         title={item.label}
         className={`relative w-full flex flex-col items-center justify-center gap-[3px] h-[44px] px-1 rounded-lg transition-colors duration-150 ${
-          active ? "text-white rail-active" : "text-[#8A8A9A] hover:text-white/85 hover:bg-white/[0.06]"
+          active ? "text-white rail-active" : "text-[color:var(--rail-text-dim)] hover:text-white/85 hover:bg-white/[0.06]"
         }`}
       >
         <Icon size={16} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
@@ -991,12 +1008,12 @@ export default function App() {
         onClick={() => setTab(item.id)}
         title={item.label}
         className={`relative w-full flex items-center h-[24px] pl-[7px] pr-1.5 rounded-md text-[10px] font-medium tracking-tight transition-colors duration-150 ${
-          active ? "text-white rail-active" : "text-[#8A8A9A] hover:text-white/85 hover:bg-white/[0.06]"
+          active ? "text-white rail-active" : "text-[color:var(--rail-text-dim)] hover:text-white/85 hover:bg-white/[0.06]"
         }`}
       >
         <span className="truncate">{item.label}</span>
         {count > 0 && (
-          <span className="ml-auto pl-1 text-[9px] font-bold tabular-nums" style={{ color: item.id === "newsletter" ? "#FCD34D" : "#F87171" }}>
+          <span className="ml-auto pl-1 text-[9px] font-bold tabular-nums" style={{ color: item.id === "newsletter" ? "var(--rail-hot)" : "#F87171" }}>
             {count > 9 ? "9+" : count}
           </span>
         )}
@@ -1012,7 +1029,7 @@ export default function App() {
       title={label}
       aria-expanded={open}
       className={`relative w-full flex flex-col items-center justify-center gap-[3px] h-[44px] px-1 rounded-lg transition-colors duration-150 ${
-        open ? "text-white rail-active" : "text-[#8A8A9A] hover:text-white/85 hover:bg-white/[0.06]"
+        open ? "text-white rail-active" : "text-[color:var(--rail-text-dim)] hover:text-white/85 hover:bg-white/[0.06]"
       }`}
     >
       <Icon size={16} strokeWidth={1.6} />
@@ -1101,7 +1118,7 @@ export default function App() {
         key={item.id}
         onClick={() => setTab(item.id)}
         className={`w-full flex items-center gap-2.5 px-2.5 h-8 rounded-lg text-[13px] tracking-tight transition-colors ${
-          active ? "text-white font-medium" : "text-[#8A8A9A] hover:text-white hover:bg-white/[0.06]"
+          active ? "text-white font-medium" : "text-[color:var(--rail-text-dim)] hover:text-white hover:bg-white/[0.06]"
         }`}
         style={active ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
       >
@@ -1113,10 +1130,10 @@ export default function App() {
           // until All screens started passing draftCount through it.
           <span
             className={`ml-auto min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold leading-4 text-center ${
-              item.id === "newsletter" ? "" : "bg-red-500 text-white"
+              item.id === "newsletter" ? "" : "bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)]"
             }`}
             style={item.id === "newsletter"
-              ? { background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }
+              ? { background: "var(--rail-hot-bg)", color: "var(--rail-hot)", border: "1px solid var(--rail-hot-line)" }
               : undefined}
           >
             {badge > 9 ? "9+" : badge}
@@ -1206,13 +1223,13 @@ export default function App() {
             onClick={() => setTab(bellTab)}
             title={logisticsOnly && bellCount > 0 ? `${bellCount} to quote or book` : bellTitle(bellCount)}
             className="relative w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-            style={{ color: tab === bellTab ? "var(--accent-400)" : "#7A7A90" }}
+            style={{ color: tab === bellTab ? "var(--accent-400)" : "var(--rail-text-faint)" }}
             onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== bellTab) e.currentTarget.style.color = "var(--accent-400)"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = tab === bellTab ? "var(--accent-400)" : "#7A7A90"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = tab === bellTab ? "var(--accent-400)" : "var(--rail-text-faint)"; }}
           >
             <Bell size={13} strokeWidth={2} />
             {bellCount > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-[15px] text-center">
+              <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-[15px] text-center">
                 {bellCount > 9 ? "9+" : bellCount}
               </span>
             )}
@@ -1225,14 +1242,14 @@ export default function App() {
           onClick={() => setDark(d => !d)}
           title={dark ? "Switch to light mode" : "Switch to dark mode"}
           className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-          style={{ color: dark ? "#FCD34D" : "#7A7A90" }}
+          style={{ color: dark ? "var(--rail-hot)" : "var(--rail-text-faint)" }}
           onMouseEnter={e => {
             e.currentTarget.style.background = "rgba(255,255,255,0.08)";
             e.currentTarget.style.color = dark ? "#FDE68A" : "var(--accent-400)";
           }}
           onMouseLeave={e => {
             e.currentTarget.style.background = "";
-            e.currentTarget.style.color = dark ? "#FCD34D" : "#7A7A90";
+            e.currentTarget.style.color = dark ? "var(--rail-hot)" : "var(--rail-text-faint)";
           }}
         >
           {dark
@@ -1246,9 +1263,9 @@ export default function App() {
           onClick={toggleSplit}
           title={splitTab ? "Close split view" : "Open split view (two tabs side by side)"}
           className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-          style={{ color: splitTab ? "var(--accent-400)" : "#7A7A90" }}
+          style={{ color: splitTab ? "var(--accent-400)" : "var(--rail-text-faint)" }}
           onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (!splitTab) e.currentTarget.style.color = "var(--accent-400)"; }}
-          onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = splitTab ? "var(--accent-400)" : "#7A7A90"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = splitTab ? "var(--accent-400)" : "var(--rail-text-faint)"; }}
         >
           <Columns2 size={13} strokeWidth={2} />
         </button>}
@@ -1259,7 +1276,7 @@ export default function App() {
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
       {/* Sidebar */}
       <aside className={`${navCollapsed ? "w-[96px]" : "w-[216px]"} flex flex-col flex-shrink-0 relative transition-[width] motion-reduce:transition-none`} style={{
-        background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)",
+        background: "linear-gradient(180deg, var(--rail-bg-top) 0%, var(--rail-bg-bottom) 100%)",
         borderRight: "1px solid rgba(255,255,255,0.05)",
       }}>
         {/* Brand. The mark, and the org name when there is room for it - nothing else in
@@ -1341,7 +1358,7 @@ export default function App() {
                     onClick={() => toggleGroup(node.id)}
                     className="absolute top-0 right-1 h-9 w-7 flex items-center justify-center rounded-md hover:bg-white/10 transition-colors"
                   >
-                    <ChevronRight size={13} style={{ color: "#6B6B7A", transform: open ? "rotate(90deg)" : "none", transition: "transform 150ms ease" }} />
+                    <ChevronRight size={13} style={{ color: "var(--rail-text)", transform: open ? "rotate(90deg)" : "none", transition: "transform 150ms ease" }} />
                   </button>
                 </div>
                 {open && kids.map((c) => navButton(c, true))}
@@ -1372,17 +1389,15 @@ export default function App() {
         <div className={`${navCollapsed ? "px-1.5" : "px-3"} py-3 flex-shrink-0`} style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
           {navCollapsed ? (
             <div className="flex flex-col items-center gap-1.5">
-              <span className="py-0.5" title={`Ollama ${aiOnline ? "online" : "offline"}`}>
-                {aiOnline
-                  ? <Wifi size={12} className="text-success-ink" />
-                  : <WifiOff size={12} className="text-danger-ink" />}
+              <span className="py-0.5" title={netTitle} style={{ color: netColor }}>
+                {netOk ? <Wifi size={12} /> : <WifiOff size={12} />}
               </span>
               {!logisticsOnly && <button
                 onClick={handleSync}
                 disabled={syncing}
                 title={`Sync · ${lastSync ? new Date(lastSync).toLocaleTimeString() : "never"}`}
                 className="w-7 h-7 rounded-md flex items-center justify-center transition-colors disabled:opacity-50"
-                style={{ color: "#7A7A90" }}
+                style={{ color: "var(--rail-text-faint)" }}
                 onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
                 onMouseLeave={e => (e.currentTarget.style.background = "")}
               >
@@ -1402,7 +1417,7 @@ export default function App() {
                       {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
                     </div>}
                 {bellShown && bellCount > 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" style={{ border: "1px solid #101011" }} />
+                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-[color:var(--rail-badge)]" style={{ border: "1px solid #101011" }} />
                 )}
               </button>
               {/* The only way back out of the rail, and it sits in the same corner as the
@@ -1414,31 +1429,27 @@ export default function App() {
                 title="Expand sidebar (Cmd/Ctrl + B)"
                 aria-label="Expand sidebar"
                 className="w-7 h-7 rounded-md flex items-center justify-center transition-colors"
-                style={{ color: "#7A7A90" }}
+                style={{ color: "var(--rail-text-faint)" }}
                 onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "var(--accent-400)"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--rail-text-faint)"; }}
               >
                 <PanelLeftOpen size={13} strokeWidth={2} />
               </button>
             </div>
           ) : (
             <div className="space-y-1">
-              {!logisticsOnly && <div className="flex items-center justify-between px-1.5 py-0.5">
-                <span className="flex items-center gap-2 text-[11px]" style={{ color: "#4A4A5A" }}>
-                  {aiOnline
-                    ? <Wifi size={11} className="text-success-ink" />
-                    : <WifiOff size={11} className="text-danger-ink" />}
-                  Ollama
+              {!logisticsOnly && <div className="flex items-center justify-between px-1.5 py-0.5" title={netTitle}>
+                <span className="flex items-center gap-2 text-[11px]" style={{ color: "var(--rail-text-dim)" }}>
+                  <span style={{ color: netColor }}>{netOk ? <Wifi size={11} /> : <WifiOff size={11} />}</span>
+                  Server
                 </span>
-                <span className={`text-[11px] font-medium ${aiOnline ? "text-success-ink" : "text-danger-ink"}`}>
-                  {aiOnline ? "online" : "offline"}
-                </span>
+                <span className="text-[11px] font-medium" style={{ color: netColor }}>{netWord}</span>
               </div>}
               {!logisticsOnly && <button
                 onClick={handleSync}
                 disabled={syncing}
                 className="w-full flex items-center justify-between px-1.5 py-1.5 rounded-md text-[11px] transition-colors disabled:opacity-50"
-                style={{ color: "#4A4A5A" }}
+                style={{ color: "var(--rail-text-dim)" }}
                 onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
                 onMouseLeave={e => (e.currentTarget.style.background = "")}
               >
@@ -1462,17 +1473,17 @@ export default function App() {
                       {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
                     </div>}
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
-                  <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
+                  <div className="text-[11px] font-medium truncate" style={{ color: "var(--rail-text-bright)" }}>{me?.display_name}</div>
+                  <div className="text-[10px] truncate" style={{ color: "var(--rail-text-dim)" }}>{me?.role_name}</div>
                 </div>
                 <button
                   onClick={toggleNav}
                   title="Collapse sidebar (Cmd/Ctrl + B)"
                   aria-label="Collapse sidebar"
                   className="p-1.5 rounded-md transition-colors flex-shrink-0"
-                  style={{ color: "#7A7A90" }}
+                  style={{ color: "var(--rail-text-faint)" }}
                   onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "var(--accent-400)"; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--rail-text-faint)"; }}
                 >
                   <PanelLeftClose size={13} strokeWidth={2} />
                 </button>
@@ -1481,9 +1492,9 @@ export default function App() {
                   title="Sign out"
                   aria-expanded={signOutArm}
                   className="p-1.5 rounded-md transition-colors flex-shrink-0"
-                  style={{ color: signOutArm ? "#F87171" : "#7A7A90", background: signOutArm ? "rgba(248,113,113,0.14)" : "" }}
+                  style={{ color: signOutArm ? "#F87171" : "var(--rail-text-faint)", background: signOutArm ? "rgba(248,113,113,0.14)" : "" }}
                   onMouseEnter={e => { if (!signOutArm) { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "#F87171"; } }}
-                  onMouseLeave={e => { if (!signOutArm) { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; } }}
+                  onMouseLeave={e => { if (!signOutArm) { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--rail-text-faint)"; } }}
                 >
                   <LogOut size={13} />
                 </button>
@@ -1494,7 +1505,7 @@ export default function App() {
                   you press all day - so it asks. */}
               {signOutArm && (
                 <div className="px-1.5 pt-2 mt-1 space-y-1.5" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
-                  <div className="text-[11px]" style={{ color: "#C7C7D1" }}>Sign out of {orgName || "Ecliptr"}?</div>
+                  <div className="text-[11px]" style={{ color: "var(--rail-text-bright)" }}>Sign out of {orgName || "Ecliptr"}?</div>
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={signOut}
@@ -1508,7 +1519,7 @@ export default function App() {
                     <button
                       onClick={() => setSignOutArm(false)}
                       className="flex-1 h-7 rounded-md text-[11px] transition-colors"
-                      style={{ background: "rgba(255,255,255,0.06)", color: "#C7C7D1" }}
+                      style={{ background: "rgba(255,255,255,0.06)", color: "var(--rail-text-bright)" }}
                       onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.11)")}
                       onMouseLeave={e => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
                     >
@@ -1543,15 +1554,15 @@ export default function App() {
               {flyout.id === "__account" ? (
                 <>
                   <div className="px-2.5 pt-1.5 pb-2 mb-1" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-                    <div className="text-[12px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
-                    <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
+                    <div className="text-[12px] font-medium truncate" style={{ color: "var(--rail-text-bright)" }}>{me?.display_name}</div>
+                    <div className="text-[10px] truncate" style={{ color: "var(--rail-text-dim)" }}>{me?.role_name}</div>
                   </div>
                   {bellShown && (
                     <button onClick={() => setTab(bellTab)} className={RAIL_MENU_ROW}>
                       <Bell size={14} strokeWidth={1.7} />
                       <span>Notifications</span>
                       {bellCount > 0 && (
-                        <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+                        <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center">
                           {bellCount > 9 ? "9+" : bellCount}
                         </span>
                       )}
@@ -1593,8 +1604,8 @@ export default function App() {
                           aria-label={railPins.includes(t.id) ? `Unpin ${t.label}` : `Pin ${t.label}`}
                           className={`absolute top-1 right-1 h-6 w-6 flex items-center justify-center rounded-md transition-colors ${
                             railPins.includes(t.id)
-                              ? "text-[#C7C7D1] hover:bg-white/[0.1]"
-                              : "opacity-0 group-hover/allrow:opacity-100 text-[#5A5A6A] hover:text-white hover:bg-white/[0.1]"
+                              ? "text-[color:var(--rail-text-bright)] hover:bg-white/[0.1]"
+                              : "opacity-0 group-hover/allrow:opacity-100 text-[color:var(--rail-text-faint)] hover:text-white hover:bg-white/[0.1]"
                           }`}
                         >
                           <Pin size={12} strokeWidth={1.9} style={railPins.includes(t.id) ? { fill: "currentColor" } : undefined} />

@@ -59,6 +59,7 @@ window.__FIXTURE = (cmd: string) => {
                clients: 812, client_limit: null, is_superadmin: role === "admin" };
     case "local_is_superadmin":   return role === "admin";
     case "sync_status":           return { last_applied: "2026-09-01T13:04:00Z", pending: 0 };
+    case "netsync_status":        return { connected: true, url: "https://ecliptr.app", pending_push: 0, pull_cursor: 1, auth: "ok", last_pull_at: "2026-09-01T13:04:00Z", last_push_at: "2026-09-01T13:04:00Z", invariants: [], invariants_at: "" };
     case "get_pending_approvals": return pendingClients;
     case "list_approval_requests": return requests;
     case "list_drafts":           return Array.from({ length: draftCount }, (_, i) => ({ id: `d_${i}`, status: "pending" }));
@@ -68,6 +69,8 @@ window.__FIXTURE = (cmd: string) => {
     // DashboardView, so null is the honest "no data" value and an empty array is not.
     case "get_receivables_aging":
     case "get_payables_aging":    return null;
+    // R-449 bills: `alertRow` reads `.items` off the answer, so the list default would crash the Dashboard.
+    case "bills_alerts":          return null;
     case "dashboard_stats":       return {};
     // Everything else is a list. An empty one is enough to keep a screen quiet.
     default: return [];

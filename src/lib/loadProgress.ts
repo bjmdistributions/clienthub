@@ -90,7 +90,11 @@ export function loadProgress(b: ProgressFacts, teamView: boolean): Stage[] {
     rows = [all[0], { key: "team", label: "With the team", done, skipped: legacy, note: "" }, ...all.slice(4)];
   }
   const current = rows.findIndex((r) => !r.done && !r.skipped);
+  // A cancelled load stops where it stopped: the stages it never reached are passed over (dashed), and the one
+  // it was on says "Cancelled", instead of the next stage lighting up as the blue current step (R-511 LD-21).
+  const cancelled = b.status === "cancelled";
   return rows.map((r, i): Stage => {
+    if (cancelled && !r.done) return { key: r.key, label: r.label, state: "skipped", note: i === current ? "Cancelled" : r.note };
     const state: StageState = r.skipped ? "skipped" : r.done ? "done" : i === current ? "current" : "todo";
     const note = r.key === "booked" && state === "current" && b.status === "requested" ? "Waiting on logistics" : r.note;
     return { key: r.key, label: r.label, state, note };

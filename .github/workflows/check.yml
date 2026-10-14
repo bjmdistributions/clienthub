@@ -122,6 +122,18 @@ jobs:
           # over the ground it gets in the app. A token would test the globe on a
           # ground no user sees. Nothing in this file reaches a user.
           echo "src/__r133-harness.tsx" >> "$allowlist"
+          # Deliberate exception (2026-10-14, R-511). `src/lib/freightMapStyle.test.ts`
+          # is the test for the map recolouring (R-485 round 2): its hex values are
+          # OpenFreeMap style JSON as the tiles serve it, the INPUT the function
+          # under test converts to the theme's tokens. A token there would test a
+          # style no tile server sends. Nothing in a test file reaches a user. This
+          # line is why Check was red on main from b7be1c7 to cae4855.
+          echo "src/lib/freightMapStyle.test.ts" >> "$allowlist"
+          # Deliberate exception (2026-10-14, R-511 DG-01). `src/components/ErrorBoundary.test.ts`
+          # mounts the pane fallback over the Globe's forced dark ground (#0a0a14, the
+          # value App.tsx paints in every theme) to prove its text reads there; the
+          # hex is the real container, copied from App.tsx (already allowlisted).
+          echo "src/components/ErrorBoundary.test.ts" >> "$allowlist"
           # Anchor each allowlisted path to the start of a `path:line:` hit so a
           # new file cannot slip through by containing an allowlisted name.
           patterns=$(mktemp)

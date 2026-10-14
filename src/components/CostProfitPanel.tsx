@@ -96,7 +96,7 @@ export default function CostProfitPanel({
       {isComplete && profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending) && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3">
           <div className="text-[12.5px] font-medium text-muted mb-2">
-            Profit Split
+            Profit split
           </div>
           <div className="flex flex-wrap gap-x-6 gap-y-2">
             <LogisticsPayCell pay={logiPay} />

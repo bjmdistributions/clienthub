@@ -57,10 +57,10 @@ function LoadSquare({ b, today, i }: { b: FreightBooking; today: string; i: numb
         {deal ? (
           <button type="button" onClick={(e) => { e.stopPropagation(); openLoadInLogistics(b.id); }}
             title="Open the load in Logistics"
-            className="font-mono text-[11.5px] text-muted hover:text-ink truncate px-1.5 h-6 rounded-md hover:bg-surface-2 transition-colors duration-[130ms]">
+            className="tabular-nums text-[11.5px] text-muted hover:text-ink truncate px-1.5 h-6 rounded-md hover:bg-surface-2 transition-colors duration-[130ms]">
             {loadNumber(b)}
           </button>
-        ) : <span className="font-mono text-[11.5px] text-muted truncate">{loadNumber(b)}</span>}
+        ) : <span className="tabular-nums text-[11.5px] text-muted truncate">{loadNumber(b)}</span>}
       </div>
 
       <div className="relative flex-1 flex flex-col justify-center min-w-0 py-2">

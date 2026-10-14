@@ -23,6 +23,21 @@
 
 /* ── Light theme tokens ───────────────────────────────────── */
 :root {
+  /* The sidebar rail is dark in every theme (it never inverts), so its colours are fixed and named
+     here once (R-511 DG-29). Labels used to sit at 2.1 to 3.7:1; these are 5.3:1 or better on the rail. */
+  --rail-bg-top: #161618;
+  --rail-bg-bottom: #0C0C0D;
+  --rail-ink: #FFFFFF;          /* the current item, the mark */
+  --rail-text: #A3A3B2;         /* nav labels, 7.5:1 */
+  --rail-text-bright: #C7C7D1;  /* a hovered row */
+  --rail-text-dim: #8A8A9A;     /* captions, the footer, 5.3:1 */
+  --rail-text-faint: #7A7A90;   /* icons beside unselected labels, never text */
+  --rail-hot: #FCD34D;          /* the Newsletter draft mark */
+  --rail-hot-bg: rgba(251,191,36,0.15);
+  --rail-hot-line: rgba(251,191,36,0.25);
+  --rail-badge: #DC2626;        /* an unread count */
+  --rail-ok: #34D399;           /* the server light: connected */
+  --rail-bad: #F87171;          /* the server light: unreachable, or a failed sync */
   --color-primary:        #FF6520;
   --color-primary-hover:  #F0570F;
   --color-primary-light:  #FFF3EB;

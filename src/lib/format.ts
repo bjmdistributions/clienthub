@@ -6,11 +6,12 @@ const safeNum = (n: unknown): number => {
   return Number.isFinite(v) ? v : 0;
 };
 
-export const fmtAmount = (n: number) =>
-  "$" + safeNum(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-export const fmtFullAmount = (n: number) =>
-  "$" + safeNum(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/** "$1,200.00", and a negative as "-$1,200.00" (the sign before the dollar, never "$-1,200.00"). */
+export const fmtAmount = (n: number) => {
+  const v = safeNum(n);
+  const abs = Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (v <= -0.005 ? "-$" : "$") + abs;
+};
 
 /** Format a phone number as xxx-xxx-xxxx (US), dropping a leading +1/1 and any
  *  parentheses/spaces. Non-10-digit input returns the cleaned digits as-is. */
