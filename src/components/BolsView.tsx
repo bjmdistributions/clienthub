@@ -64,7 +64,7 @@ function LoadPicker({ title, sub, onPick, onClose }: { title: string; sub: strin
             {shown.map((b) => (
               <button key={b.id} type="button" onClick={() => onPick(b)}
                 className="w-full text-left flex items-center gap-3 px-3 py-2.5 hover:bg-surface-2/60 transition-colors min-w-0">
-                <span className="font-mono text-[12px] text-muted flex-shrink-0">{loadNumber(b)}</span>
+                <span className="tabular-nums text-[12px] text-muted flex-shrink-0">{loadNumber(b)}</span>
                 <span className="text-[13px] text-ink truncate min-w-0 flex-1">{routeLabel(b) || "-"}</span>
                 <FreightStatusPill status={b.status} logistics={isLogisticsSide(b)} />
               </button>
@@ -256,7 +256,7 @@ function BolEditor({ initial, readOnly, onClose, onSaved, onGone, onOpenLoad }: 
         <div className="border-b border-line px-6 pt-4 pb-3 flex-shrink-0 space-y-2">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h3 className="text-[20px] font-semibold text-ink font-mono tracking-tight">{rec.number || "New BOL"}</h3>
+              <h3 className="text-[20px] font-semibold text-ink tabular-nums tracking-tight">{rec.number || "New BOL"}</h3>
               <div className="text-[13px] text-ink-2 truncate mt-0.5">{route || (rec.number ? "" : "The number is assigned when you save.")}</div>
             </div>
             <button type="button" onClick={tryClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors flex-shrink-0"><X size={16} /></button>
@@ -266,7 +266,7 @@ function BolEditor({ initial, readOnly, onClose, onSaved, onGone, onOpenLoad }: 
               ? (
                 <button type="button" onClick={() => onOpenLoad(bookingId)} title="Open the load"
                   className="inline-flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-7 rounded-lg border border-line hover:bg-surface-2 transition-colors">
-                  Load <span className="font-mono">{loadNo || "attached"}</span><ChevronRight size={12} />
+                  Load <span className="tabular-nums">{loadNo || "attached"}</span><ChevronRight size={12} />
                 </button>
               )
               : <StatusPill tone="neutral">Not attached to a load</StatusPill>}
@@ -519,7 +519,7 @@ export default function BolsView({ me }: { me: Me | null | undefined }) {
                 className="w-full text-left flex items-center gap-3 px-4 py-3 hover:bg-surface-2/60 transition-colors min-w-0">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2 min-w-0">
-                    <span className="font-mono text-[12px] text-muted flex-shrink-0">{r.number}</span>
+                    <span className="tabular-nums text-[12px] text-muted flex-shrink-0">{r.number}</span>
                     <span className="text-[13.5px] font-medium text-ink truncate min-w-0">{ends || "-"}</span>
                   </div>
                   <div className="text-[12px] text-muted mt-0.5 truncate">

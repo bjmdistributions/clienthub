@@ -619,7 +619,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
         className={`w-full text-left bg-surface border border-line rounded-xl px-4 py-3 hover:border-accent/40 transition-colors min-w-0 ${b.status === "cancelled" ? "opacity-60" : ""}`}
       >
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          <span className="font-mono text-[12px] text-muted">{loadNumber(b)}</span>
+          <span className="tabular-nums text-[12px] text-muted">{loadNumber(b)}</span>
           <FreightStatusPill status={b.status} />
           {isHot(b) && <UrgentPill />}
           {pickupNumberUnconfirmed(b, localDay()) && <PickupNumberPill />}
@@ -698,7 +698,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
                   {live.map((b) => (
                     <li key={b.id} className="min-w-0 space-y-1">
                       <div className="text-[12px] truncate text-ink-2">
-                        <span className="font-mono text-muted">{loadNumber(b)}</span>{b.carrier ? `, ${b.carrier}` : ""}
+                        <span className="tabular-nums text-muted">{loadNumber(b)}</span>{b.carrier ? `, ${b.carrier}` : ""}
                       </div>
                       <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap">
                         <PaidSummary b={b} today={localDay()} />

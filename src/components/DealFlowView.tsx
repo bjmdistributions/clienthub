@@ -846,7 +846,7 @@ function PaymentsView({ deals, recon, invoices, searching, canMove, moved, onOpe
                     className="flex-1 min-w-0 flex items-start gap-3 pl-5 pr-3 py-3 text-left hover:bg-surface-2/40 transition-colors">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline gap-2 min-w-0">
-                        <span className="text-[12px] font-mono text-muted flex-shrink-0">{f.invoice_number}</span>
+                        <span className="text-[12px] tabular-nums text-muted flex-shrink-0">{f.invoice_number}</span>
                         <span className="text-[14px] text-ink truncate min-w-0">
                           <span className="font-semibold">{f.client_name || "Unknown"}</span>
                           {sup ? <span className="text-[12px] text-muted"> → {sup}</span> : null}
@@ -863,7 +863,7 @@ function PaymentsView({ deals, recon, invoices, searching, canMove, moved, onOpe
                   <div className="w-[168px] flex-shrink-0 flex items-center justify-end gap-3 flex-wrap pl-1 pr-5 py-2">
                     {loads.length > 0 ? loads.map((ld) => (
                       <button key={ld} type="button" onClick={() => openLoad(f, ld)} title="Open the load in Logistics"
-                        className="font-mono text-[12px] text-accent hover:underline">{ld}</button>
+                        className="tabular-nums text-[12px] text-accent hover:underline">{ld}</button>
                     )) : canMove && canMoveDeal(f) ? (
                       <MoveToLogistics flow={f} onMoved={(made) => onMoved(f, made)} />
                     ) : null}
@@ -1083,7 +1083,7 @@ function DealFlowCard({
 
         <div className="flex-1 min-w-[180px]">
           <div className="flex items-baseline gap-2 min-w-0">
-            <span className="text-[12px] font-mono text-muted flex-shrink-0">{flow.invoice_number}</span>
+            <span className="text-[12px] tabular-nums text-muted flex-shrink-0">{flow.invoice_number}</span>
             <span className="text-[14px] text-ink truncate min-w-0">
               <span className="font-semibold">{flow.client_name || "Unknown"}</span>
               {(() => {
@@ -1250,7 +1250,7 @@ function DealFlowCard({
           {invItems.length > 0 && (
             <div className="mx-5 mt-4 rounded-xl border border-line bg-surface">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 pt-3">
-                <span className="text-[14px] font-semibold text-ink">Invoice <span className="font-mono">{invMeta?.number || flow.invoice_number}</span></span>
+                <span className="text-[14px] font-semibold text-ink">Invoice <span className="tabular-nums">{invMeta?.number || flow.invoice_number}</span></span>
                 <span className={`text-[12px] font-medium px-2 py-0.5 rounded-full ${invPill.cls}`}>{invPill.label}</span>
                 {invMeta && (invMeta.issued || invMeta.due) && (
                   <span className="text-[12.5px] text-muted">
