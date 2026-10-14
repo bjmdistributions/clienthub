@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import StatusPill from "./StatusPill";
 import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotPriceTier, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus, LotMatch } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { formatLocation, parseLocation, isCanonicalLocation } from "../lib/location";
@@ -935,9 +936,7 @@ function LotCard({
 
         {/* Needs-attention chip — missing info or unsynced media (tooltip lists them) */}
         {!archived && warnings.length > 0 && (
-          <span className="absolute bottom-2.5 left-2.5 text-[10px] font-semibold px-2 py-0.5 rounded-full flex items-center gap-1.5 bg-warning-bg/95 backdrop-blur-sm text-warning-ink border border-warning/40" title={warnings.join(" · ")}>
-            <span className="w-1.5 h-1.5 rounded-full bg-warning" /> {warnings.length} to fix
-          </span>
+          <span className="absolute bottom-2.5 left-2.5"><StatusPill tone="warning" title={warnings.join(", ")}>{warnings.length} to fix</StatusPill></span>
         )}
 
         {/* Bottom-right meta chips */}
@@ -2418,7 +2417,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
             <div className="flex flex-wrap gap-1.5">
               {warnings.map((w) => (
                 <span key={w} className="inline-flex items-center gap-1.5 text-[11.5px] text-ink-2 bg-surface border border-warning/30 rounded-full px-2.5 py-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-warning" /> {w}
+                  {w}
                 </span>
               ))}
             </div>

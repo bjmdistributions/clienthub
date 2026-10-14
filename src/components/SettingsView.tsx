@@ -247,7 +247,6 @@ const SETTINGS_GROUPS: {
       { id: "sheets",   label: "Google Sheets", icon: Sheet,       desc: "Two-way sheet sync" },
       { id: "shopify",  label: "Shopify",       icon: ShoppingBag, desc: "Sync new customers as leads" },
       { id: "facebook", label: "Facebook",      icon: Facebook,    desc: "Post inventory to a Facebook Page" },
-      { id: "billing",  label: "Billing",       icon: CreditCard,  desc: "Stripe configuration" },
       { id: "ai",       label: "AI",            icon: Bot,         desc: "Local model selection" },
     ],
   },
@@ -362,7 +361,6 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "sheets", label: "Sheet sync history", kw: "log errors duplicates skipped new clients" },
   { tab: "shopify", card: "Shopify customer sync", label: "Shopify customer sync", kw: "webhook url signing secret hmac new customers pending clients" },
   { tab: "facebook", card: "Facebook Page posting", label: "Facebook Page posting", kw: "meta app id app secret oauth redirect page connect post inventory" },
-  { tab: "billing", label: "Stripe", kw: "billing card payments coming soon" },
   { tab: "ai", card: "Local AI", label: "Local AI model", kw: "ollama llm offline model picker llama qwen" },
   // Data & team
   { tab: "sync", card: "Cloud sync", label: "Cloud sync", kw: "sign in server workspace last synced sync now disconnect account" },
@@ -6162,7 +6160,7 @@ function BillingTab() {
         <div className="space-y-3 mb-4">
           <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1">
-              Publishable Key {config?.publishable_key_present && <span className="inline-block w-2 h-2 rounded-full bg-success-ink align-middle" />}
+              Publishable key {config?.publishable_key_present && <span className="text-success-ink">(on file)</span>}
             </label>
             <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full font-mono" type="password" placeholder="pk_test_..." value={pk} onChange={(e) => setPk(e.target.value)} />
           </div>

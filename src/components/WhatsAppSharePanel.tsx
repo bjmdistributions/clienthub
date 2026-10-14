@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import StatusPill from "./StatusPill";
 import { api, Lot, LotMediaFiles } from "../lib/api";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -224,7 +225,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="text-[13px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{lot.name}</span>
-                        {(photos.length === 0 || !hasManifest) && <span className="w-1.5 h-1.5 rounded-full bg-warning flex-shrink-0" title="Missing media" />}
+                        {(photos.length === 0 || !hasManifest) && <StatusPill tone="warning" title="No photos or manifest in this lot's folder">No media</StatusPill>}
                       </div>
                       <button onClick={() => openFolder(lot)} className={btnQuiet} style={{ borderColor: "var(--t-b1)" }} title="Open this lot's media folder">
                         <FolderOpen size={12} /> Folder

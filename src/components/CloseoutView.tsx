@@ -302,7 +302,6 @@ function DealBreakdown({
           <div className="divide-y divide-line-2">
             {payments.map((p) => (
               <div key={p.id} className="flex items-center gap-3 px-4 py-3">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] text-ink font-medium">{p.supplier_name}</div>
                   {p.quantity != null && p.unit_price != null && (

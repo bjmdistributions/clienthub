@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import Switch from "./Switch";
 import { api, ReceivablesAging, ARItem, ARClient, Client, PaymentMethod } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import { RefreshCw, ArrowUpRight, CalendarClock, Inbox, X, Check } from "lucide-react";
@@ -7,9 +8,9 @@ import StatusPill from "./StatusPill";
 // Aging buckets, oldest-money on the right; a calm → alarming ramp.
 const BUCKETS = [
   { key: "current",  label: "Current",   short: "Current", color: "var(--c-success)" },
-  { key: "d1_30",    label: "1–30 days", short: "1–30d",   color: "#84CC16" },
+  { key: "d1_30",    label: "1–30 days", short: "1–30d",   color: "rgb(var(--c-success) / 0.55)" },
   { key: "d31_60",   label: "31–60 days",short: "31–60d",  color: "var(--c-warning)" },
-  { key: "d61_90",   label: "61–90 days",short: "61–90d",  color: "#F97316" },
+  { key: "d61_90",   label: "61–90 days",short: "61–90d",  color: "rgb(var(--c-danger) / 0.55)" },
   { key: "d90_plus", label: "90+ days",  short: "90+d",    color: "var(--c-danger)" },
 ] as const;
 
@@ -229,10 +230,7 @@ export default function ReceivablesView() {
           </p>
           <label className="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
             <span className="text-[12px] text-ink-2">Show speculative</span>
-            <button onClick={() => setShowSpec((v) => !v)} role="switch" aria-checked={showSpec}
-              className={`w-9 h-5 rounded-full relative transition-colors ${showSpec ? "bg-accent" : "bg-surface-3"}`}>
-              <span className={`absolute top-0.5 left-0 w-4 h-4 rounded-full shadow-sm transition-transform ${showSpec ? "bg-on-accent translate-x-[18px]" : "bg-faint translate-x-0.5"}`} />
-            </button>
+            <Switch on={showSpec} onToggle={() => setShowSpec((v) => !v)} label="Show speculative" />
           </label>
         </div>
       )}
@@ -247,7 +245,7 @@ export default function ReceivablesView() {
               if (v <= 0) return null;
               return (
                 <span key={b.key} className="inline-flex items-center gap-1.5 text-[11px] tabular-nums text-muted">
-                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: b.color }} />
+                  <span className="w-3 h-1.5 rounded-sm flex-shrink-0" style={{ background: b.color }} />
                   {b.short} <span className="font-semibold text-ink-2">{fmtAmount(v)}</span>
                 </span>
               );
