@@ -4076,41 +4076,67 @@ fn shipped_deal_metadata(conn: &rusqlite::Connection, flow_id: &str) -> Result<S
     serde_json::to_string(&Value::Object(meta)).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn save_invoice_shipping(invoice_id: String, info: ShippingInfo) -> Result<(), String> {
+/// The values `save_invoice_shipping` writes onto the invoice: what the caller
+/// sent laid over what the invoice already holds. Split out, with
+/// `write_invoice_shipping`, so a test runs the exact statements the command runs.
+///
+/// Merge-on-write for every column. An omitted field means "leave the invoice's
+/// own value alone", not "write NULL / 0 over it": this wrote the shipping charge
+/// as 0 and blanked carrier and tracking whenever "Confirm delivery & complete"
+/// sent only the flag, which dropped the floor under an unpaid truck (the buyer's
+/// charge lived only in `shipping_charged`). The two dates were merged first: R-154
+/// moved the deal's real pickup and delivery dates onto `deal_flows`, so the deal
+/// card stopped sending them, and these columns are never re-derivable once
+/// blanked. An explicit `Some("")` still clears a text column and an explicit
+/// `Some(0.0)` is still a zero.
+///
+/// `is_complete` here means "set the flag"; false means "leave it as it is".
+fn merge_invoice_shipping(conn: &rusqlite::Connection, invoice_id: &str, info: &ShippingInfo) -> ShippingInfo {
     let has_shipping = info.carrier.as_deref().map_or(false, |s| !s.is_empty())
         && info.tracking_number.as_deref().map_or(false, |s| !s.is_empty())
         && info.pickup_date.as_deref().map_or(false, |s| !s.is_empty());
-    let is_complete = info.is_complete || has_shipping;
+    let (cur_carrier, cur_tracking, cur_charged, cur_pickup, cur_delivery): (Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>) = conn
+        .query_row("SELECT carrier, tracking_number, shipping_charged, pickup_date, delivery_date FROM invoices WHERE id=?1",
+            [invoice_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .unwrap_or((None, None, None, None, None));
+    ShippingInfo {
+        carrier: info.carrier.clone().or(cur_carrier),
+        tracking_number: info.tracking_number.clone().or(cur_tracking),
+        shipping_charged: info.shipping_charged.or(cur_charged),
+        pickup_date: info.pickup_date.clone().or(cur_pickup),
+        delivery_date: info.delivery_date.clone().or(cur_delivery),
+        is_complete: info.is_complete || has_shipping,
+    }
+}
 
-    // Merge-on-write for the two date columns. R-154 moved the deal's real pickup
-    // and delivery dates onto `deal_flows`, so the deal card stopped sending these
-    // — and an omitted field must mean "leave the invoice's own value alone", not
-    // "write NULL over it". Writing NULL over an unshown field is the narrow-form
-    // data loss, and these columns are never re-derivable once blanked. An explicit
-    // `Some("")` still clears, so a caller that means it can still say so.
-    let (cur_pickup, cur_delivery): (Option<String>, Option<String>) = {
+fn write_invoice_shipping(conn: &rusqlite::Connection, invoice_id: &str, w: &ShippingInfo) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE invoices SET carrier=?1, tracking_number=?2, shipping_charged=?3, pickup_date=?4, delivery_date=?5, is_complete=CASE WHEN ?6 THEN 1 ELSE is_complete END WHERE id=?7",
+        rusqlite::params![w.carrier, w.tracking_number, w.shipping_charged, w.pickup_date, w.delivery_date, w.is_complete as i64, invoice_id],
+    )
+}
+
+#[tauri::command]
+pub async fn save_invoice_shipping(invoice_id: String, info: ShippingInfo) -> Result<(), String> {
+    let w = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT pickup_date, delivery_date FROM invoices WHERE id=?1",
-            [&invoice_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((None, None))
+        merge_invoice_shipping(&conn, &invoice_id, &info)
     };
-    let pickup_date = info.pickup_date.clone().or(cur_pickup);
-    let delivery_date = info.delivery_date.clone().or(cur_delivery);
+    let is_complete = w.is_complete;
 
+    // The synced event carries only what this call actually sets, so an unsent
+    // column is not restamped over another device's newer value.
     let mut cols = Map::new();
-    cols.insert("carrier".into(), to_value(info.carrier.clone()));
-    cols.insert("tracking_number".into(), to_value(info.tracking_number.clone()));
-    cols.insert("shipping_charged".into(), json!(info.shipping_charged.unwrap_or(0.0)));
-    cols.insert("pickup_date".into(), to_value(pickup_date.clone()));
-    cols.insert("delivery_date".into(), to_value(delivery_date.clone()));
-    cols.insert("is_complete".into(), json!(is_complete));
+    if info.carrier.is_some() { cols.insert("carrier".into(), to_value(w.carrier.clone())); }
+    if info.tracking_number.is_some() { cols.insert("tracking_number".into(), to_value(w.tracking_number.clone())); }
+    if info.shipping_charged.is_some() { cols.insert("shipping_charged".into(), json!(w.shipping_charged)); }
+    cols.insert("pickup_date".into(), to_value(w.pickup_date.clone()));
+    cols.insert("delivery_date".into(), to_value(w.delivery_date.clone()));
+    if is_complete { cols.insert("is_complete".into(), json!(true)); }
     sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
 
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE invoices SET carrier=?1, tracking_number=?2, shipping_charged=?3, pickup_date=?4, delivery_date=?5, is_complete=?6 WHERE id=?7",
-        rusqlite::params![info.carrier, info.tracking_number, info.shipping_charged.unwrap_or(0.0), pickup_date, delivery_date, is_complete as i64, invoice_id],
-    ).map_err(|e| e.to_string())?;
+    write_invoice_shipping(&conn, &invoice_id, &w).map_err(|e| e.to_string())?;
     if is_complete {
         let flow_id: Option<String> = conn.query_row("SELECT id FROM deal_flows WHERE invoice_id=?1", [&invoice_id], |r| r.get(0)).ok();
         if let Some(flow_id) = flow_id {
@@ -4742,10 +4768,12 @@ pub struct SupplierPaymentInput {
     pub notes: Option<String>,
     #[serde(default)]
     pub category: Option<String>,
+    /// R-511 FD-08: omitted means unchanged on an edit (and not billed on an add).
     #[serde(default)]
-    pub supplier_billed: bool,
+    pub supplier_billed: Option<bool>,
     /// R-324. When present the backend computes `amount` from it, so a stored partner
-    /// cut can never disagree with the basis stored beside it.
+    /// cut can never disagree with the basis stored beside it. R-511 FD-08: omitted on an
+    /// edit keeps the line's stored split.
     #[serde(default)]
     pub split: Option<PartnerSplit>,
 }
@@ -5650,7 +5678,7 @@ pub async fn add_supplier_payment(id: String, input: SupplierPaymentInput) -> Re
         paid_at: None,
         category: input.category,
         kept: false,
-        supplier_billed: input.supplier_billed,
+        supplier_billed: input.supplier_billed.unwrap_or(false),
         split: input.split,
     });
 
@@ -5669,9 +5697,11 @@ pub async fn update_supplier_payment(id: String, payment_id: String, input: Supp
     let old_amount = p.amount;
 
     // R-324: an edited partner line re-derives its cut from the edited basis, the same
-    // rule `add_supplier_payment` applies, so the two paths cannot drift.
+    // rule `add_supplier_payment` applies, so the two paths cannot drift. R-511 FD-08: an edit
+    // that sends no split keeps the stored one (and so its derived cut), never erases it.
+    let split = input.split.clone().or_else(|| p.split.clone());
     let mut new_amount = input.amount;
-    if let Some(sp) = input.split.as_ref() {
+    if let Some(sp) = split.as_ref() {
         new_amount = sp.cut();
         p.quantity = Some(sp.units);
         p.unit_price = Some(if sp.units > 0.0 { r2(new_amount / sp.units) } else { new_amount });
@@ -5687,9 +5717,10 @@ pub async fn update_supplier_payment(id: String, payment_id: String, input: Supp
     p.supplier_id = input.supplier_id.clone();
     p.method = input.method;
     p.notes = input.notes;
-    p.category = input.category;
-    p.supplier_billed = input.supplier_billed;
-    p.split = input.split;
+    // R-511 FD-08: merge on write. An omitted category, supplier_billed or split is left as it is.
+    if input.category.is_some() { p.category = input.category; }
+    if let Some(billed) = input.supplier_billed { p.supplier_billed = billed; }
+    p.split = split;
 
     p.amount = new_amount;
     if (old_amount - new_amount).abs() > 0.001 {
@@ -7846,8 +7877,10 @@ pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<Str
     // validates direction (money out) + exclusivity and books it into Financials.
     // It fails cleanly, before any refund row is written, if the txn can't take it.
     if let Some(ref t) = txn {
-        allocate_bank_txn(t.clone(), deal_flow_id.clone(), amt, "refund_out".to_string(),
-            reason.clone().unwrap_or_else(|| "Refund".into()), None).await?;
+        // No re-link here: this refund's own row is written below, and an earlier unlinked
+        // refund of the same amount is a different refund that must keep its own state.
+        allocate_bank_txn_inner(t.clone(), deal_flow_id.clone(), amt, "refund_out".to_string(),
+            reason.clone().unwrap_or_else(|| "Refund".into()), None, false).await?;
     }
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -18238,6 +18271,17 @@ pub async fn allocate_bank_txn(
     bank_txn_id: String, deal_flow_id: String, amount: f64, role: String, note: String,
     allow_split: Option<bool>,
 ) -> Result<String, String> {
+    allocate_bank_txn_inner(bank_txn_id, deal_flow_id, amount, role, note, allow_split, true).await
+}
+
+/// `allocate_bank_txn` with the refund re-link switchable. The re-link (a lone unlinked refund
+/// of the same amount takes the new transaction) is the Financials booking path's correction
+/// after an unlink. `create_refund` passes false: it links the transaction before its own
+/// refunds row exists, so the re-link could only ever grab a DIFFERENT refund (R-511 FD-01).
+async fn allocate_bank_txn_inner(
+    bank_txn_id: String, deal_flow_id: String, amount: f64, role: String, note: String,
+    allow_split: Option<bool>, relink_refund: bool,
+) -> Result<String, String> {
     let (txn_amount, allocated, direction): (f64, f64, String) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.query_row(
@@ -18309,7 +18353,7 @@ pub async fn allocate_bank_txn(
     // that correction, and without this the refund would then be counted by BOTH arms
     // — permanently double — instead of once. Re-link it here, before the recalc below
     // reads the deal's numbers. Runs before `resync_completed_deal` for that reason.
-    if role == "refund_out" {
+    if role == "refund_out" && relink_refund {
         let refund_ids: Vec<String> = {
             let conn = pool().get().map_err(|e| e.to_string())?;
             let mut stmt = conn.prepare(
@@ -21702,6 +21746,12 @@ pub async fn financials_overview() -> Result<Value, String> {
     // the deal isn't complete (never ours — ring-fenced). Netted per deal against any
     // supplier-payment the user has already allocated from the bank feed (actuals),
     // clamped at 0 so an over-allocation on one deal can't erase another's payable.
+    // R-511 FD-02: an allocation carries no line id, so a linked wire first pays the goods lines
+    // already marked paid (the same goods rule as move_resold_cost: supplier category, not kept) and
+    // only what is left over comes off the unpaid ones. Freight and partner lines marked paid are not
+    // counted, so they cannot soak up a wire linked for an unflagged goods line. A goods line marked
+    // paid without a wire (card or cash) still shadows a wire linked for a sibling line, as in R-443's
+    // max(flagged paid, linked): the two cannot be told apart without a line id on the allocation.
     //
     // R-400: on a deal that ships through Logistics the booking replaces its typed freight lines,
     // so those lines leave the goods part and the quotes of its live unpaid bookings (less any
@@ -21712,9 +21762,15 @@ pub async fn financials_overview() -> Result<Value, String> {
                FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp
               WHERE COALESCE(json_extract(sp.value,'$.paid'),0) != 1
                 AND NOT (COALESCE(json_extract(sp.value,'$.category'),'')='freight' AND ", ship_mode_sql!(), "))
-            - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
-                 WHERE a.deal_flow_id=df.id AND a.role='supplier_payment'
-                   AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
+            - MAX(0,
+                (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
+                  WHERE a.deal_flow_id=df.id AND a.role='supplier_payment'
+                    AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
+              - (SELECT COALESCE(SUM(CAST(json_extract(pp.value,'$.amount') AS REAL)),0)
+                   FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) pp
+                  WHERE COALESCE(json_extract(pp.value,'$.paid'),0) = 1
+                    AND COALESCE(json_extract(pp.value,'$.kept'),0) != 1
+                    AND COALESCE(json_extract(pp.value,'$.category'),'supplier') = 'supplier'))
          )),0)
          FROM deal_flows df
          WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
@@ -27319,6 +27375,110 @@ mod shipping_metadata_tests {
     }
 }
 
+#[cfg(test)]
+mod shipping_save_tests {
+    use super::{merge_invoice_shipping, write_invoice_shipping, ShippingInfo};
+
+    type Row = (Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>, i64);
+
+    /// One invoice holding what a delivered load holds: the customer shipping
+    /// charge, the carrier and tracking, both dates, not yet flagged complete.
+    fn invoice() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE invoices (id TEXT PRIMARY KEY, carrier TEXT, tracking_number TEXT,
+               shipping_charged REAL DEFAULT 0, pickup_date TEXT, delivery_date TEXT, is_complete INTEGER DEFAULT 0);
+             INSERT INTO invoices (id, carrier, tracking_number, shipping_charged, pickup_date, delivery_date, is_complete)
+               VALUES ('inv1', 'XPO', 'T-1001', 450.0, '2026-10-01', '2026-10-05', 0);",
+        ).unwrap();
+        conn
+    }
+
+    fn none() -> ShippingInfo {
+        ShippingInfo { carrier: None, tracking_number: None, shipping_charged: None, pickup_date: None, delivery_date: None, is_complete: false }
+    }
+
+    fn save(conn: &rusqlite::Connection, info: ShippingInfo) {
+        let w = merge_invoice_shipping(conn, "inv1", &info);
+        write_invoice_shipping(conn, "inv1", &w).unwrap();
+    }
+
+    fn row(conn: &rusqlite::Connection) -> Row {
+        conn.query_row(
+            "SELECT carrier, tracking_number, shipping_charged, pickup_date, delivery_date, is_complete FROM invoices WHERE id='inv1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        ).unwrap()
+    }
+
+    fn s(v: &str) -> Option<String> { Some(v.to_string()) }
+
+    #[test]
+    fn flagging_complete_alone_leaves_the_other_five_columns() {
+        let conn = invoice();
+        save(&conn, ShippingInfo { is_complete: true, ..none() });
+        assert_eq!(row(&conn), (s("XPO"), s("T-1001"), Some(450.0), s("2026-10-01"), s("2026-10-05"), 1));
+    }
+
+    #[test]
+    fn the_confirm_delivery_call_keeps_the_shipping_charge() {
+        // Carrier and tracking and the flag, no charge: what DealFlowView sends.
+        let conn = invoice();
+        save(&conn, ShippingInfo { carrier: s("Estes"), tracking_number: s("E-77"), is_complete: true, ..none() });
+        assert_eq!(row(&conn), (s("Estes"), s("E-77"), Some(450.0), s("2026-10-01"), s("2026-10-05"), 1));
+    }
+
+    #[test]
+    fn a_sent_charge_replaces_and_an_explicit_zero_is_a_zero() {
+        let conn = invoice();
+        save(&conn, ShippingInfo { shipping_charged: Some(125.5), ..none() });
+        assert_eq!(row(&conn).2, Some(125.5));
+        save(&conn, ShippingInfo { shipping_charged: Some(0.0), ..none() });
+        assert_eq!(row(&conn).2, Some(0.0));
+    }
+
+    #[test]
+    fn an_explicit_empty_string_still_clears_a_text_column() {
+        let conn = invoice();
+        save(&conn, ShippingInfo { carrier: s(""), tracking_number: s(""), ..none() });
+        assert_eq!(row(&conn), (s(""), s(""), Some(450.0), s("2026-10-01"), s("2026-10-05"), 0));
+    }
+
+    #[test]
+    fn a_null_charge_stays_null_when_omitted() {
+        let conn = invoice();
+        conn.execute("UPDATE invoices SET shipping_charged=NULL WHERE id='inv1'", []).unwrap();
+        save(&conn, ShippingInfo { is_complete: true, ..none() });
+        assert_eq!(row(&conn).2, None);
+    }
+
+    #[test]
+    fn a_save_that_is_not_complete_never_unflags_a_complete_invoice() {
+        let conn = invoice();
+        conn.execute("UPDATE invoices SET is_complete=1 WHERE id='inv1'", []).unwrap();
+        save(&conn, ShippingInfo { carrier: s("Estes"), ..none() });
+        assert_eq!(row(&conn).5, 1, "is_complete=false means leave it, not write 0");
+        // And a never-completed invoice stays that way.
+        let fresh = invoice();
+        save(&fresh, ShippingInfo { carrier: s("Estes"), ..none() });
+        assert_eq!(row(&fresh).5, 0);
+    }
+
+    #[test]
+    fn carrier_tracking_and_pickup_together_still_flag_it_complete() {
+        let conn = invoice();
+        save(&conn, ShippingInfo { carrier: s("Estes"), tracking_number: s("E-77"), pickup_date: s("2026-10-02"), ..none() });
+        assert_eq!(row(&conn).5, 1);
+    }
+
+    #[test]
+    fn a_missing_invoice_is_not_an_error() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE invoices (id TEXT PRIMARY KEY, carrier TEXT, tracking_number TEXT, shipping_charged REAL, pickup_date TEXT, delivery_date TEXT, is_complete INTEGER);").unwrap();
+        let w = merge_invoice_shipping(&conn, "nope", &ShippingInfo { is_complete: true, ..none() });
+        assert_eq!(write_invoice_shipping(&conn, "nope", &w).unwrap(), 0);
+    }
+}
+
 /* ── Find matches — buyers for a lot, from what they have bought (R-236) ─────
  *
  * Jack, 2026-09-03: "only do it when its very similar, dont always show a buyer
@@ -27944,7 +28104,7 @@ mod r400_shipping_tests {
         assert_eq!(books(&id).0, 6800.0);
         let input = SupplierPaymentInput {
             supplier_name: "Sample supplier".into(), supplier_id: None, amount: 6100.0, quantity: None, unit_price: None,
-            method: None, notes: None, category: Some("supplier".into()), supplier_billed: false, split: None,
+            method: None, notes: None, category: Some("supplier".into()), supplier_billed: None, split: None,
         };
         update_supplier_payment(id.clone(), "a".into(), input).await.unwrap();
         let b = books(&id);
@@ -27955,7 +28115,7 @@ mod r400_shipping_tests {
         complete(&linked).await;
         let input = SupplierPaymentInput {
             supplier_name: "Sample supplier".into(), supplier_id: None, amount: 6200.0, quantity: None, unit_price: None,
-            method: None, notes: None, category: Some("supplier".into()), supplier_billed: false, split: None,
+            method: None, notes: None, category: Some("supplier".into()), supplier_billed: None, split: None,
         };
         update_supplier_payment(linked.clone(), "a".into(), input).await.unwrap();
         assert_eq!(books(&linked).0, 5900.0);
@@ -28265,6 +28425,81 @@ mod r400_shipping_tests {
         assert_eq!(owed().await - base, 6700.0);
         set_paid(&id, "1", 700.0);
         assert_eq!(owed().await - base, 6000.0, "paid: only the goods are still owed");
+    }
+
+    /// R-511 FD-02: Free cash took every supplier wire linked to a deal off only the deal's unpaid
+    /// lines, so a paid line's own wire ate the unpaid line beside it (an allocation has no line id).
+    /// A wire is the payment of the lines already marked paid first; only what is left over comes
+    /// off the unpaid ones. The per-deal clamp stays, so one over-linked deal never erases another.
+    #[tokio::test]
+    async fn fd02_a_paid_lines_own_wire_does_not_hide_the_unpaid_line_beside_it() {
+        let _db = crate::db::init_test_store();
+        let owed = || async { financials_overview().await.unwrap()["supplier_payables"].as_f64().unwrap() };
+        let base = owed().await;
+
+        // Line A 10,000 marked paid with its 10,000 wire linked; line B 5,000 unpaid: B is still owed.
+        let a = deal("fd02a", vec![line("a", "supplier", 10000.0, true), line("b", "supplier", 5000.0, false)], "payment_received");
+        assert_eq!(owed().await - base, 5000.0, "no wire yet: the unpaid line is owed");
+        link(&a, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 5000.0, "the wire paid line A, not line B");
+
+        // A wire bigger than the paid lines: the 2,000 over what is marked paid pays into B.
+        let b = deal("fd02b", vec![line("a", "supplier", 10000.0, true), line("b", "supplier", 5000.0, false)], "payment_received");
+        link(&b, "supplier_payment", 12000.0);
+        assert_eq!(owed().await - base, 5000.0 + 3000.0, "only the 2,000 over the paid line comes off B");
+
+        // Nothing marked paid: the wire is B's payment, as before.
+        let c = deal("fd02c", vec![line("b", "supplier", 5000.0, false)], "payment_received");
+        link(&c, "supplier_payment", 5000.0);
+        assert_eq!(owed().await - base, 5000.0 + 3000.0, "a fully wired unpaid line owes nothing");
+
+        // Over-linked: clamped at 0 on its own deal, the other deals' payables stand.
+        let d = deal("fd02d", vec![line("a", "supplier", 10000.0, true), line("b", "supplier", 5000.0, false)], "payment_received");
+        link(&d, "supplier_payment", 30000.0);
+        assert_eq!(owed().await - base, 5000.0 + 3000.0, "an over-linked deal owes nothing and takes nothing from the others");
+    }
+
+    /// R-511 FD-02 review: the wire pays the lines already marked paid that are GOODS, and only
+    /// those (the rule move_resold_cost uses). A paid freight or partner line, or a typed freight
+    /// line on a deal that ships through Logistics, is not what the supplier wire was linked for, so
+    /// it must not soak up a wire meant for an unflagged goods line and bring back phantom debt.
+    #[tokio::test]
+    async fn fd02_only_paid_goods_lines_take_the_wire_first() {
+        let _db = crate::db::init_test_store();
+        let owed = || async { financials_overview().await.unwrap()["supplier_payables"].as_f64().unwrap() };
+        let base = owed().await;
+
+        // Goods 10,000 not marked paid but wired in full; a 500 freight line marked paid: nothing owed.
+        let f = deal("fd02e", vec![line("a", "supplier", 10000.0, false), line("f", "freight", 500.0, true)], "payment_received");
+        link(&f, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 0.0, "a paid freight line is not a payment toward the goods");
+
+        // The same with a 3,000 partner cut marked paid.
+        let p = deal("fd02f", vec![line("a", "supplier", 10000.0, false), line("p", "partner", 3000.0, true)], "payment_received");
+        link(&p, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 0.0, "a paid partner cut is not a payment toward the goods");
+
+        // A deal that ships through Logistics (a shipping link): its typed freight is replaced by the
+        // booking, so a paid freight line there is no payment toward the goods either.
+        let s = deal("fd02g", vec![line("a", "supplier", 10000.0, false), line("f", "freight", 1500.0, true)], "payment_received");
+        link(&s, "supplier_payment", 10000.0);
+        link(&s, "shipping", 1500.0);
+        assert_eq!(owed().await - base, 0.0, "a paid typed freight line on a shipped deal is not a payment toward the goods");
+
+        // The legacy wire that carried the goods and the freight together still clears both.
+        let l = deal("fd02h", vec![line("a", "supplier", 6000.0, false), line("f", "freight", 500.0, true)], "payment_received");
+        link(&l, "supplier_payment", 6500.0);
+        assert_eq!(owed().await - base, 0.0, "goods and freight paid in one wire owe nothing");
+
+        // Paid goods wired in full beside an unpaid partner cut: the wire paid the goods, the cut is still owed.
+        let o = deal("fd02i", vec![line("a", "supplier", 10000.0, true), line("p", "partner", 3000.0, false)], "payment_received");
+        link(&o, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 3000.0, "the wire paid the paid goods line, not the unpaid partner cut");
+
+        // The other stage Free cash counts: a supplier_paid deal nets the same way.
+        let sp = deal("fd02j", vec![line("a", "supplier", 10000.0, true), line("b", "supplier", 5000.0, false)], "supplier_paid");
+        link(&sp, "supplier_payment", 10000.0);
+        assert_eq!(owed().await - base, 3000.0 + 5000.0, "a supplier_paid deal nets the same way");
     }
 
     /// R-459: a booking still at `quote` or `quoted` is a question to logistics, not a truck. It
@@ -29996,5 +30231,227 @@ mod r509_carrier_hold_tests {
         assert_eq!(stage_meta(&paid).0, "complete");
         complete_deal_flow(id.clone(), None, None, None, None, Some("Paid in cash, no bank row".into())).await.unwrap();
         assert!(stage_meta(&id).1.get("carrier_hold").is_none());
+    }
+}
+
+/// R-511 FD-01: `create_refund` writes the bank allocation BEFORE its own `refunds` row, and
+/// `allocate_bank_txn` re-links a lone unlinked refund of the same amount to the new transaction
+/// (the correction path after an unlink). Called from `create_refund` that re-link grabbed an
+/// earlier cash refund of the same amount, so two refunds carried one transaction id and the
+/// counted-once readers saw one refund. Only the Financials booking path may re-link.
+#[cfg(test)]
+mod r511_refund_relink_tests {
+    use super::*;
+
+    fn deal(tag: &str) -> String {
+        let id = format!("df-r511-{tag}");
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r511', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r511', ?2, '2026-09-01', '2026-09-30', '[]', 5000, 5000, '2026-09-01')",
+            rusqlite::params![format!("inv-r511-{tag}"), format!("INV-R-{tag}")]).unwrap();
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount, metadata)
+             VALUES (?1, ?2, 'payment_received', '2026-09-01', '2026-09-01', '[]', 0, 5000, '{}')",
+            rusqlite::params![id, format!("inv-r511-{tag}")]).unwrap();
+        id
+    }
+    fn wire_out(txn: &str, amount: f64) {
+        pool().get().unwrap().execute(
+            "INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, '2026-10-05', ?2, 'out')",
+            rusqlite::params![txn, amount]).unwrap();
+    }
+    /// The counted-once total, read through DF_REFUNDS_SQL the way the books do.
+    fn counted(id: &str) -> f64 {
+        pool().get().unwrap().query_row(
+            &format!("SELECT {DF_REFUNDS_SQL} FROM deal_flows df WHERE df.id=?1"), [id], |r| r.get(0)).unwrap()
+    }
+    fn refunded(id: &str) -> f64 {
+        futures::executor::block_on(refund_status_all()).unwrap().into_iter()
+            .find(|v| v["deal_flow_id"] == id).unwrap()["refunded"].as_f64().unwrap()
+    }
+    fn carrying(txn: &str) -> i64 {
+        pool().get().unwrap().query_row("SELECT COUNT(*) FROM refunds WHERE bank_txn_id=?1", [txn], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_bank_paid_refund_does_not_take_over_an_earlier_cash_refund_of_the_same_amount() {
+        let _db = crate::db::init_test_store();
+        let id = deal("two");
+        // First refund: cash, no bank row.
+        let cash = create_refund(id.clone(), 500.0, Some("cash".into()), None, None, None, Some("Paid in cash".into()), None).await.unwrap();
+        // Second refund, the same amount, paid by a wire linked to it.
+        wire_out("txn_r511_wire", 500.0);
+        let wired = create_refund(id.clone(), 500.0, Some("wire".into()), None, None, None, Some("Wire".into()), Some("txn_r511_wire".into())).await.unwrap();
+        assert_eq!(counted(&id), 1000.0, "both refunds are counted once");
+        assert_eq!(refunded(&id), 1000.0);
+        assert_eq!(carrying("txn_r511_wire"), 1, "exactly one refund row carries the transaction");
+        let bank_of = |rid: &str| -> Option<String> { pool().get().unwrap().query_row("SELECT bank_txn_id FROM refunds WHERE id=?1", [rid], |r| r.get(0)).unwrap() };
+        assert_eq!(bank_of(&cash), None, "the cash refund stays cash");
+        assert_eq!(bank_of(&wired).as_deref(), Some("txn_r511_wire"));
+    }
+
+    /// The Financials booking path still re-links: unlinking a workspace refund's transaction and
+    /// pairing the right one afterwards puts the refund back on the allocation arm, once.
+    #[tokio::test]
+    async fn pairing_a_transaction_in_financials_still_relinks_the_one_unlinked_refund() {
+        let _db = crate::db::init_test_store();
+        let id = deal("fin");
+        let refund = create_refund(id.clone(), 500.0, None, None, None, None, Some("Refund".into()), None).await.unwrap();
+        wire_out("txn_r511_fin", 500.0);
+        allocate_bank_txn("txn_r511_fin".into(), id.clone(), 500.0, "refund_out".into(), String::new(), None).await.unwrap();
+        let bank: Option<String> = pool().get().unwrap().query_row("SELECT bank_txn_id FROM refunds WHERE id=?1", [&refund], |r| r.get(0)).unwrap();
+        assert_eq!(bank.as_deref(), Some("txn_r511_fin"));
+        assert_eq!(counted(&id), 500.0, "the refund is counted once, on the allocation");
+    }
+}
+
+/// R-511 FD-08: editing a cost line used to overwrite `supplier_billed` and `split` with whatever
+/// the caller sent, and a caller that sent neither (the completed-deal screen) wrote `false` and
+/// nothing. The input is built from JSON here, the way the front end sends it.
+#[cfg(test)]
+mod r511_fd08_tests {
+    use super::*;
+
+    fn billed_freight() -> Value {
+        json!({
+            "id": "fr", "supplier_name": "Sample supplier", "supplier_id": null, "amount": 500.0,
+            "original_amount": null, "price_changed": false, "quantity": 1.0, "unit_price": 500.0,
+            "method": null, "notes": null, "paid": true, "paid_at": null, "category": "freight",
+            "kept": false, "supplier_billed": true
+        })
+    }
+
+    fn partner() -> Value {
+        json!({
+            "id": "pt", "supplier_name": "Sample partner", "supplier_id": null, "amount": 375.0,
+            "original_amount": 375.0, "price_changed": false, "quantity": 1000.0, "unit_price": 0.375,
+            "method": null, "notes": null, "paid": true, "paid_at": null, "category": "partner",
+            "kept": false, "supplier_billed": false,
+            "split": { "units": 1000.0, "sale_unit_price": 7.0, "basis_unit_cost": 6.25, "share_pct": 50.0 }
+        })
+    }
+
+    fn supplier() -> Value {
+        json!({
+            "id": "su", "supplier_name": "Sample supplier", "supplier_id": null, "amount": 6000.0,
+            "original_amount": null, "price_changed": false, "quantity": null, "unit_price": null,
+            "method": null, "notes": null, "paid": true, "paid_at": null, "category": "supplier",
+            "kept": false, "supplier_billed": false
+        })
+    }
+
+    fn insert_deal(tag: &str, stage: &str, lines: Vec<Value>) -> String {
+        let id = format!("df-r511-fd08-{tag}");
+        let total: f64 = lines.iter().map(|l| l["amount"].as_f64().unwrap()).sum();
+        let conn = pool().get().unwrap();
+        conn.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c-r511-fd08', 'Sample buyer', '2026-09-01', '2026-09-01')", []).unwrap();
+        conn.execute(
+            "INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, total, created_at)
+             VALUES (?1, 'c-r511-fd08', ?2, '2026-09-01', '2026-09-30', '[]', 10000, 10000, '2026-09-01')",
+            rusqlite::params![format!("inv-r511-fd08-{tag}"), format!("INV-R511-FD08-{tag}")],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO deal_flows (id, invoice_id, stage, created_at, updated_at, supplier_payments_json, total_supplier_cost, payment_received_amount)
+             VALUES (?1, ?2, ?3, '2026-09-01', '2026-09-01', ?4, ?5, 10000)",
+            rusqlite::params![id, format!("inv-r511-fd08-{tag}"), stage, Value::Array(lines).to_string(), total],
+        ).unwrap();
+        id
+    }
+
+    /// A completed deal with a supplier line, a billed freight line and a partner line.
+    async fn completed_deal(tag: &str) -> String {
+        let id = insert_deal(tag, "supplier_paid", vec![supplier(), billed_freight(), partner()]);
+        complete_deal_flow(id.clone(), None, None, None, None, None).await.unwrap();
+        id
+    }
+
+    fn input(v: Value) -> SupplierPaymentInput {
+        serde_json::from_value(v).expect("the front end's input shape")
+    }
+
+    fn line_of(deal: &str, pid: &str) -> SupplierPayment {
+        read_df(deal).unwrap().supplier_payments.into_iter().find(|p| p.id == pid).unwrap()
+    }
+
+    #[tokio::test]
+    async fn editing_only_the_amount_of_a_billed_freight_line_keeps_it_billed() {
+        let _db = crate::db::init_test_store();
+        let id = completed_deal("billed").await;
+        assert!(line_of(&id, "fr").owed_to_supplier(), "fixture: the freight line is supplier money");
+        // The completed-deal screen used to send no supplier_billed at all.
+        update_supplier_payment(id.clone(), "fr".into(), input(json!({
+            "supplier_name": "Sample supplier", "supplier_id": null, "amount": 650.0,
+            "quantity": null, "unit_price": null, "method": null, "notes": null, "category": "freight"
+        }))).await.unwrap();
+        let fr = line_of(&id, "fr");
+        assert_eq!(fr.amount, 650.0, "the amount took");
+        assert!(fr.supplier_billed, "an omitted supplier_billed means unchanged");
+        assert!(fr.owed_to_supplier(), "so the line still groups under the supplier in Payables");
+    }
+
+    #[tokio::test]
+    async fn an_explicit_supplier_billed_still_changes_the_line_either_way() {
+        let _db = crate::db::init_test_store();
+        let id = completed_deal("explicit").await;
+        update_supplier_payment(id.clone(), "fr".into(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 500.0, "category": "freight", "supplier_billed": false
+        }))).await.unwrap();
+        assert!(!line_of(&id, "fr").supplier_billed, "an explicit false un-bills the line");
+        update_supplier_payment(id.clone(), "fr".into(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 500.0, "category": "freight", "supplier_billed": true
+        }))).await.unwrap();
+        assert!(line_of(&id, "fr").supplier_billed, "an explicit true bills it");
+    }
+
+    #[tokio::test]
+    async fn editing_a_partner_line_keeps_its_split_and_its_derived_cut() {
+        let _db = crate::db::init_test_store();
+        let id = completed_deal("split").await;
+        // No split sent, a typed amount that is not the cut: the split stays and the cut stays derived.
+        update_supplier_payment(id.clone(), "pt".into(), input(json!({
+            "supplier_name": "Sample partner", "amount": 999.0, "quantity": 1000.0, "unit_price": 0.999,
+            "notes": "Agreed on a call", "category": "partner"
+        }))).await.unwrap();
+        let pt = line_of(&id, "pt");
+        let sp = pt.split.expect("the split survives an edit that does not send one");
+        assert_eq!((sp.units, sp.sale_unit_price, sp.basis_unit_cost, sp.share_pct), (1000.0, 7.0, 6.25, 50.0));
+        assert_eq!(pt.amount, 375.0, "the amount is still the cut the split works out to");
+        assert_eq!(pt.notes.as_deref(), Some("Agreed on a call"), "the rest of the edit took");
+        // A split sent with the edit replaces the stored one and the amount follows it.
+        update_supplier_payment(id.clone(), "pt".into(), input(json!({
+            "supplier_name": "Sample partner", "amount": 1.0, "category": "partner",
+            "split": { "units": 1000.0, "sale_unit_price": 7.0, "basis_unit_cost": 6.0, "share_pct": 50.0 }
+        }))).await.unwrap();
+        let pt = line_of(&id, "pt");
+        assert_eq!(pt.amount, 500.0);
+        assert_eq!(pt.split.unwrap().basis_unit_cost, 6.0);
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_omits_the_category_keeps_the_stored_one() {
+        let _db = crate::db::init_test_store();
+        let id = completed_deal("category").await;
+        update_supplier_payment(id.clone(), "fr".into(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 600.0
+        }))).await.unwrap();
+        let fr = line_of(&id, "fr");
+        assert_eq!(fr.category.as_deref(), Some("freight"));
+        assert!(fr.supplier_billed);
+    }
+
+    #[tokio::test]
+    async fn adding_a_line_without_supplier_billed_is_still_not_billed() {
+        let _db = crate::db::init_test_store();
+        let id = insert_deal("add", "invoiced", vec![]);
+        let pid = add_supplier_payment(id.clone(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 200.0, "category": "freight"
+        }))).await.unwrap();
+        assert!(!line_of(&id, &pid).supplier_billed);
+        let pid = add_supplier_payment(id.clone(), input(json!({
+            "supplier_name": "Sample supplier", "amount": 200.0, "category": "freight", "supplier_billed": true
+        }))).await.unwrap();
+        assert!(line_of(&id, &pid).supplier_billed);
     }
 }

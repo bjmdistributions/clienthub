@@ -851,8 +851,9 @@ export interface SupplierPaymentInput {
   method?: string | null;
   notes?: string | null;
   category?: string | null;
+  /** Omitted on an update keeps the line's stored value (R-511 FD-08). */
   supplier_billed?: boolean;
-  /** R-324. When set, the backend computes `amount` from it and ignores the one sent. */
+  /** R-324. When set, the backend computes `amount` from it and ignores the one sent. Omitted on an update keeps the stored split. */
   split?: PartnerSplit | null;
 }
 

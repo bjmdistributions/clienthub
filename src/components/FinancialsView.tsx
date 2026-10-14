@@ -22,6 +22,7 @@ import AccountantChanges from "./AccountantChanges";
 import NearDuplicates from "./NearDuplicates";
 import RetractedRows from "./RetractedRows";
 import { parseAmount } from "../lib/format";
+import { alreadyTied, tieAmount } from "../lib/tieAmount";
 
 // Backend errors arrive as raw Rust strings and were shown to the user verbatim,
 // often prefixed "Error:" by String(e). Strip the noise and never render an empty
@@ -428,6 +429,7 @@ const localChoices = (t: BankTxn, pool: DealFlow[]): DealChoice[] => {
         }
       }
     } else {
+      if (alreadyTied(t.links, d.id, "buyer_payment")) continue; // FD-05: the first tie already covered it
       let score = 0;
       if (cp.length > 2 && (d.client_name || "").toLowerCase().includes(cp)) score += 100;
       if (t.amount && d.invoice_total && Math.abs(d.invoice_total - t.amount) < 0.5) score += 60;
@@ -479,6 +481,9 @@ const dealOffer = (
   for (const c of cands ?? []) {
     const deal = poolById ? poolById.get(c.deal_id) : pool.find((d) => d.id === c.deal_id);
     if (!deal) continue;
+    // FD-05: candidates are fetched once, so after a capped tie the deal it landed on is
+    // still in the list. Offering it again would put a second payment on a covered invoice.
+    if (alreadyTied(t.links, c.deal_id, c.role)) continue;
     const cur = byDeal.get(c.deal_id);
     if (!cur || c.score > cur.c.score) byDeal.set(c.deal_id, { c, deal });
   }
@@ -1932,13 +1937,16 @@ export default function FinancialsView() {
     finally { setAllocBusy(false); }
   };
 
-  // One-click allocate for an unambiguous match: the full remaining amount, role read
-  // from the direction (money in = buyer payment, money out = supplier payment — the
-  // same pairing bulk allocate uses and the only roles rolesFor allows). A server
-  // candidate (R-150) overrides both: its role, its supplier leg cap, and the
-  // counterparty tag stamped on the txn after the allocation lands. This calls the
-  // exact command the panel calls, so nothing here skips a backend check; the row is
-  // re-checked for remaining amount at click time in case it went stale.
+  // One-click allocate for an unambiguous match: the remaining amount, capped at the leg
+  // (tieAmount), role read from the direction (money in = buyer payment, money out =
+  // supplier payment — the same pairing bulk allocate uses and the only roles rolesFor
+  // allows). A server candidate (R-150) overrides the role and names the leg to cap at;
+  // with no candidate a buyer tie caps at the deal's invoice total. The counterparty tag
+  // is stamped on the txn after the allocation lands. This calls the exact command the
+  // panel calls, so nothing here skips a backend check; the row is re-checked for
+  // remaining amount at click time in case it went stale. A row that already holds a
+  // payment on a different deal (the rest of a capped tie) passes allowSplit, the same
+  // as the split sheet, or the backend refuses the second deal as linked elsewhere.
   const tieMatch = async (t: BankTxn, d: DealFlow, candidate?: BankSuggestCandidate) => {
     if (tyingId) return;
     if (!(t.unallocated > 0.0001)) { toast("Nothing left to tie on this transaction", "error"); return; }
@@ -1946,14 +1954,14 @@ export default function FinancialsView() {
     try {
       const r: string = candidate?.role ?? (t.direction === "out" ? "supplier_payment" : "buyer_payment");
       // A supplier leg is one cut of a deal: tie at most that leg's amount so a
-      // multi-leg wire leaves its remainder allocatable elsewhere. Buyer ties keep
-      // the full remainder (the pre-existing behaviour, over-invoice confirm aside).
-      // A shipping leg is capped the same way (R-400).
-      const amt = (r === "supplier_payment" || r === "shipping") && candidate && candidate.leg_amount > 0
-        ? Math.min(t.unallocated, candidate.leg_amount)
-        : t.unallocated;
+      // multi-leg wire leaves its remainder allocatable elsewhere. A shipping leg is
+      // capped the same way (R-400), and so is a buyer payment (FD-05): a wire that
+      // covers two invoices must not land whole on the first. The rule lives in
+      // tieAmount; a buyer remainder over the leg is tied to the leg and left unbooked.
+      const { amount: amt, book: fullyTied } = tieAmount(r, t.unallocated, candidate?.leg_amount, d.invoice_total);
       const note = r === "supplier_payment" && candidate?.supplier_name ? candidate.supplier_name : "";
-      await api.allocateBankTxn(t.id, d.id, amt, r, note);
+      const onOtherDeal = (t.links ?? []).some((l) => l.deal_id !== d.id);
+      await api.allocateBankTxn(t.id, d.id, amt, r, note, onOtherDeal || undefined);
       // R-150 phase 4: stamp the supplier/client identity on the txn so profiles
       // show payment history even for money never tied to a deal. Best-effort —
       // a failed tag must never undo or hide a successful allocation.
@@ -1971,7 +1979,6 @@ export default function FinancialsView() {
       // one-click tie was followed by a second, redundant click on Book and the
       // row's own subline said so: "Tied to a deal — book it". A partial tie
       // still leaves the row in the queue, because the rest is still unfiled.
-      const fullyTied = amt + 0.005 >= t.unallocated;
       let booked = false;
       if (fullyTied && !t.reviewed) {
         try {
