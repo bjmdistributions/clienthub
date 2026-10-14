@@ -98,6 +98,7 @@ import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
 import { bellCountOf, bellTitle, canSeeTeamNotices } from "./lib/notices";
 import { confirmLeaveUnsaved } from "./lib/unsavedWork";
+import { tabSwitchAction } from "./lib/tabSwitch";
 import { useNotices } from "./lib/useNotices";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
@@ -205,9 +206,17 @@ export default function App() {
   // survivors still need anchoring and clamping. Click to open rather than hover: a
   // hover menu on a narrow rail is hard to hit on a trackpad, and Jack asked for click.
   const [flyout, setFlyout] = useState<{ id: string; top: number } | null>(null);
+  // The screen on show, for setTab. The navigate-tab and shortcut listeners are mounted once ([] deps) and keep the
+  // first render's setTab, so it cannot read `tab` from its own closure; this ref is kept current instead.
+  const tabRef = useRef<Tab>(tab);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
   const setTab = (t: Tab) => {
+    // DG-02: a request for the screen already open keeps it as it is (no remount, nothing asked); only a menu closes.
     // R-464: a full-page form with unsaved typing is asked about before the screen is switched away from it.
-    if (!confirmLeaveUnsaved()) return;
+    const action = tabSwitchAction(tabRef.current, t, confirmLeaveUnsaved);
+    if (action === "stay") { setFlyout(null); return; }
+    if (action === "refused") return;
+    tabRef.current = t;
     setTabState(t);
     setPageKey(k => k + 1);
     setFlyout(null);
