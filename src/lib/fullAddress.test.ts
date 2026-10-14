@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ADDRESS_EXAMPLE, ADDRESS_HINT, addressLack, addressNote, isFullAddress, keptPickupRows, relabelAddressGap, relabelPickupError } from "./fullAddress";
+import { ADDRESS_EXAMPLE, ADDRESS_HINT, addressLack, addressNote, isFullAddress, isSuiteLine, keptPickupRows, oneLineAddress, relabelAddressGap, relabelPickupError } from "./fullAddress";
 
 // R-483: invented addresses. The server's full_address is tested against the same cases.
 describe("isFullAddress", () => {
@@ -37,6 +37,12 @@ describe("isFullAddress", () => {
     "9 Depot Rd\nReno NV 89501",
     "9 Depot Rd Dock B Reno NV 89501",
     "9 Depot Rd NW Reno NV 89501",
+    // R-516: a suite or unit on its own line, after the city, state and ZIP line.
+    "9 Depot Rd, Warehouse City, NV 89001, Suite 4",
+    "9 Depot Rd\nWarehouse City, NV 89001\nSuite 101",
+    "9 Depot Rd, Warehouse City, NV 89001, Ste B",
+    "123 Main St, Reno, NV 89501, Unit 2",
+    "123 Main St, Reno, NV 89501, Dock 4",
   ];
   for (const a of full) it(`is full: ${JSON.stringify(a)}`, () => expect(isFullAddress(a)).toBe(true));
 
@@ -72,6 +78,9 @@ describe("isFullAddress", () => {
     ["9 Depot Rd, Warehouse City, NV 89001, Mexico", "another country", "zip"],
     ["12 Test Way, Testville", "a street and a city only", "zip"],
     ["9 Depot Rd, Warehouse City, constructor 89001", "a word that is not a state, even one every object has", "state"],
+    // R-516: a suite alone is never a street or a city.
+    ["Warehouse City, NV 89001, Suite 4", "a suite where the street should be", "street"],
+    ["NV 89001, Suite 4", "only a state and ZIP plus a suite", "zip"],
   ] as const;
   for (const [a, why, lack] of notFull) {
     it(`is not full: ${why}`, () => {
@@ -83,6 +92,19 @@ describe("isFullAddress", () => {
   it("reads a missing value as not full", () => {
     expect(isFullAddress(null)).toBe(false);
     expect(isFullAddress(undefined)).toBe(false);
+  });
+});
+
+describe("oneLineAddress", () => {
+  it("joins every line with a comma for one-tap copying", () => {
+    expect(oneLineAddress("123 Main St\nSuite 101\nReno, NV 89501")).toBe("123 Main St, Suite 101, Reno, NV 89501");
+    expect(oneLineAddress("123 Main St, Suite 101, Reno, NV 89501")).toBe("123 Main St, Suite 101, Reno, NV 89501");
+    expect(oneLineAddress(" 9 Depot Rd \n Reno, NV 89501 ")).toBe("9 Depot Rd, Reno, NV 89501");
+    expect(oneLineAddress("")).toBe("");
+  });
+  it("recognises the suite lines it allows after the ZIP", () => {
+    for (const a of ["Suite 101", "Ste B", "Unit 2", "#12", "Dock 4", "Floor 3"]) expect(isSuiteLine(a)).toBe(true);
+    for (const a of ["101", "Warehouse City", "Main St", ""]) expect(isSuiteLine(a)).toBe(false);
   });
 });
 

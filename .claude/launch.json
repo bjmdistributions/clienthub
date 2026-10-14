@@ -23,6 +23,57 @@
       "port": 5173
     },
     {
+      "name": "www-r505",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8091",
+        "--directory",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r505/www"
+      ],
+      "port": 8091
+    },
+    {
+      "name": "portal-r499-harness",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8097",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/92dbf7cc-3b14-4a52-9aaa-1e385c4664fd/scratchpad/portal"
+      ],
+      "port": 8097
+    },
+    {
+      "name": "www-r498",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8099",
+        "--directory",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r498/www"
+      ],
+      "port": 8099
+    },
+    {
+      "name": "desktop-r497-harness",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r497",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5197",
+        "--strictPort"
+      ],
+      "port": 5197
+    },
+    {
       "name": "desktop-harness",
       "runtimeExecutable": "npm",
       "runtimeArgs": [
@@ -169,7 +220,7 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": [
         "--prefix",
-        "C:/Users/Jack/Desktop/BUSINESS-APP-wt-r282",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r282",
         "run",
         "dev",
         "--",
@@ -187,7 +238,7 @@
         "http.server",
         "8298",
         "--directory",
-        "C:/Users/Jack/Desktop/clienthub-api-wt-r282/www"
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r282/www"
       ],
       "port": 8298
     },
@@ -487,6 +538,726 @@
         "8326"
       ],
       "port": 8326
+    },
+    {
+      "name": "phone-r336",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/fb6ec61e-3f22-4107-9430-2d2a1dcef4d5/scratchpad/harness/server.mjs"
+      ],
+      "port": 4173
+    },
+    {
+      "name": "phone-r362",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/419bdcb9-8845-44a3-aafd-7d155c13e3e7/scratchpad/harness/server.mjs"
+      ],
+      "port": 4362
+    },
+    {
+      "name": "sja-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/Websites/southjerzauctions",
+        "run",
+        "dev",
+        "--",
+        "-p",
+        "3200"
+      ],
+      "port": 3200
+    },
+    {
+      "name": "desktop-harness-r366",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5366",
+        "--strictPort"
+      ],
+      "port": 5366
+    },
+    {
+      "name": "phone-r366",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/6a686743-8c30-44ad-a365-e9b0df942904/scratchpad/harness/server.mjs"
+      ],
+      "port": 4366
+    },
+    {
+      "name": "portal-r374",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8374",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/dd9cf50a-ac82-42f0-9bd4-bc2f3edf8089/scratchpad"
+      ],
+      "port": 8374
+    },
+    {
+      "name": "desktop-harness-r379",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r379",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5379",
+        "--strictPort"
+      ],
+      "port": 5379
+    },
+    {
+      "name": "phone-r376",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/fb6ec61e-3f22-4107-9430-2d2a1dcef4d5/scratchpad/harness/server.mjs"
+      ],
+      "port": 4376,
+      "env": {
+        "PORT": "4376",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r376/www"
+      }
+    },
+    {
+      "name": "phone-r382",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/fb6ec61e-3f22-4107-9430-2d2a1dcef4d5/scratchpad/harness/server.mjs"
+      ],
+      "port": 4382,
+      "env": {
+        "PORT": "4382",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r382/www"
+      }
+    },
+    {
+      "name": "phone-r386-before",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/c929cd03-bbdb-4e75-83f6-f3c3cd2880b8/scratchpad/phone/before.mjs"
+      ],
+      "port": 4385
+    },
+    {
+      "name": "phone-r386-after",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/c929cd03-bbdb-4e75-83f6-f3c3cd2880b8/scratchpad/phone/after.mjs"
+      ],
+      "port": 4386
+    },
+    {
+      "name": "phone-r389",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/5120656f-5050-4b63-a703-3223d8567764/scratchpad/harness/server.mjs"
+      ],
+      "port": 4389,
+      "env": {
+        "PORT": "4389",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r389/www"
+      }
+    },
+    {
+      "name": "phone-r391",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/5120656f-5050-4b63-a703-3223d8567764/scratchpad/harness/server.mjs"
+      ],
+      "port": 4491,
+      "env": {
+        "PORT": "4491",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r391/www"
+      }
+    },
+    {
+      "name": "www-r394-before",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8394",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/aced7392-d5b1-4495-8401-d1841b7b3efb/scratchpad/before1/www"
+      ],
+      "port": 8394
+    },
+    {
+      "name": "desktop-harness-r133",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5133",
+        "--strictPort"
+      ],
+      "port": 5133
+    },
+    {
+      "name": "desktop-r392",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r392",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5392",
+        "--strictPort"
+      ],
+      "port": 5392
+    },
+    {
+      "name": "desktop-harness-r396",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5396",
+        "--strictPort"
+      ],
+      "port": 5396
+    },
+    {
+      "name": "phone-r404",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/5120656f-5050-4b63-a703-3223d8567764/scratchpad/harness/server.mjs"
+      ],
+      "port": 4404,
+      "env": {
+        "PORT": "4404",
+        "WWW_DIR": "C:/Users/Jack/Desktop/clienthub-api/www"
+      }
+    },
+    {
+      "name": "desktop-harness-r402",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r402",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5402",
+        "--strictPort"
+      ],
+      "port": 5402
+    },
+    {
+      "name": "phone-r402",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/7b82d7c8-38b7-4853-8817-4fa797030dae/scratchpad/phone_mock_r402.py",
+        "8402"
+      ],
+      "port": 8402
+    },
+    {
+      "name": "desktop-harness-r414",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5414",
+        "--strictPort"
+      ],
+      "port": 5414
+    },
+    {
+      "name": "phone-r414",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/522408bb-3bb4-4786-96e9-07931fcb4324/scratchpad/phone/server.mjs"
+      ],
+      "port": 4414,
+      "env": {
+        "PORT": "4414",
+        "WWW_DIR": "C:/Users/Jack/Desktop/clienthub-api/www"
+      }
+    },
+    {
+      "name": "r400-phone",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8401",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/a2ac715e-20c3-4445-9b33-e1d2c0ec6bfa/scratchpad/phone-harness/site"
+      ],
+      "port": 8401
+    },
+    {
+      "name": "phone-r429",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/a00514db-d491-44ff-9fd1-bfe7ceecbbac/scratchpad/r428/harness/server.mjs"
+      ],
+      "port": 4429,
+      "env": {
+        "PORT": "4429",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r429/www"
+      }
+    },
+    {
+      "name": "phone-r428",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/a00514db-d491-44ff-9fd1-bfe7ceecbbac/scratchpad/r428/harness/server.mjs"
+      ],
+      "port": 4428,
+      "env": {
+        "PORT": "4428",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r428/www"
+      }
+    },
+    {
+      "name": "desktop-r425",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r425",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5425",
+        "--strictPort"
+      ],
+      "port": 5425
+    },
+    {
+      "name": "www-r422",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8422",
+        "--directory",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r422/www"
+      ],
+      "port": 8422
+    },
+    {
+      "name": "desktop-r430",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r430",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5430",
+        "--strictPort"
+      ],
+      "port": 5430
+    },
+    {
+      "name": "phone-r430",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/1debe072-c00f-4ad3-9b39-4f0532c972df/scratchpad/r430/harness/server.mjs"
+      ],
+      "port": 4430,
+      "env": {
+        "PORT": "4430",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r430/www"
+      }
+    },
+    {
+      "name": "phone-r440",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8440",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/50641c1b-91d5-4cb1-b8ff-0e8e1a2b6d0d/scratchpad/lg/site"
+      ],
+      "port": 8440
+    },
+    {
+      "name": "desktop-harness-r441",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5441",
+        "--strictPort"
+      ],
+      "port": 5441
+    },
+    {
+      "name": "phone-r441",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/3562013a-758f-40ae-8bdf-d18619a03b2b/scratchpad/phone/server.mjs"
+      ],
+      "port": 4441,
+      "env": {
+        "PORT": "4441",
+        "WWW_DIR": "C:/Users/Jack/Desktop/clienthub-api/www"
+      }
+    },
+    {
+      "name": "desktop-harness-r444",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5244",
+        "--strictPort"
+      ],
+      "port": 5244
+    },
+    {
+      "name": "desktop-harness-r449",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r449",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5449",
+        "--strictPort"
+      ],
+      "port": 5449
+    },
+    {
+      "name": "phone-r449",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/f04fce53-9d16-4fda-a9a5-c1fa4f946d39/scratchpad/mock/server.js"
+      ],
+      "port": 8123
+    },
+    {
+      "name": "phone-r452",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8452",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/52c851a4-55cf-4e0a-94dc-f70513065d50/scratchpad/lgsite"
+      ],
+      "port": 8452
+    },
+    {
+      "name": "desktop-harness-r453",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r453",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5453",
+        "--strictPort"
+      ],
+      "port": 5453
+    },
+    {
+      "name": "phone-r458",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8458",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/772511d7-2ce5-4d89-aa5f-caf5d9e76828/scratchpad/lg458/site"
+      ],
+      "port": 8458
+    },
+    {
+      "name": "phone-r459",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8459",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/cd56fb39-c822-408f-a183-48077fcc5bce/scratchpad/lg459/site"
+      ],
+      "port": 8459
+    },
+    {
+      "name": "desktop-r459",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r459",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5459",
+        "--strictPort"
+      ],
+      "port": 5459
+    },
+    {
+      "name": "desktop-r458",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r458",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5458",
+        "--strictPort"
+      ],
+      "port": 5458
+    },
+    {
+      "name": "desktop-r467",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r467",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5467",
+        "--strictPort"
+      ],
+      "port": 5467
+    },
+    {
+      "name": "phone-r467",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/59f37375-8ff2-433f-97ec-8c6eaa4cd613/scratchpad/phone/server.mjs"
+      ],
+      "port": 8467,
+      "env": {
+        "PORT": "8467",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r467/www"
+      }
+    },
+    {
+      "name": "desktop-r483",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r482",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5483",
+        "--strictPort"
+      ],
+      "port": 5483
+    },
+    {
+      "name": "phone-r483",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/874ffda8-33ff-455c-897e-7e1ac9d96474/scratchpad/phone/server.mjs"
+      ],
+      "port": 8483,
+      "env": {
+        "PORT": "8483",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r482/www"
+      }
+    },
+    {
+      "name": "csp-r485",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/cd56fb39-c822-408f-a183-48077fcc5bce/scratchpad/csp485/server.js"
+      ],
+      "port": 8485
+    },
+    {
+      "name": "desktop-r485m",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r485m",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5485",
+        "--strictPort"
+      ],
+      "port": 5485
+    },
+    {
+      "name": "www-r485m-map",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8486",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/cd56fb39-c822-408f-a183-48077fcc5bce/scratchpad/r485w"
+      ],
+      "port": 8486
+    },
+    {
+      "name": "www-r486-mock",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/cd56fb39-c822-408f-a183-48077fcc5bce/scratchpad/r486-mock.js"
+      ],
+      "port": 8796
+    },
+    {
+      "name": "desktop-r486",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r486",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5486",
+        "--strictPort"
+      ],
+      "port": 5486
+    },
+    {
+      "name": "desktop-r485b",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r485b",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5488",
+        "--strictPort"
+      ],
+      "port": 5488
+    },
+    {
+      "name": "www-r485b-map",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/cd56fb39-c822-408f-a183-48077fcc5bce/scratchpad/r485w/serve.js",
+        "8488"
+      ],
+      "port": 8488
+    },
+    {
+      "name": "phone-r489",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/38f4930f-2cac-4f66-ab7c-210f183b85f5/scratchpad/phone/server.mjs"
+      ],
+      "port": 8489,
+      "env": {
+        "PORT": "8489",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r489/www"
+      }
+    },
+    {
+      "name": "desktop-r489",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r489",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5489",
+        "--strictPort"
+      ],
+      "port": 5489
+    },
+    {
+      "name": "portal-r504-harness",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8096",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/56c2c9ec-80e1-4828-abb1-81fd0326580e/scratchpad/h"
+      ],
+      "port": 8096
+    },
+    {
+      "name": "phone-r507",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/874ffda8-33ff-455c-897e-7e1ac9d96474/scratchpad/phone/server.mjs"
+      ],
+      "port": 8507,
+      "env": {
+        "PORT": "8507",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r507/www"
+      }
+    },
+    {
+      "name": "phone-r508",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/874ffda8-33ff-455c-897e-7e1ac9d96474/scratchpad/phone/server.mjs"
+      ],
+      "port": 8508,
+      "env": {
+        "PORT": "8508",
+        "WWW_DIR": "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r508/www"
+      }
+    },
+    {
+      "name": "desktop-r511-ui",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "-e",
+        "process.chdir('C:/Users/Jack/Desktop/ecliptr-worktrees/desktop-r511-ui'); require('child_process').spawn('npx', ['vite','--port','5177','--strictPort'], {stdio:'inherit', shell:true})"
+      ],
+      "port": 5177
+    },
+    {
+      "name": "www-r511-ui",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8092",
+        "--directory",
+        "C:/Users/Jack/Desktop/ecliptr-worktrees/server-r511-ui/www"
+      ],
+      "port": 8092
     }
   ]
 }

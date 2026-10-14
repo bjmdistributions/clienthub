@@ -51,6 +51,9 @@ export interface DealShipFacts {
   /** R-509: marked done, waiting for the carrier payment. A row without it is read from `metadata.carrier_hold`. */
   carrier_hold?: boolean;
   metadata?: string | null;
+  /** R-514: what the carriers are still owed (the R-418 floor). 0 once every truck is paid,
+   *  or without logistics. Zero for a viewer without the dollar switch. */
+  shipping_owed?: number;
 }
 
 /** What is still unpaid on a deal, as the screen needs it. `buyerLeft` and `supplierLeft` are dollars, and are null for
@@ -275,10 +278,17 @@ export function stillNeededLine(f: DealShipFacts, ctx: DealCtx): Line | null {
   if (pay?.buyerDue) need.push(pay.buyerLeft !== null ? `buyer payment ${money(pay.buyerLeft)}` : "buyer payment");
   if (pay?.supplierDue) need.push(pay.supplierLeft !== null ? `supplier payment ${money(pay.supplierLeft)}` : "supplier payment");
   if (pay?.costMissing) need.push("supplier cost");
-  if (carrierDue(f) && shippingDone(f, ctx)) need.push("carrier payment");
+  // R-514: the money the carriers are still owed, so the card says how much is pending
+  // without opening the loads. Words only for a viewer without the dollar switch.
+  const owed = f.shipping_owed ?? 0;
+  if (carrierDue(f) && shippingDone(f, ctx)) {
+    need.push(ctx.numbers && owed > 0.005 ? `carrier payment ${money(owed)}` : "carrier payment");
+  } else if (owed > 0.005) {
+    need.push(ctx.numbers ? `carrier payment ${money(owed)}` : "carrier payment");
+  }
   if (section === "notSetUp") need.push("shipping");
   // R-509: marked done, and the carrier payment is all it waits for.
-  if (need.length === 1 && need[0] === "carrier payment" && carrierHold(f)) return one("Marked done. It completes when the carrier payment is linked.", "ink");
+  if (need.length === 1 && need[0].startsWith("carrier payment") && carrierHold(f)) return one("Marked done. It completes when the carrier payment is linked.", "ink");
   if (need.length > 0) return one(`Still needed: ${need.join(", ")}`, "ink");
   if (!pay) return section === "paymentMissing" ? one("Payment status not available", "muted") : null;
   return one(`Buyer paid. ${pay.supplierKept ? "Supplier kept, nothing to pay." : "Supplier paid."}`, "muted");

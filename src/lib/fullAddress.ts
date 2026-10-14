@@ -14,6 +14,14 @@ const ZIP = /^(\d{5})(-\d{4})?$/;
 /** R-502: the first part an address is missing, read from the end (the server's `AddressLack`). */
 export type AddressLack = "empty" | "zip" | "state" | "city" | "street";
 
+/** R-516: a line that is just a suite or unit on its own ("Suite 101", "Ste B", "Unit 2", "#12",
+ *  "Dock 4"). It may sit after the city, state and ZIP line, so the address never has to end in the
+ *  ZIP. */
+export const isSuiteLine = (part: string): boolean => {
+  const w = part.trim().split(/\s+/)[0]?.replace(/[.,]+$/, "").toLowerCase() ?? "";
+  return w.startsWith("#") || ["no", "number", "suite", "ste", "unit", "apt", "apartment", "floor", "fl", "room", "rm", "bldg", "building", "dock", "slip", "space", "lot", "bay"].includes(w);
+};
+
 /** R-502: street words that end a street name, so a city can be told from the street with no comma between them. */
 const STREET_ENDS = new Set([
   "st", "street", "rd", "road", "ave", "av", "avenue", "blvd", "boulevard", "dr", "drive", "ln", "lane", "way", "hwy",
@@ -35,11 +43,18 @@ const isState = (s: string) => typeof resolveState(s) === "string";
  *  any case, comma or not), and what is left is the street and the city: two parts when a comma or new line splits
  *  them, else the street starts with its number and runs to its street word ("Rd") and any unit, number or direction
  *  after it ("Rd Suite 4", "Hwy 50"), and the city is what follows ("9 Depot Rd Reno NV 89501"). A country after the
- *  ZIP ("USA") and a full stop after a word do not matter. The server's `read_address` is the same rule. */
+ *  ZIP ("USA") and a full stop after a word do not matter. R-516: a suite or unit line may come after the city, state
+ *  and ZIP line ("123 Main St, Reno, NV 89501, Suite 101"). The server's `read_address` is the same rule. */
 export function addressLack(addr: string | null | undefined): AddressLack | undefined {
   let parts = (addr ?? "").split(/[,\r\n]/).map((p) => p.trim().split(/\s+/).filter(Boolean)).filter((p) => p.length > 0);
   if (parts.length === 0) return "empty";
   if (parts.length > 1 && COUNTRIES.has(parts[parts.length - 1].join(" ").toLowerCase())) parts.pop();
+  // R-516: take suite lines off the end, then ask for the ZIP. Two at most, and never fewer than
+  // two parts left, so a street or city is never silently treated as a suite.
+  for (let i = 0; i < 2; i++) {
+    const tail = parts[parts.length - 1];
+    if (parts.length > 2 && tail && isSuiteLine(tail.join(" "))) parts.pop();
+  }
   const zip = parts[parts.length - 1].pop() ?? "";
   if (!ZIP.test(zip.replace(/\.+$/, ""))) return "zip";
   parts = parts.filter((p) => p.length > 0);
@@ -65,6 +80,17 @@ export function addressLack(addr: string | null | undefined): AddressLack | unde
 
 /** A full address: `addressLack` finds nothing missing. */
 export const isFullAddress = (addr: string | null | undefined): boolean => addressLack(addr) === undefined;
+
+/** R-516: an address formatted for one-tap copying: every line joined with ", ", stray spacing and
+ *  double commas collapsed, so "123 Main St\nSuite 101\nReno, NV 89501" reads "123 Main St, Suite 101, Reno, NV 89501". */
+export const oneLineAddress = (addr: string | null | undefined): string =>
+  (addr ?? "")
+    .split(/[\r\n]+/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .join(", ")
+    .replace(/\s*,\s*,+\s*/g, ", ")
+    .trim();
 
 /** R-502: the worked example the server's refusal ends with (logistics.rs `ADDRESS_EXAMPLE`). */
 export const ADDRESS_EXAMPLE = "Like 9 Depot Rd, Reno, NV 89501.";

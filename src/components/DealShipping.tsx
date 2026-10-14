@@ -288,7 +288,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                   </select>
                 )}
                 <input className={inp} placeholder="Name" value={pickup.name} onChange={(e) => setPickup({ ...pickup, name: e.target.value })} />
-                <input className={inp} placeholder={ADDRESS_HINT} aria-label="Pickup address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
+                <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label="Pickup address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
                 <AddressNote value={pickup.address} />
                 <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={when.window} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, window: v })); }} />
               </div>
@@ -300,7 +300,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                       className="text-[11.5px] text-muted hover:text-danger-ink px-1.5 h-6 rounded-md hover:bg-danger-bg transition-colors">Remove</button>
                   </div>
                   <input className={inp} placeholder="Name" aria-label={`Pickup ${i + 2} name`} value={x.name} onChange={(e) => setStop(i, { name: e.target.value })} />
-                  <input className={inp} placeholder={ADDRESS_HINT} aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
+                  <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
                   <AddressNote value={x.address} />
                   <input className={inp} placeholder="Time, like before 4 pm" aria-label={`Pickup ${i + 2} time`} value={x.window} onChange={(e) => setStop(i, { window: e.target.value })} />
                 </div>
@@ -314,7 +314,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Delivery</div>
                 <input className={inp} placeholder="Name" value={delivery.name} onChange={(e) => setDelivery({ ...delivery, name: e.target.value })} />
-                <input className={inp} placeholder={ADDRESS_HINT} aria-label="Delivery address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
+                <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label="Delivery address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
                 <AddressNote value={delivery.address} />
               </div>
               {lane && <RateCard by={lane} onOpenCarrier={setCarrierId} />}

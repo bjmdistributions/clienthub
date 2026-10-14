@@ -1157,6 +1157,15 @@ export interface DealFlow {
   /** total_supplier_cost - freight_typed + shipping_estimate. What an open deal is expected
    *  to cost. Equal to total_supplier_cost for a deal that does not use logistics. */
   projected_cost?: number;
+  /** R-513: the supplier invoice files on the deal — {id, name, mime, size, by, at}, the
+   *  bytes fetched from the server. Read tolerantly: an older response has none. */
+  files?: FreightFile[];
+  /** R-514: what the carriers are still owed (the R-418 floor). 0 once every truck is paid,
+   *  or without logistics. Zeroed for a viewer without the dollar switch. */
+  shipping_owed?: number;
+  /** R-515: the deal's item, as the invoice names it (the first line-item description),
+   *  "" when the invoice has no lines. */
+  item_name?: string;
 }
 
 /** R-277: one Priority1 shipment, built from its tracking emails. `deal_flow_id` empty =
@@ -3646,6 +3655,11 @@ function logisticsRequest<T>(method: string, path: string, body?: unknown): Prom
   return invoke<T>("logistics_request", { method, path, body: body ?? null });
 }
 
+// R-513: the deal's supplier invoice files ride the same shape of proxy, scoped to /api/deal-flows.
+function dealFilesRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return invoke<T>("deal_files_request", { method, path, body: body ?? null });
+}
+
 // ===== API =====
 export const api = {
   // Clients
@@ -3971,9 +3985,21 @@ export const api = {
   confirmWorkspaceSwitch: (email: string, password: string) =>
     invoke<void>("confirm_workspace_switch", { email, password }),
   resumeSwitchLogin: () => invoke<Me | null>("resume_switch_login"),
+  // R-513: supplier invoice files on a deal. The list syncs on the deal; the bytes come
+  // from the server's /api/deal-flows/:id/files routes through the one proxy command.
+  dealFiles: {
+    add: (dealFlowId: string, name: string, data: string) =>
+      dealFilesRequest<DealFlow>("POST", `/api/deal-flows/${encodeURIComponent(dealFlowId)}/files`, { name, data }),
+    get: (dealFlowId: string, fileId: string) =>
+      dealFilesRequest<{ name: string; mime: string; size: number; data: string }>("GET", `/api/deal-flows/${encodeURIComponent(dealFlowId)}/files/${encodeURIComponent(fileId)}`),
+    remove: (dealFlowId: string, fileId: string) =>
+      dealFilesRequest<DealFlow>("DELETE", `/api/deal-flows/${encodeURIComponent(dealFlowId)}/files/${encodeURIComponent(fileId)}`),
+    /** Writes the file to `dest`, a path from the save dialog. */
+    saveAs: (dealFlowId: string, fileId: string, dest: string) =>
+      invoke<void>("deal_files_save_as", { dealFlowId, fileId, dest }),
+  },
   // Logistics (R-400)
-  logistics: {
-    /** `includeDone` also returns delivered-and-paid and cancelled bookings. `dealFlowId` is
+  logistics: {    /** `includeDone` also returns delivered-and-paid and cancelled bookings. `dealFlowId` is
      *  honoured only for someone who may see deals. */
     list: (opts?: { includeDone?: boolean; dealFlowId?: string }) => {
       const q: string[] = [];
@@ -4017,8 +4043,7 @@ export const api = {
     saveDownload: (path: string) => invoke<string | null>("logistics_save_download", { path }),
     /** R-459: the carriers directory. The server holds it, it is never synced. */
     carriers: {
-      list: (q?: string) => logisticsRequest<{ carriers: FreightCarrier[] }>("GET", `/api/logistics/carriers${q && queryText(q) ? `?q=${queryText(q)}` : ""}`),
-      get: (id: string) => logisticsRequest<FreightCarrierDetail>("GET", `/api/logistics/carriers/${encodeURIComponent(id)}`),
+      list: (q?: string) => logisticsRequest<{ carriers: FreightCarrier[] }>("GET", `/api/logistics/carriers${q && queryText(q) ? `?q=${queryText(q)}` : ""}`),      get: (id: string) => logisticsRequest<FreightCarrierDetail>("GET", `/api/logistics/carriers/${encodeURIComponent(id)}`),
       create: (c: FreightCarrierInput) => logisticsRequest<FreightCarrierDetail>("POST", "/api/logistics/carriers", c),
       update: (id: string, c: Partial<FreightCarrierInput>) => logisticsRequest<FreightCarrierDetail>("PATCH", `/api/logistics/carriers/${encodeURIComponent(id)}`, c),
       /** Archives it: loads that used it keep the name. */

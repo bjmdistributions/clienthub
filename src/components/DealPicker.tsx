@@ -229,7 +229,7 @@ export default function DealPicker({
 
     const matches = (d: DealFlow) => {
       if (!q) return true;
-      const hay = `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""}`.toLowerCase();
+      const hay = `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""} ${d.item_name || ""}`.toLowerCase();
       if (hay.includes(q)) return true;
       // Searching by amount: the figure on the transaction is usually the
       // fastest way to name the deal, and the old search could not read it.
@@ -331,7 +331,9 @@ export default function DealPicker({
             </span>
             <span className="text-[11px] text-muted truncate min-w-0">
               {d.invoice_number ? `#${d.invoice_number}` : ""}
-              {d.invoice_number && (d.completed_at || d.created_at) ? " · " : ""}
+              {d.invoice_number && d.item_name ? " · " : ""}
+              {d.item_name}
+              {(d.invoice_number || d.item_name) && (d.completed_at || d.created_at) ? " · " : ""}
               {shortDate(d.completed_at || d.created_at)}
             </span>
           </div>

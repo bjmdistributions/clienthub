@@ -5101,6 +5101,17 @@ pub struct DealFlow {
     /// R-460: the load numbers of the deal's live and quote-stage bookings, space-joined ("" when none).
     #[serde(default)]
     pub load_numbers: String,
+    /// R-513: the supplier invoice files on the deal — `{id, name, mime, size, by, at}` rows, the
+    /// bytes fetched from the server's `/api/deal-flows/:id/files/:file_id`.
+    #[serde(default)]
+    pub files: Vec<Value>,
+    /// R-514: what the carriers are still owed (the R-418 floor, `ShipFacts::shipping_owed`).
+    #[serde(default)]
+    pub shipping_owed: f64,
+    /// R-515: the deal's item, as the invoice names it: the first line-item description ("" when
+    /// the invoice has no lines). Shown where a deal is picked by invoice number.
+    #[serde(default)]
+    pub item_name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -5213,7 +5224,25 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         projected_cost: facts.projected_cost(total_supplier_cost),
         shipping_billed: facts.billed,
         shipping_billed_source: facts.billed_source().to_string(),
+        // R-514: what the carriers are still owed (the R-418 floor), computed once here so the
+        // list and the detail agree.
+        shipping_owed: facts.shipping_owed(),
         load_numbers: r.get::<_, Option<String>>("load_numbers").ok().flatten().unwrap_or_default(),
+        // R-513: the files listed on the deal (the bytes live on the server). Read
+        // tolerantly like the derived fields above; unreadable JSON reads as none.
+        files: r
+            .get::<_, String>("files")
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default(),
+        // R-515: the deal's item, as the invoice names it (the first line-item description).
+        item_name: r
+            .get::<_, String>("inv_line_items_json")
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Vec<Value>>(&raw).ok())
+            .and_then(|items| items.into_iter().next())
+            .and_then(|it| it.get("description").and_then(|d| d.as_str()).map(|s| s.trim().to_string()))
+            .unwrap_or_default(),
     })
 }
 

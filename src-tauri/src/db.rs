@@ -2447,4 +2447,15 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE bank_txn ADD COLUMN tie_out_hidden INTEGER DEFAULT 0;
         "#,
     ),
+    (
+        113,
+        // R-513: the supplier invoice files on a deal. `files` is the LIST of files (the bytes
+        // live in the server's deal_flow_files table and are fetched by route); it syncs like
+        // every deal_flows column. Mirrored in clienthub-api (schema.sql and the sync.rs backfill),
+        // which must be DEPLOYED FIRST or apply_upsert drops the list out of every deal-flow event
+        // as SCHEMA DRIFT. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        ALTER TABLE deal_flows ADD COLUMN files TEXT NOT NULL DEFAULT '[]';
+        "#,
+    ),
 ];

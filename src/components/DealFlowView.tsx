@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit, isResoldLine, allocateDealPayout, dealPayoutIncluded, dealPayoutRecipients,
-  type FreightBooking,
+  type FreightBooking, type FreightFile,
 } from "../lib/api";
 import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, isShippingLine, owedToSupplier } from "../lib/format";
 import { toast } from "./Toast";
@@ -32,7 +32,7 @@ import {
   buyerLeg, canMoveDeal, canSeePayments, groupPayments, groupSummary, loadNumbersOf, money, paymentFiguresOf, supplierLeg,
   type LegTone, type PaymentEntry, type PaymentLeg,
 } from "../lib/dealPayments";
-import { useNetsyncApplied, FreightStatusPill, AmountNeededPill } from "./LogisticsBookingForm";
+import { useNetsyncApplied, FreightStatusPill, AmountNeededPill, fileBase64, fileSize, keepSmall, FileDrop } from "./LogisticsBookingForm";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -927,10 +927,88 @@ const sIdx = (k: SectionKey) => SECTIONS.findIndex((s) => s.key === k);
 // mounts, and taken by the card for that invoice.
 let openTarget: { invoice: string; section: SectionKey } | null = null;
 
+// R-513: the supplier invoice files on one deal. The list syncs on the deal row; the bytes come
+// from the server. Adding and removing ride the server's routes, which enforce deal edit access
+// (the UI hides both while the card is edit-locked).
+function SupplierInvoices({ flow, locked, onReload }: { flow: DealFlow; locked: boolean; onReload: () => void }) {
+  const files = (flow.files ?? []).filter((f) => f && f.id);
+  const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<{ url: string; name: string } | null>(null);
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
+  const open = async (f: FreightFile) => {
+    try {
+      const got = await api.dealFiles.get(flow.id, f.id);
+      const bin = Uint8Array.from(atob(got.data), (c) => c.charCodeAt(0));
+      setPreview({ url: URL.createObjectURL(new Blob([bin], { type: got.mime })), name: got.name });
+    } catch (e) { toast(String(e), "error"); }
+  };
+  const save = async (f: FreightFile) => {
+    const dest = await saveDialog({ defaultPath: f.name });
+    if (!dest) return;
+    try { await api.dealFiles.saveAs(flow.id, f.id, dest); toast("Saved"); } catch (e) { toast(String(e), "error"); }
+  };
+  const remove = async (f: FreightFile) => {
+    if (!confirm(`Remove ${f.name} from this deal?`)) return;
+    try { await api.dealFiles.remove(flow.id, f.id); toast("Invoice removed"); onReload(); } catch (e) { toast(String(e), "error"); }
+  };
+  const add = async (list: File[]) => {
+    setBusy(true);
+    let ok = 0;
+    for (const f of list) {
+      try { await api.dealFiles.add(flow.id, f.name, await fileBase64(f)); ok++; }
+      catch (e) { toast(`${f.name}: ${String(e)}`, "error"); }
+    }
+    setBusy(false);
+    if (ok > 0) { toast(ok === 1 ? "Invoice attached" : `${ok} invoices attached`); onReload(); }
+  };
+  return (
+    <div className="border-t border-line px-5 py-3 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[12.5px] font-medium text-ink-2 inline-flex items-center gap-1.5"><FileDown size={13} /> Supplier invoices</span>
+        <StatusPill tone={files.length ? "success" : "neutral"}>{files.length ? `${files.length} on file` : "None yet"}</StatusPill>
+      </div>
+      {files.length > 0 && (
+        <div className="rounded-lg border border-line divide-y divide-line">
+          {files.map((f) => (
+            <div key={f.id} className="flex items-center gap-2 px-3 py-2 min-w-0">
+              <FileDown size={14} className="text-muted flex-shrink-0" />
+              <button type="button" onClick={() => open(f)} className="min-w-0 flex-1 text-left">
+                <div className="text-[13px] text-ink truncate hover:underline">{f.name}</div>
+                <div className="text-[11px] text-muted truncate">{[fileSize(f.size || 0), f.by, f.at ? parseLocalDay(f.at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : ""].filter(Boolean).join(", ")}</div>
+              </button>
+              {!locked && (
+                <>
+                  <button type="button" onClick={() => save(f)} title="Save a copy"
+                    className="p-1.5 rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><FileDown size={14} /></button>
+                  <button type="button" onClick={() => remove(f)} title="Remove"
+                    className="p-1.5 rounded-lg text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors flex-shrink-0"><Trash2 size={14} /></button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {!locked && (
+        <FileDrop onFiles={add} busy={busy} prompt="a supplier invoice PDF" hint="Each file up to 15 MB" />
+      )}
+      {preview && (
+        <div className="fixed inset-0 z-[90] bg-black/60 flex items-center justify-center p-6" onClick={() => setPreview(null)}>
+          <div className="bg-surface rounded-xl shadow-xl w-full max-w-3xl h-[80vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-line">
+              <span className="text-[13px] font-medium text-ink truncate">{preview.name}</span>
+              <button onClick={() => setPreview(null)} className="ml-auto p-1.5 rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2"><X size={15} /></button>
+            </div>
+            <iframe src={preview.url} title={preview.name} className="flex-1 w-full bg-white" />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DealFlowCard({
   flow, onReload, zebra, refund, reconStatus, lines,
-}: { flow: DealFlow; onReload: () => void; zebra: boolean; lines?: DealDescription; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean } }) {
-  // Collapsed by default, unless another screen asked for this deal on a step (R-401).
+}: { flow: DealFlow; onReload: () => void; zebra: boolean; lines?: DealDescription; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean } }) {  // Collapsed by default, unless another screen asked for this deal on a step (R-401).
   const [wanted] = useState<SectionKey | null>(() => {
     if (openTarget && openTarget.invoice === flow.invoice_number) { const s = openTarget.section; openTarget = null; return s; }
     return null;
@@ -1331,6 +1409,9 @@ function DealFlowCard({
               </button>
             </div>
           )}
+
+          {/* Supplier invoices — R-513, the PDFs for the deal's supplier paperwork */}
+          <SupplierInvoices flow={flow} locked={locked} onReload={onReload} />
 
           {/* Active section body */}
           <div className="border-t border-line bg-surface-2 px-5 py-4">

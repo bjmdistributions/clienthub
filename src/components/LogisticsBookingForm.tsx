@@ -938,8 +938,13 @@ export default function LogisticsBookingForm({
 
   const t = (k: TextKey, label: string, opts?: { type?: string; hint?: string; wide?: boolean; placeholder?: string }) => (
     <Field label={label} hint={opts?.hint} wide={opts?.wide}>
-      <input className={inp} type={opts?.type ?? "text"} value={draft[k]} placeholder={opts?.placeholder}
-        onChange={(e) => set(k, e.target.value)} />
+      {k.endsWith("_address") ? (
+        <textarea className={`${inp} h-auto py-2`} rows={2} value={draft[k]} placeholder={opts?.placeholder}
+          onChange={(e) => set(k, e.target.value)} />
+      ) : (
+        <input className={inp} type={opts?.type ?? "text"} value={draft[k]} placeholder={opts?.placeholder}
+          onChange={(e) => set(k, e.target.value)} />
+      )}
     </Field>
   );
   const dateHint = (kind: "pickup" | "delivery") =>
@@ -972,7 +977,11 @@ export default function LogisticsBookingForm({
   };
   const stopInput = (i: number, k: keyof FreightStop, label: string, wide?: boolean) => (
     <Field label={label} wide={wide} hint={k === "address" ? addressNote(draft.stops[i].address) : undefined}>
-      <input className={inp} value={String(draft.stops[i][k] ?? "")} placeholder={k === "address" ? ADDRESS_HINT : undefined} onChange={(e) => setStop(i, k, e.target.value)} />
+      {k === "address" ? (
+        <textarea className={`${inp} h-auto py-2`} rows={2} value={String(draft.stops[i][k] ?? "")} placeholder={ADDRESS_HINT} onChange={(e) => setStop(i, k, e.target.value)} />
+      ) : (
+        <input className={inp} value={String(draft.stops[i][k] ?? "")} onChange={(e) => setStop(i, k, e.target.value)} />
+      )}
     </Field>
   );
 

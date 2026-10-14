@@ -44,6 +44,7 @@ mod secret_store;
 mod show_packing;
 mod shipments;
 mod freight;
+mod deal_files;
 mod warehouse;
 mod warehouse_core;
 mod pallet_fit;
@@ -1277,6 +1278,8 @@ fn main() {
             // Logistics (R-400)
             freight::logistics_request,
             freight::logistics_save_file,
+            deal_files::deal_files_request,
+            deal_files::deal_files_save_as,
             freight::logistics_save_download,
             freight::list_freight_bookings,
             freight::get_deal_logistics_pay,
