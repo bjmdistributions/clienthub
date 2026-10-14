@@ -98,7 +98,7 @@ import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
 import { bellCountOf, bellTitle, canSeeTeamNotices } from "./lib/notices";
 import { confirmLeaveUnsaved } from "./lib/unsavedWork";
-import { tabSwitchAction } from "./lib/tabSwitch";
+import { tabSwitchAction, tabToShow } from "./lib/tabSwitch";
 import { useNotices } from "./lib/useNotices";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
@@ -461,6 +461,9 @@ export default function App() {
   // and whatever else lands later). Gates the Show packing tab; the server is the
   // authoritative check on every route.
   const [entitlements, setEntitlements] = useState<Record<string, boolean>>({});
+  // DG-03: true once the plan, entitlement and superadmin answers above have arrived (or failed) for the person signed in.
+  // Until then visible() hides the screens that ride them, so a remembered one is not judged yet.
+  const [accessSettled, setAccessSettled] = useState(false);
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   // R-400: an account that holds only Logistics permissions gets the Logistics screen and
@@ -493,10 +496,11 @@ export default function App() {
     return () => window.removeEventListener("replay-tour", replay);
   }, []);
   useEffect(() => {
-    if (me && !logisticsOnly) {
-      api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); setEntitlements(p.entitlements || {}); }).catch(() => { setSuperadmin(false); setPlan(null); setEntitlements({}); });
-      api.localIsSuperadmin().then(setLocalSuper).catch(() => setLocalSuper(false));
-    }
+    if (!me || logisticsOnly) { setAccessSettled(false); return; }
+    Promise.all([
+      api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); setEntitlements(p.entitlements || {}); }).catch(() => { setSuperadmin(false); setPlan(null); setEntitlements({}); }),
+      api.localIsSuperadmin().then(setLocalSuper).catch(() => setLocalSuper(false)),
+    ]).then(() => setAccessSettled(true));
   }, [me, logisticsOnly]);
 
   // Poll the approval queue for the bell badge: the pending customers and the requests. (A `client_add`
@@ -573,9 +577,10 @@ export default function App() {
 
   const signOut = async () => {
     try { await api.employeeLogout(); } catch {}
-    // R-400: the next person to sign in on this device starts on the Dashboard, not on the
-    // Logistics screen the last account was held to.
-    if (logisticsOnly) setTabState("dashboard");
+    // R-400, DG-03: the next person to sign in on this device starts on the Dashboard, not on the screen the
+    // last account was held to or left open. The stored last screen is per device, so it goes for every role.
+    try { localStorage.removeItem("clienthub_last_tab"); } catch { /* a blocked store has nothing to forget */ }
+    setTabState("dashboard");
     setMe(null);
   };
 
@@ -732,6 +737,7 @@ export default function App() {
       // sidebar itself uses - via a ref, since this effect mounts once and visible
       // is a fresh function every render.
       if (detail && visibleRef.current(detail)) setTab(detail, true);
+      else if (detail) toast("That screen is not available to your account", "error");
     };
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement?.tagName || "").toLowerCase();
@@ -875,6 +881,23 @@ export default function App() {
     ...NAV.flatMap((n) => [{ id: n.id, label: n.label, icon: n.icon } as NavKid, ...(n.children || [])]),
     ...UTILITY,
   ].filter((t) => visible(t.id));
+
+  // DG-03: the remembered screen (and the split pane's) is read off this device's disk, which belongs to no one person.
+  // A role that cannot open it, a role changed since, or an id that no longer exists would paint an empty pane with no
+  // row lit, so the Dashboard opens instead. Not written back: the next sign-in on this device reads what was stored.
+  // A Logistics-only account has no Dashboard and is sent to its own screen by the lock above.
+  useEffect(() => {
+    if (!me || logisticsOnly || !accessSettled) return;
+    const openable = flatTabs.map((t) => t.id);
+    const shown = tabToShow(tab, openable, "dashboard");
+    if (shown !== tab) { setTabState(shown); setPageKey((k) => k + 1); }
+    if (splitTab) {
+      const shownSplit = tabToShow(splitTab, openable, "dashboard");
+      if (shownSplit !== splitTab) setSplitTabState(shownSplit);
+    }
+    // flatTabs is rebuilt every render; what it holds only changes with the inputs listed (and accessSettled says they are in)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me, logisticsOnly, accessSettled, tab, splitTab]);
 
   // A group is open when the user opened it, or the active tab lives inside it.
   const parentOfActive = NAV.find((n) => n.children?.some((c) => c.id === tab))?.id ?? null;

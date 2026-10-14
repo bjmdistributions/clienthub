@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hasUnsavedWork, setUnsavedWork, confirmLeaveUnsaved } from "./unsavedWork";
-import { tabSwitchAction } from "./tabSwitch";
+import { tabSwitchAction, tabToShow } from "./tabSwitch";
 import appSource from "../App.tsx?raw";
 
 afterEach(() => { setUnsavedWork(false); });
@@ -80,5 +80,67 @@ describe("App.tsx wiring for tabSwitchAction", () => {
   it("only the navigate-tab listener passes handoff, so every click on a row, the bell or a shortcut stays a no-op on its own screen", () => {
     expect(appSource.match(/\bsetTab\([^()]*,\s*true\)/g)).toEqual(["setTab(detail, true)"]);
     expect(appSource).toMatch(/if \(detail && visibleRef\.current\(detail\)\) setTab\(detail, true\);/);
+  });
+});
+
+// DG-03: the screen remembered on this device (or the split pane's) is read back off disk before anyone has signed in,
+// and that disk is per device, not per person. A role that cannot open it, a role changed since, or an id that no
+// longer exists left a blank page with no row lit. The shell now opens the Dashboard in its place.
+describe("tabToShow", () => {
+  const reachable = ["dashboard", "clients", "inventory", "settings"] as const;
+
+  it("keeps a screen this account can open", () => {
+    expect(tabToShow("inventory", reachable, "dashboard")).toBe("inventory");
+  });
+
+  it("opens the Dashboard for a screen this account cannot open", () => {
+    expect(tabToShow("financials", reachable, "dashboard")).toBe("dashboard");
+  });
+
+  it("opens the Dashboard for an id that no longer exists", () => {
+    expect(tabToShow("retired-screen", reachable as readonly string[], "dashboard")).toBe("dashboard");
+  });
+
+  it("keeps the Dashboard when it is the one on show", () => {
+    expect(tabToShow("dashboard", reachable, "dashboard")).toBe("dashboard");
+  });
+});
+
+describe("App.tsx wiring for tabToShow", () => {
+  // The shell effect that applies it, cut out of the source so each check reads that effect and not a lookalike elsewhere.
+  const effect = appSource.slice(appSource.indexOf("// DG-03: the remembered screen"), appSource.indexOf("// A group is open when the user opened it"));
+
+  it("moves the main pane and the split pane to the Dashboard once the account's access is known", () => {
+    expect(effect).toContain("tabToShow(tab, openable, \"dashboard\")");
+    expect(effect).toContain("tabToShow(splitTab, openable, \"dashboard\")");
+  });
+
+  it("leaves a Logistics-only account to its own lock", () => {
+    // That account has no Dashboard (visible() refuses it); the R-400 effect sends it to Logistics and closes the split.
+    expect(effect).toMatch(/if \(!me \|\| logisticsOnly \|\| !accessSettled\) return;/);
+  });
+
+  it("does not write the fallback over the screen stored for the next person", () => {
+    expect(effect).not.toContain("localStorage");
+    expect(effect).not.toContain("setTab(");
+    expect(effect).not.toContain("setSplit(");
+  });
+
+  it("waits for the plan, the entitlements and the superadmin answers before judging a screen that rides them", () => {
+    // sheetcopy, showpacking, platform and datasafety are hidden until those answers arrive; judging earlier would
+    // send an owner on Platform to the Dashboard on every launch.
+    expect(appSource).toMatch(/Promise\.all\(\[\s*api\.getMyPlan\(\)[\s\S]*?api\.localIsSuperadmin\(\)[\s\S]*?\]\)\.then\(\(\) => setAccessSettled\(true\)\)/);
+    expect(appSource).toMatch(/if \(!me \|\| logisticsOnly\) \{ setAccessSettled\(false\); return; \}/);
+  });
+
+  it("forgets the stored screen on every sign-out, not only a Logistics-only account's", () => {
+    const signOut = appSource.slice(appSource.indexOf("const signOut = async"), appSource.indexOf("// Disarm on its own."));
+    expect(signOut).toContain('localStorage.removeItem("clienthub_last_tab")');
+    expect(signOut).not.toMatch(/if \(logisticsOnly\)/);
+    expect(signOut).toContain('setTabState("dashboard")');
+  });
+
+  it("tells the person when a navigate-tab to a screen their account cannot open is refused", () => {
+    expect(appSource).toMatch(/if \(detail && visibleRef\.current\(detail\)\) setTab\(detail, true\);\s*else if \(detail\) toast\("That screen is not available to your account", "error"\);/);
   });
 });

@@ -15,3 +15,10 @@ export function tabSwitchAction(current: string, next: string, confirmLeave: () 
   if (next === current && !handoff) return "stay";
   return confirmLeave() ? "switch" : "refused";
 }
+
+// DG-03: the screen to show given the ones this account can open. The last screen (and the split pane's) is stored
+// per device, not per person, so the next person to sign in, or the same person after a role change, can be handed
+// an id they cannot open, or one that no longer exists. The shell used to paint nothing for it, with no row lit.
+export function tabToShow<T extends string>(current: T, reachable: readonly T[], fallback: T): T {
+  return reachable.includes(current) ? current : fallback;
+}
