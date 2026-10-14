@@ -42,6 +42,12 @@ export default {
         'step-now':    'rgb(var(--c-step-now) / <alpha-value>)',
         'step-now-fill': 'rgb(var(--c-step-now-fill) / <alpha-value>)',
         'on-step-now': 'rgb(var(--c-on-step-now) / <alpha-value>)',
+        // R-507 / R-511: teal is the shipping colour (a load that is booked or on the way); the ink is
+        // Apple's accessible teal for words (R-487). Named here so the pill never needs an arbitrary value.
+        ship: {
+          DEFAULT: 'rgb(var(--c-chart-2) / <alpha-value>)',
+          ink:     'rgb(var(--c-chart-2-ink) / <alpha-value>)',
+        },
         success: {
           DEFAULT: 'rgb(var(--c-success) / <alpha-value>)',
           bg:      'rgb(var(--c-success-bg) / <alpha-value>)',
