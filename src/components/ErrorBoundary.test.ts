@@ -3,11 +3,14 @@ import React from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { ErrorBoundary, PaneBoundary } from "./ErrorBoundary";
+import appSource from "../App.tsx?raw";
 
 // R-511 DG-01: one throwing screen used to unmount the whole app, and Reload reopened the same screen.
 // These tests mount the REAL boundaries around a child that throws while rendering. The suite runs in
 // plain node (see vitest.config.ts), so the DOM below is the few dozen lines react-dom needs to render a
 // tree; it is not a general DOM, and a test needing more than this one probably wants jsdom instead.
+// It reads the props react-dom keeps on each node under a private key, so it is tied to react-dom 18.x:
+// if a react-dom upgrade breaks this file, look at FakeEl.reactProps first.
 
 class FakeNode {
   nodeType: number;
@@ -109,7 +112,7 @@ function Screen(): React.ReactNode {
 }
 const shell = (pane: React.ReactNode) =>
   React.createElement("div", null, React.createElement("aside", null, "Sidebar"), pane);
-const pane = (props: { onBack: () => void; key?: string }, child: React.ReactNode) =>
+const pane = (props: { onBack?: () => void; key?: string }, child: React.ReactNode) =>
   React.createElement(PaneBoundary, { ...props, children: child });
 
 describe("PaneBoundary", () => {
@@ -138,6 +141,25 @@ describe("PaneBoundary", () => {
     click("Try again");
     expect(container.text).toContain("Clients screen");
     expect(container.text).not.toContain("This screen hit an error");
+  });
+
+  it("paints its own surface, so it reads inside the Globe's forced dark pane (light theme text on #0a0a14 was about 1.1:1)", () => {
+    // The real container: App.tsx's paneBg("globe") is #0a0a14 in every theme, behind the fallback.
+    show(React.createElement("div", { style: { background: "#0a0a14" } }, pane({ onBack: () => {} }, React.createElement(Screen))));
+    let node: FakeNode | null = container.all().find((e) => e.tagName === "H2")!;
+    expect(node, "the fallback heading").toBeDefined();
+    let surface = "";
+    while (node && !surface) { surface = (node as FakeEl).style?.background ?? ""; node = node.parentNode; }
+    // The nearest painted ancestor of the heading is the fallback's own theme surface, not the pane.
+    expect(surface).toBe("var(--t-bg)");
+  });
+
+  it("without onBack (the screen is the Dashboard, or the account only has Logistics) offers Try again and no Back button", () => {
+    show(shell(pane({}, React.createElement(Screen))));
+    const labels = container.all().filter((e) => e.tagName === "BUTTON").map((e) => e.text);
+    expect(labels).toEqual(["Try again"]);
+    expect(container.text).not.toContain("Back to Dashboard");
+    expect(container.text).not.toContain("Go back to the Dashboard");
   });
 
   it("a new key (the next screen) clears the error", () => {
@@ -175,5 +197,24 @@ describe("ErrorBoundary (the whole app)", () => {
     vi.stubGlobal("localStorage", { removeItem: () => { throw new Error("blocked"); } });
     click("Reload");
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+});
+
+// App.tsx is not rendered here (it needs the whole Tauri shell), so its wiring is held by reading the source:
+// deleting guardedPane, un-keying it or pointing Back somewhere else must fail a test, not just a code review.
+describe("App.tsx wiring of the pane boundaries", () => {
+  it("renders every screen through guardedPane, and nothing else calls paneContent", () => {
+    expect(appSource.match(/\bpaneContent\(/g)).toHaveLength(1);
+    expect(appSource).toMatch(/<PaneBoundary key=\{t\} [^>]*>\{paneContent\(t\)\}<\/PaneBoundary>/);
+  });
+
+  it("guards the main pane, the split's left pane and the split's right pane, each Back going to its own Dashboard", () => {
+    expect(appSource.match(/guardedPane\(tab, \(\) => setTab\("dashboard"\)\)/g)).toHaveLength(2);
+    expect(appSource.match(/guardedPane\(splitTab, \(\) => setSplit\("dashboard"\)\)/g)).toHaveLength(1);
+    expect(appSource.match(/\bguardedPane\(/g)).toHaveLength(3); // no fourth, unguarded way to open a pane
+  });
+
+  it("offers no Back to Dashboard on the Dashboard itself or to a Logistics-only account", () => {
+    expect(appSource).toMatch(/onBack=\{t === "dashboard" \|\| logisticsOnly \? undefined : onBack\}/);
   });
 });

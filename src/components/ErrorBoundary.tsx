@@ -119,8 +119,13 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
 /** One boundary per screen (R-511 DG-01). A render error in a screen stops at its pane: the sidebar,
  *  the bell and every other screen keep working, and the person can go somewhere else. App.tsx keys it
  *  on the screen id, so opening another screen mounts a fresh boundary and clears the error. It draws
- *  nothing around its children while healthy, so the layout is the same with or without it. */
-export class PaneBoundary extends React.Component<{ children: React.ReactNode; onBack: () => void }, State> {
+ *  nothing around its children while healthy, so the layout is the same with or without it.
+ *
+ *  onBack is left out when there is nowhere better to go (the screen is the Dashboard itself, or the
+ *  account is held to Logistics): the fallback then offers Try again alone. The fallback paints its own
+ *  theme surface: the Globe's pane is forced dark (#0a0a14) in every theme, and theme text on it was
+ *  unreadable in a light theme. */
+export class PaneBoundary extends React.Component<{ children: React.ReactNode; onBack?: () => void }, State> {
   state: State = { error: null };
 
   static getDerivedStateFromError(error: Error): State {
@@ -133,21 +138,29 @@ export class PaneBoundary extends React.Component<{ children: React.ReactNode; o
 
   render() {
     const { error } = this.state;
+    const { onBack } = this.props;
     if (!error) return this.props.children;
     return (
-      <div className="h-full min-h-[320px] flex items-center justify-center p-7">
+      <div
+        className="h-full min-h-[320px] flex items-center justify-center p-7"
+        style={{ background: "var(--t-bg)" }}
+      >
         <div className="max-w-[420px] text-center">
           <h2 className="text-[18px] font-semibold tracking-tight text-ink">This screen hit an error</h2>
           <p className="mt-2 text-[13px] leading-relaxed text-muted">
-            Your data is safe, and the rest of Ecliptr still works. Go back to the Dashboard, or try this screen again.
+            {onBack
+              ? "Your data is safe, and the rest of Ecliptr still works. Go back to the Dashboard, or try this screen again."
+              : "Your data is safe, and the rest of Ecliptr still works. Try this screen again, or open another screen."}
           </p>
           <div className="mt-5 flex items-center justify-center gap-2">
-            <button
-              onClick={this.props.onBack}
-              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium"
-            >
-              Back to Dashboard
-            </button>
+            {onBack && (
+              <button
+                onClick={onBack}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium"
+              >
+                Back to Dashboard
+              </button>
+            )}
             <button
               onClick={() => this.setState({ error: null })}
               className="border border-line text-ink-2 hover:bg-surface-3 px-4 h-9 rounded-lg text-[13px] font-medium"
@@ -156,7 +169,7 @@ export class PaneBoundary extends React.Component<{ children: React.ReactNode; o
             </button>
           </div>
           {error.message && (
-            <p className="mt-5 max-h-[96px] overflow-auto whitespace-pre-wrap break-words text-[11.5px] text-faint">
+            <p className="mt-5 max-h-[96px] overflow-auto whitespace-pre-wrap break-words text-[11.5px] text-muted">
               {error.message}
             </p>
           )}

@@ -1186,9 +1186,11 @@ export default function App() {
 
   // R-511 DG-01: a screen that throws while rendering stops at its own pane instead of taking the whole app
   // down. Keyed on the screen id, so opening another screen mounts a fresh boundary. Back to Dashboard moves
-  // this pane (the main one, or the split one) to the Dashboard.
+  // this pane (the main one, or the split one) to the Dashboard. It is not offered on the Dashboard itself (a
+  // split pane already on it would not change state, so the button would do nothing) or to a Logistics-only
+  // account (the lock above sends it straight back to the screen that crashed).
   const guardedPane = (t: Tab, onBack: () => void) => (
-    <PaneBoundary key={t} onBack={onBack}>{paneContent(t)}</PaneBoundary>
+    <PaneBoundary key={t} onBack={t === "dashboard" || logisticsOnly ? undefined : onBack}>{paneContent(t)}</PaneBoundary>
   );
 
   // Auth gates everything: not signed in → sign-in screen (accounts are made on
