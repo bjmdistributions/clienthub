@@ -173,7 +173,7 @@ const NAV_AUTO_KEY = "clienthub_nav_auto";
  *  never reorders it on its own, because at this width the row's position is the
  *  only thing about it that survives a glance. */
 const RAIL_PINS_KEY = "clienthub_rail_pins";
-const DEFAULT_PINS = ["dashboard", "clients", "suppliers", "inventory", "invoices", "financials"];
+const DEFAULT_PINS = ["dashboard", "dealflow", "clients", "suppliers", "inventory", "invoices", "financials"];
 
 /** Collapsed rail row heights, in px, kept here because the fit calculation below
  *  has to agree with the markup exactly - a rail that miscounts either scrolls
