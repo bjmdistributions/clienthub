@@ -2930,6 +2930,28 @@ export interface PlaidSyncResult {
   imported: number;
   status: string; // "ok" | "preparing" | "error"
   error: string;
+  /** R-518: Plaid's error code, and whether only signing in to the bank again fixes it. */
+  code?: string;
+  needs_login?: boolean;
+}
+/** R-518: one connected bank's health, kept on this device across every pull (background ones too). */
+export interface PlaidHealthBank {
+  id: string;
+  institution: string;
+  last_ok: string | null;
+  last_try: string | null;
+  error: string;
+  code: string;
+  needs_login: boolean;
+  /** Whether Plaid took this bank's instant-update webhook (null: not tried yet on this run). */
+  webhook_ok: boolean | null;
+  last_ring: string | null;
+}
+export interface PlaidHealth {
+  banks: PlaidHealthBank[];
+  /** What background pulls raised for a person: a booking not moved, a row booked for more than it says, ... */
+  warnings: { at: string; kind: string; text: string }[];
+  last_sync: string | null;
 }
 /** What one run of the bank feed did. Every field that can destroy or defer booked
  *  work must be surfaced by EVERY caller — see surfaceSyncWarnings in FinancialsView. */
@@ -4556,7 +4578,12 @@ export const api = {
   plaidRemoveItem: (id: string) => invoke<void>("plaid_remove_item", { id }),
   plaidSync: () => invoke<PlaidSyncSummary>("plaid_sync"),
   plaidResyncAll: () => invoke<PlaidSyncSummary>("plaid_resync_all"),
-  plaidRefreshSync: () => invoke<PlaidSyncSummary>("plaid_refresh_sync"),
+  plaidRefreshSync: () => invoke<PlaidSyncSummary & { refresh_refused?: string[] }>("plaid_refresh_sync"),
+  plaidHealth: () => invoke<PlaidHealth>("plaid_health"),
+  plaidHealthDismiss: () => invoke<void>("plaid_health_dismiss"),
+  plaidReconnectStart: (id: string) => invoke<{ hosted_link_url: string; link_token: string }>("plaid_reconnect_start", { id }),
+  plaidReconnectPoll: (linkToken: string, id: string) =>
+    invoke<{ status: "pending" | "done" | "exited" }>("plaid_reconnect_poll", { linkToken, id }),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   listTieOutBacklog: () => invoke<TieOutRow[]>("list_tie_out_backlog"),
   setTieOutHidden: (ids: string[], hidden: boolean) => invoke<number>("set_tie_out_hidden", { ids, hidden }),

@@ -121,6 +121,11 @@ pub struct Takeover {
 /// charge is which: the bank has already said the retracted row does not exist, so retiring it
 /// removes no real money — the worst case is its category landing on the posted charge, which is
 /// reported and visible. Everything else is a one-click chip for a person.
+///
+/// R-518: that worst case held only for a row with a category. A retracted row tied to money (a
+/// deal allocation, a refund, a loan) moves those ties onto the posted copy, so an unrelated
+/// round-amount wire or Zelle on the same account that week took a deal's payment silently. A
+/// linked row is automatic only when the two memos also name the same merchant or person.
 pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec<Takeover> {
     let acct_of = |a: &str| aliases.get(a).cloned().unwrap_or_else(|| a.to_string());
     let metas: Vec<Meta> = rows.iter().map(|r| meta(&r.raw_json)).collect();
@@ -153,7 +158,9 @@ pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec
             if !same_amount && ((tr.amount - fr.amount).abs() > fr.amount * 0.30 || f_words.is_disjoint(&merchant_words(&tr.desc))) {
                 continue;
             }
-            let exact = (same_label || same_mask) && metas[f].retracted && same_amount && gap <= 7;
+            let words_agree = !f_words.is_disjoint(&merchant_words(&tr.desc));
+            let exact = (same_label || same_mask) && metas[f].retracted && same_amount && gap <= 7
+                && (!fr.linked || words_agree);
             by_from.entry(f).or_default().push((t, exact));
             by_to.entry(t).or_default().push((f, exact));
         }
@@ -1121,6 +1128,34 @@ mod tests {
             raw(row("post60", card, "2026-08-24", 60.0, "out", "X", "", "2026-08-24T00:00:00Z"), "pa_1", false, false),
         ];
         assert!(takeover_pairs(&v, &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_retracted_row_tied_to_a_deal_moves_only_onto_the_same_payer() {
+        // R-518: a returned wire tied to a deal, and an unrelated wire for the same round amount that week.
+        let chk = "BUSINESS CHECKING \u{00b7}\u{00b7}1111";
+        let v = vec![
+            raw(linked(row("ret", chk, "2026-10-01", 5000.0, "in", "WIRE FROM HARBOR GOODS LLC", "", "2026-10-01T00:00:00Z")), "pa_1", false, true),
+            raw(row("other", chk, "2026-10-03", 5000.0, "in", "WIRE FROM CEDAR TRADING CO", "", "2026-10-03T00:00:00Z"), "pa_1", false, false),
+        ];
+        let p = takeover_pairs(&v, &HashMap::new());
+        assert_eq!(p.len(), 1);
+        assert!(!p[0].automatic, "a deal's payment never moves onto another payer's wire without a click");
+
+        let same = vec![
+            v[0].clone(),
+            raw(row("again", chk, "2026-10-03", 5000.0, "in", "WIRE FROM HARBOR GOODS LLC REF 7781", "", "2026-10-03T00:00:00Z"), "pa_1", false, false),
+        ];
+        let p = takeover_pairs(&same, &HashMap::new());
+        assert_eq!(p.len(), 1);
+        assert!(p[0].automatic, "the same payer re-sent: the deal's payment follows it");
+
+        // A row with only a category keeps the old rule: the bank already said it does not exist.
+        let cat_only = vec![
+            raw(booked(row("ret2", chk, "2026-10-01", 5000.0, "in", "WIRE FROM HARBOR GOODS LLC", "", "2026-10-01T00:00:00Z"), "sales"), "pa_1", false, true),
+            v[1].clone(),
+        ];
+        assert!(takeover_pairs(&cat_only, &HashMap::new())[0].automatic);
     }
 
     #[test]

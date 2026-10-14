@@ -17933,6 +17933,68 @@ pub async fn list_near_duplicates() -> Result<Vec<Value>, String> {
     }).collect())
 }
 
+/// One bill payment (R-449): id, org, bill, period, amount, status, created_by, created_at.
+type BillPay = (String, String, String, String, f64, String, String, String);
+
+fn bill_payments_on(conn: &rusqlite::Connection, txn_id: &str) -> Vec<BillPay> {
+    conn.prepare("SELECT id, COALESCE(org_id,''), bill_id, period, amount, COALESCE(status,''), COALESCE(created_by,''), COALESCE(created_at,'') \
+                    FROM bill_payments WHERE bank_txn_id=?1")
+        .and_then(|mut st| st.query_map([txn_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default()
+}
+
+/// Two copies of one payment that pay DIFFERENT bills: a person must say which is right.
+fn bill_payments_conflict(from: &[BillPay], to: &[BillPay]) -> bool {
+    let live = |v: &[BillPay]| -> std::collections::HashSet<String> { v.iter().filter(|b| b.5 != "rejected").map(|b| b.2.clone()).collect() };
+    let (f, t) = (live(from), live(to));
+    !f.is_empty() && !t.is_empty() && f.is_disjoint(&t)
+}
+
+/// Move the bill payments on `from_id` onto `to_id`, decided per bill: one payment pays one bill
+/// once. When `to_id` already pays that bill, the `from_id` link goes (backed up first under
+/// `backup_reason`), carrying a confirmed answer over; otherwise it moves. Used by the near-duplicate
+/// retire (R-456) and, since R-518, by the pending/retracted settle, which used to move only the
+/// deal allocations and leave the bill pointing at a deleted row (the bill read unpaid again).
+fn carry_bill_payments(
+    conn: &rusqlite::Connection, from_id: &str, to_id: &str, from: &[BillPay], to: &[BillPay], now: &str, backup_reason: &str,
+) -> Result<(), String> {
+    for (bid, borg, bill, period, amt, status, by, at) in from {
+        let kept_live = to.iter().find(|k| &k.2 == bill && k.5 != "rejected");
+        if let Some(k) = kept_live {
+            let bp_json = json!({ "id": bid, "org_id": borg, "bill_id": bill, "bank_txn_id": from_id, "period": period,
+                                  "amount": amt, "status": status, "created_by": by, "created_at": at }).to_string();
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) VALUES (?1,?2,?3,?4,?5)",
+                rusqlite::params![format!("bp:{bid}"), bp_json, to_id, backup_reason, now]);
+            if status == "confirmed" && k.5 != "confirmed" {
+                let mut c = Map::new();
+                c.insert("status".into(), json!("confirmed"));
+                c.insert("period".into(), json!(period));
+                c.insert("updated_at".into(), json!(now));
+                if sync::record_upsert("bill_payments", &k.0, c).is_err() { return Err("could not carry its bill payment".into()); }
+                let _ = conn.execute("UPDATE bill_payments SET status='confirmed', period=?1, updated_at=?2 WHERE id=?3", rusqlite::params![period, now, k.0]);
+            }
+            if sync::record_delete("bill_payments", bid).is_err() { return Err("could not move its bill payment".into()); }
+            let _ = conn.execute("DELETE FROM bill_payments WHERE id=?1", [bid]);
+        } else {
+            let mut c = Map::new();
+            c.insert("org_id".into(), json!(borg));
+            c.insert("bill_id".into(), json!(bill));
+            c.insert("bank_txn_id".into(), json!(to_id));
+            c.insert("period".into(), json!(period));
+            c.insert("amount".into(), json!(amt));
+            c.insert("status".into(), json!(status));
+            c.insert("created_by".into(), json!(by));
+            c.insert("created_at".into(), json!(at));
+            c.insert("updated_at".into(), json!(now));
+            if sync::record_upsert("bill_payments", bid, c).is_err() { return Err("could not move its bill payment".into()); }
+            let _ = conn.execute("UPDATE bill_payments SET bank_txn_id=?1, updated_at=?2 WHERE id=?3", rusqlite::params![to_id, now, bid]);
+        }
+    }
+    Ok(())
+}
+
 /// R-456: retire `extra_id` as a copy of `keep_id`: its booking, deal links and bill payments move
 /// onto the copy that stays (a link the kept copy already has is dropped, not doubled), a full
 /// backup is written first, and the row is removed through the oplog so every device drops it.
@@ -17964,21 +18026,9 @@ fn retire_near_duplicate(
     if !ed.is_empty() && !kd.is_empty() && ed != kd {
         return Settled::Refused(format!("{}: the two copies are linked to different deals. Unlink the wrong one first", e.desc));
     }
-    // Bill payments (R-449), decided per bill: one payment pays one bill once. When the kept copy
-    // already pays that bill, the extra copy's link goes (backed up), carrying a confirmed status
-    // onto the kept one; otherwise it moves. Two copies paying different bills are refused.
-    type Bp = (String, String, String, String, f64, String, String, String);
-    let bps_of = |id: &str| -> Vec<Bp> {
-        conn.prepare("SELECT id, COALESCE(org_id,''), bill_id, period, amount, COALESCE(status,''), COALESCE(created_by,''), COALESCE(created_at,'') \
-                        FROM bill_payments WHERE bank_txn_id=?1")
-            .and_then(|mut st| st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))
-                .map(|it| it.filter_map(|x| x.ok()).collect()))
-            .unwrap_or_default()
-    };
-    let (bps, kept_bps) = (bps_of(extra_id), bps_of(keep_id));
-    let live = |v: &[Bp]| -> std::collections::HashSet<String> { v.iter().filter(|b| b.5 != "rejected").map(|b| b.2.clone()).collect() };
-    let (e_bills, k_bills) = (live(&bps), live(&kept_bps));
-    if !e_bills.is_empty() && !k_bills.is_empty() && e_bills.is_disjoint(&k_bills) {
+    // Bill payments (R-449), decided per bill: see carry_bill_payments.
+    let (bps, kept_bps) = (bill_payments_on(conn, extra_id), bill_payments_on(conn, keep_id));
+    if bill_payments_conflict(&bps, &kept_bps) {
         return Settled::Refused(format!("{}: the two copies pay different bills. Unlink the wrong one in Bills first", e.desc));
     }
     if let Ok(rj) = conn.query_row(BANK_TXN_BACKUP_SQL, [extra_id], |r| r.get::<_, String>(0)) {
@@ -17986,40 +18036,8 @@ fn retire_near_duplicate(
             "INSERT OR IGNORE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) VALUES (?1,?2,?3,?4,?5)",
             rusqlite::params![extra_id, rj, keep_id, reason, now]);
     }
-    for (bid, borg, bill, period, amt, status, by, at) in &bps {
-        let kept_live = kept_bps.iter().find(|k| &k.2 == bill && k.5 != "rejected");
-        if let Some(k) = kept_live {
-            // The kept copy already pays this bill: the extra link goes, backed up first, and a
-            // confirmed answer on it carries over.
-            let bp_json = json!({ "id": bid, "org_id": borg, "bill_id": bill, "bank_txn_id": extra_id, "period": period,
-                                  "amount": amt, "status": status, "created_by": by, "created_at": at }).to_string();
-            let _ = conn.execute(
-                "INSERT OR IGNORE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) VALUES (?1,?2,?3,'near_duplicate_bill_link',?4)",
-                rusqlite::params![format!("bp:{bid}"), bp_json, keep_id, now]);
-            if status == "confirmed" && k.5 != "confirmed" {
-                let mut c = Map::new();
-                c.insert("status".into(), json!("confirmed"));
-                c.insert("period".into(), json!(period));
-                c.insert("updated_at".into(), json!(now));
-                if sync::record_upsert("bill_payments", &k.0, c).is_err() { return Settled::Refused(format!("{}: could not carry its bill payment", e.desc)); }
-                let _ = conn.execute("UPDATE bill_payments SET status='confirmed', period=?1, updated_at=?2 WHERE id=?3", rusqlite::params![period, now, k.0]);
-            }
-            if sync::record_delete("bill_payments", bid).is_err() { return Settled::Refused(format!("{}: could not move its bill payment", e.desc)); }
-            let _ = conn.execute("DELETE FROM bill_payments WHERE id=?1", [bid]);
-        } else {
-            let mut c = Map::new();
-            c.insert("org_id".into(), json!(borg));
-            c.insert("bill_id".into(), json!(bill));
-            c.insert("bank_txn_id".into(), json!(keep_id));
-            c.insert("period".into(), json!(period));
-            c.insert("amount".into(), json!(amt));
-            c.insert("status".into(), json!(status));
-            c.insert("created_by".into(), json!(by));
-            c.insert("created_at".into(), json!(at));
-            c.insert("updated_at".into(), json!(now));
-            if sync::record_upsert("bill_payments", bid, c).is_err() { return Settled::Refused(format!("{}: could not move its bill payment", e.desc)); }
-            let _ = conn.execute("UPDATE bill_payments SET bank_txn_id=?1, updated_at=?2 WHERE id=?3", rusqlite::params![keep_id, now, bid]);
-        }
+    if let Err(w) = carry_bill_payments(conn, extra_id, keep_id, &bps, &kept_bps, now, "near_duplicate_bill_link") {
+        return Settled::Refused(format!("{}: {w}", e.desc));
     }
     let src = conn.query_row(
         "SELECT COALESCE(reviewed,0), COALESCE(category,''), COALESCE(counterparty_name,''), \
@@ -19450,7 +19468,11 @@ fn bank_txn_is_referenced(conn: &rusqlite::Connection, id: &str) -> bool {
             OR EXISTS(SELECT 1 FROM bank_txn WHERE id=?1 AND COALESCE(counterparty_type,'')='loan') \
             OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=?1) \
             OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=?1) \
-            OR EXISTS(SELECT 1 FROM bill_payments WHERE bank_txn_id=?1)",
+            OR EXISTS(SELECT 1 FROM bill_payments WHERE bank_txn_id=?1) \
+            OR EXISTS(SELECT 1 FROM bank_txn WHERE id=?1 AND (COALESCE(note,'')<>'' OR COALESCE(confirmed_method,'')<>'' \
+                      OR COALESCE(tie_out_hidden,0)<>0 OR COALESCE(counterparty_type,'')<>''))",
+        // R-518: the last clause. A note, a confirmed payment method, a supplier/client tag or a Tie out hide is
+        // a person's work too; an unnamed retraction used to delete a pending row carrying only those.
         [id],
         |r| r.get::<_, i64>(0),
     ).unwrap_or(1) != 0
@@ -19639,6 +19661,11 @@ fn settle_carry(
     if unmovable != 0 {
         return Settled::Refused(format!("{s_desc}: a refund / loan / purchase / expense is linked to it"));
     }
+    // R-518: bill payments move with the booking (they used to stay on the retired row).
+    let (src_bps, tgt_bps) = (bill_payments_on(conn, pending_id), bill_payments_on(conn, posted_id));
+    if bill_payments_conflict(&src_bps, &tgt_bps) {
+        return Settled::Refused(format!("{s_desc}: the two copies pay different bills"));
+    }
 
     let src_allocs: Vec<(String, String, String, f64, String, String, String, String)> = conn
         .prepare("SELECT id, COALESCE(org_id,''), deal_flow_id, amount, COALESCE(role,''), \
@@ -19772,6 +19799,19 @@ fn settle_carry(
     }
 
     if !all_ok { return Settled::Refused(format!("{s_desc}: could not move every booking, both rows kept")); }
+    if let Err(w) = carry_bill_payments(conn, pending_id, posted_id, &src_bps, &tgt_bps, now, "settle_bill_link") {
+        return Settled::Refused(format!("{s_desc}: {w}, both rows kept"));
+    }
+    // R-518: a row hidden from Tie out stays hidden once its posted copy takes over.
+    let hidden = |id: &str| conn.query_row("SELECT COALESCE(tie_out_hidden,0) FROM bank_txn WHERE id=?1", [id], |r| r.get::<_, i64>(0)).unwrap_or(0);
+    if hidden(pending_id) != 0 && hidden(posted_id) == 0 {
+        let mut c = Map::new();
+        c.insert("tie_out_hidden".into(), json!(1));
+        c.insert("updated_at".into(), Value::String(now.to_string()));
+        if sync::record_upsert("bank_txn", posted_id, c).is_ok() {
+            let _ = conn.execute("UPDATE bank_txn SET tie_out_hidden=1, updated_at=?1 WHERE id=?2", rusqlite::params![now, posted_id]);
+        }
+    }
     // Invariant 2: an allocation must never outlive its transaction.
     let left: i64 = conn.query_row(
         "SELECT COUNT(*) FROM bank_allocation WHERE bank_txn_id=?1", [pending_id], |r| r.get(0)).unwrap_or(1);
@@ -20680,6 +20720,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         let mut item_amended = 0i64;
         let mut status = "ok";
         let mut error_msg = String::new();
+        let mut error_code = String::new(); // R-518: Plaid's code, so "sign in again" can be told from "try later"
         let accts: Vec<Value> = serde_json::from_str(&accounts_json).unwrap_or_default();
         let label_of = |aid: &str| -> String {
             for a in &accts {
@@ -20695,7 +20736,11 @@ pub async fn plaid_sync() -> Result<Value, String> {
         loop {
             let outcome = match crate::plaid::transactions_sync(&access, &cursor, &item_env).await {
                 Ok(o) => o,
-                Err(e) => { status = "error"; error_msg = e.to_string(); break; }
+                Err(e) => {
+                    status = "error";
+                    (error_msg, error_code) = split_plaid_code(&e.to_string());
+                    break;
+                }
             };
             let page = match outcome {
                 crate::plaid::SyncOutcome::Page(p) => p,
@@ -21007,14 +21052,17 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     cols.insert("created_at".into(), s(&now));
                     cols.insert("updated_at".into(), s(&now));
                     cols.insert("raw_json".into(), s(&rawj));
-                    // The oplog refused the write, so the INSERT below never runs — and the
-                    // cursor at the foot of this loop still advances past the page, so Plaid
-                    // will not offer this transaction again. This is the one true loss in the
-                    // whole function. It is named here rather than changed: deciding whether
-                    // it should abort the page too is a separate call.
-                    if sync::record_upsert("bank_txn", &id, cols).is_err() {
+                    // The oplog refused the write, so the INSERT below never runs. R-518 (FD-10): this
+                    // used to `continue`, the cursor at the foot of the loop advanced past the page,
+                    // and Plaid never offered the transaction again: the one true loss in this
+                    // function. It now stops this bank's pass exactly as a failed INSERT does, so the
+                    // cursor stays put and the page replays on the next pull (the replay is idempotent:
+                    // rows already saved are found by id and skipped).
+                    if let Err(e) = sync::record_upsert("bank_txn", &id, cols) {
                         skipped_unsaved.push(format!("new: {} {:.2} {} {}", date, amount, direction, desc));
-                        continue;
+                        status = "error";
+                        error_msg = format!("save failed: {e}");
+                        break;
                     }
                     if let Err(e) = conn.execute(
                         "INSERT OR IGNORE INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, category, counterparty_name, source_format, imported_at, created_at, updated_at, raw_json)
@@ -21029,7 +21077,14 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     }
                     item_imported += 1;
                     // R-493: the posted twin of a pending row was alerted as the pending row, so it is not news.
-                    if pend.is_none() && date.to_string() >= alert_since {
+                    // R-518: card charges post under a new id WITHOUT naming their pending row, so the same charge
+                    // pushed "New charge" twice. A pending row on this account, same direction, same amount to the
+                    // cent and still held (Plaid retracts it later in this pass or the next) was the alert already.
+                    let alerted_as_pending = !incoming_pending && conn.query_row(
+                        &format!("SELECT 1 FROM bank_txn b WHERE b.id<>?1 AND b.account_id=?2 AND b.direction=?3 \
+                                  AND ABS(b.amount-?4)<0.005 AND b.posted_at>=?5 AND {} LIMIT 1", crate::bank_flags::pending("b")),
+                        rusqlite::params![id, label, direction, amount, alert_since], |_| Ok(())).is_ok();
+                    if pend.is_none() && date.to_string() >= alert_since && !alerted_as_pending {
                         fresh_rows.push(json!({ "id": id, "amount": amount, "money_in": direction == "in", "rail": payment_rail(&desc) }));
                     }
                     // The normal same-page settle: the posted twin was just inserted, so
@@ -21126,9 +21181,13 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         cols.insert("category".into(), s(&plaid_category(pfc, direction)));
                         cols.insert("counterparty_name".into(), s(&if merchant.is_empty() { desc.clone() } else { merchant }));
                     }
-                    if sync::record_upsert("bank_txn", &id, cols).is_err() {
+                    // R-518 (FD-10): a change that cannot be saved stops this bank's pass too, so the
+                    // cursor stays put and Plaid re-sends the change on the next pull.
+                    if let Err(e) = sync::record_upsert("bank_txn", &id, cols) {
                         skipped_unsaved.push(format!("change: {} {:.2} {} {}", date, amount, direction, desc));
-                        continue;
+                        status = "error";
+                        error_msg = format!("save failed: {e}");
+                        break;
                     }
                     if let Err(e) = conn.execute(
                         "UPDATE bank_txn SET posted_at=?1, amount=?2, direction=?3, description=?4, memo_raw=?4, raw_json=?5, updated_at=?6 WHERE id=?7",
@@ -21136,7 +21195,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     ) {
                         tracing::warn!("plaid_sync: amendment for {} failed to save: {}", id, e);
                         skipped_unsaved.push(format!("change: {} {:.2} {} {}", date, amount, direction, desc));
-                        continue;
+                        status = "error";
+                        error_msg = format!("save failed: {e}");
+                        break;
                     }
                     item_amended += 1;
                 }
@@ -21268,12 +21329,15 @@ pub async fn plaid_sync() -> Result<Value, String> {
         imported += item_imported;
         amended += item_amended;
         results.push(json!({
+            "item": item_pk.clone(),
             "institution": institution,
             "env": item_env,
             "imported": item_imported,
             "amended": item_amended,
             "status": status,
             "error": error_msg,
+            "code": error_code,
+            "needs_login": plaid_needs_login(&error_code),
         }));
     }
     // Re-derive every deal whose bank link actually MOVED in a settle. plaid_sync has
@@ -21400,6 +21464,25 @@ pub async fn plaid_sync() -> Result<Value, String> {
     if !fresh_rows.is_empty() {
         tokio::spawn(crate::netsync::report_bank_activity(fresh_rows));
     }
+    // R-518: the timer and the doorbell now make almost every pull, and they used to log only "imported N". Each
+    // bank's outcome and every warning a person must see are kept on this device and shown on Financials.
+    let held_text: Vec<String> = held_reference_collision.iter().map(|v| format!("{} {:.2} {}",
+        v.get("date").and_then(|x| x.as_str()).unwrap_or(""), v.get("amount").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        v.get("description").and_then(|x| x.as_str()).unwrap_or(""))).collect();
+    let retracted_text: Vec<String> = match pool().get() {
+        Ok(c) => retracted_kept.iter().map(|id| c.query_row(
+            "SELECT posted_at || ' ' || printf('%.2f', amount) || ' ' || COALESCE(description,'') FROM bank_txn WHERE id=?1",
+            [id], |r| r.get::<_, String>(0)).unwrap_or_else(|_| id.clone())).collect(),
+        Err(_) => retracted_kept.clone(),
+    };
+    record_plaid_pass(&results, &[
+        ("over_allocated", &amended_over_allocated),
+        ("settle_refused", &settle_refused),
+        ("skipped_unsaved", &skipped_unsaved),
+        ("retracted_kept", &retracted_text),
+        ("held_reference_collision", &held_text),
+    ], &now);
+    publish_plaid_health();
     Ok(json!({
         "imported": imported, "removed": removed, "amended": amended,
         "over_allocated": amended_over_allocated,
@@ -21472,6 +21555,201 @@ pub fn plaid_doorbell_items() -> Vec<(String, String, String)> {
         .unwrap_or_default()
 }
 
+// ── R-518: each bank's health, kept on this device ─────────────────────────────────────────────
+// settings 'plaid_health' (device-local, like plaid_last_sync):
+//   {"items": {"<plaid_items.id>": {"last_ok","last_try","error","code","webhook_ok","webhook_at","last_ring"}},
+//    "warnings": [{"at","kind","text"}]}
+// A bank whose login broke used to fail every background pull silently ("imported 0" in the log) while a healthy
+// bank kept plaid_last_sync moving, so money could be missing for days with nothing on screen.
+
+/// "Plaid: message [CODE]" -> ("Plaid: message", "CODE"). Any other text comes back whole, with no code.
+pub(crate) fn split_plaid_code(s: &str) -> (String, String) {
+    if let (Some(open), true) = (s.rfind(" ["), s.ends_with(']')) {
+        let code = &s[open + 2..s.len() - 1];
+        if !code.is_empty() && code.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+            return (s[..open].to_string(), code.to_string());
+        }
+    }
+    (s.to_string(), String::new())
+}
+
+/// Plaid codes that only a person signing in to the bank again can fix (Plaid's update mode).
+pub(crate) fn plaid_needs_login(code: &str) -> bool {
+    matches!(code, "ITEM_LOGIN_REQUIRED" | "PENDING_EXPIRATION" | "PENDING_DISCONNECT" | "INVALID_CREDENTIALS"
+        | "INVALID_MFA" | "ITEM_LOCKED" | "USER_SETUP_REQUIRED")
+}
+
+fn plaid_health_load(conn: &rusqlite::Connection) -> Value {
+    conn.query_row("SELECT value FROM settings WHERE key='plaid_health'", [], |r| r.get::<_, String>(0)).ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| json!({ "items": {}, "warnings": [] }))
+}
+
+fn plaid_health_save(conn: &rusqlite::Connection, v: &Value) {
+    let _ = conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('plaid_health',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [v.to_string()]);
+}
+
+/// Keep one pass's outcome: each bank's last good pull or its error, and the warnings a person must see (newest
+/// first, a repeat of the same text is not added twice, at most 40 kept).
+fn record_plaid_pass(results: &[Value], warnings: &[(&str, &Vec<String>)], now: &str) {
+    let Ok(conn) = pool().get() else { return };
+    let mut h = plaid_health_load(&conn);
+    for r in results {
+        let Some(pk) = r.get("item").and_then(|v| v.as_str()) else { continue };
+        let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let e = &mut h["items"][pk];
+        if !e.is_object() { *e = json!({}); }
+        e["last_try"] = json!(now);
+        match status {
+            "ok" => { e["last_ok"] = json!(now); e["error"] = json!(""); e["code"] = json!(""); }
+            "error" => { e["error"] = r.get("error").cloned().unwrap_or(json!("")); e["code"] = r.get("code").cloned().unwrap_or(json!("")); }
+            _ => {}
+        }
+    }
+    let mut list: Vec<Value> = h["warnings"].as_array().cloned().unwrap_or_default();
+    for (kind, texts) in warnings {
+        for t in texts.iter() {
+            if t.trim().is_empty() { continue; }
+            if list.iter().any(|w| w["kind"] == json!(kind) && w["text"] == json!(t)) { continue; }
+            list.insert(0, json!({ "at": now, "kind": kind, "text": t }));
+        }
+    }
+    list.truncate(40);
+    h["warnings"] = json!(list);
+    plaid_health_save(&conn, &h);
+}
+
+/// R-518: the doorbell loop reports whether Plaid took an item's webhook re-point, and when an item last rang.
+pub fn plaid_health_note(item_id: &str, webhook_ok: Option<bool>, rang_at: Option<&str>) {
+    let Ok(conn) = pool().get() else { return };
+    let Ok(pk) = conn.query_row("SELECT id FROM plaid_items WHERE item_id=?1", [item_id], |r| r.get::<_, String>(0)) else { return };
+    let mut h = plaid_health_load(&conn);
+    let e = &mut h["items"][pk.as_str()];
+    if !e.is_object() { *e = json!({}); }
+    if let Some(ok) = webhook_ok { e["webhook_ok"] = json!(ok); e["webhook_at"] = json!(Utc::now().to_rfc3339()); }
+    if let Some(at) = rang_at { e["last_ring"] = json!(at); }
+    plaid_health_save(&conn, &h);
+}
+
+/// Each connected bank with its health, the warnings kept from every pull, and when this device last pulled.
+#[tauri::command]
+pub async fn plaid_health() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let h = plaid_health_load(&conn);
+    let mut st = conn.prepare("SELECT id, COALESCE(institution,'') FROM plaid_items ORDER BY created_at").map_err(|e| e.to_string())?;
+    let banks: Vec<Value> = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .map(|(pk, inst)| {
+            let e = h["items"].get(&pk).cloned().unwrap_or(json!({}));
+            let code = e.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            json!({
+                "id": pk, "institution": inst,
+                "last_ok": e.get("last_ok").cloned().unwrap_or(Value::Null),
+                "last_try": e.get("last_try").cloned().unwrap_or(Value::Null),
+                "error": e.get("error").and_then(|v| v.as_str()).unwrap_or(""),
+                "code": code, "needs_login": plaid_needs_login(&code),
+                "webhook_ok": e.get("webhook_ok").cloned().unwrap_or(Value::Null),
+                "last_ring": e.get("last_ring").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    let last_sync: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='plaid_last_sync'", [], |r| r.get(0)).ok();
+    Ok(json!({ "banks": banks, "warnings": h["warnings"].clone(), "last_sync": last_sync }))
+}
+
+/// Clear the kept warnings once a person has read them.
+#[tauri::command]
+pub async fn plaid_health_dismiss() -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut h = plaid_health_load(&conn);
+    h["warnings"] = json!([]);
+    plaid_health_save(&conn, &h);
+    Ok(())
+}
+
+/// R-518: the health the phone and the website show, published with the balance (names and errors only: the
+/// token never leaves this device). Best-effort.
+fn publish_plaid_health() {
+    let Ok(conn) = pool().get() else { return };
+    let h = plaid_health_load(&conn);
+    let banks: Vec<Value> = conn.prepare("SELECT id, COALESCE(institution,'') FROM plaid_items ORDER BY created_at")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>()))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(pk, inst)| {
+            let e = h["items"].get(&pk).cloned().unwrap_or(json!({}));
+            let code = e.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            json!({ "institution": inst, "last_ok": e.get("last_ok").cloned().unwrap_or(Value::Null),
+                    "error": e.get("error").and_then(|v| v.as_str()).unwrap_or(""), "needs_login": plaid_needs_login(&code) })
+        })
+        .collect();
+    let last_sync: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='plaid_last_sync'", [], |r| r.get(0)).ok();
+    drop(conn);
+    tokio::spawn(async move { crate::netsync::publish_bank_health(last_sync, banks).await; });
+}
+
+/// R-518: pull when the window comes to the front and this device has not pulled for five minutes, so a PC that
+/// slept or sat in the background catches up the moment someone looks. Never while another pull runs, and at most
+/// one try per five minutes however often the window is focused.
+pub async fn plaid_sync_if_stale() {
+    static LAST_TRY: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    {
+        let mut last = LAST_TRY.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(300)) { return; }
+        *last = Some(std::time::Instant::now());
+    }
+    if plaid_doorbell_items().is_empty() { return; }
+    let stale = pool().get().ok()
+        .and_then(|c| c.query_row("SELECT value FROM settings WHERE key='plaid_last_sync'", [], |r| r.get::<_, String>(0)).ok())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .map_or(true, |t| Utc::now().signed_duration_since(t) > chrono::Duration::minutes(5));
+    if !stale || plaid_gate().try_lock().is_err() { return; }
+    match plaid_sync().await {
+        Ok(v) => tracing::info!("plaid focus sync: imported {}", v.get("imported").and_then(|n| n.as_i64()).unwrap_or(0)),
+        Err(e) => tracing::warn!("plaid focus sync failed: {}", e),
+    }
+}
+
+/// R-518: start an update-mode sign-in for one bank whose login stopped working. Returns
+/// { link_token, hosted_link_url }; the screen opens the URL in the browser and polls plaid_reconnect_poll.
+#[tauri::command]
+pub async fn plaid_reconnect_start(id: String) -> Result<Value, String> {
+    let (access, env): (String, String) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT access_token, env FROM plaid_items WHERE id=?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|_| "That bank is no longer connected on this computer.".to_string())?
+    };
+    let (link_token, url) = crate::plaid::create_update_hosted_link(&access, &env).await.map_err(|e| e.to_string())?;
+    Ok(json!({ "link_token": link_token, "hosted_link_url": url }))
+}
+
+/// Poll an update-mode sign-in. {status:"pending"} until the person finishes; {status:"done"} once Plaid reports a
+/// successful session, after which the bank's error is cleared and a pull runs. Nothing is exchanged or added: the
+/// same connection carries on.
+#[tauri::command]
+pub async fn plaid_reconnect_poll(link_token: String, id: String) -> Result<Value, String> {
+    let v = crate::plaid::link_token_get(&link_token).await.map_err(|e| e.to_string())?;
+    let sessions = v.get("link_sessions").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+    let done = sessions.iter().any(|s| s.get("on_success").is_some_and(|o| !o.is_null())
+        || s.get("results").and_then(|r| r.get("item_add_results")).and_then(|a| a.as_array()).is_some_and(|a| !a.is_empty()));
+    if !done {
+        let exited = sessions.iter().any(|s| s.get("on_exit").is_some_and(|o| !o.is_null()));
+        return Ok(json!({ "status": if exited { "exited" } else { "pending" } }));
+    }
+    if let Ok(conn) = pool().get() {
+        let mut h = plaid_health_load(&conn);
+        let e = &mut h["items"][id.as_str()];
+        if e.is_object() { e["error"] = json!(""); e["code"] = json!(""); }
+        plaid_health_save(&conn, &h);
+    }
+    Ok(json!({ "status": "done" }))
+}
+
 /// Force a full re-pull: reset every bank's sync cursor to the start, then sync.
 /// Fixes items whose cursor was advanced past their history (leaving them empty).
 #[tauri::command]
@@ -21486,23 +21764,30 @@ pub async fn plaid_resync_all() -> Result<Value, String> {
 /// Ask each connected bank for its very latest activity (today's wires / spend),
 /// then sync. `/transactions/sync` alone only returns Plaid's cached copy, so
 /// same-day items need a forced `/transactions/refresh` first. The refresh is
-/// asynchronous at Plaid, so we wait a few seconds, then sync (the 20-min auto-sync
-/// backfills anything that lands later).
+/// asynchronous at Plaid, so we wait a few seconds, then sync (the doorbell and the
+/// 10-minute pull backfill anything that lands later).
 #[tauri::command]
 pub async fn plaid_refresh_sync() -> Result<Value, String> {
-    let items: Vec<(String, String)> = {
+    let items: Vec<(String, String, String)> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT access_token, env FROM plaid_items").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT access_token, env, COALESCE(institution,'') FROM plaid_items").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
     if items.is_empty() { return Err("No banks connected yet. Connect a bank first.".into()); }
-    for (access, env) in &items {
-        let _ = crate::plaid::transactions_refresh(access, env).await;
+    // R-518: what Plaid said to each refresh. It used to be thrown away, so a refused refresh still read "Refreshed".
+    let mut refused: Vec<String> = Vec::new();
+    for (access, env, institution) in &items {
+        if let Some(why) = crate::plaid::transactions_refresh(access, env).await {
+            refused.push(format!("{}: {}", if institution.is_empty() { "A bank" } else { institution.as_str() }, why));
+        }
     }
-    // Give Plaid a few seconds to land the fresh pull before we read it.
+    // Give Plaid a few seconds to land the fresh pull before we read it. Plaid's refresh is asynchronous, so most
+    // new rows arrive a few minutes later by the doorbell rather than in this pull.
     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
-    plaid_sync().await
+    let mut v = plaid_sync().await?;
+    v["refresh_refused"] = json!(refused);
+    Ok(v)
 }
 
 // ── Financial engine: money config, Free Cash, loans, AI categorize ─────────
@@ -23346,10 +23631,14 @@ fn apply_txn_rules_impl(override_existing: bool, imported_since: Option<&str>) -
         // category, so blank-only matching found nothing. The automatic post-sync
         // pass reads ALL unbooked rows too, but writes a non-blank category only
         // for AUTO-BOOK rules (see below) so it can't clobber categories you've set.
+        // R-518: never a row pending at the bank or retracted by it. A rule that booked a pending card charge made
+        // it "referenced", so when the charge posted under a new id the pending row was kept as retracted beside a
+        // second booked copy. The posted copy gets the rule when it arrives (bank_learn skips pending rows too).
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare(
-            "SELECT id, counterparty_name, description, direction, COALESCE(category,''), COALESCE(imported_at,'') FROM bank_txn WHERE reviewed=0",
-        ).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, counterparty_name, description, direction, COALESCE(category,''), COALESCE(imported_at,'') FROM bank_txn b WHERE reviewed=0 AND {}",
+            crate::bank_flags::settled("b"),
+        )).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((
             r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
             r.get::<_, String>(4)?, r.get::<_, String>(5)?,
@@ -26735,6 +27024,96 @@ mod txn_rule_retag_tests {
 }
 
 #[cfg(test)]
+mod r518_rules_skip_pending_tests {
+    use super::apply_txn_rules_impl;
+    use crate::db::pool;
+
+    // R-518: an auto-book rule booked a pending card charge; when the charge posted under a new id the pending row
+    // was "referenced" and kept as retracted beside a second booked copy. The rule waits for the posted copy now.
+    #[test]
+    fn an_auto_book_rule_books_only_the_settled_row() {
+        let _db = crate::db::init_test_store();
+        let c = pool().get().unwrap();
+        c.execute("INSERT INTO txn_rule (id, match_counterparty, category, auto_book, created_at) VALUES ('r518_rule','r518 acme supply','cogs',1,'2026-10-14')", []).unwrap();
+        for (id, raw) in [("r518_posted", "{}"), ("r518_pending", r#"{"pnd":true}"#), ("r518_retracted", r#"{"rtr":"2026-10-14T10:00:00Z"}"#), ("r518_blank", "")] {
+            c.execute(
+                "INSERT INTO bank_txn (id, counterparty_name, description, direction, amount, posted_at, category, reviewed, raw_json) VALUES (?1,'R518 Acme Supply','R518 ACME SUPPLY','out',48.2,'2026-10-14','',0,?2)",
+                rusqlite::params![id, raw],
+            ).unwrap();
+        }
+        drop(c);
+        apply_txn_rules_impl(false, None).unwrap();
+        let c = pool().get().unwrap();
+        let rev = |id: &str| c.query_row("SELECT reviewed FROM bank_txn WHERE id=?1", [id], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(rev("r518_posted"), 1, "a settled row is booked by its auto-book rule");
+        assert_eq!(rev("r518_blank"), 1, "an empty raw_json is a settled row and does not throw");
+        assert_eq!(rev("r518_pending"), 0, "a pending row waits for its posted copy");
+        assert_eq!(rev("r518_retracted"), 0, "a retracted row is a person's to resolve");
+        c.execute("DELETE FROM bank_txn WHERE id LIKE 'r518_%'", []).unwrap();
+        c.execute("DELETE FROM txn_rule WHERE id='r518_rule'", []).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod r518_bank_health_tests {
+    use super::{plaid_health, plaid_health_dismiss, plaid_needs_login, record_plaid_pass, split_plaid_code};
+    use crate::db::pool;
+    use serde_json::json;
+
+    #[test]
+    fn the_plaid_code_comes_off_the_message() {
+        assert_eq!(split_plaid_code("Plaid: the login details of this item have changed [ITEM_LOGIN_REQUIRED]"),
+            ("Plaid: the login details of this item have changed".to_string(), "ITEM_LOGIN_REQUIRED".to_string()));
+        assert_eq!(split_plaid_code("Plaid: transactions sync error"), ("Plaid: transactions sync error".to_string(), String::new()));
+        assert_eq!(split_plaid_code("save failed: disk [full]"), ("save failed: disk [full]".to_string(), String::new()),
+            "only an upper-case code is a Plaid code");
+        assert!(plaid_needs_login("ITEM_LOGIN_REQUIRED"));
+        assert!(!plaid_needs_login("RATE_LIMIT_EXCEEDED"));
+        assert!(!plaid_needs_login(""));
+    }
+
+    // R-518: a bank whose login broke used to fail every background pull with nothing on screen.
+    #[tokio::test]
+    async fn each_bank_keeps_its_last_good_pull_and_its_error() {
+        let _db = crate::db::init_test_store();
+        {
+            let c = pool().get().unwrap();
+            c.execute("DELETE FROM settings WHERE key='plaid_health'", []).unwrap();
+            c.execute("INSERT OR REPLACE INTO plaid_items (id, item_id, access_token, institution, accounts_json, env, created_at) \
+                       VALUES ('r518_a','item_a','tok_a','First Bank','[]','sandbox','2026-10-01'), \
+                              ('r518_b','item_b','tok_b','Second Bank','[]','sandbox','2026-10-02')", []).unwrap();
+        }
+        let results = vec![
+            json!({ "item": "r518_a", "status": "ok" }),
+            json!({ "item": "r518_b", "status": "error", "error": "Plaid: sign in again", "code": "ITEM_LOGIN_REQUIRED" }),
+        ];
+        let refused = vec!["WIRE 500.00: the posted transaction is already booked to a different deal".to_string()];
+        record_plaid_pass(&results, &[("settle_refused", &refused)], "2026-10-14T10:00:00Z");
+        // The same warning on the next pass is not added twice; the bank that recovered clears its error.
+        let later = vec![json!({ "item": "r518_b", "status": "ok" })];
+        record_plaid_pass(&results[..1], &[("settle_refused", &refused)], "2026-10-14T10:10:00Z");
+        let h = plaid_health().await.unwrap();
+        let banks = h["banks"].as_array().unwrap();
+        let a = banks.iter().find(|b| b["id"] == "r518_a").unwrap();
+        let b = banks.iter().find(|b| b["id"] == "r518_b").unwrap();
+        assert_eq!(a["last_ok"], "2026-10-14T10:10:00Z");
+        assert_eq!(b["needs_login"], true);
+        assert_eq!(b["error"], "Plaid: sign in again");
+        assert!(b["last_ok"].is_null(), "a bank that never pulled has no last good pull");
+        assert_eq!(h["warnings"].as_array().unwrap().len(), 1);
+        record_plaid_pass(&later, &[], "2026-10-14T10:20:00Z");
+        let h = plaid_health().await.unwrap();
+        let b = h["banks"].as_array().unwrap().iter().find(|b| b["id"] == "r518_b").unwrap().clone();
+        assert_eq!((b["needs_login"].clone(), b["error"].clone()), (json!(false), json!("")));
+        plaid_health_dismiss().await.unwrap();
+        assert!(plaid_health().await.unwrap()["warnings"].as_array().unwrap().is_empty());
+        let c = pool().get().unwrap();
+        c.execute("DELETE FROM plaid_items WHERE id LIKE 'r518_%'", []).unwrap();
+        c.execute("DELETE FROM settings WHERE key='plaid_health'", []).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod settle_twin_tests {
     use super::{carried_booking_fields, carried_note_fields, SETTLE_SRC_SQL};
 
@@ -26869,7 +27248,8 @@ mod canonical_id_collision_tests {
         conn.execute_batch(
             "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, reviewed INTEGER NOT NULL DEFAULT 0,
                direction TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-               account_id TEXT NOT NULL DEFAULT '', counterparty_type TEXT NOT NULL DEFAULT '');
+               account_id TEXT NOT NULL DEFAULT '', counterparty_type TEXT NOT NULL DEFAULT '',
+               note TEXT DEFAULT '', confirmed_method TEXT, tie_out_hidden INTEGER DEFAULT 0);
              CREATE TABLE bank_allocation (bank_txn_id TEXT);
              CREATE TABLE refunds (bank_txn_id TEXT);
              CREATE TABLE loan (bank_txn_id TEXT);
@@ -26951,7 +27331,8 @@ mod canonical_id_collision_tests {
             "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, reviewed INTEGER NOT NULL DEFAULT 0,
                direction TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
                account_id TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0,
-               counterparty_type TEXT NOT NULL DEFAULT '');
+               counterparty_type TEXT NOT NULL DEFAULT '',
+               note TEXT DEFAULT '', confirmed_method TEXT, tie_out_hidden INTEGER DEFAULT 0);
              CREATE TABLE bank_allocation (bank_txn_id TEXT);
              CREATE TABLE refunds (bank_txn_id TEXT);
              CREATE TABLE loan (bank_txn_id TEXT);

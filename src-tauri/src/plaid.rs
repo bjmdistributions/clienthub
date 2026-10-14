@@ -181,23 +181,58 @@ pub async fn transactions_sync(access_token: &str, cursor: &str, env: &str) -> R
         .filter(|s| !s.is_empty())
         .or(Some(code).filter(|s| !s.is_empty()))
         .unwrap_or("transactions sync error");
-    Err(anyhow!("Plaid: {}", msg))
+    // R-518: Plaid's error code rides along in brackets so the sync can tell "sign in again" from "try later";
+    // `commands::split_plaid_code` takes it off before anything is shown.
+    if code.is_empty() { Err(anyhow!("Plaid: {}", msg)) } else { Err(anyhow!("Plaid: {} [{}]", msg, code)) }
 }
 
 /// Force Plaid to pull the freshest data from the bank NOW. `/transactions/sync`
 /// only returns what Plaid has already fetched on its own cadence (~1–4x/day), so
 /// same-day wires / spend aren't visible until this forces a re-pull. Best-effort:
-/// a non-2xx (rate-limit, product not enabled) is swallowed so one bank can't fail
-/// the batch — the follow-up sync backfills either way.
-pub async fn transactions_refresh(access_token: &str, env: &str) -> Result<()> {
-    let _ = post_raw_env("/transactions/refresh", json!({ "access_token": access_token }), env).await;
-    Ok(())
+/// a non-2xx (rate-limit, product not enabled) never fails the batch — the follow-up sync backfills either way.
+/// R-518: but it is no longer swallowed: `Some(reason)` when Plaid refused, so the screen stops saying "Refreshed".
+pub async fn transactions_refresh(access_token: &str, env: &str) -> Option<String> {
+    match post_raw_env("/transactions/refresh", json!({ "access_token": access_token }), env).await {
+        Ok((true, _)) => None,
+        Ok((false, v)) => Some(v.get("error_message").and_then(|m| m.as_str())
+            .or_else(|| v.get("error_code").and_then(|m| m.as_str()))
+            .unwrap_or("Plaid refused the refresh").to_string()),
+        Err(e) => Some(e.to_string()),
+    }
 }
 
 /// R-493: point an item's webhook at this server's doorbell. Items linked before a server was connected carry no
-/// webhook, so Plaid never rang for them. Best-effort, like the refresh above.
-pub async fn webhook_update(access_token: &str, env: &str, url: &str) {
-    let _ = post_raw_env("/item/webhook/update", json!({ "access_token": access_token, "webhook": url }), env).await;
+/// webhook, so Plaid never rang for them. R-518: true only when Plaid took it; the doorbell loop retries a refusal
+/// and Setup shows which banks have instant updates on.
+pub async fn webhook_update(access_token: &str, env: &str, url: &str) -> bool {
+    matches!(post_raw_env("/item/webhook/update", json!({ "access_token": access_token, "webhook": url }), env).await, Ok((true, _)))
+}
+
+/// R-518: a HOSTED Link session in update mode, for a bank whose login stopped working (ITEM_LOGIN_REQUIRED).
+/// The person signs in again in their browser and the SAME item carries on: same access token, same cursor, no
+/// second connection and no two years of history pulled again under new ids. Returns (link_token, hosted_link_url).
+pub async fn create_update_hosted_link(access_token: &str, env: &str) -> Result<(String, String)> {
+    let mut body = json!({
+        "user": { "client_user_id": "bjm-owner" },
+        "client_name": "Ecliptr",
+        "country_codes": ["US"],
+        "language": "en",
+        "access_token": access_token,
+        "hosted_link": {}
+    });
+    if let Some(cfg) = crate::netsync::config() {
+        body["webhook"] = json!(format!("{}/api/bank/doorbell/ring", cfg.url.trim_end_matches('/')));
+    }
+    let (ok, v) = post_raw_env("/link/token/create", body, env).await?;
+    if !ok {
+        let msg = v.get("error_message").and_then(|m| m.as_str()).unwrap_or("Plaid API error");
+        return Err(anyhow!("Plaid: {}", msg));
+    }
+    let token = v.get("link_token").and_then(|t| t.as_str()).map(String::from)
+        .ok_or_else(|| anyhow!("No link_token in Plaid response"))?;
+    let url = v.get("hosted_link_url").and_then(|t| t.as_str()).map(String::from)
+        .ok_or_else(|| anyhow!("Plaid didn't return a hosted link URL. Enable Hosted Link in your Plaid dashboard (Link → Hosted Link)."))?;
+    Ok((token, url))
 }
 
 /// Best-effort: tell Plaid to forget an item when the user disconnects a bank.

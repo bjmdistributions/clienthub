@@ -7,7 +7,7 @@ import {
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
   Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, ShippingSplit, BankPersonCandidate, ReconciliationMissingDeal,
-  TakeoverSuggestion, TieOutRow, RetractedRow,
+  TakeoverSuggestion, TieOutRow, RetractedRow, PlaidHealth,
 } from "../lib/api";
 import StatusPill from "./StatusPill";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
@@ -21,6 +21,7 @@ import LoansView from "./LoansView";
 import AccountantChanges from "./AccountantChanges";
 import NearDuplicates from "./NearDuplicates";
 import RetractedRows from "./RetractedRows";
+import BankHealthStrip from "./BankHealthStrip";
 import { parseAmount } from "../lib/format";
 import { alreadyTied, tieAmount } from "../lib/tieAmount";
 
@@ -1102,6 +1103,10 @@ export default function FinancialsView() {
   const [undoingAuto, setUndoingAuto] = useState<string | null>(null);
   // R-288 phase 4: the daily controls live on To book.
   const [lastBankSync, setLastBankSync] = useState<string | null>(null);
+  // R-518: bumped after every pull this screen runs, so the bank-health strip re-reads at once.
+  const [healthVersion, setHealthVersion] = useState(0);
+  // R-518: which banks have instant updates on, for Setup's connected-banks list.
+  const [bankHealth, setBankHealth] = useState<PlaidHealth | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [armedBook, setArmedBook] = useState<string | null>(null); // deal money booked without a deal asks once
   const [, setClockTick] = useState(0);
@@ -1239,7 +1244,16 @@ export default function FinancialsView() {
       if (cfg.env === "sandbox" || cfg.env === "production") setPlaidEnv(cfg.env);
     } catch { setPlaidReady(false); }
     try { setPlaidItems(await api.plaidListItems()); } catch { /* no banks / not set up yet */ }
+    api.plaidHealth().then(setBankHealth).catch(() => {});
   };
+
+  // R-518: background pulls move "Bank checked" without telling this screen, so re-read it each minute.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      api.plaidHealth().then((h) => { setBankHealth(h); setLastBankSync(h.last_sync ?? null); }).catch(() => {});
+    }, 60_000);
+    return () => window.clearInterval(t);
+  }, []);
 
   useEffect(() => {
     loadAll();
@@ -1586,8 +1600,12 @@ export default function FinancialsView() {
         toast("Plaid is still preparing your transactions. This can take a minute.");
       } else {
         setPlaidPreparing(stillPreparing);
-        if (mode === "refresh" && r.imported === 0 && r.removed === 0 && amended === 0) {
-          toast("Refreshed from bank, nothing new yet. Same-day wires can take a few hours to post; try again shortly.");
+        const refused = mode === "refresh" ? ((r as { refresh_refused?: string[] }).refresh_refused ?? []) : [];
+        if (refused.length) {
+          // R-518: a refused refresh used to read "Refreshed".
+          toast(`The bank did not take the refresh: ${refused.join("; ")}. The regular pull still runs every 10 minutes.`, "error");
+        } else if (mode === "refresh" && r.imported === 0 && r.removed === 0 && amended === 0) {
+          toast("Asked your banks for their newest activity. New rows usually arrive within a few minutes and show here on their own.");
         } else {
           const lead = mode === "refresh" ? "Refreshed: " : "";
           const bits = [`Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}`];
@@ -1602,7 +1620,7 @@ export default function FinancialsView() {
       surfaceSyncWarnings(r);
       api.plaidConfig().then((c) => setLastBankSync(c.last_sync ?? null)).catch(() => {});
     } catch (e: any) { toast(errText(e), "error"); }
-    finally { setPlaidSyncing(false); }
+    finally { setPlaidSyncing(false); setHealthVersion((v) => v + 1); }
   };
 
   const agoText = (iso: string | null) => {
@@ -3495,10 +3513,10 @@ export default function FinancialsView() {
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
           {plaidItems.length > 0 && tab !== "tobook" && (
-            // Honest wording: the bank feed is pulled on a 20-minute timer by this
-            // device (main.rs), not continuously. "Auto-syncing" read as live.
+            // Honest wording: the bank feed is pulled on a 10-minute timer by this
+            // device (main.rs), plus the doorbell when Plaid has news. "Auto-syncing" read as live.
             <span className="text-[11.5px] text-muted whitespace-nowrap">
-              {lastBankSync ? `Bank checked ${agoText(lastBankSync)}` : "Bank feed checked every 20 min"}
+              {lastBankSync ? `Bank checked ${agoText(lastBankSync)}` : "Bank feed checked every 10 minutes"}
             </span>
           )}
           {tab !== "tobook" && (
@@ -3673,6 +3691,10 @@ export default function FinancialsView() {
       {tab !== "cash" && tab !== "report" && (
       <div className="space-y-5">
       {/* To book — headline row: how much work waits, plus the daily controls. */}
+      {tab === "tobook" && plaidItems.length > 0 && (
+        <BankHealthStrip version={healthVersion} onSynced={() => { refreshAll(false).catch(() => {}); loadPlaid(); }} />
+      )}
+
       {tab === "tobook" && (
         <div className="min-w-0 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-[14px] text-ink min-w-0">
@@ -4479,6 +4501,16 @@ export default function FinancialsView() {
                       <div className="text-[12px] font-medium text-ink truncate">{it.institution}</div>
                       <div className="text-[11px] text-muted tabular-nums">
                         {it.account_count} account{it.account_count === 1 ? "" : "s"}
+                        {(() => {
+                          // R-518: whether Plaid rings for this bank, so a doorbell that never armed is visible.
+                          const h = bankHealth?.banks.find((b) => b.id === it.id);
+                          if (!h) return null;
+                          const parts: string[] = [];
+                          if (h.last_ok) parts.push(`last pulled ${agoText(h.last_ok)}`);
+                          if (h.webhook_ok === true) parts.push(h.last_ring ? `instant updates on, last one ${agoText(h.last_ring)}` : "instant updates on");
+                          else if (h.webhook_ok === false) parts.push("instant updates not set up yet, retrying every 30 minutes");
+                          return parts.length ? <> · {parts.join(" · ")}</> : null;
+                        })()}
                       </div>
                     </div>
                     <button

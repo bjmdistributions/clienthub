@@ -2,6 +2,7 @@
 
 mod ai;
 mod bank_dedup;
+mod bank_flags;
 mod bank_near_dup;
 mod bank_learn;
 mod bank_import;
@@ -358,6 +359,12 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_drag::init())
+        // R-518: a PC that slept or sat in the background pulls its banks the moment someone looks at it.
+        .on_window_event(|_window, event| {
+            if let tauri::WindowEvent::Focused(true) = event {
+                tauri::async_runtime::spawn(commands::plaid_sync_if_stale());
+            }
+        })
         .setup(|app| {
             // Critical startup steps: on failure show a native dialog + log and
             // exit, rather than returning Err (which aborts inside tao's
@@ -566,6 +573,9 @@ fn main() {
                     Err(e) => tracing::warn!("plaid auto-sync failed: {}", e),
                 }
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+                // R-518: a tokio interval's first tick is immediate, which ran a second full pull right after the
+                // startup one. Take it here so the first timed pull is ten minutes out.
+                interval.tick().await;
                 loop {
                     interval.tick().await;
                     match commands::plaid_sync().await {
@@ -583,6 +593,11 @@ fn main() {
                 tokio::time::sleep(std::time::Duration::from_secs(45)).await;
                 // The items last named to the server; a bank linked later is named on the next pass.
                 let mut registered: Vec<String> = Vec::new();
+                // R-518: items whose webhook Plaid took, and when a refused re-point was last tried. A refusal used
+                // to be thrown away and never retried until the app restarted, so a bank could stay on the
+                // 10-minute timer for good with nothing saying so.
+                let mut armed: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut tried: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
                 let mut last_seen = chrono::Utc::now().to_rfc3339();
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                 loop {
@@ -592,18 +607,27 @@ fn main() {
                     if items.is_empty() { continue; }
                     let ids: Vec<String> = items.iter().map(|(id, _, _)| id.clone()).collect();
                     if registered != ids && netsync::register_doorbell(&ids).await {
-                        let hook = format!("{}/api/bank/doorbell/ring", cfg.url.trim_end_matches('/'));
-                        for (id, token, env) in &items {
-                            if !registered.contains(id) { plaid::webhook_update(token, env, &hook).await; }
-                        }
                         registered = ids.clone();
                     }
+                    let hook = format!("{}/api/bank/doorbell/ring", cfg.url.trim_end_matches('/'));
+                    for (id, token, env) in &items {
+                        if !registered.contains(id) || armed.contains(id) { continue; }
+                        if tried.get(id).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1800)) { continue; }
+                        tried.insert(id.clone(), std::time::Instant::now());
+                        let ok = plaid::webhook_update(token, env, &hook).await;
+                        if ok { armed.insert(id.clone()); } else { tracing::warn!("plaid doorbell: Plaid refused the webhook for item {id}; retrying in 30 minutes"); }
+                        commands::plaid_health_note(id, Some(ok), None);
+                    }
                     let Some(rings) = netsync::doorbell_rings().await else { continue };
-                    let newest = rings.into_iter().filter(|(id, _)| ids.contains(id)).map(|(_, at)| at).max();
-                    if let Some(at) = newest.filter(|at| *at > last_seen) {
-                        last_seen = at;
+                    let newest = rings.into_iter().filter(|(id, _)| ids.contains(id)).max_by(|a, b| a.1.cmp(&b.1));
+                    if let Some((item, at)) = newest.filter(|(_, at)| *at > last_seen) {
+                        commands::plaid_health_note(&item, None, Some(&at));
                         match commands::plaid_sync().await {
-                            Ok(v) => tracing::info!("plaid doorbell sync: imported {}", v.get("imported").and_then(|n| n.as_i64()).unwrap_or(0)),
+                            // R-518: the ring is spent only by a pull that ran; a failed one is retried next minute.
+                            Ok(v) => {
+                                last_seen = at;
+                                tracing::info!("plaid doorbell sync: imported {}", v.get("imported").and_then(|n| n.as_i64()).unwrap_or(0));
+                            }
                             Err(e) => tracing::warn!("plaid doorbell sync failed: {}", e),
                         }
                     }
@@ -1139,6 +1163,10 @@ fn main() {
             plaid_list_items,
             plaid_remove_item,
             plaid_sync,
+            commands::plaid_health,
+            commands::plaid_health_dismiss,
+            commands::plaid_reconnect_start,
+            commands::plaid_reconnect_poll,
             list_bank_txns,
             list_tie_out_backlog,
             set_tie_out_hidden,

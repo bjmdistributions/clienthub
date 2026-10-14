@@ -305,6 +305,20 @@ pub async fn publish_bank_balance(bank: f64, card: f64) {
         .await;
 }
 
+/// R-518: when this device last pulled its banks and each bank's health, for the phone and the website (which hold
+/// no Plaid link). Names, times and error text only. Sent to the same endpoint as the balance, without balance
+/// fields, which the server leaves untouched when they are absent.
+pub async fn publish_bank_health(last_sync: Option<String>, banks: Vec<serde_json::Value>) {
+    let cfg = match config() { Some(c) => c, None => return };
+    let url = format!("{}/api/bank-balance", cfg.url.trim_end_matches('/'));
+    let _ = http()
+        .post(&url)
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({ "pulled_at": last_sync, "banks": banks }))
+        .send()
+        .await;
+}
+
 /// R-493: the bank rows a Plaid sync just brought in (`{ id, amount, money_in }`), so the server raises a notice
 /// per row and a phone push. Best-effort: a lost report costs an alert, never a row.
 pub async fn report_bank_activity(txns: Vec<serde_json::Value>) {
