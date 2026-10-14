@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import TierBadge from "./TierBadge";
 import {
   api, Client, Interaction, Invoice, BuyerTier, CustomField, CompanyInfo,
   PaymentMethod, CounterpartyPaymentRow, DealFlow, Supplier, PartyLink, LineItem,
@@ -1075,13 +1076,6 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   const lastActivityRaw = client.last_contact_at || interactions[0]?.created_at || null;
   const followUp = ((client.next_follow_up_date || meta.next_follow_up_date || "") as string).slice(0, 10);
 
-  const tierLabel = tier ? (tier.tier === "P" ? "Platinum" : tier.tier === "S" ? "Diamond" : tier.tier === "A" ? "Gold" : tier.tier === "B" ? "Silver" : tier.tier === "C" ? "Bronze" : "Prospect") : null;
-  const tierChipCls = tier ? (
-    tier.tier === "P" ? "bg-[#8B5CF6]/12 text-[#8B5CF6]" :
-    tier.tier === "S" ? "bg-accent/10 text-accent-hover" :
-    tier.tier === "A" ? "bg-success-bg text-success-ink" :
-    tier.tier === "B" ? "bg-warning-bg text-warning-ink" : "bg-surface-3 text-muted"
-  ) : "";
 
   // Merge-on-write: `update_client` writes lead_status unconditionally and
   // defaults it to "prospect" when the caller omits it, so this call has to send
@@ -1312,7 +1306,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 <StatusPill className={leadStatusColor(client.lead_status)}>
                   {client.lead_status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
                 </StatusPill>
-                {tierLabel && <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ${tierChipCls}`}>{tierLabel}</span>}
+                {tier && <TierBadge tier={tier.tier} />}
                 {tier && tier.avg_commission_pct > 0 && (
                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ${
                     tier.avg_commission_pct >= 25 ? "bg-success-bg text-success-ink" : tier.avg_commission_pct >= 10 ? "bg-warning-bg text-warning-ink" : "bg-danger-bg text-danger-ink"
