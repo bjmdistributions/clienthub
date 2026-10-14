@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
-import { BankSuggestCandidate, DealFlow } from "../lib/api";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, X } from "lucide-react";
+import { api, BankSuggestCandidate, BankTxn, DealFlow, LineItem } from "../lib/api";
 import { fmtAmount, parseLocalDay } from "../lib/format";
+import StatusPill from "./StatusPill";
 
 /* ── Which deal does this payment belong to? ──────────────────────────────────
  *
@@ -135,6 +136,9 @@ export default function DealPicker({
   disabled,
   variant,
   busy,
+  itemsByInvoice,
+  summary,
+  onClose,
 }: {
   /** The pool, already deduped by the caller (`survivorDeals`) — a suggestion
    *  must never land on a duplicate deal_flow row the deal screen hides. */
@@ -162,11 +166,19 @@ export default function DealPicker({
    *  the same sections — the bulk list used to be unsectioned, unranked and
    *  sorted newest-completed-first, so a tag affecting twenty rows was MORE
    *  likely to land on a dead deal than a tag affecting one. */
-  variant?: "dropdown" | "inline";
+  variant?: "dropdown" | "inline" | "page";
   /** Disables rows while a bulk write is in flight. */
   busy?: boolean;
+  /** R-517: each invoice's line items, so a row can show what was sold and the search can find
+   *  a deal by an item. Only the full page passes it. */
+  itemsByInvoice?: Map<string, LineItem[]>;
+  /** R-517: the payment being tied, as one line at the top of the full page. */
+  summary?: string;
+  /** R-517: closes the full page. */
+  onClose?: () => void;
 }) {
-  const inline = variant === "inline";
+  const page = variant === "page";
+  const inline = variant === "inline" || page;
   const [open, setOpen] = useState(inline);
   const [activeIdx, setActiveIdx] = useState(0);
   const [showAllActive, setShowAllActive] = useState(false);
@@ -204,6 +216,14 @@ export default function DealPicker({
     };
   }, [open, inline]);
 
+  // R-517: the full page closes on Escape, the way every sheet does.
+  useEffect(() => {
+    if (!page || !onClose) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [page, onClose]);
+
   const { suggested, active, done, activeTotal, doneTotal } = useMemo(() => {
     const q = query.trim().toLowerCase();
     const amountQ = parseAmountQuery(query);
@@ -229,7 +249,8 @@ export default function DealPicker({
 
     const matches = (d: DealFlow) => {
       if (!q) return true;
-      const hay = `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""} ${d.item_name || ""}`.toLowerCase();
+      const items = itemsByInvoice?.get(d.invoice_id)?.map((i) => i.description).join(" ") || "";
+      const hay = `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""} ${d.item_name || ""} ${items}`.toLowerCase();
       if (hay.includes(q)) return true;
       // Searching by amount: the figure on the transaction is usually the
       // fastest way to name the deal, and the old search could not read it.
@@ -267,7 +288,7 @@ export default function DealPicker({
       activeTotal: activeAll.length,
       doneTotal: doneAll.length,
     };
-  }, [deals, candidates, query, txnAmount, direction, showAllActive, showAllDone]);
+  }, [deals, candidates, query, txnAmount, direction, showAllActive, showAllDone, itemsByInvoice]);
 
   // Everything the arrow keys can land on, in render order.
   const walk: Row[] = useMemo(
@@ -308,6 +329,65 @@ export default function DealPicker({
     const money = rowMoney(d, direction, cand?.outstanding, role);
     const isActive = d.stage !== "complete";
     const exact = txnAmount > 0 && money.fits && Math.abs(money.value - txnAmount) < 0.5;
+    if (page) {
+      // R-517: the full page has room, so a row says what was sold. Jack: the dropdown "is not
+      // showing good enough information" to tell deals apart when tying a payment.
+      const items = itemsByInvoice?.get(d.invoice_id) || [];
+      const shown = items.slice(0, 6);
+      return (
+        <button
+          key={`${d.id}-${cand?.role ?? ""}`}
+          data-idx={idx}
+          onMouseEnter={() => setActiveIdx(idx)}
+          onClick={() => pick(r)}
+          disabled={busy}
+          className={`w-full text-left px-4 py-3 rounded-xl border transition-colors min-w-0 disabled:opacity-50 ${
+            idx === activeIdx ? "bg-surface-2 border-line-3" : "border-line hover:bg-surface-2"
+          } ${dim ? "opacity-70" : ""}`}
+        >
+          <div className="flex items-start gap-3 min-w-0">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-[15px] font-semibold text-ink truncate">{dealLabel(d)}</span>
+                <StatusPill tone={isActive ? "step" : "neutral"}>{STAGE_WORDS[d.stage] ?? d.stage}</StatusPill>
+              </div>
+              <div className="text-[12.5px] text-muted mt-0.5 truncate">
+                {d.invoice_number ? `Invoice #${d.invoice_number}` : "No invoice"}
+                {d.completed_at || d.created_at ? ` on ${shortDate(d.completed_at || d.created_at)}` : ""}
+                {d.invoice_total ? ` for ${fmtAmount(d.invoice_total)}` : ""}
+              </div>
+              {cand?.reason && (
+                <div className="text-[12.5px] text-accent mt-0.5">
+                  {cand.reason}
+                  {cand.role === "supplier_payment" && cand.supplier_name ? `, ${cand.supplier_name}` : ""}
+                </div>
+              )}
+            </div>
+            <div className="text-right flex-shrink-0">
+              <div className={`text-[15px] tabular-nums ${exact ? "text-accent font-semibold" : "text-ink"}`}>
+                {money.value ? fmtAmount(money.value) : "–"}
+              </div>
+              <div className="text-[12px] text-muted tabular-nums">{money.label}</div>
+            </div>
+          </div>
+          {shown.length > 0 && (
+            <div className="mt-2 grid gap-y-0.5 gap-x-4" style={{ gridTemplateColumns: "minmax(0,1fr) auto auto" }}>
+              {shown.map((it, i) => (
+                <Fragment key={i}>
+                  <span className="text-[12.5px] text-ink-2 truncate">{it.description || "Item"}</span>
+                  <span className="text-[12.5px] text-muted tabular-nums text-right">{it.qty ? `${it.qty} ×` : ""}</span>
+                  <span className="text-[12.5px] text-muted tabular-nums text-right">{fmtAmount(it.rate || 0)}</span>
+                </Fragment>
+              ))}
+              {items.length > shown.length && (
+                <span className="text-[12px] text-faint col-span-3">and {items.length - shown.length} more</span>
+              )}
+            </div>
+          )}
+          {d.notes?.trim() && <div className="text-[12px] text-muted mt-1.5 truncate">{d.notes.trim()}</div>}
+        </button>
+      );
+    }
     return (
       <button
         key={`${d.id}-${cand?.role ?? ""}`}
@@ -376,8 +456,8 @@ export default function DealPicker({
   let idx = -1;
   const nothing = suggested.length === 0 && activeTotal === 0 && doneTotal === 0;
 
-  return (
-    <div ref={wrapRef} className={inline ? "min-w-0 flex flex-col min-h-0" : "relative min-w-0"}>
+  const body = (
+    <div ref={wrapRef} className={inline ? "min-w-0 flex flex-col min-h-0 flex-1" : "relative min-w-0"}>
       <input
         value={query}
         onChange={(e) => onQueryChange(e.target.value)}
@@ -449,5 +529,72 @@ export default function DealPicker({
         </div>
       )}
     </div>
+  );
+
+  if (!page) return body;
+  // R-517: the same list as a full page over the Financials screen, with the room to show each deal's items.
+  return (
+    <div className="fixed inset-0 z-50 bg-surface flex flex-col" role="dialog" aria-label="Which deal is this payment for?">
+      <div className="flex items-start gap-3 px-6 pt-5 pb-3 border-b border-line flex-shrink-0">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[18px] font-semibold tracking-tight text-ink">Which deal is this payment for?</h2>
+          {summary && <p className="text-[13px] text-muted mt-0.5 truncate">{summary}</p>}
+        </div>
+        <button onClick={onClose} aria-label="Close" className="p-2 rounded-lg text-muted hover:text-ink hover:bg-surface-2 transition-colors">
+          <X size={18} />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="max-w-[960px] mx-auto px-6 py-4 flex flex-col min-h-0 gap-2 [&_input]:h-11 [&_input]:text-[14px]">{body}</div>
+      </div>
+    </div>
+  );
+}
+
+/** R-517: the full-page picker, with every invoice's line items read once so each row can list what was sold. */
+export function DealPickerPage({ deals, candidates, txn, role, onPick, onClose }: {
+  deals: DealFlow[];
+  candidates: BankSuggestCandidate[];
+  txn: BankTxn;
+  role: string;
+  onPick: (d: DealFlow, cand?: BankSuggestCandidate) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [items, setItems] = useState<Map<string, LineItem[]>>(() => new Map());
+  useEffect(() => {
+    let live = true;
+    api.listInvoices().then((rows) => {
+      if (!live) return;
+      const m = new Map<string, LineItem[]>();
+      for (const inv of rows) {
+        try {
+          const parsed = JSON.parse(inv.line_items_json || "[]");
+          if (Array.isArray(parsed)) m.set(inv.id, parsed as LineItem[]);
+        } catch { /* a row with no readable items simply shows none */ }
+      }
+      setItems(m);
+    }).catch(() => { /* the rows still list without items */ });
+    return () => { live = false; };
+  }, []);
+  const when = shortDate(txn.posted_at);
+  const summary = `${fmtAmount(txn.amount)} ${txn.direction === "out" ? "out" : "in"}${when ? ` on ${when}` : ""}, ${txn.counterparty_name?.trim() || txn.description || ""}`;
+  return (
+    <DealPicker
+      variant="page"
+      deals={deals}
+      candidates={candidates}
+      txnAmount={txn.unallocated > 0.005 ? txn.unallocated : txn.amount}
+      direction={txn.direction === "out" ? "out" : "in"}
+      role={role}
+      query={query}
+      onQueryChange={setQuery}
+      onPick={onPick}
+      autoFocus
+      itemsByInvoice={items}
+      summary={summary}
+      onClose={onClose}
+      placeholder="Search a buyer, an invoice number, an item, or type an amount"
+    />
   );
 }

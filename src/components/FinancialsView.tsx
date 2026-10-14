@@ -2,7 +2,7 @@ import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, us
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
   Building2, RefreshCw, RotateCcw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle, Download,
-  Eye, EyeOff,
+  Eye, EyeOff, Maximize2,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
@@ -15,7 +15,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "./Toast";
 import PersonPickerModal, { PersonRef, personKey } from "./PersonPicker";
-import DealPicker from "./DealPicker";
+import DealPicker, { DealPickerPage } from "./DealPicker";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
 import AccountantChanges from "./AccountantChanges";
@@ -6068,6 +6068,10 @@ function AllocationPanel(props: {
     newDealBusy, onCreateDeal,
   } = props;
 
+  // R-517: the deal list as a full page, with each invoice's items. The dropdown beside the amount box
+  // is too narrow to tell two deals for the same buyer apart.
+  const [pickerPage, setPickerPage] = useState(false);
+
   // Live split math: how much of this transaction is still unallocated across ALL deals.
   const splitAllocated = allocs.reduce((s, a) => s + (a.amount || 0), 0);
   const splitRemaining = Math.max((txn.amount || 0) - splitAllocated, 0);
@@ -6255,6 +6259,23 @@ function AllocationPanel(props: {
                 onQueryChange={setDealQuery}
                 onPick={onPickDeal}
               />
+              <button
+                type="button"
+                onClick={() => setPickerPage(true)}
+                className="mt-1.5 inline-flex items-center gap-1.5 text-[12.5px] font-medium text-accent hover:text-accent-hover transition-colors"
+              >
+                <Maximize2 size={13} /> Open the full list, with each deal's items
+              </button>
+              {pickerPage && (
+                <DealPickerPage
+                  deals={dealPool}
+                  candidates={dealCandidates}
+                  txn={txn}
+                  role={role}
+                  onPick={(d, cand) => { setPickerPage(false); onPickDeal(d, cand); }}
+                  onClose={() => setPickerPage(false)}
+                />
+              )}
             </div>
             <input
               type="text"
