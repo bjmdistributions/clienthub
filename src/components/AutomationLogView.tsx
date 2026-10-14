@@ -6,6 +6,8 @@ import {
 } from "lucide-react";
 import { SetupGuide } from "./IntakeSetupGuide";
 import StatusPill from "./StatusPill";
+import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 
 // Jump to a Settings sub-tab (persisted key the SettingsView reads on mount).
 function goToSettings(tab: string) {
@@ -15,7 +17,10 @@ function goToSettings(tab: string) {
 
 function CopyField({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => { navigator.clipboard?.writeText(value).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 1500); };
+  const copy = async () => {
+    if (!(await copyText(value))) { toast(COPY_FAILED, "error"); return; }
+    setCopied(true); setTimeout(() => setCopied(false), 1500);
+  };
   return (
     <div className="flex items-center gap-1.5 min-w-0">
       <code className="flex-1 bg-surface-2 border border-line rounded-md h-7 px-2 text-[11px] text-ink-2 truncate flex items-center font-mono">{value}</code>

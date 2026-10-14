@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 import {
   CopyPlus,
   ExternalLink,
@@ -67,9 +69,9 @@ export default function SheetCopyView() {
     if (result) api.openExternal(result.newUrl).catch(() => {});
   };
 
-  const copyLink = () => {
+  const copyLink = async () => {
     if (!result) return;
-    navigator.clipboard.writeText(result.newUrl).catch(() => {});
+    if (!(await copyText(result.newUrl))) { toast(COPY_FAILED, "error"); return; }
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };

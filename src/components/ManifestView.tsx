@@ -4,6 +4,7 @@ import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 import { Upload, Clipboard, ClipboardList, Layers, Plus, RotateCcw } from "lucide-react";
 import ManifestSplit from "./ManifestSplit";
 import StatusPill from "./StatusPill";
@@ -659,7 +660,7 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
               <Plus size={14} /> Create lot{num(ask) ? ` at ${fmtAmount(num(ask) || 0)} cost` : ""}
             </button>
             {bid.max != null && (
-              <button onClick={() => navigator.clipboard.writeText(bid.max!.toFixed(2)).then(() => toast("Most you can pay copied."))}
+              <button onClick={() => copyText(bid.max!.toFixed(2)).then((ok) => { if (ok) toast("Most you can pay copied."); else toast(COPY_FAILED, "error"); })}
                 className="text-ink-2 border border-line-3 hover:border-accent hover:text-accent px-3.5 h-9 rounded-lg text-[12px] font-medium flex items-center gap-1.5 transition-colors">
                 <Clipboard size={12} /> Copy most you can pay
               </button>

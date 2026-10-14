@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { api, type FormDef, type FormField } from "../lib/api";
+import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 
 const FIELD_TYPES: [string, string][] = [
   ["name", "Name"], ["email", "Email"], ["phone", "Phone"], ["company", "Company"],
@@ -60,7 +62,10 @@ export function FormsPanel() {
     setEditing(null); load();
   };
   const remove = async (id: string) => { if (!confirm("Delete this form?")) return; await api.deleteForm(id).catch(() => {}); load(); };
-  const copy = (id: string) => { navigator.clipboard.writeText(`https://ecliptr.app/f/${id}`).catch(() => {}); setCopied(id); setTimeout(() => setCopied(""), 1500); };
+  const copy = async (id: string) => {
+    if (!(await copyText(`https://ecliptr.app/f/${id}`))) { toast(COPY_FAILED, "error"); return; }
+    setCopied(id); setTimeout(() => setCopied(""), 1500);
+  };
   const usePreset = () =>
     setEditing((e) => {
       if (!e) return e;

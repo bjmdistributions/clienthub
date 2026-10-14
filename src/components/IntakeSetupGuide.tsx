@@ -2,13 +2,18 @@ import { useState } from "react";
 import { IntakeSourceSummary } from "../lib/api";
 import { ArrowLeft, ArrowRight, ArrowDown, Copy, Check, Code2, MousePointerClick, ShoppingBag, FileInput, Sparkles } from "lucide-react";
 import StatusPill from "./StatusPill";
+import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 
 // A visual, on-brand setup guide for turning any website form into pending
 // Ecliptr leads. Illustrations are stylized mock UI blocks (NOT screenshots).
 
 function useCopy(): [boolean, (v: string) => void] {
   const [copied, setCopied] = useState(false);
-  const copy = (v: string) => { navigator.clipboard?.writeText(v).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 1600); };
+  const copy = async (v: string) => {
+    if (!(await copyText(v))) { toast(COPY_FAILED, "error"); return; }
+    setCopied(true); setTimeout(() => setCopied(false), 1600);
+  };
   return [copied, copy];
 }
 

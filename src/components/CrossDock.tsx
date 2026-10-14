@@ -25,6 +25,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, Info, Volume2, VolumeX, Trophy, Check, Copy } from "lucide-react";
 import { api } from "../lib/api";
 import StatusPill from "./StatusPill";
+import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 import { laneY, laneV, stopAt, VMAX } from "../lib/crossdock-motion";
 import {
   REELS, PAYLINES, SYMBOLS, SYMBOL_BY_ID, JACKPOTS, LINE_COUNT,
@@ -401,8 +403,8 @@ function Leaderboard({ onClose }: { onClose: () => void }) {
   const rows = board(mine, rivals);
   const localNames = new Set(mine.map((m) => m.name.toLowerCase()));
 
-  const copy = (sc: Score) => {
-    navigator.clipboard?.writeText(encodeScore({ ...sc, at: Date.now() })).catch(() => { /* no clipboard */ });
+  const copy = async (sc: Score) => {
+    if (!(await copyText(encodeScore({ ...sc, at: Date.now() })))) { toast(COPY_FAILED, "error"); return; }
     setCopied(sc.name);
     window.setTimeout(() => setCopied(""), 1600);
   };

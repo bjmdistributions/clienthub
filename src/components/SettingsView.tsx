@@ -106,6 +106,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "./Toast";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
@@ -3443,7 +3444,8 @@ function AutomationTab() {
   const [copied,   setCopied]   = useState(false);
   const leadFormUrl = "https://ecliptr.app/signup";
   const copyLeadLink = async () => {
-    try { await navigator.clipboard.writeText(leadFormUrl); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ }
+    if (!(await copyText(leadFormUrl))) { toast(COPY_FAILED, "error"); return; }
+    setCopied(true); setTimeout(() => setCopied(false), 1500);
   };
 
   const load = () => api.listSignupRules().then(setRules).catch(console.error);
@@ -3825,7 +3827,7 @@ function IntakeSourceCard({ source, fields, onChange }: { source: any; fields: {
       </div>
       <div className="flex items-center gap-2">
         <input readOnly value={source.url} className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2.5 text-[12px] text-ink" />
-        <button onClick={() => navigator.clipboard?.writeText(source.url)} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors shrink-0">Copy URL</button>
+        <button onClick={() => copyText(source.url).then((ok) => { if (ok) toast("Copied"); else toast(COPY_FAILED, "error"); })} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors shrink-0">Copy URL</button>
       </div>
       {incoming.length === 0 ? (
         <div className="text-[12.5px] text-muted bg-surface-2 border border-line rounded-lg p-3 leading-relaxed">
@@ -3999,7 +4001,7 @@ function FacebookTab() {
           <li>Add the <strong className="text-ink-2">Facebook Login</strong> product. Under its settings, add this exact <strong className="text-ink-2">Valid OAuth Redirect URI</strong>:
             <div className="flex items-center gap-2 mt-1.5">
               <input readOnly value={redirect} className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2.5 text-[12px] text-ink" />
-              <button onClick={() => { navigator.clipboard?.writeText(redirect); toast("Copied"); }} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
+              <button onClick={() => copyText(redirect).then((ok) => { if (ok) toast("Copied"); else toast(COPY_FAILED, "error"); })} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
             </div>
           </li>
           <li>In <strong className="text-ink-2">App settings → Basic</strong>, copy the <strong className="text-ink-2">App ID</strong> and <strong className="text-ink-2">App secret</strong> into the fields above and save.</li>
@@ -4044,7 +4046,7 @@ function ShopifyTab() {
           <div className="text-[12.5px] font-medium text-muted mb-1.5">Webhook URL</div>
           <div className="flex items-center gap-2">
             <input readOnly value={url} className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[12px] text-ink" />
-            <button onClick={() => navigator.clipboard?.writeText(url)} className="px-3 h-9 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
+            <button onClick={() => copyText(url).then((ok) => { if (ok) toast("Copied"); else toast(COPY_FAILED, "error"); })} className="px-3 h-9 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
           </div>
         </div>
         <div>
@@ -4347,7 +4349,11 @@ function StorefrontTab() {
     catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
-  const copy = () => { if (cfg.url) { navigator.clipboard.writeText(cfg.url); setCopied(true); setTimeout(() => setCopied(false), 1500); } };
+  const copy = async () => {
+    if (!cfg.url) return;
+    if (!(await copyText(cfg.url))) { toast(COPY_FAILED, "error"); return; }
+    setCopied(true); setTimeout(() => setCopied(false), 1500);
+  };
 
   const inpCls = "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40";
   const Toggle = ({ on, onClick }: { on: boolean; onClick: () => void }) => (
