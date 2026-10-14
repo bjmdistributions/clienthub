@@ -133,7 +133,7 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
               className={`${inp} pl-8`} />
           </div>
           {rows === null ? <p className="text-[12.5px] text-muted">Looking...</p> : rows.length === 0 ? (
-            <p className="text-[12.5px] text-ink-2">{err ? "" : q.trim() ? "No bank payment matches that." : "No bank payment to link yet. It shows up here once the money leaves the account, and a payment still pending at the bank once it posts."}</p>
+            <p className="text-[12.5px] text-ink-2">{err ? "" : q.trim() ? "No bank payment matches that." : "No bank payment to link yet. It shows up here once the money leaves the account, pending or posted."}</p>
           ) : (
             <div className="rounded-lg border border-line divide-y divide-line">
               {rows.map((c) => (
