@@ -9,6 +9,8 @@ export type LoadLine = {
   cost: number; msrp: number; sizes: SizeQty[]; sheet_total: number; source: string;
   /** R-537: the tab it was read from, and its picture from the sheet ("media/deliveries/<load>/<line>.jpg"). */
   sheet?: string; image?: string;
+  /** R-539: the sheet rows its pairs were read from, and the row its size names came from (0 or absent: none). */
+  rows?: number[]; sizes_row?: number;
 };
 export type CaseLine = { line_id: string; size: string; pairs: number };
 /** A box, or (kind "loose", number 0) items on the pallet with no box (R-535). */
@@ -62,6 +64,22 @@ export function layoutText(layout: string | undefined): string {
   if (layout === "column") return "One size a row, gathered into one line for each style and colour.";
   return "";
 }
+/** R-539: where on the sheet a shoe was read: "Lamo Hash row 393, sizes from row 392", or "Boots rows 2 to 4 and 7". Empty for a style added by hand. */
+export function rowsText(l: LoadLine): string {
+  const rs = l.rows ?? [];
+  if (!rs.length) return "";
+  const runs: string[] = [];
+  for (let i = 0; i < rs.length;) {
+    let j = i;
+    while (j + 1 < rs.length && rs[j + 1] === rs[j] + 1) j++;
+    runs.push(j > i ? `${rs[i]} to ${rs[j]}` : String(rs[i]));
+    i = j + 1;
+  }
+  const list = runs.length > 1 ? `${runs.slice(0, -1).join(", ")} and ${runs[runs.length - 1]}` : runs[0];
+  const where = `${l.sheet ? `${l.sheet} ` : ""}${rs.length > 1 ? "rows" : "row"} ${list}`;
+  return l.sizes_row ? `${where}, sizes from row ${l.sizes_row}` : where;
+}
+
 /** "8 rows have Totals that do not match their sizes" */
 export const offText = (n: number) => (n === 1 ? "1 row has a Total that does not match its sizes" : `${n.toLocaleString("en-US")} rows have Totals that do not match their sizes`);
 /** "5 × 20 · 6 × 24": the sizes the manifest lists for a line. */

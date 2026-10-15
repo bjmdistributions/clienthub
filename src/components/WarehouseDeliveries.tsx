@@ -10,7 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api } from "../lib/api";
-import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PicturesAdded, type WhCase } from "../lib/deliveries";
+import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
@@ -18,7 +18,6 @@ import Switch from "./Switch";
 import { Seg } from "./WarehouseProduct";
 import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0 } from "./warehouseUi";
 
-const SHEET_EXTS = ["csv", "tsv", "txt", "xlsx", "xlsm", "xls", "ods"];
 const BAR = { background: "rgb(var(--c-chart-1))" };
 const money = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const many = (n: number, one: string, more: string) => `${n0(n)} ${n === 1 ? one : more}`;
@@ -29,7 +28,13 @@ type Draft = { id: string | null; number: number | null; kind: "box" | "loose"; 
 const blocksOf = (contents: CaseLine[]): Block[] => byStyle(contents).map((g) => ({ line_id: g.line_id, qty: Object.fromEntries(g.sizes) }));
 const draftTotal = (d: Draft) => d.blocks.reduce((a, b) => a + Object.values(b.qty).reduce((x, y) => x + (y || 0), 0), 0);
 
-export default function WarehouseDeliveries({ dropped }: { dropped: { path: string; n: number } | null }) {
+export default function WarehouseDeliveries({ dropped, onImport, onAsStock }: {
+  dropped: { path: string; n: number; read?: ManifestRead } | null;
+  /** R-539: the Warehouse's one import (a manifest opens here; any other sheet, the column picker). */
+  onImport: () => void;
+  /** R-539: this sheet is stock, not a delivery: the column picker for it. */
+  onAsStock: (path: string) => void;
+}) {
   const [list, setList] = useState<LoadSummary[] | null>(null);
   const [detail, setDetail] = useState<LoadDetail | null>(null);
   const [preview, setPreview] = useState<{ read: ManifestRead; fileName: string; path: string; n: number } | null>(null);
@@ -59,17 +64,20 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
       setPreview((p) => ({ read, fileName: path.split(/[\\/]/).pop() || "Manifest", path, n: (p?.n ?? 0) + 1 }));
     } catch (e) { toast(String(e), "error"); }
   }, []);
-  useEffect(() => { if (dropped) openManifest(dropped.path); }, [dropped, openManifest]);
-  const pick = async () => {
-    const f = await openDialog({ multiple: false, filters: [{ name: "Manifest", extensions: SHEET_EXTS }] });
-    if (typeof f === "string") openManifest(f);
-  };
+  // A sheet the Warehouse already read as a manifest opens at once; otherwise it is read here.
+  useEffect(() => {
+    if (!dropped) return;
+    const read = dropped.read;
+    if (read) setPreview((p) => ({ read, fileName: dropped.path.split(/[\\/]/).pop() || "Manifest", path: dropped.path, n: (p?.n ?? 0) + 1 }));
+    else openManifest(dropped.path);
+  }, [dropped, openManifest]);
   const open = (id: string) => api.getWarehouseLoad(id).then((d) => setDetail(d)).catch((e) => toast(String(e), "error"));
 
   if (preview) {
     return <ManifestPreview key={preview.n} read={preview.read} fileName={preview.fileName} path={preview.path} onCancel={() => setPreview(null)}
       onSaved={(d, msg) => { setPreview(null); setDetail(d); loadList(); toast(msg); }}
-      onLate={(msg) => { loadList(); toast(msg); }} />;
+      onLate={(msg) => { loadList(); toast(msg); }}
+      onAsStock={() => { const p = preview.path; setPreview(null); onAsStock(p); }} />;
   }
   if (detail) {
     return <DeliveryScreen d={detail} merge={merge} setEditing={setEditing} onBack={() => { setDetail(null); loadList(); }} />;
@@ -92,12 +100,12 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <p className="text-[12.5px] text-muted max-w-[640px]">Import a delivery's manifest: every tab is read, each style and colour with its cost, MSRP and the pairs expected in each size. Then add each case onto its pallet as the truck is unloaded.</p>
-        <button onClick={pick} className={WH_BTN_PRIMARY} title="Or drop the file anywhere on this screen"><FileSpreadsheet size={14} /> Import a manifest</button>
+        <p className="text-[12.5px] text-muted max-w-[640px]">Import a delivery's manifest: every page is read, each style and colour with its cost, MSRP and the pairs expected in each size, whichever rows it takes on the sheet. Then add each box onto its pallet as the truck is unloaded.</p>
+        <button onClick={onImport} className={WH_BTN_PRIMARY} title="Or drop the file anywhere on this screen"><FileSpreadsheet size={14} /> Import a sheet</button>
       </div>
       {list === null ? <div className="text-[13px] text-muted">Loading…</div> : live.length ? (
         <div className="grid gap-3 grid-cols-1 xl:grid-cols-2">{live.map(card)}</div>
-      ) : <div className={`${WH_CARD} p-6 text-[13px] text-muted text-center`}>No deliveries yet. Drop a manifest here or use Import a manifest.</div>}
+      ) : <div className={`${WH_CARD} p-6 text-[13px] text-muted text-center`}>No deliveries yet. Drop a manifest here or use Import a sheet.</div>}
       {gone.length > 0 && <>
         <button onClick={() => setShowRemoved((v) => !v)} className={`${WH_BTN_SECONDARY} mt-4`}>{showRemoved ? "Hide" : "Show"} removed ({gone.length})</button>
         {showRemoved && <div className="grid gap-3 grid-cols-1 xl:grid-cols-2 mt-3 opacity-80">{gone.map(card)}</div>}
@@ -174,7 +182,8 @@ function PhotoView({ l, onClose }: { l: LoadLine; onClose: () => void }) {
 // R-537: one card a page, each saying plainly whether it is imported. A totals page is never
 // imported; each page of styles has its own switch, on at first; a page that repeats all the
 // others is off at first. Only the pages switched on are saved, and their pictures with them.
-function ManifestPreview({ read, fileName, path, onCancel, onSaved, onLate }: { read: ManifestRead; fileName: string; path: string; onCancel: () => void; onSaved: (d: LoadDetail, msg: string) => void; onLate: (msg: string) => void }) {
+function ManifestPreview({ read, fileName, path, onCancel, onSaved, onLate, onAsStock }: { read: ManifestRead; fileName: string; path: string; onCancel: () => void; onSaved: (d: LoadDetail, msg: string) => void; onLate: (msg: string) => void; onAsStock: () => void }) {
+  const [listed, setListed] = useState<string | null>(null);
   const [name, setName] = useState(fileName.replace(/\.[^.]+$/, ""));
   const [busy, setBusy] = useState(false);
   const [on, setOn] = useState<Set<string>>(() => defaultTabs(read));
@@ -213,6 +222,7 @@ function ManifestPreview({ read, fileName, path, onCancel, onSaved, onLate }: { 
       <button onClick={onCancel} disabled={busy} className="inline-flex items-center gap-1 text-[12.5px] text-muted hover:text-ink-2 mb-3 disabled:opacity-50"><ArrowLeft size={13} /> Deliveries</button>
       <h2 className="text-[18px] font-semibold text-ink tracking-tight">Import a delivery</h2>
       <p className="text-[13px] text-ink-2 mt-1">{fileName} has {many(read.tabs.length, "page", "pages")}. {pages.length ? `${many(pages.length, "page has", "pages have")} styles to import` : "No page has styles to import"}{ignored.length ? `, and ${many(ignored.length, "page is", "pages are")} ignored` : ""}. Check each page below.</p>
+      <p className="text-[12.5px] text-muted mt-1">Each shoe is read from its own rows, however many it takes: the row of sizes above it, or one size a row. Every shoe below says which rows. <button onClick={onAsStock} disabled={busy} className="text-accent hover:underline disabled:opacity-50">Not a delivery? Choose the columns of a stock sheet instead</button></p>
 
       <div className="space-y-3 mt-4">
         {read.tabs.map((t) => {
@@ -258,11 +268,24 @@ function ManifestPreview({ read, fileName, path, onCancel, onSaved, onLate }: { 
                         <div className="text-[13px] font-medium text-ink">{lineTitle(l)}{l.group ? <span className="font-normal text-muted"> · {l.group}</span> : null}</div>
                         {lineDesc(l) && <div className="text-[12px] text-muted truncate">{lineDesc(l)}</div>}
                         <div className="text-[12px] text-ink-2 tabular-nums">{sizesText(l) || "No pairs listed"}</div>
+                        {rowsText(l) && <div className="text-[11.5px] text-muted tabular-nums">{rowsText(l)}</div>}
                       </div>
                     </div>
                   );
                 })}
-                {t.lines > (t.samples ?? []).length && <div className="px-3 py-1.5 text-[12px] text-muted">and {many(t.lines - (t.samples ?? []).length, "more style", "more styles")}</div>}
+                {t.lines > (t.samples ?? []).length && <div className="px-3 py-1.5 text-[12px] text-muted">
+                  and {many(t.lines - (t.samples ?? []).length, "more style", "more styles")}.{" "}
+                  <button onClick={() => setListed(listed === t.name ? null : t.name)} className="text-accent hover:underline">{listed === t.name ? "Hide the list" : `Show every shoe on this page (${n0(t.lines)})`}</button>
+                </div>}
+                {listed === t.name && <div className="max-h-[360px] overflow-auto border-t border-line">
+                  {read.lines.filter((x) => x.sheet === t.name).map((x) => (
+                    <div key={x.id} className="px-3 py-1.5 border-b border-line last:border-b-0 text-[12px]">
+                      <span className="font-medium text-ink">{lineTitle(x)}</span>{x.group ? <span className="text-muted"> · {x.group}</span> : null}
+                      <span className="text-ink-2 tabular-nums"> · {sizesText(x) || "No pairs listed"}</span>
+                      {rowsText(x) && <span className="block text-[11.5px] text-muted tabular-nums">{rowsText(x)}</span>}
+                    </div>
+                  ))}
+                </div>}
               </div>}
               {(t.mismatches ?? 0) > 0 && <p className="text-[12.5px] text-warning-ink mt-2">{offText(t.mismatches ?? 0)}. {(t.mismatches ?? 0) === 1 ? "It is" : "They are"} listed below.</p>}
               {(t.warnings ?? []).map((w, k) => <p key={k} className="text-[12.5px] text-warning-ink mt-1.5">{w}</p>)}
@@ -747,6 +770,7 @@ function CheckView({ lines, counts, totals: T, pallets }: { lines: LoadLine[]; c
                     </span>
                   ))}
                 </div>}
+                {open && rowsText(l) && <div className="text-[11.5px] text-muted mt-1.5 tabular-nums">From {rowsText(l)}</div>}
               </button>
             </div>
           );

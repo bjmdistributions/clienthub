@@ -9,6 +9,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, ClipboardPaste, FileSpreadsheet, Plus, Trash2, Warehouse as WarehouseIcon } from "lucide-react";
 import { api } from "../lib/api";
 import { itemTotals, rowsFromText, sectionUnits, shares, type BoxType, type SheetRead, type WarehouseItem, type WhSection } from "../lib/warehouse";
+import type { ManifestRead } from "../lib/deliveries";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
@@ -39,8 +40,8 @@ export default function WarehouseView() {
     try { const v = localStorage.getItem("warehouse_view"); return v === "map" || v === "pallets" || v === "deliveries" ? v : "products"; } catch { return "products"; }
   });
   const pickView = (v: "products" | "map" | "pallets" | "deliveries") => { setView(v); setOpenId(null); try { localStorage.setItem("warehouse_view", v); } catch { /* ignore */ } };
-  // R-519: a sheet dropped on Deliveries is a manifest, not a stock sheet.
-  const [dropped, setDropped] = useState<{ path: string; n: number } | null>(null);
+  // R-539: a sheet that reads as a delivery's manifest opens as a delivery, wherever it was imported.
+  const [dropped, setDropped] = useState<{ path: string; n: number; read?: ManifestRead } | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
   const openRef = useRef<string | null>(null);
@@ -64,13 +65,29 @@ export default function WarehouseView() {
   const put = (it: WarehouseItem) =>
     setItems((prev) => (prev ? (prev.some((p) => p.id === it.id) ? prev.map((p) => (p.id === it.id ? it : p)) : [...prev, it]) : [it]));
 
-  const openSheet = useCallback(async (path: string) => {
+  // The column picker: for the sheet Jack keeps his stock in.
+  const openAsStock = useCallback(async (path: string) => {
     try {
       const read = await api.warehouseReadSheet(path);
       const fileName = path.split(/[\\/]/).pop() || "Sheet";
       setImporting({ read, fileName, targetId: openRef.current });
     } catch (e) { toast(String(e), "error"); }
   }, []);
+
+  // R-539: one import. The sheet is read as a delivery's manifest first: when any page of it has
+  // styles with sizes, it opens as a delivery, page by page, with nothing to choose. Any other
+  // sheet opens the column picker.
+  const openSheet = useCallback(async (path: string) => {
+    let read: ManifestRead | null = null;
+    try { read = await api.readLoadManifest(path); } catch { read = null; }
+    if (read && read.lines.length > 0) {
+      setView("deliveries"); setOpenId(null);
+      try { localStorage.setItem("warehouse_view", "deliveries"); } catch { /* ignore */ }
+      setDropped((d) => ({ path, n: (d?.n ?? 0) + 1, read: read! }));
+      return;
+    }
+    openAsStock(path);
+  }, [openAsStock]);
 
   const pickSheet = async () => {
     const f = await openDialog({ multiple: false, filters: [{ name: "Spreadsheet", extensions: SHEET_EXTS }] });
@@ -91,8 +108,7 @@ export default function WarehouseView() {
         else if (p.type === "drop") {
           setDragging(false);
           const file = p.paths.find((x) => SHEET_RE.test(x));
-          if (file && viewRef.current === "deliveries") setDropped((d) => ({ path: file, n: (d?.n ?? 0) + 1 }));
-          else if (file) openSheet(file);
+          if (file) openSheet(file);
           else if (p.paths.length) toast("Drop a spreadsheet: Excel or CSV.", "error");
         }
       })
@@ -106,7 +122,7 @@ export default function WarehouseView() {
       <div className={`${WH_CARD} px-8 py-6 text-center shadow-[0_8px_24px_rgba(0,0,0,0.12)]`}>
         <FileSpreadsheet size={22} className="text-accent mx-auto mb-2" />
         <div className="text-[14px] font-semibold text-ink">Drop the sheet to import it</div>
-        <div className="text-[12px] text-muted mt-0.5">Excel or CSV. You choose what each column is next.</div>
+        <div className="text-[12px] text-muted mt-0.5">Excel or CSV. A delivery's manifest opens page by page; for any other sheet you choose what each column is.</div>
       </div>
     </div>
   );
@@ -203,7 +219,7 @@ export default function WarehouseView() {
         </div>
       </div>
 
-      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <WarehouseMap items={items || []} /> : <>
+      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onImport={pickSheet} onAsStock={openAsStock} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <WarehouseMap items={items || []} /> : <>
       {items === null ? (
         <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
           {[0, 1].map((i) => <div key={i} className="h-[112px] bg-surface-2 rounded-xl animate-pulse" />)}
@@ -213,8 +229,9 @@ export default function WarehouseView() {
           <WarehouseIcon size={22} className="text-faint mx-auto mb-3" />
           <div className="text-[14px] font-semibold text-ink">Count what is on your shelves</div>
           <p className="text-[13px] text-muted mt-1 max-w-[460px] mx-auto">
-            Drop in the spreadsheet you keep your stock in (any layout) and pick what each column is.
-            Or add a product by hand. The packer then tells you exactly which boxes to pull for an order.
+            Drop in a sheet. A delivery's manifest is read for you, page by page; for the spreadsheet you
+            keep your stock in, you pick what each column is. Or add a product by hand. The packer then tells
+            you exactly which boxes to pull for an order.
           </p>
           <div className="flex items-center justify-center gap-2 mt-4 flex-wrap">
             <button onClick={pickSheet} className={WH_BTN_PRIMARY}><FileSpreadsheet size={14} /> Import a sheet</button>

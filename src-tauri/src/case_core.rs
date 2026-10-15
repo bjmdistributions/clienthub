@@ -74,7 +74,22 @@ pub struct LoadLine {
     /// R-537: its picture from the sheet, "media/deliveries/<load>/<line>.jpg", or "".
     #[serde(default)]
     pub image: String,
+    /// R-539: the sheet rows (1-based) its pairs were read from: one row, or every row of a
+    /// style written one size a row. Empty when added by hand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<usize>,
+    /// R-539: the sheet row its size names came from (a row of sizes above it, or the heading
+    /// row); 0 when each row names its own size, or added by hand.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sizes_row: usize,
 }
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// A line keeps at most this many rows it was read from.
+pub const MAX_LINE_ROWS: usize = 64;
 
 impl LoadLine {
     pub fn expected(&self) -> i64 {
@@ -575,6 +590,7 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
         let first_line = lines.len();
         let first_warning = warnings.len();
         let mut scale: Vec<(usize, String)> = cols.scale.clone();
+        let mut scale_row = if scale.is_empty() { 0 } else { cols.header_row + 1 };
         let mut group = String::new();
         let mut tab_mismatches = 0usize;
         // Pairs by column since the last row of sizes or group heading: a row with no style whose
@@ -614,6 +630,7 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
                             ));
                         }
                         scale = grid;
+                        scale_row = r + 1;
                         since.clear();
                     } else {
                         warnings.push(format!("{} row {}: numbers with no style that are not size names, so they were left out.", tab.name, r + 1));
@@ -656,11 +673,16 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
                             source: source.clone(),
                             sheet: tab.name.clone(),
                             image: String::new(),
+                            rows: vec![],
+                            sizes_row: 0,
                         });
                         lines.len() - 1
                     }
                 };
                 let l = &mut lines[k];
+                if l.rows.len() < MAX_LINE_ROWS {
+                    l.rows.push(r + 1);
+                }
                 match l.sizes.iter_mut().find(|s| s.size == size) {
                     Some(s) => s.qty += qty.max(0),
                     None => l.sizes.push(SizeQty { size, qty: qty.max(0) }),
@@ -718,6 +740,8 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
                 source,
                 sheet: tab.name.clone(),
                 image: String::new(),
+                rows: vec![r + 1],
+                sizes_row: scale_row,
             });
         }
         let read = &lines[first_line..];
@@ -1310,6 +1334,11 @@ pub fn clean_lines(lines: Vec<LoadLine>) -> Result<Vec<LoadLine>, String> {
             *f = one_line(f);
         }
         l.image = clean_image(&l.image);
+        l.rows.retain(|&r| (1..=1_048_576).contains(&r));
+        l.rows.truncate(MAX_LINE_ROWS);
+        if l.sizes_row > 1_048_576 {
+            l.sizes_row = 0;
+        }
         let mut sizes: Vec<SizeQty> = Vec::new();
         for s in l.sizes {
             let size = one_line(&s.size);
@@ -2615,6 +2644,36 @@ mod tests {
         // The linked picture is an anchor with nothing to read; the text box is no picture at all.
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].embed, None);
+    }
+
+    #[test]
+    fn each_line_knows_the_rows_it_was_read_from() {
+        // Rows of sizes above (the sample): K100 on row 4, its sizes on row 3.
+        let m = read_manifest(&sample());
+        let k = m.lines.iter().find(|l| l.style == "K100").unwrap();
+        assert_eq!((k.rows.clone(), k.sizes_row), (vec![4], 3));
+        let w = m.lines.iter().find(|l| l.style == "W300").unwrap();
+        assert_eq!((w.rows.clone(), w.sizes_row), (vec![9], 8));
+        // Sizes on the heading row.
+        let m = read_manifest(&[Tab { name: "S".into(), rows: vec![row(&["Style", "Color", "7", "8", "Total"]), row(&["A1", "BLK", "1", "2", "3"])] }]);
+        assert_eq!((m.lines[0].rows.clone(), m.lines[0].sizes_row), (vec![2], 1));
+        // One size a row: every row of the style, no row of sizes.
+        let m = read_manifest(&[Tab {
+            name: "B".into(),
+            rows: vec![row(&["Style", "Color", "Size", "Qty"]), row(&["B1", "BLK", "7", "2"]), row(&["B2", "RED", "S", "1"]), row(&["B1", "BLK", "8", "3"])],
+        }]);
+        let b1 = m.lines.iter().find(|l| l.style == "B1").unwrap();
+        assert_eq!((b1.rows.clone(), b1.sizes_row), (vec![2, 4], 0));
+        // Stored and read back; a line added by hand has none, and junk is dropped.
+        let mut lines = m.lines.clone();
+        lines[0].rows = (0..100).chain([2_000_000]).collect();
+        lines[0].sizes_row = 5_000_000;
+        let c = clean_lines(lines).unwrap();
+        assert_eq!(c[0].rows.len(), MAX_LINE_ROWS);
+        assert!(c[0].rows.iter().all(|&r| r >= 1));
+        assert_eq!(c[0].sizes_row, 0);
+        let json = serde_json::to_string(&LoadLine { id: "h1".into(), style: "X".into(), ..Default::default() }).unwrap();
+        assert!(!json.contains("rows") && !json.contains("sizes_row"), "{json}");
     }
 
     /// The real sheet, read locally only: `R519_SHEET=path cargo test real_manifest -- --ignored --nocapture`.
