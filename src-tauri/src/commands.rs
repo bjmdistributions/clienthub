@@ -4808,9 +4808,7 @@ macro_rules! ship_facts_cols {
         concat!(
             "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted')) AS logistics_bookings, ",
             "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status IN ('quoted','requested','booked','picked_up')) AS logistics_live_quoted, ",
-            "(SELECT COUNT(*) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NULL) AS logistics_unpaid, ",
             "(SELECT COALESCE(SUM(fb.paid_amount),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NOT NULL) AS logistics_paid, ",
-            "(SELECT COALESCE(SUM(fb.quoted_cost),0) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NULL AND fb.quoted_cost IS NOT NULL) AS logistics_quoted, ",
             "COALESCE((SELECT MIN(CASE fb.status WHEN 'requested' THEN 1 WHEN 'booked' THEN 2 WHEN 'picked_up' THEN 3 WHEN 'delivered' THEN 4 ELSE 5 END) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted')), (SELECT MIN(CASE fb.status WHEN 'quote' THEN 6 ELSE 7 END) FROM freight_bookings fb WHERE fb.deal_flow_id=df.id AND fb.archived=0 AND fb.status IN ('quote','quoted')), 0) AS logistics_stage_rank, ",
             "(SELECT COALESCE(SUM(sa.amount),0) FROM bank_allocation sa WHERE sa.deal_flow_id=df.id AND sa.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn sbt WHERE sbt.id=sa.bank_txn_id)) AS shipping_linked, ",
             "(SELECT COUNT(*) FROM bank_allocation sa WHERE sa.deal_flow_id=df.id AND sa.role='shipping' AND EXISTS (SELECT 1 FROM bank_txn sbt WHERE sbt.id=sa.bank_txn_id)) AS shipping_link_count, ",
@@ -4898,10 +4896,16 @@ pub struct ShipFacts {
     /// and where it came from (`lines`, `field`, `none`; empty reads as `none`).
     pub billed: f64,
     pub billed_source: &'static str,
+    /// R-533: the deal's carrier position by carrier_paid's rules: which trucks the gate holds the deal for, and which
+    /// still owe money and what (`unpaid` and `quoted` above are read from it).
+    pub carrier: crate::carrier_paid::DealCarrier,
 }
 
 impl ShipFacts {
     pub fn mode(&self) -> bool { self.bookings > 0 || self.has_link }
+    /// What is already known of the shipping cost: the bank links (with the trucks a partial link does not cover yet),
+    /// else what was recorded.
+    pub fn known(&self) -> f64 { if self.has_link { self.linked + self.link_rest } else { self.paid } }
     pub fn leg(&self) -> f64 {
         if self.has_link { self.linked + self.link_rest } else if self.mode() { self.paid } else { 0.0 }
     }
@@ -4968,8 +4972,11 @@ pub fn freight_typed_of(payments: &[SupplierPayment]) -> f64 {
     r2(payments.iter().filter(|p| !p.kept && p.category.as_deref() == Some("freight")).map(|p| p.amount).sum())
 }
 
-/// R-400: read the `ship_facts_cols!` columns off a row (by name, tolerant of a missing one).
-fn ship_facts_from_row(r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipFacts {
+/// R-400: read the `ship_facts_cols!` columns off a row (by name, tolerant of a missing one). R-533: which trucks still
+/// owe their carrier, and what, come from carrier_paid (it needs the bank links to tell a part payment from a typed
+/// figure), so it takes the connection the caller holds and the deal's id. Twin of the server's `map_df_row` /
+/// `read_ship_figures`.
+fn ship_facts_from_row(conn: &rusqlite::Connection, deal_flow_id: &str, r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipFacts {
     let items: String = r.get("inv_line_items_json").unwrap_or_default();
     let field: f64 = r.get("inv_shipping_charged").unwrap_or(0.0);
     let (billed, billed_source) = crate::freight::charged_of(&items, field);
@@ -4978,11 +4985,18 @@ fn ship_facts_from_row(r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipF
     let paid_list: String = r.get::<_, Option<String>>("logistics_paid_list").ok().flatten().unwrap_or_default();
     let paid_amounts: Vec<f64> = paid_list.split(',').filter_map(|v| v.trim().parse().ok()).collect();
     let link_rest = if has_link { crate::freight::shipping_link_rest(linked, &paid_amounts) } else { 0.0 };
-    ShipFacts {
-        bookings: r.get("logistics_bookings").unwrap_or(0),
-        unpaid: r.get("logistics_unpaid").unwrap_or(0),
+    let bookings: i64 = r.get("logistics_bookings").unwrap_or(0);
+    let carrier = if bookings > 0 {
+        let (loads, links) = deal_loads(conn, deal_flow_id);
+        crate::carrier_paid::deal_carrier(&loads, &links)
+    } else {
+        crate::carrier_paid::DealCarrier::default()
+    };
+    let mut facts = ShipFacts {
+        bookings,
+        unpaid: carrier.owing,
         paid: r2(r.get::<_, f64>("logistics_paid").unwrap_or(0.0)),
-        quoted: r2(r.get::<_, f64>("logistics_quoted").unwrap_or(0.0)),
+        quoted: 0.0,
         stage_rank: r.get("logistics_stage_rank").unwrap_or(0),
         live_quoted: r.get("logistics_live_quoted").unwrap_or(0),
         linked,
@@ -4991,7 +5005,11 @@ fn ship_facts_from_row(r: &rusqlite::Row, payments: &[SupplierPayment]) -> ShipF
         freight_typed: freight_typed_of(payments),
         billed,
         billed_source,
-    }
+        carrier,
+    };
+    // What is still to come is the expected cost less what is known, so no link is counted twice.
+    facts.quoted = facts.carrier.remainder(facts.known());
+    facts
 }
 
 /// R-400: the shipping facts for one deal, straight from the database.
@@ -5002,7 +5020,7 @@ pub(crate) fn ship_facts(conn: &rusqlite::Connection, deal_flow_id: &str) -> Shi
         |r| {
             let sp: String = r.get("sp_json")?;
             let payments: Vec<SupplierPayment> = serde_json::from_str(&sp).unwrap_or_default();
-            Ok(ship_facts_from_row(r, &payments))
+            Ok(ship_facts_from_row(conn, deal_flow_id, r, &payments))
         },
     ).unwrap_or_default()
 }
@@ -5087,8 +5105,16 @@ pub struct DealFlow {
     /// R-400: derived from the live freight bookings (`ship_facts_cols!`), never stored.
     #[serde(default)]
     pub logistics_bookings: i64,
+    /// R-533: the trucks the deal waits for before it completes (carrier_paid's gate); on a completed deal the trucks
+    /// still owed money. Twin of the server's.
     #[serde(default)]
     pub logistics_unpaid: i64,
+    /// R-533: the trucks that still owe their carrier money (what "the freight is known" reads).
+    #[serde(default)]
+    pub carrier_owing: i64,
+    /// R-533: the load numbers `logistics_unpaid` counts, oldest first.
+    #[serde(default)]
+    pub carrier_due_loads: Vec<String>,
     #[serde(default)]
     pub logistics_paid: f64,
     #[serde(default)]
@@ -5188,7 +5214,8 @@ fn central_day(s: &str) -> String {
     s.chars().take(10).collect()
 }
 
-fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
+/// R-533: takes the connection the caller holds, for the deal's carrier position (`ship_facts_from_row`).
+fn map_deal_flow_row(conn: &rusqlite::Connection, r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
     let sp_json: String = r.get("supplier_payments_json")?;
     let pick = load_pick_from_row(r);
     let pick_text = |k: &str| pick.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -5205,8 +5232,10 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
     let own_costs_total: f64 = supplier_payments.iter()
         .filter(|p| !p.kept && !p.owed_to_supplier())
         .map(|p| p.amount).sum();
-    let facts = ship_facts_from_row(r, &supplier_payments);
+    let deal_id: String = r.get("id")?;
+    let facts = ship_facts_from_row(conn, &deal_id, r, &supplier_payments);
     let total_supplier_cost: f64 = r.get("total_supplier_cost")?;
+    let complete = r.get::<_, String>("stage").map(|s| s == "complete").unwrap_or(false);
     Ok(DealFlow {
         id: r.get("id")?,
         name: r.get("name").ok(),
@@ -5248,7 +5277,14 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         expected_delivery_date_prev: r.get("expected_delivery_date_prev").unwrap_or(None),
         shipping_cost: r.get("shipping_cost").unwrap_or(None),
         logistics_bookings: facts.bookings,
-        logistics_unpaid: facts.unpaid,
+        // R-533: the gate's count; on a completed deal the trucks still owed money.
+        logistics_unpaid: if complete { facts.carrier.owing } else { facts.carrier.not_paid.len() as i64 },
+        carrier_owing: facts.carrier.owing,
+        carrier_due_loads: if complete {
+            facts.carrier.loads.iter().filter(|v| v.owes).map(|v| v.code.clone()).collect()
+        } else {
+            facts.carrier.not_paid.clone()
+        },
         logistics_paid: facts.paid,
         logistics_quoted: facts.quoted,
         logistics_stage: facts.stage().to_string(),
@@ -5307,7 +5343,7 @@ fn sync_invoice_stage(invoice_id: &str, stage: &str) -> Result<(), String> {
 fn read_df(id: &str) -> Result<DealFlow, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!("{} WHERE df.id=?1", DF_JOIN);
-    conn.query_row(&sql, [&id], map_deal_flow_row).map_err(|e| e.to_string())
+    conn.query_row(&sql, [&id], |r| map_deal_flow_row(&conn, r)).map_err(|e| e.to_string())
 }
 
 fn get_or_create_deal_flow_for_invoice(invoice_id: &str) -> Result<String, String> {
@@ -5437,7 +5473,7 @@ pub async fn create_deal_flow(invoice_id: String, notes: Option<String>, name: O
 pub async fn get_deal_flow_by_invoice(invoice_id: String) -> Result<Option<DealFlow>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!("{} WHERE df.invoice_id=?1", DF_JOIN);
-    match conn.query_row(&sql, [&invoice_id], map_deal_flow_row) {
+    match conn.query_row(&sql, [&invoice_id], |r| map_deal_flow_row(&conn, r)) {
         Ok(df) => Ok(Some(df)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.to_string()),
@@ -5475,7 +5511,7 @@ pub async fn list_deal_flows() -> Result<Vec<DealFlow>, String> {
         DF_JOIN
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], map_deal_flow_row).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| map_deal_flow_row(&conn, r)).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -5487,7 +5523,7 @@ pub async fn list_deal_flows_by_stage(stage: String) -> Result<Vec<DealFlow>, St
         DF_JOIN
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([&stage], map_deal_flow_row).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&stage], |r| map_deal_flow_row(&conn, r)).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -5934,7 +5970,7 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
         } else {
             match carrier_reason.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
                 None => return Err(format!(
-                    "The carrier for {} is not paid yet. Mark the deal done to complete it when the carrier payment is linked, or say why no carrier is paid.",
+                    "The carrier for {} is not paid in full yet. Mark the deal done to complete it when the carrier payment is linked (if the carrier took less, change the rate), or say why no carrier is paid.",
                     unpaid.join(", "))),
                 Some(why) => {
                     let (by_id, by) = actor_identity();
@@ -6004,7 +6040,7 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     // R-401: the logistics pay comes off the top before the owner split, like a rep's cut.
     let (logistics_cut, logistics_pay) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let cut = crate::freight::logistics_cut(&conn, &id);
+        let cut = crate::freight::logistics_cut_on_completion(&conn, &id);
         (cut, cut.unwrap_or(0.0))
     };
     let breakdown = build_payout_breakdown(&read_profit_split_shares_raw(), crate::freight::owner_remainder(net, 0.0, logistics_pay), include_payout);
@@ -6505,22 +6541,45 @@ fn write_deal_metadata(id: &str, meta: Map<String, Value>) -> Result<(), String>
     Ok(())
 }
 
-/// R-509: the deal's live loads whose carrier is not paid yet (no payment recorded), as their codes. The same rule as
+/// R-509, R-533: the deal's live loads whose carrier is not paid in full (carrier_paid's gate), as their codes. The same rule as
 /// the server's `unpaid_load_codes` and the deal list's `logistics_unpaid`.
 fn unpaid_load_codes(deal_id: &str) -> Result<Vec<String>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut st = conn
-        .prepare(
-            "SELECT id, COALESCE(load_number,'') FROM freight_bookings WHERE deal_flow_id=?1 AND COALESCE(archived,0)=0 \
-               AND status NOT IN ('cancelled','quote','quoted') AND paid_amount IS NULL ORDER BY created_at, id",
+    let (loads, links) = deal_loads(&conn, deal_id);
+    Ok(crate::carrier_paid::not_paid_codes(&loads, &links))
+}
+
+/// R-533: a deal's live loads (oldest first) and its shipping bank links (bank row still there), as carrier_paid reads
+/// them. Twin of the server's `logistics::deal_loads`. Takes the connection the caller holds.
+pub(crate) fn deal_loads(conn: &rusqlite::Connection, deal_id: &str) -> (Vec<crate::carrier_paid::Load>, Vec<crate::carrier_paid::Link>) {
+    if deal_id.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let loads = conn
+        .prepare_cached(
+            "SELECT id, COALESCE(load_number,''), paid_amount, quoted_cost FROM freight_bookings WHERE deal_flow_id=?1 \
+               AND COALESCE(archived,0)=0 AND status NOT IN ('cancelled','quote','quoted') ORDER BY created_at, id",
         )
-        .map_err(|e| e.to_string())?;
-    let codes = st
-        .query_map([deal_id], |r| Ok(crate::freight::booking_code_of(&r.get::<_, String>(0)?, &r.get::<_, String>(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(codes)
+        .and_then(|mut st| {
+            st.query_map([deal_id], |r| {
+                let id: String = r.get(0)?;
+                let number: String = r.get(1)?;
+                Ok(crate::carrier_paid::Load { code: crate::freight::booking_code_of(&id, &number), id, paid: r.get(2)?, rate: r.get(3)? })
+            })
+            .map(|it| it.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+    let links = conn
+        .prepare_cached(
+            "SELECT a.amount, COALESCE(a.note,'') FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role='shipping' \
+               AND EXISTS (SELECT 1 FROM bank_txn t WHERE t.id=a.bank_txn_id)",
+        )
+        .and_then(|mut st| {
+            st.query_map([deal_id], |r| Ok(crate::carrier_paid::Link { amount: r.get(0)?, note: r.get(1)? }))
+                .map(|it| it.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+    (loads, links)
 }
 
 /// R-509: marks a deal done while a load's carrier is unpaid. Nothing is recorded: the deal keeps its stage and the
@@ -14327,7 +14386,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
          JOIN deal_flows df ON df.id = fb.deal_flow_id \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
          LEFT JOIN clients c ON c.id = i.client_id \
-         WHERE fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') AND fb.paid_amount IS NULL \
+         WHERE fb.archived=0 AND fb.status NOT IN ('cancelled','quote','quoted') \
            AND df.stage != 'complete' AND COALESCE(df.archived,0)=0 \
            AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0"),
     ).map_err(|e| e.to_string())?;
@@ -14368,9 +14427,20 @@ pub async fn get_payables_aging() -> Result<Value, String> {
             if r.12.is_some() { by_deal.entry(r.3.clone()).or_default().push(i); }
         }
         for (deal, idxs) in by_deal {
-            let quotes: Vec<Option<f64>> = idxs.iter().map(|&i| rows[i].1).collect();
-            let shares = shipping_owed_rows(ship_facts(&conn, &deal).shipping_owed(), &quotes);
-            for (&i, a) in idxs.iter().zip(shares) { amounts[i] = a; }
+            // R-533: only the trucks that still owe their carrier money (carrier_paid), each at the rest of its rate; the
+            // others read 0 and are left out below. Twin of the server's Payables.
+            let facts = ship_facts(&conn, &deal);
+            let owing: Vec<(usize, Option<f64>)> = idxs
+                .iter()
+                .filter_map(|&i| {
+                    let v = facts.carrier.loads.iter().find(|v| Some(&v.id) == rows[i].12.as_ref())?;
+                    v.owes.then(|| (i, if v.still_owed > 0.005 { Some(v.still_owed) } else { None }))
+                })
+                .collect();
+            for &i in &idxs { amounts[i] = 0.0; }
+            let quotes: Vec<Option<f64>> = owing.iter().map(|(_, q)| *q).collect();
+            let shares = shipping_owed_rows(facts.shipping_owed(), &quotes);
+            for (&(i, _), a) in owing.iter().zip(shares) { amounts[i] = a; }
         }
     }
     // R-438: an unpaid resold offset (a negative line) is never a payable row of its own. It
@@ -19348,7 +19418,7 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         let has_financials: bool = r.get(6)?;
         let metadata: String = r.get(7)?;
         let payments: Vec<SupplierPayment> = serde_json::from_str(&r.get::<_, String>("sp_json")?).unwrap_or_default();
-        let facts = ship_facts_from_row(r, &payments);
+        let facts = ship_facts_from_row(&conn, &id, r, &payments);
         // "no bank records expected" acknowledgement — a completed deal the user has
         // marked as having no buyer / no supplier / no shipping money to link (cash-only, etc.).
         let meta: Value = serde_json::from_str(&metadata).unwrap_or(Value::Null);
@@ -28460,8 +28530,10 @@ mod r400_shipping_tests {
         ).unwrap()
     }
 
+    /// These cases test the books, not the carrier gate: most type the carrier figure the way loads did before R-470,
+    /// which R-533 counts as recorded but not paid, so they complete with the carrier reason.
     async fn complete(id: &str) {
-        complete_deal_flow(id.to_string(), None, None, None, None, None).await.unwrap();
+        complete_deal_flow(id.to_string(), None, None, None, None, Some("Test: carrier figure typed before R-470".into())).await.unwrap();
     }
 
     #[tokio::test]
@@ -28599,7 +28671,10 @@ mod r400_shipping_tests {
         let b = deal("c10b", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "invoiced");
         booking(&b, "1", "booked", Some(800.0), None, 0);
         let d = read_df(&b).unwrap();
-        assert_eq!((d.shipping_mode, d.logistics_paid, d.logistics_unpaid, d.shipping_estimate, d.projected_cost), (true, 800.0, 0, 800.0, 6800.0));
+        // R-533: a typed figure is known money (nothing owed) but no bank payment carries it, so the gate still holds
+        // the open deal for that load.
+        assert_eq!((d.shipping_mode, d.logistics_paid, d.logistics_unpaid, d.shipping_estimate, d.projected_cost), (true, 800.0, 1, 800.0, 6800.0));
+        assert_eq!(d.carrier_owing, 0);
         assert_eq!(d.logistics_stage, "booked");
         // A booking with only a quote: 6,000 + 700.
         let c = deal("c10c", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "invoiced");
@@ -29015,6 +29090,71 @@ mod r400_shipping_tests {
         assert!(add_manual_deal_line(id.clone(), "shipping".into(), 50.0, Some("2026-09-11".into()), None, None).await.is_ok(), "a hand-entered carrier payment is money out");
     }
 
+    fn number(deal_id: &str, n: &str, load_number: &str) {
+        pool().get().unwrap().execute(
+            "UPDATE freight_bookings SET load_number=?1 WHERE id=?2", rusqlite::params![load_number, format!("fb_{deal_id}_{n}")],
+        ).unwrap();
+    }
+
+    /// R-533: a load part paid through the bank still owes its carrier the rest of its rate. The gate holds the deal for
+    /// it, the deal counts it as owed, and Payables keeps the rest; a rate set to what the carrier took is the way out.
+    /// Twin of the server's r533 tests.
+    #[tokio::test]
+    async fn r533_a_part_paid_truck_holds_the_gate_and_owes_the_rest_of_its_rate() {
+        let _db = crate::db::init_test_store();
+        let id = deal("r533p", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(300.0), Some(800.0), 0);
+        number(&id, "1", "LD-0533");
+        link(&id, "shipping", 300.0);
+        let d = read_df(&id).unwrap();
+        assert_eq!((d.logistics_unpaid, d.carrier_owing, d.carrier_due_loads.clone()), (1, 1, vec!["LD-0533".to_string()]));
+        assert_eq!((d.shipping_owed, d.projected_cost), (500.0, 6800.0));
+        assert_eq!(unpaid_load_codes(&id).unwrap(), vec!["LD-0533".to_string()]);
+        let ship: Vec<Value> = get_payables_aging().await.unwrap()["items"].as_array().unwrap().iter()
+            .filter(|i| i["deal_flow_id"] == id.as_str() && i["kind"] == "shipping").cloned().collect();
+        assert_eq!(ship.len(), 1);
+        assert_eq!(ship[0]["amount"].as_f64(), Some(500.0), "the rest of the rate, not the whole of it");
+        let err = complete_deal_flow(id.clone(), None, None, None, None, None).await.unwrap_err();
+        assert!(err.contains("LD-0533") && err.contains("not paid in full yet"), "{err}");
+        // The carrier took 300: the rate set to that makes the load paid in full, and the deal completes.
+        pool().get().unwrap().execute("UPDATE freight_bookings SET quoted_cost=300 WHERE id=?1", [format!("fb_{id}_1")]).unwrap();
+        let d = read_df(&id).unwrap();
+        assert_eq!((d.logistics_unpaid, d.carrier_owing, d.shipping_owed), (0, 0, 0.0));
+        complete_deal_flow(id.clone(), None, None, None, None, None).await.unwrap();
+    }
+
+    /// R-533: a $0 recorded is not a payment: the carrier is still owed its rate and the gate holds the deal.
+    #[tokio::test]
+    async fn r533_a_zero_recorded_is_not_a_carrier_payment() {
+        let _db = crate::db::init_test_store();
+        let id = deal("r533z", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        booking(&id, "1", "delivered", Some(0.0), Some(800.0), 0);
+        number(&id, "1", "LD-0534");
+        let d = read_df(&id).unwrap();
+        assert_eq!((d.logistics_unpaid, d.carrier_owing, d.shipping_owed, d.projected_cost), (1, 1, 800.0, 6800.0));
+        let err = complete_deal_flow(id.clone(), None, None, None, None, None).await.unwrap_err();
+        assert!(err.contains("LD-0534"), "{err}");
+    }
+
+    /// R-533: a deal completed with a typed carrier figure reads nothing still owed; one completed while a truck was
+    /// part paid still shows that truck.
+    #[tokio::test]
+    async fn r533_a_completed_deal_reads_only_the_money_still_owed() {
+        let _db = crate::db::init_test_store();
+        let typed = deal("r533c", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        booking(&typed, "1", "delivered", Some(800.0), Some(800.0), 0);
+        complete(&typed).await;
+        let d = read_df(&typed).unwrap();
+        assert_eq!((d.logistics_unpaid, d.carrier_owing), (0, 0));
+        let part = deal("r533d", vec![line("a", "supplier", 6000.0, true)], "supplier_paid");
+        booking(&part, "1", "delivered", Some(300.0), Some(800.0), 0);
+        number(&part, "1", "LD-0535");
+        link(&part, "shipping", 300.0);
+        complete(&part).await;
+        let d = read_df(&part).unwrap();
+        assert_eq!((d.logistics_unpaid, d.carrier_due_loads.clone()), (1, vec!["LD-0535".to_string()]));
+    }
+
     #[tokio::test]
     async fn free_cash_counts_the_booking_quote_instead_of_the_typed_freight() {
         let _db = crate::db::init_test_store();
@@ -29024,10 +29164,10 @@ mod r400_shipping_tests {
         assert_eq!(owed().await - base, 6500.0, "no logistics: the freight line is owed like the goods");
         booking(&id, "1", "booked", None, Some(700.0), 0);
         assert_eq!(owed().await - base, 6700.0, "the quote replaces the typed freight");
-        // R-418: a carrier payment already linked is known freight; the unpaid truck still owes its
-        // quote (the projection counts the two separately too: 200 + 700).
+        // R-418: a carrier payment already linked is known freight. R-533: with one truck it is part of that truck's
+        // 700, so 500 is still owed, not the whole quote on top of it.
         link(&id, "shipping", 200.0);
-        assert_eq!(owed().await - base, 6700.0);
+        assert_eq!(owed().await - base, 6500.0);
         set_paid(&id, "1", 700.0);
         assert_eq!(owed().await - base, 6000.0, "paid: only the goods are still owed");
     }
@@ -29495,7 +29635,8 @@ mod r401_pay_tests {
     }
 
     /// A deal whose cost is one 6,000 supplier line, the buyer's 10,000 received, and an invoice
-    /// carrying a 500 shipping line.
+    /// carrying a 500 shipping line. Its one load carries a typed 350 (R-533: recorded, not paid
+    /// through the bank, so these deals complete with the carrier reason; the figure still books).
     fn deal(tag: &str) -> String {
         let id = format!("df-r401-{tag}");
         let line = json!({
@@ -29540,7 +29681,7 @@ mod r401_pay_tests {
         put("profit_split_json", SPLIT);
         put("logistics_pay", RULE);
         let id = deal("snap");
-        complete_deal_flow(id.clone(), None, None, Some(true), None, None).await.unwrap();
+        complete_deal_flow(id.clone(), None, None, Some(true), None, Some("Test: carrier figure typed before R-470".into())).await.unwrap();
         // Net is 10,000 - 6,000 - 350 = 3,650. Charged 500, paid 350: the logistics pay is 150,
         // so 3,500 is split 60/40. net_profit itself is unchanged.
         let net: f64 = pool().get().unwrap().query_row("SELECT net_profit FROM deal_flows WHERE id=?1", [&id], |r| r.get(0)).unwrap();
@@ -29554,6 +29695,34 @@ mod r401_pay_tests {
         put("logistics_pay", r#"{"enabled":false}"#);
         resync_completed_deal(&id).unwrap();
         assert_eq!(amounts(&id), vec![2220.0, 1480.0]);
+        clear();
+    }
+
+    /// R-533: completion records the logistics pay the way a completed deal reads it, so the next resync moves nothing.
+    /// A truck part paid through the bank (300 of an 800 rate), completed with the carrier reason: before, completion
+    /// read it as owed (pay 0) and the first resync as paid (pay 200), so the recorded split moved with nothing changed.
+    #[tokio::test]
+    async fn r533_a_part_paid_truck_completed_with_a_reason_keeps_its_recorded_pay() {
+        let _db = crate::db::init_test_store();
+        put("profit_split_json", SPLIT);
+        put("logistics_pay", RULE);
+        let id = deal("r533");
+        {
+            let conn = pool().get().unwrap();
+            conn.execute("UPDATE freight_bookings SET paid_amount=300, quoted_cost=800 WHERE id=?1", [format!("fb_{id}")]).unwrap();
+            conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, '2026-10-02', 300, 'out')", [format!("bt-{id}")]).unwrap();
+            conn.execute(
+                "INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role) VALUES (?1, ?2, ?3, 300, 'shipping')",
+                rusqlite::params![format!("al-{id}"), format!("bt-{id}"), id],
+            ).unwrap();
+        }
+        complete_deal_flow(id.clone(), None, None, Some(true), None, Some("Test: the carrier settled for less".into())).await.unwrap();
+        let meta: String = pool().get().unwrap().query_row("SELECT metadata FROM deal_flows WHERE id=?1", [&id], |r| r.get(0)).unwrap();
+        let pay = serde_json::from_str::<Value>(&meta).unwrap()["logistics_pay"].as_f64();
+        assert_eq!(pay, Some(200.0), "charged 500, paid 300: the pay is recorded at completion");
+        let before = amounts(&id);
+        assert!(!resync_completed_deal_if_changed(&id).unwrap(), "nothing changed, so nothing moves");
+        assert_eq!(amounts(&id), before);
         clear();
     }
 
@@ -29599,7 +29768,7 @@ mod r401_pay_tests {
             ).unwrap();
             conn.execute("INSERT OR REPLACE INTO deal_reps (deal_flow_id, lead_rep_id) VALUES (?1, 'st-r401')", [&id]).unwrap();
         }
-        complete_deal_flow(id.clone(), None, None, Some(true), None, None).await.unwrap();
+        complete_deal_flow(id.clone(), None, None, Some(true), None, Some("Test: carrier figure typed before R-470".into())).await.unwrap();
         let p = deal_flow_payout(id.clone()).await.unwrap();
         // Net 3,650: the rep's 10% is 365 and the logistics pay is 150, so 3,135 is left to split.
         assert_eq!(p["rep_cut"], json!(365.0));
@@ -30775,7 +30944,8 @@ mod r456_near_duplicate_tests {
 mod r509_carrier_hold_tests {
     use super::*;
 
-    /// A deal ready to complete (bought, sold and paid), with one delivered load whose carrier is `paid` or not.
+    /// A deal ready to complete (bought, sold and paid), with one delivered load whose carrier is `paid` or not. A
+    /// paid carrier is paid through the bank (R-533: a figure no bank payment carries holds the gate).
     fn deal(tag: &str, paid: Option<f64>) -> String {
         let id = format!("df-r509-{tag}");
         let conn = pool().get().unwrap();
@@ -30795,6 +30965,13 @@ mod r509_carrier_hold_tests {
              VALUES (?1, ?2, 'delivered', ?3, ?4, 900, 0, '2026-10-02', '2026-10-02')",
             rusqlite::params![format!("fb_r509{tag}"), id, format!("LD-09{tag}"), paid],
         ).unwrap();
+        if let Some(amount) = paid {
+            conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES (?1, '2026-10-03', ?2, 'out')", rusqlite::params![format!("bt-r509-{tag}"), amount]).unwrap();
+            conn.execute(
+                "INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role, note) VALUES (?1, ?2, ?3, ?4, 'shipping', ?5)",
+                rusqlite::params![format!("al-r509-{tag}"), format!("bt-r509-{tag}"), id, amount, format!("LD-09{tag}")],
+            ).unwrap();
+        }
         id
     }
 
@@ -30809,7 +30986,7 @@ mod r509_carrier_hold_tests {
         let _db = crate::db::init_test_store();
         let id = deal("1", None);
         let err = complete_deal_flow(id.clone(), None, None, None, None, None).await.unwrap_err();
-        assert!(err.contains("LD-091") && err.contains("not paid yet"), "{err}");
+        assert!(err.contains("LD-091") && err.contains("not paid in full yet"), "{err}");
         assert_eq!(stage_meta(&id).0, "supplier_paid");
         complete_deal_flow(id.clone(), None, None, None, None, Some("The buyer sent their own truck".into())).await.unwrap();
         let (stage, meta) = stage_meta(&id);

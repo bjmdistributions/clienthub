@@ -1125,9 +1125,16 @@ export interface DealFlow {
   /** R-400, derived from the live freight bookings and the bank links. Read them tolerantly:
    *  an older response has none of them. */
   logistics_bookings?: number;
+  /** R-533: on an open deal, the loads the completion gate holds it for (not paid in full through the bank); on a
+   *  completed deal, the loads still owed money. */
   logistics_unpaid?: number;
   logistics_paid?: number;
+  /** R-533: what is still to pay the carriers (the rest of a part-paid rate included). */
   logistics_quoted?: number;
+  /** R-533: the loads still owed money: nothing recorded, part paid, or a $0. A typed figure is not owed. */
+  carrier_owing?: number;
+  /** R-533: the codes of the loads the completion gate holds the deal for. */
+  carrier_due_loads?: string[];
   /** Least advanced status among the live bookings, '' when there are none. */
   logistics_stage?: "" | "quote" | "quoted" | "requested" | "booked" | "picked_up" | "delivered";
   /** R-481: how many loads are at quoted, requested, booked or picked_up (a count, not money). */

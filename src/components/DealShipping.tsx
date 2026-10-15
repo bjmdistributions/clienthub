@@ -717,10 +717,11 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
                   sub={gap > 0.5 ? `${fmtAmount(gap)} ${linked > paid ? "more" : "less"} than the amount paid` : undefined}
                 />
               )}
-              {quoted > 0.005 && <Row label="Carrier rate, not paid yet" value={fmtAmount(quoted)} />}
+              {quoted > 0.005 && <Row label="Still to pay the carrier" value={fmtAmount(quoted)} />}
               {charged.amount > 0.005 && (mode || linked > 0.005 || typedTotal > 0.005) && (
                 // The surplus is known only once every live truck has its amount paid (R-415), as on the phone.
-                (pay ? !pay.pending : (flow.logistics_unpaid ?? 0) === 0)
+                // R-533: the trucks still owed money (carrier_owing), not the gate's count: a typed figure's amount is known.
+                (pay ? !pay.pending : (flow.carrier_owing ?? flow.logistics_unpaid ?? 0) === 0)
                   ? <Row label="Shipping profit" value={fmtSigned(pay ? pay.surplus : charged.amount - shippingEstimateOf(flow))} />
                   : <Row label="Shipping profit" value="Waiting on the amount paid" />
               )}

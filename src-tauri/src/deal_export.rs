@@ -5,7 +5,8 @@
 //! Byte-identical in `BUSINESS APP/src-tauri/src` and `clienthub-api/src`, like
 //! `bills_core.rs`: the desktop saves it from Deal Flow, the server sends it to the website
 //! and the phone, and both must write the same file from the same synced rows, so both run
-//! this file. No `use crate::`. Read-only: it never writes a row.
+//! this file. No `use crate::`: the one crate path it names is `crate::carrier_paid` (R-533), written out in full, which
+//! is byte-identical in both repos too. Read-only: it never writes a row.
 //!
 //! Three sheets:
 //! - **Deals**: one row per deal flow, archived and fallen-through ones included, saying
@@ -196,21 +197,50 @@ pub fn collect(conn: &Connection, org: &str) -> Result<Records, String> {
     let mut loads: HashMap<String, Vec<MoneyRow>> = HashMap::new();
     let mut load_numbers: HashMap<String, Vec<String>> = HashMap::new();
     {
+        // R-533: each deal's shipping bank links, so a load's Status says where its payment stands, by the rule the app
+        // uses (crate::carrier_paid): paid in full through the bank, part paid, or a figure no bank payment carries.
+        let mut ship_links: HashMap<String, Vec<crate::carrier_paid::Link>> = HashMap::new();
+        {
+            let mut st = conn.prepare(
+                "SELECT a.deal_flow_id, a.amount, COALESCE(a.note,'') FROM bank_allocation a JOIN deal_flows df ON df.id = a.deal_flow_id \
+                 WHERE (?1 = '' OR df.org_id = ?1) AND a.role = 'shipping' AND EXISTS (SELECT 1 FROM bank_txn t WHERE t.id = a.bank_txn_id)").map_err(e)?;
+            let rows = st.query_map([org], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, String>(2)?))).map_err(e)?;
+            for row in rows {
+                let (dfid, amount, note) = row.map_err(e)?;
+                ship_links.entry(dfid).or_default().push(crate::carrier_paid::Link { amount, note });
+            }
+        }
         let mut st = conn.prepare(
             "SELECT fb.deal_flow_id, COALESCE(fb.load_number,''), COALESCE(fb.carrier,''), fb.status, \
-                    fb.quoted_cost, fb.paid_amount, COALESCE(fb.paid_at,''), COALESCE(fb.paid_method,''), COALESCE(fb.paid_note,'') \
+                    fb.quoted_cost, fb.paid_amount, COALESCE(fb.paid_at,''), COALESCE(fb.paid_method,''), COALESCE(fb.paid_note,''), fb.id \
              FROM freight_bookings fb JOIN deal_flows df ON df.id = fb.deal_flow_id \
              WHERE (?1 = '' OR df.org_id = ?1) AND COALESCE(fb.archived,0) = 0 \
                AND fb.status NOT IN ('cancelled','quote','quoted')").map_err(e)?;
         let rows = st.query_map([org], |r| Ok((
             r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
             r.get::<_, Option<f64>>(4)?, r.get::<_, Option<f64>>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?,
-            r.get::<_, String>(8)?,
+            r.get::<_, String>(8)?, r.get::<_, String>(9)?,
         ))).map_err(e)?;
+        let rows: Vec<_> = rows.collect::<Result<Vec<_>, _>>().map_err(e)?;
+        let mut deal_loads: HashMap<String, Vec<crate::carrier_paid::Load>> = HashMap::new();
+        for (dfid, number, _, _, quoted, paid, _, _, _, id) in &rows {
+            deal_loads.entry(dfid.clone()).or_default().push(crate::carrier_paid::Load {
+                id: id.clone(), code: crate::carrier_paid::code_of(id, number), paid: *paid, rate: *quoted,
+            });
+        }
+        let none: Vec<crate::carrier_paid::Link> = Vec::new();
         for row in rows {
-            let (dfid, number, carrier, status, quoted, paid, paid_at, method, note) = row.map_err(e)?;
+            let (dfid, number, carrier, status, quoted, paid, paid_at, method, note, id) = row;
             let date = if paid.is_some() { day(&paid_at) } else { String::new() };
+            let state = crate::carrier_paid::paid_state(
+                deal_loads.get(&dfid).map(|v| v.as_slice()).unwrap_or(&[]),
+                ship_links.get(&dfid).unwrap_or(&none),
+                &id, paid, quoted,
+            );
             let (amount, state) = match (paid, quoted) {
+                (Some(p), _) if p <= 0.005 => (p, "$0 recorded, not a payment".to_string()),
+                (Some(p), Some(q)) if state == "part" => (p, format!("Part paid, {:.2} of {:.2}", p, q)),
+                (Some(p), _) if state == "marked" => (p, "Recorded, not linked to a bank payment".to_string()),
                 (Some(p), _) => (p, "Paid".to_string()),
                 (None, Some(q)) => (q, "Not paid yet (quoted)".to_string()),
                 (None, None) => (0.0, "Not paid yet, no price".to_string()),
@@ -514,6 +544,35 @@ mod tests {
         let items: Vec<&Vec<Cell>> = r.items.iter().filter(|m| m[1] == t("June apparel")).collect();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0][col(ITEM_HEADERS, "Amount")], Cell::Money(10000.0));
+    }
+
+    /// R-533: a carrier row's Status says where its payment stands, by the rule the app uses (crate::carrier_paid).
+    #[test]
+    fn r533_a_carrier_row_says_where_its_payment_stands() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO bank_txn VALUES ('b9','2026-06-20','out',300,'ACH ROAD CO','Road Co','Chase 3655');
+             INSERT INTO bank_txn VALUES ('b8','2026-06-21','out',200,'ACH ROAD CO','Road Co','Chase 3655');
+             INSERT INTO bank_allocation VALUES ('a9','b9','d2',300,'shipping','Road Co LD-0010');
+             INSERT INTO bank_allocation VALUES ('a8','b8','d2',200,'shipping','LD-0012');
+             INSERT INTO freight_bookings VALUES ('f3','d2','LD-0010','Road Co','delivered',800,300,'2026-06-20','ach','',0);
+             INSERT INTO freight_bookings VALUES ('f4','d2','LD-0011','Road Co','delivered',500,0,'2026-06-20','','',0);
+             INSERT INTO freight_bookings VALUES ('f5','d2','LD-0012','Road Co','delivered',200,200,'2026-06-21','ach','',0);",
+        )
+        .unwrap();
+        let r = collect(&conn, "").unwrap();
+        let status = |load: &str| {
+            r.money
+                .iter()
+                .find(|m| m[col(MONEY_HEADERS, "What")] == t("Carrier pay") && matches!(&m[col(MONEY_HEADERS, "Notes")], Cell::Text(s) if s.contains(load)))
+                .map(|m| m[col(MONEY_HEADERS, "Status")].clone())
+                .unwrap()
+        };
+        assert_eq!(status("LD-0010"), t("Part paid, 300.00 of 800.00"));
+        assert_eq!(status("LD-0011"), t("$0 recorded, not a payment"));
+        assert_eq!(status("LD-0012"), t("Paid"));
+        // The fixture's own load: 480 recorded on a 450 rate with no bank link behind it.
+        assert_eq!(status("LD-0007"), t("Recorded, not linked to a bank payment"));
     }
 
     #[test]

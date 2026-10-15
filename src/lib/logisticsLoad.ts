@@ -193,7 +193,8 @@ export function paidView(b: PaidFacts, today: string, now?: Date): PaidView {
     return {
       state, tone: "warning", zero: false,
       text: `${amount == null ? "Paid" : `Paid ${fmtAmount(amount)}`}${rate != null ? ` of ${fmtAmount(rate)}` : ""}, link the rest`,
-      note: due ? dueLabel(due, today, now) : "", noteTone: due ? dueTone(due, today) : "neutral",
+      // R-533: the deal waits for the rest; if the carrier took less, the rate is what to change.
+      note: due ? dueLabel(due, today, now) : "If the carrier took less, change the rate", noteTone: due ? dueTone(due, today) : "neutral",
     };
   }
   const bits = [amount == null ? "Paid" : `Paid ${fmtAmount(amount)}`];

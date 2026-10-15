@@ -615,6 +615,12 @@ pub fn shipping_link_rest(linked: f64, paid_amounts: &[f64]) -> f64 {
 /// A deal whose freight amount is not known yet (a live booking has no amount paid) is a line
 /// with `pay: None` (pending).
 pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings) -> Option<DealPay> {
+    deal_pay_as(conn, deal_flow_id, s, false)
+}
+
+/// `deal_pay`, read as a completed deal when `completing` (R-533): the cut `complete_deal_flow` records is then the one
+/// every later resync reads, so a recorded owner split never moves with nothing changed behind it.
+fn deal_pay_as(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings, completing: bool) -> Option<DealPay> {
     if !s.enabled {
         return None;
     }
@@ -623,10 +629,10 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
     // as the server's rules_by_deal / settings_for.
     let effective = rule_for_deal(conn, deal_flow_id, s);
     let s = &effective;
-    let (archived, voided, items, field): (i64, i64, String, f64) = conn.query_row(
-        "SELECT COALESCE(df.archived,0), MAX(COALESCE(i.voided,0), COALESCE(i.archived,0)), COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0)
+    let (archived, voided, items, field, stage): (i64, i64, String, f64, String) = conn.query_row(
+        "SELECT COALESCE(df.archived,0), MAX(COALESCE(i.voided,0), COALESCE(i.archived,0)), COALESCE(i.line_items_json,'[]'), COALESCE(i.shipping_charged,0), COALESCE(df.stage,'')
          FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id WHERE df.id=?1",
-        [deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        [deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     ).ok()?;
     if archived != 0 || voided != 0 {
         return None;
@@ -645,7 +651,16 @@ pub fn deal_pay(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySettings
     // carrier being paid. Any truck without markup data keeps the surplus-share rule for the deal.
     let figs: Vec<(bool, Option<f64>)> = live.iter().map(|(_, b, _, _, m)| (!b.is_empty(), *m)).collect();
     let by_markup = pay_for_markup(s, &figs);
-    let pending = by_markup.is_none() && live.iter().any(|(_, _, none, _, _)| *none != 0);
+    // R-533: on a deal not complete yet a truck still owes its carrier while part paid or with a $0 too (carrier_paid);
+    // a completed deal, and the one being completed, keeps the "nothing recorded" reading, so its recorded pay never
+    // moves. Twin of the server's.
+    let owes_any = if completing || stage == "complete" {
+        live.iter().any(|(_, _, none, _, _)| *none != 0)
+    } else {
+        let (loads, links) = crate::commands::deal_loads(conn, deal_flow_id);
+        crate::carrier_paid::deal_carrier(&loads, &links).owing > 0
+    };
+    let pending = by_markup.is_none() && owes_any;
     let (pay, rule) = match by_markup {
         Some((pay, _, rule)) => (Some(pay), rule),
         None => pay_for(s, charged, freight, pending),
@@ -701,11 +716,21 @@ pub fn rule_for_deal(conn: &rusqlite::Connection, deal_flow_id: &str, s: &PaySet
 /// for a deal with no line or no amount yet), `None` while it is off. Kept in
 /// `metadata.logistics_pay`, like the server's `cut_for_deal`.
 pub fn logistics_cut(conn: &rusqlite::Connection, deal_flow_id: &str) -> Option<f64> {
+    cut_as(conn, deal_flow_id, false)
+}
+
+/// R-533: the cut `complete_deal_flow` records, read as the completed deal every later resync reads (the deal's stage is
+/// written after it). Twin of the server's `cut_on_completion`.
+pub fn logistics_cut_on_completion(conn: &rusqlite::Connection, deal_flow_id: &str) -> Option<f64> {
+    cut_as(conn, deal_flow_id, true)
+}
+
+fn cut_as(conn: &rusqlite::Connection, deal_flow_id: &str, completing: bool) -> Option<f64> {
     let s = read_pay_settings();
     if !s.enabled {
         return None;
     }
-    Some(deal_pay(conn, deal_flow_id, &s).and_then(|d| d.pay).unwrap_or(0.0))
+    Some(deal_pay_as(conn, deal_flow_id, &s, completing).and_then(|d| d.pay).unwrap_or(0.0))
 }
 
 /// One deal's logistics pay line for the deal page: the figures behind it, or `null` when the
@@ -1364,6 +1389,28 @@ mod pay_tests {
 
     fn read(deal: &str, s: &PaySettings) -> Option<DealPay> {
         deal_pay(&pool().get().unwrap(), deal, s)
+    }
+
+    /// R-533: a part-paid truck on an open deal still owes its carrier, so the pay waits; on a completed deal the
+    /// recorded pay stands, so it never moves under a recompute. Twin of the server's.
+    #[test]
+    fn r533_a_part_paid_truck_holds_the_pay_until_the_deal_is_complete() {
+        let _db = crate::db::init_test_store();
+        let deal = seed("r533part", &lines("Shipping", 1.0, 1000.0), 0.0);
+        book(&deal, "1", "delivered", "2026-10-01", Some(300.0), Some(800.0));
+        {
+            let conn = pool().get().unwrap();
+            conn.execute("INSERT INTO bank_txn (id, posted_at, amount, direction) VALUES ('bt-r533-pay', '2026-10-02', 300, 'out')", []).unwrap();
+            conn.execute(
+                "INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role) VALUES ('al-r533-pay', 'bt-r533-pay', ?1, 300, 'shipping')",
+                [&deal],
+            ).unwrap();
+        }
+        assert!(read(&deal, &on()).unwrap().pending, "open deal: 500 of the rate is still owed, so the pay waits");
+        pool().get().unwrap().execute("UPDATE deal_flows SET stage='complete' WHERE id=?1", [&deal]).unwrap();
+        let done = read(&deal, &on()).unwrap();
+        assert!(!done.pending, "completed deal: the recorded pay stands");
+        assert_eq!(done.freight, 300.0);
     }
 
     #[test]

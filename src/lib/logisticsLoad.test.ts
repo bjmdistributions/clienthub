@@ -599,6 +599,8 @@ describe("R-470: a load is paid only when its bank payment is linked", () => {
     const v = paidView({ paid_state: "part", paid_amount: 300, quoted_cost: 800, pay_due_date: "2026-10-03" }, today);
     expect(v).toMatchObject({ state: "part", tone: "warning", text: "Paid $300.00 of $800.00, link the rest", note: "Overdue since Oct 3", noteTone: "danger" });
     expect(paidView({ paid_state: "part", paid_amount: 300 }, today).text).toBe("Paid $300.00, link the rest");
+    // R-533: with no due date, the note names the way out when the carrier took less.
+    expect(paidView({ paid_state: "part", paid_amount: 300, quoted_cost: 800 }, today).note).toBe("If the carrier took less, change the rate");
   });
 
   it("says only part of a marked payment is linked, with the marked day and method (C-3)", () => {

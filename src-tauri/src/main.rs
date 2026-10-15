@@ -3,6 +3,7 @@
 mod ai;
 mod bank_dedup;
 mod bank_flags;
+mod carrier_paid;
 mod bank_near_dup;
 mod bank_learn;
 mod bank_import;

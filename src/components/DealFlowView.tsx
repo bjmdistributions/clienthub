@@ -2297,8 +2297,9 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const [carrierWhy, setCarrierWhy] = useState("");
   const holdMode = carrierDue && !noCarrier;
   const carrierBlocks = carrierDue && noCarrier && carrierWhy.trim().length === 0;
-  const dueLoads = (flow.load_numbers || "").trim().split(/\s+/).filter(Boolean);
-  const dueText = dueLoads.length ? `${dueLoads.join(", ")} ${dueLoads.length > 1 ? "have" : "has"}` : "A load on this deal has";
+  // R-533: the loads the gate holds the deal for (an older backend sends only load_numbers).
+  const dueLoads = Array.isArray(flow.carrier_due_loads) ? flow.carrier_due_loads : (flow.load_numbers || "").trim().split(/\s+/).filter(Boolean);
+  const dueText = dueLoads.length ? `${dueLoads.join(", ")} ${dueLoads.length > 1 ? "are" : "is"}` : "A load on this deal is";
   const todayStr = localDay();
   const [completedDate, setCompletedDate] = useState(todayStr);
   const [payoutIncluded, setPayoutIncluded] = useState(true);
@@ -2489,10 +2490,10 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           <Row label="Supplier and other costs" value={fmtAmount(recGoods)} clr="text-ink-2" />
           <Row label="Shipping" value={fmtAmount(recShip)} clr="text-ink-2" />
         </div>
-        {(flow.logistics_unpaid ?? 0) > 0 && (
+        {(flow.carrier_owing ?? flow.logistics_unpaid ?? 0) > 0 && (
           <div className="mt-2.5 flex items-start gap-1.5 text-[11.5px] text-warning-ink">
             <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-            <span>Shipping has not been paid yet. Profit updates by itself when the bank payment is linked.</span>
+            <span>Shipping is not paid in full yet. Profit updates by itself when the bank payment is linked.</span>
           </div>
         )}
         {refundTotal > 0.005 && (
@@ -2638,7 +2639,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
                 <span>
                   {held
                     ? "Marked done. It completes by itself when the carrier payment is linked."
-                    : `${dueText} no carrier payment linked yet. Mark the deal done and it completes by itself once the payment is linked.`}
+                    : `${dueText} not paid in full yet. Mark the deal done and it completes by itself once the payment is linked. If the carrier took less, change the rate.`}
                 </span>
               </div>
               {!noCarrier ? (
