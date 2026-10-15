@@ -4,15 +4,17 @@
 // count are case_core.rs (byte-identical on the server); this only draws. The phone twin is
 // www/app.js whd*.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api } from "../lib/api";
-import { bucketLine, bucketName, buckets, byStyle, lineDesc, lineMatches, lineStatus, lineTitle, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type WhCase } from "../lib/deliveries";
+import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
+import Switch from "./Switch";
 import { Seg } from "./WarehouseProduct";
 import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0 } from "./warehouseUi";
 
@@ -30,7 +32,7 @@ const draftTotal = (d: Draft) => d.blocks.reduce((a, b) => a + Object.values(b.q
 export default function WarehouseDeliveries({ dropped }: { dropped: { path: string; n: number } | null }) {
   const [list, setList] = useState<LoadSummary[] | null>(null);
   const [detail, setDetail] = useState<LoadDetail | null>(null);
-  const [preview, setPreview] = useState<{ read: ManifestRead; fileName: string } | null>(null);
+  const [preview, setPreview] = useState<{ read: ManifestRead; fileName: string; path: string } | null>(null);
   const [showRemoved, setShowRemoved] = useState(false);
   const [editing, setEditing] = useState(false);
 
@@ -54,7 +56,7 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
   const openManifest = useCallback(async (path: string) => {
     try {
       const read = await api.readLoadManifest(path);
-      setPreview({ read, fileName: path.split(/[\\/]/).pop() || "Manifest" });
+      setPreview({ read, fileName: path.split(/[\\/]/).pop() || "Manifest", path });
     } catch (e) { toast(String(e), "error"); }
   }, []);
   useEffect(() => { if (dropped) openManifest(dropped.path); }, [dropped, openManifest]);
@@ -65,8 +67,8 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
   const open = (id: string) => api.getWarehouseLoad(id).then((d) => setDetail(d)).catch((e) => toast(String(e), "error"));
 
   if (preview) {
-    return <ManifestPreview read={preview.read} fileName={preview.fileName} onCancel={() => setPreview(null)}
-      onSaved={(d) => { setPreview(null); setDetail(d); loadList(); toast("Delivery saved"); }} />;
+    return <ManifestPreview read={preview.read} fileName={preview.fileName} path={preview.path} onCancel={() => setPreview(null)}
+      onSaved={(d, msg) => { setPreview(null); setDetail(d); loadList(); toast(msg); }} />;
   }
   if (detail) {
     return <DeliveryScreen d={detail} merge={merge} setEditing={setEditing} onBack={() => { setDetail(null); loadList(); }} />;
@@ -103,72 +105,212 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
   );
 }
 
+// ---- Pictures from the sheet (R-537) ----------------------------------------------------
+// A line's `image` is a path inside the synced media folder ("media/deliveries/<load>/<line>.jpg").
+// A line with no picture shows nothing; a picture this computer does not have yet is fetched
+// when the delivery opens (ensure_delivery_pictures) and `v` re-asks for every image then.
+
+let mediaBase: Promise<string> | null = null;
+function useMediaBase() {
+  const [base, setBase] = useState("");
+  useEffect(() => { (mediaBase ??= api.mediaBaseDir().catch(() => "")).then(setBase); }, []);
+  return base;
+}
+const picSrc = (base: string, rel: string | undefined, v: number) =>
+  base && rel ? `${convertFileSrc(`${base.replace(/\\/g, "/")}/${rel}`)}${v ? `?v=${v}` : ""}` : "";
+
+const PicCtx = createContext<{ base: string; v: number; show: (l: LoadLine) => void }>({ base: "", v: 0, show: () => {} });
+
+/** A style's picture, or nothing when it has none. `zoom`: a click shows it large. */
+function Thumb({ l, size = 40, zoom = false }: { l: LoadLine; size?: number; zoom?: boolean }) {
+  const { base, v, show } = useContext(PicCtx);
+  const [bad, setBad] = useState(false);
+  useEffect(() => setBad(false), [v, l.image]);
+  const src = picSrc(base, l.image, v);
+  if (!src || bad) return null;
+  const img = <img src={src} alt="" loading="lazy" className="w-full h-full object-contain" onError={() => setBad(true)} />;
+  const cls = "flex-shrink-0 rounded-md overflow-hidden bg-surface-2 ring-1 ring-line";
+  // A span, not a button: it can sit inside a row that is itself a button.
+  return zoom
+    ? <span role="button" tabIndex={0} aria-label={`See the picture of ${lineTitle(l)}`} className={`${cls} cursor-zoom-in`} style={{ width: size, height: size }}
+        onClick={(e) => { e.stopPropagation(); show(l); }} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); show(l); } }}>{img}</span>
+    : <span className={cls} style={{ width: size, height: size }}>{img}</span>;
+}
+
+function PhotoView({ l, onClose }: { l: LoadLine; onClose: () => void }) {
+  const { base, v } = useContext(PicCtx);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6" onClick={onClose}>
+      <div className={`${WH_CARD} p-3 w-full max-w-[640px]`} onClick={(e) => e.stopPropagation()}>
+        <img src={picSrc(base, l.image, v)} alt={lineTitle(l)} className="w-full max-h-[70vh] object-contain rounded-md bg-surface-2" />
+        <div className="flex items-start justify-between gap-3 mt-3">
+          <div className="min-w-0">
+            <div className="text-[14px] font-semibold text-ink">{lineTitle(l)}</div>
+            <div className="text-[12px] text-muted">{[l.brand, l.group, lineDesc(l)].filter(Boolean).join(" · ")}</div>
+            <div className="text-[12px] text-ink-2 tabular-nums mt-0.5">{sizesText(l)}</div>
+          </div>
+          <button onClick={onClose} className={WH_BTN_SECONDARY}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- The preview: nothing is saved until Save delivery ---------------------------------
 
-function ManifestPreview({ read, fileName, onCancel, onSaved }: { read: ManifestRead; fileName: string; onCancel: () => void; onSaved: (d: LoadDetail) => void }) {
+// R-537: one card a page, each saying plainly whether it is imported. A totals page is never
+// imported; each page of styles has its own switch, on at first; a page that repeats all the
+// others is off at first. Only the pages switched on are saved, and their pictures with them.
+function ManifestPreview({ read, fileName, path, onCancel, onSaved }: { read: ManifestRead; fileName: string; path: string; onCancel: () => void; onSaved: (d: LoadDetail, msg: string) => void }) {
   const [name, setName] = useState(fileName.replace(/\.[^.]+$/, ""));
   const [busy, setBusy] = useState(false);
+  const [on, setOn] = useState<Set<string>>(() => defaultTabs(read));
+  const idx = useMemo(() => Object.fromEntries(read.lines.map((l) => [l.id, l])) as Record<string, LoadLine>, [read.lines]);
+  const chosen = useMemo(() => linesOfTabs(read, on), [read, on]);
+  const chosenIds = useMemo(() => new Set(chosen.map((l) => l.id)), [chosen]);
+  const pairs = chosen.reduce((a, l) => a + lineQty(l), 0);
+  const totalCol = chosen.reduce((a, l) => a + (l.sheet_total || 0), 0);
+  const pics = read.tabs.filter((t) => on.has(t.name)).reduce((a, t) => a + (t.pictures ?? 0), 0);
+  const mism = read.mismatches.filter((m) => chosenIds.has(m.line_id));
+  const groups = groupsOf(chosen);
+  const pages = read.tabs.filter((t) => ["items", "copy"].includes(tabKind(t)));
+  const ignored = read.tabs.filter((t) => !["items", "copy"].includes(tabKind(t)));
+  const tabWarnings = new Set(read.tabs.flatMap((t) => t.warnings ?? []));
+  const otherWarnings = read.warnings.filter((w) => !tabWarnings.has(w));
   const st = read.stated;
-  const stLines = st ? (st.lines ?? read.lines.length) : 0;
-  const agrees = st && st.pairs === read.pairs && stLines === read.lines.length;
+  const stLines = st?.lines ?? null;
+  const linesAgree = stLines == null || stLines === chosen.length;
+  const flip = (t: string) => setOn((s) => { const n = new Set(s); if (n.has(t)) n.delete(t); else n.add(t); return n; });
+
   const save = async () => {
     setBusy(true);
-    try { onSaved(await api.createWarehouseLoad(name, fileName, read.lines)); }
-    catch (e) { toast(String(e), "error"); }
-    finally { setBusy(false); }
+    try {
+      const d = await api.createWarehouseLoad(name, fileName, chosen);
+      if (pics > 0) {
+        try {
+          const r = await api.addLoadPictures(d.load.id, path);
+          onSaved(r, `Delivery saved, with pictures on ${many(r.pictures.on_lines, "style", "styles")}`);
+        } catch (e) {
+          onSaved(d, `Delivery saved. The pictures did not come in (${e}). Use Add pictures from the sheet on the delivery.`);
+        }
+        return;
+      }
+      onSaved(d, "Delivery saved");
+    } catch (e) { toast(String(e), "error"); setBusy(false); }
   };
+
   return (
-    <div className="max-w-[880px]">
+    <div className="max-w-[920px]">
       <button onClick={onCancel} className="inline-flex items-center gap-1 text-[12.5px] text-muted hover:text-ink-2 mb-3"><ArrowLeft size={13} /> Deliveries</button>
       <h2 className="text-[18px] font-semibold text-ink tracking-tight">Import a delivery</h2>
-      <p className="text-[12.5px] text-muted mt-0.5">{fileName} · {many(read.lines.length, "style and colour", "styles and colours")} · {n0(read.pairs)} pairs expected</p>
-      {st && <p className={`text-[12.5px] mt-2 ${agrees ? "text-muted" : "text-warning-ink"}`}>{agrees
-        ? `Matches the ${st.tab} tab: ${many(stLines, "style", "styles")}, ${n0(st.pairs)} pairs.`
-        : `The ${st.tab} tab says ${st.lines != null ? many(st.lines, "style", "styles") + " and " : ""}${n0(st.pairs)} pairs. The lines read add up to ${many(read.lines.length, "style", "styles")} and ${n0(read.pairs)} pairs.`}</p>}
+      <p className="text-[13px] text-ink-2 mt-1">{fileName} has {many(read.tabs.length, "page", "pages")}. {pages.length ? `${many(pages.length, "page has", "pages have")} styles to import` : "No page has styles to import"}{ignored.length ? `, and ${many(ignored.length, "page is", "pages are")} ignored` : ""}. Check each page below.</p>
 
-      <label className="block mt-4 max-w-[420px]"><span className="text-[12px] text-muted">Name</span>
-        <input value={name} onChange={(e) => setName(e.target.value)} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`} /></label>
+      <div className="space-y-3 mt-4">
+        {read.tabs.map((t) => {
+          const kind = tabKind(t);
+          if (kind !== "items" && kind !== "copy") {
+            return (
+              <div key={t.name} className={`${WH_CARD} p-4 bg-surface-2/60`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[14px] font-semibold text-ink-2">{t.name}</div>
+                  <StatusPill tone="neutral">Ignored</StatusPill>
+                </div>
+                <p className="text-[12.5px] text-muted mt-1">{kind === "totals"
+                  ? `This is a totals page. Nothing on it is imported.${st && st.tab === t.name ? ` It is only used to check the count: it says ${stLines != null ? `${many(stLines, "style", "styles")} and ` : ""}${n0(st.pairs)} pairs.` : ""}`
+                  : t.note || "Nothing on this page is imported."}</p>
+              </div>
+            );
+          }
+          const isOn = on.has(t.name);
+          return (
+            <div key={t.name} className={`${WH_CARD} p-4 ${isOn ? "" : "opacity-75"}`}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[14px] font-semibold text-ink">{t.name}</div>
+                  <div className="text-[12.5px] text-muted tabular-nums">{many(t.lines, "style", "styles")} · {n0(t.pairs)} pairs{t.pictures ? ` · ${many(t.pictures, "picture", "pictures")}` : ""}</div>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  {isOn ? <StatusPill tone="success">Imported</StatusPill> : <StatusPill tone="neutral">Left out</StatusPill>}
+                  <span className="text-[12.5px] text-ink-2">Import this page</span>
+                  <Switch on={isOn} onToggle={() => flip(t.name)} label={`Import ${t.name}`} />
+                </div>
+              </div>
+              {kind === "copy" && <p className="text-[12.5px] text-warning-ink mt-1.5">{t.note}</p>}
+              {layoutText(t.layout) && <p className="text-[12px] text-muted mt-1.5">{layoutText(t.layout)}</p>}
+              {(t.samples ?? []).length > 0 && <div className="mt-2.5 rounded-lg border border-line divide-y divide-line">
+                {(t.samples ?? []).map((id) => {
+                  const l = idx[id];
+                  if (!l) return null;
+                  const src = read.previews?.[id];
+                  return (
+                    <div key={id} className="flex items-center gap-3 px-3 py-2">
+                      {src && <img src={src} alt="" className="w-14 h-14 rounded-md object-contain bg-surface-2 ring-1 ring-line flex-shrink-0" />}
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-medium text-ink">{lineTitle(l)}{l.group ? <span className="font-normal text-muted"> · {l.group}</span> : null}</div>
+                        {lineDesc(l) && <div className="text-[12px] text-muted truncate">{lineDesc(l)}</div>}
+                        <div className="text-[12px] text-ink-2 tabular-nums">{sizesText(l) || "No pairs listed"}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {t.lines > (t.samples ?? []).length && <div className="px-3 py-1.5 text-[12px] text-muted">and {many(t.lines - (t.samples ?? []).length, "more style", "more styles")}</div>}
+              </div>}
+              {(t.mismatches ?? 0) > 0 && <p className="text-[12.5px] text-warning-ink mt-2">{offText(t.mismatches ?? 0)}. {(t.mismatches ?? 0) === 1 ? "It is" : "They are"} listed below.</p>}
+              {(t.warnings ?? []).map((w, k) => <p key={k} className="text-[12.5px] text-warning-ink mt-1.5">{w}</p>)}
+            </div>
+          );
+        })}
+      </div>
 
-      <div className="grid gap-4 md:grid-cols-2 mt-5">
-        <div className={`${WH_CARD} p-4`}>
-          <div className="text-[13px] font-semibold text-ink mb-2">By brand and group</div>
-          {read.groups.map((g, k) => (
-            <div key={k} className="flex justify-between gap-3 py-1.5 border-t border-line first:border-t-0 text-[12.5px]">
-              <span className="text-ink-2">{g.brand}{g.group ? ` · ${g.group}` : ""}</span>
-              <span className="text-muted tabular-nums whitespace-nowrap">{many(g.lines, "style", "styles")} · <span className="text-ink font-medium">{n0(g.pairs)}</span> pairs</span>
-            </div>
-          ))}
-        </div>
-        <div className={`${WH_CARD} p-4`}>
-          <div className="text-[13px] font-semibold text-ink mb-2">Tabs</div>
-          {read.tabs.map((t, k) => (
-            <div key={k} className="flex justify-between gap-3 py-1.5 border-t border-line first:border-t-0 text-[12.5px]">
-              <span className="text-ink-2">{t.name}</span>
-              <span className="text-muted tabular-nums text-right">{t.read ? `${many(t.lines, "style", "styles")}, ${n0(t.pairs)} pairs` : t.note}</span>
-            </div>
-          ))}
+      <div className={`${WH_CARD} p-4 mt-4`}>
+        <div className="text-[14px] text-ink">{chosen.length
+          ? <>Importing {many(pages.filter((t) => on.has(t.name)).length, "page", "pages")}: <span className="font-semibold tabular-nums">{many(chosen.length, "style", "styles")}</span>, <span className="font-semibold tabular-nums">{n0(pairs)} pairs</span>{pics ? `, ${many(pics, "picture", "pictures")}` : ""}.</>
+          : "No page is switched on, so nothing would be imported."}</div>
+        {st && chosen.length > 0 && <p className={`text-[12.5px] mt-1 ${pairs === st.pairs && linesAgree ? "text-success-ink" : "text-warning-ink"}`}>{
+          pairs === st.pairs && linesAgree
+            ? `This matches the totals page: ${stLines != null ? `${many(stLines, "style", "styles")} and ` : ""}${n0(st.pairs)} pairs.`
+            : totalCol === st.pairs && linesAgree && mism.length
+              ? `The totals page says ${n0(st.pairs)} pairs. The sizes add up to ${n0(pairs)}, ${n0(Math.abs(st.pairs - pairs))} ${pairs < st.pairs ? "fewer" : "more"}, because ${offText(mism.length)} (listed below). Boxes are counted by size, so ${n0(pairs)} is what is expected.`
+              : `The totals page says ${stLines != null ? `${many(stLines, "style", "styles")} and ` : ""}${n0(st.pairs)} pairs. The pages switched on have ${many(chosen.length, "style", "styles")} and ${n0(pairs)} pairs.`
+        }</p>}
+        {(read.pictures_left_out ?? 0) > 0 && <p className="text-[12px] text-muted mt-1">{many(read.pictures_left_out ?? 0, "picture sits", "pictures sit")} on a row with no style, or is a second picture for a style, so {(read.pictures_left_out ?? 0) === 1 ? "it is" : "they are"} left out.</p>}
+        <label className="block mt-3 max-w-[420px]"><span className="text-[12px] text-muted">Name of the delivery</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`} /></label>
+        <div className="flex gap-2 mt-3">
+          <button onClick={save} disabled={busy || !chosen.length || !name.trim()} className={WH_BTN_PRIMARY}>{busy ? (pics ? "Saving, with pictures…" : "Saving…") : "Save delivery"}</button>
+          <button onClick={onCancel} className={WH_BTN_SECONDARY}>Cancel</button>
         </div>
       </div>
 
-      {read.mismatches.length > 0 && <div className={`${WH_CARD} p-4 mt-4`}>
-        <div className="text-[13px] font-semibold text-ink">{read.mismatches.length === 1 ? "1 line has a Total" : `${read.mismatches.length} lines have a Total`} that the sizes do not add up to</div>
-        <p className="text-[12px] text-muted mt-0.5 mb-2">Cases are counted by size, so the sizes are kept. Check these when they come off the truck.</p>
-        {read.mismatches.map((m) => (
+      {groups.length > 0 && <div className={`${WH_CARD} p-4 mt-4`}>
+        <div className="text-[13px] font-semibold text-ink mb-2">By brand and group</div>
+        {groups.map((g, k) => (
+          <div key={k} className="flex justify-between gap-3 py-1.5 border-t border-line first:border-t-0 text-[12.5px]">
+            <span className="text-ink-2">{g.brand}{g.group ? ` · ${g.group}` : ""}</span>
+            <span className="text-muted tabular-nums whitespace-nowrap">{many(g.lines, "style", "styles")} · <span className="text-ink font-medium">{n0(g.pairs)}</span> pairs</span>
+          </div>
+        ))}
+      </div>}
+
+      {mism.length > 0 && <div className={`${WH_CARD} p-4 mt-4`}>
+        <div className="text-[13px] font-semibold text-ink">{offText(mism.length)}</div>
+        <p className="text-[12px] text-muted mt-0.5 mb-2">Boxes are counted by size, so the sizes are kept. Check these when they come off the truck.</p>
+        {mism.map((m) => (
           <div key={m.line_id} className="flex justify-between gap-3 py-1.5 border-t border-line text-[12.5px]">
             <span className="text-ink-2">{[m.style, m.color].filter(Boolean).join(" ")} <span className="text-muted">· {m.source}</span></span>
             <span className="text-muted tabular-nums whitespace-nowrap">sizes {n0(m.sizes)}, Total {n0(m.total)}</span>
           </div>
         ))}
       </div>}
-      {read.warnings.length > 0 && <div className={`${WH_CARD} p-4 mt-4`}>
+      {otherWarnings.length > 0 && <div className={`${WH_CARD} p-4 mt-4`}>
         <div className="text-[13px] font-semibold text-ink mb-1">Left out</div>
-        {read.warnings.map((w, k) => <p key={k} className="text-[12px] text-muted">{w}</p>)}
+        {otherWarnings.map((w, k) => <p key={k} className="text-[12px] text-muted">{w}</p>)}
       </div>}
-
-      <div className="flex gap-2 mt-5">
-        <button onClick={save} disabled={busy || !read.lines.length || !name.trim()} className={WH_BTN_PRIMARY}>Save delivery</button>
-        <button onClick={onCancel} className={WH_BTN_SECONDARY}>Cancel</button>
-      </div>
     </div>
   );
 }
@@ -191,6 +333,34 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
   const setDraft = (x: Draft | null) => { setDraftRaw(x); setEditing(!!x); };
   const live = !L.archived;
   const nextPallet = pallets.reduce((a, p) => Math.max(a, p.pallet), 0) + 1;
+
+  // R-537: the sheet's pictures. Fetch the ones this computer lacks (a phone added them), then
+  // show them; Add pictures from the sheet puts them on a delivery saved without.
+  const base = useMediaBase();
+  const [picV, setPicV] = useState(0);
+  const [big, setBig] = useState<LoadLine | null>(null);
+  const picCount = useMemo(() => lines.filter((l) => l.image).length, [lines]);
+  useEffect(() => {
+    if (!picCount) return;
+    let alive = true;
+    api.ensureDeliveryPictures(L.id).then((n) => { if (alive && n > 0) setPicV((v) => v + 1); }).catch(() => {});
+    return () => { alive = false; };
+  }, [L.id, picCount]);
+  const pic = useMemo(() => ({ base, v: picV, show: setBig }), [base, picV]);
+  const [picBusy, setPicBusy] = useState(false);
+  const addPictures = async () => {
+    const f = await openDialog({ multiple: false, filters: [{ name: "Manifest with pictures", extensions: ["xlsx", "xlsm"] }] });
+    if (typeof f !== "string") return;
+    setPicBusy(true);
+    try {
+      const r = await api.addLoadPictures(L.id, f);
+      merge(r); setPicV((v) => v + 1);
+      const p = r.pictures;
+      if (!p.on_lines) toast("No picture in that file sits beside a style on this delivery.", "error");
+      else toast(`Pictures on ${many(p.on_lines, "style", "styles")}${p.not_on_delivery ? `. ${many(p.not_on_delivery, "picture is", "pictures are")} for styles not on this delivery` : ""}.`);
+    } catch (e) { toast(String(e), "error"); }
+    finally { setPicBusy(false); }
+  };
 
   const update = async (patch: { name?: string; archived?: boolean }) => {
     try { merge(await api.updateWarehouseLoad(L.id, patch)); return true; } catch (e) { toast(String(e), "error"); return false; }
@@ -251,7 +421,9 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
   const recentLocs = [...new Set([...pallets.map((p) => p.location).filter(Boolean), ...(d.recent_locations ?? [])])].filter((l) => l !== ps?.location).slice(0, 10);
 
   return (
+    <PicCtx.Provider value={pic}>
     <div>
+      {big && <PhotoView l={big} onClose={() => setBig(null)} />}
       <button onClick={onBack} className="inline-flex items-center gap-1 text-[12.5px] text-muted hover:text-ink-2 mb-3"><ArrowLeft size={13} /> Deliveries</button>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div className="min-w-0">
@@ -272,6 +444,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
           <Seg size="md" value={tab} onChange={setTab} options={[{ key: "pallets", label: "Pallets" }, { key: "check", label: "Against the manifest" }, { key: "sell", label: "Sell" }]} />
           {renaming == null && <button onClick={() => setRenaming(L.name)} className={WH_BTN_SECONDARY}>Rename</button>}
           {live && <button onClick={() => setAddingLine("")} className={WH_BTN_SECONDARY}>Add a style not on the manifest</button>}
+          {live && <button onClick={addPictures} disabled={picBusy} className={WH_BTN_SECONDARY} title="Choose the manifest file: each picture goes on the style on its row">{picBusy ? "Adding pictures…" : "Add pictures from the sheet"}</button>}
           {L.archived ? <button onClick={() => update({ archived: false })} className={WH_BTN_SECONDARY}>Bring it back</button>
             : sureRemove ? <>
               <button onClick={async () => { if (await update({ archived: true })) onBack(); }} className={WH_BTN_PRIMARY}>Remove it</button>
@@ -376,6 +549,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
         </div>
       )}
     </div>
+    </PicCtx.Provider>
   );
 }
 
@@ -424,7 +598,7 @@ function CaseEditor({ draft, setDraft, lines, idx, counts, cases, saved, onSave,
           return (
             <div key={b.line_id} className="rounded-lg border border-line p-3">
               <div className="flex justify-between gap-3">
-                <div className="min-w-0"><div className="text-[13px] font-semibold text-ink">{lineTitle(l)}</div><div className="text-[12px] text-muted truncate">{[l.brand, l.group, lineDesc(l)].filter(Boolean).join(" · ")}</div></div>
+                <div className="min-w-0 flex items-center gap-3"><Thumb l={l} size={64} zoom /><div className="min-w-0"><div className="text-[13px] font-semibold text-ink">{lineTitle(l)}</div><div className="text-[12px] text-muted truncate">{[l.brand, l.group, lineDesc(l)].filter(Boolean).join(" · ")}</div></div></div>
                 <button onClick={() => setDraft({ ...draft, blocks: draft.blocks.filter((_, i) => i !== k) })} className="text-muted hover:text-ink-2 h-7 w-7 grid place-items-center" aria-label="Take this style out of the case"><X size={14} /></button>
               </div>
               <div className="flex flex-wrap gap-2 mt-2">
@@ -447,10 +621,10 @@ function CaseEditor({ draft, setDraft, lines, idx, counts, cases, saved, onSave,
       <div className="relative mt-3 max-w-[560px]">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={draft.blocks.length ? "Another style: type a style, colour or name" : (draft.kind === "loose" ? "What is loose on the pallet" : "What is in the box") + ": type a style, colour or name"} style={WH_INPUT_BG} className={`${WH_INPUT} pl-9`} />
-        {q.trim() && <div className={`${WH_CARD} absolute z-10 left-0 right-0 mt-1 max-h-[320px] overflow-auto shadow-[0_8px_24px_rgba(0,0,0,0.12)]`}>
+        {q.trim() && <div className={`${WH_CARD} absolute z-10 left-0 right-0 mt-1 max-h-[420px] overflow-auto shadow-[0_8px_24px_rgba(0,0,0,0.12)]`}>
           {hits.map((l) => (
-            <button key={l.id} onClick={() => add(l.id)} className="w-full text-left px-3 py-2 hover:bg-surface-2 border-b border-line last:border-b-0 flex justify-between gap-3">
-              <span className="min-w-0"><span className="text-[13px] font-medium text-ink">{lineTitle(l)}</span><span className="block text-[12px] text-muted truncate">{[l.brand, l.group, lineDesc(l)].filter(Boolean).join(" · ")}</span></span>
+            <button key={l.id} onClick={() => add(l.id)} className="w-full text-left px-3 py-2 hover:bg-surface-2 border-b border-line last:border-b-0 flex items-center justify-between gap-3">
+              <span className="min-w-0 flex items-center gap-3"><Thumb l={l} size={44} /><span className="min-w-0"><span className="text-[13px] font-medium text-ink">{lineTitle(l)}</span><span className="block text-[12px] text-muted truncate">{[l.brand, l.group, lineDesc(l)].filter(Boolean).join(" · ")}</span></span></span>
               <span className="text-[12px] text-muted tabular-nums whitespace-nowrap">{n0(counts[l.id]?.received ?? 0)} of {n0(l.sizes.reduce((a, s) => a + s.qty, 0))}</span>
             </button>
           ))}
@@ -539,6 +713,7 @@ function CheckView({ lines, counts, totals: T, pallets }: { lines: LoadLine[]; c
               {showHead && <div className="px-4 py-2 text-[12px] font-semibold text-ink-2 bg-surface-2 border-b border-line">{h}</div>}
               <button onClick={() => setOpenLine(open ? null : l.id)} className="w-full text-left px-4 py-2.5 border-b border-line hover:bg-surface-2/60 transition-colors">
                 <div className="flex items-center gap-3">
+                  <Thumb l={l} size={36} />
                   <div className="min-w-0 flex-1">
                     <span className="text-[13px] font-medium text-ink">{lineTitle(l)}</span>
                     <span className="text-[12px] text-muted"> {lineDesc(l)}{c.pallets.length ? ` · ${palletNames(c.pallets, pallets)}` : ""}</span>
@@ -551,7 +726,8 @@ function CheckView({ lines, counts, totals: T, pallets }: { lines: LoadLine[]; c
                       : <StatusPill tone="success">All in</StatusPill>}
                   </span>
                 </div>
-                {open && <div className="flex flex-wrap gap-1.5 mt-2">
+                {open && <div className="flex flex-wrap items-start gap-1.5 mt-2">
+                  <Thumb l={l} size={120} zoom />
                   {c.sizes.filter((z) => z.expected || z.received).map((z) => (
                     <span key={z.size} className={`w-[64px] rounded-md px-1 py-1 text-center bg-surface-2 ${z.received < z.expected ? "ring-1 ring-warning/50" : z.received > z.expected ? "ring-1 ring-accent/50" : ""}`}>
                       <span className="block text-[11px] text-muted">{z.size}</span>
@@ -777,6 +953,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
               )}
               <div className="px-4 py-2.5 border-b border-line">
                 <button onClick={() => setOpenLine(open ? null : l.id)} className="w-full text-left flex items-center gap-3">
+                  <Thumb l={l} size={36} />
                   <div className="min-w-0 flex-1">
                     <span className="text-[13px] font-medium text-ink">{lineTitle(l)}</span>
                     <span className="text-[12px] text-muted"> {lineDesc(l)}{ll?.pallets.length ? ` · ${palletNames(ll.pallets, d.pallets ?? [])}` : ""}</span>
@@ -786,7 +963,8 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
                 </button>
                 {open && ll && (
                   <div className="mt-2">
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-start gap-2">
+                      <Thumb l={l} size={120} zoom />
                       {ll.sizes.filter((z) => z.left > 0 || (pick[l.id]?.[z.size] ?? 0) > 0).map((z) => (
                         <label key={z.size} className="w-[76px] text-center">
                           <span className="block text-[12px] font-medium text-ink-2">{z.size}</span>

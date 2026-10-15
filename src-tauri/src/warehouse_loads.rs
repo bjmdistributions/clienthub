@@ -838,4 +838,34 @@ mod tests {
         let d = start_load_pallet(id.clone()).await.unwrap();
         assert_eq!(d.pallets.iter().map(|p| p.pallet).collect::<Vec<_>>(), vec![1, 2, 3]);
     }
+
+    /// R-537 on the real sheet, read locally only: `R519_SHEET=path cargo test real_sheet_pictures
+    /// -- --ignored`. A delivery saved from it takes every picture onto its own style, in the synced
+    /// media folder and the upload queue; reading the file again changes nothing.
+    #[tokio::test]
+    #[ignore]
+    async fn real_sheet_pictures() {
+        let _db = crate::db::init_test_store();
+        let path = std::env::var("R519_SHEET").expect("R519_SHEET");
+        let read = read_load_manifest(path.clone()).await.unwrap();
+        let lines: Vec<LoadLine> = serde_json::from_value(read["lines"].clone()).unwrap();
+        let n = lines.len();
+        let id = create_warehouse_load("Truck".into(), "shoes.xlsx".into(), lines).await.unwrap().load.id;
+        let v = add_load_pictures(id.clone(), path.clone()).await.unwrap();
+        assert_eq!(v["pictures"]["on_lines"], json!(n));
+        assert_eq!(v["pictures"]["not_on_delivery"], json!(0));
+        let saved = get_warehouse_load(id.clone()).await.unwrap().load.lines.unwrap();
+        let base = crate::db::app_data_dir().join("sync");
+        assert!(saved.iter().all(|l| l.image == format!("media/deliveries/{id}/{}.jpg", l.id) && base.join(&l.image).exists()));
+        let queued: i64 = pool()
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM netsync_media_outbound WHERE kind = 'delivery' AND lot_id = ?1", [&id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(queued as usize, n);
+        let v = add_load_pictures(id.clone(), path).await.unwrap();
+        assert_eq!(v["pictures"]["on_lines"], json!(n));
+        assert_eq!(get_warehouse_load(id).await.unwrap().load.lines.unwrap(), saved);
+        println!("{n} lines, every one with its picture on disk and queued");
+    }
 }

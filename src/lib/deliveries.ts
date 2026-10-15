@@ -7,6 +7,8 @@ export type SizeQty = { size: string; qty: number };
 export type LoadLine = {
   id: string; brand: string; group: string; style: string; color: string; description: string; color_name: string;
   cost: number; msrp: number; sizes: SizeQty[]; sheet_total: number; source: string;
+  /** R-537: the tab it was read from, and its picture from the sheet ("media/deliveries/<load>/<line>.jpg"). */
+  sheet?: string; image?: string;
 };
 export type CaseLine = { line_id: string; size: string; pairs: number };
 /** A box, or (kind "loose", number 0) items on the pallet with no box (R-535). */
@@ -24,15 +26,57 @@ export type LoadDetail = {
   pallets: PalletView[]; recent_locations: string[];
 };
 export type LoadSummary = Omit<LoadHead, "lines"> & { totals: LoadTotals };
+/**
+ * One tab of a manifest as read (R-537). `kind`: "items" (styles to import), "totals" (a totals
+ * page: never imported, only checks the count), "copy" (every style is also on the other pages:
+ * a master list, left out unless turned on) or "other". `layout`: how its sizes are named.
+ */
+export type TabRead = {
+  name: string; read: boolean; lines: number; pairs: number; note: string;
+  kind?: string; layout?: string; samples?: string[]; mismatches?: number; pictures?: number; warnings?: string[];
+};
+export type GroupCount = { brand: string; group: string; lines: number; pairs: number };
 export type ManifestRead = {
   lines: LoadLine[];
-  tabs: { name: string; read: boolean; lines: number; pairs: number; note: string }[];
-  groups: { brand: string; group: string; lines: number; pairs: number }[];
+  tabs: TabRead[];
+  groups: GroupCount[];
   mismatches: { line_id: string; source: string; style: string; color: string; sizes: number; total: number }[];
   warnings: string[];
   stated: { tab: string; lines: number | null; pairs: number } | null;
   pairs: number;
+  /** R-537: pictures matched to a style, pictures left out, and the sample lines' pictures as data: URLs. */
+  pictures?: number; pictures_left_out?: number; previews?: Record<string, string>;
 };
+/** What putting a sheet's pictures on a delivery did (R-537). */
+export type PicturesAdded = { on_lines: number; not_on_delivery: number; left_out: number };
+
+export const tabKind = (t: TabRead) => t.kind ?? (t.read ? "items" : "other");
+/** The tabs a new delivery takes at first: every page of styles, never a totals page or a copy. */
+export const defaultTabs = (read: ManifestRead) => new Set(read.tabs.filter((t) => tabKind(t) === "items").map((t) => t.name));
+/** The lines of the chosen tabs. A line with no tab (read before R-537) is always kept. */
+export const linesOfTabs = (read: ManifestRead, on: Set<string>) => read.lines.filter((l) => !l.sheet || on.has(l.sheet));
+/** How a tab names its sizes, said plainly. */
+export function layoutText(layout: string | undefined): string {
+  if (layout === "above") return "Sizes are on a row above the styles, so each style keeps its own sizes.";
+  if (layout === "heading") return "Sizes are across the top of the page.";
+  if (layout === "column") return "One size a row, gathered into one line for each style and colour.";
+  return "";
+}
+/** "8 rows have Totals that do not match their sizes" */
+export const offText = (n: number) => (n === 1 ? "1 row has a Total that does not match its sizes" : `${n.toLocaleString("en-US")} rows have Totals that do not match their sizes`);
+/** "5 × 20 · 6 × 24": the sizes the manifest lists for a line. */
+export const sizesText = (l: LoadLine) => l.sizes.filter((s) => s.qty > 0).map((s) => `${s.size} × ${s.qty}`).join(" · ");
+export const lineQty = (l: LoadLine) => l.sizes.reduce((a, s) => a + Math.max(0, s.qty), 0);
+/** Lines and pairs by brand and group, in the order they first appear (case_core::group_counts). */
+export function groupsOf(lines: LoadLine[]): GroupCount[] {
+  const out: GroupCount[] = [];
+  for (const l of lines) {
+    let g = out.find((x) => x.brand === l.brand && x.group === l.group);
+    if (!g) { g = { brand: l.brand, group: l.group, lines: 0, pairs: 0 }; out.push(g); }
+    g.lines += 1; g.pairs += lineQty(l);
+  }
+  return out;
+}
 export type NewLine = { brand: string; group: string; style: string; color: string; description: string; cost: number; msrp: number; sizes: string };
 
 /** "CK2316 CNT" */

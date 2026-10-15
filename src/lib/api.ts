@@ -4,7 +4,7 @@ import { queryText } from "./logisticsCarriers";
 import { bolPdfPath } from "./logisticsBols";
 import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
 import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, PalletSpec, WarehousePallet } from "./palletFit";
-import type { CaseLine, LoadDetail, LoadLine, LoadSummary, ManifestRead, NewLine } from "./deliveries";
+import type { CaseLine, LoadDetail, LoadLine, LoadSummary, ManifestRead, NewLine, PicturesAdded } from "./deliveries";
 
 // R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
 // are server-proxied and don't exist until Pass 2. Every wrapper below routes
@@ -3933,6 +3933,10 @@ export const api = {
   // R-519: a delivery read from its manifest, and the cases received onto its pallets (case_core.rs)
   listWarehouseLoads: () => invoke<LoadSummary[]>("list_warehouse_loads"),
   readLoadManifest: (path: string) => invoke<ManifestRead>("read_load_manifest", { path }),
+  /** R-537: put a sheet's pictures on a saved delivery (same row and style, never a guess). */
+  addLoadPictures: (loadId: string, path: string) => invoke<LoadDetail & { pictures: PicturesAdded }>("add_load_pictures", { loadId, path }),
+  /** R-537: fetch the delivery's pictures this computer does not have yet; answers how many arrived. */
+  ensureDeliveryPictures: (loadId: string) => invoke<number>("ensure_delivery_pictures", { loadId }),
   getWarehouseLoad: (id: string) => invoke<LoadDetail>("get_warehouse_load", { id }),
   createWarehouseLoad: (name: string, source: string, lines: LoadLine[]) => invoke<LoadDetail>("create_warehouse_load", { name, source, lines }),
   updateWarehouseLoad: (id: string, patch: { name?: string; notes?: string; archived?: boolean }) =>

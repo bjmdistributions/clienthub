@@ -498,12 +498,12 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
                 if !per_row && !grid.is_empty() && grid.len() == filled.len() {
                     if is_size_row(&grid) {
                         let twice = repeated_sizes(&grid);
-                        if !twice.is_empty() {
+                        if let Some((last, rest)) = twice.split_last() {
+                            let named = if rest.is_empty() { format!("size {last} is") } else { format!("sizes {} and {last} are each", rest.join(", ")) };
                             warnings.push(format!(
-                                "{} row {}: size {} is named twice in this row of sizes, so the pairs under both count as that one size. If one should be a half size, fix the sheet and read it again.",
+                                "{} row {}: {named} named twice in this row of sizes, so the pairs under both count as that one size. If one should be a half size, fix the sheet and read it again.",
                                 tab.name,
-                                r + 1,
-                                twice.join(", ")
+                                r + 1
                             ));
                         }
                         scale = grid;
