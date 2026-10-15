@@ -3939,8 +3939,13 @@ export const api = {
     invoke<LoadDetail>("update_warehouse_load", { id, name: patch.name ?? null, notes: patch.notes ?? null, archived: patch.archived ?? null }),
   addWarehouseLoadLine: (id: string, line: NewLine) => invoke<LoadDetail>("add_warehouse_load_line", { id, line }),
   /** A new case (with `copies` identical ones), or a change to one saved when caseId is given. Answers without the lines. */
-  saveWarehouseCase: (loadId: string, c: { caseId?: string | null; pallet: number; contents: CaseLine[]; notes?: string; copies?: number }) =>
-    invoke<LoadDetail>("save_warehouse_case", { loadId, caseId: c.caseId ?? null, pallet: c.pallet, contents: c.contents, notes: c.notes ?? null, copies: c.copies ?? null }),
+  saveWarehouseCase: (loadId: string, c: { caseId?: string | null; pallet: number; contents: CaseLine[]; notes?: string; copies?: number; kind?: "box" | "loose" }) =>
+    invoke<LoadDetail>("save_warehouse_case", { loadId, caseId: c.caseId ?? null, pallet: c.pallet, contents: c.contents, notes: c.notes ?? null, copies: c.copies ?? null, kind: c.kind ?? null }),
+  /** R-535: start the next pallet, empty. */
+  startLoadPallet: (loadId: string) => invoke<LoadDetail>("start_load_pallet", { loadId }),
+  /** R-535: where a pallet stands, its note, full or not; startNext also starts the next pallet. */
+  saveLoadPallet: (loadId: string, number: number, patch: { location?: string; note?: string; closed?: boolean; startNext?: boolean }) =>
+    invoke<LoadDetail>("save_load_pallet", { loadId, number, location: patch.location ?? null, note: patch.note ?? null, closed: patch.closed ?? null, startNext: patch.startNext ?? null }),
   removeWarehouseCase: (loadId: string, caseId: string) => invoke<LoadDetail>("remove_warehouse_case", { loadId, caseId }),
   /** R-519 phase 2: an invoice's pairs leave the delivery (one out per invoice, so a retry takes nothing twice). */
   takeLoadPairs: (loadId: string, o: { invoiceId?: string; reference?: string; note?: string; takes: CaseLine[] }) =>

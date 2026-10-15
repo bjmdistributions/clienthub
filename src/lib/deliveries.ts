@@ -9,7 +9,10 @@ export type LoadLine = {
   cost: number; msrp: number; sizes: SizeQty[]; sheet_total: number; source: string;
 };
 export type CaseLine = { line_id: string; size: string; pairs: number };
-export type WhCase = { id: string; pallet: number; number: number; contents: CaseLine[]; notes: string; created_at: string; updated_at: string };
+/** A box, or (kind "loose", number 0) items on the pallet with no box (R-535). */
+export type WhCase = { id: string; pallet: number; number: number; contents: CaseLine[]; notes: string; created_at: string; updated_at: string; kind?: string };
+/** A pallet as the screens show it: its record (where it stands, full or not) and what is on it (R-535). */
+export type PalletView = { pallet: number; location: string; closed: boolean; note: string; recorded: boolean; boxes: number; loose: number; pairs: number; styles: number; cost: number; msrp: number };
 export type SizeCount = { size: string; expected: number; received: number };
 export type LineCount = { line_id: string; sizes: SizeCount[]; expected: number; received: number; pallets: number[] };
 export type PalletSum = { pallet: number; cases: number; pairs: number; styles: number; cost: number; msrp: number };
@@ -18,6 +21,7 @@ export type LoadHead = { id: string; name: string; source: string; notes: string
 export type LoadDetail = {
   load: LoadHead; cases: WhCase[]; tally: { counts: LineCount[]; pallets: PalletSum[]; totals: LoadTotals };
   outs: LoadOut[]; stock: Stock; short?: TakeShort[];
+  pallets: PalletView[]; recent_locations: string[];
 };
 export type LoadSummary = Omit<LoadHead, "lines"> & { totals: LoadTotals };
 export type ManifestRead = {
@@ -106,3 +110,18 @@ export const bucketName = (b: Bucket) => [b.brand, b.group].filter(Boolean).join
 export const bucketLine = (b: Bucket) => `${bucketName(b)}, ${b.styles} ${b.styles === 1 ? "style" : "styles"}`;
 /** A rate from a percent of the bucket's average MSRP, to the cent. */
 export const pctRate = (b: Bucket, pct: number) => (b.pairs > 0 ? Math.round((b.msrp / b.pairs) * pct) / 100 : 0);
+
+/** "pallet 2 at A2, pallet 5" for the pallets a style stands on (R-535). */
+export function palletNames(ns: number[], pallets: PalletView[]): string {
+  if (!ns.length) return "";
+  return (ns.length === 1 ? "pallet " : "pallets ") + ns.map((n) => { const p = pallets.find((x) => x.pallet === n); return p?.location ? `${n} at ${p.location}` : String(n); }).join(", ");
+}
+/** "1 box · 2 loose · 2 styles · $51.00 cost", or "Empty". */
+export function palletMeta(p: PalletView, money: (n: number) => string): string {
+  const parts: string[] = [];
+  if (p.boxes) parts.push(`${p.boxes} ${p.boxes === 1 ? "box" : "boxes"}`);
+  if (p.loose) parts.push(`${p.loose} loose`);
+  if (p.styles) parts.push(`${p.styles} ${p.styles === 1 ? "style" : "styles"}`);
+  if (p.pairs) parts.push(`${money(p.cost)} cost`);
+  return parts.join(" · ") || "Empty";
+}

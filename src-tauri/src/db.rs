@@ -2518,4 +2518,29 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_warehouse_load_outs_load ON warehouse_load_outs(load_id);
         "#,
     ),
+    (
+        116,
+        // R-535: a delivery's pallets as records (where each stands, full or not), one row per pallet,
+        // id pal-load_id-number so two devices starting one pallet write one row, and a delivery row
+        // that is loose items on a pallet rather than a box (kind loose, number 0). Synced (sync.rs
+        // ALLOWED_TABLES, netsync SNAPSHOT_TABLES) and mirrored in clienthub-api schema.sql and its
+        // sync.rs ALTER list, which must be deployed first. Never put a semicolon inside a comment
+        // here, the runner splits on it.
+        r#"
+        CREATE TABLE IF NOT EXISTS warehouse_load_pallets (
+            id TEXT PRIMARY KEY,
+            load_id TEXT NOT NULL,
+            number INTEGER NOT NULL DEFAULT 1,
+            location TEXT DEFAULT '',
+            closed INTEGER DEFAULT 0,
+            note TEXT DEFAULT '',
+            archived INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_warehouse_load_pallets_load ON warehouse_load_pallets(load_id);
+        ALTER TABLE warehouse_cases ADD COLUMN kind TEXT DEFAULT 'box';
+        "#,
+    ),
 ];

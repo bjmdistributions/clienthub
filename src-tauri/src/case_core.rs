@@ -91,6 +91,16 @@ pub struct Case {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
+    /// "" or "box" for a box; "loose" for items on the pallet with no box (R-535). A loose row
+    /// has number 0 and never takes a box number. Its pairs count like any box's.
+    #[serde(default)]
+    pub kind: String,
+}
+
+impl Case {
+    pub fn is_loose(&self) -> bool {
+        self.kind == "loose"
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -564,7 +574,94 @@ pub fn clean_contents(lines: &[LoadLine], contents: &[CaseLine]) -> Result<Vec<C
 /// The next case number on a pallet (one more than the highest there), leaving out one case
 /// (the one being moved).
 pub fn next_number(cases: &[Case], pallet: i64, skip_id: &str) -> i64 {
-    cases.iter().filter(|c| c.pallet == pallet && c.id != skip_id).map(|c| c.number).max().unwrap_or(0) + 1
+    cases.iter().filter(|c| c.pallet == pallet && c.id != skip_id && !c.is_loose()).map(|c| c.number).max().unwrap_or(0) + 1
+}
+
+// ---------------------------------------------------------------------------------------
+// Pallets as records (R-535): a pallet can stand empty, has a location, and can be marked full
+// ---------------------------------------------------------------------------------------
+//
+// A pallet record (`warehouse_load_pallets`, one row per pallet, id `pal-<load_id>-<number>` so
+// two devices starting the same pallet write one row) carries what the boxes cannot: where it
+// stands and whether it is full. A pallet number with boxes and no record is still a pallet; it
+// shows with no location until one is set.
+
+pub const MAX_LOCATION: usize = 40;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PalletRecord {
+    pub id: String,
+    #[serde(default)]
+    pub number: i64,
+    #[serde(default)]
+    pub location: String,
+    #[serde(default)]
+    pub closed: bool,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+pub fn pallet_id(load_id: &str, number: i64) -> String {
+    format!("pal-{load_id}-{number}")
+}
+
+/// A location as stored: one line, trimmed, at most 40 characters.
+pub fn clean_location(s: &str) -> String {
+    one_line(s).chars().take(MAX_LOCATION).collect()
+}
+
+/// One pallet as the screens show it: its record (when there is one) and what is on it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PalletView {
+    pub pallet: i64,
+    pub location: String,
+    pub closed: bool,
+    pub note: String,
+    /// False for a pallet known only through its boxes (no record yet).
+    pub recorded: bool,
+    pub boxes: usize,
+    /// Pairs on the pallet with no box.
+    pub loose: i64,
+    pub pairs: i64,
+    pub styles: usize,
+    pub cost: f64,
+    pub msrp: f64,
+}
+
+/// Every pallet, recorded or known through its boxes, lowest number first.
+pub fn pallet_views(records: &[PalletRecord], sums: &[PalletSum]) -> Vec<PalletView> {
+    let mut numbers: Vec<i64> = records.iter().map(|r| r.number).chain(sums.iter().map(|s| s.pallet)).collect();
+    numbers.sort();
+    numbers.dedup();
+    numbers
+        .into_iter()
+        .map(|n| {
+            let r = records.iter().find(|r| r.number == n);
+            let s = sums.iter().find(|s| s.pallet == n);
+            PalletView {
+                pallet: n,
+                location: r.map(|r| r.location.clone()).unwrap_or_default(),
+                closed: r.map(|r| r.closed).unwrap_or(false),
+                note: r.map(|r| r.note.clone()).unwrap_or_default(),
+                recorded: r.is_some(),
+                boxes: s.map(|s| s.cases).unwrap_or(0),
+                loose: s.map(|s| s.loose).unwrap_or(0),
+                pairs: s.map(|s| s.pairs).unwrap_or(0),
+                styles: s.map(|s| s.styles).unwrap_or(0),
+                cost: s.map(|s| s.cost).unwrap_or(0.0),
+                msrp: s.map(|s| s.msrp).unwrap_or(0.0),
+            }
+        })
+        .collect()
+}
+
+/// The next pallet number: one more than any recorded or any with boxes on it.
+pub fn next_pallet(records: &[PalletRecord], cases: &[Case]) -> i64 {
+    records.iter().map(|r| r.number).chain(cases.iter().map(|c| c.pallet)).max().unwrap_or(0) + 1
 }
 
 // ---------------------------------------------------------------------------------------
@@ -591,8 +688,11 @@ pub struct LineCount {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PalletSum {
     pub pallet: i64,
+    /// Boxes on the pallet (loose rows are not boxes).
     pub cases: usize,
     pub pairs: i64,
+    /// Pairs on the pallet with no box (R-535).
+    pub loose: i64,
     pub styles: usize,
     pub cost: f64,
     pub msrp: f64,
@@ -626,8 +726,10 @@ pub fn tally(lines: &[LoadLine], cases: &[Case]) -> Tally {
     let mut on: Vec<Vec<i64>> = vec![Vec::new(); lines.len()];
     let mut pallets: BTreeMap<i64, (PalletSum, Vec<usize>)> = BTreeMap::new();
     for c in cases {
-        let p = pallets.entry(c.pallet).or_insert((PalletSum { pallet: c.pallet, cases: 0, pairs: 0, styles: 0, cost: 0.0, msrp: 0.0 }, Vec::new()));
-        p.0.cases += 1;
+        let p = pallets.entry(c.pallet).or_insert((PalletSum { pallet: c.pallet, cases: 0, pairs: 0, loose: 0, styles: 0, cost: 0.0, msrp: 0.0 }, Vec::new()));
+        if !c.is_loose() {
+            p.0.cases += 1;
+        }
         for x in &c.contents {
             let k = match idx.get(x.line_id.as_str()) {
                 Some(k) => *k,
@@ -638,6 +740,9 @@ pub fn tally(lines: &[LoadLine], cases: &[Case]) -> Tally {
                 on[k].push(c.pallet);
             }
             p.0.pairs += x.pairs;
+            if c.is_loose() {
+                p.0.loose += x.pairs;
+            }
             p.0.cost += x.pairs as f64 * lines[k].cost;
             p.0.msrp += x.pairs as f64 * lines[k].msrp;
             if !p.1.contains(&k) {
@@ -645,7 +750,7 @@ pub fn tally(lines: &[LoadLine], cases: &[Case]) -> Tally {
             }
         }
     }
-    let mut totals = Totals { lines: lines.len(), cases: cases.len(), pallets: pallets.len(), ..Default::default() };
+    let mut totals = Totals { lines: lines.len(), cases: cases.iter().filter(|c| !c.is_loose()).count(), pallets: pallets.len(), ..Default::default() };
     let counts: Vec<LineCount> = lines
         .iter()
         .enumerate()
@@ -1080,6 +1185,43 @@ mod tests {
         after[0].contents[0].pairs = 3;
         assert!(newly_oversold(&lines, &before, &after, &outs).is_empty());
         assert_eq!(newly_oversold(&lines, &before, &[], &outs).len(), 1);
+    }
+
+    #[test]
+    fn loose_items_count_as_pairs_not_boxes_and_take_no_box_number() {
+        let lines = read_manifest(&sample()).lines;
+        let a = lines[0].id.clone();
+        let cases = vec![
+            Case { id: "b1".into(), pallet: 2, number: 1, contents: vec![cl(&a, "S", 4)], ..Default::default() },
+            Case { id: "l1".into(), pallet: 2, number: 0, kind: "loose".into(), contents: vec![cl(&a, "M", 3)], ..Default::default() },
+        ];
+        let t = tally(&lines, &cases);
+        assert_eq!((t.totals.cases, t.totals.received), (1, 7));
+        assert_eq!((t.pallets[0].cases, t.pallets[0].pairs, t.pallets[0].loose), (1, 7, 3));
+        assert_eq!(next_number(&cases, 2, ""), 2);
+        // Selling counts loose pairs like any box's.
+        assert_eq!(stock(&lines, &cases, &[]).left, 7);
+    }
+
+    #[test]
+    fn pallets_are_records_or_known_through_their_boxes() {
+        let lines = read_manifest(&sample()).lines;
+        let a = lines[0].id.clone();
+        let cases = vec![Case { id: "b1".into(), pallet: 3, number: 1, contents: vec![cl(&a, "S", 4)], ..Default::default() }];
+        let records = vec![
+            PalletRecord { id: pallet_id("L", 1), number: 1, location: "Dock door".into(), ..Default::default() },
+            PalletRecord { id: pallet_id("L", 3), number: 3, location: "A2".into(), closed: true, ..Default::default() },
+        ];
+        let v = pallet_views(&records, &tally(&lines, &cases).pallets);
+        assert_eq!(v.iter().map(|p| (p.pallet, p.location.as_str(), p.recorded, p.closed, p.pairs)).collect::<Vec<_>>(),
+            vec![(1, "Dock door", true, false, 0), (3, "A2", true, true, 4)]);
+        let v2 = pallet_views(&[], &tally(&lines, &cases).pallets);
+        assert_eq!((v2[0].pallet, v2[0].recorded, v2[0].location.as_str()), (3, false, ""));
+        assert_eq!(next_pallet(&records, &cases), 4);
+        assert_eq!(next_pallet(&[], &[]), 1);
+        assert_eq!(pallet_id("L", 7), "pal-L-7");
+        assert_eq!(clean_location("  Row  B,\n spot 4 "), "Row B, spot 4");
+        assert_eq!(clean_location(&"x".repeat(60)).chars().count(), MAX_LOCATION);
     }
 
     #[test]

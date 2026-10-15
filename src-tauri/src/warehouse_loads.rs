@@ -6,7 +6,7 @@
 //! the server (clienthub-api `routes/case_core.rs`, behind `routes/warehouse_loads.rs`): this
 //! file is only storage, sync and the Tauri commands. Removed rows are archived, never deleted.
 
-use crate::case_core::{self as core, Case, CaseLine, LoadLine, ManifestRead, Out, Stock, Tally, TakeShort, Totals};
+use crate::case_core::{self as core, Case, CaseLine, LoadLine, ManifestRead, Out, PalletRecord, PalletView, Stock, Tally, TakeShort, Totals};
 use crate::db::pool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -14,6 +14,7 @@ use serde_json::{json, Map, Value};
 const LOADS: &str = "warehouse_loads";
 const CASES: &str = "warehouse_cases";
 const OUTS: &str = "warehouse_load_outs";
+const PALLETS: &str = "warehouse_load_pallets";
 
 #[derive(Debug, Serialize)]
 pub struct LoadHead {
@@ -41,6 +42,10 @@ pub struct LoadDetail {
     /// What a take could not take (set by `take_load_pairs` only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short: Option<Vec<TakeShort>>,
+    /// Every pallet, recorded or known through its boxes (R-535).
+    pub pallets: Vec<PalletView>,
+    /// Locations used most recently on any delivery, for the quick choices.
+    pub recent_locations: Vec<String>,
 }
 
 /// An out as the screen sees it: the row, plus its invoice's state ("live", "voided",
@@ -96,7 +101,7 @@ fn load(conn: &rusqlite::Connection, id: &str) -> Result<LoadRow, String> {
 fn cases(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Case>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, COALESCE(pallet,1), COALESCE(number,1), COALESCE(contents_json,'[]'), COALESCE(notes,''), created_at, updated_at \
+            "SELECT id, COALESCE(pallet,1), COALESCE(number,1), COALESCE(contents_json,'[]'), COALESCE(notes,''), created_at, updated_at, COALESCE(kind,'box') \
              FROM warehouse_cases WHERE load_id = ?1 AND COALESCE(archived,0) = 0 ORDER BY pallet, number, created_at",
         )
         .map_err(|e| e.to_string())?;
@@ -111,10 +116,65 @@ fn cases(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Case>, String
                 notes: r.get(4)?,
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
+                kind: r.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// A delivery's pallet records (R-535), not removed ones.
+fn pallet_records(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<PalletRecord>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, COALESCE(number,0), COALESCE(location,''), COALESCE(closed,0), COALESCE(note,''), created_at, updated_at \
+             FROM warehouse_load_pallets WHERE load_id = ?1 AND COALESCE(archived,0) = 0 ORDER BY number",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([load_id], |r| {
+            Ok(PalletRecord {
+                id: r.get(0)?,
+                number: r.get(1)?,
+                location: r.get(2)?,
+                closed: r.get::<_, i64>(3)? != 0,
+                note: r.get(4)?,
+                created_at: r.get(5)?,
+                updated_at: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// The locations used most recently on any delivery, for the quick choices beside the field.
+fn recent_locations(conn: &rusqlite::Connection) -> Vec<String> {
+    let mut stmt = match conn.prepare(
+        "SELECT location FROM warehouse_load_pallets WHERE COALESCE(location,'') <> '' AND COALESCE(archived,0) = 0 \
+         GROUP BY location ORDER BY MAX(updated_at) DESC LIMIT 12",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let out: Vec<String> = match stmt.query_map([], |r| r.get::<_, String>(0)) {
+        Ok(it) => it.filter_map(|r| r.ok()).collect(),
+        Err(_) => Vec::new(),
+    };
+    out
+}
+
+/// The columns of a new pallet record.
+fn pallet_cols(load_id: &str, number: i64, t: &str) -> Map<String, Value> {
+    let mut cols = Map::new();
+    cols.insert("load_id".into(), json!(load_id));
+    cols.insert("number".into(), json!(number));
+    cols.insert("location".into(), json!(""));
+    cols.insert("closed".into(), json!(0));
+    cols.insert("note".into(), json!(""));
+    cols.insert("archived".into(), json!(0));
+    cols.insert("created_at".into(), json!(t));
+    cols.insert("updated_at".into(), json!(t));
+    cols
 }
 
 fn outs(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Out>, String> {
@@ -179,7 +239,8 @@ fn detail(conn: &rusqlite::Connection, id: &str, with_lines: bool) -> Result<Loa
             OutRow { out: o, invoice_state }
         })
         .collect();
-    Ok(LoadDetail { load: head, cases: cs, tally, outs, stock, short: None })
+    let pallets = core::pallet_views(&pallet_records(conn, id)?, &tally.pallets);
+    Ok(LoadDetail { load: head, cases: cs, tally, outs, stock, short: None, pallets, recent_locations: recent_locations(conn) })
 }
 
 fn json_str<T: Serialize>(v: &T) -> Value {
@@ -275,6 +336,8 @@ pub async fn create_warehouse_load(name: String, source: String, lines: Vec<Load
     cols.insert("created_at".into(), json!(t));
     cols.insert("updated_at".into(), json!(t));
     write(&conn, LOADS, &id, cols, true)?;
+    // R-535: pallet 1 stands empty, ready for the truck.
+    write(&conn, PALLETS, &core::pallet_id(&id, 1), pallet_cols(&id, 1, &t), true)?;
     detail(&conn, &id, true)
 }
 
@@ -362,7 +425,7 @@ pub async fn add_warehouse_load_line(id: String, line: NewLine) -> Result<LoadDe
 
 /// Save a case: a new one (and as many identical copies as asked), or a change to one saved.
 #[tauri::command]
-pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, pallet: i64, contents: Vec<CaseLine>, notes: Option<String>, copies: Option<i64>) -> Result<LoadDetail, String> {
+pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, pallet: i64, contents: Vec<CaseLine>, notes: Option<String>, copies: Option<i64>, kind: Option<String>) -> Result<LoadDetail, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     if !(1..=999).contains(&pallet) {
         return Err("Pallet numbers run from 1 to 999.".into());
@@ -391,7 +454,7 @@ pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, palle
             let mut cols = Map::new();
             if old.pallet != pallet {
                 cols.insert("pallet".into(), json!(pallet));
-                cols.insert("number".into(), json!(core::next_number(&have, pallet, cid)));
+                cols.insert("number".into(), json!(if old.is_loose() { 0 } else { core::next_number(&have, pallet, cid) }));
             }
             cols.insert("contents_json".into(), json_str(&contents));
             cols.insert("notes".into(), json!(notes));
@@ -399,8 +462,10 @@ pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, palle
             write(&conn, CASES, cid, cols, false)?;
         }
         None => {
-            for _ in 0..copies {
-                let number = core::next_number(&have, pallet, "");
+            // R-535: loose items on the pallet are one row with no box number.
+            let loose = kind.as_deref() == Some("loose");
+            for _ in 0..(if loose { 1 } else { copies }) {
+                let number = if loose { 0 } else { core::next_number(&have, pallet, "") };
                 let cid = uuid::Uuid::new_v4().to_string();
                 let mut cols = Map::new();
                 cols.insert("load_id".into(), json!(load_id));
@@ -408,11 +473,12 @@ pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, palle
                 cols.insert("number".into(), json!(number));
                 cols.insert("contents_json".into(), json_str(&contents));
                 cols.insert("notes".into(), json!(notes));
+                cols.insert("kind".into(), json!(if loose { "loose" } else { "box" }));
                 cols.insert("archived".into(), json!(0));
                 cols.insert("created_at".into(), json!(t));
                 cols.insert("updated_at".into(), json!(t));
                 write(&conn, CASES, &cid, cols, true)?;
-                have.push(Case { id: cid, pallet, number, ..Default::default() });
+                have.push(Case { id: cid, pallet, number, kind: if loose { "loose".into() } else { "box".into() }, ..Default::default() });
             }
         }
     }
@@ -501,6 +567,58 @@ pub async fn undo_load_out(load_id: String, out_id: String) -> Result<LoadDetail
     detail(&conn, &load_id, false)
 }
 
+/// Start the next pallet, empty (R-535). Its number is one more than any pallet the delivery has.
+#[tauri::command]
+pub async fn start_load_pallet(load_id: String) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let l = load(&conn, &load_id)?;
+    if l.head.archived {
+        return Err("This delivery was removed. Bring it back first.".into());
+    }
+    let n = core::next_pallet(&pallet_records(&conn, &load_id)?, &cases(&conn, &load_id)?);
+    if n > 999 {
+        return Err("Pallet numbers run from 1 to 999.".into());
+    }
+    write(&conn, PALLETS, &core::pallet_id(&load_id, n), pallet_cols(&load_id, n, &now()), true)?;
+    detail(&conn, &load_id, false)
+}
+
+/// Where a pallet stands, its note, full or not (R-535). The record is made the first time any of
+/// them is set; "Pallet full" can also start the next pallet.
+#[tauri::command]
+pub async fn save_load_pallet(load_id: String, number: i64, location: Option<String>, note: Option<String>, closed: Option<bool>, start_next: Option<bool>) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    if !(1..=999).contains(&number) {
+        return Err("Pallet numbers run from 1 to 999.".into());
+    }
+    let l = load(&conn, &load_id)?;
+    if l.head.archived {
+        return Err("This delivery was removed. Bring it back first.".into());
+    }
+    let t = now();
+    let records = pallet_records(&conn, &load_id)?;
+    let exists = records.iter().any(|r| r.number == number);
+    let mut cols = if exists { Map::new() } else { pallet_cols(&load_id, number, &t) };
+    if let Some(loc) = location {
+        cols.insert("location".into(), json!(core::clean_location(&loc)));
+    }
+    if let Some(n) = note {
+        cols.insert("note".into(), json!(n.trim()));
+    }
+    if let Some(c) = closed {
+        cols.insert("closed".into(), json!(c as i64));
+    }
+    cols.insert("updated_at".into(), json!(t));
+    write(&conn, PALLETS, &core::pallet_id(&load_id, number), cols, !exists)?;
+    if start_next.unwrap_or(false) {
+        let n = core::next_pallet(&pallet_records(&conn, &load_id)?, &cases(&conn, &load_id)?);
+        if n <= 999 {
+            write(&conn, PALLETS, &core::pallet_id(&load_id, n), pallet_cols(&load_id, n, &t), true)?;
+        }
+    }
+    detail(&conn, &load_id, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,23 +643,23 @@ mod tests {
         let id = d.load.id.clone();
         assert_eq!(d.tally.totals.expected, 9);
         let c = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }, CaseLine { line_id: "b".into(), size: "S".into(), pairs: 1 }];
-        let d = save_warehouse_case(id.clone(), None, 1, c.clone(), None, Some(3)).await.unwrap();
+        let d = save_warehouse_case(id.clone(), None, 1, c.clone(), None, Some(3), None).await.unwrap();
         assert!(d.load.lines.is_none());
         assert_eq!(d.cases.iter().map(|x| (x.pallet, x.number)).collect::<Vec<_>>(), vec![(1, 1), (1, 2), (1, 3)]);
         assert_eq!(d.tally.totals.received, 9);
         let moved = d.cases[1].id.clone();
-        let d = save_warehouse_case(id.clone(), Some(moved.clone()), 2, c.clone(), Some("dented".into()), None).await.unwrap();
+        let d = save_warehouse_case(id.clone(), Some(moved.clone()), 2, c.clone(), Some("dented".into()), None, None).await.unwrap();
         let m = d.cases.iter().find(|x| x.id == moved).unwrap();
         assert_eq!((m.pallet, m.number, m.notes.as_str()), (2, 1, "dented"));
         let d = remove_warehouse_case(id.clone(), d.cases[0].id.clone()).await.unwrap();
         assert_eq!(d.cases.len(), 2);
         assert_eq!(d.tally.totals.received, 6);
-        assert!(save_warehouse_case(id.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "12".into(), pairs: 1 }], None, None).await.is_err());
+        assert!(save_warehouse_case(id.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "12".into(), pairs: 1 }], None, None, None).await.is_err());
         let d = add_warehouse_load_line(id.clone(), NewLine { style: "X9".into(), sizes: "5, 6".into(), brand: "Acme".into(), group: String::new(), color: String::new(), description: String::new(), cost: 0.0, msrp: 0.0 }).await.unwrap();
         assert_eq!(d.load.lines.as_ref().unwrap().len(), 3);
         let d = update_warehouse_load(id.clone(), None, None, Some(true)).await.unwrap();
         assert!(d.load.archived);
-        assert!(save_warehouse_case(id.clone(), None, 1, c, None, None).await.is_err());
+        assert!(save_warehouse_case(id.clone(), None, 1, c, None, None, None).await.is_err());
         let all = list_warehouse_loads().await.unwrap();
         assert!(all.iter().any(|x| x.id == id && x.totals.cases == 2));
     }
@@ -554,7 +672,7 @@ mod tests {
         let d = create_warehouse_load("Truck".into(), "t.xlsx".into(), vec![line("a", "K1", &[("7", 4), ("8", 2)])]).await.unwrap();
         let id = d.load.id.clone();
         let c = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 3 }, CaseLine { line_id: "a".into(), size: "8".into(), pairs: 2 }];
-        let d = save_warehouse_case(id.clone(), None, 1, c, None, None).await.unwrap();
+        let d = save_warehouse_case(id.clone(), None, 1, c, None, None, None).await.unwrap();
         let case_id = d.cases[0].id.clone();
         assert_eq!(d.stock.left, 5);
         let want = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }, CaseLine { line_id: "a".into(), size: "8".into(), pairs: 5 }];
@@ -568,7 +686,7 @@ mod tests {
         assert_eq!((d.stock.left, d.outs.len()), (1, 1));
         // Cutting the case below what was sold is refused; so is removing it.
         let less = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 1 }];
-        assert!(save_warehouse_case(id.clone(), Some(case_id.clone()), 1, less, None, None).await.is_err());
+        assert!(save_warehouse_case(id.clone(), Some(case_id.clone()), 1, less, None, None, None).await.is_err());
         assert!(remove_warehouse_case(id.clone(), case_id.clone()).await.is_err());
         let out_id = d.outs[0].out.id.clone();
         let d = undo_load_out(id.clone(), out_id.clone()).await.unwrap();
@@ -577,5 +695,30 @@ mod tests {
         // A second Put back changes nothing; now the case can go.
         assert_eq!(undo_load_out(id.clone(), out_id).await.unwrap().stock.left, 5);
         assert!(remove_warehouse_case(id.clone(), case_id).await.is_ok());
+    }
+
+    /// R-535: a new delivery has pallet 1 standing empty; a pallet gets a location and is marked
+    /// full, which starts the next; loose items take no box number.
+    #[tokio::test]
+    async fn pallets_are_records_with_locations_and_loose_items() {
+        let _db = crate::db::init_test_store();
+        let d = create_warehouse_load("Truck".into(), "t.xlsx".into(), vec![line("a", "K1", &[("7", 4), ("8", 2)])]).await.unwrap();
+        let id = d.load.id.clone();
+        assert_eq!(d.pallets.iter().map(|p| (p.pallet, p.recorded, p.pairs)).collect::<Vec<_>>(), vec![(1, true, 0)]);
+        let loose = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }];
+        let d = save_warehouse_case(id.clone(), None, 1, loose, None, Some(5), Some("loose".into())).await.unwrap();
+        assert_eq!(d.cases.len(), 1);
+        assert_eq!((d.cases[0].number, d.cases[0].kind.as_str()), (0, "loose"));
+        let boxed = vec![CaseLine { line_id: "a".into(), size: "8".into(), pairs: 2 }];
+        let d = save_warehouse_case(id.clone(), None, 1, boxed, None, None, None).await.unwrap();
+        let b = d.cases.iter().find(|c| !c.is_loose()).unwrap();
+        assert_eq!(b.number, 1);
+        assert_eq!((d.pallets[0].boxes, d.pallets[0].loose, d.pallets[0].pairs), (1, 2, 4));
+        let d = save_load_pallet(id.clone(), 1, Some("  Dock door ".into()), None, Some(true), Some(true)).await.unwrap();
+        assert_eq!(d.pallets.iter().map(|p| (p.pallet, p.location.as_str(), p.closed)).collect::<Vec<_>>(), vec![(1, "Dock door", true), (2, "", false)]);
+        assert_eq!(d.recent_locations, vec!["Dock door".to_string()]);
+        let d = start_load_pallet(id.clone()).await.unwrap();
+        assert_eq!(d.pallets.last().unwrap().pallet, 3);
+        assert_eq!(d.tally.totals.cases, 1);
     }
 }

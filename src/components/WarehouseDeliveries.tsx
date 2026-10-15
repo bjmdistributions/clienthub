@@ -9,7 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api } from "../lib/api";
-import { bucketLine, bucketName, buckets, byStyle, lineDesc, lineMatches, lineStatus, lineTitle, pctRate, pendingTakeKey, pickKey, type Bucket, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type WhCase } from "../lib/deliveries";
+import { bucketLine, bucketName, buckets, byStyle, lineDesc, lineMatches, lineStatus, lineTitle, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
@@ -22,7 +22,7 @@ const money = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDi
 const many = (n: number, one: string, more: string) => `${n0(n)} ${n === 1 ? one : more}`;
 
 type Block = { line_id: string; qty: Record<string, number>; all?: boolean };
-type Draft = { id: string | null; number: number | null; pallet: string; blocks: Block[]; notes: string; copies: string };
+type Draft = { id: string | null; number: number | null; kind: "box" | "loose"; pallet: string; blocks: Block[]; notes: string; copies: string };
 
 const blocksOf = (contents: CaseLine[]): Block[] => byStyle(contents).map((g) => ({ line_id: g.line_id, qty: Object.fromEntries(g.sizes) }));
 const draftTotal = (d: Draft) => d.blocks.reduce((a, b) => a + Object.values(b.qty).reduce((x, y) => x + (y || 0), 0), 0);
@@ -81,7 +81,7 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
           <div className="text-[14px] font-semibold text-ink truncate">{d.name}</div>
           <div className="text-[12px] text-muted whitespace-nowrap"><span className="text-[15px] font-semibold text-ink tabular-nums">{n0(t.received)}</span> of {n0(t.expected)} pairs</div>
         </div>
-        <div className="text-[12px] text-muted mt-0.5">{many(t.lines, "style", "styles")} · {many(t.cases, "case", "cases")} on {many(t.pallets, "pallet", "pallets")}{d.source ? ` · ${d.source}` : ""}</div>
+        <div className="text-[12px] text-muted mt-0.5">{many(t.lines, "style", "styles")} · {many(t.cases, "box", "boxes")} on {many(t.pallets, "pallet", "pallets")}{d.source ? ` · ${d.source}` : ""}</div>
         <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden mt-3"><div className="h-full rounded-full" style={{ ...BAR, width: `${pct * 100}%` }} /></div>
       </button>
     );
@@ -181,7 +181,8 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
   const idx = useMemo(() => Object.fromEntries(lines.map((l) => [l.id, l])) as Record<string, LoadLine>, [lines]);
   const counts = useMemo(() => Object.fromEntries(d.tally.counts.map((c) => [c.line_id, c])) as Record<string, LineCount>, [d.tally.counts]);
   const [tab, setTab] = useState<"pallets" | "check" | "sell">("pallets");
-  const [pallet, setPallet] = useState<number | null>(() => d.tally.pallets[0]?.pallet ?? null);
+  const pallets: PalletView[] = d.pallets ?? [];
+  const [pallet, setPallet] = useState<number | null>(() => (d.pallets ?? [])[0]?.pallet ?? null);
   const [draft, setDraftRaw] = useState<Draft | null>(null);
   const [saved, setSaved] = useState<number[] | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -189,29 +190,45 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
   const [sureRemove, setSureRemove] = useState(false);
   const setDraft = (x: Draft | null) => { setDraftRaw(x); setEditing(!!x); };
   const live = !L.archived;
-  const nextPallet = d.tally.pallets.reduce((a, p) => Math.max(a, p.pallet), 0) + 1;
+  const nextPallet = pallets.reduce((a, p) => Math.max(a, p.pallet), 0) + 1;
 
   const update = async (patch: { name?: string; archived?: boolean }) => {
     try { merge(await api.updateWarehouseLoad(L.id, patch)); return true; } catch (e) { toast(String(e), "error"); return false; }
   };
-  const startCase = (c: WhCase | null, p?: number) => {
+  const startCase = (c: WhCase | null, kind: "box" | "loose" = "box") => {
     setSaved(null);
-    setDraft(c ? { id: c.id, number: c.number, pallet: String(c.pallet), blocks: blocksOf(c.contents), notes: c.notes, copies: "1" }
-      : { id: null, number: null, pallet: String(p ?? pallet ?? nextPallet), blocks: [], notes: "", copies: "1" });
+    setDraft(c ? { id: c.id, number: c.number, kind: c.kind === "loose" ? "loose" : "box", pallet: String(c.pallet), blocks: blocksOf(c.contents), notes: c.notes, copies: "1" }
+      : { id: null, number: null, kind, pallet: String(pallet ?? nextPallet), blocks: [], notes: "", copies: "1" });
   };
+  // R-535: pallets as records: start one, set where it stands, mark it full.
+  const startPallet = async () => {
+    try {
+      const next = await api.startLoadPallet(L.id);
+      merge(next);
+      setPallet(Math.max(...(next.pallets ?? []).map((p) => p.pallet)));
+      setDraft(null); setSaved(null);
+    } catch (e) { toast(String(e), "error"); }
+  };
+  const savePallet = async (n: number, patch: { location?: string; closed?: boolean; startNext?: boolean }) => {
+    try { const next = await api.saveLoadPallet(L.id, n, patch); merge(next); return next; } catch (e) { toast(String(e), "error"); return null; }
+  };
+  const [locDraft, setLocDraft] = useState<string | null>(null);
+  const [asking, setAsking] = useState<string | null>(null);
   const saveCase = async () => {
     if (!draft) return;
     const contents: CaseLine[] = [];
     draft.blocks.forEach((b) => Object.entries(b.qty).forEach(([size, pairs]) => { if (pairs > 0) contents.push({ line_id: b.line_id, size, pairs }); }));
-    if (!contents.length) { toast("Put at least one pair in the case.", "error"); return; }
+    if (!contents.length) { toast(draft.kind === "loose" ? "Put at least one pair in." : "Put at least one pair in the box.", "error"); return; }
     const p = parseInt(draft.pallet, 10);
     if (!(p >= 1)) { toast("Type the pallet number.", "error"); return; }
     try {
       const before = new Set(d.cases.map((c) => c.id));
-      const next = await api.saveWarehouseCase(L.id, { caseId: draft.id, pallet: p, contents, notes: draft.notes, copies: draft.id ? 1 : Math.max(1, parseInt(draft.copies, 10) || 1) });
+      const next = await api.saveWarehouseCase(L.id, { caseId: draft.id, pallet: p, contents, notes: draft.notes, copies: draft.id || draft.kind === "loose" ? 1 : Math.max(1, parseInt(draft.copies, 10) || 1), kind: draft.kind });
       merge(next);
       setPallet(p);
-      if (draft.id) { setDraft(null); toast("Case saved"); return; }
+      if (draft.id) { setDraft(null); toast("Saved"); return; }
+      // Loose items are one row a save: back to the pallet, so the same items are not saved twice.
+      if (draft.kind === "loose") { setDraft(null); toast(`Loose items saved on pallet ${p}`); return; }
       // The next case starts with the same pairs: most cases off one truck are the same pack.
       setSaved(next.cases.filter((c) => !before.has(c.id)).map((c) => c.number).sort((a, b) => a - b));
       setDraft({ ...draft, pallet: String(p), notes: "", copies: "1" });
@@ -219,11 +236,12 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
   };
   const removeCase = async () => {
     if (!draft?.id) return;
-    try { merge(await api.removeWarehouseCase(L.id, draft.id)); setDraft(null); toast("Case removed"); } catch (e) { toast(String(e), "error"); }
+    try { merge(await api.removeWarehouseCase(L.id, draft.id)); setDraft(null); toast("Removed"); } catch (e) { toast(String(e), "error"); }
   };
 
-  const cs = pallet != null ? d.cases.filter((c) => c.pallet === pallet) : [];
-  const ps = d.tally.pallets.find((p) => p.pallet === pallet);
+  const cs = pallet != null ? d.cases.filter((c) => c.pallet === pallet).sort((a, b) => (a.kind === "loose" ? 1 : 0) - (b.kind === "loose" ? 1 : 0) || a.number - b.number) : [];
+  const ps = pallets.find((p) => p.pallet === pallet);
+  const recentLocs = [...new Set([...pallets.map((p) => p.location).filter(Boolean), ...(d.recent_locations ?? [])])].filter((l) => l !== ps?.location).slice(0, 10);
 
   return (
     <div>
@@ -238,7 +256,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
             </div>
           ) : <h2 className="text-[18px] font-semibold text-ink tracking-tight">{L.name}</h2>}
           <p className="text-[12px] text-muted mt-0.5 tabular-nums">
-            <span className="text-ink-2 font-medium">{n0(T.received)}</span> of {n0(T.expected)} pairs in · {many(T.cases, "case", "cases")} on {many(T.pallets, "pallet", "pallets")}
+            <span className="text-ink-2 font-medium">{n0(T.received)}</span> of {n0(T.expected)} pairs in · {many(T.cases, "box", "boxes")} on {many(pallets.length, "pallet", "pallets")}
             {T.received > 0 && <> · {money(T.cost)} cost, {money(T.msrp)} MSRP in</>}
           </p>
           {L.archived && <p className="text-[12px] text-warning-ink mt-1">This delivery was removed. Bring it back to add cases.</p>}
@@ -267,18 +285,19 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
         } catch (e) { toast(String(e), "error"); }
       }} />}
 
-      {tab === "check" ? <CheckView lines={lines} counts={counts} totals={T} /> : tab === "sell" ? <SellView d={d} lines={lines} merge={merge} live={live} /> : (
+      {tab === "check" ? <CheckView lines={lines} counts={counts} totals={T} pallets={pallets} /> : tab === "sell" ? <SellView d={d} lines={lines} merge={merge} live={live} /> : (
         <div className="grid gap-4 grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)]">
           <div className="space-y-2">
-            {live && <button onClick={() => { setPallet(nextPallet); startCase(null, nextPallet); }} className={`${WH_BTN_SECONDARY} w-full justify-center`}><Plus size={14} /> Start pallet {nextPallet}</button>}
-            {d.tally.pallets.map((p) => (
-              <button key={p.pallet} onClick={() => { setPallet(p.pallet); setDraft(null); setSaved(null); }}
+            {live && <button onClick={startPallet} className={`${WH_BTN_SECONDARY} w-full justify-center`}><Plus size={14} /> Start pallet {nextPallet}</button>}
+            {pallets.map((p) => (
+              <button key={p.pallet} onClick={() => { setPallet(p.pallet); setDraft(null); setSaved(null); setLocDraft(null); setAsking(null); }}
                 className={`${WH_CARD} w-full text-left px-3 py-2.5 transition-colors ${pallet === p.pallet ? "ring-2 ring-accent/40 border-accent/40" : "hover:border-accent/30"}`}>
-                <div className="flex justify-between items-baseline gap-2"><span className="text-[13px] font-semibold text-ink">Pallet {p.pallet}</span><span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(p.pairs)}</span> pairs</span></div>
-                <div className="text-[11.5px] text-muted mt-0.5">{many(p.cases, "case", "cases")} · {many(p.styles, "style", "styles")} · {money(p.cost)} cost</div>
+                <div className="flex justify-between items-baseline gap-2"><span className="text-[13px] font-semibold text-ink">Pallet {p.pallet}{p.location && <span className="font-normal text-muted"> at {p.location}</span>}</span><span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(p.pairs)}</span> pairs</span></div>
+                <div className="text-[11.5px] text-muted mt-0.5">{palletMeta(p, money)}</div>
+                <div className="flex gap-1 mt-1">{p.closed ? <StatusPill tone="neutral">Full</StatusPill> : <StatusPill tone="success">Open</StatusPill>}{!p.location && <StatusPill tone="warning">No location</StatusPill>}</div>
               </button>
             ))}
-            {!d.tally.pallets.length && <p className="text-[12.5px] text-muted px-1">No cases yet. Start pallet 1, then add each case on it as it comes off the truck.</p>}
+            {!pallets.length && <p className="text-[12.5px] text-muted px-1">No pallets yet. Start pallet 1, then add each box on it as it comes off the truck.</p>}
           </div>
 
           <div className="min-w-0 space-y-3">
@@ -290,14 +309,30 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
               <>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <div className="text-[15px] font-semibold text-ink">Pallet {pallet}</div>
-                    {ps && <div className="text-[12px] text-muted tabular-nums">{many(ps.cases, "case", "cases")} · {n0(ps.pairs)} pairs · {many(ps.styles, "style", "styles")} · {money(ps.cost)} cost · {money(ps.msrp)} MSRP</div>}
+                    <div className="text-[15px] font-semibold text-ink">Pallet {pallet}{ps?.location && <span className="font-normal text-muted"> at {ps.location}</span>}</div>
+                    {ps && <div className="text-[12px] text-muted tabular-nums">{palletMeta(ps, money)}{ps.pairs ? ` · ${n0(ps.pairs)} pairs · ${money(ps.msrp)} MSRP` : ""} · {ps.closed ? "full" : "open"}</div>}
                   </div>
-                  {live && <button onClick={() => startCase(null)} className={WH_BTN_PRIMARY}><Plus size={14} /> Add a case</button>}
+                  {live && <div className="flex gap-2">
+                    <button onClick={() => startCase(null, "box")} className={WH_BTN_PRIMARY}><Plus size={14} /> Add a box</button>
+                    <button onClick={() => startCase(null, "loose")} className={WH_BTN_SECONDARY}>Add loose items</button>
+                  </div>}
                 </div>
+                {live && (
+                  <div className={`${WH_CARD} p-3`}>
+                    <div className="flex flex-wrap items-end gap-2">
+                      <label className="text-[12px] text-muted">Where it stands
+                        <div className="w-56"><input value={locDraft ?? ps?.location ?? ""} maxLength={40} placeholder="For example A2, or Dock door" style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`}
+                          onChange={(e) => setLocDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                          onBlur={async () => { if (locDraft != null && locDraft.trim() !== (ps?.location ?? "")) { if (await savePallet(pallet, { location: locDraft })) toast(`Saved: pallet ${pallet}${locDraft.trim() ? ` at ${locDraft.trim()}` : " has no location"}`); } setLocDraft(null); }} /></div>
+                      </label>
+                      {recentLocs.map((l) => <button key={l} onClick={() => savePallet(pallet, { location: l })} className={`${WH_BTN_SECONDARY} h-8 px-2.5 text-[12px]`}>{l}</button>)}
+                    </div>
+                  </div>
+                )}
                 {cs.map((c) => (
                   <button key={c.id} onClick={() => live && startCase(c)} disabled={!live} className={`${WH_CARD} w-full text-left p-3.5 hover:border-accent/30 transition-colors disabled:hover:border-line`}>
-                    <div className="flex justify-between items-baseline gap-3"><span className="text-[13px] font-semibold text-ink">Case {c.number}</span><span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(c.contents.reduce((a, x) => a + x.pairs, 0))}</span> pairs</span></div>
+                    <div className="flex justify-between items-baseline gap-3"><span className="text-[13px] font-semibold text-ink">{c.kind === "loose" ? "Loose items" : `Box ${c.number}`}</span><span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(c.contents.reduce((a, x) => a + x.pairs, 0))}</span> {c.contents.reduce((a, x) => a + x.pairs, 0) === 1 ? "pair" : "pairs"}</span></div>
                     {byStyle(c.contents).map((g) => {
                       const l = idx[g.line_id];
                       return <div key={g.line_id} className="text-[12px] text-muted mt-1"><span className="text-ink-2 font-medium">{l ? lineTitle(l) : "A style no longer listed"}</span>{l?.description ? ` ${l.description}` : ""}: {g.sizes.map(([s, n]) => `${s} × ${n}`).join(" · ")}</div>;
@@ -305,7 +340,25 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
                     {c.notes && <div className="text-[12px] text-muted mt-1 italic">{c.notes}</div>}
                   </button>
                 ))}
-                {!cs.length && <p className="text-[12.5px] text-muted">Nothing on this pallet yet.</p>}
+                {!cs.length && <p className="text-[12.5px] text-muted">Nothing on this pallet yet. Add each box as it goes on, or the loose items if there is no box.</p>}
+                {live && ps && (ps.closed
+                  ? <button onClick={() => savePallet(pallet, { closed: false })} className={WH_BTN_SECONDARY}>Reopen this pallet</button>
+                  : asking != null
+                    ? <div className={`${WH_CARD} p-3 flex flex-wrap items-end gap-2`}>
+                        <label className="text-[12px] text-muted">Pallet {pallet} is full. Where does it stand?
+                          <div className="w-56"><input autoFocus value={asking} maxLength={40} onChange={(e) => setAsking(e.target.value)} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`} /></div>
+                        </label>
+                        <button className={WH_BTN_PRIMARY} onClick={async () => {
+                          const next = await savePallet(pallet, { location: asking, closed: true, startNext: true });
+                          if (!next) return;
+                          const open = (next.pallets ?? []).filter((x) => !x.closed).map((x) => x.pallet);
+                          setAsking(null);
+                          if (open.length) setPallet(Math.max(...open));
+                          toast(`Pallet ${pallet} is full.${open.length ? ` Now on pallet ${Math.max(...open)}.` : ""}`);
+                        }}>Save, start the next pallet</button>
+                        <button className={WH_BTN_SECONDARY} onClick={() => setAsking(null)}>Cancel</button>
+                      </div>
+                    : <button onClick={() => setAsking(ps.location || "")} className={WH_BTN_SECONDARY}>Pallet full, start the next one</button>)}
               </>
             )}
           </div>
@@ -336,11 +389,11 @@ function CaseEditor({ draft, setDraft, lines, idx, counts, cases, saved, onSave,
         <div className="text-[12px] text-muted">The next case starts with the same pairs. Change what differs, or save it as it is.</div>
       </div>}
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="text-[15px] font-semibold text-ink">{draft.id ? `Case ${draft.number}` : "New case"}</div>
+        <div className="text-[15px] font-semibold text-ink">{draft.kind === "loose" ? `Loose items on pallet ${draft.pallet}` : draft.id ? `Box ${draft.number}` : "New box"}</div>
         <div className="flex items-end gap-3 flex-wrap">
           <label className="text-[12px] text-muted">Pallet<input value={draft.pallet} inputMode="numeric" onChange={(e) => setDraft({ ...draft, pallet: e.target.value.replace(/\D/g, "") })} style={WH_INPUT_BG} className={`${WH_INPUT} w-20 mt-1 tabular-nums`} /></label>
-          {!draft.id && <label className="text-[12px] text-muted">Cases exactly like this<input value={draft.copies} inputMode="numeric" onChange={(e) => setDraft({ ...draft, copies: e.target.value.replace(/\D/g, "") })} style={WH_INPUT_BG} className={`${WH_INPUT} w-24 mt-1 tabular-nums`} /></label>}
-          {!draft.id && recent.length > 0 && <label className="text-[12px] text-muted">Same as an earlier case
+          {!draft.id && draft.kind !== "loose" && <label className="text-[12px] text-muted">Boxes exactly like this<input value={draft.copies} inputMode="numeric" onChange={(e) => setDraft({ ...draft, copies: e.target.value.replace(/\D/g, "") })} style={WH_INPUT_BG} className={`${WH_INPUT} w-24 mt-1 tabular-nums`} /></label>}
+          {!draft.id && recent.length > 0 && <label className="text-[12px] text-muted">Same as an earlier box
             <select value="" onChange={(e) => { const c = cases.find((x) => x.id === e.target.value); if (c) setDraft({ ...draft, blocks: blocksOf(c.contents) }); }} style={WH_INPUT_BG} className={`${WH_INPUT} w-56 mt-1`}>
               <option value="">Choose a case…</option>
               {recent.map((c) => <option key={c.id} value={c.id}>Pallet {c.pallet}, case {c.number}: {c.contents.reduce((a, x) => a + x.pairs, 0)} pairs</option>)}
@@ -382,7 +435,7 @@ function CaseEditor({ draft, setDraft, lines, idx, counts, cases, saved, onSave,
 
       <div className="relative mt-3 max-w-[560px]">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={draft.blocks.length ? "Another style in this case: type a style, colour or name" : "What is in the case: type a style, colour or name"} style={WH_INPUT_BG} className={`${WH_INPUT} pl-9`} />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={draft.blocks.length ? "Another style: type a style, colour or name" : (draft.kind === "loose" ? "What is loose on the pallet" : "What is in the box") + ": type a style, colour or name"} style={WH_INPUT_BG} className={`${WH_INPUT} pl-9`} />
         {q.trim() && <div className={`${WH_CARD} absolute z-10 left-0 right-0 mt-1 max-h-[320px] overflow-auto shadow-[0_8px_24px_rgba(0,0,0,0.12)]`}>
           {hits.map((l) => (
             <button key={l.id} onClick={() => add(l.id)} className="w-full text-left px-3 py-2 hover:bg-surface-2 border-b border-line last:border-b-0 flex justify-between gap-3">
@@ -397,10 +450,10 @@ function CaseEditor({ draft, setDraft, lines, idx, counts, cases, saved, onSave,
       <label className="block mt-3 max-w-[560px] text-[12px] text-muted">Note<input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Optional, for example the label on the case" style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`} /></label>
 
       <div className="flex flex-wrap items-center gap-2 mt-4">
-        <button onClick={onSave} disabled={!total} className={WH_BTN_PRIMARY}>{draft.id ? "Save changes" : "Save case"}</button>
+        <button onClick={onSave} disabled={!total} className={WH_BTN_PRIMARY}>{draft.id ? "Save changes" : draft.kind === "loose" ? "Save loose items" : "Save box"}</button>
         <button onClick={onClose} className={WH_BTN_SECONDARY}>{draft.id || !saved ? "Cancel" : "Done"}</button>
-        {onRemove && (sure ? <><button onClick={onRemove} className={WH_BTN_SECONDARY}>Remove case {draft.number}</button><button onClick={() => setSure(false)} className={WH_BTN_SECONDARY}>Keep it</button></>
-          : <button onClick={() => setSure(true)} className={WH_BTN_SECONDARY} title="Its pairs come off the received counts. The other cases keep their numbers.">Remove case</button>)}
+        {onRemove && (sure ? <><button onClick={onRemove} className={WH_BTN_SECONDARY}>{draft.kind === "loose" ? "Remove these loose items" : `Remove box ${draft.number}`}</button><button onClick={() => setSure(false)} className={WH_BTN_SECONDARY}>Keep it</button></>
+          : <button onClick={() => setSure(true)} className={WH_BTN_SECONDARY} title="Its pairs come off the received counts. The other boxes keep their numbers.">Remove</button>)}
         <span className="text-[12.5px] text-muted ml-auto tabular-nums">Pairs in this case: <span className="text-ink font-semibold">{n0(total)}</span></span>
       </div>
     </div>
@@ -434,7 +487,7 @@ function NewLineForm({ lines, guess, onCancel, onAdd }: { lines: LoadLine[]; gue
 
 type Filter = "all" | "none" | "short" | "over" | "done";
 
-function CheckView({ lines, counts, totals: T }: { lines: LoadLine[]; counts: Record<string, LineCount>; totals: LoadDetail["tally"]["totals"] }) {
+function CheckView({ lines, counts, totals: T, pallets }: { lines: LoadLine[]; counts: Record<string, LineCount>; totals: LoadDetail["tally"]["totals"]; pallets: PalletView[] }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [q, setQ] = useState("");
   const [openLine, setOpenLine] = useState<string | null>(null);
@@ -477,7 +530,7 @@ function CheckView({ lines, counts, totals: T }: { lines: LoadLine[]; counts: Re
                 <div className="flex items-center gap-3">
                   <div className="min-w-0 flex-1">
                     <span className="text-[13px] font-medium text-ink">{lineTitle(l)}</span>
-                    <span className="text-[12px] text-muted"> {lineDesc(l)}{c.pallets.length ? ` · pallet ${c.pallets.join(", ")}` : ""}</span>
+                    <span className="text-[12px] text-muted"> {lineDesc(l)}{c.pallets.length ? ` · ${palletNames(c.pallets, pallets)}` : ""}</span>
                   </div>
                   <span className="text-[12.5px] text-muted tabular-nums whitespace-nowrap"><span className="text-ink font-medium">{n0(c.received)}</span> of {n0(c.expected)}</span>
                   <span className="w-[150px] flex justify-end">
@@ -715,7 +768,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
                 <button onClick={() => setOpenLine(open ? null : l.id)} className="w-full text-left flex items-center gap-3">
                   <div className="min-w-0 flex-1">
                     <span className="text-[13px] font-medium text-ink">{lineTitle(l)}</span>
-                    <span className="text-[12px] text-muted"> {lineDesc(l)}{ll?.pallets.length ? ` · ${ll.pallets.length === 1 ? "pallet" : "pallets"} ${ll.pallets.join(", ")}` : ""}</span>
+                    <span className="text-[12px] text-muted"> {lineDesc(l)}{ll?.pallets.length ? ` · ${palletNames(ll.pallets, d.pallets ?? [])}` : ""}</span>
                   </div>
                   <span className="text-[12.5px] text-muted tabular-nums whitespace-nowrap"><span className="text-ink font-medium">{n0(ll?.left ?? 0)}</span> left</span>
                   <span className="w-[100px] flex justify-end">{picked > 0 && <StatusPill tone="success">{n0(picked)} picked</StatusPill>}</span>

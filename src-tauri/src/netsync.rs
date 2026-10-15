@@ -44,7 +44,8 @@ const POLL_SECS: u64 = 20;
 /// count check, so a device that updates after deliveries, cases or sales already exist restores
 /// them from the server's snapshot (an older device dead-letters their events). Without it a sale
 /// made on the phone would read as stock still there on a desktop that updated later.
-const HEAL_GENERATION: &str = "8";
+/// "9" adds `warehouse_load_pallets` (R-535: where each pallet stands, full or not) for the same reason.
+const HEAL_GENERATION: &str = "9";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -89,6 +90,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "warehouse_cases",
     // The pairs each order took from a delivery (R-519 phase 2).
     "warehouse_load_outs",
+    // A delivery's pallets as records (R-535).
+    "warehouse_load_pallets",
     // Freight bookings (R-400): the Logistics screen's rows, one per truck.
     "freight_bookings",
     // The logistics payee's pay record (R-401), server-authored like the bookings.
@@ -1540,6 +1543,8 @@ async fn auto_heal_if_behind() {
         "bills", "bill_payments",
         // R-519: deliveries, their cases, and the pairs each order took (generation 8).
         "warehouse_loads", "warehouse_cases", "warehouse_load_outs",
+        // R-535: a delivery's pallet records (generation 9).
+        "warehouse_load_pallets",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -2770,10 +2775,17 @@ mod r400_sync_tests {
     #[test]
     fn r519_deliveries_force_one_more_restore_per_device() {
         assert_ne!(HEAL_GENERATION, "7", "devices healed under generation 7 never compared the delivery tables");
-        assert_eq!(HEAL_GENERATION, "8");
         for t in ["warehouse_loads", "warehouse_cases", "warehouse_load_outs"] {
             assert!(SNAPSHOT_TABLES.contains(&t), "{t} must be restorable from the snapshot");
         }
+    }
+
+    /// R-535: pallet records reach a desktop that updates after pallets were set on the phone.
+    #[test]
+    fn r535_pallet_records_force_one_more_restore_per_device() {
+        assert_ne!(HEAL_GENERATION, "8", "devices healed under generation 8 never compared the pallet records");
+        assert_eq!(HEAL_GENERATION, "9");
+        assert!(SNAPSHOT_TABLES.contains(&"warehouse_load_pallets"));
     }
 
     #[tokio::test]

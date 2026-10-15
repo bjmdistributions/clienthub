@@ -1360,6 +1360,8 @@ fn main() {
             warehouse_loads::remove_warehouse_case,
             warehouse_loads::take_load_pairs,
             warehouse_loads::undo_load_out,
+            warehouse_loads::start_load_pallet,
+            warehouse_loads::save_load_pallet,
             // Bills (R-449)
             bills::bills_list,
             bills::bills_alerts,
