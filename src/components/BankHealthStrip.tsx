@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
-import { api, PlaidHealth, PlaidHealthBank } from "../lib/api";
+import { api, OverbookedTxn, PlaidHealth, PlaidHealthBank } from "../lib/api";
+import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
 
 // R-518: what the bank feed needs from a person, on To book where the work is.
@@ -40,10 +41,18 @@ interface Props {
 export default function BankHealthStrip({ version, onSynced }: Props) {
   const [health, setHealth] = useState<PlaidHealth | null>(null);
   const [open, setOpen] = useState(false);
+  // R-518 (F7): rows booked for more than the bank row says. Trim is two clicks: the first arms it.
+  const [over, setOver] = useState<OverbookedTxn[]>([]);
+  const [overOpen, setOverOpen] = useState(false);
+  const [armed, setArmed] = useState<string | null>(null);
+  const [trimming, setTrimming] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState<string | null>(null);
   const cancelRef = useRef(false);
 
-  const load = () => { api.plaidHealth().then(setHealth).catch(() => {}); };
+  const load = () => {
+    api.plaidHealth().then(setHealth).catch(() => {});
+    api.listOverbookedTxns().then(setOver).catch(() => {});
+  };
 
   // Re-read every minute: a background pull changes the health without telling the screen.
   useEffect(() => {
@@ -81,16 +90,31 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
     }
   };
 
+  const trim = async (t: OverbookedTxn) => {
+    if (armed !== t.id) { setArmed(t.id); return; }
+    setArmed(null);
+    setTrimming(t.id);
+    try {
+      const r = await api.trimTxnBookings(t.id);
+      toast(`Took ${fmtAmount(r.trimmed)} off the bookings, so they match the ${fmtAmount(t.amount)} bank row.`, "success");
+      load();
+      onSynced();
+    } catch (e: any) {
+      toast(String(e?.message || e), "error");
+    } finally {
+      setTrimming(null);
+    }
+  };
+
   const dismiss = async () => {
     await api.plaidHealthDismiss().catch(() => {});
     setOpen(false);
     load();
   };
 
-  if (!health) return null;
-  const broken = health.banks.filter((b) => b.error);
-  const warnings = health.warnings;
-  if (broken.length === 0 && warnings.length === 0) return null;
+  const broken = health ? health.banks.filter((b) => b.error) : [];
+  const warnings = health ? health.warnings : [];
+  if (broken.length === 0 && warnings.length === 0 && over.length === 0) return null;
 
   return (
     <div className="border border-line-2 rounded-lg divide-y divide-line-2 min-w-0">
@@ -123,6 +147,41 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
           )}
         </div>
       ))}
+      {over.length > 0 && (
+        <div className="px-3.5 py-2.5 min-w-0">
+          <button
+            onClick={() => setOverOpen((o) => !o)}
+            className="flex items-center gap-1.5 min-w-0 w-full text-left text-[13px] text-ink hover:text-ink-2"
+          >
+            {overOpen ? <ChevronDown size={14} className="text-muted flex-shrink-0" /> : <ChevronRight size={14} className="text-muted flex-shrink-0" />}
+            <span className="font-medium tabular-nums">{over.length}</span>
+            <span className="truncate">bank {over.length === 1 ? "row is" : "rows are"} booked for more than the bank says</span>
+          </button>
+          {overOpen && (
+            <div className="mt-2 flex flex-col divide-y divide-line-2 pl-5">
+              {over.map((t) => (
+                <div key={t.id} className="flex items-center gap-3 py-2 min-w-0">
+                  <div className="min-w-0 flex-1 text-[12.5px] leading-relaxed">
+                    <div className="text-ink truncate">{t.name || "Bank row"} <span className="text-muted">({t.posted_at.slice(0, 10)})</span></div>
+                    <div className="text-ink-2">
+                      Booked <span className="tabular-nums">{fmtAmount(t.booked)}</span> on a <span className="tabular-nums">{fmtAmount(t.amount)}</span> row
+                      {t.allocations.length > 0 && <span className="text-muted"> · {t.allocations.map((a) => a.deal).join(", ")}</span>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => trim(t)}
+                    disabled={trimming !== null}
+                    className={`flex-shrink-0 h-8 px-3 rounded-lg text-[12.5px] font-medium transition-colors disabled:opacity-60 ${
+                      armed === t.id ? "bg-accent hover:bg-accent-hover text-on-accent" : "border border-line text-ink-2 hover:bg-surface-2"}`}
+                  >
+                    {trimming === t.id ? <Loader2 size={13} className="animate-spin" /> : armed === t.id ? `Take ${fmtAmount(t.excess)} off?` : `Trim to ${fmtAmount(t.amount)}`}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {warnings.length > 0 && (
         <div className="px-3.5 py-2.5 min-w-0">
           <div className="flex items-center gap-2.5 min-w-0">

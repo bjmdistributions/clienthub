@@ -145,6 +145,31 @@ pub fn near_duplicates(rows: &[NdRow]) -> Vec<NearDup> {
             }
         }
     }
+    // R-518 (F5): a statement imported under a plain name ("business", no last four digits) is on an account the
+    // feed never names, so its rows were never compared with the feed's. Such a row pairs with a feed row on any
+    // account, same direction and amount, close in date: a question for a person (two_sources), never automatic.
+    let unnamed = |r: &NdRow| account_key(&r.account).starts_with("label:") && account_key(&r.account) != "label:cash";
+    let mut by_amount: HashMap<(String, i64), Vec<usize>> = HashMap::new();
+    for (i, r) in rows.iter().enumerate() {
+        if r.amount <= 0.005 || r.retracted || r.pending || day(&r.date).is_none() { continue; }
+        by_amount.entry((r.dir.clone(), (r.amount * 100.0).round() as i64)).or_default().push(i);
+    }
+    for idx in by_amount.values() {
+        for x in 0..idx.len() {
+            for y in (x + 1)..idx.len() {
+                let (a, b) = (&rows[idx[x]], &rows[idx[y]]);
+                if account_key(&a.account) == account_key(&b.account) { continue; }
+                if unnamed(a) == unnamed(b) { continue; }
+                let (stmt, feed) = if unnamed(a) { (a, b) } else { (b, a) };
+                if stmt.source == "plaid" || feed.source != "plaid" { continue; }
+                if a.not_dup.contains(&b.id) || b.not_dup.contains(&a.id) { continue; }
+                let gap = match (day(&a.date), day(&b.date)) { (Some(p), Some(q)) => (p - q).num_days().abs(), _ => continue };
+                if gap > 1 { continue; }
+                let (k, e) = if keeps_first(a, b) { (idx[x], idx[y]) } else { (idx[y], idx[x]) };
+                cands.push((strength("two_sources"), gap, k, e, "two_sources"));
+            }
+        }
+    }
     cands.sort_by(|p, q| q.0.cmp(&p.0).then(p.1.cmp(&q.1)).then(rows[p.3].id.cmp(&rows[q.3].id)));
     let mut used: HashSet<usize> = HashSet::new();
     let mut out = Vec::new();
@@ -241,6 +266,23 @@ mod tests {
         let mut a = row("n1", A, "2026-10-01", 5000.0, "WIRE A");
         a.not_dup = vec!["n2".into()];
         assert!(near_duplicates(&[a, row("n2", A, "2026-10-02", 5000.0, "WIRE B")]).is_empty());
+    }
+
+    #[test]
+    fn a_statement_under_a_plain_name_is_asked_about_beside_the_feed() {
+        // R-518 (F5): "business" (no last four) beside the feed's own account.
+        let mut s = row("s1", "business", "2026-10-03", 300.0, "ACME SUPPLY");
+        s.source = "csv".into();
+        let f = row("f1", "CHASE PLATINUM \u{00b7}\u{00b7}1234", "2026-10-02", 300.0, "ACME SUPPLY CO");
+        let d = near_duplicates(&[s.clone(), f.clone()]);
+        assert_eq!(d.len(), 1);
+        assert_eq!((d[0].keep_id.as_str(), d[0].extra_id.as_str(), d[0].reason, d[0].automatic), ("f1", "s1", "two_sources", false));
+        // Two feed rows on different named accounts are two payments, and a day apart is the limit.
+        let g = row("g1", "OTHER CARD \u{00b7}\u{00b7}9999", "2026-10-02", 300.0, "ACME SUPPLY CO");
+        assert!(near_duplicates(&[f.clone(), g]).is_empty());
+        let mut late = s.clone();
+        late.date = "2026-10-05".into();
+        assert!(near_duplicates(&[late, f]).is_empty());
     }
 
     #[test]

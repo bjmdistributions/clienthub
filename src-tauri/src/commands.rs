@@ -18857,6 +18857,94 @@ pub async fn cleanup_ghost_deal_flows() -> Result<i64, String> {
     Ok(archived)
 }
 
+/// R-518 (F7): bank rows booked for more than the row now says, most often a card hold or a tip that settled lower
+/// after it was booked. Read only; each is the person's to trim (invariant 14: opening a screen never changes money).
+#[tauri::command]
+pub async fn list_overbooked_txns() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, String, f64, f64)> = {
+        let mut st = conn.prepare(&format!(
+            "SELECT bt.id, COALESCE(bt.posted_at,''), COALESCE(NULLIF(TRIM(bt.counterparty_name),''), bt.description, ''), bt.amount, \
+                    SUM(a.amount) FROM bank_txn bt JOIN bank_allocation a ON a.bank_txn_id=bt.id \
+              WHERE {} GROUP BY bt.id HAVING SUM(a.amount) > bt.amount + 0.01 ORDER BY bt.posted_at DESC LIMIT 50",
+            crate::bank_flags::counted("bt"))).map_err(|e| e.to_string())?;
+        let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(|e| e.to_string())?;
+        it.filter_map(|x| x.ok()).collect()
+    };
+    let mut out = Vec::new();
+    for (id, posted_at, name, amount, booked) in rows {
+        let deals: Vec<Value> = conn.prepare(
+            "SELECT a.id, a.amount, COALESCE(a.role,''), \
+                    COALESCE(NULLIF(TRIM(c.name),''), NULLIF(TRIM(df.name),''), 'Invoice #' || NULLIF(TRIM(i.number),''), 'A deal') \
+               FROM bank_allocation a LEFT JOIN deal_flows df ON df.id=a.deal_flow_id \
+               LEFT JOIN invoices i ON i.id=df.invoice_id LEFT JOIN clients c ON c.id=i.client_id \
+              WHERE a.bank_txn_id=?1 ORDER BY a.created_at DESC, a.id DESC")
+            .and_then(|mut st| st.query_map([&id], |r| Ok(json!({
+                "id": r.get::<_, String>(0)?, "amount": r.get::<_, f64>(1)?, "role": r.get::<_, String>(2)?, "deal": r.get::<_, String>(3)?,
+            }))).map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        out.push(json!({ "id": id, "posted_at": posted_at, "name": name, "amount": amount, "booked": booked,
+                         "excess": ((booked - amount) * 100.0).round() / 100.0, "allocations": deals }));
+    }
+    Ok(out)
+}
+
+/// R-518 (F7): bring one row's bookings down to what the bank row says, newest booking first: a booking the excess
+/// covers is unlinked (through `remove_bank_allocation`, so refunds and deals follow), the next is lowered. A carrier
+/// payment is left to Pay carriers, where its load's paid amount lives. Returns how much was taken off.
+#[tauri::command]
+pub async fn trim_txn_bookings(id: String) -> Result<Value, String> {
+    let (amount, allocs): (f64, Vec<(String, String, String, f64, String, String, String, String)>) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let amount: f64 = conn.query_row("SELECT amount FROM bank_txn WHERE id=?1", [&id], |r| r.get(0))
+            .map_err(|_| "That bank row is no longer here.".to_string())?;
+        let mut st = conn.prepare(
+            "SELECT id, COALESCE(org_id,''), deal_flow_id, amount, COALESCE(role,''), COALESCE(note,''), COALESCE(created_by,''), COALESCE(created_at,'') \
+               FROM bank_allocation WHERE bank_txn_id=?1 ORDER BY created_at DESC, id DESC").map_err(|e| e.to_string())?;
+        let it = st.query_map([&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))
+            .map_err(|e| e.to_string())?;
+        (amount, it.filter_map(|x| x.ok()).collect())
+    };
+    let booked: f64 = allocs.iter().map(|a| a.3).sum();
+    let mut excess = ((booked - amount) * 100.0).round() / 100.0;
+    if excess <= 0.005 { return Ok(json!({ "trimmed": 0.0 })); }
+    let total = excess;
+    let now = Utc::now().to_rfc3339();
+    for (aid, org, deal, amt, role, note, by, at) in allocs {
+        if excess <= 0.005 { break; }
+        if role == "shipping" {
+            return Err("A carrier payment booked for more than the bank row is corrected on its load in Pay carriers.".into());
+        }
+        if amt <= excess + 0.005 {
+            remove_bank_allocation(aid.clone()).await?;
+            excess = ((excess - amt) * 100.0).round() / 100.0;
+            continue;
+        }
+        let new_amt = ((amt - excess) * 100.0).round() / 100.0;
+        // The full identifying set, as settle_carry sends it, so no copy can make a stub of it (F12).
+        let mut cols = Map::new();
+        cols.insert("org_id".into(), json!(org));
+        cols.insert("bank_txn_id".into(), json!(id));
+        cols.insert("deal_flow_id".into(), json!(deal));
+        cols.insert("amount".into(), json!(new_amt));
+        cols.insert("role".into(), json!(role));
+        cols.insert("note".into(), json!(note));
+        cols.insert("created_by".into(), json!(by));
+        cols.insert("created_at".into(), json!(at));
+        cols.insert("updated_at".into(), json!(now));
+        sync::record_upsert("bank_allocation", &aid, cols).map_err(|e| e.to_string())?;
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("UPDATE bank_allocation SET amount=?1, updated_at=?2 WHERE id=?3", rusqlite::params![new_amt, now, aid])
+                .map_err(|e| e.to_string())?;
+        }
+        let _ = resync_completed_deal(&deal);
+        excess = 0.0;
+    }
+    crate::netsync::push_now();
+    Ok(json!({ "trimmed": ((total - excess) * 100.0).round() / 100.0 }))
+}
+
 /// Heal transactions whose allocations exceed the transaction amount. allocate_bank_txn
 /// enforces SUM(allocations) <= amount LOCALLY, but two devices allocating the same txn
 /// concurrently each pass their own check, and after the sync merge the SUM can exceed
@@ -21791,6 +21879,23 @@ pub async fn plaid_reconnect_poll(link_token: String, id: String) -> Result<Valu
         plaid_health_save(&conn, &h);
     }
     Ok(json!({ "status": "done" }))
+}
+
+/// R-518: whether Ecliptr opens when this computer starts. The bank feed runs only while the app is open on the
+/// computer that holds the bank link, so a reboot used to stop it until someone opened the app. Off unless chosen.
+#[tauri::command]
+pub async fn autostart_get(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+/// R-518: turn opening at startup on or off; answers what the system now says.
+#[tauri::command]
+pub async fn autostart_set(app: tauri::AppHandle, on: bool) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let al = app.autolaunch();
+    if on { al.enable() } else { al.disable() }.map_err(|e| e.to_string())?;
+    al.is_enabled().map_err(|e| e.to_string())
 }
 
 /// Force a full re-pull: reset every bank's sync cursor to the start, then sync.
@@ -27178,6 +27283,35 @@ mod r518_counted_once_tests {
         assert_eq!(bank_overhead(&conn, "shipping", "", ""), 500.0, "the posted copy and the plain row count; the withdrawn one does not");
         let m = bank_overhead_by_month(&conn, "", "");
         assert_eq!(m.get("2026-10").map(|x| x.0), Some(500.0));
+    }
+}
+
+#[cfg(test)]
+mod r518_trim_tests {
+    use super::{list_overbooked_txns, trim_txn_bookings};
+    use crate::db::pool;
+
+    // R-518 (F7): a $100 hold booked to a deal settles at $90; the person trims the booking to $90.
+    #[tokio::test]
+    async fn a_hold_that_settled_lower_is_trimmed_to_the_bank_amount() {
+        let _db = crate::db::init_test_store();
+        {
+            let c = pool().get().unwrap();
+            c.execute("INSERT INTO bank_txn (id, posted_at, amount, direction, description, raw_json) VALUES ('r518_hold','2026-10-10',90,'out','HOTEL','{}')", []).unwrap();
+            c.execute("INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role, created_at) VALUES ('r518_a1','r518_hold','r518_deal',60,'supplier_payment','2026-10-10T01:00:00Z'), ('r518_a2','r518_hold','r518_deal',40,'supplier_payment','2026-10-10T02:00:00Z')", []).unwrap();
+        }
+        let over = list_overbooked_txns().await.unwrap();
+        let row = over.iter().find(|r| r["id"] == "r518_hold").expect("listed");
+        assert_eq!(row["excess"], 10.0);
+        let r = trim_txn_bookings("r518_hold".into()).await.unwrap();
+        assert_eq!(r["trimmed"], 10.0);
+        let c = pool().get().unwrap();
+        let amt = |id: &str| c.query_row("SELECT amount FROM bank_allocation WHERE id=?1", [id], |r| r.get::<_, f64>(0)).unwrap();
+        assert_eq!(amt("r518_a2"), 30.0, "the newest booking is lowered first");
+        assert_eq!(amt("r518_a1"), 60.0);
+        assert!(list_overbooked_txns().await.unwrap().iter().all(|r| r["id"] != "r518_hold"));
+        c.execute("DELETE FROM bank_allocation WHERE bank_txn_id='r518_hold'", []).unwrap();
+        c.execute("DELETE FROM bank_txn WHERE id='r518_hold'", []).unwrap();
     }
 }
 

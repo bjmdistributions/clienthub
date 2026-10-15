@@ -22,6 +22,7 @@ import AccountantChanges from "./AccountantChanges";
 import NearDuplicates from "./NearDuplicates";
 import RetractedRows from "./RetractedRows";
 import BankHealthStrip from "./BankHealthStrip";
+import Switch from "./Switch";
 import { parseAmount } from "../lib/format";
 import { alreadyTied, tieAmount } from "../lib/tieAmount";
 
@@ -1107,6 +1108,9 @@ export default function FinancialsView() {
   const [healthVersion, setHealthVersion] = useState(0);
   // R-518: which banks have instant updates on, for Setup's connected-banks list.
   const [bankHealth, setBankHealth] = useState<PlaidHealth | null>(null);
+  // R-518: open Ecliptr when this computer starts, so a reboot does not stop the bank feed. null = not known.
+  const [autostart, setAutostart] = useState<boolean | null>(null);
+  useEffect(() => { api.autostartGet().then(setAutostart).catch(() => setAutostart(null)); }, []);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [armedBook, setArmedBook] = useState<string | null>(null); // deal money booked without a deal asks once
   const [, setClockTick] = useState(0);
@@ -1833,7 +1837,8 @@ export default function FinancialsView() {
       const acct = accountId.trim() || "business";
       localStorage.setItem("fin_last_account", acct);
       const s = await api.bankImport(previewPath, acct);
-      toast(`Imported ${s.imported}, skipped ${s.skipped} (already imported)`);
+      const feed = s.from_feed ?? 0;
+      toast(`Imported ${s.imported}, skipped ${s.skipped}${feed ? ` (${feed} already came in from the bank feed)` : " (already imported)"}`);
       setPreview(null); setPreviewPath(null);
       await refreshAll(false);
     } catch (e: any) { toast(errText(e), "error"); }
@@ -3691,7 +3696,8 @@ export default function FinancialsView() {
       {tab !== "cash" && tab !== "report" && (
       <div className="space-y-5">
       {/* To book — headline row: how much work waits, plus the daily controls. */}
-      {tab === "tobook" && plaidItems.length > 0 && (
+      {tab === "tobook" && (
+        // Renders nothing when no bank needs anything; over-booked rows (R-518 F7) can come from a statement too.
         <BankHealthStrip version={healthVersion} onSynced={() => { refreshAll(false).catch(() => {}); loadPlaid(); }} />
       )}
 
@@ -3923,12 +3929,21 @@ export default function FinancialsView() {
           </button>
           <label className="flex items-center gap-1.5 text-[12px] text-muted">
             Account
+            {/* R-518 (F5): the accounts already on the books are offered, so a statement lands on the account the
+                bank feed uses and its rows are matched instead of doubled. A new name is still allowed. */}
             <input
               value={accountId}
               onChange={(e) => setAccountId(e.target.value)}
-              className="border border-line px-2.5 h-9 rounded-lg text-[13px] w-40 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
+              list="fin-import-accounts"
+              className="border border-line px-2.5 h-9 rounded-lg text-[13px] w-56 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
+            <datalist id="fin-import-accounts">
+              {accounts.map((a) => <option key={a} value={a} />)}
+            </datalist>
           </label>
+          {accounts.length > 0 && accountId.trim() && !accounts.includes(accountId.trim()) && (
+            <span className="text-[12px] text-warning-ink">A new account name. Pick the one the bank feed uses so rows it already has are skipped.</span>
+          )}
           <button
             onClick={pickAndPreview}
             disabled={bulkBusy || previewing}
@@ -4489,6 +4504,24 @@ export default function FinancialsView() {
                     Dismiss
                   </button>
                 </div>
+              </div>
+            )}
+
+            {plaidItems.length > 0 && autostart !== null && (
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12.5px] font-medium text-ink">Open Ecliptr when this computer starts</div>
+                  <div className="text-[12px] text-muted">The bank feed only runs while Ecliptr is open on the computer that holds the bank link.</div>
+                </div>
+                <Switch
+                  on={autostart}
+                  label="Open Ecliptr when this computer starts"
+                  onToggle={() => {
+                    api.autostartSet(!autostart)
+                      .then((v) => { setAutostart(v); toast(v ? "Ecliptr will open when this computer starts." : "Ecliptr will not open on its own.", "success"); })
+                      .catch((e) => toast(errText(e), "error"));
+                  }}
+                />
               </div>
             )}
 

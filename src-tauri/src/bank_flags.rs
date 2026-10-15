@@ -58,6 +58,37 @@ pub fn withdrawn_copy_booked_to(conn: &rusqlite::Connection, txn_id: &str, deal_
     conn.query_row(&sql, rusqlite::params![txn_id, deal_id], |_| Ok(())).is_ok()
 }
 
+/// R-518 (F11): `raw_json` is one blob that several writers replace whole under per-column last-writer-wins, so a
+/// phone answering "two real payments" (`nd`) could erase the withdrawn mark (`rtr`) a desktop had just stamped, and
+/// the row would be counted beside its posted copy again. These keys are only ever added while a row lives (`rtr` and
+/// `acct0` are set once, `nd` only grows), so a blob arriving by sync keeps them from the stored one. `None` when
+/// nothing needs keeping or either side is not a JSON object.
+pub fn merge_sticky_flags(stored: &str, incoming: &str) -> Option<String> {
+    let old = serde_json::from_str::<serde_json::Value>(stored).ok()?;
+    let mut new = serde_json::from_str::<serde_json::Value>(incoming).ok()?;
+    let (Some(old), Some(obj)) = (old.as_object(), new.as_object_mut()) else { return None };
+    let mut changed = false;
+    for k in ["rtr", "acct0"] {
+        if let Some(v) = old.get(k).filter(|v| !v.is_null()) {
+            if obj.get(k).map_or(true, |x| x.is_null()) {
+                obj.insert(k.to_string(), v.clone());
+                changed = true;
+            }
+        }
+    }
+    if let Some(prev) = old.get("nd").and_then(|v| v.as_array()) {
+        let mut list: Vec<serde_json::Value> = obj.get("nd").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        for id in prev {
+            if !list.contains(id) {
+                list.push(id.clone());
+                changed = true;
+            }
+        }
+        if changed { obj.insert("nd".to_string(), serde_json::Value::Array(list)); }
+    }
+    changed.then(|| new.to_string())
+}
+
 /// `counted(alias)` as a string literal, for SQL that is a `const` built with `concat!`. The alias is a literal too:
 /// `concat!("... WHERE ", bank_counted_sql!("t"), " AND ...")`.
 #[macro_export]
@@ -88,6 +119,19 @@ mod tests {
         assert!(!withdrawn_copy_booked_to(&c, "far", "deal_1"), "outside the ten-day window");
         assert!(!withdrawn_copy_booked_to(&c, "other", "deal_1"), "another account");
         assert!(!withdrawn_copy_booked_to(&c, "w", "deal_1"), "the withdrawn row itself is not its own copy");
+    }
+
+    #[test]
+    fn a_synced_blob_keeps_the_withdrawn_mark_and_the_answers() {
+        // The phone's answer (nd) arrives after the desktop stamped rtr: both survive.
+        let m = merge_sticky_flags(r#"{"pa":"x","rtr":"2026-10-14T10:00:00Z","nd":["a"]}"#, r#"{"pa":"x","nd":["b"]}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&m).unwrap();
+        assert_eq!(v["rtr"], "2026-10-14T10:00:00Z");
+        assert_eq!(v["nd"], serde_json::json!(["b", "a"]));
+        // Nothing to keep: the incoming blob stands as it is.
+        assert!(merge_sticky_flags(r#"{"pa":"x"}"#, r#"{"pa":"y","rtr":"t"}"#).is_none());
+        assert!(merge_sticky_flags("", r#"{"pa":"y"}"#).is_none());
+        assert!(merge_sticky_flags(r#"{"rtr":"t"}"#, "not json").is_none());
     }
 
     #[test]

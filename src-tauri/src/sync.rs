@@ -759,6 +759,20 @@ fn apply_upsert(
         )
         .unwrap_or(0);
 
+    // R-518 (F11): a bank row's raw_json arriving by sync keeps the keys that are only ever added (bank_flags).
+    if table == "bank_txn" && exists > 0 {
+        if let Some(pos) = winning.iter().position(|(c, _)| c == "raw_json") {
+            if let Some(incoming) = winning[pos].1.as_str().map(str::to_string) {
+                let stored: String = conn
+                    .query_row("SELECT COALESCE(raw_json,'') FROM bank_txn WHERE id=?1", [row_id], |r| r.get(0))
+                    .unwrap_or_default();
+                if let Some(m) = crate::bank_flags::merge_sticky_flags(&stored, &incoming) {
+                    winning[pos].1 = serde_json::Value::String(m);
+                }
+            }
+        }
+    }
+
     if exists == 0 {
         // R-518 (F12): every bank_txn and bank_allocation column has a default, so an edit for a row this copy does
         // not hold (deleted here, or not created yet) used to make an undated $0 row. Every create names these

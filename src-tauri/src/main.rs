@@ -359,6 +359,8 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_drag::init())
+        // R-518: open at startup, only when the person turns it on in Financials > Setup.
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         // R-518: a PC that slept or sat in the background pulls its banks the moment someone looks at it.
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Focused(true) = event {
@@ -600,8 +602,16 @@ fn main() {
                 let mut tried: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
                 let mut last_seen = chrono::Utc::now().to_rfc3339();
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                // R-518: the wall clock between ticks. A gap of minutes means the PC slept (the monotonic timers this
+                // loop and the 10-minute pull run on may not count sleep), so the banks are pulled on wake.
+                let mut last_wall = chrono::Utc::now();
                 loop {
                     interval.tick().await;
+                    let now_wall = chrono::Utc::now();
+                    if now_wall.signed_duration_since(last_wall) > chrono::Duration::minutes(3) {
+                        tauri::async_runtime::spawn(commands::plaid_sync_if_stale());
+                    }
+                    last_wall = now_wall;
                     let Some(cfg) = netsync::config() else { continue };
                     let items = commands::plaid_doorbell_items();
                     if items.is_empty() { continue; }
@@ -1164,6 +1174,10 @@ fn main() {
             plaid_remove_item,
             plaid_sync,
             commands::plaid_health,
+            commands::list_overbooked_txns,
+            commands::autostart_get,
+            commands::autostart_set,
+            commands::trim_txn_bookings,
             commands::plaid_health_dismiss,
             commands::plaid_reconnect_start,
             commands::plaid_reconnect_poll,

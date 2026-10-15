@@ -45,7 +45,9 @@ pub struct BankPreview {
 #[derive(Debug, Serialize)]
 pub struct BankImportSummary {
     pub imported: usize,
-    pub skipped: usize, // already present (dedupe)
+    pub skipped: usize, // already present (dedupe), including the rows below
+    /// R-518 (F5): rows skipped because the bank feed already brought them in (a twin on the same account).
+    pub from_feed: usize,
     pub errors: Vec<String>,
     pub format: String,
     pub has_fitid: bool,
@@ -480,11 +482,14 @@ pub fn persist_rows(rows: &[ParsedRow], account_id: &str, format: &str) -> Resul
     let conn = crate::db::pool().get().context("db pool")?;
 
     let mut summary = BankImportSummary {
-        imported: 0, skipped: 0, errors: Vec::new(),
+        imported: 0, skipped: 0, from_feed: 0, errors: Vec::new(),
         format: format.to_string(), has_fitid,
     };
 
     let mut seen: std::collections::HashMap<String, usize> = Default::default();
+    // R-518 (F5): feed rows already matched to a statement row in this import, so two identical statement rows
+    // never both skip against one feed row.
+    let mut used_feed: std::collections::HashSet<String> = Default::default();
     for row in rows {
         let first = stable_id(account_id, row);
         let nth = { let n = seen.entry(first).or_insert(0); *n += 1; *n };
@@ -497,6 +502,27 @@ pub fn persist_rows(rows: &[ParsedRow], account_id: &str, format: &str) -> Resul
         // deleted. Writing it again cleared the delete record and put it back on every device.
         if exists || crate::sync::is_tombstoned("bank_txn", &id) {
             summary.skipped += 1;
+            continue;
+        }
+        // R-518 (F5): a statement over a period the bank feed already covers doubled every row. A row whose twin the
+        // feed brought in on this account (same direction, the amount to the cent, posted within a day) is skipped.
+        let feed_twin: Option<String> = conn
+            .prepare(
+                "SELECT id FROM bank_txn WHERE account_id=?1 AND direction=?2 AND ABS(amount-?3)<0.005 \
+                   AND COALESCE(source_format,'')='plaid' \
+                   AND ABS(julianday(substr(posted_at,1,10)) - julianday(substr(?4,1,10))) <= 1 \
+                 ORDER BY posted_at, id",
+            )
+            .and_then(|mut st| {
+                st.query_map(rusqlite::params![account_id, row.direction, row.amount, row.posted_at], |r| r.get::<_, String>(0))
+                    .map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>())
+            })
+            .ok()
+            .and_then(|ids| ids.into_iter().find(|i| !used_feed.contains(i)));
+        if let Some(t) = feed_twin {
+            used_feed.insert(t);
+            summary.skipped += 1;
+            summary.from_feed += 1;
             continue;
         }
 
@@ -664,5 +690,34 @@ DAILY ENDING BALANCE\n\
         let id2 = stable_id("acct", &r);
         assert_eq!(id1, id2, "same input must yield same id (cross-device dedupe)");
         assert!(id1.starts_with("bt_"));
+    }
+}
+
+#[cfg(test)]
+mod r518_feed_twin_tests {
+    use super::{persist_rows, ParsedRow};
+    use crate::db::pool;
+
+    fn row(date: &str, amount: f64, desc: &str) -> ParsedRow {
+        ParsedRow { posted_at: date.into(), amount, direction: "out".into(), description: desc.into(), memo_raw: desc.into(),
+                    rail: String::new(), category: String::new(), counterparty_name: String::new(), fitid: String::new(),
+                    wire_ref: String::new(), check_num: String::new(), balance: 0.0 }
+    }
+
+    // R-518 (F5): a statement over a period the bank feed already covers no longer doubles its rows.
+    #[test]
+    fn a_statement_row_the_feed_already_has_is_skipped_once() {
+        let _db = crate::db::init_test_store();
+        let acct = "R518 Checking \u{00b7}\u{00b7}4242";
+        {
+            let c = pool().get().unwrap();
+            c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, source_format) \
+                       VALUES ('r518_feed','R518 Checking \u{00b7}\u{00b7}4242','2026-10-02',250,'out','ACME SUPPLY','plaid')", []).unwrap();
+        }
+        // Two identical statement rows a day later: one is the feed's row, the other is a second real payment.
+        let s = persist_rows(&[row("2026-10-03", 250.0, "ACME SUPPLY CO"), row("2026-10-03", 250.0, "ACME SUPPLY CO"), row("2026-10-03", 99.0, "OTHER")], acct, "csv").unwrap();
+        assert_eq!((s.imported, s.from_feed), (2, 1));
+        let c = pool().get().unwrap();
+        c.execute("DELETE FROM bank_txn WHERE account_id='R518 Checking \u{00b7}\u{00b7}4242'", []).unwrap();
     }
 }

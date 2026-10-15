@@ -2592,6 +2592,8 @@ export interface BankPreview {
 export interface BankImportSummary {
   imported: number;
   skipped: number;
+  /** R-518: rows the bank feed already brought in on this account, skipped (counted in `skipped` too). */
+  from_feed?: number;
   errors: string[];
   format: "ofx" | "csv";
   has_fitid: boolean;
@@ -2946,6 +2948,16 @@ export interface PlaidHealthBank {
   /** Whether Plaid took this bank's instant-update webhook (null: not tried yet on this run). */
   webhook_ok: boolean | null;
   last_ring: string | null;
+}
+/** R-518 (F7): a bank row booked for more than it says, with its bookings newest first. */
+export interface OverbookedTxn {
+  id: string;
+  posted_at: string;
+  name: string;
+  amount: number;
+  booked: number;
+  excess: number;
+  allocations: { id: string; amount: number; role: string; deal: string }[];
 }
 export interface PlaidHealth {
   banks: PlaidHealthBank[];
@@ -4581,6 +4593,10 @@ export const api = {
   plaidRefreshSync: () => invoke<PlaidSyncSummary & { refresh_refused?: string[] }>("plaid_refresh_sync"),
   plaidHealth: () => invoke<PlaidHealth>("plaid_health"),
   plaidHealthDismiss: () => invoke<void>("plaid_health_dismiss"),
+  listOverbookedTxns: () => invoke<OverbookedTxn[]>("list_overbooked_txns"),
+  autostartGet: () => invoke<boolean>("autostart_get"),
+  autostartSet: (on: boolean) => invoke<boolean>("autostart_set", { on }),
+  trimTxnBookings: (id: string) => invoke<{ trimmed: number }>("trim_txn_bookings", { id }),
   plaidReconnectStart: (id: string) => invoke<{ hosted_link_url: string; link_token: string }>("plaid_reconnect_start", { id }),
   plaidReconnectPoll: (linkToken: string, id: string) =>
     invoke<{ status: "pending" | "done" | "exited" }>("plaid_reconnect_poll", { linkToken, id }),

@@ -2,7 +2,7 @@
 name = "clienthub"
 # Keep in step with src-tauri/tauri.conf.json — that file is what the release
 # pipeline reads, and these two drifted 118 patch versions apart before 2026-08-07.
-version = "0.16.171"
+version = "0.16.172"
 edition = "2021"
 
 [lib]
@@ -103,6 +103,7 @@ regex = "1"
 image = "0.24"
 dirs = "5"
 rand = "0.8"
+tauri-plugin-autostart = "~2.5.1"
 
 # macOS 26 (Tahoe) launch-crash fix. macOS 26 changed the Obj-C type encoding for
 # fast enumeration (countByEnumeratingWithState:objects:count:) from 'q' to 'Q';
