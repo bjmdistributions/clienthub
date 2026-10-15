@@ -75,7 +75,8 @@ export function rowsText(l: LoadLine): string {
     runs.push(j > i ? `${rs[i]} to ${rs[j]}` : String(rs[i]));
     i = j + 1;
   }
-  const list = runs.length > 1 ? `${runs.slice(0, -1).join(", ")} and ${runs[runs.length - 1]}` : runs[0];
+  // A style keeps at most 64 rows (case_core MAX_LINE_ROWS): a list that long says there are more.
+  const list = (runs.length > 1 ? `${runs.slice(0, -1).join(", ")} and ${runs[runs.length - 1]}` : runs[0]) + (rs.length >= 64 ? " and more" : "");
   const where = `${l.sheet ? `${l.sheet} ` : ""}${rs.length > 1 ? "rows" : "row"} ${list}`;
   return l.sizes_row ? `${where}, sizes from row ${l.sizes_row}` : where;
 }

@@ -41,13 +41,15 @@ export default function WarehouseView() {
   });
   const pickView = (v: "products" | "map" | "pallets" | "deliveries") => { setView(v); setOpenId(null); try { localStorage.setItem("warehouse_view", v); } catch { /* ignore */ } };
   // R-539: a sheet that reads as a delivery's manifest opens as a delivery, wherever it was imported.
-  const [dropped, setDropped] = useState<{ path: string; n: number; read?: ManifestRead } | null>(null);
+  const [dropped, setDropped] = useState<{ path: string; n: number; read: ManifestRead } | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
   const openRef = useRef<string | null>(null);
   openRef.current = openId;
   const busyRef = useRef(false);
-  busyRef.current = !!editing || !!importing;
+  busyRef.current = !!editing || !!importing || pasting;
+  // R-539: where an import began (its view and product): Cancel and Not a delivery go back there.
+  const originRef = useRef<{ view: "products" | "map" | "pallets" | "deliveries"; openId: string | null } | null>(null);
 
   const load = useCallback(() =>
     api.listWarehouseItems()
@@ -66,11 +68,11 @@ export default function WarehouseView() {
     setItems((prev) => (prev ? (prev.some((p) => p.id === it.id) ? prev.map((p) => (p.id === it.id ? it : p)) : [...prev, it]) : [it]));
 
   // The column picker: for the sheet Jack keeps his stock in.
-  const openAsStock = useCallback(async (path: string) => {
+  const openAsStock = useCallback(async (path: string, targetId?: string | null) => {
     try {
       const read = await api.warehouseReadSheet(path);
       const fileName = path.split(/[\\/]/).pop() || "Sheet";
-      setImporting({ read, fileName, targetId: openRef.current });
+      setImporting({ read, fileName, targetId: targetId !== undefined ? targetId : openRef.current });
     } catch (e) { toast(String(e), "error"); }
   }, []);
 
@@ -78,16 +80,31 @@ export default function WarehouseView() {
   // styles with sizes, it opens as a delivery, page by page, with nothing to choose. Any other
   // sheet opens the column picker.
   const openSheet = useCallback(async (path: string) => {
-    let read: ManifestRead | null = null;
-    try { read = await api.readLoadManifest(path); } catch { read = null; }
-    if (read && read.lines.length > 0) {
+    let read: ManifestRead;
+    try { read = await api.readLoadManifest(path); } catch (e) { toast(String(e), "error"); return; }
+    // A delivery has pairs to receive: headings alone (Style, Size on a stock sheet) are not one.
+    if (read.lines.some((l) => l.sizes.some((s) => s.qty > 0))) {
+      originRef.current = { view: viewRef.current, openId: openRef.current };
       setView("deliveries"); setOpenId(null);
-      try { localStorage.setItem("warehouse_view", "deliveries"); } catch { /* ignore */ }
-      setDropped((d) => ({ path, n: (d?.n ?? 0) + 1, read: read! }));
+      setDropped((d) => ({ path, n: (d?.n ?? 0) + 1, read }));
       return;
     }
     openAsStock(path);
   }, [openAsStock]);
+  // The delivery import ended: saved, it stays on Deliveries; cancelled, back to where it began.
+  const importEnded = (how: "saved" | "cancelled") => {
+    const o = originRef.current;
+    originRef.current = null;
+    if (how === "saved") { try { localStorage.setItem("warehouse_view", "deliveries"); } catch { /* ignore */ } return; }
+    if (o && o.view !== "deliveries") { setView(o.view); setOpenId(o.openId); }
+  };
+  // Not a delivery: the column picker for the product the import began on.
+  const asStock = (path: string) => {
+    const o = originRef.current;
+    originRef.current = null;
+    if (o && o.view !== "deliveries") { setView(o.view); setOpenId(o.openId); }
+    openAsStock(path, o ? o.openId : null);
+  };
 
   const pickSheet = async () => {
     const f = await openDialog({ multiple: false, filters: [{ name: "Spreadsheet", extensions: SHEET_EXTS }] });
@@ -135,7 +152,12 @@ export default function WarehouseView() {
         items={(items || []).filter((i) => !i.archived)}
         defaultTargetId={importing.targetId}
         onClose={() => setImporting(null)}
-        onImported={(it) => { put(it); setImporting(null); setOpenId(it.id); }}
+        onImported={(it) => {
+          put(it); setImporting(null);
+          // A stock import shows its product among the products.
+          setView("products"); try { localStorage.setItem("warehouse_view", "products"); } catch { /* ignore */ }
+          setOpenId(it.id);
+        }}
       />
     );
   }
@@ -219,7 +241,7 @@ export default function WarehouseView() {
         </div>
       </div>
 
-      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onImport={pickSheet} onAsStock={openAsStock} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <WarehouseMap items={items || []} /> : <>
+      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onDropUsed={() => setDropped(null)} onImport={pickSheet} onAsStock={asStock} onImportEnded={importEnded} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <WarehouseMap items={items || []} /> : <>
       {items === null ? (
         <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
           {[0, 1].map((i) => <div key={i} className="h-[112px] bg-surface-2 rounded-xl animate-pulse" />)}

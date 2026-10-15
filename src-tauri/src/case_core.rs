@@ -180,6 +180,9 @@ pub fn read_tabs(filename: &str, bytes: &[u8]) -> Result<Vec<Tab>, String> {
     match ext.as_str() {
         "csv" | "tsv" | "txt" => {
             let text = String::from_utf8_lossy(bytes).trim_start_matches('\u{feff}').to_string();
+            // A blank line is still a row, as it is when the file opens in Excel, so row numbers
+            // match the sheet: the csv reader skips truly empty lines, not one holding a space.
+            let text = text.split('\n').map(|l| if l.trim().is_empty() { " " } else { l }).collect::<Vec<_>>().join("\n");
             let mut rdr = csv::ReaderBuilder::new()
                 .delimiter(sniff_delimiter(&text))
                 .has_headers(false)
@@ -2672,6 +2675,12 @@ mod tests {
         assert_eq!(c[0].rows.len(), MAX_LINE_ROWS);
         assert!(c[0].rows.iter().all(|&r| r >= 1));
         assert_eq!(c[0].sizes_row, 0);
+        // A CSV's blank lines count as rows, as in Excel.
+        let tabs = read_tabs("a.csv", b"Style,Color,7,8,Total\nA1,BLK,1,2,3\n\nA2,BLK,1,2,3\n").unwrap();
+        let m = read_manifest(&tabs);
+        assert_eq!(m.lines.iter().map(|l| l.rows.clone()).collect::<Vec<_>>(), vec![vec![2], vec![4]]);
+        let tabs = read_tabs("b.csv", b"Style,Color,Size,Qty\r\n\r\nB1,BLK,7,2\r\n\r\n\r\nB1,BLK,8,3\r\n").unwrap();
+        assert_eq!(read_manifest(&tabs).lines[0].rows, vec![3, 6]);
         let json = serde_json::to_string(&LoadLine { id: "h1".into(), style: "X".into(), ..Default::default() }).unwrap();
         assert!(!json.contains("rows") && !json.contains("sizes_row"), "{json}");
     }
