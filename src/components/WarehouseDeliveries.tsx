@@ -40,7 +40,7 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
   useEffect(() => { loadList(); }, [loadList]);
 
   // A case save answers without the lines (they did not change): keep the ones on hand.
-  const merge = useCallback((next: LoadDetail) => setDetail((prev) => ({ ...next, load: { ...next.load, lines: next.load.lines ?? (prev && prev.load.id === next.load.id ? prev.load.lines : []) } })), []);
+  const merge = useCallback((next: LoadDetail) => setDetail((prev) => (prev && prev.load.id === next.load.id ? { ...next, load: { ...next.load, lines: next.load.lines ?? prev.load.lines } } : prev)), []);
 
   // Live: cases added on the phone (or another desktop) land here as soon as they sync.
   const openId = detail?.load.id ?? null;
@@ -68,7 +68,8 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
 
   if (preview) {
     return <ManifestPreview key={preview.n} read={preview.read} fileName={preview.fileName} path={preview.path} onCancel={() => setPreview(null)}
-      onSaved={(d, msg) => { setPreview(null); setDetail(d); loadList(); toast(msg); }} />;
+      onSaved={(d, msg) => { setPreview(null); setDetail(d); loadList(); toast(msg); }}
+      onLate={(msg) => { loadList(); toast(msg); }} />;
   }
   if (detail) {
     return <DeliveryScreen d={detail} merge={merge} setEditing={setEditing} onBack={() => { setDetail(null); loadList(); }} />;
@@ -173,7 +174,7 @@ function PhotoView({ l, onClose }: { l: LoadLine; onClose: () => void }) {
 // R-537: one card a page, each saying plainly whether it is imported. A totals page is never
 // imported; each page of styles has its own switch, on at first; a page that repeats all the
 // others is off at first. Only the pages switched on are saved, and their pictures with them.
-function ManifestPreview({ read, fileName, path, onCancel, onSaved }: { read: ManifestRead; fileName: string; path: string; onCancel: () => void; onSaved: (d: LoadDetail, msg: string) => void }) {
+function ManifestPreview({ read, fileName, path, onCancel, onSaved, onLate }: { read: ManifestRead; fileName: string; path: string; onCancel: () => void; onSaved: (d: LoadDetail, msg: string) => void; onLate: (msg: string) => void }) {
   const [name, setName] = useState(fileName.replace(/\.[^.]+$/, ""));
   const [busy, setBusy] = useState(false);
   const [on, setOn] = useState<Set<string>>(() => defaultTabs(read));
@@ -202,13 +203,14 @@ function ManifestPreview({ read, fileName, path, onCancel, onSaved }: { read: Ma
       const msg = !pics ? "Delivery saved"
         : d.pictures ? `Delivery saved, with pictures on ${many(d.pictures.on_lines, "style", "styles")}`
         : `Delivery saved. The pictures did not come in (${d.pictures_error ?? "no reason given"}). Use Add pictures from the sheet on the delivery.`;
-      if (alive.current) onSaved(d, msg); else toast(msg);
+      // Saved after this preview was replaced: the list still learns of it.
+      if (alive.current) onSaved(d, msg); else onLate(msg);
     } catch (e) { toast(String(e), "error"); if (alive.current) setBusy(false); }
   };
 
   return (
     <div className="max-w-[920px]">
-      <button onClick={onCancel} className="inline-flex items-center gap-1 text-[12.5px] text-muted hover:text-ink-2 mb-3"><ArrowLeft size={13} /> Deliveries</button>
+      <button onClick={onCancel} disabled={busy} className="inline-flex items-center gap-1 text-[12.5px] text-muted hover:text-ink-2 mb-3 disabled:opacity-50"><ArrowLeft size={13} /> Deliveries</button>
       <h2 className="text-[18px] font-semibold text-ink tracking-tight">Import a delivery</h2>
       <p className="text-[13px] text-ink-2 mt-1">{fileName} has {many(read.tabs.length, "page", "pages")}. {pages.length ? `${many(pages.length, "page has", "pages have")} styles to import` : "No page has styles to import"}{ignored.length ? `, and ${many(ignored.length, "page is", "pages are")} ignored` : ""}. Check each page below.</p>
 
@@ -285,7 +287,7 @@ function ManifestPreview({ read, fileName, path, onCancel, onSaved }: { read: Ma
           <input value={name} onChange={(e) => setName(e.target.value)} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`} /></label>
         <div className="flex gap-2 mt-3">
           <button onClick={save} disabled={busy || !chosen.length || !name.trim()} className={WH_BTN_PRIMARY}>{busy ? (pics ? "Saving, with pictures…" : "Saving…") : "Save delivery"}</button>
-          <button onClick={onCancel} className={WH_BTN_SECONDARY}>Cancel</button>
+          <button onClick={onCancel} disabled={busy} className={WH_BTN_SECONDARY}>Cancel</button>
         </div>
       </div>
 
@@ -347,9 +349,8 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
     // Pictures another device has not uploaded yet are asked for again, every 30 seconds, ten times.
     let live = true, tries = 0, timer: number | undefined;
     const run = () => api.ensureDeliveryPictures(L.id).then((r) => {
-      if (!live) return;
       if (r.arrived > 0) setPicV((v) => v + 1);
-      if (r.missing > 0 && ++tries < 10) timer = window.setTimeout(run, 30_000);
+      if (live && r.missing > 0 && ++tries < 10) timer = window.setTimeout(run, 30_000);
     }).catch(() => {});
     run();
     return () => { live = false; if (timer) window.clearTimeout(timer); };
@@ -363,7 +364,8 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
     setPicBusy(true);
     try {
       const r = await api.addLoadPictures(L.id, f);
-      if (screenAlive.current) { merge(r); setPicV((v) => v + 1); }
+      merge(r);
+      if (screenAlive.current) setPicV((v) => v + 1);
       const p = r.pictures;
       if (!p.on_lines) toast("No picture in that file sits beside a style on this delivery.", "error");
       else toast(`Pictures on ${many(p.on_lines, "style", "styles")}${p.not_on_delivery ? `. ${many(p.not_on_delivery, "picture is", "pictures are")} for styles not on this delivery` : ""}.`);

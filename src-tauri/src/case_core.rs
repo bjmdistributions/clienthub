@@ -366,7 +366,19 @@ fn is_size_row(labels: &[(usize, String)]) -> bool {
     if labels.is_empty() {
         return false;
     }
-    if labels.iter().all(|(_, l)| looks_like_size(l)) || labels.iter().all(|(_, l)| num(l).is_none() && l.chars().count() <= 16) {
+    if labels.iter().all(|(_, l)| looks_like_size(l)) {
+        return true;
+    }
+    let filler = |l: &str| {
+        let n = norm(l);
+        n.is_empty() || matches!(n.as_str(), "pairs" | "pair" | "qty" | "quantity" | "units" | "unit" | "pcs" | "each" | "ea" | "total" | "n a" | "na" | "tbd" | "none" | "size" | "sizes")
+    };
+    let side_by_side = labels.windows(2).all(|w| w[1].0 == w[0].0 + 1);
+    let words = labels.len() >= 2
+        && side_by_side
+        && labels.iter().all(|(_, l)| num(l).is_none() && l.chars().count() <= 16 && !filler(l))
+        && labels.iter().any(|(_, l)| !l.eq_ignore_ascii_case(&labels[0].1));
+    if words {
         return true;
     }
     let ns: Vec<f64> = labels.iter().filter_map(|(_, l)| size_number(l)).collect();
@@ -435,11 +447,11 @@ fn find_cols(rows: &[Vec<String>]) -> Option<Cols> {
             h.iter().enumerate().skip(from).find(|(_, x)| total_head(x)).map(|(c, _)| c).or_else(|| h.iter().enumerate().skip(style + 1).find(|(_, x)| total_head(x)).map(|(c, _)| c))
         };
         let width = rows.iter().map(|r| r.len()).max().unwrap_or(0);
-        let size_head = |x: &str| {
-            (matches!(x, "size" | "sizes" | "sz" | "sizing") || x.starts_with("size ") || x.starts_with("sizes ") || x.ends_with(" size") || x.ends_with(" sizes"))
-                && !["pack", "case", "box", "carton", "pallet", "inner", "master"].iter().any(|w| x.contains(w))
-        };
-        let size_col = h.iter().position(|x| size_head(x));
+        let not_a_measure = |x: &str| !["pack", "case", "box", "carton", "pallet", "inner", "master", "lot", "sample", "min", "max"].iter().any(|w| x.split(' ').any(|p| p == *w));
+        let exact_head = |x: &str| (matches!(x, "size" | "sizes" | "sz" | "sizing") || x.starts_with("size ") || x.starts_with("sizes ")) && not_a_measure(x) && !looks_like_size(x);
+        let named_on_heading = (style + 1..rows[r].len()).filter(|&k| heading_size(&rows[r][k])).count();
+        let loose_head = |x: &str| (x.ends_with(" size") || x.ends_with(" sizes")) && not_a_measure(x) && !looks_like_size(x) && named_on_heading < 2;
+        let size_col = h.iter().position(|x| exact_head(x)).or_else(|| h.iter().position(|x| loose_head(x)));
         // A "Size" heading where the grid starts (up to the total after it), or else sizes named
         // as headings (a Qty or Total before them does not cut them off).
         let (grid_from, grid_to, scale, total) = if let Some(c) = size_col {
@@ -482,7 +494,8 @@ fn stated_totals(tab: &Tab) -> Option<Stated> {
         let lines_col = h.iter().position(|x| x.starts_with("sku") || x.starts_with("style"));
         for row in &tab.rows[r + 1..] {
             let first = row.iter().find(|c| !c.trim().is_empty()).cloned().unwrap_or_default();
-            if is_total(&first) {
+            let sub = norm(&first);
+            if is_total(&first) && !sub.starts_with("subtotal") && !sub.starts_with("sub total") {
                 let pairs = num(&at(row, Some(pairs_col)))?;
                 let lines = lines_col.and_then(|c| num(&at(row, Some(c))));
                 return Some(Stated { tab: tab.name.clone(), lines, pairs });
@@ -890,7 +903,8 @@ struct Anchor {
     row: usize,
     row_last: usize,
     col: usize,
-    embed: String,
+    /// None for a picture linked from outside the file: it cannot be read.
+    embed: Option<String>,
     /// More pictures inside the same anchor (a group): their place cannot be told, so they are
     /// counted as not read.
     extra: usize,
@@ -916,7 +930,7 @@ fn drawing_anchors(xml: &str) -> Vec<Anchor> {
     let mut reader = quick_xml::Reader::from_str(xml);
     let (mut in_anchor, mut fallback, mut edge, mut field) = (false, 0usize, Edge::None, String::new());
     let (mut from, mut to, mut to_off): (Option<usize>, Option<usize>, i64) = (None, None, 0);
-    let (mut from_col, mut extra) = (0usize, 0usize);
+    let (mut from_col, mut extra, mut saw_blip) = (0usize, 0usize, false);
     let mut embed: Option<String> = None;
     // A row or column past Excel's last is not one.
     let cell = |v: &str| v.parse::<usize>().ok().map(|n| n.min(1_048_575));
@@ -934,18 +948,23 @@ fn drawing_anchors(xml: &str) -> Vec<Anchor> {
                         embed = None;
                         from_col = 0;
                         extra = 0;
+                        saw_blip = false;
                     }
                     b"from" if in_anchor => edge = Edge::From,
                     b"to" if in_anchor => edge = Edge::To,
                     b"row" | b"rowOff" | b"col" if edge != Edge::None => field = String::from_utf8_lossy(name.as_ref()).to_string(),
-                    b"blip" if in_anchor && embed.is_none() => embed = blip_embed(&e),
+                    b"blip" if in_anchor && !saw_blip => {
+                        saw_blip = true;
+                        embed = blip_embed(&e);
+                    }
                     b"blip" if in_anchor => extra += 1,
                     _ => {}
                 }
             }
             Ok(Event::Empty(e)) => {
                 if in_anchor && e.local_name().as_ref() == b"blip" {
-                    if embed.is_none() {
+                    if !saw_blip {
+                        saw_blip = true;
                         embed = blip_embed(&e);
                     } else {
                         extra += 1;
@@ -972,13 +991,13 @@ fn drawing_anchors(xml: &str) -> Vec<Anchor> {
                     b"from" | b"to" => edge = Edge::None,
                     b"twoCellAnchor" | b"oneCellAnchor" => {
                         in_anchor = false;
-                        if let (Some(r), Some(id), 0) = (from, embed.take(), fallback) {
+                        if let (Some(r), true, 0) = (from, saw_blip, fallback) {
                             let last = match to {
                                 Some(t) if t > r && to_off > 0 => t,
                                 Some(t) if t > r => t - 1,
                                 _ => r,
                             };
-                            out.push(Anchor { row: r, row_last: last, col: from_col, embed: id, extra });
+                            out.push(Anchor { row: r, row_last: last, col: from_col, embed: embed.take(), extra });
                         }
                     }
                     _ => {}
@@ -1047,7 +1066,11 @@ pub fn read_pictures(filename: &str, bytes: &[u8]) -> SheetPictures {
             let drels = rels(&mut z, &format!("{ddir}/_rels/{dfile}.rels"), ddir);
             for a in drawing_anchors(&xml) {
                 sp.unreadable += a.extra;
-                let media = match drels.get(&a.embed) {
+                if out.len() >= MAX_PICTURES {
+                    sp.unreadable += 1;
+                    continue;
+                }
+                let media = match a.embed.as_ref().and_then(|e| drels.get(e)) {
                     Some(m) => m.clone(),
                     None => {
                         sp.unreadable += 1;
@@ -1082,10 +1105,6 @@ pub fn read_pictures(filename: &str, bytes: &[u8]) -> SheetPictures {
                     }
                 };
                 out.push(Picture { sheet: name.clone(), row: a.row + 1, row_last: a.row_last + 1, col: a.col, ext: ext.into(), bytes: data });
-                if out.len() >= MAX_PICTURES {
-                    sp.pictures = out;
-                    return sp;
-                }
             }
         }
     }
@@ -2539,6 +2558,63 @@ mod tests {
         let book = w.finish().unwrap().into_inner();
         assert!(read_pictures("a.xlsx", &book).in_cell);
         assert!(!read_pictures("a.xlsx", &picture_book()).in_cell);
+    }
+
+    #[test]
+    fn one_size_plus_size_and_lot_size_headings_are_not_the_size_column() {
+        let m = read_manifest(&[Tab { name: "Hats".into(), rows: vec![row(&["Style", "Color", "One Size", "Total"]), row(&["H1", "RED", "12", "12"])] }]);
+        assert_eq!(sizes_of(&m, "H1"), vec![("One Size".to_string(), 12)]);
+        let m = read_manifest(&[Tab { name: "Tops".into(), rows: vec![row(&["Style", "Color", "S", "M", "L", "Plus Size", "Total"]), row(&["T1", "BLK", "1", "2", "3", "", "6"])] }]);
+        assert_eq!(sizes_of(&m, "T1"), vec![("S".to_string(), 1), ("M".to_string(), 2), ("L".to_string(), 3)]);
+        assert!(m.mismatches.is_empty());
+        let m = read_manifest(&[Tab {
+            name: "Boots".into(),
+            rows: vec![row(&["Style", "Color", "Lot Size", "Size", "Qty"]), row(&["A1", "BLK", "12", "7", "2"]), row(&["A1", "BLK", "12", "8", "3"])],
+        }]);
+        assert_eq!(m.tabs[0].layout, "column");
+        assert_eq!(sizes_of(&m, "A1"), vec![("7".to_string(), 2), ("8".to_string(), 3)]);
+    }
+
+    #[test]
+    fn heading_words_fillers_and_banners_never_become_the_sizes() {
+        let tab = |extra: &[&str]| {
+            let mut r = vec![row(&["Style", "Color", "Size Scale", "", "", "Total"]), row(&["", "", "5", "6", "7", ""])];
+            r.push(row(extra));
+            r.push(row(&["T1", "BLK", "1", "2", "3", "6"]));
+            vec![Tab { name: "T".into(), rows: r }]
+        };
+        for extra in [&["", "", "Pairs", "Pairs", "Pairs"][..], &["", "", "-----", "-----", "-----"][..], &["", "", "N/A", "N/A", "TBD"][..]] {
+            let m = read_manifest(&tab(extra));
+            assert_eq!(sizes_of(&m, "T1"), vec![("5".to_string(), 1), ("6".to_string(), 2), ("7".to_string(), 3)], "{extra:?}");
+        }
+        // A banner over the sizes (Youth over 5, Adult over 8) is not a row of sizes.
+        let m = read_manifest(&[Tab {
+            name: "Kids".into(),
+            rows: vec![row(&["Style", "Color", "5", "6", "7", "8", "9", "10", "Total"]), row(&["", "", "Youth", "", "", "Adult", "", "", ""]), row(&["T1", "BLK", "1", "2", "3", "", "", "", "6"])],
+        }]);
+        assert_eq!(sizes_of(&m, "T1")[..3], [("5".to_string(), 1), ("6".to_string(), 2), ("7".to_string(), 3)]);
+        assert!(m.mismatches.is_empty());
+    }
+
+    #[test]
+    fn the_totals_page_figure_is_the_grand_total() {
+        let totals = Tab {
+            name: "Totals".into(),
+            rows: vec![row(&["Brand", "SKU's", "Total Pairs"]), row(&["A", "3", "10"]), row(&["Subtotal", "3", "10"]), row(&["B", "2", "5"]), row(&["Sub Total", "2", "5"]), row(&["Total", "5", "15"])],
+        };
+        let mut tabs = sample();
+        tabs[0] = totals;
+        let m = read_manifest(&tabs);
+        assert_eq!(m.stated.as_ref().map(|s| (s.lines, s.pairs)), Some((Some(5), 15)));
+    }
+
+    #[test]
+    fn a_linked_picture_is_counted_not_lost() {
+        let xml = r#"<wsDr><oneCellAnchor><from><col>0</col><row>3</row></from><pic><blip link="rId9"/></pic></oneCellAnchor><oneCellAnchor><from><col>0</col><row>5</row></from><sp><txBody/></sp></oneCellAnchor></wsDr>"#;
+        let a = drawing_anchors(xml);
+        // The linked picture is an anchor with nothing to read; the text box is no picture at all.
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].embed, None);
     }
 
     /// The real sheet, read locally only: `R519_SHEET=path cargo test real_manifest -- --ignored --nocapture`.
