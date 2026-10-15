@@ -3927,6 +3927,10 @@ export const api = {
   saveWarehouseCase: (loadId: string, c: { caseId?: string | null; pallet: number; contents: CaseLine[]; notes?: string; copies?: number }) =>
     invoke<LoadDetail>("save_warehouse_case", { loadId, caseId: c.caseId ?? null, pallet: c.pallet, contents: c.contents, notes: c.notes ?? null, copies: c.copies ?? null }),
   removeWarehouseCase: (loadId: string, caseId: string) => invoke<LoadDetail>("remove_warehouse_case", { loadId, caseId }),
+  /** R-519 phase 2: an invoice's pairs leave the delivery (one out per invoice, so a retry takes nothing twice). */
+  takeLoadPairs: (loadId: string, o: { invoiceId?: string; reference?: string; note?: string; takes: CaseLine[] }) =>
+    invoke<LoadDetail>("take_load_pairs", { loadId, invoiceId: o.invoiceId ?? null, reference: o.reference ?? null, note: o.note ?? null, takes: o.takes }),
+  undoLoadOut: (loadId: string, outId: string) => invoke<LoadDetail>("undo_load_out", { loadId, outId }),
   warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
   warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
     invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),

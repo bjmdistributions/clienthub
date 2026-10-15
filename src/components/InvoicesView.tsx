@@ -13,7 +13,8 @@ import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { FromPicker, useSendFromOptions } from "./FromPicker";
-import { changesForInvoice, INVOICE_PREFILL_KEY, plainLines, unitsOnInvoice, type InvoicePrefill, type WhTag } from "../lib/warehouse";
+import { changesForInvoice, INVOICE_PREFILL_KEY, plainLines, unitsOnInvoice, type DlTag, type InvoicePrefill, type WhTag } from "../lib/warehouse";
+import { pendingTakeKey, pickKey } from "../lib/deliveries";
 import { QUOTE_WAITING_WARNING, quoteWaitingOnInvoice } from "../lib/logisticsLoad";
 
 /** R-459: true when the deal behind this invoice has a load whose quote is not on the invoice yet. A
@@ -158,7 +159,7 @@ export default function InvoicesView() {
     if (!raw) return;
     try {
       const p = JSON.parse(raw) as InvoicePrefill;
-      if (Array.isArray(p?.lines) && p.lines.length && p.warehouse?.item_id) {
+      if (Array.isArray(p?.lines) && p.lines.length && (p.warehouse?.item_id || p.delivery?.load_id)) {
         setPrefill(p);
         setEditing(null);
         setShowForm(true);
@@ -670,7 +671,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
   // A line from the warehouse packer carries `wh` (which section it came from) while the
   // form is open, so saving can take exactly what the invoice ends up carrying off the
   // shelf. It never reaches the stored invoice — see plainLines.
-  const [items, setItems]           = useState<(LineItem & { wh?: WhTag })[]>(() => {
+  const [items, setItems]           = useState<(LineItem & { wh?: WhTag; dl?: DlTag })[]>(() => {
     if (initial) {
       const parsed: LineItem[] = JSON.parse(initial.line_items_json || "[]");
       return parsed.length ? parsed : [{ description: "", qty: 1, rate: 0, amount: 0 }];
@@ -678,8 +679,11 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
     if (prefill?.lines.length) return prefill.lines.map((l) => ({ ...l }));
     return [{ description: "", qty: 1, rate: 0, amount: 0 }];
   });
-  const whOut = !initial && prefill ? changesForInvoice(items) : [];
-  const whUnits = !initial && prefill ? unitsOnInvoice(items) : 0;
+  const whOut = !initial && prefill?.warehouse ? changesForInvoice(items) : [];
+  const whUnits = !initial && prefill?.warehouse ? unitsOnInvoice(items) : 0;
+  // R-519 phase 2: a delivery line's pairs are fixed (qty is read-only); a deleted line takes none.
+  const dlTakes = !initial && prefill?.delivery ? items.filter((it) => it.dl && it.qty > 0).flatMap((it) => it.dl!.takes) : [];
+  const dlPairs = dlTakes.reduce((a, x) => a + x.pairs, 0);
   const [submitting, setSubmitting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [templates, setTemplates]   = useState<LineItemTemplate[]>([]);
@@ -816,14 +820,33 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
         }
         // R-326: the invoice exists, so its boxes leave the warehouse now — read from the
         // lines as saved, so an edited quantity or a deleted line is what counts.
-        if (prefill && whOut.length) {
+        const wh = prefill?.warehouse;
+        if (wh && whOut.length) {
           const number = await api.getInvoice(invId).then((v) => v?.number).catch(() => "");
-          await api.warehouseAdjust(prefill.warehouse.item_id, whOut, { reference: number || undefined, note: "Invoiced" })
+          await api.warehouseAdjust(wh.item_id, whOut, { reference: number || undefined, note: "Invoiced" })
             .then((r) => {
               if (r.short.length) toast(`Invoice created. Short on the shelf: ${r.short.map((x) => `${x.name} had ${x.taken} of ${x.wanted} units`).join(", ")}`, "error");
-              else toast(`${whUnits.toLocaleString()} units of ${prefill.warehouse.item_name} taken out of the warehouse`);
+              else toast(`${whUnits.toLocaleString()} units of ${wh.item_name} taken out of the warehouse`);
             })
             .catch((e: any) => toast(`Invoice created, but the warehouse was not updated: ${e}`, "error"));
+        }
+        // R-519 phase 2: the invoice exists, so the pairs its delivery lines picked leave now. One
+        // out per invoice and delivery, so finishing it again later never takes twice.
+        const dl = prefill?.delivery;
+        if (dl && dlTakes.length) {
+          const number = await api.getInvoice(invId).then((v) => v?.number).catch(() => "");
+          await api.takeLoadPairs(dl.load_id, { invoiceId: invId, reference: number || "", note: "Invoiced", takes: dlTakes })
+            .then((d) => {
+              const short = (d.short ?? []).reduce((a, x) => a + (x.asked - x.taken), 0);
+              if (short > 0) toast(`Invoice created. ${(dlPairs - short).toLocaleString()} pairs taken off the delivery; ${short.toLocaleString()} were no longer there (sold on another device).`, "error");
+              else toast(`Invoice created. ${dlPairs.toLocaleString()} pairs taken off the delivery ${dl.load_name}.`);
+              try { localStorage.removeItem(pickKey(dl.load_id)); } catch { /* ignore */ }
+            })
+            .catch((e: any) => {
+              // Kept on this device: the delivery's Sell tab offers to finish it.
+              try { localStorage.setItem(pendingTakeKey(dl.load_id), JSON.stringify({ invoice_id: invId, reference: number || "", takes: dlTakes })); } catch { /* ignore */ }
+              toast(`Invoice created, but the pairs have not left the delivery yet (${e}). Open the delivery, Sell, to finish.`, "error");
+            });
         }
         // R-348: the pallets that were built go onto this order, each with its label and link.
         if (prefill?.pallets && prefill.pallets.pallets.length) {
@@ -951,12 +974,24 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
       )}
 
       {/* R-326: say what saving does to the warehouse, live, before it does it. */}
-      {!initial && prefill && (
+      {!initial && prefill?.delivery && (
+        <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl text-[13px] text-ink">
+          {dlPairs > 0 ? (
+            <>
+              <strong className="font-semibold">From the delivery.</strong> Creating this invoice takes {dlPairs.toLocaleString()} {dlPairs === 1 ? "pair" : "pairs"} off {prefill.delivery.load_name}, the styles and sizes you picked.
+              <span className="text-muted"> Quantities are fixed; delete a line to leave its pairs on the delivery.</span>
+            </>
+          ) : (
+            <>No delivery lines are left on this invoice, so nothing will be taken off the delivery.</>
+          )}
+        </div>
+      )}
+      {!initial && prefill?.warehouse && (
         <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl text-[13px] text-ink">
           {whUnits > 0 ? (
             <>
               <strong className="font-semibold">From the warehouse.</strong> Creating this invoice takes{" "}
-              {whUnits.toLocaleString()} {whUnits === 1 ? "unit" : "units"} of {prefill.warehouse.item_name} off the shelf, in the boxes each line names.
+              {whUnits.toLocaleString()} {whUnits === 1 ? "unit" : "units"} of {prefill.warehouse?.item_name} off the shelf, in the boxes each line names.
               <span className="text-muted"> Change a quantity and that many units are taken instead; delete a line and nothing is taken for it.</span>
             </>
           ) : prefill.built ? (
@@ -981,7 +1016,8 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
             <input className="col-span-6 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
               value={it.description} onChange={(e) => updateItem(i, "description", e.target.value)} />
             <NumberInput className="col-span-1 border border-line px-2 h-9 rounded-lg text-[13px] text-center focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
-              value={it.qty || ""} onValue={(n) => updateItem(i, "qty", n)} />
+              value={it.qty || ""} onValue={(n) => updateItem(i, "qty", n)}
+              readOnly={!!it.dl} title={it.dl ? "The pairs picked on the delivery. Delete the line to leave them out." : undefined} />
             <div className="col-span-2 relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
               <NumberInput className="w-full border border-line pl-7 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"

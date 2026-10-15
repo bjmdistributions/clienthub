@@ -1019,8 +1019,9 @@ fn render_item_row(
     y: f32,
     font: &IndirectFontRef,
 ) {
-    let desc = if item.description.len() > 60 {
-        format!("{}...", &item.description[..57])
+    // Cut by characters, not bytes: a byte cut inside an accented or curly character panics.
+    let desc = if item.description.chars().count() > 60 {
+        format!("{}...", item.description.chars().take(57).collect::<String>())
     } else {
         item.description.clone()
     };

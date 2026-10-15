@@ -83,6 +83,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     // A delivery coming in and its cases (R-519).
     "warehouse_loads",
     "warehouse_cases",
+    // The pairs each order took from a delivery (R-519 phase 2).
+    "warehouse_load_outs",
     // Freight bookings (R-400): the Logistics screen's rows, one per truck.
     "freight_bookings",
     // The logistics payee's pay record (R-401), server-authored like the bookings.

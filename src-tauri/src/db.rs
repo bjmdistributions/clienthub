@@ -2492,4 +2492,30 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_warehouse_cases_load ON warehouse_cases(load_id);
         "#,
     ),
+    (
+        115,
+        // R-519 phase 2: the pairs an order took from a delivery (case_core::Out), one row per
+        // invoice and delivery, written once and only ever marked undone (Put back). What is left
+        // is received less every live out, never stored. Synced (sync.rs ALLOWED_TABLES, netsync
+        // SNAPSHOT_TABLES) and mirrored in clienthub-api schema.sql, which must be deployed
+        // first. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        CREATE TABLE IF NOT EXISTS warehouse_load_outs (
+            id TEXT PRIMARY KEY,
+            load_id TEXT NOT NULL,
+            invoice_id TEXT DEFAULT '',
+            reference TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            takes_json TEXT DEFAULT '[]',
+            pairs INTEGER DEFAULT 0,
+            cost_total REAL DEFAULT 0,
+            undone INTEGER DEFAULT 0,
+            undone_at TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_warehouse_load_outs_load ON warehouse_load_outs(load_id);
+        "#,
+    ),
 ];

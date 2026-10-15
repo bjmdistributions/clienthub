@@ -19,6 +19,7 @@
 // www/app.js. Change both together; the tests pin the behaviour.
 
 import type { LineItem } from "./api";
+import type { CaseLine } from "./deliveries";
 import type { FitPallet, NewPallet, PalletLine, PalletSetup, PalletSpec } from "./palletFit";
 
 export interface BoxType { id: string; name: string; per_box: number }
@@ -394,9 +395,15 @@ export function planUnits(types: BoxType[], sections: WhSection[], target: numbe
 /** Which warehouse section an invoice line came from, and exactly what the packer planned for it. */
 export interface WhTag { section_id: string; name: string; boxes: Record<string, number>; loose: number; units: number }
 
+/** R-519 phase 2: the pairs a delivery line takes once the invoice exists, and what they cost. */
+export interface DlTag { takes: CaseLine[]; cost: number }
+
 export interface InvoicePrefill {
-  lines: (LineItem & { wh?: WhTag })[];
-  warehouse: { item_id: string; item_name: string };
+  lines: (LineItem & { wh?: WhTag; dl?: DlTag })[];
+  /** A warehouse product's lines (R-326). Absent on a delivery's lines. */
+  warehouse?: { item_id: string; item_name: string };
+  /** R-519 phase 2: lines picked on a delivery; their pairs leave it when the invoice exists. */
+  delivery?: { load_id: string; load_name: string };
   /** R-342: built in the warehouse — the boxes already left the shelf as they were grabbed. */
   built?: boolean;
   /** R-348: the pallets that were built, saved onto the invoice once it exists. */

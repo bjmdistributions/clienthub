@@ -9,7 +9,8 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api } from "../lib/api";
-import { byStyle, lineDesc, lineMatches, lineStatus, lineTitle, type CaseLine, type LineCount, type LoadDetail, type LoadLine, type LoadSummary, type ManifestRead, type WhCase } from "../lib/deliveries";
+import { bucketLine, bucketName, buckets, byStyle, lineDesc, lineMatches, lineStatus, lineTitle, pctRate, pendingTakeKey, pickKey, type Bucket, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type WhCase } from "../lib/deliveries";
+import { INVOICE_PREFILL_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
 import { Seg } from "./WarehouseProduct";
@@ -179,7 +180,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
   const lines = useMemo(() => L.lines ?? [], [L.lines]);
   const idx = useMemo(() => Object.fromEntries(lines.map((l) => [l.id, l])) as Record<string, LoadLine>, [lines]);
   const counts = useMemo(() => Object.fromEntries(d.tally.counts.map((c) => [c.line_id, c])) as Record<string, LineCount>, [d.tally.counts]);
-  const [tab, setTab] = useState<"pallets" | "check">("pallets");
+  const [tab, setTab] = useState<"pallets" | "check" | "sell">("pallets");
   const [pallet, setPallet] = useState<number | null>(() => d.tally.pallets[0]?.pallet ?? null);
   const [draft, setDraftRaw] = useState<Draft | null>(null);
   const [saved, setSaved] = useState<number[] | null>(null);
@@ -243,7 +244,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
           {L.archived && <p className="text-[12px] text-warning-ink mt-1">This delivery was removed. Bring it back to add cases.</p>}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Seg size="md" value={tab} onChange={setTab} options={[{ key: "pallets", label: "Pallets" }, { key: "check", label: "Against the manifest" }]} />
+          <Seg size="md" value={tab} onChange={setTab} options={[{ key: "pallets", label: "Pallets" }, { key: "check", label: "Against the manifest" }, { key: "sell", label: "Sell" }]} />
           {renaming == null && <button onClick={() => setRenaming(L.name)} className={WH_BTN_SECONDARY}>Rename</button>}
           {live && <button onClick={() => setAddingLine("")} className={WH_BTN_SECONDARY}>Add a style not on the manifest</button>}
           {L.archived ? <button onClick={() => update({ archived: false })} className={WH_BTN_SECONDARY}>Bring it back</button>
@@ -266,7 +267,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
         } catch (e) { toast(String(e), "error"); }
       }} />}
 
-      {tab === "check" ? <CheckView lines={lines} counts={counts} totals={T} /> : (
+      {tab === "check" ? <CheckView lines={lines} counts={counts} totals={T} /> : tab === "sell" ? <SellView d={d} lines={lines} merge={merge} live={live} /> : (
         <div className="grid gap-4 grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)]">
           <div className="space-y-2">
             {live && <button onClick={() => { setPallet(nextPallet); startCase(null, nextPallet); }} className={`${WH_BTN_SECONDARY} w-full justify-center`}><Plus size={14} /> Start pallet {nextPallet}</button>}
@@ -501,6 +502,251 @@ function CheckView({ lines, counts, totals: T }: { lines: LoadLine[]; counts: Re
         })}
         {!rows.length && <div className="px-4 py-6 text-[13px] text-muted text-center">Nothing here.</div>}
       </div>
+    </div>
+  );
+}
+
+// ---- Sell (R-519 phase 2): pick by brand and group, price per pair, send to an invoice -----
+// What is left comes from case_core::stock. The pick is a draft kept on this device until its
+// invoice exists; the invoice form then takes the pairs (take_load_pairs). The phone twin is
+// whdSell* in www/app.js.
+
+function readJson<T>(key: string, fallback: T): T {
+  try { const v = JSON.parse(localStorage.getItem(key) || "null"); return v ?? fallback; } catch { return fallback; }
+}
+
+function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[]; merge: (d: LoadDetail) => void; live: boolean }) {
+  const loadId = d.load.id;
+  const left = useMemo(() => Object.fromEntries(d.stock.lines.map((l) => [l.line_id, l])) as Record<string, LineLeft>, [d.stock.lines]);
+  const leftOf = useCallback((lid: string, size: string) => left[lid]?.sizes.find((z) => z.size === size)?.left ?? 0, [left]);
+  const [pick, setPickRaw] = useState<Pick>(() => readJson<Pick>(pickKey(loadId), {}));
+  const [tray, setTray] = useState(false);
+  const [rates, setRates] = useState<Record<string, string>>({});
+  const [pct, setPct] = useState("");
+  const [q, setQ] = useState("");
+  const [brand, setBrand] = useState("");
+  const [group, setGroup] = useState("");
+  const [openLine, setOpenLine] = useState<string | null>(null);
+  const [sureClear, setSureClear] = useState(false);
+  const [sureUndo, setSureUndo] = useState<string | null>(null);
+  const [pending, setPending] = useState(() => readJson<{ invoice_id: string; reference: string; takes: CaseLine[] } | null>(pendingTakeKey(loadId), null));
+  const setPick = (p: Pick) => { setPickRaw(p); try { localStorage.setItem(pickKey(loadId), JSON.stringify(p)); } catch { /* ignore */ } };
+
+  // A pick never asks for more than is left now (another device may have sold some).
+  useEffect(() => {
+    setPickRaw((p) => {
+      let changed = false;
+      const next: Pick = {};
+      for (const [lid, sizes] of Object.entries(p)) {
+        for (const [s, n] of Object.entries(sizes)) {
+          const v = Math.min(n, leftOf(lid, s));
+          if (v !== n) changed = true;
+          if (v > 0) (next[lid] ||= {})[s] = v;
+        }
+      }
+      return changed ? next : p;
+    });
+  }, [leftOf]);
+
+  const setSize = (lid: string, size: string, n: number) => {
+    const v = Math.max(0, Math.min(leftOf(lid, size), Math.floor(n) || 0));
+    const sizes = { ...(pick[lid] || {}) };
+    if (v > 0) sizes[size] = v; else delete sizes[size];
+    const next = { ...pick };
+    if (Object.keys(sizes).length) next[lid] = sizes; else delete next[lid];
+    setPick(next);
+  };
+  const allLeft = (p: Pick, lid: string) => {
+    const l = left[lid];
+    if (!l) return p;
+    const sizes: Record<string, number> = {};
+    for (const z of l.sizes) if (z.left > 0) sizes[z.size] = z.left;
+    const next = { ...p };
+    if (Object.keys(sizes).length) next[lid] = sizes; else delete next[lid];
+    return next;
+  };
+  const pickedOf = (lid: string) => Object.values(pick[lid] || {}).reduce((a, b) => a + b, 0);
+  const matches = (l: LoadLine) => (!brand || l.brand === brand) && (!group || l.group === group) && lineMatches(l, q);
+  const shown = lines.filter((l) => ((left[l.id]?.left ?? 0) > 0 || pickedOf(l.id) > 0) && matches(l));
+  const withLeft = lines.filter((l) => (left[l.id]?.left ?? 0) > 0);
+  const brands = [...new Set(withLeft.map((l) => l.brand).filter(Boolean))];
+  const groups = [...new Set(withLeft.filter((l) => !brand || l.brand === brand).map((l) => l.group).filter(Boolean))];
+  const bs = buckets(lines, pick);
+  const totalPairs = bs.reduce((a, b) => a + b.pairs, 0), totalStyles = bs.reduce((a, b) => a + b.styles, 0);
+  const rateOf = (b: Bucket) => { const v = Number(String(rates[b.key] ?? "").replace(/[$,\s]/g, "")); return v > 0 ? Math.round(v * 100) / 100 : 0; };
+  const orderTotal = bs.reduce((a, b) => a + Math.round(b.pairs * rateOf(b) * 100) / 100, 0);
+  const orderCost = bs.reduce((a, b) => a + b.cost, 0);
+  const ready = bs.length > 0 && bs.every((b) => rateOf(b) > 0);
+
+  const send = () => {
+    if (!ready) { toast("Give every line a price per pair.", "error"); return; }
+    const prefill: InvoicePrefill = {
+      lines: bs.map((b) => { const rate = rateOf(b); return { description: bucketLine(b), qty: b.pairs, rate, amount: Math.round(b.pairs * rate * 100) / 100, dl: { takes: b.takes, cost: b.cost } }; }),
+      delivery: { load_id: loadId, load_name: d.load.name },
+    };
+    try { localStorage.setItem(INVOICE_PREFILL_KEY, JSON.stringify(prefill)); } catch { /* ignore */ }
+    window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
+  };
+  const finishPending = async () => {
+    if (!pending) return;
+    try {
+      merge(await api.takeLoadPairs(loadId, { invoiceId: pending.invoice_id, reference: pending.reference, note: "Invoiced", takes: pending.takes }));
+      try { localStorage.removeItem(pendingTakeKey(loadId)); localStorage.removeItem(pickKey(loadId)); } catch { /* ignore */ }
+      setPending(null); setPickRaw({});
+      toast("Done: the pairs left the delivery");
+    } catch (e) { toast(String(e), "error"); }
+  };
+  const undo = async (o: LoadOut) => {
+    try { merge(await api.undoLoadOut(loadId, o.id)); setSureUndo(null); toast("Put back"); } catch (e) { toast(String(e), "error"); }
+  };
+
+  if (tray) {
+    return (
+      <div className="max-w-[760px]">
+        <div className={`${WH_CARD} p-4 mb-3`}>
+          <div className="text-[15px] font-semibold text-ink">Price the order</div>
+          <p className="text-[12.5px] text-muted mt-0.5">{n0(totalPairs)} pairs, {many(totalStyles, "style", "styles")}. One invoice line for each brand and group, priced per pair.</p>
+          <label className="block mt-3 text-[12px] text-muted w-[220px]">% of MSRP for every line
+            <input value={pct} inputMode="decimal" placeholder="Optional, e.g. 20" style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`}
+              onChange={(e) => {
+                setPct(e.target.value);
+                const p = Number(e.target.value.replace(/[%\s]/g, ""));
+                if (p > 0) setRates(Object.fromEntries(bs.map((b) => { const r = pctRate(b, p); return [b.key, r > 0 ? r.toFixed(2) : ""]; })));
+              }} />
+          </label>
+        </div>
+        <div className={`${WH_CARD} overflow-hidden`}>
+          {bs.map((b) => (
+            <div key={b.key} className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-line last:border-b-0">
+              <div className="min-w-0 flex-1">
+                <div className="text-[13.5px] font-semibold text-ink">{bucketName(b)}</div>
+                <div className="text-[12px] text-muted tabular-nums">{n0(b.pairs)} pairs, {many(b.styles, "style", "styles")} · cost {money(b.cost)} · MSRP {money(b.msrp)}</div>
+              </div>
+              <label className="text-[12px] text-muted">Price a pair
+                <input value={rates[b.key] ?? ""} inputMode="decimal" placeholder="0.00" style={WH_INPUT_BG} className={`${WH_INPUT} w-28 mt-1 tabular-nums`}
+                  onChange={(e) => setRates({ ...rates, [b.key]: e.target.value })} />
+              </label>
+              <div className="w-28 text-right text-[13px] font-semibold text-ink tabular-nums">{money(Math.round(b.pairs * rateOf(b) * 100) / 100)}</div>
+            </div>
+          ))}
+        </div>
+        <div className={`${WH_CARD} p-4 mt-3`}>
+          <div className="flex justify-between text-[13.5px]"><span className="text-ink-2">Order total</span><span className="font-semibold text-ink tabular-nums">{money(orderTotal)}</span></div>
+          <div className="flex justify-between text-[12.5px] text-muted mt-1"><span>What the pairs cost</span><span className="tabular-nums">{money(orderCost)}</span></div>
+          {orderTotal > 0 && orderTotal < orderCost && <p className="text-[12.5px] text-warning-ink mt-1">This order is {money(Math.round((orderCost - orderTotal) * 100) / 100)} below what the pairs cost.</p>}
+          <p className="text-[12px] text-muted mt-2">The cost is shown so you can enter it in Deal Flow. Pairs leave this delivery only when the invoice is created.</p>
+          <div className="flex gap-2 mt-3">
+            <button onClick={send} disabled={!ready} className={WH_BTN_PRIMARY}>Send to invoice</button>
+            <button onClick={() => setTray(false)} className={WH_BTN_SECONDARY}>Back to picking</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  let head = "";
+  return (
+    <div>
+      {pending && (
+        <div className={`${WH_CARD} p-4 mb-3 border-warning/40`}>
+          <div className="text-[13.5px] font-semibold text-ink">Invoice {pending.reference} is saved, its pairs have not left yet</div>
+          <p className="text-[12.5px] text-muted mt-0.5">The call failed after the invoice was created. Finish it so the {n0(pending.takes.reduce((a, x) => a + x.pairs, 0))} pairs come off this delivery.</p>
+          <button onClick={finishPending} className={`${WH_BTN_PRIMARY} mt-2`}>Take them out now</button>
+        </div>
+      )}
+      <div className={`${WH_CARD} p-3.5 mb-3 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-10`}>
+        <div>
+          <div className="text-[14px] text-ink tabular-nums"><span className="font-semibold">{n0(totalPairs)}</span> pairs picked <span className="text-muted text-[12.5px]">· {many(totalStyles, "style", "styles")}</span></div>
+          <div className="text-[12px] text-muted tabular-nums">{n0(d.stock.left)} of {n0(d.stock.received)} pairs left to sell</div>
+        </div>
+        <div className="flex gap-2">
+          {totalPairs > 0 && (sureClear
+            ? <><button onClick={() => { setPick({}); setSureClear(false); }} className={WH_BTN_SECONDARY}>Clear the pick</button><button onClick={() => setSureClear(false)} className={WH_BTN_SECONDARY}>Keep it</button></>
+            : <button onClick={() => setSureClear(true)} className={WH_BTN_SECONDARY}>Clear</button>)}
+          <button onClick={() => setTray(true)} disabled={!totalPairs || !live} className={WH_BTN_PRIMARY}>Price it</button>
+        </div>
+      </div>
+      {d.stock.oversold.length > 0 && <p className="text-[12.5px] text-warning-ink mb-3">{d.stock.oversold.length === 1 ? "1 size has" : `${d.stock.oversold.length} sizes have`} more pairs sold than received. Check those cases, or put back one of the orders.</p>}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative w-[300px] max-w-full">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a style, colour or name" style={WH_INPUT_BG} className={`${WH_INPUT} pl-9`} />
+        </div>
+        {brands.length > 1 && <div className="w-48"><select value={brand} onChange={(e) => { setBrand(e.target.value); setGroup(""); }} style={WH_INPUT_BG} className={WH_INPUT} aria-label="Brand">
+          <option value="">Every brand</option>{brands.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>}
+        {groups.length > 1 && <div className="w-44"><select value={group} onChange={(e) => setGroup(e.target.value)} style={WH_INPUT_BG} className={WH_INPUT} aria-label="Group">
+          <option value="">Every group</option>{groups.map((g) => <option key={g} value={g}>{g}</option>)}</select></div>}
+      </div>
+      <div className={`${WH_CARD} overflow-hidden`}>
+        {shown.map((l) => {
+          const h = `${l.brand}\u0001${l.group}`;
+          const showHead = h !== head; head = h;
+          const ll = left[l.id];
+          const picked = pickedOf(l.id);
+          const open = openLine === l.id;
+          const groupLeft = showHead ? shown.filter((x) => x.brand === l.brand && x.group === l.group).reduce((a, x) => a + (left[x.id]?.left ?? 0), 0) : 0;
+          return (
+            <div key={l.id}>
+              {showHead && (
+                <div className="flex items-center justify-between gap-3 px-4 py-2 bg-surface-2 border-b border-line">
+                  <span className="text-[12.5px] font-semibold text-ink-2">{[l.brand, l.group].filter(Boolean).join(" · ")} <span className="font-normal text-muted">· {n0(groupLeft)} left</span></span>
+                  {live && <button onClick={() => setPick(shown.filter((x) => x.brand === l.brand && x.group === l.group).reduce((p, x) => allLeft(p, x.id), pick))} className="text-[12.5px] text-accent hover:underline">Take all</button>}
+                </div>
+              )}
+              <div className="px-4 py-2.5 border-b border-line">
+                <button onClick={() => setOpenLine(open ? null : l.id)} className="w-full text-left flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <span className="text-[13px] font-medium text-ink">{lineTitle(l)}</span>
+                    <span className="text-[12px] text-muted"> {lineDesc(l)}{ll?.pallets.length ? ` · ${ll.pallets.length === 1 ? "pallet" : "pallets"} ${ll.pallets.join(", ")}` : ""}</span>
+                  </div>
+                  <span className="text-[12.5px] text-muted tabular-nums whitespace-nowrap"><span className="text-ink font-medium">{n0(ll?.left ?? 0)}</span> left</span>
+                  <span className="w-[100px] flex justify-end">{picked > 0 && <StatusPill tone="success">{n0(picked)} picked</StatusPill>}</span>
+                </button>
+                {open && ll && (
+                  <div className="mt-2">
+                    <div className="flex flex-wrap gap-2">
+                      {ll.sizes.filter((z) => z.left > 0 || (pick[l.id]?.[z.size] ?? 0) > 0).map((z) => (
+                        <label key={z.size} className="w-[76px] text-center">
+                          <span className="block text-[12px] font-medium text-ink-2">{z.size}</span>
+                          <input value={pick[l.id]?.[z.size] || ""} inputMode="numeric" placeholder="0" aria-label={`Pairs of size ${z.size}`} disabled={!live}
+                            onChange={(e) => setSize(l.id, z.size, parseInt(e.target.value.replace(/\D/g, ""), 10) || 0)}
+                            style={WH_INPUT_BG} className={`${WH_INPUT} text-center tabular-nums mt-0.5 px-1`} />
+                          <span className="block text-[11px] text-muted mt-0.5 tabular-nums">{n0(z.left)} left</span>
+                        </label>
+                      ))}
+                    </div>
+                    {live && <div className="flex gap-3 mt-2">
+                      <button onClick={() => setPick(allLeft(pick, l.id))} className="text-[12.5px] text-accent hover:underline">All left</button>
+                      {picked > 0 && <button onClick={() => { const next = { ...pick }; delete next[l.id]; setPick(next); }} className="text-[12.5px] text-muted hover:text-ink-2">Clear</button>}
+                    </div>}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {!shown.length && <div className="px-4 py-6 text-[13px] text-muted text-center">Nothing left here. Clear the filters, or this delivery is sold.</div>}
+      </div>
+
+      {d.outs.length > 0 && <>
+        <div className="text-[13px] font-semibold text-ink mt-5 mb-2">Sold from this delivery</div>
+        <div className={`${WH_CARD} overflow-hidden`}>
+          {d.outs.map((o) => (
+            <div key={o.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-line last:border-b-0">
+              <div className="min-w-0 flex-1">
+                <span className="text-[13px] font-medium text-ink">{o.reference || "Taken out"}</span>
+                <span className="text-[12px] text-muted tabular-nums"> · {n0(o.pairs)} pairs · {money(o.cost)} cost · {new Date(o.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+              </div>
+              {o.undone ? <StatusPill tone="neutral">Back on the delivery</StatusPill>
+                : o.invoice_state === "voided" ? <StatusPill tone="warning">Invoice voided, pairs still out</StatusPill>
+                : o.invoice_state === "removed" || o.invoice_state === "gone" ? <StatusPill tone="warning">Invoice removed, pairs still out</StatusPill> : null}
+              {live && !o.undone && (sureUndo === o.id
+                ? <><button onClick={() => undo(o)} className={WH_BTN_SECONDARY} title="The pairs count as on this delivery again. The invoice is not changed.">Put {n0(o.pairs)} pairs back</button><button onClick={() => setSureUndo(null)} className={WH_BTN_SECONDARY}>Keep them out</button></>
+                : <button onClick={() => setSureUndo(o.id)} className={WH_BTN_SECONDARY}>Put back</button>)}
+            </div>
+          ))}
+        </div>
+      </>}
     </div>
   );
 }

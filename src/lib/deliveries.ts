@@ -15,7 +15,10 @@ export type LineCount = { line_id: string; sizes: SizeCount[]; expected: number;
 export type PalletSum = { pallet: number; cases: number; pairs: number; styles: number; cost: number; msrp: number };
 export type LoadTotals = { lines: number; expected: number; received: number; short: number; over: number; cases: number; pallets: number; cost: number; msrp: number };
 export type LoadHead = { id: string; name: string; source: string; notes: string; archived: boolean; created_at: string; updated_at: string; lines?: LoadLine[] };
-export type LoadDetail = { load: LoadHead; cases: WhCase[]; tally: { counts: LineCount[]; pallets: PalletSum[]; totals: LoadTotals } };
+export type LoadDetail = {
+  load: LoadHead; cases: WhCase[]; tally: { counts: LineCount[]; pallets: PalletSum[]; totals: LoadTotals };
+  outs: LoadOut[]; stock: Stock; short?: TakeShort[];
+};
 export type LoadSummary = Omit<LoadHead, "lines"> & { totals: LoadTotals };
 export type ManifestRead = {
   lines: LoadLine[];
@@ -58,3 +61,48 @@ export function byStyle(contents: CaseLine[]): { line_id: string; sizes: [string
   }
   return out;
 }
+
+// ---- R-519 phase 2: selling from a delivery -------------------------------------------------
+
+export type SizeLeft = { size: string; received: number; out: number; left: number };
+export type LineLeft = { line_id: string; sizes: SizeLeft[]; received: number; out: number; left: number; pallets: number[] };
+export type Stock = {
+  lines: LineLeft[]; groups: { brand: string; group: string; styles: number; left: number }[];
+  received: number; out: number; left: number; oversold: { line_id: string; size: string; over: number }[];
+};
+/** An order that took pairs; `invoice_state` is "live", "voided", "removed", "gone" or "" (no invoice). */
+export type LoadOut = {
+  id: string; invoice_id: string; reference: string; note: string; takes: CaseLine[]; pairs: number; cost: number;
+  undone: boolean; undone_at: string; created_at: string; updated_at: string; invoice_state: string;
+};
+export type TakeShort = { line_id: string; size: string; asked: number; taken: number };
+
+/** The pick, a draft kept on this device per delivery until its invoice exists. */
+export const pickKey = (loadId: string) => `warehouse_pick:${loadId}`;
+/** An invoice whose pairs did not leave the delivery (the call failed after it was created). */
+export const pendingTakeKey = (loadId: string) => `warehouse_pending_take:${loadId}`;
+
+export type Pick = Record<string, Record<string, number>>;
+export type Bucket = { key: string; brand: string; group: string; pairs: number; styles: number; cost: number; msrp: number; takes: CaseLine[] };
+
+/** One bucket per brand and group, in manifest order: the invoice gets one line each, priced per pair. */
+export function buckets(lines: LoadLine[], pick: Pick): Bucket[] {
+  const out: Bucket[] = [];
+  for (const l of lines) {
+    const sizes = pick[l.id] || {};
+    const n = Object.values(sizes).reduce((a, b) => a + (b || 0), 0);
+    if (!(n > 0)) continue;
+    const key = `${l.brand}\u0001${l.group}`;
+    let b = out.find((x) => x.key === key);
+    if (!b) { b = { key, brand: l.brand, group: l.group, pairs: 0, styles: 0, cost: 0, msrp: 0, takes: [] }; out.push(b); }
+    b.pairs += n; b.styles += 1; b.cost += n * (l.cost || 0); b.msrp += n * (l.msrp || 0);
+    for (const [size, pairs] of Object.entries(sizes)) if (pairs > 0) b.takes.push({ line_id: l.id, size, pairs });
+  }
+  for (const b of out) { b.cost = Math.round(b.cost * 100) / 100; b.msrp = Math.round(b.msrp * 100) / 100; }
+  return out;
+}
+export const bucketName = (b: Bucket) => [b.brand, b.group].filter(Boolean).join(" ") || "Other";
+/** "Lamo Hash WOMEN'S, 31 styles": the invoice line for a bucket. */
+export const bucketLine = (b: Bucket) => `${bucketName(b)}, ${b.styles} ${b.styles === 1 ? "style" : "styles"}`;
+/** A rate from a percent of the bucket's average MSRP, to the cent. */
+export const pctRate = (b: Bucket, pct: number) => (b.pairs > 0 ? Math.round((b.msrp / b.pairs) * pct) / 100 : 0);

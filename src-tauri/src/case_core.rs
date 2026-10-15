@@ -679,6 +679,233 @@ pub fn tally(lines: &[LoadLine], cases: &[Case]) -> Tally {
     Tally { counts, pallets, totals }
 }
 
+// ---------------------------------------------------------------------------------------
+// Selling (R-519 phase 2): pairs leave a delivery through outs, never by editing a case
+// ---------------------------------------------------------------------------------------
+//
+// An out (`warehouse_load_outs`, one row per order per delivery) lists the pairs an order took,
+// by style and size. It is written once, after the invoice exists, and only ever marked undone
+// (Put back): a set-once flag, so two devices pressing it agree. The cases stay what was
+// received, so "Against the manifest" keeps meaning received against expected. What is left is
+// always worked out here: received less every live out, never stored.
+
+/// Styles and sizes one order takes at most, so one out row stays well inside a sync event.
+pub const MAX_TAKES: usize = 2_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Out {
+    pub id: String,
+    #[serde(default)]
+    pub invoice_id: String,
+    /// The invoice number, or "" for a take with no invoice.
+    #[serde(default)]
+    pub reference: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub takes: Vec<CaseLine>,
+    #[serde(default)]
+    pub pairs: i64,
+    /// What the pairs cost (each pair at its line's cost when taken).
+    #[serde(default)]
+    pub cost: f64,
+    #[serde(default)]
+    pub undone: bool,
+    #[serde(default)]
+    pub undone_at: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SizeLeft {
+    pub size: String,
+    pub received: i64,
+    pub out: i64,
+    pub left: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LineLeft {
+    pub line_id: String,
+    pub sizes: Vec<SizeLeft>,
+    pub received: i64,
+    pub out: i64,
+    pub left: i64,
+    /// The pallets its pairs stand on, lowest first.
+    pub pallets: Vec<i64>,
+}
+
+/// More pairs out than were received: two devices sold the last pairs at once, or a case was
+/// changed on a device that had not seen the sale. Shown, never hidden.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Oversold {
+    pub line_id: String,
+    pub size: String,
+    pub over: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GroupLeft {
+    pub brand: String,
+    pub group: String,
+    /// Styles in the group with pairs left.
+    pub styles: usize,
+    pub left: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct Stock {
+    pub lines: Vec<LineLeft>,
+    /// Brand and group in manifest order.
+    pub groups: Vec<GroupLeft>,
+    pub received: i64,
+    pub out: i64,
+    pub left: i64,
+    pub oversold: Vec<Oversold>,
+}
+
+fn out_by_line(lines: &[LoadLine], outs: &[Out]) -> Vec<BTreeMap<String, i64>> {
+    let idx: HashMap<&str, usize> = lines.iter().enumerate().map(|(k, l)| (l.id.as_str(), k)).collect();
+    let mut out: Vec<BTreeMap<String, i64>> = vec![BTreeMap::new(); lines.len()];
+    for o in outs.iter().filter(|o| !o.undone) {
+        for t in &o.takes {
+            if let Some(k) = idx.get(t.line_id.as_str()) {
+                *out[*k].entry(t.size.clone()).or_insert(0) += t.pairs.max(0);
+            }
+        }
+    }
+    out
+}
+
+/// What is left of every line and size: received (the cases) less every live out.
+pub fn stock(lines: &[LoadLine], cases: &[Case], outs: &[Out]) -> Stock {
+    let t = tally(lines, cases);
+    let out = out_by_line(lines, outs);
+    let mut s = Stock::default();
+    for (k, l) in lines.iter().enumerate() {
+        let c = &t.counts[k];
+        let mut sizes: Vec<SizeLeft> = Vec::new();
+        for z in &c.sizes {
+            let o = out[k].get(&z.size).copied().unwrap_or(0);
+            if o > z.received {
+                s.oversold.push(Oversold { line_id: l.id.clone(), size: z.size.clone(), over: o - z.received });
+            }
+            sizes.push(SizeLeft { size: z.size.clone(), received: z.received, out: o, left: (z.received - o).max(0) });
+        }
+        let line = LineLeft {
+            line_id: l.id.clone(),
+            received: c.received,
+            out: sizes.iter().map(|z| z.out).sum(),
+            left: sizes.iter().map(|z| z.left).sum(),
+            sizes,
+            pallets: c.pallets.clone(),
+        };
+        s.received += line.received;
+        s.out += line.out;
+        s.left += line.left;
+        let has = (line.left > 0) as usize;
+        match s.groups.iter_mut().find(|g| g.brand == l.brand && g.group == l.group) {
+            Some(g) => {
+                g.left += line.left;
+                g.styles += has;
+            }
+            None => s.groups.push(GroupLeft { brand: l.brand.clone(), group: l.group.clone(), styles: has, left: line.left }),
+        }
+        s.lines.push(line);
+    }
+    s
+}
+
+/// Pairs asked for and not there: what an order could not take.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TakeShort {
+    pub line_id: String,
+    pub size: String,
+    pub asked: i64,
+    pub taken: i64,
+}
+
+/// What an order takes: every style and size asked for, as far as what is left goes. Unknown
+/// styles or sizes are refused; nothing goes below zero.
+pub fn take(lines: &[LoadLine], cases: &[Case], outs: &[Out], asked: &[CaseLine]) -> Result<(Vec<CaseLine>, Vec<TakeShort>), String> {
+    let mut want: Vec<CaseLine> = Vec::new();
+    for a in asked {
+        let line = lines.iter().find(|l| l.id == a.line_id).ok_or("A style in this order is no longer on the delivery.")?;
+        let size = one_line(&a.size);
+        if !line.sizes.iter().any(|s| s.size == size) {
+            return Err(format!("{} {} has no size {size}.", line.style, line.color));
+        }
+        if a.pairs < 0 {
+            return Err("An order cannot take fewer than 0 pairs.".into());
+        }
+        if a.pairs == 0 {
+            continue;
+        }
+        match want.iter_mut().find(|x| x.line_id == a.line_id && x.size == size) {
+            Some(x) => x.pairs += a.pairs,
+            None => want.push(CaseLine { line_id: a.line_id.clone(), size, pairs: a.pairs }),
+        }
+    }
+    if want.is_empty() {
+        return Err("Pick at least one pair.".into());
+    }
+    if want.len() > MAX_TAKES {
+        return Err(format!("More than {MAX_TAKES} styles and sizes in one order."));
+    }
+    let st = stock(lines, cases, outs);
+    let left = |line_id: &str, size: &str| -> i64 {
+        st.lines.iter().find(|l| l.line_id == line_id).and_then(|l| l.sizes.iter().find(|z| z.size == size)).map(|z| z.left).unwrap_or(0)
+    };
+    let mut taken = Vec::new();
+    let mut short = Vec::new();
+    for w in want {
+        let n = w.pairs.min(left(&w.line_id, &w.size));
+        if n < w.pairs {
+            short.push(TakeShort { line_id: w.line_id.clone(), size: w.size.clone(), asked: w.pairs, taken: n });
+        }
+        if n > 0 {
+            taken.push(CaseLine { line_id: w.line_id, size: w.size, pairs: n });
+        }
+    }
+    Ok((taken, short))
+}
+
+/// What the taken pairs cost, each at its line's cost, to the cent.
+pub fn takes_cost(lines: &[LoadLine], takes: &[CaseLine]) -> f64 {
+    let c: f64 = takes.iter().map(|t| t.pairs as f64 * lines.iter().find(|l| l.id == t.line_id).map(|l| l.cost).unwrap_or(0.0)).sum();
+    (c * 100.0).round() / 100.0
+}
+
+/// A case change or removal is refused when it would leave fewer pairs than were already sold:
+/// the sizes that would newly go below what is out. Empty means the change is fine.
+pub fn newly_oversold(lines: &[LoadLine], cases_before: &[Case], cases_after: &[Case], outs: &[Out]) -> Vec<Oversold> {
+    let before = stock(lines, cases_before, outs).oversold;
+    stock(lines, cases_after, outs)
+        .oversold
+        .into_iter()
+        .filter(|o| before.iter().find(|b| b.line_id == o.line_id && b.size == o.size).map(|b| o.over > b.over).unwrap_or(true))
+        .collect()
+}
+
+/// "K100 RED size 7 (2 more sold than would be left)" for a refusal.
+pub fn describe_oversold(lines: &[LoadLine], over: &[Oversold]) -> String {
+    over.iter()
+        .take(5)
+        .map(|o| {
+            let name = lines
+                .iter()
+                .find(|l| l.id == o.line_id)
+                .map(|l| [l.style.as_str(), l.color.as_str()].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" "))
+                .unwrap_or_default();
+            format!("{name} size {} ({} more sold than would be left)", o.size, o.over)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,6 +1019,67 @@ mod tests {
         assert_eq!(next_number(&cases, 1, ""), 2);
         assert_eq!(next_number(&cases, 1, "c1"), 1);
         assert_eq!(next_number(&cases, 5, ""), 1);
+    }
+
+    fn sold(id: &str, takes: Vec<CaseLine>) -> Out {
+        Out { id: id.into(), pairs: takes.iter().map(|t| t.pairs).sum(), takes, ..Default::default() }
+    }
+    fn cl(line: &str, size: &str, pairs: i64) -> CaseLine {
+        CaseLine { line_id: line.into(), size: size.into(), pairs }
+    }
+
+    #[test]
+    fn an_out_takes_pairs_off_what_is_left_and_a_put_back_returns_them() {
+        let lines = read_manifest(&sample()).lines;
+        let a = lines[0].id.clone();
+        let cases = vec![Case { id: "c1".into(), pallet: 1, number: 1, contents: vec![cl(&a, "S", 4), cl(&a, "M", 6)], ..Default::default() }];
+        let (taken, short) = take(&lines, &cases, &[], &[cl(&a, "S", 3), cl(&a, "M", 9)]).unwrap();
+        assert_eq!(taken, vec![cl(&a, "S", 3), cl(&a, "M", 6)]);
+        assert_eq!(short, vec![TakeShort { line_id: a.clone(), size: "M".into(), asked: 9, taken: 6 }]);
+        assert_eq!(takes_cost(&lines, &taken), 94.5);
+        let mut outs = vec![sold("o1", taken)];
+        let s = stock(&lines, &cases, &outs);
+        assert_eq!((s.received, s.out, s.left), (10, 9, 1));
+        assert_eq!(s.lines[0].sizes.iter().map(|z| (z.size.as_str(), z.left)).collect::<Vec<_>>(), vec![("XS", 0), ("S", 1), ("M", 0), ("L", 0)]);
+        assert_eq!(s.groups[0], GroupLeft { brand: "Acme Hash".into(), group: "KIDS".into(), styles: 1, left: 1 });
+        assert_eq!(s.groups.iter().map(|g| g.left).sum::<i64>(), s.left);
+        // Nothing left in M: a second order gets none of it.
+        let (taken2, short2) = take(&lines, &cases, &outs, &[cl(&a, "M", 1)]).unwrap();
+        assert!(taken2.is_empty());
+        assert_eq!(short2[0].taken, 0);
+        outs[0].undone = true;
+        assert_eq!(stock(&lines, &cases, &outs).left, 10);
+        // What was received never moves.
+        assert_eq!(tally(&lines, &cases).totals.received, 10);
+        assert!(take(&lines, &cases, &[], &[cl(&a, "XXL", 1)]).is_err());
+        assert!(take(&lines, &cases, &[], &[]).is_err());
+    }
+
+    #[test]
+    fn two_orders_racing_for_the_last_pairs_show_as_oversold_never_negative() {
+        let lines = read_manifest(&sample()).lines;
+        let a = lines[0].id.clone();
+        let cases = vec![Case { id: "c1".into(), pallet: 1, number: 1, contents: vec![cl(&a, "S", 2)], ..Default::default() }];
+        let outs = vec![sold("o1", vec![cl(&a, "S", 2)]), sold("o2", vec![cl(&a, "S", 2)])];
+        let s = stock(&lines, &cases, &outs);
+        assert_eq!(s.left, 0);
+        assert_eq!(s.oversold, vec![Oversold { line_id: a.clone(), size: "S".into(), over: 2 }]);
+    }
+
+    #[test]
+    fn a_case_change_that_would_undercut_a_sale_is_named() {
+        let lines = read_manifest(&sample()).lines;
+        let a = lines[0].id.clone();
+        let before = vec![Case { id: "c1".into(), pallet: 1, number: 1, contents: vec![cl(&a, "S", 4)], ..Default::default() }];
+        let outs = vec![sold("o1", vec![cl(&a, "S", 3)])];
+        let mut after = before.clone();
+        after[0].contents[0].pairs = 2;
+        let bad = newly_oversold(&lines, &before, &after, &outs);
+        assert_eq!(bad, vec![Oversold { line_id: a.clone(), size: "S".into(), over: 1 }]);
+        assert!(describe_oversold(&lines, &bad).contains("K100 RED size S"));
+        after[0].contents[0].pairs = 3;
+        assert!(newly_oversold(&lines, &before, &after, &outs).is_empty());
+        assert_eq!(newly_oversold(&lines, &before, &[], &outs).len(), 1);
     }
 
     #[test]

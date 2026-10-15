@@ -6,13 +6,14 @@
 //! the server (clienthub-api `routes/case_core.rs`, behind `routes/warehouse_loads.rs`): this
 //! file is only storage, sync and the Tauri commands. Removed rows are archived, never deleted.
 
-use crate::case_core::{self as core, Case, CaseLine, LoadLine, ManifestRead, Tally, Totals};
+use crate::case_core::{self as core, Case, CaseLine, LoadLine, ManifestRead, Out, Stock, Tally, TakeShort, Totals};
 use crate::db::pool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 const LOADS: &str = "warehouse_loads";
 const CASES: &str = "warehouse_cases";
+const OUTS: &str = "warehouse_load_outs";
 
 #[derive(Debug, Serialize)]
 pub struct LoadHead {
@@ -33,6 +34,22 @@ pub struct LoadDetail {
     pub load: LoadHead,
     pub cases: Vec<Case>,
     pub tally: Tally,
+    /// Every order that took pairs (R-519 phase 2), put-back ones included, newest first.
+    pub outs: Vec<OutRow>,
+    /// What is left: received less every live out.
+    pub stock: Stock,
+    /// What a take could not take (set by `take_load_pairs` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short: Option<Vec<TakeShort>>,
+}
+
+/// An out as the screen sees it: the row, plus its invoice's state ("live", "voided",
+/// "removed", "gone", or "" for a take with no invoice).
+#[derive(Debug, Serialize)]
+pub struct OutRow {
+    #[serde(flatten)]
+    pub out: Out,
+    pub invoice_state: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,14 +117,69 @@ fn cases(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Case>, String
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+fn outs(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Out>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, COALESCE(invoice_id,''), COALESCE(reference,''), COALESCE(note,''), COALESCE(takes_json,'[]'), COALESCE(pairs,0), \
+             COALESCE(cost_total,0), COALESCE(undone,0), COALESCE(undone_at,''), created_at, updated_at \
+             FROM warehouse_load_outs WHERE load_id = ?1 ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([load_id], |r| {
+            let takes: String = r.get(4)?;
+            Ok(Out {
+                id: r.get(0)?,
+                invoice_id: r.get(1)?,
+                reference: r.get(2)?,
+                note: r.get(3)?,
+                takes: serde_json::from_str(&takes).unwrap_or_default(),
+                pairs: r.get(5)?,
+                cost: r.get(6)?,
+                undone: r.get::<_, i64>(7)? != 0,
+                undone_at: r.get(8)?,
+                created_at: r.get(9)?,
+                updated_at: r.get(10)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// A voided or removed invoice does not put pairs back: Put back does. The screen says which.
+fn invoice_state(conn: &rusqlite::Connection, invoice_id: &str) -> &'static str {
+    if invoice_id.is_empty() {
+        return "";
+    }
+    match conn.query_row(
+        "SELECT COALESCE(voided,0), COALESCE(archived,0) FROM invoices WHERE id = ?1",
+        [invoice_id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    ) {
+        Ok((v, _)) if v != 0 => "voided",
+        Ok((_, a)) if a != 0 => "removed",
+        Ok(_) => "live",
+        Err(_) => "gone",
+    }
+}
+
 fn detail(conn: &rusqlite::Connection, id: &str, with_lines: bool) -> Result<LoadDetail, String> {
     let LoadRow { mut head, lines } = load(conn, id)?;
     let cs = cases(conn, id)?;
+    let os = outs(conn, id)?;
     let tally = core::tally(&lines, &cs);
+    let stock = core::stock(&lines, &cs, &os);
     if with_lines {
         head.lines = Some(lines);
     }
-    Ok(LoadDetail { load: head, cases: cs, tally })
+    let outs = os
+        .into_iter()
+        .map(|o| {
+            let invoice_state = invoice_state(conn, &o.invoice_id);
+            OutRow { out: o, invoice_state }
+        })
+        .collect();
+    Ok(LoadDetail { load: head, cases: cs, tally, outs, stock, short: None })
 }
 
 fn json_str<T: Serialize>(v: &T) -> Value {
@@ -310,6 +382,12 @@ pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, palle
     match case_id.as_deref().filter(|s| !s.is_empty()) {
         Some(cid) => {
             let old = have.iter().find(|c| c.id == cid).cloned().ok_or("That case is no longer there.")?;
+            // Never fewer pairs than were already sold (R-519 phase 2).
+            let after: Vec<Case> = have.iter().map(|c| if c.id == cid { Case { contents: contents.clone(), ..c.clone() } } else { c.clone() }).collect();
+            let bad = core::newly_oversold(&l.lines, &have, &after, &outs(&conn, &load_id)?);
+            if !bad.is_empty() {
+                return Err(format!("More pairs were sold than this case would leave: {}. Put back that order first, or keep the pairs.", core::describe_oversold(&l.lines, &bad)));
+            }
             let mut cols = Map::new();
             if old.pallet != pallet {
                 cols.insert("pallet".into(), json!(pallet));
@@ -346,13 +424,80 @@ pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, palle
 #[tauri::command]
 pub async fn remove_warehouse_case(load_id: String, case_id: String) -> Result<LoadDetail, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    if !cases(&conn, &load_id)?.iter().any(|c| c.id == case_id) {
+    let have = cases(&conn, &load_id)?;
+    if !have.iter().any(|c| c.id == case_id) {
         return Err("That case is no longer there.".into());
+    }
+    // Never fewer pairs than were already sold (R-519 phase 2).
+    let l = load(&conn, &load_id)?;
+    let after: Vec<Case> = have.iter().filter(|c| c.id != case_id).cloned().collect();
+    let bad = core::newly_oversold(&l.lines, &have, &after, &outs(&conn, &load_id)?);
+    if !bad.is_empty() {
+        return Err(format!("Pairs from this case were already sold: {}. Put back that order first.", core::describe_oversold(&l.lines, &bad)));
     }
     let mut cols = Map::new();
     cols.insert("archived".into(), json!(1));
     cols.insert("updated_at".into(), json!(now()));
     write(&conn, CASES, &case_id, cols, false)?;
+    detail(&conn, &load_id, false)
+}
+
+/// Pairs leave a delivery (R-519 phase 2): called once the invoice exists, with the pairs its
+/// lines took. Each style and size as far as what is left goes; what could not be taken comes
+/// back in `short`. One out per invoice and delivery, so a retry returns the out already
+/// written instead of taking twice.
+#[tauri::command]
+pub async fn take_load_pairs(load_id: String, invoice_id: Option<String>, reference: Option<String>, note: Option<String>, takes: Vec<CaseLine>) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let invoice_id = invoice_id.unwrap_or_default().trim().to_string();
+    let out_id = if invoice_id.is_empty() { uuid::Uuid::new_v4().to_string() } else { format!("out-{invoice_id}-{load_id}") };
+    let l = load(&conn, &load_id)?;
+    let os = outs(&conn, &load_id)?;
+    if os.iter().any(|o| o.id == out_id) {
+        let mut d = detail(&conn, &load_id, false)?;
+        d.short = Some(vec![]);
+        return Ok(d);
+    }
+    if l.head.archived {
+        return Err("This delivery was removed. Bring it back first.".into());
+    }
+    let cs = cases(&conn, &load_id)?;
+    let (taken, short) = core::take(&l.lines, &cs, &os, &takes)?;
+    if !taken.is_empty() {
+        let t = now();
+        let mut cols = Map::new();
+        cols.insert("load_id".into(), json!(load_id));
+        cols.insert("invoice_id".into(), json!(invoice_id));
+        cols.insert("reference".into(), json!(reference.unwrap_or_default().trim()));
+        cols.insert("note".into(), json!(note.unwrap_or_default().trim()));
+        cols.insert("pairs".into(), json!(taken.iter().map(|x| x.pairs).sum::<i64>()));
+        cols.insert("cost_total".into(), json!(core::takes_cost(&l.lines, &taken)));
+        cols.insert("takes_json".into(), json_str(&taken));
+        cols.insert("undone".into(), json!(0));
+        cols.insert("undone_at".into(), json!(""));
+        cols.insert("created_at".into(), json!(t));
+        cols.insert("updated_at".into(), json!(t));
+        write(&conn, OUTS, &out_id, cols, true)?;
+    }
+    let mut d = detail(&conn, &load_id, false)?;
+    d.short = Some(short);
+    Ok(d)
+}
+
+/// Put back: the out's pairs are on the delivery again. A set-once flag, so two devices pressing
+/// it agree, and the row stays as the record of the order.
+#[tauri::command]
+pub async fn undo_load_out(load_id: String, out_id: String) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let o = outs(&conn, &load_id)?.into_iter().find(|o| o.id == out_id).ok_or("That order is no longer on this delivery.")?;
+    if !o.undone {
+        let t = now();
+        let mut cols = Map::new();
+        cols.insert("undone".into(), json!(1));
+        cols.insert("undone_at".into(), json!(t));
+        cols.insert("updated_at".into(), json!(t));
+        write(&conn, OUTS, &out_id, cols, false)?;
+    }
     detail(&conn, &load_id, false)
 }
 
@@ -399,5 +544,38 @@ mod tests {
         assert!(save_warehouse_case(id.clone(), None, 1, c, None, None).await.is_err());
         let all = list_warehouse_loads().await.unwrap();
         assert!(all.iter().any(|x| x.id == id && x.totals.cases == 2));
+    }
+
+    /// R-519 phase 2: an invoice's pairs leave the delivery once, a retry takes nothing twice,
+    /// a case edit cannot undercut a sale, and Put back returns the pairs.
+    #[tokio::test]
+    async fn an_order_takes_pairs_once_and_put_back_returns_them() {
+        let _db = crate::db::init_test_store();
+        let d = create_warehouse_load("Truck".into(), "t.xlsx".into(), vec![line("a", "K1", &[("7", 4), ("8", 2)])]).await.unwrap();
+        let id = d.load.id.clone();
+        let c = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 3 }, CaseLine { line_id: "a".into(), size: "8".into(), pairs: 2 }];
+        let d = save_warehouse_case(id.clone(), None, 1, c, None, None).await.unwrap();
+        let case_id = d.cases[0].id.clone();
+        assert_eq!(d.stock.left, 5);
+        let want = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }, CaseLine { line_id: "a".into(), size: "8".into(), pairs: 5 }];
+        let d = take_load_pairs(id.clone(), Some("inv1".into()), Some("INV-1".into()), None, want.clone()).await.unwrap();
+        assert_eq!(d.stock.left, 1);
+        assert_eq!(d.short.as_ref().unwrap().len(), 1);
+        assert_eq!(d.outs.len(), 1);
+        assert_eq!((d.outs[0].out.pairs, d.outs[0].out.cost, d.outs[0].invoice_state), (4, 40.0, "gone"));
+        // The same invoice again takes nothing more.
+        let d = take_load_pairs(id.clone(), Some("inv1".into()), Some("INV-1".into()), None, want).await.unwrap();
+        assert_eq!((d.stock.left, d.outs.len()), (1, 1));
+        // Cutting the case below what was sold is refused; so is removing it.
+        let less = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 1 }];
+        assert!(save_warehouse_case(id.clone(), Some(case_id.clone()), 1, less, None, None).await.is_err());
+        assert!(remove_warehouse_case(id.clone(), case_id.clone()).await.is_err());
+        let out_id = d.outs[0].out.id.clone();
+        let d = undo_load_out(id.clone(), out_id.clone()).await.unwrap();
+        assert_eq!(d.stock.left, 5);
+        assert!(d.outs[0].out.undone);
+        // A second Put back changes nothing; now the case can go.
+        assert_eq!(undo_load_out(id.clone(), out_id).await.unwrap().stock.left, 5);
+        assert!(remove_warehouse_case(id.clone(), case_id).await.is_ok());
     }
 }
