@@ -270,6 +270,10 @@ export function milWindow(s: string): string | null {
   const m = /^(.+?)\s*(?:-|–|\bto\b)\s*(.+)$/i.exec(raw);
   if (m) {
     const a = one(m[1]), b = one(m[2]);
+    // am or pm on one end only ("1:00 to 3:00 pm") may belong to both: a plain 1 to 12 on the other end is not guessed.
+    const ap = (x: string) => /[ap]\.?m?\.?$/i.test(x.trim());
+    const plain12 = (x: string, t: string) => !ap(x) && Number(t.slice(0, 2)) >= 1 && Number(t.slice(0, 2)) <= 12;
+    if (a && b && ap(m[1]) !== ap(m[2]) && (plain12(m[1], a) || plain12(m[2], b))) return null;
     return a && b && b > a ? `${timeWord(a)} to ${timeWord(b)}` : null;
   }
   const a = one(raw);

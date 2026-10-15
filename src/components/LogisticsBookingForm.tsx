@@ -326,10 +326,12 @@ function TimeBox({ value, initial, onValue, onBad, className }: {
   // holds it and Save keeps refusing it, as the website does.
   const [text, setText] = useState(() => initial ?? timeWord(value));
   const [bad, setBad] = useState(() => initial != null);
-  const first = useRef(true);
+  const prev = useRef(value);
   useEffect(() => {
-    if (first.current) { first.current = false; return; }
-    // A new value from outside (the server's copy, a cleared day) replaces what the box shows.
+    // Only a value that really changed (StrictMode runs this twice on mount): a new value from outside (the server's
+    // copy, a cleared day) replaces what the box shows.
+    if (prev.current === value) return;
+    prev.current = value;
     if (milTime(text) !== value) { setText(timeWord(value)); setBad(false); onBad(null); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
@@ -342,6 +344,10 @@ function TimeBox({ value, initial, onValue, onBad, className }: {
     </>
   );
 }
+/** R-538: the step that holds each 24-hour time box, so a refused Save shows the box that cannot be read. */
+const TIME_STEP: Record<string, LoadSection> = {
+  pickup_appt_time: "pickup", picked_up_time: "pickup", delivery_appt_time: "delivery", delivered_time: "delivery",
+};
 const ACCESSORIALS = [
   "Liftgate at pickup", "Liftgate at delivery", "Residential", "Appointment",
   "Inside delivery", "Limited access", "Hazmat",
@@ -855,7 +861,9 @@ export default function LogisticsBookingForm({
   const preview = markupPreview(draft.cost, draft.pct);
 
   const save = async (opts?: { status?: FreightStatus; withQuote?: boolean; override?: boolean }) => {
-    if (badTimes.current.size > 0) { setError("Type the time as 1430 or 2:30 pm."); return; }
+    if (!mil) badTimes.current.clear();   // the 24-hour boxes are gone (the switch went off): nothing of theirs can block
+    const badKey = badTimes.current.keys().next().value as string | undefined;
+    if (badKey) { setStep(TIME_STEP[badKey] ?? step); setError("Type the time as 1430 or 2:30 pm."); return; }
     const problem = costErr || pctErr || rateErr;
     if (problem) { setError(problem); return; }
     if (opts?.withQuote && moneyValue(draft.cost) == null) { setError("Add the carrier cost first."); return; }
@@ -984,7 +992,7 @@ export default function LogisticsBookingForm({
         <textarea className={`${inp} h-auto py-2`} rows={2} value={draft[k]} placeholder={opts?.placeholder}
           onChange={(e) => set(k, e.target.value)} />
       ) : opts?.type === "time" && mil ? (
-        <TimeBox className={inp} value={draft[k]} initial={badTimes.current.get(k)} onValue={(v) => set(k, v)} onBad={markBad(k)} />
+        <TimeBox key={k} className={inp} value={draft[k]} initial={badTimes.current.get(k)} onValue={(v) => set(k, v)} onBad={markBad(k)} />
       ) : (
         <input className={inp} type={opts?.type ?? "text"} value={draft[k]} placeholder={opts?.placeholder}
           onChange={(e) => set(k, e.target.value)} onFocus={k.endsWith("_window") ? windowFocus : undefined}

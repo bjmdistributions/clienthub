@@ -371,6 +371,8 @@ describe("R-524: a time typed in 24-hour time", () => {
       ["0800–1200", "8:00 am to 12:00 pm"], ["8am-4pm", "8:00 am to 4:00 pm"], ["before 4 pm", null], ["8am to noon", null], ["", ""],
       // Bare hours are not read as 24-hour times, and a window must end after it starts.
       ["8 to 12", null], ["9-5", null], ["12-4", null], ["1-4", null], ["7", null], ["2400-0100", null], ["2200-0200", null],
+      // am or pm on one end only is not guessed for a plain 1 to 12 on the other.
+      ["1:00 to 3:00 pm", null], ["10:00 to 2:00 pm", null], ["1300 to 3:00 pm", "1:00 pm to 3:00 pm"],
     ];
     for (const [typed, want] of cases) expect([typed, milWindow(typed)]).toEqual([typed, want]);
   });
