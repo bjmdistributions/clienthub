@@ -243,10 +243,30 @@ export function milTime(s: string): string | null {
   return `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
 }
 
-/** R-524: whether this device types load times in 24-hour time. Kept on the device, like the rest of Appearance. */
+/** R-524: whether this person types load times in 24-hour time. R-538: the choice is kept on the person's account
+ *  (time24.ts reads and saves it); until the server has answered, this device's cache decides. */
 export const TIME24_KEY = "ec_time24";
+let time24Account: boolean | null = null;
 export function time24On(): boolean {
+  if (time24Account !== null) return time24Account;
   try { return localStorage.getItem(TIME24_KEY) === "1"; } catch { return false; }
+}
+/** R-538: what the server says (null: not known yet). Kept on the device too, as the cache. */
+export function setTime24Account(v: boolean | null): void {
+  time24Account = v;
+  if (v !== null) { try { localStorage.setItem(TIME24_KEY, v ? "1" : "0"); } catch { /* the cache is a convenience */ } }
+}
+
+/** R-538: a time window typed as "0800-1200" or "1400" reads back as "8:00 am to 12:00 pm" or "2:00 pm" for a person
+ *  set to 24-hour time; anything else ("before 4 pm", "8am to noon") is null and stays as typed. The website's
+ *  lgMilWindow follows the same rules. */
+export function milWindow(s: string): string | null {
+  const raw = (s || "").trim();
+  if (!raw) return "";
+  const one = (x: string) => { const t = milTime(x); return t ? timeWord(t) : null; };
+  const m = /^(.+?)\s*(?:-|–|\bto\b)\s*(.+)$/i.exec(raw);
+  if (m) { const a = one(m[1]), b = one(m[2]); return a && b ? `${a} to ${b}` : null; }
+  return one(raw);
 }
 
 /** A day and a time as people say them: "Oct 2, 2:30 pm". Either may be missing. */
@@ -545,8 +565,10 @@ export function groupOf(b: Groupable): GroupKey | null {
 
 /** R-525: where a load sits on the board: its box and its colour inside the box. Jack: "everything moves on a left to
  *  right basis". Box 1 holds the quote, the team's part and booking; box 2 booked and waiting on pickup, then on the way;
- *  box 3 delivered and waiting on the paperwork, then waiting for payment once it is in. A delivered load with nothing
- *  left to do (and a cancelled one) is finished: null. The website's lgBoardKey follows the same rules. */
+ *  box 3 delivered and waiting on the paperwork, then (R-538) waiting for payment once the carrier invoice is attached
+ *  ("a color change once the invoice is attatched"). What is finished comes from the server, which keeps a delivered load
+ *  on the open list until its carrier is paid in full or its deal is complete. A cancelled load is null. The website's
+ *  lgBoardKey follows the same rules. */
 export type BoardKey = "quote" | "team" | "book" | "pickup" | "moving" | "paper" | "pay";
 export function boardKey(b: Groupable): BoardKey | null {
   switch (b.status) {
@@ -555,12 +577,15 @@ export function boardKey(b: Groupable): BoardKey | null {
     case "requested": return "book";
     case "booked": return "pickup";
     case "picked_up": return "moving";
-    case "delivered":
-      if (missingPaperwork(b).length > 0) return "paper";
-      if ((paidStateOf(b) === "unpaid" || paidStateOf(b) === "part") && !moneyHidden(b)) return "pay";
-      return null;
+    case "delivered": return paperworkOf(b).carrier_invoice ? "pay" : "paper";
     default: return null;
   }
+}
+/** R-538: what a waiting-for-payment load still lacks besides the carrier invoice: shown as a tag on its card. */
+export function boardNeeds(b: Groupable): string[] {
+  if (boardKey(b) !== "pay") return [];
+  const p = paperworkOf(b);
+  return [!p.pod && "proof of delivery", rateMissing(b) && "carrier rate"].filter((x): x is string => !!x);
 }
 export const BOARD: { n: number; title: string; keys: BoardKey[] }[] = [
   { n: 1, title: "Quote and book", keys: ["quote", "team", "book"] },

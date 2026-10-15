@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LeadNotification } from "./api";
 import {
   ADMIN_NOTICE_KINDS, ALERT_ONLY_NOTICE_KINDS, ALERT_NOTICE_KINDS, NEEDS_YOU_NOTICE_KINDS, DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, PAY_TRACKER_KEY, PAY_TRACKER_SUB, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, RAISE_CAP, SEEN_CAP, canOpenTarget, canReadTeamNotices, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
-  logisticsBellCount, mergeSeen, noticeTarget, planDerived, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
+  logisticsBellCount, mergeSeen, noticeTarget, planDerived, planDone, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
   GROUP_LABEL, GROUP_ORDER, bellCountOf, bellTitle, canSeeGroup, chimedHere, chimes, compareRows, customerRow, dueDayOf, groupRows, leadNoticesOf, noticeRow, requestRow, switchOf, switchOn, whenWearsUrgency, whenWords,
   type NoticeLoad, type NoticeRow,
 } from "./notices";
@@ -676,5 +676,22 @@ describe("R-496: the money chime", () => {
     expect(chimedHere(done, ["other"])).toBe(false);
     expect(chimedHere(done, null)).toBe(false);
     expect(chimedHere(bank({ money_in: true, rail: "wire" }), ["df1"])).toBe(false);
+  });
+});
+
+describe("R-538: Deal 100% complete on a Logistics-only desktop", () => {
+  const c = (key: string, codes: string[]) => ({ key, at: "2026-10-15T12:00:00Z", loads: codes.map((code, i) => ({ id: `${key}-${i}`, code, lane: i === 0 ? "Reno, NV to Dallas, TX" : "" })) });
+  it("learns what is there on the first poll and raises a new completion once", () => {
+    const first = planDone([c("deal:a:1", ["LD-0001"])], null);
+    expect(first.raise).toEqual([]);
+    expect(first.seen).toContain("done:deal:a:1");
+    const next = planDone([c("deal:a:1", ["LD-0001"]), c("deal:b:1", ["LD-0002", "LD-0003"])], first.seen);
+    expect(next.raise.map((n) => [n.kind, n.title, n.body, n.id])).toEqual([
+      ["done", "Deal 100% complete", "LD-0002, Reno, NV to Dallas, TX; LD-0003: the carrier is paid and the deal is done.", "deal:b:1-0"],
+    ]);
+    expect(planDone([c("deal:b:1", ["LD-0002"])], next.seen).raise).toEqual([]);
+  });
+  it("skips a completion with no loads", () => {
+    expect(planDone([{ key: "deal:z:1", at: "", loads: [] }], []).raise).toEqual([]);
   });
 });

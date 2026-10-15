@@ -279,6 +279,10 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
         m.insert("shipping_billed".into(), if deal.is_empty() { Value::Null } else { json!(charged_of(&items, field).0) });
         m.insert("trucks_on_deal".into(), json!(if deal.is_empty() { 0 } else { trucks }));
         m.insert("freight_by_team".into(), json!(by_team));
+        // R-538: the stored pay due date is not the one that counts (R-532: none before the carrier invoice, then from its
+        // day), and the carrier's terms live on the server, so the local copy carries none; the deal page lays the
+        // server's over it.
+        m.insert("pay_due_date".into(), json!(""));
         // R-452: the pickups after the first, as the server sends them to a full viewer.
         let stops: Vec<Value> = serde_json::from_str::<Vec<Value>>(&r.get::<_, String>(at + 7)?)
             .unwrap_or_default().into_iter().filter(|v| v.is_object()).collect();
@@ -1075,7 +1079,7 @@ mod tests {
             ("quote_invoiced_at", "2026-10-06"), ("sent_to_book_at", "2026-10-07"), ("carrier_id", "fc_sample"), ("pickup_appt_time", "08:30"),
             ("picked_up_at", "2026-10-02"), ("picked_up_time", "09:15"), ("delivery_appt_time", "14:00"), ("delivered_time", "13:40"),
             ("pickup_dock", "Door 4"), ("delivery_dock", "Door 9"), ("pickup_number_confirmed_at", "2026-10-01T12:00:00Z"),
-            ("pickup_number_confirmed_by", "Sample sender"), ("pay_due_date", "2026-11-05"),
+            ("pickup_number_confirmed_by", "Sample sender"), ("pay_due_date", ""),
         ] {
             assert_eq!(b[k], v, "{k}");
         }
@@ -1099,7 +1103,8 @@ mod tests {
         }
         assert_eq!((b["quote_cost"].as_f64(), b["markup_pct"].as_f64(), b["markup_amount"].as_f64()), (Some(1500.0), Some(12.5), Some(187.5)));
         // The columns before them did not move.
-        assert_eq!((b["load_number"].as_str(), b["pay_due_date"].as_str(), b["quote_invoiced_amount"].as_f64()), (Some("LD-0012"), Some("2026-11-05"), Some(1900.0)));
+        // R-538: the stored due date is not read locally; the server's copy carries the one that counts.
+        assert_eq!((b["load_number"].as_str(), b["pay_due_date"].as_str(), b["quote_invoiced_amount"].as_f64()), (Some("LD-0012"), Some(""), Some(1900.0)));
         // Without a deal filter: all live rows, whichever deal.
         assert!(list_freight_bookings(None).await.unwrap().iter().any(|r| r["id"] == "fb_7f3k2a91c0d84e5b8a6f13c2d9e04b77"));
     }

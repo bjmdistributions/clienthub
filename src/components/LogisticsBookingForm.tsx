@@ -12,7 +12,7 @@ import {
   dealPaid, equipmentOptions, fileKind, fileKindLabel, fmtDayLabel, isHot, isLogisticsSide,
   isQuoteStage, laneLabel, loadNumber, moneyHidden, needsAmount, paidStateOf, paperworkOf, pickStatus as pickStatusFields,
   pickupNumberUnconfirmed, confirmToSend, rateConLine, rateConMissing, statusAfterActual, statusAllowed, statusWord, timeWord, type LoadStep,
-  milTime, time24On,
+  milTime, milWindow, time24On,
   QUOTE_STAGE_DAYS, actualDayGap, atQuoteStage, daysToAsk, moveBackAsk, pastDay, skipAsk, statusRank, stepForRefusal,
 } from "../lib/logisticsLoad";
 import {
@@ -319,9 +319,11 @@ const SERVICES = ["", "LTL", "FTL", "Partial", "Expedite"];
 
 /** R-524: a time box on a device set to 24-hour time: typed as 1430 (or 14:30, or 2:30 pm), shown back as 2:30 pm once
  *  the box is left. The draft keeps "HH:MM"; what does not read as a time leaves it as it was and says so. */
-function TimeBox({ value, onValue, className }: { value: string; onValue: (v: string) => void; className: string }) {
+function TimeBox({ value, onValue, onBad, className }: { value: string; onValue: (v: string) => void; onBad: (bad: boolean) => void; className: string }) {
   const [text, setText] = useState(() => timeWord(value));
   const [bad, setBad] = useState(false);
+  // R-538: the form hears whether this box reads, so Save can refuse a time it cannot read (the website does).
+  useEffect(() => { onBad(bad); return () => onBad(false); }, [bad]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     // A new value from outside (the server's copy, a cleared day) replaces what the box shows.
     if (milTime(text) !== value) { setText(timeWord(value)); setBad(false); }
@@ -849,6 +851,7 @@ export default function LogisticsBookingForm({
   const preview = markupPreview(draft.cost, draft.pct);
 
   const save = async (opts?: { status?: FreightStatus; withQuote?: boolean; override?: boolean }) => {
+    if (badTimes.current.size > 0) { setError("Type the time as 1430 or 2:30 pm."); return; }
     const problem = costErr || pctErr || rateErr;
     if (problem) { setError(problem); return; }
     if (opts?.withQuote && moneyValue(draft.cost) == null) { setError("Add the carrier cost first."); return; }
@@ -963,16 +966,21 @@ export default function LogisticsBookingForm({
   };
 
   const mil = time24On();
+  // R-538: the 24-hour boxes that cannot read what is typed in them; Save refuses while any can't.
+  const badTimes = useRef(new Set<string>());
+  const markBad = (k: string) => (b: boolean) => { if (b) badTimes.current.add(k); else badTimes.current.delete(k); };
+  // R-538: a time window typed in 24-hour time ("0800-1200") reads back as proper time when the box is left.
+  const windowBlur = (v: string, put: (x: string) => void) => () => { if (!mil) return; const t = milWindow(v); if (t && t !== v) put(t); };
   const t = (k: TextKey, label: string, opts?: { type?: string; hint?: string; wide?: boolean; placeholder?: string }) => (
     <Field label={label} hint={opts?.hint} wide={opts?.wide}>
       {k.endsWith("_address") ? (
         <textarea className={`${inp} h-auto py-2`} rows={2} value={draft[k]} placeholder={opts?.placeholder}
           onChange={(e) => set(k, e.target.value)} />
       ) : opts?.type === "time" && mil ? (
-        <TimeBox className={inp} value={draft[k]} onValue={(v) => set(k, v)} />
+        <TimeBox className={inp} value={draft[k]} onValue={(v) => set(k, v)} onBad={markBad(k)} />
       ) : (
         <input className={inp} type={opts?.type ?? "text"} value={draft[k]} placeholder={opts?.placeholder}
-          onChange={(e) => set(k, e.target.value)} />
+          onChange={(e) => set(k, e.target.value)} onBlur={k.endsWith("_window") ? windowBlur(draft[k], (x) => set(k, x)) : undefined} />
       )}
     </Field>
   );
@@ -1009,7 +1017,8 @@ export default function LogisticsBookingForm({
       {k === "address" ? (
         <textarea className={`${inp} h-auto py-2`} rows={2} value={String(draft.stops[i][k] ?? "")} placeholder={ADDRESS_HINT} onChange={(e) => setStop(i, k, e.target.value)} />
       ) : (
-        <input className={inp} value={String(draft.stops[i][k] ?? "")} onChange={(e) => setStop(i, k, e.target.value)} />
+        <input className={inp} value={String(draft.stops[i][k] ?? "")} onChange={(e) => setStop(i, k, e.target.value)}
+          onBlur={k === "window" ? windowBlur(String(draft.stops[i][k] ?? ""), (x) => setStop(i, k, x)) : undefined} />
       )}
     </Field>
   );

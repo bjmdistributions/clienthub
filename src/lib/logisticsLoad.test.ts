@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { FreightBooking } from "./api";
 import {
   EQUIPMENT, LOAD_STEPS, arrivesToday, dashboardLoads, deliveryDays, loadCard, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday,
-  BOARD, BOARD_WORD, boardKey, boardSort, milTime,
+  BOARD, BOARD_WORD, boardKey, boardNeeds, boardSort, milTime, milWindow,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, rowLane, statusAfterActual, statusWord, stepDone, timeWord,
@@ -365,6 +365,13 @@ describe("R-524: a time typed in 24-hour time", () => {
     ];
     for (const [typed, want] of cases) expect([typed, milTime(typed)]).toEqual([typed, want]);
   });
+  it("R-538: a time window typed in 24-hour time reads back as proper time; anything else stays as typed", () => {
+    const cases: [string, string | null][] = [
+      ["0800-1200", "8:00 am to 12:00 pm"], ["1400", "2:00 pm"], ["8 to 12", "8:00 am to 12:00 pm"], ["2:30 pm - 4 pm", "2:30 pm to 4:00 pm"],
+      ["0800–1200", "8:00 am to 12:00 pm"], ["before 4 pm", null], ["8am to noon", null], ["", ""], ["2400-0100", null],
+    ];
+    for (const [typed, want] of cases) expect([typed, milWindow(typed)]).toEqual([typed, want]);
+  });
 });
 
 describe("the list groups", () => {
@@ -693,7 +700,12 @@ describe("R-476: the hello and New today", () => {
     expect(boardKey(mk({ status: "picked_up" }))).toBe("moving");
     expect(boardKey(mk({ status: "delivered", quoted_cost: 900 }))).toBe("paper");
     expect(boardKey(mk({ status: "delivered", paperwork: all, quoted_cost: 900, paid_amount: null, paid_state: "unpaid" }))).toBe("pay");
-    expect(boardKey(mk({ status: "delivered", ...paid }))).toBeNull();
+    // R-538: finished comes from the server's done list; a delivered load still listed is waiting, by the carrier invoice.
+    expect(boardKey(mk({ status: "delivered", ...paid }))).toBe("pay");
+    const invoiceOnly = mk({ status: "delivered", paperwork: { bol: false, pod: false, carrier_invoice: true }, quoted_cost: 900 });
+    expect(boardKey(invoiceOnly)).toBe("pay");
+    expect(boardNeeds(invoiceOnly)).toEqual(["proof of delivery"]);
+    expect(boardNeeds(mk({ status: "delivered", quoted_cost: 900 }))).toEqual([]);
     expect(boardKey(mk({ status: "cancelled" }))).toBeNull();
     expect(BOARD_WORD.paper).toBe("Waiting on paperwork");
   });

@@ -5,7 +5,7 @@ import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf
 import { canAttachPayments, canChangePaidOn, canRecordOn, carrierByName, laneEnds } from "../lib/logisticsCarriers";
 import { CATCH_UP_STEPS, blankCatchUp, catchUpFields, catchUpProblem, dayLabel, type CatchUpForm } from "../lib/catchUpLoad";
 import { ADDRESS_HINT, addressNote, relabelPickupError } from "../lib/fullAddress";
-import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidStateOf, paidView, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
+import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, milWindow, paidStateOf, paidView, pickupNumberUnconfirmed, time24On } from "../lib/logisticsLoad";
 import { invoiceWasSent, loadProgress, withDealFacts } from "../lib/loadProgress";
 import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
@@ -290,7 +290,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                 <input className={inp} placeholder="Name" value={pickup.name} onChange={(e) => setPickup({ ...pickup, name: e.target.value })} />
                 <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label="Pickup address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
                 <AddressNote value={pickup.address} />
-                <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={when.window} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, window: v })); }} />
+                <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={when.window} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, window: v })); }}
+                  onBlur={() => { if (!time24On()) return; const t = milWindow(when.window); if (t && t !== when.window) setWhen((w) => ({ ...w, window: t })); }} />
               </div>
               {stops.map((x, i) => (
                 <div key={i} className="space-y-2">
@@ -302,7 +303,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                   <input className={inp} placeholder="Name" aria-label={`Pickup ${i + 2} name`} value={x.name} onChange={(e) => setStop(i, { name: e.target.value })} />
                   <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
                   <AddressNote value={x.address} />
-                  <input className={inp} placeholder="Time, like before 4 pm" aria-label={`Pickup ${i + 2} time`} value={x.window} onChange={(e) => setStop(i, { window: e.target.value })} />
+                  <input className={inp} placeholder="Time, like before 4 pm" aria-label={`Pickup ${i + 2} time`} value={x.window} onChange={(e) => setStop(i, { window: e.target.value })}
+                    onBlur={() => { if (!time24On()) return; const t = milWindow(x.window); if (t && t !== x.window) setStop(i, { window: t }); }} />
                 </div>
               ))}
               {stops.length < 9 && (
