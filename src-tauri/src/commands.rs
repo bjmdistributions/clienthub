@@ -21827,8 +21827,23 @@ fn publish_balance_and_health() {
         })
         .collect();
     let last_sync: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='plaid_last_sync'", [], |r| r.get(0)).ok();
+    // R-529: the reserve account too, so Free cash on the phone shows what is parked against the target, as this
+    // screen does. Its balance is already out of `bal` (plaid_balances leaves it out). Amounts and a label only.
+    let reserve = {
+        let (_, _, _, parked, linked) = plaid_balances_split(&conn);
+        let key = reserve_account_key(&conn);
+        let label = if key.is_empty() { String::new() } else {
+            plaid_reserve_candidates(&conn).iter()
+                .find(|a| a.get("key").and_then(|v| v.as_str()) == Some(key.as_str()))
+                .map(|a| format!("{} · {}",
+                    a.get("institution").and_then(|v| v.as_str()).unwrap_or(""),
+                    a.get("name").and_then(|v| v.as_str()).unwrap_or("Account")))
+                .unwrap_or_default()
+        };
+        json!({ "designated": !key.is_empty(), "linked": linked, "parked": (parked * 100.0).round() / 100.0, "label": label })
+    };
     drop(conn);
-    tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks).await; });
+    tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks, reserve).await; });
 }
 
 /// R-518: pull when the window comes to the front and this device has not pulled for five minutes, so a PC that
