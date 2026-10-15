@@ -356,12 +356,12 @@ pub async fn add_load_pictures(load_id: String, path: String) -> Result<Value, S
             Some((_, s)) => s.clone(),
             None => continue,
         };
-        let rel = core::picture_rel(&load_id, &saved_id, &p.ext).ok_or("A line's id cannot name a picture.")?;
+        let rel = core::picture_rel(&load_id, &saved_id, &p.bytes).ok_or("A line's id cannot name a picture.")?;
         let file = base.join(&rel);
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&file, &p.bytes).map_err(|e| e.to_string())?;
+        std::fs::write(&file, p.bytes.as_slice()).map_err(|e| e.to_string())?;
         crate::netsync::media_enqueue(&load_id, &rel, "delivery");
         put.push((saved_id, rel));
     }
@@ -856,7 +856,7 @@ mod tests {
         assert_eq!(v["pictures"]["not_on_delivery"], json!(0));
         let saved = get_warehouse_load(id.clone()).await.unwrap().load.lines.unwrap();
         let base = crate::db::app_data_dir().join("sync");
-        assert!(saved.iter().all(|l| l.image == format!("media/deliveries/{id}/{}.jpg", l.id) && base.join(&l.image).exists()));
+        assert!(saved.iter().all(|l| l.image.starts_with(&format!("media/deliveries/{id}/{}-", l.id)) && l.image.ends_with(".jpg") && base.join(&l.image).exists()));
         let queued: i64 = pool()
             .get()
             .unwrap()

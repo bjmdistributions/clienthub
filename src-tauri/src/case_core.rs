@@ -185,7 +185,11 @@ pub fn read_tabs(filename: &str, bytes: &[u8]) -> Result<Vec<Tab>, String> {
             let mut tabs = Vec::new();
             for n in names {
                 if let Ok(range) = wb.worksheet_range(&n) {
-                    let rows = range.rows().map(|r| r.iter().map(cell_text).collect::<Vec<String>>()).collect();
+                    // A range starts at its first used cell. The blank rows above it are put back,
+                    // so a row here is the sheet's own row: pictures are anchored by that row.
+                    let top = range.start().map(|(r, _)| r as usize).unwrap_or(0).min(100_000);
+                    let mut rows: Vec<Vec<String>> = vec![Vec::new(); top];
+                    rows.extend(range.rows().map(|r| r.iter().map(cell_text).collect::<Vec<String>>()));
                     tabs.push(Tab { name: n, rows });
                 }
             }
@@ -315,22 +319,44 @@ fn size_number(s: &str) -> Option<f64> {
     money(t)
 }
 
-/// A heading that is a size by itself: 7, 8.5, 7½, XS, XL, 4C, 11Y, 2T, or a European 38. A
-/// number must be a believable size: 0 to 60 in halves, so a quantity like 108 is never a size.
-fn looks_like_size(s: &str) -> bool {
-    let t = s.trim().to_uppercase();
-    if t.is_empty() || t.chars().count() > 6 {
-        return false;
-    }
-    if let Some(n) = size_number(&t) {
+/// One size by itself (upper case): 7, 8.5, 7½, 7 1/2, XS, XL, 2XL, 1X, 4C, 11Y, 2T, 12M, 8W, NB,
+/// one size, or a European 38. A number must be a believable size, 0 to 60 in halves, so a
+/// quantity like 108 is never one.
+fn one_size(t: &str) -> bool {
+    if let Some(n) = size_number(t) {
         return (0.0..=60.0).contains(&n) && (n * 2.0).fract() == 0.0;
     }
-    if matches!(t.as_str(), "XXS" | "XS" | "S" | "M" | "L" | "XL" | "XXL" | "XXXL" | "2XL" | "3XL" | "OS" | "OSFA") {
+    if matches!(t, "XXS" | "XS" | "S" | "M" | "L" | "XL" | "XXL" | "XXXL" | "OS" | "OSFA" | "OSFM" | "O/S" | "ONE SIZE" | "NB" | "NEWBORN") {
+        return true;
+    }
+    if t.strip_suffix("XL").map(|h| matches!(h, "2" | "3" | "4" | "5" | "6")).unwrap_or(false)
+        || t.strip_suffix('X').map(|h| matches!(h, "0" | "1" | "2" | "3" | "4" | "5" | "6")).unwrap_or(false)
+    {
         return true;
     }
     let last = t.chars().last().unwrap_or(' ');
-    let head: String = t.chars().take(t.chars().count() - 1).collect();
-    matches!(last, 'C' | 'Y' | 'T' | 'W' | 'M') && size_number(&head).map(|n| (0.0..=60.0).contains(&n)).unwrap_or(false)
+    let head: String = t.chars().take(t.chars().count().saturating_sub(1)).collect();
+    matches!(last, 'C' | 'Y' | 'T' | 'W' | 'M' | 'K') && size_number(&head).map(|n| (0.0..=60.0).contains(&n)).unwrap_or(false)
+}
+
+/// A label that is a size: one size, or two joined as a range or pair (S/M, 5/6, 7-8, 0-3M, XS-S).
+fn looks_like_size(s: &str) -> bool {
+    let t = s.trim().to_uppercase();
+    if t.is_empty() || t.chars().count() > 10 {
+        return false;
+    }
+    if one_size(&t) {
+        return true;
+    }
+    for sep in ['/', '-'] {
+        if let Some((a, b)) = t.split_once(sep) {
+            let (a, b) = (a.trim(), b.trim());
+            if !a.is_empty() && !b.is_empty() && one_size(a) && one_size(b) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// A row of size names: every label looks like a size. A row of quantities with no style
@@ -368,8 +394,13 @@ struct Cols {
     scale: Vec<(usize, String)>,
 }
 
+/// The first 30 rows with anything in them: where a heading row is looked for.
+fn top_rows(rows: &[Vec<String>]) -> Vec<usize> {
+    (0..rows.len()).filter(|&r| rows[r].iter().any(|c| !c.trim().is_empty())).take(30).collect()
+}
+
 fn find_cols(rows: &[Vec<String>]) -> Option<Cols> {
-    for r in 0..rows.len().min(30) {
+    for r in top_rows(rows) {
         let h: Vec<String> = rows[r].iter().map(|c| norm(c)).collect();
         let pos = |f: &dyn Fn(&str) -> bool| h.iter().position(|x| f(x));
         let style = match pos(&|x| matches!(x, "style" | "style number" | "style no" | "sku" | "item" | "item number" | "model")) {
@@ -382,18 +413,28 @@ fn find_cols(rows: &[Vec<String>]) -> Option<Cols> {
         let description = pos(&|x| !colorish(x) && (x.contains("desc") || x == "name" || x == "style name"));
         let cost = pos(&|x| x.contains("cost") || x.contains("wholesale") || matches!(x, "std price" | "price" | "unit price"));
         let msrp = pos(&|x| x.contains("msrp") || x.contains("retail") || x == "srp");
-        let total = h.iter().enumerate().skip(style + 1).find(|(_, x)| matches!(x.as_str(), "total" | "total pairs" | "pairs" | "qty" | "total qty" | "quantity" | "units" | "on hand")).map(|(c, _)| c);
+        let total_head = |x: &str| matches!(x, "total" | "total pairs" | "pairs" | "qty" | "total qty" | "quantity");
+        // The total column: the first after `from`, else the first after the style.
+        let total_after = |from: usize| {
+            h.iter().enumerate().skip(from).find(|(_, x)| total_head(x)).map(|(c, _)| c).or_else(|| h.iter().enumerate().skip(style + 1).find(|(_, x)| total_head(x)).map(|(c, _)| c))
+        };
         let width = rows.iter().map(|r| r.len()).max().unwrap_or(0);
-        let end = total.unwrap_or(width);
-        let size_col = h.iter().position(|x| x.contains("size"));
-        // A "Size" heading where the grid starts, or else sizes named as headings.
-        let (grid_from, grid_to, scale) = if let Some(c) = size_col {
-            let scale = (c + 1..end.max(c + 1)).filter(|&k| k < rows[r].len() && looks_like_size(&rows[r][k])).map(|k| (k, rows[r][k].trim().to_string())).collect();
-            (c, end.max(c + 1), scale)
+        let size_head = |x: &str| {
+            (matches!(x, "size" | "sizes" | "sz" | "shoe size" | "us size") || x.starts_with("size ") || x.starts_with("sizes "))
+                && !["pack", "case", "box", "carton", "pallet", "inner", "master"].iter().any(|w| x.contains(w))
+        };
+        let size_col = h.iter().position(|x| size_head(x));
+        // A "Size" heading where the grid starts (up to the total after it), or else sizes named
+        // as headings (a Qty or Total before them does not cut them off).
+        let (grid_from, grid_to, scale, total) = if let Some(c) = size_col {
+            let total = total_after(c + 1);
+            let end = total.filter(|&k| k > c).unwrap_or(width).max(c + 1);
+            let scale = (c + 1..end).filter(|&k| k < rows[r].len() && looks_like_size(&rows[r][k])).map(|k| (k, rows[r][k].trim().to_string())).collect();
+            (c, end, scale, total)
         } else {
-            let named: Vec<(usize, String)> = (style + 1..end).filter(|&k| k < rows[r].len() && looks_like_size(&rows[r][k])).map(|k| (k, rows[r][k].trim().to_string())).collect();
+            let named: Vec<(usize, String)> = (style + 1..width).filter(|&k| k < rows[r].len() && !total_head(&h[k]) && looks_like_size(&rows[r][k])).map(|k| (k, rows[r][k].trim().to_string())).collect();
             match (named.first(), named.last()) {
-                (Some(a), Some(b)) if named.len() >= 2 => (a.0, b.0 + 1, named.clone()),
+                (Some(a), Some(b)) => (a.0, b.0 + 1, named.clone(), total_after(b.0 + 1)),
                 _ => continue,
             }
         };
@@ -412,7 +453,7 @@ fn at(row: &[String], c: Option<usize>) -> String {
 /// The figures a totals tab states: the row headed Total(s), under the pairs heading and a
 /// SKU/style heading when there is one.
 fn stated_totals(tab: &Tab) -> Option<Stated> {
-    for r in 0..tab.rows.len().min(30) {
+    for r in top_rows(&tab.rows) {
         let h: Vec<String> = tab.rows[r].iter().map(|c| norm(c)).collect();
         let pairs_col = match h.iter().position(|x| x.contains("pair") || x == "qty" || x.contains("quantity") || x == "total units") {
             Some(c) => c,
@@ -478,16 +519,32 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
                 !grid.is_empty() && grid.len() == filled && is_size_row(&grid)
             })
             .count();
-        let per_row = size_rows == 0 && cols.scale.is_empty() && cols.size_col.is_some() && cols.total.is_some()
-            && body.clone().filter(|&r| !one_line(&at(&tab.rows[r], Some(cols.style))).is_empty()).any(|r| looks_like_size(&at(&tab.rows[r], cols.size_col)));
+        let styled: Vec<usize> = body
+            .clone()
+            .filter(|&r| {
+                let s = one_line(&at(&tab.rows[r], Some(cols.style)));
+                !s.is_empty() && !is_total(&s)
+            })
+            .collect();
+        let sized = styled.iter().filter(|&&r| looks_like_size(&at(&tab.rows[r], cols.size_col))).count();
+        let per_row = size_rows == 0 && cols.scale.is_empty() && cols.size_col.is_some() && cols.total.is_some() && !styled.is_empty() && sized * 10 >= styled.len() * 9;
         let layout = if per_row { "column" } else if size_rows > 0 { "above" } else { "heading" };
         let first_line = lines.len();
         let first_warning = warnings.len();
         let mut scale: Vec<(usize, String)> = cols.scale.clone();
         let mut group = String::new();
         let mut tab_mismatches = 0usize;
+        // Pairs by column since the last row of sizes or group heading: a row with no style whose
+        // numbers are exactly these sums is a subtotal.
+        let mut since: BTreeMap<usize, i64> = BTreeMap::new();
         for r in body {
             let row = &tab.rows[r];
+            let lone: Vec<&String> = row.iter().filter(|c| !c.trim().is_empty()).collect();
+            if lone.len() == 1 && num(lone[0]).is_none() && !is_total(lone[0]) {
+                group = one_line(lone[0]);
+                since.clear();
+                continue;
+            }
             let style = one_line(&at(row, Some(cols.style)));
             let grid: Vec<(usize, String)> = (cols.grid_from..cols.grid_to.min(row.len()))
                 .filter(|&c| !row[c].trim().is_empty())
@@ -496,7 +553,12 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
             if style.is_empty() {
                 let filled: Vec<&String> = row.iter().filter(|c| !c.trim().is_empty()).collect();
                 if !per_row && !grid.is_empty() && grid.len() == filled.len() {
-                    if is_size_row(&grid) {
+                    let subtotal = !since.is_empty()
+                        && grid.iter().all(|(c, v)| num(v).is_some() && since.get(c).copied() == num(v))
+                        && since.iter().all(|(c, n)| *n == 0 || grid.iter().any(|(k, _)| k == c));
+                    if subtotal {
+                        since.clear();
+                    } else if is_size_row(&grid) {
                         let twice = repeated_sizes(&grid);
                         if let Some((last, rest)) = twice.split_last() {
                             let named = if rest.is_empty() { format!("size {last} is") } else { format!("sizes {} and {last} are each", rest.join(", ")) };
@@ -507,11 +569,10 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
                             ));
                         }
                         scale = grid;
+                        since.clear();
                     } else {
                         warnings.push(format!("{} row {}: numbers with no style that are not size names, so they were left out.", tab.name, r + 1));
                     }
-                } else if filled.len() == 1 && num(filled[0]).is_none() && !is_total(filled[0]) {
-                    group = one_line(filled[0]);
                 } else if filled.len() > 1 && !filled.iter().any(|c| is_total(c)) {
                     warnings.push(format!("{} row {}: a row with no style, left out.", tab.name, r + 1));
                 }
@@ -576,6 +637,7 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
                 if q <= 0 {
                     continue;
                 }
+                *since.entry(*c).or_insert(0) += q;
                 match scale.iter().find(|(k, _)| k == c) {
                     Some((_, label)) => {
                         if let Some(s) = sizes.iter_mut().find(|s| &s.size == label) {
@@ -633,14 +695,16 @@ pub fn read_manifest_rows(tabs: &[Tab]) -> (ManifestRead, RowMap) {
     // A page listing exactly the styles of all the other pages together is a master list: its
     // pairs are already counted on those pages, so it starts left out (the screen can turn it on).
     let keys = |name: &str| -> BTreeSet<(String, String)> { lines.iter().filter(|l| l.sheet == name).map(|l| (l.style.to_lowercase(), l.color.to_lowercase())).collect() };
+    let pairs_of = |name: &str| -> i64 { lines.iter().filter(|l| l.sheet == name).map(|l| l.expected()).sum() };
     let items: Vec<usize> = (0..tab_reads.len()).filter(|&i| tab_reads[i].kind == "items").collect();
     if items.len() >= 2 {
         for &i in &items {
             let mine = keys(&tab_reads[i].name);
             let others: BTreeSet<(String, String)> = items.iter().filter(|&&j| j != i).flat_map(|&j| keys(&tab_reads[j].name)).collect();
-            if mine == others {
+            let others_pairs: i64 = items.iter().filter(|&&j| j != i).map(|&j| pairs_of(&tab_reads[j].name)).sum();
+            if mine == others && pairs_of(&tab_reads[i].name) == others_pairs {
                 tab_reads[i].kind = "copy".into();
-                tab_reads[i].note = "Every style on this page is also on the other pages, so it looks like a master list. It is left out unless you turn it on.".into();
+                tab_reads[i].note = "Every style and every pair on this page is also on the other pages, so it looks like a master list. It is left out unless you turn it on.".into();
                 break;
             }
         }
@@ -671,12 +735,15 @@ pub struct Picture {
     pub row: usize,
     pub row_last: usize,
     pub ext: String,
-    pub bytes: Vec<u8>,
+    /// Shared: one image placed on many rows is read once.
+    pub bytes: std::sync::Arc<Vec<u8>>,
 }
 
-/// One picture at most this size, and at most this many in a file.
+/// One picture at most this size, at most this many in a file, and at most this much image data
+/// unpacked from one file.
 pub const MAX_PICTURE_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_PICTURES: usize = 5_000;
+pub const MAX_PICTURES_TOTAL: usize = 256 * 1024 * 1024;
 
 /// What kind of image these bytes are, by their first bytes (never by a file name).
 pub fn image_ext(bytes: &[u8]) -> Option<&'static str> {
@@ -880,6 +947,8 @@ pub fn read_pictures(filename: &str, bytes: &[u8]) -> Vec<Picture> {
     };
     let book_rels = rels(&mut z, "xl/_rels/workbook.xml.rels", "xl");
     let mut out = Vec::new();
+    let mut media_seen: BTreeMap<String, Option<(&'static str, std::sync::Arc<Vec<u8>>)>> = BTreeMap::new();
+    let mut unpacked = 0usize;
     for sheet in xml_elements(&workbook, "sheet") {
         let (name, rid) = match (sheet.get("name"), sheet.get("id")) {
             (Some(n), Some(r)) => (n.clone(), r.clone()),
@@ -906,23 +975,28 @@ pub fn read_pictures(filename: &str, bytes: &[u8]) -> Vec<Picture> {
                     Some(m) => m.clone(),
                     None => continue,
                 };
-                let data = {
-                    use std::io::Read;
-                    let f = match z.by_name(&media) {
-                        Ok(f) => f,
-                        Err(_) => continue,
+                if !media_seen.contains_key(&media) {
+                    let got = {
+                        use std::io::Read;
+                        match z.by_name(&media) {
+                            Ok(f) if (f.size() as usize) <= MAX_PICTURE_BYTES => {
+                                let mut v = Vec::new();
+                                let ok = f.take(MAX_PICTURE_BYTES as u64 + 1).read_to_end(&mut v).is_ok() && v.len() <= MAX_PICTURE_BYTES && unpacked + v.len() <= MAX_PICTURES_TOTAL;
+                                match image_ext(&v) {
+                                    Some(e) if ok => {
+                                        unpacked += v.len();
+                                        Some((e, std::sync::Arc::new(v)))
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        }
                     };
-                    if f.size() as usize > MAX_PICTURE_BYTES {
-                        continue;
-                    }
-                    let mut v = Vec::new();
-                    if f.take(MAX_PICTURE_BYTES as u64 + 1).read_to_end(&mut v).is_err() || v.len() > MAX_PICTURE_BYTES {
-                        continue;
-                    }
-                    v
-                };
-                let ext = match image_ext(&data) {
-                    Some(e) => e,
+                    media_seen.insert(media.clone(), got);
+                }
+                let (ext, data) = match media_seen.get(&media).cloned().flatten() {
+                    Some(x) => x,
                     None => continue,
                 };
                 out.push(Picture { sheet: name.clone(), row: a.row + 1, row_last: a.row_last + 1, ext: ext.into(), bytes: data });
@@ -998,13 +1072,26 @@ pub fn safe_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128 && !s.contains("..") && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
-/// Where a line's picture is kept: "media/deliveries/<load>/<line>.<ext>" (both surfaces serve
-/// media/ at /media/). None when an id is not safe for a file name.
-pub fn picture_rel(load_id: &str, line_id: &str, ext: &str) -> Option<String> {
-    if !safe_id(load_id) || !safe_id(line_id) || !matches!(ext, "jpg" | "png" | "webp" | "gif") {
+/// The first 8 hex digits of the bytes' FNV-1a hash: in a picture's file name, so a changed
+/// picture is a new file and a cache never shows the old one.
+pub fn picture_tag(bytes: &[u8]) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in bytes {
+        h ^= *b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("{h:08x}")
+}
+
+/// Where a line's picture is kept: "media/deliveries/<load>/<line>-<tag>.<ext>" (both surfaces
+/// serve media/ at /media/), the kind from the bytes themselves. None when an id is not safe for
+/// a file name or the bytes are not a jpg, png, gif or webp.
+pub fn picture_rel(load_id: &str, line_id: &str, bytes: &[u8]) -> Option<String> {
+    let ext = image_ext(bytes)?;
+    if !safe_id(load_id) || !safe_id(line_id) {
         return None;
     }
-    Some(format!("media/deliveries/{load_id}/{line_id}.{ext}"))
+    Some(format!("media/deliveries/{load_id}/{line_id}-{}.{ext}", picture_tag(bytes)))
 }
 
 /// An image path a line may carry: one this file made, under media/deliveries/, or none.
@@ -1034,7 +1121,7 @@ pub fn previews(read: &ManifestRead, pics: &[(String, Picture)]) -> BTreeMap<Str
                     "webp" => "image/webp",
                     _ => "image/jpeg",
                 };
-                out.insert(id.clone(), format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&p.bytes)));
+                out.insert(id.clone(), format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(p.bytes.as_slice())));
             }
         }
     }
@@ -1045,12 +1132,14 @@ pub fn previews(read: &ManifestRead, pics: &[(String, Picture)]) -> BTreeMap<Str
 /// already saved: the saved line with the same id whose style and colour also match, or else the
 /// one saved line with the same tab, style and colour. A line that matches no saved line, or more
 /// than one, is left out, and a saved line takes one at most: a picture never lands on a guess.
+/// (The id alone is not enough: a row inserted above two rows of the same style and colour would
+/// move one onto the other's id; their sizes tell them apart.)
 /// Returns (read line id, saved line id) pairs.
 pub fn same_lines(saved: &[LoadLine], read: &[LoadLine]) -> Vec<(String, String)> {
     let key = |l: &LoadLine| (l.brand.to_lowercase(), l.style.to_lowercase(), l.color.to_lowercase());
     let mut out: Vec<(String, String)> = Vec::new();
     for r in read {
-        let by_id = saved.iter().find(|s| s.id == r.id && s.style.eq_ignore_ascii_case(&r.style) && s.color.eq_ignore_ascii_case(&r.color));
+        let by_id = saved.iter().find(|s| s.id == r.id && s.style.eq_ignore_ascii_case(&r.style) && s.color.eq_ignore_ascii_case(&r.color) && s.sizes == r.sizes);
         let id = match by_id {
             Some(s) => Some(s.id.clone()),
             None => {
@@ -2017,15 +2106,19 @@ mod tests {
         let matched = match_pictures(&mut m, &rows, &tabs, &pics);
         assert_eq!(matched, vec![("t2r4".to_string(), 0), ("t2r6".to_string(), 1), ("t2r9".to_string(), 4)]);
         assert_eq!((m.pictures, m.pictures_left_out, m.tabs[1].pictures, m.tabs[0].pictures), (3, 2, 3, 0));
-        assert_eq!(pics[4].bytes, b"GIF89a-gif-".to_vec());
+        assert_eq!(*pics[4].bytes, b"GIF89a-gif-".to_vec());
     }
 
     #[test]
     fn a_picture_is_kept_only_under_its_delivery_with_a_safe_name() {
-        assert_eq!(picture_rel("6f1c-ab", "t2r4", "jpg").as_deref(), Some("media/deliveries/6f1c-ab/t2r4.jpg"));
-        assert!(picture_rel("../x", "t2r4", "jpg").is_none());
-        assert!(picture_rel("a", "t2/r4", "jpg").is_none());
-        assert!(picture_rel("a", "t2r4", "svg").is_none());
+        let jpg: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 7];
+        let tag = picture_tag(jpg);
+        assert_eq!(tag.len(), 8);
+        assert_ne!(tag, picture_tag(&[0xFF, 0xD8, 0xFF, 0xE0, 8]));
+        assert_eq!(picture_rel("6f1c-ab", "t2r4", jpg), Some(format!("media/deliveries/6f1c-ab/t2r4-{tag}.jpg")));
+        assert!(picture_rel("../x", "t2r4", jpg).is_none());
+        assert!(picture_rel("a", "t2/r4", jpg).is_none());
+        assert!(picture_rel("a", "t2r4", b"<svg>").is_none());
         assert_eq!(clean_image(" media/deliveries/a/t2r4.jpg "), "media/deliveries/a/t2r4.jpg");
         assert_eq!(clean_image("media/deliveries/../secret.jpg"), "");
         assert_eq!(clean_image("https://example.com/x.jpg"), "");
@@ -2065,11 +2158,144 @@ mod tests {
     #[test]
     fn the_preview_shows_each_tabs_sample_pictures() {
         let m = read_manifest(&sample());
-        let small = Picture { sheet: "Acme Hash".into(), row: 4, row_last: 4, ext: "png".into(), bytes: b"\x89PNG-x".to_vec() };
-        let big = Picture { bytes: vec![0xFF; MAX_PREVIEW_BYTES + 1], ext: "jpg".into(), ..small.clone() };
-        let p = previews(&m, &[("t2r4".into(), small), ("t2r6".into(), big), ("t9r9".into(), Picture { sheet: "x".into(), row: 1, row_last: 1, ext: "gif".into(), bytes: b"GIF8".to_vec() })]);
+        let arc = |v: Vec<u8>| std::sync::Arc::new(v);
+        let small = Picture { sheet: "Acme Hash".into(), row: 4, row_last: 4, ext: "png".into(), bytes: arc(b"\x89PNG-x".to_vec()) };
+        let big = Picture { bytes: arc(vec![0xFF; MAX_PREVIEW_BYTES + 1]), ext: "jpg".into(), ..small.clone() };
+        let p = previews(&m, &[("t2r4".into(), small), ("t2r6".into(), big), ("t9r9".into(), Picture { sheet: "x".into(), row: 1, row_last: 1, ext: "gif".into(), bytes: arc(b"GIF8".to_vec()) })]);
         assert_eq!(p.keys().collect::<Vec<_>>(), vec!["t2r4"]);
         assert!(p["t2r4"].starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn size_names_in_ranges_pairs_and_plus_sizes_read() {
+        for s in ["S/M", "M/L", "5/6", "7-8", "0-3M", "6-12M", "XS-S", "4XL", "1X", "NB", "One Size", "O/S", "8W", "10K", "7 1/2", "7-1/2"] {
+            assert!(looks_like_size(s), "{s}");
+        }
+        for s in ["108", "Black", "61", "-5", "7.25", "12/24/36", "S/", "/M", "Size"] {
+            assert!(!looks_like_size(s), "{s}");
+        }
+        let tabs = vec![Tab {
+            name: "Tops".into(),
+            rows: vec![row(&["Style", "Color", "Size", "", "", "Total"]), row(&["", "", "S/M", "M/L", "L/XL", ""]), row(&["E1", "BLK", "1", "2", "3", "6"])],
+        }];
+        let m = read_manifest(&tabs);
+        assert_eq!(m.tabs[0].layout, "above");
+        assert_eq!(m.lines[0].sizes.iter().map(|s| (s.size.as_str(), s.qty)).collect::<Vec<_>>(), vec![("S/M", 1), ("M/L", 2), ("L/XL", 3)]);
+    }
+
+    #[test]
+    fn one_size_on_the_heading_and_pack_size_never_the_sizes() {
+        let m = read_manifest(&[Tab { name: "Hats".into(), rows: vec![row(&["Style", "Color", "OSFA", "Total"]), row(&["H1", "RED", "12", "12"])] }]);
+        assert_eq!(m.lines[0].sizes, vec![SizeQty { size: "OSFA".into(), qty: 12 }]);
+        // A Pack Size column holding 6, 12, 24 is not a size column: the sizes on the heading are.
+        let m = read_manifest(&[Tab {
+            name: "Packs".into(),
+            rows: vec![row(&["Style", "Color", "Pack Size", "Qty", "7", "8"]), row(&["P1", "TAN", "12", "", "6", "6"])],
+        }]);
+        assert_eq!(m.tabs[0].layout, "heading");
+        assert_eq!(m.lines[0].sizes.iter().map(|s| (s.size.as_str(), s.qty)).collect::<Vec<_>>(), vec![("7", 6), ("8", 6)]);
+    }
+
+    #[test]
+    fn a_row_of_sums_with_no_label_is_a_subtotal_not_the_sizes() {
+        // 12, 18, 24 would pass as sizes; they are the sums of the styles above, so they are skipped
+        // and the next style keeps the sizes 5, 6, 7.
+        let tabs = vec![Tab {
+            name: "Hash".into(),
+            rows: vec![
+                row(&["Style", "Color", "Size Scale", "", "", "Total"]),
+                row(&["", "", "5", "6", "7"]),
+                row(&["S1", "BLK", "10", "8", "20", "38"]),
+                row(&["S2", "BLK", "2", "10", "4", "16"]),
+                row(&["", "", "12", "18", "24"]),
+                row(&["S3", "BLK", "1", "", "1", "2"]),
+            ],
+        }];
+        let m = read_manifest(&tabs);
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        let s3 = m.lines.iter().find(|l| l.style == "S3").unwrap();
+        assert_eq!(s3.sizes.iter().map(|s| (s.size.as_str(), s.qty)).collect::<Vec<_>>(), vec![("5", 1), ("6", 0), ("7", 1)]);
+    }
+
+    #[test]
+    fn a_size_column_that_is_mostly_blank_is_not_one_size_a_row() {
+        // Rows of sizes the reader cannot name, a Size heading and a Total: never one size a row.
+        let tabs = vec![Tab {
+            name: "Odd".into(),
+            rows: vec![row(&["Style", "Color", "Size", "", "Total"]), row(&["A1", "BLK", "1", "2", "3"]), row(&["A2", "BLK", "", "2", "2"]), row(&["A3", "BLK", "", "1", "1"])],
+        }];
+        assert_ne!(read_manifest(&tabs).tabs[0].layout, "column");
+    }
+
+    #[test]
+    fn identical_pallet_pages_are_not_a_master_list() {
+        let page = |name: &str| Tab { name: name.into(), rows: vec![row(&["Style", "Color", "7", "8", "Total"]), row(&["A", "BLK", "1", "1", "2"])] };
+        let m = read_manifest(&[page("Pallet 1"), page("Pallet 2"), page("Pallet 3")]);
+        assert!(m.tabs.iter().all(|t| t.kind == "items"));
+        assert_eq!(m.pairs, 6);
+    }
+
+    #[test]
+    fn a_row_inserted_above_two_rows_of_one_style_never_swaps_their_pictures() {
+        let rows = |extra: bool| {
+            let mut r = vec![row(&["Style", "Color", "7", "8", "Total"])];
+            if extra {
+                r.push(row(&["Spring"]));
+            }
+            r.push(row(&["A", "BLK", "1", "", "1"]));
+            r.push(row(&["A", "BLK", "", "2", "2"]));
+            vec![Tab { name: "T".into(), rows: r }]
+        };
+        let saved = read_manifest(&rows(false)).lines;
+        let moved = read_manifest(&rows(true)).lines;
+        // moved[0] now has saved[1]'s id but not its sizes: nothing matches by id, and the style is
+        // there twice, so nothing matches at all rather than the wrong one.
+        assert_eq!(moved[0].id, saved[1].id);
+        let m = same_lines(&saved, &moved);
+        assert!(!m.iter().any(|(r, s)| *r == moved[0].id && *s == saved[1].id), "{m:?}");
+    }
+
+    #[test]
+    fn a_row_is_the_sheets_own_row_when_blank_rows_lead_the_tab() {
+        let mut tabs = sample();
+        let blank: Vec<Vec<String>> = vec![Vec::new(); 3];
+        tabs[1].rows.splice(0..0, blank);
+        let (m, rows) = read_manifest_rows(&tabs);
+        assert_eq!(m.lines[0].id, "t2r7");
+        assert_eq!(m.lines[0].source, "Acme Hash row 7");
+        assert_eq!(rows.get(&(1, 7)).map(String::as_str), Some("t2r7"));
+    }
+
+    #[test]
+    fn one_image_on_many_rows_is_read_once() {
+        let book = picture_book();
+        let pics = read_pictures("shoes.xlsx", &book);
+        // rows 4 (jpg) and 2 (jpg) use one image file: one buffer, shared.
+        assert!(std::sync::Arc::ptr_eq(&pics[0].bytes, &pics[2].bytes));
+    }
+
+    /// Every manifest in R537_DIR read and written beside it: <name>.json (lines, tabs, warnings,
+    /// mismatches, stated) and <name>-pics/<line>.<ext> for each matched picture, for a script to
+    /// check against what it wrote: `R537_DIR=dir cargo test manifests_in_a_folder -- --ignored`.
+    #[test]
+    #[ignore]
+    fn manifests_in_a_folder() {
+        let dir = std::env::var("R537_DIR").expect("R537_DIR");
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let p = e.path();
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            if !(name.ends_with(".xlsx") || name.ends_with(".csv")) {
+                continue;
+            }
+            let bytes = std::fs::read(&p).unwrap();
+            let (m, pics) = read_manifest_file(&name, &bytes).unwrap();
+            let pd = format!("{dir}/{name}-pics");
+            std::fs::create_dir_all(&pd).unwrap();
+            for (id, pic) in &pics {
+                std::fs::write(format!("{pd}/{id}.{}", pic.ext), pic.bytes.as_slice()).unwrap();
+            }
+            std::fs::write(format!("{dir}/{name}.json"), serde_json::to_string_pretty(&m).unwrap()).unwrap();
+        }
     }
 
     /// The real sheet, read locally only: `R519_SHEET=path cargo test real_manifest -- --ignored --nocapture`.
@@ -2087,7 +2313,7 @@ mod tests {
             std::fs::write(format!("{dir}/lines.json"), serde_json::to_string_pretty(&m.lines).unwrap()).unwrap();
             std::fs::write(format!("{dir}/tabs.json"), serde_json::to_string_pretty(&m.tabs).unwrap()).unwrap();
             for (id, p) in &pics {
-                std::fs::write(format!("{dir}/pics/{id}.{}", p.ext), &p.bytes).unwrap();
+                std::fs::write(format!("{dir}/pics/{id}.{}", p.ext), p.bytes.as_slice()).unwrap();
             }
         }
         for t in &m.tabs {

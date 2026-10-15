@@ -2308,13 +2308,15 @@ pub async fn push_media_pending() {
         match result {
             Ok(()) => media_dequeue(&rel),
             Err(e) => {
-                let next = attempts + 1;
+                // R-537: a delivery's pictures can be hundreds of files; a spell offline does not
+                // use up their tries (a picture the server refuses still does).
+                let next = if kind == "delivery" && e == "couldn't reach the server" { attempts } else { attempts + 1 };
                 // A sheet artifact is refused until its row has replicated, so the first
                 // attempts can legitimately fail. `push_pending` runs earlier in the same
                 // tick, so that is usually one tick — but a slow or wedged push queue
                 // makes it longer, and giving up after four minutes would strand the only
                 // copy of a sheet on this device.
-                let ceiling = if is_lot_sheet { 60 } else { MAX_MEDIA_RETRIES };
+                let ceiling = if is_lot_sheet || kind == "delivery" { 60 } else { MAX_MEDIA_RETRIES };
                 if next >= ceiling {
                     tracing::error!("netsync: giving up on media upload {} after {} attempts: {}", rel, next, e);
                     media_dequeue(&rel);
