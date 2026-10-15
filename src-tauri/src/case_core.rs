@@ -664,6 +664,17 @@ pub fn next_pallet(records: &[PalletRecord], cases: &[Case]) -> i64 {
     records.iter().map(|r| r.number).chain(cases.iter().map(|c| c.pallet)).max().unwrap_or(0) + 1
 }
 
+/// "Pallet full" on pallet `number` starts the next pallet only when no later pallet already
+/// stands open and empty, and only the first time (a retry after the pallet was already full
+/// starts nothing). Otherwise a full on an older pallet, or a second tap, would leave stray
+/// empty pallets.
+pub fn should_start_next(records: &[PalletRecord], cases: &[Case], number: i64) -> bool {
+    if records.iter().any(|r| r.number == number && r.closed) {
+        return false;
+    }
+    !records.iter().any(|r| r.number > number && !r.closed && !cases.iter().any(|c| c.pallet == r.number))
+}
+
 // ---------------------------------------------------------------------------------------
 // Counting: received against the manifest, and each pallet
 // ---------------------------------------------------------------------------------------
@@ -1218,6 +1229,13 @@ mod tests {
         let v2 = pallet_views(&[], &tally(&lines, &cases).pallets);
         assert_eq!((v2[0].pallet, v2[0].recorded, v2[0].location.as_str()), (3, false, ""));
         assert_eq!(next_pallet(&records, &cases), 4);
+        // Pallet full on 1 starts nothing while 2 stands open and empty; a retry on a full pallet neither.
+        let open2 = vec![PalletRecord { number: 1, ..Default::default() }, PalletRecord { number: 2, ..Default::default() }];
+        assert!(!should_start_next(&open2, &[], 1));
+        assert!(should_start_next(&open2, &[], 2));
+        let full1 = vec![PalletRecord { number: 1, closed: true, ..Default::default() }];
+        assert!(!should_start_next(&full1, &[], 1));
+        assert!(should_start_next(&[PalletRecord { number: 1, ..Default::default() }], &[], 1));
         assert_eq!(next_pallet(&[], &[]), 1);
         assert_eq!(pallet_id("L", 7), "pal-L-7");
         assert_eq!(clean_location("  Row  B,\n spot 4 "), "Row B, spot 4");

@@ -201,16 +201,23 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
       : { id: null, number: null, kind, pallet: String(pallet ?? nextPallet), blocks: [], notes: "", copies: "1" });
   };
   // R-535: pallets as records: start one, set where it stands, mark it full.
+  const [palletBusy, setPalletBusy] = useState(false);
   const startPallet = async () => {
+    if (palletBusy) return;
+    setPalletBusy(true);
     try {
       const next = await api.startLoadPallet(L.id);
       merge(next);
       setPallet(Math.max(...(next.pallets ?? []).map((p) => p.pallet)));
       setDraft(null); setSaved(null);
     } catch (e) { toast(String(e), "error"); }
+    finally { setPalletBusy(false); }
   };
-  const savePallet = async (n: number, patch: { location?: string; closed?: boolean; startNext?: boolean }) => {
+  const savePallet = async (n: number, patch: { location?: string; closed?: boolean; startNext?: boolean; archived?: boolean }) => {
+    if (palletBusy) return null;
+    setPalletBusy(true);
     try { const next = await api.saveLoadPallet(L.id, n, patch); merge(next); return next; } catch (e) { toast(String(e), "error"); return null; }
+    finally { setPalletBusy(false); }
   };
   const [locDraft, setLocDraft] = useState<string | null>(null);
   const [asking, setAsking] = useState<string | null>(null);
@@ -288,7 +295,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
       {tab === "check" ? <CheckView lines={lines} counts={counts} totals={T} pallets={pallets} /> : tab === "sell" ? <SellView d={d} lines={lines} merge={merge} live={live} /> : (
         <div className="grid gap-4 grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)]">
           <div className="space-y-2">
-            {live && <button onClick={startPallet} className={`${WH_BTN_SECONDARY} w-full justify-center`}><Plus size={14} /> Start pallet {nextPallet}</button>}
+            {live && <button onClick={startPallet} disabled={palletBusy} className={`${WH_BTN_SECONDARY} w-full justify-center`}><Plus size={14} /> Start pallet {nextPallet}</button>}
             {pallets.map((p) => (
               <button key={p.pallet} onClick={() => { setPallet(p.pallet); setDraft(null); setSaved(null); setLocDraft(null); setAsking(null); }}
                 className={`${WH_CARD} w-full text-left px-3 py-2.5 transition-colors ${pallet === p.pallet ? "ring-2 ring-accent/40 border-accent/40" : "hover:border-accent/30"}`}>
@@ -348,7 +355,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
                         <label className="text-[12px] text-muted">Pallet {pallet} is full. Where does it stand?
                           <div className="w-56"><input autoFocus value={asking} maxLength={40} onChange={(e) => setAsking(e.target.value)} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`} /></div>
                         </label>
-                        <button className={WH_BTN_PRIMARY} onClick={async () => {
+                        <button className={WH_BTN_PRIMARY} disabled={palletBusy} onClick={async () => {
                           const next = await savePallet(pallet, { location: asking, closed: true, startNext: true });
                           if (!next) return;
                           const open = (next.pallets ?? []).filter((x) => !x.closed).map((x) => x.pallet);
@@ -359,6 +366,10 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
                         <button className={WH_BTN_SECONDARY} onClick={() => setAsking(null)}>Cancel</button>
                       </div>
                     : <button onClick={() => setAsking(ps.location || "")} className={WH_BTN_SECONDARY}>Pallet full, start the next one</button>)}
+                {live && ps && !cs.length && (
+                  <button disabled={palletBusy} className={`${WH_BTN_SECONDARY} ml-2`} title="It is empty. Its number comes back the next time a pallet is started."
+                    onClick={async () => { const n = pallet; if (await savePallet(n, { archived: true })) { setPallet(null); toast(`Pallet ${n} removed`); } }}>Remove this empty pallet</button>
+                )}
               </>
             )}
           </div>

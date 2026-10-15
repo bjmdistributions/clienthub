@@ -163,18 +163,35 @@ fn recent_locations(conn: &rusqlite::Connection) -> Vec<String> {
     out
 }
 
-/// The columns of a new pallet record.
+/// The columns of a new pallet record: only what a new pallet needs. Location, full and note are
+/// left to the schema's defaults, so a create from a device that had not yet seen this pallet can
+/// never blank a location another device set (last writer wins per column).
 fn pallet_cols(load_id: &str, number: i64, t: &str) -> Map<String, Value> {
     let mut cols = Map::new();
     cols.insert("load_id".into(), json!(load_id));
     cols.insert("number".into(), json!(number));
-    cols.insert("location".into(), json!(""));
-    cols.insert("closed".into(), json!(0));
-    cols.insert("note".into(), json!(""));
     cols.insert("archived".into(), json!(0));
     cols.insert("created_at".into(), json!(t));
     cols.insert("updated_at".into(), json!(t));
     cols
+}
+
+/// Whether a pallet row exists at all, removed ones included (its id is fixed by its number).
+fn pallet_row_exists(conn: &rusqlite::Connection, id: &str) -> bool {
+    conn.query_row("SELECT COUNT(*) FROM warehouse_load_pallets WHERE id = ?1", [id], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
+}
+
+/// Write a new pallet, or bring a removed one with that number back.
+fn put_new_pallet(conn: &rusqlite::Connection, load_id: &str, number: i64, t: &str) -> Result<(), String> {
+    let pid = core::pallet_id(load_id, number);
+    if pallet_row_exists(conn, &pid) {
+        let mut cols = Map::new();
+        cols.insert("archived".into(), json!(0));
+        cols.insert("updated_at".into(), json!(t));
+        write(conn, PALLETS, &pid, cols, false)
+    } else {
+        write(conn, PALLETS, &pid, pallet_cols(load_id, number, t), true)
+    }
 }
 
 fn outs(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Out>, String> {
@@ -579,14 +596,14 @@ pub async fn start_load_pallet(load_id: String) -> Result<LoadDetail, String> {
     if n > 999 {
         return Err("Pallet numbers run from 1 to 999.".into());
     }
-    write(&conn, PALLETS, &core::pallet_id(&load_id, n), pallet_cols(&load_id, n, &now()), true)?;
+    put_new_pallet(&conn, &load_id, n, &now())?;
     detail(&conn, &load_id, false)
 }
 
 /// Where a pallet stands, its note, full or not (R-535). The record is made the first time any of
 /// them is set; "Pallet full" can also start the next pallet.
 #[tauri::command]
-pub async fn save_load_pallet(load_id: String, number: i64, location: Option<String>, note: Option<String>, closed: Option<bool>, start_next: Option<bool>) -> Result<LoadDetail, String> {
+pub async fn save_load_pallet(load_id: String, number: i64, location: Option<String>, note: Option<String>, closed: Option<bool>, start_next: Option<bool>, archived: Option<bool>) -> Result<LoadDetail, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     if !(1..=999).contains(&number) {
         return Err("Pallet numbers run from 1 to 999.".into());
@@ -597,8 +614,20 @@ pub async fn save_load_pallet(load_id: String, number: i64, location: Option<Str
     }
     let t = now();
     let records = pallet_records(&conn, &load_id)?;
-    let exists = records.iter().any(|r| r.number == number);
+    let have = cases(&conn, &load_id)?;
+    let pid = core::pallet_id(&load_id, number);
+    let exists = pallet_row_exists(&conn, &pid);
+    let start_next = start_next.unwrap_or(false) && core::should_start_next(&records, &have, number);
     let mut cols = if exists { Map::new() } else { pallet_cols(&load_id, number, &t) };
+    if let Some(a) = archived {
+        if a && have.iter().any(|c| c.pallet == number) {
+            return Err(format!("Pallet {number} still has boxes or loose items on it. Move or remove them first."));
+        }
+        cols.insert("archived".into(), json!(a as i64));
+    } else if exists && !records.iter().any(|r| r.number == number) {
+        // A removed pallet that is written to again comes back.
+        cols.insert("archived".into(), json!(0));
+    }
     if let Some(loc) = location {
         cols.insert("location".into(), json!(core::clean_location(&loc)));
     }
@@ -609,11 +638,11 @@ pub async fn save_load_pallet(load_id: String, number: i64, location: Option<Str
         cols.insert("closed".into(), json!(c as i64));
     }
     cols.insert("updated_at".into(), json!(t));
-    write(&conn, PALLETS, &core::pallet_id(&load_id, number), cols, !exists)?;
-    if start_next.unwrap_or(false) {
-        let n = core::next_pallet(&pallet_records(&conn, &load_id)?, &cases(&conn, &load_id)?);
+    write(&conn, PALLETS, &pid, cols, !exists)?;
+    if start_next {
+        let n = core::next_pallet(&pallet_records(&conn, &load_id)?, &have);
         if n <= 999 {
-            write(&conn, PALLETS, &core::pallet_id(&load_id, n), pallet_cols(&load_id, n, &t), true)?;
+            put_new_pallet(&conn, &load_id, n, &t)?;
         }
     }
     detail(&conn, &load_id, false)
@@ -714,11 +743,20 @@ mod tests {
         let b = d.cases.iter().find(|c| !c.is_loose()).unwrap();
         assert_eq!(b.number, 1);
         assert_eq!((d.pallets[0].boxes, d.pallets[0].loose, d.pallets[0].pairs), (1, 2, 4));
-        let d = save_load_pallet(id.clone(), 1, Some("  Dock door ".into()), None, Some(true), Some(true)).await.unwrap();
+        let d = save_load_pallet(id.clone(), 1, Some("  Dock door ".into()), None, Some(true), Some(true), None).await.unwrap();
         assert_eq!(d.pallets.iter().map(|p| (p.pallet, p.location.as_str(), p.closed)).collect::<Vec<_>>(), vec![(1, "Dock door", true), (2, "", false)]);
         assert_eq!(d.recent_locations, vec!["Dock door".to_string()]);
+        // A second Pallet full on 1 (a retry) starts nothing more.
+        let d = save_load_pallet(id.clone(), 1, None, None, Some(true), Some(true), None).await.unwrap();
+        assert_eq!(d.pallets.len(), 2);
         let d = start_load_pallet(id.clone()).await.unwrap();
         assert_eq!(d.pallets.last().unwrap().pallet, 3);
         assert_eq!(d.tally.totals.cases, 1);
+        // An empty pallet can be removed and its number comes back with the next start; one with boxes cannot.
+        let d = save_load_pallet(id.clone(), 3, None, None, None, None, Some(true)).await.unwrap();
+        assert_eq!(d.pallets.len(), 2);
+        assert!(save_load_pallet(id.clone(), 1, None, None, None, None, Some(true)).await.is_err());
+        let d = start_load_pallet(id.clone()).await.unwrap();
+        assert_eq!(d.pallets.iter().map(|p| p.pallet).collect::<Vec<_>>(), vec![1, 2, 3]);
     }
 }
