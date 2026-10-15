@@ -431,6 +431,8 @@ pub async fn add_warehouse_load_line(id: String, line: NewLine) -> Result<LoadDe
         sizes,
         sheet_total: 0,
         source: "Added by hand".into(),
+        sheet: String::new(),
+        image: String::new(),
     });
     let lines = core::clean_lines(lines)?;
     let mut cols = Map::new();
