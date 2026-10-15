@@ -4,13 +4,13 @@
 // count are case_core.rs (byte-identical on the server); this only draws. The phone twin is
 // www/app.js whd*.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api } from "../lib/api";
-import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type WhCase } from "../lib/deliveries";
+import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
@@ -32,7 +32,7 @@ const draftTotal = (d: Draft) => d.blocks.reduce((a, b) => a + Object.values(b.q
 export default function WarehouseDeliveries({ dropped }: { dropped: { path: string; n: number } | null }) {
   const [list, setList] = useState<LoadSummary[] | null>(null);
   const [detail, setDetail] = useState<LoadDetail | null>(null);
-  const [preview, setPreview] = useState<{ read: ManifestRead; fileName: string; path: string } | null>(null);
+  const [preview, setPreview] = useState<{ read: ManifestRead; fileName: string; path: string; n: number } | null>(null);
   const [showRemoved, setShowRemoved] = useState(false);
   const [editing, setEditing] = useState(false);
 
@@ -56,7 +56,7 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
   const openManifest = useCallback(async (path: string) => {
     try {
       const read = await api.readLoadManifest(path);
-      setPreview({ read, fileName: path.split(/[\\/]/).pop() || "Manifest", path });
+      setPreview((p) => ({ read, fileName: path.split(/[\\/]/).pop() || "Manifest", path, n: (p?.n ?? 0) + 1 }));
     } catch (e) { toast(String(e), "error"); }
   }, []);
   useEffect(() => { if (dropped) openManifest(dropped.path); }, [dropped, openManifest]);
@@ -67,7 +67,7 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
   const open = (id: string) => api.getWarehouseLoad(id).then((d) => setDetail(d)).catch((e) => toast(String(e), "error"));
 
   if (preview) {
-    return <ManifestPreview read={preview.read} fileName={preview.fileName} path={preview.path} onCancel={() => setPreview(null)}
+    return <ManifestPreview key={preview.n} read={preview.read} fileName={preview.fileName} path={preview.path} onCancel={() => setPreview(null)}
       onSaved={(d, msg) => { setPreview(null); setDetail(d); loadList(); toast(msg); }} />;
   }
   if (detail) {
@@ -109,6 +109,13 @@ export default function WarehouseDeliveries({ dropped }: { dropped: { path: stri
 // A line's `image` is a path inside the synced media folder ("media/deliveries/<load>/<line>.jpg").
 // A line with no picture shows nothing; a picture this computer does not have yet is fetched
 // when the delivery opens (ensure_delivery_pictures) and `v` re-asks for every image then.
+
+/** False once the component is gone: an answer that comes back after the screen was left changes nothing on it. */
+function useAlive() {
+  const ref = useRef(true);
+  useEffect(() => { ref.current = true; return () => { ref.current = false; }; }, []);
+  return ref;
+}
 
 let mediaBase: Promise<string> | null = null;
 function useMediaBase() {
@@ -187,21 +194,16 @@ function ManifestPreview({ read, fileName, path, onCancel, onSaved }: { read: Ma
   const linesAgree = stLines == null || stLines === chosen.length;
   const flip = (t: string) => setOn((s) => { const n = new Set(s); if (n.has(t)) n.delete(t); else n.add(t); return n; });
 
+  const alive = useAlive();
   const save = async () => {
     setBusy(true);
     try {
-      const d = await api.createWarehouseLoad(name, fileName, chosen);
-      if (pics > 0) {
-        try {
-          const r = await api.addLoadPictures(d.load.id, path);
-          onSaved(r, `Delivery saved, with pictures on ${many(r.pictures.on_lines, "style", "styles")}`);
-        } catch (e) {
-          onSaved(d, `Delivery saved. The pictures did not come in (${e}). Use Add pictures from the sheet on the delivery.`);
-        }
-        return;
-      }
-      onSaved(d, "Delivery saved");
-    } catch (e) { toast(String(e), "error"); setBusy(false); }
+      const d: LoadDetail & { pictures?: PicturesAdded; pictures_error?: string } = pics > 0 ? await api.createLoadWithPictures(name, fileName, chosen, path) : await api.createWarehouseLoad(name, fileName, chosen);
+      const msg = !pics ? "Delivery saved"
+        : d.pictures ? `Delivery saved, with pictures on ${many(d.pictures.on_lines, "style", "styles")}`
+        : `Delivery saved. The pictures did not come in (${d.pictures_error ?? "no reason given"}). Use Add pictures from the sheet on the delivery.`;
+      if (alive.current) onSaved(d, msg); else toast(msg);
+    } catch (e) { toast(String(e), "error"); if (alive.current) setBusy(false); }
   };
 
   return (
@@ -278,7 +280,7 @@ function ManifestPreview({ read, fileName, path, onCancel, onSaved }: { read: Ma
               ? `The totals page says ${n0(st.pairs)} pairs. The sizes add up to ${n0(pairs)}, ${n0(Math.abs(st.pairs - pairs))} ${pairs < st.pairs ? "fewer" : "more"}, because ${offText(mism.length)} (listed below). Boxes are counted by size, so ${n0(pairs)} is what is expected.`
               : `The totals page says ${stLines != null ? `${many(stLines, "style", "styles")} and ` : ""}${n0(st.pairs)} pairs. The pages switched on have ${many(chosen.length, "style", "styles")} and ${n0(pairs)} pairs.`
         }</p>}
-        {(read.pictures_left_out ?? 0) > 0 && <p className="text-[12px] text-muted mt-1">{many(read.pictures_left_out ?? 0, "picture sits", "pictures sit")} on a row with no style, or is a second picture for a style, so {(read.pictures_left_out ?? 0) === 1 ? "it is" : "they are"} left out.</p>}
+        {(read.pictures_left_out ?? 0) > 0 && <p className="text-[12px] text-muted mt-1">{many(read.pictures_left_out ?? 0, "picture is", "pictures are")} left out: on a row with no style, a second picture for a style, or a picture that could not be read.</p>}
         <label className="block mt-3 max-w-[420px]"><span className="text-[12px] text-muted">Name of the delivery</span>
           <input value={name} onChange={(e) => setName(e.target.value)} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`} /></label>
         <div className="flex gap-2 mt-3">
@@ -339,27 +341,34 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
   const base = useMediaBase();
   const [picV, setPicV] = useState(0);
   const [big, setBig] = useState<LoadLine | null>(null);
-  const picCount = useMemo(() => lines.filter((l) => l.image).length, [lines]);
+  const picKey = useMemo(() => lines.map((l) => l.image || "").join("|"), [lines]);
   useEffect(() => {
-    if (!picCount) return;
-    let alive = true;
-    api.ensureDeliveryPictures(L.id).then((n) => { if (alive && n > 0) setPicV((v) => v + 1); }).catch(() => {});
-    return () => { alive = false; };
-  }, [L.id, picCount]);
+    if (!picKey.replace(/\|/g, "")) return;
+    // Pictures another device has not uploaded yet are asked for again, every 30 seconds, ten times.
+    let live = true, tries = 0, timer: number | undefined;
+    const run = () => api.ensureDeliveryPictures(L.id).then((r) => {
+      if (!live) return;
+      if (r.arrived > 0) setPicV((v) => v + 1);
+      if (r.missing > 0 && ++tries < 10) timer = window.setTimeout(run, 30_000);
+    }).catch(() => {});
+    run();
+    return () => { live = false; if (timer) window.clearTimeout(timer); };
+  }, [L.id, picKey]);
   const pic = useMemo(() => ({ base, v: picV, show: setBig }), [base, picV]);
   const [picBusy, setPicBusy] = useState(false);
+  const screenAlive = useAlive();
   const addPictures = async () => {
     const f = await openDialog({ multiple: false, filters: [{ name: "Manifest with pictures", extensions: ["xlsx", "xlsm"] }] });
     if (typeof f !== "string") return;
     setPicBusy(true);
     try {
       const r = await api.addLoadPictures(L.id, f);
-      merge(r); setPicV((v) => v + 1);
+      if (screenAlive.current) { merge(r); setPicV((v) => v + 1); }
       const p = r.pictures;
       if (!p.on_lines) toast("No picture in that file sits beside a style on this delivery.", "error");
       else toast(`Pictures on ${many(p.on_lines, "style", "styles")}${p.not_on_delivery ? `. ${many(p.not_on_delivery, "picture is", "pictures are")} for styles not on this delivery` : ""}.`);
     } catch (e) { toast(String(e), "error"); }
-    finally { setPicBusy(false); }
+    finally { if (screenAlive.current) setPicBusy(false); }
   };
 
   const update = async (patch: { name?: string; archived?: boolean }) => {

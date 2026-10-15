@@ -331,14 +331,58 @@ pub async fn read_load_manifest(path: String) -> Result<Value, String> {
     Ok(v)
 }
 
+/// What putting a file's pictures on lines did: (line id, picture path) for each line given one,
+/// the pictures whose style is not among the lines, and the pictures the file left out.
+struct PicturesPut {
+    put: Vec<(String, String)>,
+    not_on_delivery: usize,
+    left_out: usize,
+}
+
+/// R-537: a manifest file's pictures for these lines (`core::same_lines`: never a guess), written
+/// beside the synced media, one file for each distinct picture, each queued for the server.
+fn pictures_for(load_id: &str, lines: &[LoadLine], path: &str) -> Result<PicturesPut, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Could not read the file: {e}"))?;
+    let (read, pics) = core::read_manifest_file(path, &bytes)?;
+    let pairs = core::same_lines(lines, &read.lines);
+    let base = crate::db::app_data_dir().join("sync");
+    let mut written: Vec<(std::sync::Arc<Vec<u8>>, String)> = Vec::new();
+    let mut put: Vec<(String, String)> = Vec::new();
+    for (read_id, p) in &pics {
+        let saved_id = match pairs.iter().find(|(r, _)| r == read_id) {
+            Some((_, s)) => s.clone(),
+            None => continue,
+        };
+        // One picture placed on many styles is one file.
+        let rel = match written.iter().find(|(b, _)| b.as_slice() == p.bytes.as_slice()) {
+            Some((_, rel)) => rel.clone(),
+            None => {
+                let rel = core::picture_rel(load_id, &saved_id, &p.bytes).ok_or("A line's id cannot name a picture.")?;
+                let file = base.join(&rel);
+                if let Some(dir) = file.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                }
+                std::fs::write(&file, p.bytes.as_slice()).map_err(|e| e.to_string())?;
+                crate::netsync::media_enqueue(load_id, &rel, "delivery");
+                written.push((p.bytes.clone(), rel.clone()));
+                rel
+            }
+        };
+        put.push((saved_id, rel));
+    }
+    Ok(PicturesPut { not_on_delivery: pics.len() - put.len(), left_out: read.pictures_left_out, put })
+}
+
+fn pictures_json(p: &PicturesPut) -> Value {
+    json!({ "on_lines": p.put.len(), "not_on_delivery": p.not_on_delivery, "left_out": p.left_out })
+}
+
 /// R-537: put the pictures in a manifest file on a saved delivery. Each picture beside a style in
-/// the file goes on the same style of the delivery (`core::same_lines`: never a guess), is saved
-/// in the synced media folder, and the upload queue takes it to the server for the phone. A line
-/// the file has no picture for keeps the one it has.
+/// the file goes on the same style of the delivery, is saved in the synced media folder, and the
+/// upload queue takes it to the server for the phone. A line the file has no picture for keeps
+/// the one it has.
 #[tauri::command]
 pub async fn add_load_pictures(load_id: String, path: String) -> Result<Value, String> {
-    let bytes = std::fs::read(&path).map_err(|e| format!("Could not read the file: {e}"))?;
-    let (read, pics) = core::read_manifest_file(&path, &bytes)?;
     let saved = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let l = load(&conn, &load_id)?;
@@ -347,28 +391,13 @@ pub async fn add_load_pictures(load_id: String, path: String) -> Result<Value, S
         }
         l.lines
     };
-    let pairs = core::same_lines(&saved, &read.lines);
     // The files first; then the paths, on the lines as they are now.
-    let base = crate::db::app_data_dir().join("sync");
-    let mut put: Vec<(String, String)> = Vec::new();
-    for (read_id, p) in &pics {
-        let saved_id = match pairs.iter().find(|(r, _)| r == read_id) {
-            Some((_, s)) => s.clone(),
-            None => continue,
-        };
-        let rel = core::picture_rel(&load_id, &saved_id, &p.bytes).ok_or("A line's id cannot name a picture.")?;
-        let file = base.join(&rel);
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(&file, p.bytes.as_slice()).map_err(|e| e.to_string())?;
-        crate::netsync::media_enqueue(&load_id, &rel, "delivery");
-        put.push((saved_id, rel));
-    }
+    let got = pictures_for(&load_id, &saved, &path)?;
+    let put = &got.put;
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut lines = load(&conn, &load_id)?.lines;
     let mut changed = false;
-    for (saved_id, rel) in &put {
+    for (saved_id, rel) in put {
         if let Some(x) = lines.iter_mut().find(|x| x.id == *saved_id) {
             if x.image != *rel {
                 x.image = rel.clone();
@@ -383,26 +412,36 @@ pub async fn add_load_pictures(load_id: String, path: String) -> Result<Value, S
         write(&conn, LOADS, &load_id, cols, false)?;
     }
     let mut v = serde_json::to_value(detail(&conn, &load_id, true)?).map_err(|e| e.to_string())?;
-    v["pictures"] = json!({ "on_lines": put.len(), "not_on_delivery": pics.len() - put.len(), "left_out": read.pictures_left_out });
+    v["pictures"] = pictures_json(&got);
     Ok(v)
 }
 
+/// R-537: what fetching a delivery's pictures did: how many arrived, and how many are still
+/// missing (not on the server yet: the screen asks again later).
+#[derive(Debug, Serialize)]
+pub struct PicturesFetched {
+    pub arrived: usize,
+    pub missing: usize,
+}
+
 /// R-537: fetch the pictures of a delivery's lines this computer does not have yet (a phone or
-/// another computer added them). Returns how many arrived; the screen shows them after.
+/// another computer added them).
 #[tauri::command]
-pub async fn ensure_delivery_pictures(load_id: String) -> Result<usize, String> {
+pub async fn ensure_delivery_pictures(load_id: String) -> Result<PicturesFetched, String> {
     let rels: Vec<String> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         load(&conn, &load_id)?.lines.into_iter().map(|l| l.image).filter(|r| !r.is_empty() && core::clean_image(r) == *r).collect()
     };
     let base = crate::db::app_data_dir().join("sync");
-    let missing: Vec<String> = rels.into_iter().filter(|r| !base.join(r).exists()).collect();
+    let mut missing: Vec<String> = rels.into_iter().filter(|r| !base.join(r).exists()).collect();
+    missing.sort();
+    missing.dedup();
     let mut got = 0;
     for chunk in missing.chunks(8) {
         let res = futures::future::join_all(chunk.iter().map(|r| crate::netsync::download_media(r))).await;
         got += res.iter().filter(|r| r.is_ok()).count();
     }
-    Ok(got)
+    Ok(PicturesFetched { arrived: got, missing: missing.len() - got })
 }
 
 #[tauri::command]
@@ -413,13 +452,40 @@ pub async fn get_warehouse_load(id: String) -> Result<LoadDetail, String> {
 
 #[tauri::command]
 pub async fn create_warehouse_load(name: String, source: String, lines: Vec<LoadLine>) -> Result<LoadDetail, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
+    create(name, source, lines, None).map(|(d, _)| d)
+}
+
+/// R-537: a new delivery with its manifest's pictures already on its lines, so the lines are
+/// written (and synced) once. A picture that cannot be put on says why, and the delivery is saved
+/// all the same.
+#[tauri::command]
+pub async fn create_load_with_pictures(name: String, source: String, lines: Vec<LoadLine>, path: String) -> Result<Value, String> {
+    let (d, pics) = create(name, source, lines, Some(path))?;
+    let mut v = serde_json::to_value(d).map_err(|e| e.to_string())?;
+    match pics {
+        Some(Ok(p)) => v["pictures"] = pictures_json(&p),
+        Some(Err(e)) => v["pictures_error"] = json!(e),
+        None => {}
+    }
+    Ok(v)
+}
+
+fn create(name: String, source: String, lines: Vec<LoadLine>, path: Option<String>) -> Result<(LoadDetail, Option<Result<PicturesPut, String>>), String> {
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err("Give the delivery a name.".into());
     }
-    let lines = core::clean_lines(lines)?;
+    let mut lines = core::clean_lines(lines)?;
     let id = uuid::Uuid::new_v4().to_string();
+    let pics = path.map(|p| pictures_for(&id, &lines, &p));
+    if let Some(Ok(p)) = &pics {
+        for (line_id, rel) in &p.put {
+            if let Some(x) = lines.iter_mut().find(|x| x.id == *line_id) {
+                x.image = rel.clone();
+            }
+        }
+    }
+    let conn = pool().get().map_err(|e| e.to_string())?;
     let t = now();
     let mut cols = Map::new();
     cols.insert("name".into(), json!(name));
@@ -432,7 +498,7 @@ pub async fn create_warehouse_load(name: String, source: String, lines: Vec<Load
     write(&conn, LOADS, &id, cols, true)?;
     // R-535: pallet 1 stands empty, ready for the truck.
     write(&conn, PALLETS, &core::pallet_id(&id, 1), pallet_cols(&id, 1, &t), true)?;
-    detail(&conn, &id, true)
+    Ok((detail(&conn, &id, true)?, pics))
 }
 
 /// Rename a delivery, note it, remove it (archived, never deleted) or bring it back.
@@ -856,16 +922,18 @@ mod tests {
         assert_eq!(v["pictures"]["not_on_delivery"], json!(0));
         let saved = get_warehouse_load(id.clone()).await.unwrap().load.lines.unwrap();
         let base = crate::db::app_data_dir().join("sync");
-        assert!(saved.iter().all(|l| l.image.starts_with(&format!("media/deliveries/{id}/{}-", l.id)) && l.image.ends_with(".jpg") && base.join(&l.image).exists()));
+        assert!(saved.iter().all(|l| l.image.starts_with(&format!("media/deliveries/{id}/")) && l.image.ends_with(".jpg") && base.join(&l.image).exists()));
+        // One picture placed on several styles is one file.
+        let files: std::collections::BTreeSet<&str> = saved.iter().map(|l| l.image.as_str()).collect();
         let queued: i64 = pool()
             .get()
             .unwrap()
             .query_row("SELECT COUNT(*) FROM netsync_media_outbound WHERE kind = 'delivery' AND lot_id = ?1", [&id], |r| r.get(0))
             .unwrap();
-        assert_eq!(queued as usize, n);
+        assert_eq!(queued as usize, files.len());
         let v = add_load_pictures(id.clone(), path).await.unwrap();
         assert_eq!(v["pictures"]["on_lines"], json!(n));
         assert_eq!(get_warehouse_load(id).await.unwrap().load.lines.unwrap(), saved);
-        println!("{n} lines, every one with its picture on disk and queued");
+        println!("{n} lines, every one with its picture on disk; {} files queued", files.len());
     }
 }

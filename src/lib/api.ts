@@ -3935,8 +3935,11 @@ export const api = {
   readLoadManifest: (path: string) => invoke<ManifestRead>("read_load_manifest", { path }),
   /** R-537: put a sheet's pictures on a saved delivery (same row and style, never a guess). */
   addLoadPictures: (loadId: string, path: string) => invoke<LoadDetail & { pictures: PicturesAdded }>("add_load_pictures", { loadId, path }),
-  /** R-537: fetch the delivery's pictures this computer does not have yet; answers how many arrived. */
-  ensureDeliveryPictures: (loadId: string) => invoke<number>("ensure_delivery_pictures", { loadId }),
+  /** R-537: a new delivery with its sheet's pictures already on its lines (one write); `pictures_error` says why they did not come in. */
+  createLoadWithPictures: (name: string, source: string, lines: LoadLine[], path: string) =>
+    invoke<LoadDetail & { pictures?: PicturesAdded; pictures_error?: string }>("create_load_with_pictures", { name, source, lines, path }),
+  /** R-537: fetch the delivery's pictures this computer does not have yet: how many arrived, how many are still not on the server. */
+  ensureDeliveryPictures: (loadId: string) => invoke<{ arrived: number; missing: number }>("ensure_delivery_pictures", { loadId }),
   getWarehouseLoad: (id: string) => invoke<LoadDetail>("get_warehouse_load", { id }),
   createWarehouseLoad: (name: string, source: string, lines: LoadLine[]) => invoke<LoadDetail>("create_warehouse_load", { name, source, lines }),
   updateWarehouseLoad: (id: string, patch: { name?: string; notes?: string; archived?: boolean }) =>

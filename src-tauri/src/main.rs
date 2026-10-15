@@ -1353,6 +1353,7 @@ fn main() {
             warehouse_loads::list_warehouse_loads,
             warehouse_loads::read_load_manifest,
             warehouse_loads::add_load_pictures,
+            warehouse_loads::create_load_with_pictures,
             warehouse_loads::ensure_delivery_pictures,
             warehouse_loads::get_warehouse_load,
             warehouse_loads::create_warehouse_load,
