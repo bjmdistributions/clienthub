@@ -843,8 +843,15 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
               try { localStorage.removeItem(pickKey(dl.load_id)); } catch { /* ignore */ }
             })
             .catch((e: any) => {
-              // Kept on this device: the delivery's Sell tab offers to finish it.
-              try { localStorage.setItem(pendingTakeKey(dl.load_id), JSON.stringify({ invoice_id: invId, reference: number || "", takes: dlTakes })); } catch { /* ignore */ }
+              // Kept on this device, one entry per invoice: the delivery's Sell tab offers to finish it.
+              // The pick is dropped, since its pairs now live in that entry.
+              try {
+                const prev = JSON.parse(localStorage.getItem(pendingTakeKey(dl.load_id)) || "[]");
+                const list = (Array.isArray(prev) ? prev : []).filter((x: { invoice_id?: string }) => x && x.invoice_id !== invId);
+                list.push({ invoice_id: invId, reference: number || "", takes: dlTakes });
+                localStorage.setItem(pendingTakeKey(dl.load_id), JSON.stringify(list));
+                localStorage.removeItem(pickKey(dl.load_id));
+              } catch { /* ignore */ }
               toast(`Invoice created, but the pairs have not left the delivery yet (${e}). Open the delivery, Sell, to finish.`, "error");
             });
         }

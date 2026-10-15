@@ -529,7 +529,15 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
   const [openLine, setOpenLine] = useState<string | null>(null);
   const [sureClear, setSureClear] = useState(false);
   const [sureUndo, setSureUndo] = useState<string | null>(null);
-  const [pending, setPending] = useState(() => readJson<{ invoice_id: string; reference: string; takes: CaseLine[] } | null>(pendingTakeKey(loadId), null));
+  type Pending = { invoice_id: string; reference: string; takes: CaseLine[] };
+  const [pendingAll, setPendingAll] = useState<Pending[]>(() => { const v = readJson<unknown>(pendingTakeKey(loadId), []); return Array.isArray(v) ? (v as Pending[]).filter((x) => x && x.invoice_id && Array.isArray(x.takes)) : []; });
+  const pending = pendingAll[0] ?? null;
+  const dropPending = (invoiceId: string) => {
+    const rest = pendingAll.filter((x) => x.invoice_id !== invoiceId);
+    setPendingAll(rest);
+    try { if (rest.length) localStorage.setItem(pendingTakeKey(loadId), JSON.stringify(rest)); else localStorage.removeItem(pendingTakeKey(loadId)); } catch { /* ignore */ }
+  };
+  const [sureDrop, setSureDrop] = useState(false);
   const setPick = (p: Pick) => { setPickRaw(p); try { localStorage.setItem(pickKey(loadId), JSON.stringify(p)); } catch { /* ignore */ } };
 
   // A pick never asks for more than is left now (another device may have sold some).
@@ -591,8 +599,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
     if (!pending) return;
     try {
       merge(await api.takeLoadPairs(loadId, { invoiceId: pending.invoice_id, reference: pending.reference, note: "Invoiced", takes: pending.takes }));
-      try { localStorage.removeItem(pendingTakeKey(loadId)); localStorage.removeItem(pickKey(loadId)); } catch { /* ignore */ }
-      setPending(null); setPickRaw({});
+      dropPending(pending.invoice_id);
       toast("Done: the pairs left the delivery");
     } catch (e) { toast(String(e), "error"); }
   };
@@ -644,6 +651,12 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
     );
   }
 
+  if (!live) return (
+    <div>
+      <p className="text-[12.5px] text-muted mb-3">{d.load.archived ? "This delivery was removed. Bring it back to sell from it." : "Selling needs the Inventory edit permission."}</p>
+    </div>
+  );
+
   let head = "";
   return (
     <div>
@@ -651,7 +664,12 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
         <div className={`${WH_CARD} p-4 mb-3 border-warning/40`}>
           <div className="text-[13.5px] font-semibold text-ink">Invoice {pending.reference} is saved, its pairs have not left yet</div>
           <p className="text-[12.5px] text-muted mt-0.5">The call failed after the invoice was created. Finish it so the {n0(pending.takes.reduce((a, x) => a + x.pairs, 0))} pairs come off this delivery.</p>
-          <button onClick={finishPending} className={`${WH_BTN_PRIMARY} mt-2`}>Take them out now</button>
+          <div className="flex gap-2 mt-2">
+            <button onClick={finishPending} className={WH_BTN_PRIMARY}>Take them out now</button>
+            {sureDrop
+              ? <><button onClick={() => { dropPending(pending.invoice_id); setSureDrop(false); }} className={WH_BTN_SECONDARY} title="The invoice stays. Its pairs stay counted as on this delivery.">Discard it</button><button onClick={() => setSureDrop(false)} className={WH_BTN_SECONDARY}>Keep it</button></>
+              : <button onClick={() => setSureDrop(true)} className={WH_BTN_SECONDARY}>Discard</button>}
+          </div>
         </div>
       )}
       <div className={`${WH_CARD} p-3.5 mb-3 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-10`}>
@@ -663,7 +681,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
           {totalPairs > 0 && (sureClear
             ? <><button onClick={() => { setPick({}); setSureClear(false); }} className={WH_BTN_SECONDARY}>Clear the pick</button><button onClick={() => setSureClear(false)} className={WH_BTN_SECONDARY}>Keep it</button></>
             : <button onClick={() => setSureClear(true)} className={WH_BTN_SECONDARY}>Clear</button>)}
-          <button onClick={() => setTray(true)} disabled={!totalPairs || !live} className={WH_BTN_PRIMARY}>Price it</button>
+          <button onClick={() => setTray(true)} disabled={!totalPairs || !live || !!pending} className={WH_BTN_PRIMARY} title={pending ? "Finish the saved invoice above first" : undefined}>Price it</button>
         </div>
       </div>
       {d.stock.oversold.length > 0 && <p className="text-[12.5px] text-warning-ink mb-3">{d.stock.oversold.length === 1 ? "1 size has" : `${d.stock.oversold.length} sizes have`} more pairs sold than received. Check those cases, or put back one of the orders.</p>}

@@ -40,7 +40,11 @@ const POLL_SECS: u64 = 20;
 /// "7" is the same kind of pass for the R-464 and R-465 columns on `freight_bookings` (the shipping
 /// charge choice, the booking override stamps, the carrier cost the quote was built on and the
 /// markup). A column-only change: the refresh list below stays `freight_bookings` alone.
-const HEAL_GENERATION: &str = "7";
+/// "8" adds the R-519 tables `warehouse_loads`, `warehouse_cases` and `warehouse_load_outs` to the
+/// count check, so a device that updates after deliveries, cases or sales already exist restores
+/// them from the server's snapshot (an older device dead-letters their events). Without it a sale
+/// made on the phone would read as stock still there on a desktop that updated later.
+const HEAL_GENERATION: &str = "8";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -1532,6 +1536,8 @@ async fn auto_heal_if_behind() {
         "bank_txn", "bank_allocation", "deal_receipts", "cash_purchase",
         "business_expense", "reserve_entry", "loan", "freight_bookings", "logistics_payouts",
         "bills", "bill_payments",
+        // R-519: deliveries, their cases, and the pairs each order took (generation 8).
+        "warehouse_loads", "warehouse_cases", "warehouse_load_outs",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -2754,8 +2760,18 @@ mod r400_sync_tests {
     #[test]
     fn r464_new_booking_columns_force_one_more_restore_per_device() {
         assert_ne!(HEAL_GENERATION, "6", "devices healed under generation 6 do not have the R-464 and R-465 columns");
-        assert_eq!(HEAL_GENERATION, "7");
         assert_eq!(HEAL_REFRESH_TABLES, &["freight_bookings"], "a column-only generation refreshes only the table that gained columns");
+    }
+
+    /// R-519 phase 2: a desktop that updates after sales were made on the phone must restore them,
+    /// or the pairs read as still on the delivery and can be sold twice.
+    #[test]
+    fn r519_deliveries_force_one_more_restore_per_device() {
+        assert_ne!(HEAL_GENERATION, "7", "devices healed under generation 7 never compared the delivery tables");
+        assert_eq!(HEAL_GENERATION, "8");
+        for t in ["warehouse_loads", "warehouse_cases", "warehouse_load_outs"] {
+            assert!(SNAPSHOT_TABLES.contains(&t), "{t} must be restorable from the snapshot");
+        }
     }
 
     #[tokio::test]
