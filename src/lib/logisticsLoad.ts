@@ -263,10 +263,17 @@ export function setTime24Account(v: boolean | null): void {
 export function milWindow(s: string): string | null {
   const raw = (s || "").trim();
   if (!raw) return "";
-  const one = (x: string) => { const t = milTime(x); return t ? timeWord(t) : null; };
+  // A side reads as a time only when it cannot be a bare hour: 3 or 4 digits (0800), a colon (8:00), or am or pm. So
+  // "9-5" and "8 to 12" stay as typed; they are not 9 am to 5 am. A window must end after it starts.
+  const clear = (x: string) => /^\d{3,4}$/.test(x.trim()) || /:/.test(x) || /[ap]\.?m?\.?$/i.test(x.trim());
+  const one = (x: string) => (clear(x) ? milTime(x) : null);
   const m = /^(.+?)\s*(?:-|–|\bto\b)\s*(.+)$/i.exec(raw);
-  if (m) { const a = one(m[1]), b = one(m[2]); return a && b ? `${a} to ${b}` : null; }
-  return one(raw);
+  if (m) {
+    const a = one(m[1]), b = one(m[2]);
+    return a && b && b > a ? `${timeWord(a)} to ${timeWord(b)}` : null;
+  }
+  const a = one(raw);
+  return a ? timeWord(a) : null;
 }
 
 /** A day and a time as people say them: "Oct 2, 2:30 pm". Either may be missing. */

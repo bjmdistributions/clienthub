@@ -319,20 +319,24 @@ const SERVICES = ["", "LTL", "FTL", "Partial", "Expedite"];
 
 /** R-524: a time box on a device set to 24-hour time: typed as 1430 (or 14:30, or 2:30 pm), shown back as 2:30 pm once
  *  the box is left. The draft keeps "HH:MM"; what does not read as a time leaves it as it was and says so. */
-function TimeBox({ value, onValue, onBad, className }: { value: string; onValue: (v: string) => void; onBad: (bad: boolean) => void; className: string }) {
-  const [text, setText] = useState(() => timeWord(value));
-  const [bad, setBad] = useState(false);
-  // R-538: the form hears whether this box reads, so Save can refuse a time it cannot read (the website does).
-  useEffect(() => { onBad(bad); return () => onBad(false); }, [bad]); // eslint-disable-line react-hooks/exhaustive-deps
+function TimeBox({ value, initial, onValue, onBad, className }: {
+  value: string; initial?: string; onValue: (v: string) => void; onBad: (text: string | null) => void; className: string;
+}) {
+  // R-538: the form keeps what was typed and could not be read (`initial`), so a box shown again after a step change still
+  // holds it and Save keeps refusing it, as the website does.
+  const [text, setText] = useState(() => initial ?? timeWord(value));
+  const [bad, setBad] = useState(() => initial != null);
+  const first = useRef(true);
   useEffect(() => {
+    if (first.current) { first.current = false; return; }
     // A new value from outside (the server's copy, a cleared day) replaces what the box shows.
-    if (milTime(text) !== value) { setText(timeWord(value)); setBad(false); }
+    if (milTime(text) !== value) { setText(timeWord(value)); setBad(false); onBad(null); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
   return (
     <>
       <input className={`${className}${bad ? " border-danger-ink" : ""}`} type="text" inputMode="numeric" placeholder="1430" value={text}
-        onChange={(e) => { const t = e.target.value; setText(t); const v = milTime(t); setBad(v === null); if (v !== null && v !== value) onValue(v); }}
+        onChange={(e) => { const t = e.target.value; setText(t); const v = milTime(t); setBad(v === null); onBad(v === null ? t : null); if (v !== null && v !== value) onValue(v); }}
         onBlur={() => { const v = milTime(text); if (v) setText(timeWord(v)); }} />
       {bad && <span className="block text-[11.5px] text-danger-ink mt-1">Type the time as 1430 or 2:30 pm.</span>}
     </>
@@ -967,20 +971,24 @@ export default function LogisticsBookingForm({
 
   const mil = time24On();
   // R-538: the 24-hour boxes that cannot read what is typed in them; Save refuses while any can't.
-  const badTimes = useRef(new Set<string>());
-  const markBad = (k: string) => (b: boolean) => { if (b) badTimes.current.add(k); else badTimes.current.delete(k); };
+  const badTimes = useRef(new Map<string, string>());
+  const markBad = (k: string) => (t: string | null) => { if (t === null) badTimes.current.delete(k); else badTimes.current.set(k, t); };
   // R-538: a time window typed in 24-hour time ("0800-1200") reads back as proper time when the box is left.
-  const windowBlur = (v: string, put: (x: string) => void) => () => { if (!mil) return; const t = milWindow(v); if (t && t !== v) put(t); };
+  // Only what was typed this time: a stored window that is only tabbed through stays as it is.
+  const winStart = useRef("");
+  const windowFocus = (e: { target: { value: string } }) => { winStart.current = e.target.value; };
+  const windowBlur = (v: string, put: (x: string) => void) => () => { if (!mil || v === winStart.current) return; const t = milWindow(v); if (t && t !== v) put(t); };
   const t = (k: TextKey, label: string, opts?: { type?: string; hint?: string; wide?: boolean; placeholder?: string }) => (
     <Field label={label} hint={opts?.hint} wide={opts?.wide}>
       {k.endsWith("_address") ? (
         <textarea className={`${inp} h-auto py-2`} rows={2} value={draft[k]} placeholder={opts?.placeholder}
           onChange={(e) => set(k, e.target.value)} />
       ) : opts?.type === "time" && mil ? (
-        <TimeBox className={inp} value={draft[k]} onValue={(v) => set(k, v)} onBad={markBad(k)} />
+        <TimeBox className={inp} value={draft[k]} initial={badTimes.current.get(k)} onValue={(v) => set(k, v)} onBad={markBad(k)} />
       ) : (
         <input className={inp} type={opts?.type ?? "text"} value={draft[k]} placeholder={opts?.placeholder}
-          onChange={(e) => set(k, e.target.value)} onBlur={k.endsWith("_window") ? windowBlur(draft[k], (x) => set(k, x)) : undefined} />
+          onChange={(e) => set(k, e.target.value)} onFocus={k.endsWith("_window") ? windowFocus : undefined}
+          onBlur={k.endsWith("_window") ? windowBlur(draft[k], (x) => set(k, x)) : undefined} />
       )}
     </Field>
   );
@@ -1018,6 +1026,7 @@ export default function LogisticsBookingForm({
         <textarea className={`${inp} h-auto py-2`} rows={2} value={String(draft.stops[i][k] ?? "")} placeholder={ADDRESS_HINT} onChange={(e) => setStop(i, k, e.target.value)} />
       ) : (
         <input className={inp} value={String(draft.stops[i][k] ?? "")} onChange={(e) => setStop(i, k, e.target.value)}
+          onFocus={k === "window" ? windowFocus : undefined}
           onBlur={k === "window" ? windowBlur(String(draft.stops[i][k] ?? ""), (x) => setStop(i, k, x)) : undefined} />
       )}
     </Field>

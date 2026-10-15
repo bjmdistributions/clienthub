@@ -40,7 +40,7 @@ import {
 import StatusPill from "./StatusPill";
 import { buildNewsletterBody } from "../lib/newsletter";
 import { fmtAmount, parseAmount, parseCount } from "../lib/format";
-import { isAdmin, isLogisticsOnly } from "../lib/permissions";
+import { canViewLogistics, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import { time24On } from "../lib/logisticsLoad";
 import { loadTime24, saveTime24 } from "../lib/time24";
 import {
@@ -680,7 +680,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
             )}
             <div key={tab} className="page-enter">
               {tab === "account"      && <AccountTab />}
-              {tab === "appearance"   && <AppearanceTab />}
+              {tab === "appearance"   && <AppearanceTab showTimes={canViewLogistics(me)} />}
               {tab === "email"        && <EmailTab />}
               {tab === "whatsapp"     && <WhatsAppTab />}
               {tab === "company"      && <CompanyTab />}
@@ -985,14 +985,15 @@ function PhoneNotificationsCard() {
   );
 }
 
-function AppearanceTab() {
+/** `showTimes`: the 24-hour switch, for whoever works loads (the server keeps it behind the Logistics routes). */
+function AppearanceTab({ showTimes }: { showTimes: boolean }) {
   const [dark, setDark] = useState(() => localStorage.getItem("clienthub_dark") === "1");
   const [matte, setMatte] = useState(() => localStorage.getItem("clienthub_matte") === "1");
   const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "orange");
   const [navAuto, setNavAutoState] = useState(() => localStorage.getItem("clienthub_nav_auto") !== "0");
   // R-524: how load times are typed. R-538: the person's choice, kept on their account so it follows them to every device.
   const [time24, setTime24State] = useState(() => time24On());
-  useEffect(() => { loadTime24().then(() => setTime24State(time24On())); }, []);
+  useEffect(() => { if (showTimes) loadTime24().then(() => setTime24State(time24On())); }, [showTimes]);
   const setTime24 = async (on: boolean) => {
     setTime24State(on);
     try { setTime24State(await saveTime24(on)); } catch (e) { setTime24State(!on); toast(String(e), "error"); }
@@ -1146,6 +1147,7 @@ function AppearanceTab() {
         </span>
       </button>
 
+      {showTimes && (<>
       <div className="mt-7"><SectionLabel>Times</SectionLabel></div>
       <button
         onClick={() => setTime24(!time24)}
@@ -1168,6 +1170,7 @@ function AppearanceTab() {
           <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${time24 ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
         </span>
       </button>
+      </>)}
     </div>
   );
 }

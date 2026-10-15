@@ -5,19 +5,20 @@ import { api } from "./api";
 import { TIME24_KEY, setTime24Account } from "./logisticsLoad";
 
 let asked = false;
+/** Bumped on sign-out, so an answer that lands after it is dropped. */
+let epoch = 0;
 
-/** Read the person's choice once per sign-in. A choice made on this device before it was kept on the account is sent
- *  up once. A failed read leaves the device's cache in charge and is asked again next time. */
+/** Read the person's choice once per sign-in. Never chosen on the account reads as off: a device's earlier flag is not
+ *  sent up, since it may have been another person's. A failed read leaves the device's cache in charge and is asked
+ *  again next time. */
 export async function loadTime24(): Promise<void> {
   if (asked) return;
   asked = true;
+  const mine = epoch;
   let r: { time24: boolean | null };
-  try { r = await api.logistics.me.get(); } catch { asked = false; return; }
-  if (typeof r.time24 === "boolean") { setTime24Account(r.time24); return; }
-  let local = false;
-  try { local = localStorage.getItem(TIME24_KEY) === "1"; } catch { /* storage blocked: nothing chosen here */ }
-  if (!local) { setTime24Account(false); return; }
-  try { setTime24Account((await api.logistics.me.save({ time24: true })).time24); } catch { /* the cache still says on */ }
+  try { r = await api.logistics.me.get(); } catch { if (mine === epoch) asked = false; return; }
+  if (mine !== epoch) return;
+  setTime24Account(typeof r.time24 === "boolean" ? r.time24 : false);
 }
 
 /** The switch in Settings, Appearance. Throws when the server refuses, so the switch can go back. */
@@ -27,8 +28,9 @@ export async function saveTime24(on: boolean): Promise<boolean> {
   return r.time24;
 }
 
-/** Sign-out: the next person on this device reads their own choice. */
+/** Signed out: the next person on this device reads their own choice. */
 export function forgetTime24(): void {
+  epoch++;
   asked = false;
   setTime24Account(null);
   try { localStorage.removeItem(TIME24_KEY); } catch { /* nothing to forget */ }

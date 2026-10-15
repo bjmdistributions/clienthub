@@ -104,7 +104,8 @@ function BoardCard({ b, onOpen, done }: { b: FreightBooking; onOpen: () => void;
   // R-538: the warnings the old rows carried (R-459): the pickup number not confirmed, and for whoever pays carriers when
   // the payment is due; and what a waiting-for-payment load still lacks.
   const unconfirmed = !done && pickupNumberUnconfirmed(b, today);
-  const due = k === "pay" && b.can_see_deal && b.pay_due_date ? b.pay_due_date : "";
+  // The website's rule (lgDuePill): only for a load still owed with its paperwork in, and only for someone who sees deals.
+  const due = !done && groupOf(b) === "topay" && b.can_see_deal ? b.pay_due_date || "" : null;
   const needs = done ? [] : boardNeeds(b);
   return (
     <button type="button" onClick={onOpen} style={{ boxShadow: `inset 5px 0 0 ${tone}` }}
@@ -120,11 +121,11 @@ function BoardCard({ b, onOpen, done }: { b: FreightBooking; onOpen: () => void;
       {route && <span className="text-[15px] font-semibold text-ink leading-snug break-words">{route}</span>}
       {lane && <span className="text-[13.5px] text-ink-2 break-words">{lane}</span>}
       <span className="text-[13.5px] text-ink-2 break-words">{when}</span>
-      {(isHot(b) || unconfirmed || due || needs.length > 0 || arriving || fresh) && (
+      {(isHot(b) || unconfirmed || due !== null || needs.length > 0 || arriving || fresh) && (
         <span className="flex flex-wrap gap-1.5 mt-1">
           {isHot(b) && <UrgentPill />}
           {unconfirmed && <PickupNumberPill />}
-          {due && <StatusPill tone={dueTone(due, today)}>{dueLabel(due, today)}</StatusPill>}
+          {due !== null && <StatusPill tone={dueTone(due, today)}>{dueLabel(due, today)}</StatusPill>}
           {needs.length > 0 && <StatusPill tone="neutral">Needs {needs.join(" and ")}</StatusPill>}
           {arriving && <StatusPill tone="neutral">Arriving today</StatusPill>}
           {fresh && <StatusPill tone="neutral">New</StatusPill>}

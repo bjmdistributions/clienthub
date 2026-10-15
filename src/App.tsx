@@ -470,7 +470,8 @@ export default function App() {
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   // R-538: the person's own 24-hour choice for load times, read once they are signed in (kept on their account).
-  useEffect(() => { if (me && canViewLogistics(me)) loadTime24(); }, [me]);
+  // Signed out by any route (the sign-in screen showing): forget it, so the next person reads their own.
+  useEffect(() => { if (me === null) forgetTime24(); else if (me && canViewLogistics(me)) loadTime24(); }, [me]);
   // R-400: an account that holds only Logistics permissions gets the Logistics screen and
   // nothing else. This device never holds the workspace for it (the sign-in skips the sync),
   // so every screen and every background read of workspace data below is skipped, not just hidden.

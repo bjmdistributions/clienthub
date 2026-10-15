@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, FileText, Paperclip, Plus, Truck, X } from "lucide-react";
 import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightBookingPatch, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
@@ -156,6 +156,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
   // R-458: everything logistics needs in one send: how urgent, the day and the times, and the papers.
   const [urgent, setUrgent] = useState(false);
   const [when, setWhen] = useState({ date: "", window: "" });
+  // R-538: a pickup time typed in 24-hour time reads back as proper time, only when typed this time.
+  const winWas = useRef("");
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   // R-459: what the lane cost last time, once both addresses read as a place; a carrier name opens its card.
@@ -291,7 +293,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                 <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label="Pickup address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
                 <AddressNote value={pickup.address} />
                 <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={when.window} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, window: v })); }}
-                  onBlur={() => { if (!time24On()) return; const t = milWindow(when.window); if (t && t !== when.window) setWhen((w) => ({ ...w, window: t })); }} />
+                  onFocus={(e) => { winWas.current = e.target.value; }}
+                  onBlur={() => { if (!time24On() || when.window === winWas.current) return; const t = milWindow(when.window); if (t && t !== when.window) setWhen((w) => ({ ...w, window: t })); }} />
               </div>
               {stops.map((x, i) => (
                 <div key={i} className="space-y-2">
@@ -304,7 +307,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                   <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
                   <AddressNote value={x.address} />
                   <input className={inp} placeholder="Time, like before 4 pm" aria-label={`Pickup ${i + 2} time`} value={x.window} onChange={(e) => setStop(i, { window: e.target.value })}
-                    onBlur={() => { if (!time24On()) return; const t = milWindow(x.window); if (t && t !== x.window) setStop(i, { window: t }); }} />
+                    onFocus={(e) => { winWas.current = e.target.value; }}
+                    onBlur={() => { if (!time24On() || x.window === winWas.current) return; const t = milWindow(x.window); if (t && t !== x.window) setStop(i, { window: t }); }} />
                 </div>
               ))}
               {stops.length < 9 && (
