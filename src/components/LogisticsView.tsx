@@ -4,7 +4,7 @@ import { api, type FreightBooking, type Me } from "../lib/api";
 import { localDay } from "../lib/format";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import { canViewFreightMap } from "../lib/freightMap";
-import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canPayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
+import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canSeePayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
   GROUPS, arrivesToday, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, loadHaystack, loadNumber, missingPaperwork,
   pickupNumberUnconfirmed, rowLane, splitNewToday, type GroupKey, type LoadStep,
@@ -122,7 +122,8 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   // sees deals and their dollar figures; a Logistics-only account never does.
   const canShipments = !logisticsOnly && (isAdmin(me) || (can(me, "deal_flow:view") && can(me, "deal_flow:view_numbers")));
   // R-459: Carriers for everyone on this screen, Pay carriers for whoever may pay them.
-  const canPay = canPayCarriers(me);
+  // R-527: the payer, whoever attaches, and the Logistics person (who never attaches) see Pay carriers.
+  const seePay = canSeePayCarriers(me);
   const [view, setView] = useState<"bookings" | "carriers" | "pay" | "shipments">("bookings");
   // R-485: Loads (the list below) or Map (the delivered freight on the road), for whoever may see load addresses.
   const canMap = canViewFreightMap(me);
@@ -188,7 +189,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
 
   const views: (readonly ["bookings" | "carriers" | "pay" | "shipments", string])[] = [
     ["bookings", "Bookings"], ["carriers", "Carriers"],
-    ...(canPay ? [["pay", "Pay carriers"] as const] : []),
+    ...(seePay ? [["pay", "Pay carriers"] as const] : []),
     ...(canShipments ? [["shipments", "All shipments"] as const] : []),
   ];
   const needle = q.trim().toLowerCase();
@@ -288,7 +289,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
 
       {view === "shipments" && canShipments ? <LogisticsShipments />
         : view === "carriers" ? <CarriersView openId={carrierId} onHostClose={() => setCarrierId(undefined)} onOpenLoad={(id) => { setView("bookings"); openLoad(id); }} />
-        : view === "pay" && canPay ? <PayCarriersView rev={payRev} onOpenLoad={(id, step) => openLoad(id, step)} />
+        : view === "pay" && seePay ? <PayCarriersView rev={payRev} onOpenLoad={(id, step) => openLoad(id, step)} />
         : canMap && mode === "map" ? <LogisticsMap me={me} /> : (<>
 
       {/* R-487: what arrives today, then when the rest is expected, then the list. */}

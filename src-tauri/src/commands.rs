@@ -18321,10 +18321,17 @@ pub async fn allocate_bank_txn(
 /// of the same amount takes the new transaction) is the Financials booking path's correction
 /// after an unlink. `create_refund` passes false: it links the transaction before its own
 /// refunds row exists, so the re-link could only ever grab a DIFFERENT refund (R-511 FD-01).
+/// R-526: the sentence a person without the Financials edit switch sees when they try to tie bank money to a deal.
+pub(crate) const BOOK_BANK_NEEDS_FINANCIALS: &str =
+    "Tying a bank payment to a deal needs the Financials switch on your role. An admin can turn it on in Settings, Team.";
+
 async fn allocate_bank_txn_inner(
     bank_txn_id: String, deal_flow_id: String, amount: f64, role: String, note: String,
     allow_split: Option<bool>, relink_refund: bool,
 ) -> Result<String, String> {
+    if !crate::employees::session_can_book_bank() {
+        return Err(BOOK_BANK_NEEDS_FINANCIALS.into());
+    }
     let (txn_amount, allocated, direction): (f64, f64, String) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.query_row(

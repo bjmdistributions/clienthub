@@ -240,6 +240,18 @@ pub fn session_is_privileged() -> bool {
     }
 }
 
+/// R-526 (Jack, 2026-10-14: money "if allowed in settings"): whether the signed-in person may book bank money, that is
+/// tie a bank payment to a deal: the owner PIN, an admin, or a role with the Financials edit switch. The server refuses
+/// the same push from anyone else, so the desktop says so instead of booking a row that never reaches the server.
+pub fn session_can_book_bank() -> bool {
+    match current_staff_id() {
+        None => true,
+        Some(id) => load_me(&id)
+            .map(|m| m.is_admin || m.permissions.iter().any(|p| p == "*" || p == "financials:edit"))
+            .unwrap_or(true),
+    }
+}
+
 /// (id, display_name) of the signed-in staff member, if any (owner PIN → None).
 pub fn session_actor() -> Option<(String, String)> {
     let id = current_staff_id()?;

@@ -111,6 +111,17 @@ export function canPayCarriers(me: Perms | null | undefined): boolean {
   return isAdmin(me) || (can(me, "deal_flow:view") && can(me, "deal_flow:view_numbers") && can(me, "deal_flow:edit"));
 }
 
+/** R-527 (Jack, 2026-10-14: attaching a payment "is admin or accountant job"): attaching or detaching a bank payment on a
+ *  load, the server's `Caller.attach`: an admin or the Financials edit switch. */
+export function canAttachPayments(me: Perms | null | undefined): boolean {
+  return !!me && (isAdmin(me) || can(me, "financials:edit"));
+}
+
+/** R-527: who sees Pay carriers: the payer, whoever attaches, and the Logistics person, who sees it and never attaches. */
+export function canSeePayCarriers(me: Perms | null | undefined): boolean {
+  return !!me && (canPayCarriers(me) || canAttachPayments(me) || isLogisticsOnly(me));
+}
+
 /** Who may add and change carriers: the logistics edit switch, deal edit, or an admin. */
 export const canEditCarriers = (me: Perms | null | undefined): boolean =>
   !!me && (isAdmin(me) || can(me, "logistics:edit") || can(me, "deal_flow:edit"));

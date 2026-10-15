@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, FileText, Paperclip, Plus, Truck, X } from "lucide-react";
 import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightBookingPatch, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
-import { canChangePaidOn, canPayCarriers, canRecordOn, carrierByName, laneEnds } from "../lib/logisticsCarriers";
+import { canAttachPayments, canChangePaidOn, canRecordOn, carrierByName, laneEnds } from "../lib/logisticsCarriers";
 import { CATCH_UP_STEPS, blankCatchUp, catchUpFields, catchUpProblem, dayLabel, type CatchUpForm } from "../lib/catchUpLoad";
 import { ADDRESS_HINT, addressNote, relabelPickupError } from "../lib/fullAddress";
 import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidStateOf, paidView, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
@@ -517,7 +517,8 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   // bank, and a load is Paid only when it is, so these fields are laid over the local copy.
   const [fresh, setFresh] = useState<Record<string, FreightBooking>>({});
   const me = useSessionMe();
-  const canPay = canPayCarriers(me);
+  // R-527: attaching or detaching the bank payment is for an admin or the Financials edit switch.
+  const attach = canAttachPayments(me);
 
   const loadBookings = useCallback(async () => {
     try { setBookings(await api.listFreightBookings(flow.id)); }
@@ -702,7 +703,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
                       </div>
                       <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap">
                         <PaidSummary b={b} today={localDay()} />
-                        <PaidButtons state={paidStateOf(b)} bankLinked={b.bank_linked} amount={b.paid_amount} canLink={canRecordOn(b, canPay)} canChange={canChangePaidOn(b, canPay)}
+                        <PaidButtons state={paidStateOf(b)} bankLinked={b.bank_linked} amount={b.paid_amount} canLink={canRecordOn(b, attach)} canChange={canChangePaidOn(b, attach)}
                           target={payTarget(b)} controls={paidControls} />
                       </div>
                     </li>

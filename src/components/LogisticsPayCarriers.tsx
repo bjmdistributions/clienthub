@@ -9,6 +9,8 @@ import {
 } from "../lib/logisticsCarriers";
 import { fmtDayLabel, paidStateOf, paidView, type LoadStep, type PaidFacts, type PaidView } from "../lib/logisticsLoad";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
+import { useSessionMe } from "../lib/useSessionMe";
+import { canAttachPayments } from "../lib/logisticsCarriers";
 import { LogisticsModal, modalGhost, modalPrimary } from "./LogisticsCarriers";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
@@ -284,6 +286,8 @@ function Who({ r, onOpen }: { r: CarrierPayRow; onOpen: () => void }) {
 
 export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: string, step: LoadStep) => void; rev?: number }) {
   const { data, error, reload } = useCarrierPay(true);
+  // R-527: Link and Unlink only for an admin or the Financials edit switch; the Logistics person reads the rows.
+  const attach = canAttachPayments(useSessionMe());
   // A load was saved or closed from its page: read the rows again.
   useEffect(() => { if (rev) reload(); }, [rev, reload]);
   const file = useOpenFile();
@@ -299,7 +303,7 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
   }
   const toLink = data.to_link ?? [];
   const buttons = (r: CarrierPayRow, state: PaidState) => (
-    <PaidButtons state={state} bankLinked={r.bank_linked} amount={r.paid_amount} canLink canChange target={targetOf(r)} controls={controls} />
+    <PaidButtons state={state} bankLinked={r.bank_linked} amount={r.paid_amount} canLink={attach} canChange={attach} target={targetOf(r)} controls={controls} />
   );
   return (
     <div className="space-y-5 min-w-0">
