@@ -1017,6 +1017,60 @@ pub fn clean_image(s: &str) -> String {
     if ok { s.to_string() } else { String::new() }
 }
 
+/// A preview's picture at most this size; a bigger one still imports, it is only not shown early.
+pub const MAX_PREVIEW_BYTES: usize = 400 * 1024;
+
+/// The pictures of each tab's sample lines, as data: URLs, so the preview can show them before
+/// anything is saved.
+pub fn previews(read: &ManifestRead, pics: &[(String, Picture)]) -> BTreeMap<String, String> {
+    use base64::Engine;
+    let mut out = BTreeMap::new();
+    for id in read.tabs.iter().flat_map(|t| t.samples.iter()) {
+        if let Some((_, p)) = pics.iter().find(|(l, _)| l == id) {
+            if p.bytes.len() <= MAX_PREVIEW_BYTES {
+                let mime = match p.ext.as_str() {
+                    "png" => "image/png",
+                    "gif" => "image/gif",
+                    "webp" => "image/webp",
+                    _ => "image/jpeg",
+                };
+                out.insert(id.clone(), format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&p.bytes)));
+            }
+        }
+    }
+    out
+}
+
+/// Which saved line each line read from a file is, for putting the file's pictures on a delivery
+/// already saved: the saved line with the same id whose style and colour also match, or else the
+/// one saved line with the same tab, style and colour. A line that matches no saved line, or more
+/// than one, is left out, and a saved line takes one at most: a picture never lands on a guess.
+/// Returns (read line id, saved line id) pairs.
+pub fn same_lines(saved: &[LoadLine], read: &[LoadLine]) -> Vec<(String, String)> {
+    let key = |l: &LoadLine| (l.brand.to_lowercase(), l.style.to_lowercase(), l.color.to_lowercase());
+    let mut out: Vec<(String, String)> = Vec::new();
+    for r in read {
+        let by_id = saved.iter().find(|s| s.id == r.id && s.style.eq_ignore_ascii_case(&r.style) && s.color.eq_ignore_ascii_case(&r.color));
+        let id = match by_id {
+            Some(s) => Some(s.id.clone()),
+            None => {
+                let same: Vec<&LoadLine> = saved.iter().filter(|s| key(s) == key(r)).collect();
+                if same.len() == 1 {
+                    Some(same[0].id.clone())
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(id) = id {
+            if !out.iter().any(|(_, s)| *s == id) {
+                out.push((r.id.clone(), id));
+            }
+        }
+    }
+    out
+}
+
 /// Lines and pairs by brand and group, in the order they first appear.
 pub fn group_counts(lines: &[LoadLine]) -> Vec<GroupCount> {
     let mut out: Vec<GroupCount> = Vec::new();
@@ -1983,6 +2037,39 @@ mod tests {
         lines[1].image = "media/deliveries/x/t2r6.png".into();
         let c = clean_lines(lines).unwrap();
         assert_eq!((c[0].image.as_str(), c[1].image.as_str(), c[0].sheet.as_str()), ("", "media/deliveries/x/t2r6.png", "Acme Hash"));
+    }
+
+    #[test]
+    fn a_file_read_again_finds_its_saved_lines_and_never_guesses() {
+        let saved = read_manifest(&sample()).lines;
+        // The same file: every line is itself.
+        let again = read_manifest(&sample()).lines;
+        let ids: Vec<(String, String)> = saved.iter().map(|l| (l.id.clone(), l.id.clone())).collect();
+        assert_eq!(same_lines(&saved, &again), ids);
+        // A row added near the top moves every row down: found by tab, style and colour.
+        let mut tabs = sample();
+        tabs[1].rows.insert(1, row(&["Spring order"]));
+        let moved = read_manifest(&tabs).lines;
+        assert_ne!(moved[0].id, saved[0].id);
+        assert_eq!(same_lines(&saved, &moved), ids.iter().zip(&moved).map(|((_, s), m)| (m.id.clone(), s.clone())).collect::<Vec<_>>());
+        // A style on the delivery twice by tab, style and colour, under a different id: neither.
+        let mut twice = saved.clone();
+        twice.push(LoadLine { id: "h1".into(), ..saved[0].clone() });
+        assert!(!same_lines(&twice, &moved).iter().any(|(_, s)| *s == saved[0].id || s == "h1"));
+        // A style that is not on the delivery: nothing.
+        let mut other = again.clone();
+        other[0].style = "Z999".into();
+        assert!(!same_lines(&saved, &other).iter().any(|(r, _)| *r == other[0].id));
+    }
+
+    #[test]
+    fn the_preview_shows_each_tabs_sample_pictures() {
+        let m = read_manifest(&sample());
+        let small = Picture { sheet: "Acme Hash".into(), row: 4, row_last: 4, ext: "png".into(), bytes: b"\x89PNG-x".to_vec() };
+        let big = Picture { bytes: vec![0xFF; MAX_PREVIEW_BYTES + 1], ext: "jpg".into(), ..small.clone() };
+        let p = previews(&m, &[("t2r4".into(), small), ("t2r6".into(), big), ("t9r9".into(), Picture { sheet: "x".into(), row: 1, row_last: 1, ext: "gif".into(), bytes: b"GIF8".to_vec() })]);
+        assert_eq!(p.keys().collect::<Vec<_>>(), vec!["t2r4"]);
+        assert!(p["t2r4"].starts_with("data:image/png;base64,"));
     }
 
     /// The real sheet, read locally only: `R519_SHEET=path cargo test real_manifest -- --ignored --nocapture`.

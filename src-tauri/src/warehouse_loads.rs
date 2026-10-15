@@ -6,7 +6,7 @@
 //! the server (clienthub-api `routes/case_core.rs`, behind `routes/warehouse_loads.rs`): this
 //! file is only storage, sync and the Tauri commands. Removed rows are archived, never deleted.
 
-use crate::case_core::{self as core, Case, CaseLine, LoadLine, ManifestRead, Out, PalletRecord, PalletView, Stock, Tally, TakeShort, Totals};
+use crate::case_core::{self as core, Case, CaseLine, LoadLine, Out, PalletRecord, PalletView, Stock, Tally, TakeShort, Totals};
 use crate::db::pool;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -320,12 +320,89 @@ pub async fn list_warehouse_loads() -> Result<Vec<LoadSummary>, String> {
     Ok(out)
 }
 
-/// A manifest read for the preview. Nothing is saved.
+/// A manifest read for the preview, with what each tab is and the pictures of a few of its
+/// styles (R-537). Nothing is saved.
 #[tauri::command]
-pub async fn read_load_manifest(path: String) -> Result<ManifestRead, String> {
+pub async fn read_load_manifest(path: String) -> Result<Value, String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("Could not read the file: {e}"))?;
-    let tabs = core::read_tabs(&path, &bytes)?;
-    Ok(core::read_manifest(&tabs))
+    let (read, pics) = core::read_manifest_file(&path, &bytes)?;
+    let mut v = json!(read);
+    v["previews"] = json!(core::previews(&read, &pics));
+    Ok(v)
+}
+
+/// R-537: put the pictures in a manifest file on a saved delivery. Each picture beside a style in
+/// the file goes on the same style of the delivery (`core::same_lines`: never a guess), is saved
+/// in the synced media folder, and the upload queue takes it to the server for the phone. A line
+/// the file has no picture for keeps the one it has.
+#[tauri::command]
+pub async fn add_load_pictures(load_id: String, path: String) -> Result<Value, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Could not read the file: {e}"))?;
+    let (read, pics) = core::read_manifest_file(&path, &bytes)?;
+    let saved = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let l = load(&conn, &load_id)?;
+        if l.head.archived {
+            return Err("This delivery was removed. Bring it back first.".into());
+        }
+        l.lines
+    };
+    let pairs = core::same_lines(&saved, &read.lines);
+    // The files first; then the paths, on the lines as they are now.
+    let base = crate::db::app_data_dir().join("sync");
+    let mut put: Vec<(String, String)> = Vec::new();
+    for (read_id, p) in &pics {
+        let saved_id = match pairs.iter().find(|(r, _)| r == read_id) {
+            Some((_, s)) => s.clone(),
+            None => continue,
+        };
+        let rel = core::picture_rel(&load_id, &saved_id, &p.ext).ok_or("A line's id cannot name a picture.")?;
+        let file = base.join(&rel);
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&file, &p.bytes).map_err(|e| e.to_string())?;
+        crate::netsync::media_enqueue(&load_id, &rel, "delivery");
+        put.push((saved_id, rel));
+    }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut lines = load(&conn, &load_id)?.lines;
+    let mut changed = false;
+    for (saved_id, rel) in &put {
+        if let Some(x) = lines.iter_mut().find(|x| x.id == *saved_id) {
+            if x.image != *rel {
+                x.image = rel.clone();
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        let mut cols = Map::new();
+        cols.insert("lines_json".into(), json_str(&lines));
+        cols.insert("updated_at".into(), json!(now()));
+        write(&conn, LOADS, &load_id, cols, false)?;
+    }
+    let mut v = serde_json::to_value(detail(&conn, &load_id, true)?).map_err(|e| e.to_string())?;
+    v["pictures"] = json!({ "on_lines": put.len(), "not_on_delivery": pics.len() - put.len(), "left_out": read.pictures_left_out });
+    Ok(v)
+}
+
+/// R-537: fetch the pictures of a delivery's lines this computer does not have yet (a phone or
+/// another computer added them). Returns how many arrived; the screen shows them after.
+#[tauri::command]
+pub async fn ensure_delivery_pictures(load_id: String) -> Result<usize, String> {
+    let rels: Vec<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        load(&conn, &load_id)?.lines.into_iter().map(|l| l.image).filter(|r| !r.is_empty() && core::clean_image(r) == *r).collect()
+    };
+    let base = crate::db::app_data_dir().join("sync");
+    let missing: Vec<String> = rels.into_iter().filter(|r| !base.join(r).exists()).collect();
+    let mut got = 0;
+    for chunk in missing.chunks(8) {
+        let res = futures::future::join_all(chunk.iter().map(|r| crate::netsync::download_media(r))).await;
+        got += res.iter().filter(|r| r.is_ok()).count();
+    }
+    Ok(got)
 }
 
 #[tauri::command]

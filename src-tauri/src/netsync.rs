@@ -2000,6 +2000,30 @@ pub async fn upload_inventory_photo(lot_id: &str, rel: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// R-537: upload one delivery picture ("media/deliveries/<load>/<line>.<ext>") so the phone can
+/// show it. The server checks the name, the delivery, and that the bytes are that kind of image.
+pub async fn upload_delivery_picture(load_id: &str, rel: &str) -> Result<(), String> {
+    let cfg = config().ok_or("not signed in")?;
+    let name = rel.rsplit('/').next().unwrap_or("");
+    if name.is_empty() || name.contains("..") || !rel.starts_with("media/deliveries/") {
+        return Err("bad picture path".into());
+    }
+    let local = crate::db::app_data_dir().join("sync").join(rel);
+    let bytes = std::fs::read(&local).map_err(|e| e.to_string())?;
+    let resp = http()
+        .post(format!("{}/api/warehouse/loads/{}/picture/{}", cfg.url.trim_end_matches('/'), load_id, name))
+        .bearer_auth(&cfg.token)
+        .header("content-type", "application/octet-stream")
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|_| "couldn't reach the server".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Upload a lot's manifest FILE to the server so the public storefront can serve it
 /// (the sync oplog only carries the manifest_path text, not the bytes). `rel` is the
 /// stored path "media/inventory/<lot>/manifest.<ext>".
@@ -2276,6 +2300,8 @@ pub async fn push_media_pending() {
             upload_lot_artifact(&lot_id, &local).await
         } else if kind == "manifest" {
             upload_inventory_manifest(&lot_id, &rel).await
+        } else if kind == "delivery" {
+            upload_delivery_picture(&lot_id, &rel).await
         } else {
             upload_inventory_photo(&lot_id, &rel).await
         };
