@@ -172,6 +172,44 @@ export function LogisticsFreightSetting() {
   );
 }
 
+/** R-521: whether the logistics person may send a quoted load to book when the team has not (Book anyway on With the
+ *  team). An admin's setting, on by default, saved the moment it is switched. Off: the team sends every load to book. */
+export function LogisticsMayBookSetting() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try { setOn((await api.logistics.settings.get()).logistics_may_book !== false); setErr(""); }
+    catch (e) { setErr(String(e)); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const flip = async () => {
+    if (on === null) return;
+    const next = !on;
+    setBusy(true); setErr("");
+    try { const saved = await api.logistics.settings.save({ logistics_may_book: next }); setOn(saved.logistics_may_book !== false); toast("Saved"); }
+    catch (e) { setErr(String(e)); }
+    setBusy(false);
+  };
+  if (on === null) {
+    return err
+      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
+      : <div className="text-[12.5px] text-muted">Loading...</div>;
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-[13px] font-medium text-ink">Logistics can book a load without the team</div>
+          <div className="text-[12px] text-muted mt-0.5">Shows Book anyway on the With the team step, for when a load was not sent to book. Off: your team sends every load to book.</div>
+        </div>
+        <Switch on={on} onClick={flip} disabled={busy} label="Logistics can book a load without the team" />
+      </div>
+      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+    </div>
+  );
+}
+
 /** R-459: how load numbers and BOL numbers are made, like the invoice numbers: a prefix and the number the next
  *  one gets. The server mints them (the first load is LD-0001 and the first BOL BOL-0001 unless this says otherwise),
  *  so this only changes the counters. An admin's setting. */

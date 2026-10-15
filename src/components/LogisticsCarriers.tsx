@@ -5,11 +5,15 @@ import { fmtAmount } from "../lib/format";
 import {
   PAY_METHODS, canEditCarriers, canSeePayDetails, carrierByName, carrierFacts, carrierIds, filterCarriers, offerSaveCarrier, payMethodLabel, termsWord,
 } from "../lib/logisticsCarriers";
-import { fmtDayLabel } from "../lib/logisticsLoad";
+import { fmtDayLabel, laneOf } from "../lib/logisticsLoad";
+import { formatLocation } from "../lib/location";
 import { useSessionMe } from "../lib/useSessionMe";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
+
+/** R-530: "Dallas, TX" from a carrier's address, or nothing when it does not name a city and state. */
+const cityOf = (address: string): string => { const l = laneOf(address); return l && l.city ? formatLocation(l.city, l.state) : ""; };
 
 // R-459: the carriers directory. A carrier is saved once with how to reach it and how it gets paid
 // (Zelle, wire, ACH, credit card, check), and a load picks it from the list. The server keeps the
@@ -440,14 +444,15 @@ export function CarriersView({ openId, onOpenLoad, onHostClose }: { openId?: str
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-medium text-ink truncate">{c.name}</div>
                 <div className="text-[12px] text-muted mt-0.5 truncate">
-                  {[carrierIds(c), c.contact_name, c.phone].filter(Boolean).join(" · ") || "No contact saved"}
+                  {/* R-530: where the carrier is, the city and state of its address. */}
+                  {[cityOf(c.address), carrierIds(c), c.contact_name, c.phone].filter(Boolean).join(" · ") || "No contact saved"}
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {c.pay_method && <StatusPill tone="accent">{payMethodLabel(c.pay_method)}</StatusPill>}
                 <span className="text-[12px] text-muted whitespace-nowrap">{c.load_count} {c.load_count === 1 ? "load" : "loads"}</span>
                 {c.last_used && <span className="text-[12px] text-muted whitespace-nowrap hidden lg:inline">last {fmtDayLabel(c.last_used)}</span>}
-                {c.last_rate != null && <span className="text-[12.5px] text-ink tabular-nums whitespace-nowrap">{fmtAmount(c.last_rate)}</span>}
+                {c.last_rate != null && <span className="text-[12.5px] text-ink tabular-nums whitespace-nowrap">{fmtAmount(c.last_rate)}{c.last_rate_lane ? <span className="text-muted">, {c.last_rate_lane}</span> : null}</span>}
               </div>
             </button>
           ))}

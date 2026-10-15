@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import type { FreightBooking } from "./api";
 import {
-  EQUIPMENT, GROUPS, LOAD_STEPS, arrivesToday, dashboardLoads, deliveryDays, loadCard, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday, splitNewToday,
+  EQUIPMENT, LOAD_STEPS, arrivesToday, dashboardLoads, deliveryDays, loadCard, QUOTE_WAITING_WARNING, STATUS_ORDER, firstName, isNewToday,
+  BOARD, BOARD_WORD, boardKey, boardSort, milTime,
   dayAndTime, dealPaid, dueLabel, dueTone, equipmentOptions, fileKind, firstStep, fmtDayLabel, groupOf, isHot, isLiveTruck,
   isTime, laneLabel, laneOf, loadHaystack, loadNumber, missingPaperwork, needsAmount, paidMethodWord, paidStateOf, paidView, paperworkOf, pickStatus, statusAllowed, confirmToSend,
   pickupNumberUnconfirmed, quoteWaitingOnInvoice, rateConLine, rateConMissing, rowLane, statusAfterActual, statusWord, stepDone, timeWord,
@@ -355,13 +356,19 @@ describe("the pickup number check", () => {
   });
 });
 
+describe("R-524: a time typed in 24-hour time", () => {
+  it("reads 1430, 930, 14:30 and 2:30 pm as HH:MM, and anything else as not a time", () => {
+    const cases: [string, string | null][] = [
+      ["1430", "14:30"], ["930", "09:30"], ["0930", "09:30"], ["14:30", "14:30"], ["7", "07:00"], ["0", "00:00"], ["2359", "23:59"],
+      ["2400", null], ["1260", null], ["2:30 pm", "14:30"], ["230p", "14:30"], ["12am", "00:00"], ["12pm", "12:00"],
+      ["12:15 a.m.", "00:15"], ["13pm", null], ["", ""], ["abc", null], ["12345", null],
+    ];
+    for (const [typed, want] of cases) expect([typed, milTime(typed)]).toEqual([typed, want]);
+  });
+});
+
 describe("the list groups", () => {
   const all = { bol: true, pod: true, carrier_invoice: true };
-  it("has the nine groups in order", () => {
-    expect(GROUPS.map((g) => g.title)).toEqual([
-      "Urgent", "Quotes to give", "Quoted, with the team", "To book", "Booked", "On the way", "Needs paperwork", "Carrier to be paid", "Delivered",
-    ]);
-  });
   it("sorts each status into its group", () => {
     expect(groupOf(mk({ status: "quote" }))).toBe("quotes");
     expect(groupOf(mk({ status: "quoted" }))).toBe("quoted");
@@ -389,6 +396,10 @@ describe("the list groups", () => {
     expect(STATUS_ORDER.filter((s) => statusAllowed(s, "booked", false))).toEqual(["requested", "booked", "picked_up", "delivered", "cancelled"]);
     expect(STATUS_ORDER.filter((s) => statusAllowed(s, "cancelled", false))).toEqual(["requested", "booked", "picked_up", "delivered", "cancelled"]);
     expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quote", true))).toEqual(STATUS_ORDER);
+    // R-521: with the owner's switch off, logistics waits for the team to send a quote-stage load to book.
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quoted", false, false))).toEqual(["quoted"]);
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "booked", false, false))).toEqual(["requested", "booked", "picked_up", "delivered", "cancelled"]);
+    expect(STATUS_ORDER.filter((s) => statusAllowed(s, "quoted", true, false))).toEqual(STATUS_ORDER);
   });
   it("sends a pickup number check that was ticked again after the number changed", () => {
     expect(confirmToSend(true, true, true)).toBe(true);
@@ -667,24 +678,31 @@ describe("R-476: the hello and New today", () => {
     expect(isNewToday({ created_at: "2026-10-08T09:00:00Z", status: "cancelled" }, now)).toBe(false);
     expect(isNewToday({ created_at: "", status: "quote" }, now)).toBe(false);
   });
-  it("R-480: a load shows once. New today claims the last 24 hours, newest first, and the groups are made from the rest", () => {
-    const now = Date.parse("2026-10-08T18:00:00Z");
+  it("R-525: the board has three boxes left to right, and each load is in one of them, in its colour, or finished", () => {
+    expect(BOARD.map((c) => [c.title, c.keys])).toEqual([
+      ["Quote and book", ["quote", "team", "book"]], ["Booked and on the road", ["pickup", "moving"]], ["Delivered", ["paper", "pay"]],
+    ]);
+    const all = { bol: true, pod: true, carrier_invoice: true };
+    const paid = { paperwork: all, quoted_cost: 900, paid_amount: 900, paid_state: "paid" as const };
+    expect(boardKey(mk({ status: "quote" }))).toBe("quote");
+    expect(boardKey(mk({ status: "quoted" }))).toBe("team");
+    expect(boardKey(mk({ status: "requested", urgent: true }))).toBe("book");
+    expect(boardKey(mk({ status: "booked" }))).toBe("pickup");
+    expect(boardKey(mk({ status: "picked_up" }))).toBe("moving");
+    expect(boardKey(mk({ status: "delivered", quoted_cost: 900 }))).toBe("paper");
+    expect(boardKey(mk({ status: "delivered", paperwork: all, quoted_cost: 900, paid_amount: null, paid_state: "unpaid" }))).toBe("pay");
+    expect(boardKey(mk({ status: "delivered", ...paid }))).toBeNull();
+    expect(boardKey(mk({ status: "cancelled" }))).toBeNull();
+    expect(BOARD_WORD.paper).toBe("Waiting on paperwork");
+  });
+  it("R-525: inside a box, urgent first, then by colour, then by day", () => {
     const loads = [
-      mk({ id: "old-booked", status: "booked", created_at: "2026-10-01T09:00:00Z" }),
-      mk({ id: "new-quote", status: "quote", created_at: "2026-10-08T09:00:00Z" }),
-      mk({ id: "new-booked", status: "booked", created_at: "2026-10-08T15:30:00Z" }),
-      mk({ id: "new-cancelled", status: "cancelled", created_at: "2026-10-08T10:00:00Z" }),
-      mk({ id: "old-quote", status: "quote", created_at: "2026-10-05T09:00:00Z" }),
+      mk({ id: "book-late", status: "requested", pickup_date: "2026-10-20" }),
+      mk({ id: "quote", status: "quote", pickup_date: "2026-10-25" }),
+      mk({ id: "book-soon", status: "requested", pickup_date: "2026-10-10" }),
+      mk({ id: "hot", status: "requested", urgent: true, pickup_date: "2026-10-30" }),
     ];
-    const { fresh, rest } = splitNewToday(loads, now);
-    expect(fresh.map((b) => b.id)).toEqual(["new-booked", "new-quote"]);
-    expect(rest.map((b) => b.id)).toEqual(["old-booked", "new-cancelled", "old-quote"]);
-    // Nothing is in both lists and nothing is lost.
-    expect(new Set([...fresh, ...rest].map((b) => b.id)).size).toBe(loads.length);
-    // A new quote is not also in "Quotes to give", and a new booked load is not also in "Booked": the groups read `rest`.
-    expect(rest.some((b) => b.id === "new-quote" || b.id === "new-booked")).toBe(false);
-    expect(rest.filter((b) => groupOf(b) === "quotes").map((b) => b.id)).toEqual(["old-quote"]);
-    expect(splitNewToday([], now)).toEqual({ fresh: [], rest: [] });
+    expect([...loads].sort(boardSort).map((b) => b.id)).toEqual(["hot", "quote", "book-soon", "book-late"]);
   });
   it("greets by the first word of the account's name", () => {
     expect(firstName("Robin Testcase")).toBe("Robin");

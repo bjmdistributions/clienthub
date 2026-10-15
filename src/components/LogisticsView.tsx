@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronRight, Paperclip, Search, Truck } from "lucide-react";
 import { api, type FreightBooking, type Me } from "../lib/api";
 import { localDay } from "../lib/format";
@@ -6,8 +6,8 @@ import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import { canViewFreightMap } from "../lib/freightMap";
 import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canSeePayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
-  GROUPS, arrivesToday, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, loadHaystack, loadNumber, missingPaperwork,
-  pickupNumberUnconfirmed, rowLane, splitNewToday, type GroupKey, type LoadStep,
+  BOARD, BOARD_WORD, arrivesToday, boardKey, boardSort, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, isNewToday, loadHaystack,
+  loadNumber, missingPaperwork, pickupNumberUnconfirmed, rowLane, type BoardKey, type GroupKey, type LoadStep,
 } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
 import LogisticsShipments from "./LogisticsShipments";
@@ -30,19 +30,6 @@ import LogisticsBookingForm, {
 // what a person may see is decided in one place and this screen never has to guess.
 
 const REFRESH_MS = 30_000;
-
-/** Earliest pickup first, an empty pickup last, then the order they were sent. */
-const byPickup = (a: FreightBooking, b: FreightBooking) => {
-  if (!!a.pickup_date !== !!b.pickup_date) return a.pickup_date ? -1 : 1;
-  return a.pickup_date.localeCompare(b.pickup_date) || a.created_at.localeCompare(b.created_at);
-};
-
-/** Carrier to be paid: the earliest due date first, a load with no due date last. */
-const byDue = (a: FreightBooking, b: FreightBooking) => {
-  const x = a.pay_due_date || "", y = b.pay_due_date || "";
-  if (!!x !== !!y) return x ? -1 : 1;
-  return x.localeCompare(y) || a.created_at.localeCompare(b.created_at);
-};
 
 export function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: GroupKey; onOpen: () => void }) {
   const route = routeLabel(b);
@@ -92,26 +79,69 @@ export function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: Gro
   );
 }
 
-// R-487: each group's heading wears its state's colour (the Dashboard cards' and the delivery chart's), so the list
-// reads by colour (R-507: teal while a load ships, green once delivered and while the carrier is owed): Apple system hues, a light wash behind the heading and the title in the matching ink.
-const GROUP_TONE: Partial<Record<GroupKey | "arriving" | "fresh", [string, string]>> = {
-  arriving: ["--c-chart-2", "--c-chart-2-ink"], fresh: ["--c-chart-1", "--c-chart-1"],
-  quotes: ["--c-chart-1", "--c-chart-1"], quoted: ["--c-chart-1", "--c-chart-1"], requested: ["--c-chart-1", "--c-chart-1"],
-  booked: ["--c-chart-2", "--c-chart-2-ink"], way: ["--c-chart-2", "--c-chart-2-ink"],
-  paperwork: ["--c-chart-profit", "--c-chart-profit-ink"], topay: ["--c-chart-profit", "--c-chart-profit-ink"],
-  delivered: ["--c-chart-profit", "--c-chart-profit-ink"],
+// R-525: the board's colours, one per place a load can be, the website's twins (style.css --lgs-*): Apple system hues
+// already in the chart tokens. Purple a quote, indigo with the team, orange ready to book, blue waiting on pickup, teal
+// on the way, pink waiting on paperwork, green waiting for payment (R-507: teal ships, green is the carrier owed).
+const BOARD_TONE: Record<BoardKey, string> = {
+  quote: "--c-chart-5", team: "--c-chart-3", book: "--c-chart-6", pickup: "--c-chart-1", moving: "--c-chart-2", paper: "--c-chart-4", pay: "--c-chart-profit",
 };
+const toneOf = (k: BoardKey | null) => `rgb(var(${k ? BOARD_TONE[k] : "--c-line-3"}))`;
 
-function GroupCard({ title, count, children, hot, tone }: { title: string; count: number; children: ReactNode; hot?: boolean; tone?: keyof typeof GROUP_TONE }) {
-  const t = !hot && tone ? GROUP_TONE[tone] : undefined;
+/** R-525: one load on the board, in the colour of where it is. Large type, three lines, nothing it does not need. */
+function BoardCard({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
+  const k = boardKey(b);
+  const tone = toneOf(k);
+  const route = routeLabel(b);
+  const lane = rowLane(b);
+  const when = [timingLine(b) || "No dates yet", b.deal?.client_name].filter(Boolean).join(" · ");
+  const arriving = b.status !== "delivered" && arrivesToday(b, localDay());
   return (
-    <section className={`bg-surface border rounded-xl overflow-hidden ${hot ? "border-danger-ink/30" : "border-line"}`}>
-      <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${hot ? "border-danger-ink/20 bg-danger-bg" : "border-line"}`}
-        style={t ? { background: `rgb(var(${t[0]}) / 0.10)` } : undefined}>
-        <h3 className={`text-[13px] font-semibold ${hot ? "text-danger-ink" : t ? "" : "text-ink"}`} style={t ? { color: `rgb(var(${t[1]}))` } : undefined}>{title}</h3>
-        <StatusPill tone={hot ? "danger" : "neutral"}>{count}</StatusPill>
+    <button type="button" onClick={onOpen} style={{ boxShadow: `inset 5px 0 0 ${tone}` }}
+      className={`w-full text-left flex flex-col gap-0.5 min-w-0 bg-surface border rounded-xl pl-4 pr-3.5 py-3 hover:bg-surface-2/60 transition-colors ${isHot(b) ? "border-danger-ink/40" : "border-line"}`}>
+      <span className="flex items-center justify-between gap-2 min-w-0">
+        <span className="font-mono text-[13px] text-muted">{loadNumber(b)}</span>
+        {k ? (
+          <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-ink whitespace-nowrap">
+            <span aria-hidden className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: tone }} />{BOARD_WORD[k]}
+          </span>
+        ) : <FreightStatusPill status={b.status} logistics={isLogisticsSide(b)} />}
+      </span>
+      {route && <span className="text-[15px] font-semibold text-ink leading-snug break-words">{route}</span>}
+      {lane && <span className="text-[13.5px] text-ink-2 break-words">{lane}</span>}
+      <span className="text-[13.5px] text-ink-2 break-words">{when}</span>
+      {(isHot(b) || arriving || isNewToday(b)) && (
+        <span className="flex flex-wrap gap-1.5 mt-1">
+          {isHot(b) && <UrgentPill />}
+          {arriving && <StatusPill tone="neutral">Arriving today</StatusPill>}
+          {isNewToday(b) && <StatusPill tone="neutral">New</StatusPill>}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** R-525: one box of the board: its number, its title, the key to its colours with a count each, and its cards. */
+function BoardColumn({ col, loads, searching, onOpen }: { col: (typeof BOARD)[number]; loads: FreightBooking[]; searching: boolean; onOpen: (b: FreightBooking) => void }) {
+  return (
+    <section className="min-w-0 rounded-2xl bg-surface-2 p-3" aria-label={col.title}>
+      <h3 className="flex items-center gap-2.5 px-0.5 text-[18px] font-semibold text-ink">
+        <span aria-hidden className="flex-shrink-0 w-[26px] h-[26px] rounded-full bg-ink text-surface grid place-items-center text-[14px] font-bold">{col.n}</span>
+        <span className="min-w-0">{col.title}</span>
+        <span className="ml-auto text-[15px] text-ink-2 tabular-nums">{loads.length}</span>
+      </h3>
+      <div className="flex flex-wrap gap-x-3.5 gap-y-1 px-0.5 mt-1.5 mb-2.5">
+        {col.keys.map((k) => (
+          <span key={k} className="inline-flex items-center gap-1.5 text-[13px] text-ink-2 whitespace-nowrap">
+            <span aria-hidden className="w-2.5 h-2.5 rounded-full" style={{ background: toneOf(k) }} />
+            {BOARD_WORD[k]} <b className="text-ink font-semibold tabular-nums">{loads.filter((b) => boardKey(b) === k).length}</b>
+          </span>
+        ))}
       </div>
-      <div className="divide-y divide-line">{children}</div>
+      <div className="grid gap-2.5">
+        {loads.length === 0
+          ? <div className="px-1 py-3 text-[13.5px] text-muted">{searching ? "Nothing here matches that." : "Nothing here right now."}</div>
+          : loads.map((b) => <BoardCard key={b.id} b={b} onOpen={() => onOpen(b)} />)}
+      </div>
     </section>
   );
 }
@@ -195,37 +225,27 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   const needle = q.trim().toLowerCase();
   const match = (b: FreightBooking) => !needle || loadHaystack(b).includes(needle);
 
-  // R-476: what came in during the last 24 hours, newest first, at the top of the list in the same rows.
-  // R-480: a load shows once. New today claims it, and the groups below are made from the rest.
-  // R-487: Arriving today (delivered today, or due to be delivered today) leads and claims its loads before New today.
-  const { arriving, fresh, rest } = useMemo(() => {
+  // R-525 (2026-10-14): Jack: "i dont want list anymore ... everything moves on a left to right basis". The board: box 1
+  // holds the quote, the team's part and booking; box 2 booked and waiting on pickup, then on the way with its ETA; box 3
+  // delivered and waiting on the paperwork, then waiting for payment once the carrier invoice is in. Urgent, Arriving
+  // today and New are tags on the cards now (R-458, R-487, R-476), so a load shows once, in its box.
+  const board = useMemo(() => {
     const all = (rows ?? []).filter(match);
-    const today = localDay();
-    return { arriving: all.filter((b) => arrivesToday(b, today)).sort(byPickup), ...splitNewToday(all.filter((b) => !arrivesToday(b, today))) };
+    return BOARD.map((col) => ({ col, loads: all.filter((b) => { const k = boardKey(b); return !!k && col.keys.includes(k); }).sort(boardSort) }));
   },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, needle]);
 
-  const grouped = useMemo(() => {
-    const g: Record<GroupKey, FreightBooking[]> = { urgent: [], quotes: [], quoted: [], requested: [], booked: [], way: [], paperwork: [], topay: [], delivered: [] };
-    for (const b of rest) {
-      const k = groupOf(b);
-      if (k) g[k].push(b);
-    }
-    for (const k of ["urgent", "booked", "way"] as GroupKey[]) g[k].sort(byPickup);
-    g.topay.sort(byDue);
-    return g;
-  }, [rest]);
-
-  // Whatever the include_done list has that the main one does not: cancelled bookings and
-  // delivered-and-paid ones that have aged out.
+  // Completed: a finished load still on the main list, then what the include_done list has that the main one does not
+  // (cancelled bookings and finished ones the server already counts as done).
   const done = useMemo(() => {
     const mine = new Set((rows ?? []).map((b) => b.id));
-    return (doneRows ?? []).filter((b) => !mine.has(b.id)).filter(match).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    const finished = (rows ?? []).filter(match).filter((b) => !boardKey(b));
+    return [...finished, ...(doneRows ?? []).filter((b) => !mine.has(b.id)).filter(match)].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, doneRows, needle]);
 
-  const shown = arriving.length + fresh.length + GROUPS.reduce((n, g) => n + grouped[g.key].length, 0);
+  const shown = board.reduce((n, c) => n + c.loads.length, 0);
   const hello = firstName(me?.display_name);
   const row = (b: FreightBooking) => <BookingRow key={b.id} b={b} group={groupOf(b) ?? "delivered"} onOpen={() => { setOpenStep(undefined); setOpen(b); }} />;
 
@@ -292,8 +312,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         : view === "pay" && seePay ? <PayCarriersView rev={payRev} onOpenLoad={(id, step) => openLoad(id, step)} />
         : canMap && mode === "map" ? <LogisticsMap me={me} /> : (<>
 
-      {/* R-487: what arrives today, then when the rest is expected, then the list. */}
-      {arriving.length > 0 && <GroupCard title="Arriving today" count={arriving.length} tone="arriving">{arriving.map(row)}</GroupCard>}
+      {/* When the loads are expected, then the board. */}
       {!needle && <LogisticsDeliveryChart rows={rows} today={localDay()} renderRow={row} />}
 
       {/* R-401: his own pay, only when he is the one being paid. Nothing about what a customer was charged. */}
@@ -316,15 +335,13 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         </div>
       )}
 
-      <GroupCard title="New today" count={fresh.length} tone="fresh">
-        {fresh.length === 0
-          ? <div className="px-4 py-3 text-[13.5px] text-ink-2">{needle ? "Nothing new matches that." : "Nothing new in the last 24 hours."}</div>
-          : fresh.map(row)}
-      </GroupCard>
-
-      {GROUPS.map((g) => grouped[g.key].length > 0 && (
-        <GroupCard key={g.key} title={g.title} count={grouped[g.key].length} hot={g.key === "urgent"} tone={g.key}>{grouped[g.key].map(row)}</GroupCard>
-      ))}
+      {shown > 0 && (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3.5 items-start">
+          {board.map(({ col, loads }) => (
+            <BoardColumn key={col.n} col={col} loads={loads} searching={!!needle} onOpen={(b) => { setOpenStep(undefined); setOpen(b); }} />
+          ))}
+        </div>
+      )}
 
       <section className="bg-surface border border-line rounded-xl overflow-hidden">
         <button
@@ -332,16 +349,16 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
           className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-surface-2/60 transition-colors"
         >
           <ChevronRight size={13} className={`text-muted transition-transform ${doneOpen ? "rotate-90" : ""}`} />
-          <span className="text-[13px] font-semibold text-ink">Done and cancelled</span>
+          <span className="text-[13px] font-semibold text-ink">Completed and cancelled</span>
           {doneOpen && doneRows && <StatusPill tone="neutral">{done.length}</StatusPill>}
         </button>
         {doneOpen && (
-          <div className="border-t border-line divide-y divide-line">
-            {doneRows === null
-              ? <div className="px-4 py-4 text-[12.5px] text-muted">Loading...</div>
+          <div className="border-t border-line p-3">
+            {doneRows === null && done.length === 0
+              ? <div className="px-1 py-1 text-[12.5px] text-muted">Loading...</div>
               : done.length === 0
-                ? <div className="px-4 py-4 text-[12.5px] text-muted">Nothing here yet.</div>
-                : done.map(row)}
+                ? <div className="px-1 py-1 text-[12.5px] text-muted">Nothing here yet.</div>
+                : <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">{done.map((b) => <BoardCard key={b.id} b={b} onOpen={() => { setOpenStep(undefined); setOpen(b); }} />)}</div>}
           </div>
         )}
       </section>

@@ -12,6 +12,7 @@ import {
   dealPaid, equipmentOptions, fileKind, fileKindLabel, fmtDayLabel, isHot, isLogisticsSide,
   isQuoteStage, laneLabel, loadNumber, moneyHidden, needsAmount, paidStateOf, paperworkOf, pickStatus as pickStatusFields,
   pickupNumberUnconfirmed, confirmToSend, rateConLine, rateConMissing, statusAfterActual, statusAllowed, statusWord, timeWord, type LoadStep,
+  milTime, time24On,
   QUOTE_STAGE_DAYS, actualDayGap, atQuoteStage, daysToAsk, moveBackAsk, pastDay, skipAsk, statusRank, stepForRefusal,
 } from "../lib/logisticsLoad";
 import {
@@ -313,7 +314,28 @@ export const area =
   "border border-line px-3 py-2 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted resize-y min-h-[64px] " +
   "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
-const SERVICES = ["", "LTL", "Full truckload", "Partial", "Box truck", "Other"];
+// R-522: the service choices. A load saved with an older one keeps it and still shows it (the select adds it back).
+const SERVICES = ["", "LTL", "FTL", "Partial", "Expedite"];
+
+/** R-524: a time box on a device set to 24-hour time: typed as 1430 (or 14:30, or 2:30 pm), shown back as 2:30 pm once
+ *  the box is left. The draft keeps "HH:MM"; what does not read as a time leaves it as it was and says so. */
+function TimeBox({ value, onValue, className }: { value: string; onValue: (v: string) => void; className: string }) {
+  const [text, setText] = useState(() => timeWord(value));
+  const [bad, setBad] = useState(false);
+  useEffect(() => {
+    // A new value from outside (the server's copy, a cleared day) replaces what the box shows.
+    if (milTime(text) !== value) { setText(timeWord(value)); setBad(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return (
+    <>
+      <input className={`${className}${bad ? " border-danger-ink" : ""}`} type="text" inputMode="numeric" placeholder="1430" value={text}
+        onChange={(e) => { const t = e.target.value; setText(t); const v = milTime(t); setBad(v === null); if (v !== null && v !== value) onValue(v); }}
+        onBlur={() => { const v = milTime(text); if (v) setText(timeWord(v)); }} />
+      {bad && <span className="block text-[11.5px] text-danger-ink mt-1">Type the time as 1430 or 2:30 pm.</span>}
+    </>
+  );
+}
 const ACCESSORIALS = [
   "Liftgate at pickup", "Liftgate at delivery", "Residential", "Appointment",
   "Inside delivery", "Limited access", "Hazmat",
@@ -797,10 +819,12 @@ export default function LogisticsBookingForm({
   // R-471: when the typed carrier is a saved one, a button offers to fill the load from it. Nothing changes until it is
   // pressed, and the fill is a draft edit like any other: Save keeps it.
   const carrierList = carriersError ? null : carriers;
-  const fillOffer = fillOffers(draft.carrier, carrierList, draft);
+  // R-532: no pay due date before the carrier invoice is attached.
+  const invoiced = paperworkOf(booking).carrier_invoice;
+  const fillOffer = fillOffers(draft.carrier, carrierList, { ...draft, invoiced });
   const savedCarrier: FreightCarrier | null = (draft.carrier_id && carrierList?.find((c) => c.id === draft.carrier_id)) || null;
   const fillCarrier = (c: FreightCarrier) => {
-    setDraft((d) => ({ ...d, ...fillPatch(c, d) }));
+    setDraft((d) => ({ ...d, ...fillPatch(c, { ...d, invoiced }) }));
     toast(`Filled from ${c.name}. Press Save to keep it.`);
   };
   const setPickupNumber = (v: string) =>
@@ -938,11 +962,14 @@ export default function LogisticsBookingForm({
     onClose();
   };
 
+  const mil = time24On();
   const t = (k: TextKey, label: string, opts?: { type?: string; hint?: string; wide?: boolean; placeholder?: string }) => (
     <Field label={label} hint={opts?.hint} wide={opts?.wide}>
       {k.endsWith("_address") ? (
         <textarea className={`${inp} h-auto py-2`} rows={2} value={draft[k]} placeholder={opts?.placeholder}
           onChange={(e) => set(k, e.target.value)} />
+      ) : opts?.type === "time" && mil ? (
+        <TimeBox className={inp} value={draft[k]} onValue={(v) => set(k, v)} />
       ) : (
         <input className={inp} type={opts?.type ?? "text"} value={draft[k]} placeholder={opts?.placeholder}
           onChange={(e) => set(k, e.target.value)} />
@@ -1111,8 +1138,24 @@ export default function LogisticsBookingForm({
     </Section>
   );
 
+  /** R-521: the logistics person's way past a team that forgot to send a quoted load to book: Book anyway, while the owner
+   *  allows it (Settings, on by default). The server stamps who did it, and With the team checks. */
+  const canSkipTeam = !dealEdit && booking.status === "quoted" && booking.logistics_may_book !== false;
+  const teamSkip = async () => {
+    if (!confirm("Book anyway? Your team will see you logged it.")) return;
+    await save({ status: "requested", override: true });
+  };
+  const teamBar = canSkipTeam && (
+    <div className="rounded-xl border border-line bg-surface-2/50 px-4 py-3 space-y-2">
+      <div className="text-[13px] font-medium text-ink">With the team</div>
+      <p className="text-[12.5px] text-ink-2">Waiting on your team to send this load to book.</p>
+      <button type="button" onClick={teamSkip} disabled={saving} className={btnPrimary}>Book anyway</button>
+    </div>
+  );
+
   const quoteStep = (
     <div className="space-y-6">
+      {teamBar}
       {lane && <div className="text-[13px] text-ink-2"><span className="text-muted">Lane</span> {lane}</div>}
       {routeSection}
       <RateCard by={{ bookingId: booking.id }} onOpenCarrier={(id) => setCarrierHost({ id })} />
@@ -1285,6 +1328,7 @@ export default function LogisticsBookingForm({
 
   const bookStep = (
     <div className="space-y-6">
+      {teamBar}
       {atQuote && (
         <p className="text-[12px] text-muted">
           {full ? "Fill in the booking details any time. They are stored here and sent to logistics when you send the load to book." : "Your team sends the load to book. You can still fix an address or add details here."}
@@ -1506,7 +1550,9 @@ export default function LogisticsBookingForm({
               <Field label="Carrier rate" hint={rateErr ?? "What the carrier is expected to charge."}>
                 <NumberInput className={inp} value={draft.rate} placeholder="0.00" onValue={(_n, raw) => set("rate", raw)} />
               </Field>
-              {t("pay_due_date", "Pay due date", { type: "date", hint: "When the carrier has to be paid." })}
+              {invoiced
+                ? t("pay_due_date", "Pay due date", { type: "date", hint: "When the carrier has to be paid." })
+                : <Field label="Pay due date" hint="It starts when the carrier invoice is attached."><div className="h-9 flex items-center text-[13px] text-muted">No due date yet</div></Field>}
             </div>
             <dl className="rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px] space-y-2">
               <div className="min-w-0">
@@ -1576,7 +1622,7 @@ export default function LogisticsBookingForm({
                 </label>
                 <select aria-label="Status" value={draft.status} onChange={(e) => pickStatus(e.target.value as FreightStatus)}
                   className="h-8 rounded-lg border border-line bg-surface text-[12.5px] text-ink px-2 focus:outline-none focus:ring-2 focus:ring-accent/40">
-                  {STATUS_ORDER.map((s) => <option key={s} value={s} disabled={s !== draft.status && !statusAllowed(s, booking.status, dealEdit)}>{statusWord(s, lg)}</option>)}
+                  {STATUS_ORDER.map((s) => <option key={s} value={s} disabled={s !== draft.status && !statusAllowed(s, booking.status, dealEdit, booking.logistics_may_book !== false)}>{statusWord(s, lg)}</option>)}
                 </select>
               </div>
             </div>

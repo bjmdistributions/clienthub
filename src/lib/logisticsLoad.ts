@@ -226,6 +226,28 @@ export function timeWord(v: string | null | undefined): string {
   return `${h % 12 === 0 ? 12 : h % 12}:${t.slice(3)} ${h < 12 ? "am" : "pm"}`;
 }
 
+/** R-524: a time typed in 24-hour time ("1430", "930", "14:30", "7") or with am or pm ("2:30 pm", "230p"), as "HH:MM";
+ *  "" for an empty box and null for anything that is not a time. The website's lgMilTime follows the same rules. */
+export function milTime(s: string): string | null {
+  const t = (s || "").toLowerCase().replace(/[\s.]/g, "");
+  if (!t) return "";
+  const ap = /^(\d{1,2})(?::?(\d{2}))?([ap])m?$/.exec(t);
+  const m = ap || /^(\d{1,2})(?::?(\d{2}))?$/.exec(t);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const mi = m[2] ? Number(m[2]) : 0;
+  if (mi > 59) return null;
+  if (ap) { if (h < 1 || h > 12) return null; h = (h % 12) + (ap[3] === "p" ? 12 : 0); }
+  else if (h > 23) return null;
+  return `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
+}
+
+/** R-524: whether this device types load times in 24-hour time. Kept on the device, like the rest of Appearance. */
+export const TIME24_KEY = "ec_time24";
+export function time24On(): boolean {
+  try { return localStorage.getItem(TIME24_KEY) === "1"; } catch { return false; }
+}
+
 /** A day and a time as people say them: "Oct 2, 2:30 pm". Either may be missing. */
 export const dayAndTime = (day: string | null | undefined, time: string | null | undefined, now?: Date): string =>
   [fmtDayLabel(day, now), timeWord(time)].filter(Boolean).join(", ");
@@ -385,11 +407,13 @@ export function confirmToSend(numberChanged: boolean, was: boolean, now: boolean
  *  quoted load may be moved on to To book, Booked, On the way or Delivered by a Logistics-only person too (the form asks
  *  what that skips and the save says so with `override`); only Cancelled stays shut to him while the load is a quote.
  *  The current status is always listed. */
-export function statusAllowed(to: FreightStatus, from: string, dealEdit: boolean): boolean {
+export function statusAllowed(to: FreightStatus, from: string, dealEdit: boolean, mayBook = true): boolean {
   if (dealEdit || to === from) return true;
   if (to === "quote") return false;
   if (to === "quoted") return isQuoteStage(from);
   if (to === "cancelled") return !isQuoteStage(from);
+  // R-521: past the quote stage only while the owner lets logistics book a load the team has not sent (the server's rule).
+  if (isQuoteStage(from)) return mayBook;
   return true;
 }
 
@@ -471,28 +495,8 @@ export const isNewToday = (b: { created_at: string; status: string }, now: numbe
   return !Number.isNaN(t) && now - t < 86_400_000 && b.status !== "cancelled";
 };
 
-/** R-480: a load shows once. New today claims every load created in the last 24 hours (newest first) and the groups
- *  below are made from `rest`, which leaves those out. The order of `rest` is the order of `rows`. */
-export function splitNewToday<T extends { created_at: string; status: string }>(rows: readonly T[], now: number = Date.now()): { fresh: T[]; rest: T[] } {
-  const fresh = rows.filter((b) => isNewToday(b, now)).sort((a, b) => b.created_at.localeCompare(a.created_at));
-  const claimed = new Set<T>(fresh);
-  return { fresh, rest: rows.filter((b) => !claimed.has(b)) };
-}
-
 /** R-476: the first word of the account's name, for "Hello, Robin". Blank when the account has no name. */
 export const firstName = (name: string | null | undefined): string => (name ?? "").trim().split(/\s+/)[0] ?? "";
-
-export const GROUPS: { key: GroupKey; title: string }[] = [
-  { key: "urgent", title: "Urgent" },
-  { key: "quotes", title: "Quotes to give" },
-  { key: "quoted", title: "Quoted, with the team" },
-  { key: "requested", title: "To book" },
-  { key: "booked", title: "Booked" },
-  { key: "way", title: "On the way" },
-  { key: "paperwork", title: "Needs paperwork" },
-  { key: "topay", title: "Carrier to be paid" },
-  { key: "delivered", title: "Delivered" },
-];
 
 /** Urgent and not picked up yet. Once the truck has the load it is no longer ahead of anything, and a
  *  quoted load is with the team (the phone and the server list it the same way). */
@@ -534,6 +538,48 @@ export function groupOf(b: Groupable): GroupKey | null {
       if ((paidStateOf(b) === "unpaid" || paidStateOf(b) === "part") && !moneyHidden(b)) return "topay";
       return "delivered";
   }
+}
+
+// ─── the board (R-525) ────────────────────────────────────────────────────
+
+/** R-525: where a load sits on the board: its box and its colour inside the box. Jack: "everything moves on a left to
+ *  right basis". Box 1 holds the quote, the team's part and booking; box 2 booked and waiting on pickup, then on the way;
+ *  box 3 delivered and waiting on the paperwork, then waiting for payment once it is in. A delivered load with nothing
+ *  left to do (and a cancelled one) is finished: null. The website's lgBoardKey follows the same rules. */
+export type BoardKey = "quote" | "team" | "book" | "pickup" | "moving" | "paper" | "pay";
+export function boardKey(b: Groupable): BoardKey | null {
+  switch (b.status) {
+    case "quote": return "quote";
+    case "quoted": return "team";
+    case "requested": return "book";
+    case "booked": return "pickup";
+    case "picked_up": return "moving";
+    case "delivered":
+      if (missingPaperwork(b).length > 0) return "paper";
+      if ((paidStateOf(b) === "unpaid" || paidStateOf(b) === "part") && !moneyHidden(b)) return "pay";
+      return null;
+    default: return null;
+  }
+}
+export const BOARD: { n: number; title: string; keys: BoardKey[] }[] = [
+  { n: 1, title: "Quote and book", keys: ["quote", "team", "book"] },
+  { n: 2, title: "Booked and on the road", keys: ["pickup", "moving"] },
+  { n: 3, title: "Delivered", keys: ["paper", "pay"] },
+];
+export const BOARD_WORD: Record<BoardKey, string> = {
+  quote: "Quote needed", team: "With the team", book: "Ready to book", pickup: "Waiting on pickup", moving: "On the way",
+  paper: "Waiting on paperwork", pay: "Waiting for payment",
+};
+const BOARD_ORDER: BoardKey[] = ["quote", "team", "book", "pickup", "moving", "paper", "pay"];
+/** The day a card is sorted by: the pickup until it is picked up, then the delivery, then the day it was delivered. */
+const boardDay = (b: { status: string; pickup_date?: string; delivery_date?: string; delivered_at?: string }): string =>
+  ((b.status === "picked_up" ? b.delivery_date : b.status === "delivered" ? b.delivered_at : b.pickup_date) || "9999").slice(0, 10);
+/** Inside a box: urgent first, then in the order of the box's colours, then by day. */
+export function boardSort(a: Groupable & { pickup_date?: string; delivery_date?: string; delivered_at?: string }, b: Groupable & { pickup_date?: string; delivery_date?: string; delivered_at?: string }): number {
+  const ka = boardKey(a), kb = boardKey(b);
+  return Number(isHot(b)) - Number(isHot(a))
+    || (ka ? BOARD_ORDER.indexOf(ka) : 99) - (kb ? BOARD_ORDER.indexOf(kb) : 99)
+    || boardDay(a).localeCompare(boardDay(b));
 }
 
 /** R-483: the Dashboard's two groups. Waiting on shipping is a booked or picked-up load; waiting to pay the carrier is a

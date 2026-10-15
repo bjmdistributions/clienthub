@@ -385,6 +385,9 @@ describe("recognising a saved carrier from what was typed (R-471)", () => {
     });
     it("rolls into the next month and year the way a calendar does", () => {
       expect(fillPatch(harbor, { delivered_at: "2026-12-15", pay_due_date: "" }).pay_due_date).toBe("2027-01-14");
+      // R-532: no due date until the carrier invoice is attached.
+      expect(fillPatch(harbor, { delivered_at: "2026-10-01", pay_due_date: "", invoiced: false })).toEqual({ carrier: "Harbor Lines", carrier_id: "c3" });
+      expect(fillPatch(harbor, { delivered_at: "2026-10-01", pay_due_date: "", invoiced: true }).pay_due_date).toBe("2026-10-31");
     });
   });
 

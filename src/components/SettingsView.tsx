@@ -41,6 +41,7 @@ import StatusPill from "./StatusPill";
 import { buildNewsletterBody } from "../lib/newsletter";
 import { fmtAmount, parseAmount, parseCount } from "../lib/format";
 import { isAdmin, isLogisticsOnly } from "../lib/permissions";
+import { TIME24_KEY, time24On } from "../lib/logisticsLoad";
 import {
   Save,
   Eye,
@@ -101,6 +102,7 @@ import {
   Search,
   Smartphone,
   Bell,
+  Clock,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -113,7 +115,7 @@ import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
 import NumberInput from "./NumberInput";
-import { LogisticsFreightSetting, LogisticsNumberingSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel, LogisticsRateConSetting, LogisticsRoutesSetting } from "./LogisticsPay";
+import { LogisticsFreightSetting, LogisticsMayBookSetting, LogisticsNumberingSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel, LogisticsRateConSetting, LogisticsRoutesSetting } from "./LogisticsPay";
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
 import CrossDock from "./CrossDock";
@@ -987,6 +989,11 @@ function AppearanceTab() {
   const [matte, setMatte] = useState(() => localStorage.getItem("clienthub_matte") === "1");
   const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "orange");
   const [navAuto, setNavAutoState] = useState(() => localStorage.getItem("clienthub_nav_auto") !== "0");
+  // R-524: how load times are typed on this device. Per device, like the rest of Appearance.
+  const [time24, setTime24State] = useState(() => time24On());
+  const setTime24 = (on: boolean) => {
+    try { localStorage.setItem(TIME24_KEY, on ? "1" : "0"); setTime24State(on); } catch { toast("This device could not keep the setting", "error"); }
+  };
 
   // Per device, like the rest of Appearance. App owns the state; this writes the
   // key and tells it, the same shape as the theme toggles above.
@@ -1133,6 +1140,29 @@ function AppearanceTab() {
         </span>
         <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${navAuto ? "bg-accent" : "bg-surface-3"}`}>
           <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${navAuto ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
+        </span>
+      </button>
+
+      <div className="mt-7"><SectionLabel>Times</SectionLabel></div>
+      <button
+        onClick={() => setTime24(!time24)}
+        role="switch"
+        aria-checked={time24}
+        className={`mt-3 w-full flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors ${
+          time24 ? "accent-active accent-active-bd" : "border-line hover:border-line-3"
+        }`}
+      >
+        <span className={`flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg ${time24 ? "bg-ink text-surface" : "bg-surface-2 text-muted"}`}>
+          <Clock size={16} />
+        </span>
+        <span className="flex-1 min-w-0">
+          <span className={`block text-[13px] font-semibold ${time24 ? "text-ink" : "text-ink-2"}`}>Type times in 24-hour time</span>
+          <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
+            On a load, type 1430 and it shows as 2:30 pm. Only on this device.
+          </span>
+        </span>
+        <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${time24 ? "bg-accent" : "bg-surface-3"}`}>
+          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${time24 ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
         </span>
       </button>
     </div>
@@ -5249,6 +5279,7 @@ function SplitsTab() {
 
       <SettingCard icon={Truck} title="Logistics" purpose="Who fills in the pallets, weight, dimensions and accessorials before a deal is sent to the logistics person, how load and BOL numbers are made, what a rate confirmation prints, and the free route key for the delivered-freight map.">
         <LogisticsFreightSetting />
+        <div className="border-t border-line mt-4 pt-4"><LogisticsMayBookSetting /></div>
         <div className="border-t border-line mt-4 pt-4"><LogisticsNumberingSetting /></div>
         <div className="border-t border-line mt-4 pt-4"><LogisticsRateConSetting /></div>
         <div className="border-t border-line mt-4 pt-4"><LogisticsRoutesSetting /></div>

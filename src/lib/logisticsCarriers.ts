@@ -279,11 +279,12 @@ export function carrierMatches(typed: string, list: FreightCarrier[] | null | un
 export interface FillFacts { carrier: string; carrier_id: string; delivered_at: string; pay_due_date: string }
 
 /** What pressing "Fill from <carrier>" sets: the carrier's name and id, and (only when the load is already delivered
- *  and has no pay due date) the day it was delivered plus the carrier's terms. */
-export function fillPatch(c: FreightCarrier, f: Pick<FillFacts, "delivered_at" | "pay_due_date">): { carrier: string; carrier_id: string; pay_due_date?: string } {
+ *  and has no pay due date) the day it was delivered plus the carrier's terms. R-532: no due date at all until the
+ *  carrier invoice is attached (`invoiced` false); the server then runs it from the invoice day. */
+export function fillPatch(c: FreightCarrier, f: Pick<FillFacts, "delivered_at" | "pay_due_date"> & { invoiced?: boolean }): { carrier: string; carrier_id: string; pay_due_date?: string } {
   const out: { carrier: string; carrier_id: string; pay_due_date?: string } = { carrier: c.name, carrier_id: c.id };
   const delivered = (f.delivered_at || "").trim().slice(0, 10);
-  if (delivered && !(f.pay_due_date || "").trim() && c.pay_terms_days != null && !isNaN(parseLocalDay(delivered).getTime())) {
+  if (f.invoiced !== false && delivered && !(f.pay_due_date || "").trim() && c.pay_terms_days != null && !isNaN(parseLocalDay(delivered).getTime())) {
     out.pay_due_date = addDays(delivered, c.pay_terms_days);
   }
   return out;
@@ -291,13 +292,13 @@ export function fillPatch(c: FreightCarrier, f: Pick<FillFacts, "delivered_at" |
 
 /** Whether pressing the button would change anything. Once the load carries this carrier by name and id, with the pay
  *  due date set or nothing to set it from, the button goes away. */
-export function fillWouldChange(c: FreightCarrier, f: FillFacts): boolean {
+export function fillWouldChange(c: FreightCarrier, f: FillFacts & { invoiced?: boolean }): boolean {
   const p = fillPatch(c, f);
   return p.carrier !== f.carrier || p.carrier_id !== f.carrier_id || (p.pay_due_date !== undefined && p.pay_due_date !== f.pay_due_date);
 }
 
 /** The matches that pressing would change something for. The button shows when this is not empty. */
-export const fillOffers = (typed: string, list: FreightCarrier[] | null | undefined, f: FillFacts): FreightCarrier[] =>
+export const fillOffers = (typed: string, list: FreightCarrier[] | null | undefined, f: FillFacts & { invoiced?: boolean }): FreightCarrier[] =>
   carrierMatches(typed, list).filter((c) => fillWouldChange(c, f));
 
 /** What a filled carrier shows on the load: MC and DOT, contact, phone and how it gets paid. Empty ones are left out. */

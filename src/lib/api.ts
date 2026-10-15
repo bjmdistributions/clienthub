@@ -3375,6 +3375,9 @@ export interface FreightBooking {
   trucks_on_deal?: number;
   /** While on, our side fills in the freight and the logistics person only reads it. */
   freight_by_team?: boolean;
+  /** R-521: whether a Logistics-only person may send a quoted load to book himself (Book anyway on With the team).
+   *  On unless the owner switched it off; absent on an older server. */
+  logistics_may_book?: boolean;
   /** R-452: the pickups after the first, on the same truck (one delivery). A name or address the
    *  viewer may not see comes back empty. Absent on an older server. */
   extra_pickups?: FreightStop[];
@@ -3423,6 +3426,8 @@ export type FreightBookingPatch = Partial<Omit<FreightBooking,
 /** R-415: the one Logistics setting. */
 export interface LogisticsSettings {
   freight_by_team: boolean;
+  /** R-521: logistics may book a load the team has not sent. On by default; absent on an older server. */
+  logistics_may_book?: boolean;
   /** R-459: load and BOL numbering, like the invoice numbers. Absent on an older server. */
   load_prefix?: string; load_next_number?: number; bol_prefix?: string; bol_next_number?: number;
   /** R-475: what a rate confirmation prints: where carriers send freight bills (blank: the company email) and our MC
@@ -3472,6 +3477,9 @@ export interface FreightCarrier {
   id: string; name: string; mc_number: string; dot_number: string; contact_name: string; phone: string; email: string; address: string;
   pay_method: CarrierPayMethod; pay_terms_days: number | null; notes: string;
   load_count: number; last_used: string; last_rate: number | null;
+  /** R-530: the two states of the load the last rate came from, "TX to NJ". Blank without money or addresses; absent on
+   *  an older server. */
+  last_rate_lane?: string;
 }
 /** R-459: one past load for a carrier. `rate` is null without money, `lane` blank without addresses. */
 export interface CarrierHistoryRow { booking_id: string; load_number: string; day: string; lane: string; rate: number | null; paid: boolean }
