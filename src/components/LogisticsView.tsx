@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronRight, Paperclip, Search, Truck } from "lucide-react";
-import { api, type FreightBooking, type Me } from "../lib/api";
+import { api, type FreightBooking, type LogisticsCompletion, type Me } from "../lib/api";
+import { loadTime24 } from "../lib/time24";
 import { localDay } from "../lib/format";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import { canViewFreightMap } from "../lib/freightMap";
-import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canSeePayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
+import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canPayCarriers, canSeePayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
-  BOARD, BOARD_WORD, arrivesToday, boardKey, boardSort, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, isNewToday, loadHaystack,
+  BOARD, BOARD_WORD, arrivesToday, boardKey, boardNeeds, boardSort, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, isNewToday, loadHaystack,
   loadNumber, missingPaperwork, pickupNumberUnconfirmed, rowLane, type BoardKey, type GroupKey, type LoadStep,
 } from "../lib/logisticsLoad";
 import StatusPill from "./StatusPill";
@@ -30,6 +31,8 @@ import LogisticsBookingForm, {
 // what a person may see is decided in one place and this screen never has to guess.
 
 const REFRESH_MS = 30_000;
+/** R-538: the "Deal 100% complete" notes dismissed on this device. */
+const DONE_SEEN_KEY = "ec_lg_done_seen";
 
 export function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: GroupKey; onOpen: () => void }) {
   const route = routeLabel(b);
@@ -88,13 +91,22 @@ const BOARD_TONE: Record<BoardKey, string> = {
 const toneOf = (k: BoardKey | null) => `rgb(var(${k ? BOARD_TONE[k] : "--c-line-3"}))`;
 
 /** R-525: one load on the board, in the colour of where it is. Large type, three lines, nothing it does not need. */
-function BoardCard({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
-  const k = boardKey(b);
+/** `done`: a card in Completed and cancelled reads by its status, grey (R-538), whatever its paperwork. */
+function BoardCard({ b, onOpen, done, canPay }: { b: FreightBooking; onOpen: () => void; done?: boolean; canPay?: boolean }) {
+  const k = done ? null : boardKey(b);
   const tone = toneOf(k);
   const route = routeLabel(b);
   const lane = rowLane(b);
   const when = [timingLine(b) || "No dates yet", b.deal?.client_name].filter(Boolean).join(" · ");
-  const arriving = b.status !== "delivered" && arrivesToday(b, localDay());
+  const today = localDay();
+  const arriving = !done && b.status !== "delivered" && arrivesToday(b, today);
+  const fresh = !done && isNewToday(b);
+  // R-538: the warnings the old rows carried (R-459): the pickup number not confirmed, and for whoever pays carriers when
+  // the payment is due; and what a waiting-for-payment load still lacks.
+  const unconfirmed = !done && pickupNumberUnconfirmed(b, today);
+  // The website's rule (lgDuePill): only for a load still owed with its paperwork in, and only for whoever pays carriers.
+  const due = !done && canPay && groupOf(b) === "topay" ? b.pay_due_date || "" : null;
+  const needs = done ? [] : boardNeeds(b);
   return (
     <button type="button" onClick={onOpen} style={{ boxShadow: `inset 5px 0 0 ${tone}` }}
       className={`w-full text-left flex flex-col gap-0.5 min-w-0 bg-surface border rounded-xl pl-4 pr-3.5 py-3 hover:bg-surface-2/60 transition-colors ${isHot(b) ? "border-danger-ink/40" : "border-line"}`}>
@@ -109,11 +121,14 @@ function BoardCard({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
       {route && <span className="text-[15px] font-semibold text-ink leading-snug break-words">{route}</span>}
       {lane && <span className="text-[13.5px] text-ink-2 break-words">{lane}</span>}
       <span className="text-[13.5px] text-ink-2 break-words">{when}</span>
-      {(isHot(b) || arriving || isNewToday(b)) && (
+      {(isHot(b) || unconfirmed || due !== null || needs.length > 0 || arriving || fresh) && (
         <span className="flex flex-wrap gap-1.5 mt-1">
           {isHot(b) && <UrgentPill />}
+          {unconfirmed && <PickupNumberPill />}
+          {due !== null && <StatusPill tone={dueTone(due, today)}>{dueLabel(due, today)}</StatusPill>}
+          {needs.length > 0 && <StatusPill tone="neutral">Needs {needs.join(" and ")}</StatusPill>}
           {arriving && <StatusPill tone="neutral">Arriving today</StatusPill>}
-          {isNewToday(b) && <StatusPill tone="neutral">New</StatusPill>}
+          {fresh && <StatusPill tone="neutral">New</StatusPill>}
         </span>
       )}
     </button>
@@ -121,7 +136,7 @@ function BoardCard({ b, onOpen }: { b: FreightBooking; onOpen: () => void }) {
 }
 
 /** R-525: one box of the board: its number, its title, the key to its colours with a count each, and its cards. */
-function BoardColumn({ col, loads, searching, onOpen }: { col: (typeof BOARD)[number]; loads: FreightBooking[]; searching: boolean; onOpen: (b: FreightBooking) => void }) {
+function BoardColumn({ col, loads, searching, onOpen, canPay }: { col: (typeof BOARD)[number]; loads: FreightBooking[]; searching: boolean; onOpen: (b: FreightBooking) => void; canPay: boolean }) {
   return (
     <section className="min-w-0 rounded-2xl bg-surface-2 p-3" aria-label={col.title}>
       <h3 className="flex items-center gap-2.5 px-0.5 text-[18px] font-semibold text-ink">
@@ -140,7 +155,7 @@ function BoardColumn({ col, loads, searching, onOpen }: { col: (typeof BOARD)[nu
       <div className="grid gap-2.5">
         {loads.length === 0
           ? <div className="px-1 py-3 text-[13.5px] text-muted">{searching ? "Nothing here matches that." : "Nothing here right now."}</div>
-          : loads.map((b) => <BoardCard key={b.id} b={b} onOpen={() => onOpen(b)} />)}
+          : loads.map((b) => <BoardCard key={b.id} b={b} canPay={canPay} onOpen={() => onOpen(b)} />)}
       </div>
     </section>
   );
@@ -154,6 +169,8 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   // R-459: Carriers for everyone on this screen, Pay carriers for whoever may pay them.
   // R-527: the payer, whoever attaches, and the Logistics person (who never attaches) see Pay carriers.
   const seePay = canSeePayCarriers(me);
+  // R-538: the due pill on the board, for whoever pays carriers (the website's lgDuePill).
+  const canPay = canPayCarriers(me);
   const [view, setView] = useState<"bookings" | "carriers" | "pay" | "shipments">("bookings");
   // R-485: Loads (the list below) or Map (the delivered freight on the road), for whoever may see load addresses.
   const canMap = canViewFreightMap(me);
@@ -161,6 +178,16 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   const [carrierId, setCarrierId] = useState<string | undefined>(undefined);
   const [payRev, setPayRev] = useState(0);
   const [rows, setRows] = useState<FreightBooking[] | null>(null);
+  // R-538: deals just completed with every truck paid, for the "Deal 100% complete" note, and the ones dismissed here.
+  const [completed, setCompleted] = useState<LogisticsCompletion[]>([]);
+  const [doneSeen, setDoneSeen] = useState<string[]>(() => {
+    try { const v = JSON.parse(localStorage.getItem(DONE_SEEN_KEY) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
+  });
+  const dismissDone = (key: string) => {
+    const next = [...doneSeen.filter((k) => k !== key), key].slice(-50);
+    setDoneSeen(next);
+    try { localStorage.setItem(DONE_SEEN_KEY, JSON.stringify(next)); } catch { /* the note comes back next time */ }
+  };
   const [doneRows, setDoneRows] = useState<FreightBooking[] | null>(null);
   const [doneOpen, setDoneOpen] = useState(false);
   const [error, setError] = useState("");
@@ -174,6 +201,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
     try {
       const r = await api.logistics.list();
       setRows(r.bookings);
+      setCompleted(r.completed ?? []);
       setError("");
     } catch (e) {
       setError(String(e));
@@ -205,7 +233,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
     return () => window.removeEventListener("logistics-open-load", takeHandoff);
   }, [takeHandoff]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); loadTime24(); }, [load]);
   useEffect(() => {
     // Another person changes these rows from another device. A Logistics-only desktop never
     // syncs the workspace, so it asks; Jack's desktop also hears about it through sync.
@@ -335,10 +363,21 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
         </div>
       )}
 
+      {/* R-538: "Deal 100% complete", so the Logistics person hears of it here and not only on an iPhone. */}
+      {completed.filter((c) => !doneSeen.includes(c.key)).slice(0, 3).map((c) => (
+        <div key={c.key} role="status" style={{ boxShadow: "inset 5px 0 0 rgb(var(--c-chart-profit))" }}
+          className="flex items-center justify-between gap-3 bg-surface border border-line rounded-xl pl-4 pr-3.5 py-3 text-[14px] text-ink">
+          <span className="min-w-0 break-words">
+            <span className="font-semibold">Deal 100% complete.</span>{" "}
+            {c.loads.map((l) => (l.lane ? `${l.code}, ${l.lane}` : l.code)).join("; ")}: the carrier is paid and the deal is done.
+          </span>
+          <button type="button" onClick={() => dismissDone(c.key)} className="text-[12.5px] text-muted hover:text-ink underline flex-shrink-0">Dismiss</button>
+        </div>
+      ))}
       {shown > 0 && (
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-3.5 items-start">
           {board.map(({ col, loads }) => (
-            <BoardColumn key={col.n} col={col} loads={loads} searching={!!needle} onOpen={(b) => { setOpenStep(undefined); setOpen(b); }} />
+            <BoardColumn key={col.n} col={col} loads={loads} searching={!!needle} canPay={canPay} onOpen={(b) => { setOpenStep(undefined); setOpen(b); }} />
           ))}
         </div>
       )}
@@ -358,7 +397,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
               ? <div className="px-1 py-1 text-[12.5px] text-muted">Loading...</div>
               : done.length === 0
                 ? <div className="px-1 py-1 text-[12.5px] text-muted">Nothing here yet.</div>
-                : <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">{done.map((b) => <BoardCard key={b.id} b={b} onOpen={() => { setOpenStep(undefined); setOpen(b); }} />)}</div>}
+                : <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">{done.map((b) => <BoardCard key={b.id} b={b} done onOpen={() => { setOpenStep(undefined); setOpen(b); }} />)}</div>}
           </div>
         )}
       </section>

@@ -95,6 +95,7 @@ import BolsView from "./components/BolsView";
 import { api, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
+import { forgetTime24, loadTime24 } from "./lib/time24";
 import { bellCountOf, bellTitle, canSeeTeamNotices } from "./lib/notices";
 import { confirmLeaveUnsaved } from "./lib/unsavedWork";
 import { tabSwitchAction, tabToShow } from "./lib/tabSwitch";
@@ -468,6 +469,9 @@ export default function App() {
   const [accessSettled, setAccessSettled] = useState(false);
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
+  // R-538: the person's own 24-hour choice for load times, read once they are signed in (kept on their account).
+  // Signed out by any route (the sign-in screen showing): forget it, so the next person reads their own.
+  useEffect(() => { if (me === null) forgetTime24(); else if (me && canViewLogistics(me)) loadTime24(); }, [me]);
   // R-400: an account that holds only Logistics permissions gets the Logistics screen and
   // nothing else. This device never holds the workspace for it (the sign-in skips the sync),
   // so every screen and every background read of workspace data below is skipped, not just hidden.
@@ -582,6 +586,7 @@ export default function App() {
     // R-400, DG-03: the next person to sign in on this device starts on the Dashboard, not on the screen the
     // last account was held to or left open. The stored last screen is per device, so it goes for every role.
     try { localStorage.removeItem("clienthub_last_tab"); } catch { /* a blocked store has nothing to forget */ }
+    forgetTime24();   // R-538: the next person on this device reads their own 24-hour choice
     setTabState("dashboard");
     setMe(null);
   };

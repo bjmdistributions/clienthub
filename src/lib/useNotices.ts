@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, isUnavailable, type FreightBooking, type LeadNotification, type Me } from "./api";
+import { api, isUnavailable, type FreightBooking, type LeadNotification, type LogisticsCompletion, type Me } from "./api";
 import {
-  CHIMED_DEALS_KEY, canReadTeamNotices, canSeeTeamNotices, chimedHere, chimes, desktopNoticesOn, leadNoticesOf, logisticsBellCount, planDerived, planTeamRaise, readSeen, seenKey, switchOf, switchOn, teamNoticesOf, writeSeen,
+  CHIMED_DEALS_KEY, canReadTeamNotices, canSeeTeamNotices, chimedHere, chimes, desktopNoticesOn, leadNoticesOf, logisticsBellCount, mergeSeen, planDerived, planDone, planTeamRaise, readSeen, seenKey, switchOf, switchOn, teamNoticesOf, writeSeen,
 } from "./notices";
 import { pushApi } from "./billsApi";
 import { isAdmin, isLogisticsOnly } from "./permissions";
@@ -101,16 +101,22 @@ export function useNotices(me: Me | null | undefined): NoticeState {
   const refreshLogistics = useCallback(async () => {
     if (!logisticsOnly) return;
     let bookings: FreightBooking[];
-    try { bookings = (await api.logistics.list()).bookings; } catch { return; }
+    let completed: LogisticsCompletion[];
+    try { const r = await api.logistics.list(); bookings = r.bookings; completed = r.completed ?? []; } catch { return; }
     setLogisticsCount(logisticsBellCount(bookings));
     const key = seenKey("derived", userId);
     if (derivedSeen.current === undefined) derivedSeen.current = readSeen(store(), key);
-    const plan = planDerived(bookings, derivedSeen.current, (b) => routeLabel(b as FreightBooking));
-    derivedSeen.current = plan.seen;
-    writeSeen(store(), key, plan.seen);
-    // R-494: a Logistics person's quote and booking alerts follow their Logistics switch.
-    const prefs = plan.raise.length ? await noticePrefs() : null;
-    if (switchOn(prefs, "logistics")) raise(plan.raise.map((n) => ({ title: n.title, body: n.body })));
+    // R-538: the "Deal 100% complete" alerts are planned against the same seen list as it stood before this poll.
+    const before = derivedSeen.current;
+    const plan = planDerived(bookings, before, (b) => routeLabel(b as FreightBooking));
+    const done = planDone(completed, before);
+    const seenNow = mergeSeen(plan.seen, done.seen);
+    derivedSeen.current = seenNow;
+    writeSeen(store(), key, seenNow);
+    // R-494: a Logistics person's quote and booking alerts follow their Logistics switch; so does the 100% complete one.
+    const all = [...plan.raise, ...done.raise];
+    const prefs = all.length ? await noticePrefs() : null;
+    if (switchOn(prefs, "logistics")) raise(all.map((n) => ({ title: n.title, body: n.body })));
   }, [logisticsOnly, userId]);
 
   const refresh = useCallback(() => { refreshTeam(); refreshLogistics(); }, [refreshTeam, refreshLogistics]);

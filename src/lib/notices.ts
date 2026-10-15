@@ -6,7 +6,7 @@
 // Everything here is plain logic with no screen, so what is new, what is raised once, and where a notice
 // opens are all tested. The hook that polls (useNotices.ts) and the screens only call these.
 
-import type { LeadNotification } from "./api";
+import type { LeadNotification, LogisticsCompletion } from "./api";
 import { daysBetween, shortDay } from "./billsFormat";
 import { localDay } from "./format";
 import { isHot, loadNumber, type LoadStep } from "./logisticsLoad";
@@ -262,10 +262,10 @@ export function planTeamRaise(
 
 // ─── the Logistics-only account's notices, worked out from its loads ──────
 
-export type DerivedKind = "quote" | "book" | "urgent";
+export type DerivedKind = "quote" | "book" | "urgent" | "done";
 export interface DerivedNotice { key: string; id: string; kind: DerivedKind; title: string; body: string }
 
-const TITLE: Record<DerivedKind, string> = { quote: "Quote needed", book: "To book", urgent: "Urgent" };
+const TITLE: Record<DerivedKind, string> = { quote: "Quote needed", book: "To book", urgent: "Urgent", done: "Deal 100% complete" };
 
 /** The few fields of a load these rules read. */
 export interface NoticeLoad { id: string; status: string; urgent?: boolean; archived?: boolean | number; load_number?: string; code: string }
@@ -304,6 +304,19 @@ export function planDerived(
     return { key, id: b.id, kind, title: TITLE[kind], body: route ? `${num}, ${route}` : num };
   });
   return { raise: raise.slice(0, RAISE_CAP), seen: mergeSeen(seen, fresh.map((p) => p.key)) };
+}
+
+/** R-538: "Deal 100% complete" for a Logistics-only desktop, from the server's deals completed in the last seven days with
+ *  every truck paid (the list's `completed`). Raised once per completion per device. Planned against the seen list as it
+ *  stood before this poll (the first poll, `seen` null, only learns what is there), like planDerived. */
+export function planDone(completed: readonly LogisticsCompletion[], seen: readonly string[] | null): { raise: DerivedNotice[]; seen: string[] } {
+  const known = new Set(seen ?? []);
+  const fresh = completed.filter((c) => c && c.key && (c.loads ?? []).length > 0 && !known.has(`done:${c.key}`));
+  const raise: DerivedNotice[] = seen === null ? [] : fresh.map((c) => ({
+    key: `done:${c.key}`, id: c.loads[0].id, kind: "done" as const, title: TITLE.done,
+    body: `${c.loads.map((l) => (l.lane ? `${l.code}, ${l.lane}` : l.code)).join("; ")}: the carrier is paid and the deal is done.`,
+  }));
+  return { raise: raise.slice(0, RAISE_CAP), seen: mergeSeen(seen, fresh.map((c) => `done:${c.key}`)) };
 }
 
 // ─── R-477: the Notifications screen, in groups, most urgent first ────────

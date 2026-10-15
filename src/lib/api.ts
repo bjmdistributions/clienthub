@@ -3430,6 +3430,9 @@ export type FreightBookingPatch = Partial<Omit<FreightBooking,
    *  in place of a quote, for the team only, and stamps it as a catch-up. Needs a carrier and a carrier cost. */
   catch_up?: boolean;
 };
+/** R-538: a deal that completed in the last seven days with every truck paid in full: its loads as this person may see
+ *  them (never the deal or money), for the Logistics screen's "Deal 100% complete" note and the Logistics desktop alert. */
+export interface LogisticsCompletion { key: string; at: string; loads: { id: string; code: string; lane: string }[] }
 /** R-415: the one Logistics setting. */
 export interface LogisticsSettings {
   freight_by_team: boolean;
@@ -4084,7 +4087,7 @@ export const api = {
       const q: string[] = [];
       if (opts?.includeDone) q.push("include_done=1");
       if (opts?.dealFlowId) q.push(`deal_flow_id=${encodeURIComponent(opts.dealFlowId)}`);
-      return logisticsRequest<{ bookings: FreightBooking[] }>("GET", `/api/logistics/bookings${q.length ? `?${q.join("&")}` : ""}`);
+      return logisticsRequest<{ bookings: FreightBooking[]; completed?: LogisticsCompletion[] }>("GET", `/api/logistics/bookings${q.length ? `?${q.join("&")}` : ""}`);
     },
     get: (id: string) => logisticsRequest<FreightBooking>("GET", `/api/logistics/bookings/${encodeURIComponent(id)}`),
     prefill: (dealFlowId: string) =>
@@ -4164,6 +4167,11 @@ export const api = {
     /** R-459: find a load, a BOL or a carrier by number or name. At most eight of each. */
     search: (q: string) => logisticsRequest<LogisticsSearchResults>("GET", `/api/logistics/search?q=${queryText(q)}`),
     /** R-415: who fills in the freight. Anyone the Logistics routes let in reads it; saving is an admin's. */
+    /** R-538: the person's own choices for the Logistics screens (24-hour time), kept on the server. */
+    me: {
+      get: () => logisticsRequest<{ time24: boolean | null }>("GET", "/api/logistics/me"),
+      save: (p: { time24: boolean }) => logisticsRequest<{ time24: boolean }>("PUT", "/api/logistics/me", p),
+    },
     settings: {
       get: () => logisticsRequest<LogisticsSettings>("GET", "/api/logistics/settings"),
       /** Only the keys present are written (the server keeps the rest), so a block saves its own keys and never another's. */

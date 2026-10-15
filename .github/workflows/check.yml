@@ -227,7 +227,11 @@ jobs:
           # .132 (create-release cancelled) and "lost communication with the server" 50 minutes
           # into .133's build; both code changes are inside v0.16.134 (R-449), which superseded
           # them. Dead ON PURPOSE for the same reason as v0.16.81: never re-run either.
-          allow="v0.12.1 v0.12.3 v0.14.5 v0.15.84 v0.15.131 v0.16.72 v0.16.81 v0.16.132 v0.16.133"
+          # v0.16.179 (2026-10-15, R-538): the Windows leg failed at `npm ci` after 4 minutes while the
+          # same lockfile installed on Linux (Check) and macOS for that commit, and on Windows for
+          # v0.16.178 an hour earlier, so the runner, not the code. v0.16.180 carries the same commit's
+          # code and superseded it. Dead ON PURPOSE for the same reason as v0.16.81: never re-run.
+          allow="v0.12.1 v0.12.3 v0.14.5 v0.15.84 v0.15.131 v0.16.72 v0.16.81 v0.16.132 v0.16.133 v0.16.179"
           gh api --paginate "repos/$R/releases" --jq '.[] | select(.draft == false) | .tag_name' > published.txt
           echo "Published releases: $(wc -l < published.txt)"
           dead=""
