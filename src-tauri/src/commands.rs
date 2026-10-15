@@ -1798,7 +1798,7 @@ fn ledger_role_label(role: &str) -> &str {
 fn ledger_csv_row(
     id: &str, posted_at: &str, description: &str, payee: &str, account: &str,
     direction: &str, amount: f64, category: &str, method: &str, note: &str,
-    reviewed: bool, allocated: f64, pending: bool, deals: &str,
+    reviewed: bool, allocated: f64, pending: bool, retracted: bool, deals: &str,
 ) -> Vec<String> {
     let is_in = direction == "in";
     let (label, group) = pnl_group_of(category)
@@ -1825,6 +1825,9 @@ fn ledger_csv_row(
         format!("{:.2}", match ((amount - allocated) * 100.0).round() / 100.0 { u if u == 0.0 => 0.0, u => u }),
         if reviewed { "Yes" } else { "No" }.to_string(),
         if pending { "Yes" } else { "No" }.to_string(),
+        // R-518: a row the bank withdrew stays in the ledger for a person to resolve but is money that never moved,
+        // so no total counts it; the file says which rows those are.
+        if retracted { "Yes" } else { "No" }.to_string(),
         note.to_string(),
         id.to_string(),
     ]
@@ -1876,7 +1879,8 @@ pub async fn export_ledger_csv(ids: Vec<String>, output_path: String) -> Result<
         "SELECT bt.id, bt.posted_at, bt.description, bt.counterparty_name, bt.account_id, bt.direction, bt.amount, \
                 COALESCE(bt.category,''), COALESCE(bt.confirmed_method,''), COALESCE(bt.note,''), bt.reviewed, \
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0), \
-                COALESCE(CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pnd') END, 0) \
+                COALESCE(CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pnd') END, 0), \
+                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.rtr') END IS NOT NULL \
          FROM bank_txn bt WHERE bt.id IN (SELECT value FROM json_each(?1)) \
          ORDER BY bt.posted_at DESC, bt.created_at DESC"
     ).map_err(|e| e.to_string())?;
@@ -1884,7 +1888,7 @@ pub async fn export_ledger_csv(ids: Vec<String>, output_path: String) -> Result<
         r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
         r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, f64>(6)?, r.get::<_, String>(7)?,
         r.get::<_, String>(8)?, r.get::<_, String>(9)?, r.get::<_, i64>(10)?, r.get::<_, f64>(11)?,
-        r.get::<_, i64>(12)?,
+        r.get::<_, i64>(12)?, r.get::<_, i64>(13)?,
     ))).map_err(|e| e.to_string())?;
 
     // A BOM, deliberately: Excel on Windows reads a BOM-less CSV as ANSI, and these
@@ -1897,30 +1901,30 @@ pub async fn export_ledger_csv(ids: Vec<String>, output_path: String) -> Result<
     wtr.write_record([
         "Date", "Description", "Payee", "Account", "Direction", "Money in", "Money out",
         "Category", "Group", "Confirmed method", "Linked deals", "Allocated", "Unfiled",
-        "Booked", "Pending", "Note", "Transaction ID",
+        "Booked", "Pending", "Withdrawn by bank", "Note", "Transaction ID",
     ]).map_err(|e| e.to_string())?;
 
     let (mut count, mut sum_in, mut sum_out) = (0u32, 0.0, 0.0);
-    for (id, posted_at, description, payee, account, direction, amount, category, method, note, reviewed, allocated, pending)
+    for (id, posted_at, description, payee, account, direction, amount, category, method, note, reviewed, allocated, pending, retracted)
         in rows.filter_map(|r| r.ok())
     {
         if direction == "in" { sum_in += amount; } else { sum_out += amount; }
         let linked = deals.get(&id).map(|v| v.join("; ")).unwrap_or_default();
         wtr.write_record(&ledger_csv_row(
             &id, &posted_at, &description, &payee, &account, &direction, amount, &category,
-            &method, &note, reviewed != 0, allocated, pending != 0, &linked,
+            &method, &note, reviewed != 0, allocated, pending != 0, retracted != 0, &linked,
         )).map_err(|e| e.to_string())?;
         count += 1;
     }
 
     // The same two figures the Ledger prints above the list, so the file can be
     // checked against the screen without adding anything up by hand.
-    wtr.write_record(vec![""; 17]).map_err(|e| e.to_string())?;
+    wtr.write_record(vec![""; 18]).map_err(|e| e.to_string())?;
     let mut total = vec![format!("Total: {} transaction{}", count, if count == 1 { "" } else { "s" })];
     total.extend(std::iter::repeat(String::new()).take(4));
     total.push(format!("{:.2}", sum_in));
     total.push(format!("{:.2}", sum_out));
-    total.extend(std::iter::repeat(String::new()).take(10));
+    total.extend(std::iter::repeat(String::new()).take(11));
     wtr.write_record(&total).map_err(|e| e.to_string())?;
 
     wtr.flush().map_err(|e| e.to_string())?;
@@ -1990,8 +1994,17 @@ mod ledger_csv_tests {
     fn row(direction: &str, amount: f64, category: &str, reviewed: bool, allocated: f64) -> Vec<String> {
         ledger_csv_row(
             "bt_1", "2026-03-04T00:00:00Z", "ZELLE FROM ACME", "Acme Wholesale", "Business checking",
-            direction, amount, category, "ach", "", reviewed, allocated, false, "",
+            direction, amount, category, "ach", "", reviewed, allocated, false, false, "",
         )
+    }
+
+    // R-518: a row the bank withdrew is marked, so a person summing the file can leave it out.
+    #[test]
+    fn a_withdrawn_row_is_marked() {
+        let w = ledger_csv_row("bt_2", "2026-03-04", "CARD HOLD", "", "Card", "out", 40.0, "travel", "", "", true, 40.0, false, true, "");
+        assert_eq!(w.len(), 18);
+        assert_eq!((w[14].as_str(), w[15].as_str()), ("No", "Yes"));
+        assert_eq!(w[17], "bt_2");
     }
 
     // Money in and money out are separate columns, and only one of them is ever
@@ -18337,6 +18350,14 @@ async fn allocate_bank_txn_inner(
     if linked_elsewhere && !allow_split.unwrap_or(false) {
         return Err("This transaction is already linked to another deal.".into());
     }
+    // R-518 (F9): the same payment's withdrawn copy already holds this deal's booking; Swap moves it.
+    let withdrawn_twin = {
+        let c = pool().get().map_err(|e| e.to_string())?;
+        crate::bank_flags::withdrawn_copy_booked_to(&c, &bank_txn_id, &deal_flow_id)
+    };
+    if withdrawn_twin {
+        return Err(crate::bank_flags::WITHDRAWN_COPY_BOOKED.into());
+    }
     // A role has to match the transaction's direction, or role-based reconciliation
     // (supplier payables, refund liability) would book money against the wrong side.
     let role_ok = match direction.as_str() {
@@ -20745,12 +20766,26 @@ pub async fn plaid_sync() -> Result<Value, String> {
             aid.to_string()
         };
         let mut pages = 0;
+        // R-518: Plaid's rule for TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION is to restart the whole pagination
+        // from the cursor it began with. The pages already applied replay harmlessly (a held row is found by id).
+        let cursor_at_start = cursor.clone();
+        let mut restarts = 0;
         loop {
             let outcome = match crate::plaid::transactions_sync(&access, &cursor, &item_env).await {
                 Ok(o) => o,
                 Err(e) => {
+                    let (msg, code) = split_plaid_code(&e.to_string());
+                    if code == "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" && restarts < 2 {
+                        restarts += 1;
+                        cursor = cursor_at_start.clone();
+                        if let Ok(c) = pool().get() {
+                            let _ = c.execute("UPDATE plaid_items SET cursor=?1 WHERE id=?2", rusqlite::params![cursor, item_pk]);
+                        }
+                        tracing::info!("plaid_sync: {institution} changed while paging; restarting from the first page");
+                        continue;
+                    }
                     status = "error";
-                    (error_msg, error_code) = split_plaid_code(&e.to_string());
+                    (error_msg, error_code) = (msg, code);
                     break;
                 }
             };

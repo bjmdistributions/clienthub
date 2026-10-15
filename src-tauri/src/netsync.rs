@@ -323,6 +323,8 @@ pub async fn publish_bank_balance_and_health(bank: f64, card: f64, last_sync: Op
 /// per row and a phone push. Best-effort: a lost report costs an alert, never a row.
 pub async fn report_bank_activity(txns: Vec<serde_json::Value>) {
     let cfg = match config() { Some(c) => c, None => return };
+    // R-518 (PS-26): the server now builds each alert from the stored row, so the rows go up first.
+    if let Err(e) = push_pending().await { tracing::warn!("bank activity: push before report failed: {}", e); }
     let url = format!("{}/api/bank/activity", cfg.url.trim_end_matches('/'));
     for chunk in txns.chunks(50) {
         let _ = http().post(&url).bearer_auth(&cfg.token).json(&serde_json::json!({ "txns": chunk })).send().await;

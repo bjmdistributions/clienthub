@@ -760,6 +760,17 @@ fn apply_upsert(
         .unwrap_or(0);
 
     if exists == 0 {
+        // R-518 (F12): every bank_txn and bank_allocation column has a default, so an edit for a row this copy does
+        // not hold (deleted here, or not created yet) used to make an undated $0 row. Every create names these
+        // columns; a partial edit without them is left for its create, with no clocks recorded (as for a NOT-NULL
+        // miss), so the create still applies when it arrives.
+        if let Some(need) = create_columns(table) {
+            if !need.iter().all(|c| winning.iter().any(|(w, _)| w.as_str() == *c)) {
+                tracing::warn!("apply_upsert: {}/{} is not held here and the event is not its create; skipped", table, row_id);
+                return Ok(());
+            }
+        }
+
         // Insert a stub row; required-NOT-NULL columns must be present in `winning`.
         let cols = std::iter::once(pk.to_string())
             .chain(winning.iter().map(|(c, _)| c.clone()))
@@ -820,6 +831,15 @@ fn apply_upsert(
         winning.iter().map(|(c, v)| (c.clone(), v.clone())).collect();
     update_row_clocks(table, row_id, &applied, hlc)?;
     Ok(())
+}
+
+/// R-518 (F12): the columns an event must carry to create a row of a money table whose every column has a default.
+fn create_columns(table: &str) -> Option<&'static [&'static str]> {
+    match table {
+        "bank_txn" => Some(&["posted_at", "amount", "direction"]),
+        "bank_allocation" => Some(&["bank_txn_id", "deal_flow_id", "amount"]),
+        _ => None,
+    }
 }
 
 fn apply_delete(table: &str, row_id: &str, hlc: Hlc) -> Result<()> {

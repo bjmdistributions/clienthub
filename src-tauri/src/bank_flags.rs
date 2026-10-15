@@ -33,6 +33,31 @@ pub fn settled(alias: &str) -> String {
     format!("NOT ({}) AND NOT ({})", pending(alias), retracted(alias))
 }
 
+/// R-518 (F9): the message when booking a row to a deal that already holds its withdrawn copy.
+pub const WITHDRAWN_COPY_BOOKED: &str = "This payment's withdrawn copy is already booked to this deal. Use Swap under Retracted by bank to move that booking onto this row.";
+
+/// R-518 (F9): true when a row the bank withdrew is already booked to `deal_id` and looks like this row's earlier copy:
+/// same direction, same account (its label, or its last four digits), an amount within 30%, dated from one day after
+/// to ten days before this row. Booking this row to the same deal would count one payment twice while the withdrawn
+/// copy waits under Retracted by bank; Swap moves its booking instead. Fails open (false) on a query error, since the
+/// allocation's own guards still hold.
+pub fn withdrawn_copy_booked_to(conn: &rusqlite::Connection, txn_id: &str, deal_id: &str) -> bool {
+    let sql = format!(
+        "SELECT 1 FROM bank_txn x \
+           JOIN bank_txn w ON w.id <> x.id AND w.direction = x.direction \
+           JOIN bank_allocation a ON a.bank_txn_id = w.id AND a.deal_flow_id = ?2 \
+          WHERE x.id = ?1 AND {w_rtr} AND NOT ({x_rtr}) \
+            AND (w.account_id = x.account_id \
+                 OR (instr(w.account_id, '{sep}') > 0 \
+                     AND substr(w.account_id, instr(w.account_id, '{sep}')) = substr(x.account_id, instr(x.account_id, '{sep}')))) \
+            AND ABS(w.amount - x.amount) <= 0.30 * w.amount + 0.005 \
+            AND julianday(substr(x.posted_at, 1, 10)) - julianday(substr(w.posted_at, 1, 10)) BETWEEN -1 AND 10 \
+          LIMIT 1",
+        w_rtr = retracted("w"), x_rtr = retracted("x"), sep = "\u{00b7}\u{00b7}",
+    );
+    conn.query_row(&sql, rusqlite::params![txn_id, deal_id], |_| Ok(())).is_ok()
+}
+
 /// `counted(alias)` as a string literal, for SQL that is a `const` built with `concat!`. The alias is a literal too:
 /// `concat!("... WHERE ", bank_counted_sql!("t"), " AND ...")`.
 #[macro_export]
@@ -45,6 +70,25 @@ macro_rules! bank_counted_sql {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_posted_copy_cannot_be_booked_to_the_deal_its_withdrawn_copy_holds() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, account_id TEXT, direction TEXT, amount REAL, posted_at TEXT, raw_json TEXT);
+             CREATE TABLE bank_allocation (id TEXT PRIMARY KEY, bank_txn_id TEXT, deal_flow_id TEXT, amount REAL);
+             INSERT INTO bank_txn VALUES ('w','Checking \u{00b7}\u{00b7}1111','in',5000,'2026-10-01','{\"rtr\":\"2026-10-03T00:00:00Z\"}');
+             INSERT INTO bank_txn VALUES ('p','Business checking \u{00b7}\u{00b7}1111','in',5000,'2026-10-03','{}');
+             INSERT INTO bank_txn VALUES ('far','Checking \u{00b7}\u{00b7}1111','in',5000,'2026-10-30','{}');
+             INSERT INTO bank_txn VALUES ('other','Card \u{00b7}\u{00b7}9999','in',5000,'2026-10-03','');
+             INSERT INTO bank_allocation VALUES ('a','w','deal_1',5000);",
+        ).unwrap();
+        assert!(withdrawn_copy_booked_to(&c, "p", "deal_1"), "the posted copy, renamed account, same last four");
+        assert!(!withdrawn_copy_booked_to(&c, "p", "deal_2"), "another deal is a different booking");
+        assert!(!withdrawn_copy_booked_to(&c, "far", "deal_1"), "outside the ten-day window");
+        assert!(!withdrawn_copy_booked_to(&c, "other", "deal_1"), "another account");
+        assert!(!withdrawn_copy_booked_to(&c, "w", "deal_1"), "the withdrawn row itself is not its own copy");
+    }
 
     #[test]
     fn the_literal_form_is_the_same_test() {
