@@ -279,10 +279,6 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
         m.insert("shipping_billed".into(), if deal.is_empty() { Value::Null } else { json!(charged_of(&items, field).0) });
         m.insert("trucks_on_deal".into(), json!(if deal.is_empty() { 0 } else { trucks }));
         m.insert("freight_by_team".into(), json!(by_team));
-        // R-538: the stored pay due date is not the one that counts (R-532: none before the carrier invoice, then from its
-        // day), and the carrier's terms live on the server, so the local copy carries none; the deal page lays the
-        // server's over it.
-        m.insert("pay_due_date".into(), json!(""));
         // R-452: the pickups after the first, as the server sends them to a full viewer.
         let stops: Vec<Value> = serde_json::from_str::<Vec<Value>>(&r.get::<_, String>(at + 7)?)
             .unwrap_or_default().into_iter().filter(|v| v.is_object()).collect();
@@ -302,6 +298,10 @@ pub async fn list_freight_bookings(deal_flow_id: Option<String>) -> Result<Vec<V
         for (i, c) in TEXT_C.iter().enumerate() {
             m.insert((*c).into(), json!(r.get::<_, String>(at + 12 + i)?));
         }
+        // R-538: the stored pay due date is not the one that counts (R-532: none before the carrier invoice, then from its
+        // day), and the carrier's terms live on the server, so the local copy carries none; the deal page lays the
+        // server's over it.
+        m.insert("pay_due_date".into(), json!(""));
         // R-465: the carrier cost the quote was built on and the markup on top of it (null when the
         // quote was not built that way).
         let at_real = at + 12 + TEXT_C.len();
