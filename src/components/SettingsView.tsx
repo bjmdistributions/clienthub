@@ -775,10 +775,10 @@ function resizePhoto(file: File, max = 256): Promise<string> {
   });
 }
 
-/** The three accounts Cross-dock exists for. This is a frontend check and nothing more:
+/** The four accounts Cross-dock exists for. This is a frontend check and nothing more:
  *  it guards no data and grants no permission, it just keeps a private toy out of
  *  everyone else's Settings. Five taps on your own photo reveals it. */
-const CROSSDOCK_ACCOUNTS = ["jackjohnm7@gmail.com", "ben@bjmdistributions.com", "jackmildice@gmail.com"];
+const CROSSDOCK_ACCOUNTS = ["jackjohnm7@gmail.com", "jack@bjmdistributions.com", "ben@bjmdistributions.com", "jackmildice@gmail.com"];
 const CROSSDOCK_KEY = "clienthub_crossdock_shown";
 
 function AccountTab() {
