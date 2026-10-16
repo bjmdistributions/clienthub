@@ -17,7 +17,8 @@ import {
 } from "../lib/billsApi";
 import { PERIODS, periodRange, rangeText, type PeriodKind } from "../lib/billsFormat";
 import { CarriersToPaySection, openLoadInLogistics, useCarrierPay } from "./LogisticsPayCarriers";
-import { LogisticsPayBillsBlock, openPayTracker, usePayTracker } from "./LogisticsPay";
+import { LogisticsPayBillsBlock, usePayTracker } from "./LogisticsPay";
+import { LogisticsWeekPanel } from "./LogisticsWeek";
 import BillsMode from "./bills/BillsMode";
 import BillDetail from "./bills/BillDetail";
 import BillForm from "./bills/BillForm";
@@ -52,6 +53,8 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
   const [rev, setRev] = useState(0);
   const [open, setOpen] = useState<string | null>(null);
   const [form, setForm] = useState<{ bill?: BillOut; seed?: Partial<BillFields> } | null>(null);
+  // R-542: a logistics pay day opened from the block or the month strip: the week it pays.
+  const [weekPay, setWeekPay] = useState<string | null>(null);
   const [sp, setSp] = useState<{ resp?: SpendingResponse; error?: string; busy: boolean }>({ busy: false });
   const spSeq = useRef(0);
 
@@ -114,9 +117,10 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
   const tracker = usePayTracker(canReadPayTracker(me));
   const payBlock = payBlockOf(tracker, today);
   const marks = useMemo(() => logisticsMarks(today, tracker, carriers.data?.to_pay, fmtAmount), [today, tracker, carriers.data]);
-  // The pay tracker lives in the owner's Team settings: anyone else sees the block and the pay dates, not a way in.
-  const markOpens = (m: LogisticsMark) => (m.kind === "pay" || !m.bookingId ? admin : true);
-  const openMark = (m: LogisticsMark) => (m.kind === "pay" || !m.bookingId ? openPayTracker() : openLoadInLogistics(m.bookingId, "pay"));
+  // R-542: a pay day opens the week it pays (the trucks he booked and his commission); the server decides who sees
+  // the money. A carrier mark opens its load on the Pay step.
+  const markOpens = (m: LogisticsMark) => m.kind === "pay" || !!m.bookingId;
+  const openMark = (m: LogisticsMark) => (m.kind === "pay" ? setWeekPay(m.date) : m.bookingId ? openLoadInLogistics(m.bookingId, "pay") : undefined);
 
   const range = periodRange(period, today);
   const wantsSpend = mode !== "bills" && !!data;
@@ -159,7 +163,7 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
       </div>
 
       {/* R-459: the carriers the team owes, above the recurring bills. Nothing shows when no one is owed. */}
-      {mode === "bills" && payBlock && <LogisticsPayBillsBlock block={payBlock} onOpen={admin ? openPayTracker : undefined} />}
+      {mode === "bills" && payBlock && <LogisticsPayBillsBlock block={payBlock} onOpen={() => setWeekPay(payBlock.date)} />}
       {mode === "bills" && <CarriersToPaySection canPay={canPay} data={carriers.data} />}
 
       {mode !== "bills" && (
@@ -209,6 +213,7 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
         </div>
       )}
 
+      {weekPay && <LogisticsWeekPanel payDate={weekPay} onClose={() => setWeekPay(null)} />}
       {open && (
         <BillDetail id={open} rev={rev} admin={admin} onClose={() => { if (!form) setOpen(null); }}
           onEdit={(b) => setForm({ bill: b })} onChanged={load} />

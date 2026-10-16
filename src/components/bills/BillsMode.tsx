@@ -163,7 +163,8 @@ function MarkChip({ m, onMark, opens = true }: { m: LogisticsMark; onMark: (m: L
   return (
     <Wrap {...(opens ? { onClick: () => onMark(m) } : {})} title={m.title} aria-label={m.title}
       className={`relative rounded-[10px] p-[2px] ${RING[m.state]} ${m.state === "paid" ? "opacity-50 hover:opacity-100" : ""} transition-opacity`}>
-      <span className="w-[22px] h-[22px] rounded-lg bg-surface-3 text-ink-2 flex items-center justify-center">
+      {/* R-542: a logistics pay day has its own colour, so it stands out from the bills around it. */}
+      <span className={`w-[22px] h-[22px] rounded-lg flex items-center justify-center ${m.kind === "pay" ? "bg-info-bg text-info-ink ring-1 ring-info/40" : "bg-surface-3 text-ink-2"}`}>
         <Icon size={13} strokeWidth={2} />
       </span>
       {m.state === "paid" && (
@@ -206,7 +207,7 @@ function MonthStrip({ today, upcoming, bills, marks, onMark, markOpens, onOpen }
           <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded ring-2 ring-warning" /> Due soon</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded ring-2 ring-danger" /> Overdue</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-surface-3 flex items-center justify-center text-success-ink"><Check size={9} /></span> Paid</span>
-          {hasPay && <span className="inline-flex items-center gap-1.5"><HandCoins size={12} /> Logistics pay</span>}
+          {hasPay && <span className="inline-flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-info-bg text-info-ink ring-1 ring-info/40 flex items-center justify-center"><HandCoins size={10} /></span> Logistics pay day</span>}
           {hasCarrier && <span className="inline-flex items-center gap-1.5"><Truck size={12} /> Carrier due</span>}
         </div>
       }>

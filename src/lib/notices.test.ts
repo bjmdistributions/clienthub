@@ -84,17 +84,17 @@ describe("the pay-day notice (R-464)", () => {
   it("an acknowledged one is gone", () => {
     expect(teamNoticesOf([payDay("p", { status: "acknowledged" })], true)).toEqual([]);
   });
-  it("opens the pay tracker, for an admin only", () => {
+  it("opens Bills (R-543: it is what is to pay that day), for anyone who reads the books", () => {
     const t = noticeTarget(payDay("p"));
-    expect(t).toEqual({ to: "paytracker" });
+    expect(t).toEqual({ to: "bill" });
     expect(canOpenTarget(t, { permissions: ["*"] })).toBe(true);
     expect(canOpenTarget(t, { permissions: ["admin:manage"] })).toBe(true);
-    expect(canOpenTarget(t, { permissions: ["financials:view", "deal_flow:view"] })).toBe(false);
+    expect(canOpenTarget(t, { permissions: ["deal_flow:view"] })).toBe(false);
     expect(canOpenTarget(t, null)).toBe(false);
   });
-  it("opens the tracker even when the payload is empty or broken", () => {
-    expect(noticeTarget({ kind: "logistics_pay_due", payload_json: null })).toEqual({ to: "paytracker" });
-    expect(noticeTarget({ kind: "logistics_pay_due", payload_json: "nope" })).toEqual({ to: "paytracker" });
+  it("opens Bills even when the payload is empty or broken", () => {
+    expect(noticeTarget({ kind: "logistics_pay_due", payload_json: null })).toEqual({ to: "bill" });
+    expect(noticeTarget({ kind: "logistics_pay_due", payload_json: "nope" })).toEqual({ to: "bill" });
   });
   it("reads as an amber Pay day, with the handoff keys named", () => {
     expect(NOTICE_KIND_LABEL.logistics_pay_due).toBe("Pay day");

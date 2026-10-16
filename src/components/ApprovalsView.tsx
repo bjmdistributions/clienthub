@@ -5,7 +5,6 @@ import PendingReviewModal from "./PendingReviewModal";
 import { Inbox, X, Store, Reply } from "lucide-react";
 import StatusPill from "./StatusPill";
 import { openLoadInLogistics } from "./LogisticsPayCarriers";
-import { openPayTracker } from "./LogisticsPay";
 import {
   BILL_OPEN_KEY, canOpenTarget, canSeeGroup, customerRow, groupRows, noticeRow, noticeTarget, requestRow, whenWearsUrgency, whenWords,
   type NoticeGroup, type NoticeRow, type NoticeTarget, type Urgency,
@@ -83,7 +82,6 @@ function gmailReplyUrl(n: LeadNotification, fields: Record<string, any>): string
 function openTarget(t: NoticeTarget) {
   if (t.to === "load") { openLoadInLogistics(t.id, t.step); return; }
   if (t.to === "logistics") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "logistics" })); return; }
-  if (t.to === "paytracker") { openPayTracker(); return; }
   if (t.to === "bank") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "financials" })); return; }
   if (t.to === "deal") {
     try { localStorage.setItem("dealflow_invoice_filter", t.invoice); } catch { /* storage blocked: Deal Flow just opens */ }

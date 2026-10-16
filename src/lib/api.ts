@@ -3684,6 +3684,44 @@ export interface LogisticsPayMine {
   dates?: { pay_date: string; total: number; status: "paid" | "due" | "upcoming"; paid_at: string }[];
   loads?: { code: string; pickup_name: string; delivery_name: string; earned_on: string; due_date: string; amount: number; status: "earned" | "pending" | "paid" }[];
 }
+/** R-542: one truck on the Logistics timeline: booked on `booked_on`, with his commission on it (null when the
+ *  person viewing may not see his pay, or the load waits on the freight amount). `lane` is "" without the address switch. */
+export interface LogisticsWeekLoad {
+  id: string;
+  code: string;
+  booked_on: string;
+  lane: string;
+  commission: number | null;
+  paid: boolean;
+}
+/** R-542: one week of the Logistics timeline, off /api/logistics/pay/week. While he is paid weekly the week is the
+ *  pay week (`pay_date` pays it), otherwise Monday to Sunday. The money fields are null unless `money`. */
+export interface LogisticsWeek {
+  start: string;
+  end: string;
+  pay_date: string;
+  today: string;
+  money: boolean;
+  /** The person viewing is the one being paid. */
+  mine: boolean;
+  payee_name: string;
+  /** How he is usually paid (Settings), for the admin's Record payment; "" for anyone else. */
+  pay_method: string;
+  loads: LogisticsWeekLoad[];
+  commission: number | null;
+  /** "paid", "due" (the pay date has come), "upcoming", or "" when nothing is owed for the week. */
+  status: "" | "paid" | "due" | "upcoming";
+  /** What a payment on the pay date would be (the commission plus anything carried), 0 once paid. */
+  to_pay: number;
+  /** The payment recorded on the pay date. `extra` is what was paid above the commission; `method` and
+   *  `payout_id` are the admin's to read ("" for anyone else). */
+  paid: { amount: number; extra: number; paid_at: string; method: string; payout_id: string } | null;
+  /** Everything paid to him so far, and what is owed now. */
+  paid_total: number | null;
+  owed_now: number | null;
+  /** An admin may record the payment now (the date has come and no earlier date still owes). */
+  can_record: boolean;
+}
 /** One deal's pay line, off `get_deal_logistics_pay`. null when the rule is off, the deal is
  *  archived or voided, or no live booking is confirmed booked yet. */
 export interface DealLogisticsPay {
@@ -4202,11 +4240,15 @@ export const api = {
       },
       tracker: () => logisticsRequest<LogisticsPayTracker>("GET", `/api/logistics/pay/tracker?today=${localDay()}`),
       mine: () => logisticsRequest<LogisticsPayMine>("GET", `/api/logistics/pay/mine?today=${localDay()}`),
-      /** The amount is never typed: the server adds up what is due on or before that date. */
-      record: (payDate: string, opts: { method: string; reference?: string; note?: string }) =>
+      /** The server adds up what is due on or before that date. R-542: `amount` is what was actually paid, at least
+       *  that; anything above it is kept as extra. Left out, the commission owed is paid. */
+      record: (payDate: string, opts: { method: string; reference?: string; note?: string; amount?: number }) =>
         logisticsRequest<LogisticsPayout>("POST", "/api/logistics/pay/payouts", {
           pay_date: payDate, method: opts.method, reference: opts.reference ?? "", note: opts.note ?? "", today: localDay(),
+          ...(opts.amount != null ? { amount: opts.amount } : {}),
         }),
+      /** R-542: the week `day` falls in, for the Logistics timeline and a pay day on Bills. */
+      week: (day: string) => logisticsRequest<LogisticsWeek>("GET", `/api/logistics/pay/week?day=${encodeURIComponent(day)}&today=${localDay()}`),
       /** Undo: archives the payout, and what it covered is owed again. */
       undo: (id: string) => logisticsRequest<unknown>("DELETE", `/api/logistics/pay/payouts/${encodeURIComponent(id)}`),
     },

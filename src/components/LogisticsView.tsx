@@ -16,6 +16,7 @@ import LogisticsDeliveryChart from "./LogisticsDeliveryChart";
 import LogisticsMap from "./LogisticsMap";
 import { Seg } from "./bills/ui";
 import { YourPayCard } from "./LogisticsPay";
+import { LogisticsWeekView } from "./LogisticsWeek";
 import { CarriersView } from "./LogisticsCarriers";
 import { PayCarriersView } from "./LogisticsPayCarriers";
 import { toast } from "./Toast";
@@ -342,6 +343,9 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
 
       {/* When the loads are expected, then the board. */}
       {!needle && <LogisticsDeliveryChart rows={rows} today={localDay()} renderRow={row} />}
+
+      {/* R-542: the trucks booked each day of the week, and his commission for it. Always shown, to him and to the owner. */}
+      {!needle && <LogisticsWeekView onOpenLoad={(id) => openLoad(id)} />}
 
       {/* R-401: his own pay, only when he is the one being paid. Nothing about what a customer was charged. */}
       <YourPayCard />

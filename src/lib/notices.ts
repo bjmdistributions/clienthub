@@ -74,8 +74,6 @@ export type NoticeTarget =
   | { to: "load"; id: string; step: LoadStep }
   | { to: "logistics" }
   | { to: "bill"; id?: string }
-  /** R-464: the logistics pay tracker (Settings, Team, Payouts), where a pay date is recorded. */
-  | { to: "paytracker" }
   /** R-493: a new bank row opens Financials, where it is booked. */
   | { to: "bank" }
   /** R-496: a completed deal opens Deal Flow on its invoice number. */
@@ -110,8 +108,9 @@ export function noticeTarget(n: Pick<LeadNotification, "kind" | "payload_json">)
       const bill = idIn(p, "bill_id");
       return bill ? { to: "bill", id: bill } : { to: "bill" };
     }
+    // R-543: the pay day notice is what is to pay that day (his pay, the carriers, the bills), all on Bills.
     case "logistics_pay_due":
-      return { to: "paytracker" };
+      return { to: "bill" };
     case "bank_txn":
       return { to: "bank" };
     case "deal_complete": {
@@ -148,8 +147,6 @@ export function canOpenTarget(t: NoticeTarget | null, me: Perms | null | undefin
   if (!t || !me) return false;
   if (t.to === "bill" || t.to === "bank") return isAdmin(me) || can(me, "financials:view");
   if (t.to === "deal") return isAdmin(me) || can(me, "deal_flow:view");
-  // The tracker lives in Settings, whose Team section is the admin's.
-  if (t.to === "paytracker") return isAdmin(me);
   return canViewLogistics(me);
 }
 

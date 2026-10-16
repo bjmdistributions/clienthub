@@ -9,7 +9,6 @@ import { isLogisticsOnly } from "../lib/permissions";
 import { describeSchedule, freightUnknown, logisticsPayFor, sumTrackedLines, WEEKDAYS } from "../lib/logisticsPay";
 import { lowersCounter, numberPreview, numberingProblem } from "../lib/logisticsBols";
 import type { PayBlock } from "../lib/logisticsBills";
-import { PAY_TRACKER_KEY, PAY_TRACKER_SUB } from "../lib/notices";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
@@ -981,17 +980,6 @@ export function YourPayCard() {
 
 // ─── R-464: Bills screen and notices ──────────────────────────────────────
 
-/** Open the pay tracker (Settings, Team, Payouts) from another screen: stash where to land, switch to Settings,
- *  and tell a Settings screen that is already open (the same stash-then-switch handoff the Bills screen uses). */
-export function openPayTracker() {
-  try {
-    localStorage.setItem("clienthub_settings_tab", "team");
-    localStorage.setItem(PAY_TRACKER_KEY, PAY_TRACKER_SUB);
-  } catch { /* storage blocked: Settings just opens */ }
-  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "settings" }));
-  setTimeout(() => window.dispatchEvent(new CustomEvent("settings-team-sub")), 100);
-}
-
 /** The pay tracker for the Bills screen, read now and again on a timer and on focus. null until it is read, and
  *  null for good when it is refused or logistics pay is off: the block and the marks just do not show. Nothing
  *  is asked unless `enabled`. */
@@ -1006,7 +994,8 @@ export function usePayTracker(enabled: boolean): LogisticsPayTracker | null {
 }
 
 /** The Logistics pay block at the top of the Bills screen: who is paid, on which date, how much, and for how many
- *  loads. It opens the pay tracker, where the payment is recorded (the owner only: no button without `onOpen`). */
+ *  loads. R-542: in the pay day colour, and it opens the week that date pays (the trucks, the commission, the
+ *  payment). No button without `onOpen`. */
 export function LogisticsPayBillsBlock({ block, onOpen }: { block: PayBlock; onOpen?: () => void }) {
   const pill = block.nothingOwed ? { tone: "neutral" as const, word: "Coming up" }
     : block.late ? { tone: "danger" as const, word: "Late" }
@@ -1014,9 +1003,10 @@ export function LogisticsPayBillsBlock({ block, onOpen }: { block: PayBlock; onO
     : { tone: "neutral" as const, word: "Coming up" };
   const bits = [block.payee, fmtDay(block.date), block.nothingOwed ? "" : `${block.loads} ${block.loads === 1 ? "load" : "loads"}`].filter(Boolean);
   return (
-    <section className="mb-5 bg-surface border border-line rounded-2xl overflow-hidden" aria-label="Logistics pay">
+    <section className="mb-5 bg-surface border border-line rounded-2xl overflow-hidden" aria-label="Logistics pay"
+      style={{ boxShadow: "inset 5px 0 0 rgb(var(--c-info))" }}>
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap min-w-0">
-        <span className="w-8 h-8 rounded-lg bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0"><HandCoins size={16} /></span>
+        <span className="w-8 h-8 rounded-lg bg-info-bg text-info-ink flex items-center justify-center flex-shrink-0"><HandCoins size={16} /></span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-[14px] font-semibold text-ink">Logistics pay</h3>
@@ -1028,7 +1018,7 @@ export function LogisticsPayBillsBlock({ block, onOpen }: { block: PayBlock; onO
         {onOpen && (
           <button type="button" onClick={onOpen}
             className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12.5px] font-medium whitespace-nowrap flex-shrink-0 inline-flex items-center gap-1">
-            Open pay tracker <ChevronRight size={13} />
+            See the week <ChevronRight size={13} />
           </button>
         )}
       </div>
