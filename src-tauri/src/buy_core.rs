@@ -33,8 +33,15 @@ pub const CENT: f64 = 0.005;
 /// `is_buy_line` (both engines) refuses to edit, keep, pay or remove such a line by hand.
 pub const LINE_NOTE_PREFIX: &str = "Buy: ";
 
+/// To the cent. `+ 0.0` turns a negative zero (what Rust's float `sum` of nothing is) into a plain
+/// zero, so no screen ever prints "-0".
 pub fn r2(x: f64) -> f64 {
-    (x * 100.0).round() / 100.0
+    (x * 100.0).round() / 100.0 + 0.0
+}
+
+/// The sum of what is given, plain zero when there is nothing (`Iterator::sum` gives -0.0 then).
+pub fn total(it: impl Iterator<Item = f64>) -> f64 {
+    it.fold(0.0, |a, b| a + b)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,7 +158,7 @@ fn shares(t: &Totals, orders: &[OrderIn]) -> Vec<(f64, f64, bool)> {
 
 /// Take `need` from the rows in order, or nothing when they cannot cover all of it.
 fn cover(rooms: &mut [(String, f64, String)], need: f64) -> Option<(Vec<Slice>, String)> {
-    let have: f64 = rooms.iter().map(|r| r.1).sum();
+    let have = total(rooms.iter().map(|r| r.1));
     if have + CENT < need {
         return None;
     }
@@ -251,7 +258,7 @@ pub fn plan(t: &Totals, orders: &[OrderIn], rows: &[RowIn]) -> Plan {
     let mut held = Vec::new();
     let goods_held = hold(&goods_rooms, Kind::Goods, t.goods, goods_taken, &mut held);
     let ship_held = hold(&ship_rooms, Kind::Ship, t.ship, ship_taken, &mut held);
-    let sold: f64 = orders.iter().map(|o| o.count.max(0.0)).sum();
+    let sold = total(orders.iter().map(|o| o.count.max(0.0)));
     let units = t.units.max(0.0);
     Plan {
         sold,
@@ -515,6 +522,14 @@ mod tests {
         let r2_ = rollup(&t, &p2, &m2, 0.0);
         assert!(r2_.sold_out);
         assert_eq!(r2_.made_on_sold, r2_.made_so_far, "sold out and paid: the two figures meet");
+    }
+
+    #[test]
+    fn nothing_sold_reads_as_a_plain_zero() {
+        let p = plan(&Totals { units: 5.0, goods: 10.0, ship: 0.0 }, &[], &[]);
+        assert!(p.sold == 0.0 && p.sold.is_sign_positive(), "an empty sum must not serialise as -0.0");
+        assert!(r2(-0.0).is_sign_positive());
+        assert_eq!(serde_json::to_string(&p.sold).unwrap(), "0.0");
     }
 
     #[test]

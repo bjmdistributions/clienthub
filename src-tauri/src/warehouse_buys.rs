@@ -216,7 +216,7 @@ fn txn_info(c: &rusqlite::Connection, id: &str, owned_ids: &BTreeSet<String>) ->
             |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
         )
         .ok()?;
-    let others: f64 = allocs_where(c, "a.bank_txn_id=?1", &[&id]).iter().filter(|a| !owned_ids.contains(&a.id)).map(|a| a.amount).sum();
+    let others = core::total(allocs_where(c, "a.bank_txn_id=?1", &[&id]).iter().filter(|a| !owned_ids.contains(&a.id)).map(|a| a.amount));
     Some(TxnInfo { amount, posted_at, name, source_format, others })
 }
 
@@ -251,7 +251,7 @@ fn item_units(sections_json: &str, types_json: &str) -> f64 {
     let mut types: Vec<wc::BoxType> = serde_json::from_str(types_json).unwrap_or_default();
     let mut sections: Vec<wc::Section> = serde_json::from_str(sections_json).unwrap_or_default();
     wc::upgrade(&mut types, &mut sections);
-    sections.iter().map(|s| wc::units_of(&types, s) as f64).sum()
+    core::total(sections.iter().map(|s| wc::units_of(&types, s) as f64))
 }
 
 fn load_pairs_left(c: &rusqlite::Connection, load_id: &str, lines_json: &str) -> f64 {
@@ -842,7 +842,7 @@ pub async fn warehouse_buy_for(item_id: Option<String>, load_id: Option<String>)
     let c = conn()?;
     let Some(b) = buy_for(&c, item_id.as_deref().unwrap_or(""), load_id.as_deref().unwrap_or("")) else { return Ok(json!({ "buy": null })) };
     let units = b.units.max(0.0);
-    let sold: f64 = orders(&c, &b.id).iter().filter(|o| !o.undone).map(|o| o.count).sum();
+    let sold = core::total(orders(&c, &b.id).iter().filter(|o| !o.undone).map(|o| o.count));
     let (ug, us) = if units > 0.0 { (b.goods / units, b.ship / units) } else { (0.0, 0.0) };
     Ok(json!({ "buy": { "id": b.id, "name": b.name, "units_bought": b.units, "sold": sold, "unit_goods": ug, "unit_ship": us } }))
 }
