@@ -267,6 +267,8 @@ pub async fn warehouse_adjust(
 ) -> Result<AdjustResult, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut item = load(&conn, &id)?;
+    // R-488: a move put back that an invoice made gives that order back to the product's buy.
+    let undone_ref = undo_of.as_deref().and_then(|u| item.log.iter().find(|m| m.id == u && !m.undone).map(|m| m.reference.clone())).unwrap_or_default();
     let changes = match undo_of.as_deref() {
         Some(u) => match item.log.iter().find(|m| m.id == u) {
             Some(m) if m.undone => return Err("That move was already put back.".into()),
@@ -301,6 +303,10 @@ pub async fn warehouse_adjust(
     cols.insert("log_json".into(), json_str(&item.log));
     cols.insert("updated_at".into(), json!(now));
     write(&conn, ITEMS, &id, cols, false)?;
+    if !undone_ref.trim().is_empty() {
+        let inv = crate::warehouse_buys::invoice_for_reference(&undone_ref);
+        crate::warehouse_buys::stock_put_back(&id, "", &inv);
+    }
     Ok(AdjustResult { item: load(&conn, &id)?, short })
 }
 
@@ -388,6 +394,10 @@ pub async fn warehouse_import(
     let conn = pool().get().map_err(|e| e.to_string())?;
     let input = match target_id.as_deref().filter(|s| !s.is_empty()) {
         Some(id) => {
+            // R-488: each buy is its own stock, so a delivery is never added into one.
+            if add && crate::warehouse_buys::item_has_buy(&conn, id) {
+                return Err("This product has its own buy, so new stock is not added into it. Import it as a new product.".into());
+            }
             let cur = load(&conn, id)?;
             let (mut types, mut sections) = (cur.box_types, cur.sections);
             core::merge_import(&mut types, &mut sections, &imp, add);

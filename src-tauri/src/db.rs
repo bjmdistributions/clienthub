@@ -2543,4 +2543,47 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_cases ADD COLUMN kind TEXT DEFAULT 'box';
         "#,
     ),
+    (
+        117,
+        // R-488: a buy, what one warehouse product (item_id) or one delivery (load_id) cost, and the
+        // orders taken from it. The shares are worked out by buy_core.rs (byte-identical on the
+        // server), never stored: an order holds its count, a typed goods share (NULL is worked out)
+        // and whether its deal kept its own typed cost. Synced (sync.rs ALLOWED_TABLES, netsync
+        // SNAPSHOT_TABLES) and mirrored in clienthub-api schema.sql, which must be deployed first.
+        // Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        CREATE TABLE IF NOT EXISTS warehouse_buys (
+            id TEXT PRIMARY KEY,
+            item_id TEXT DEFAULT '',
+            load_id TEXT DEFAULT '',
+            name TEXT DEFAULT '',
+            supplier_id TEXT DEFAULT '',
+            supplier_name TEXT DEFAULT '',
+            units_bought REAL DEFAULT 0,
+            goods_total REAL DEFAULT 0,
+            ship_total REAL DEFAULT 0,
+            notes TEXT DEFAULT '',
+            archived INTEGER DEFAULT 0,
+            archived_at TEXT DEFAULT '',
+            created_by TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE TABLE IF NOT EXISTS warehouse_buy_orders (
+            id TEXT PRIMARY KEY,
+            buy_id TEXT NOT NULL,
+            invoice_id TEXT NOT NULL,
+            count REAL DEFAULT 0,
+            goods_typed REAL,
+            own_cost INTEGER DEFAULT 0,
+            undone INTEGER DEFAULT 0,
+            undone_at TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_warehouse_buy_orders_buy ON warehouse_buy_orders(buy_id);
+        "#,
+    ),
 ];

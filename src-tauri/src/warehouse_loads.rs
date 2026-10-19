@@ -98,7 +98,7 @@ fn load(conn: &rusqlite::Connection, id: &str) -> Result<LoadRow, String> {
         .map_err(|_| "That delivery is no longer there.".to_string())
 }
 
-fn cases(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Case>, String> {
+pub(crate) fn cases(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Case>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, COALESCE(pallet,1), COALESCE(number,1), COALESCE(contents_json,'[]'), COALESCE(notes,''), created_at, updated_at, COALESCE(kind,'box') \
@@ -194,7 +194,7 @@ fn put_new_pallet(conn: &rusqlite::Connection, load_id: &str, number: i64, t: &s
     }
 }
 
-fn outs(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Out>, String> {
+pub(crate) fn outs(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Out>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, COALESCE(invoice_id,''), COALESCE(reference,''), COALESCE(note,''), COALESCE(takes_json,'[]'), COALESCE(pairs,0), \
@@ -727,6 +727,8 @@ pub async fn undo_load_out(load_id: String, out_id: String) -> Result<LoadDetail
         cols.insert("undone_at".into(), json!(t));
         cols.insert("updated_at".into(), json!(t));
         write(&conn, OUTS, &out_id, cols, false)?;
+        // R-488: the order comes off the delivery's buy, and its cost share goes back.
+        crate::warehouse_buys::stock_put_back("", &load_id, &o.invoice_id);
     }
     detail(&conn, &load_id, false)
 }

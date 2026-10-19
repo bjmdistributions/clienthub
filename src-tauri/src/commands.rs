@@ -5340,13 +5340,13 @@ fn sync_invoice_stage(invoice_id: &str, stage: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn read_df(id: &str) -> Result<DealFlow, String> {
+pub(crate) fn read_df(id: &str) -> Result<DealFlow, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!("{} WHERE df.id=?1", DF_JOIN);
     conn.query_row(&sql, [&id], |r| map_deal_flow_row(&conn, r)).map_err(|e| e.to_string())
 }
 
-fn get_or_create_deal_flow_for_invoice(invoice_id: &str) -> Result<String, String> {
+pub(crate) fn get_or_create_deal_flow_for_invoice(invoice_id: &str) -> Result<String, String> {
     let existing: Option<String> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.query_row("SELECT id FROM deal_flows WHERE invoice_id=?1", [invoice_id], |r| r.get(0)).ok()
@@ -5357,7 +5357,7 @@ fn get_or_create_deal_flow_for_invoice(invoice_id: &str) -> Result<String, Strin
     create_deal_flow_internal(invoice_id.to_string(), None, None)
 }
 
-fn write_sp(deal_flow_id: &str, payments: &[SupplierPayment], invoice_id: &str) -> Result<(), String> {
+pub(crate) fn write_sp(deal_flow_id: &str, payments: &[SupplierPayment], invoice_id: &str) -> Result<(), String> {
     let sp_json = serde_json::to_string(payments).map_err(|e| e.to_string())?;
     // "kept" payments (you didn't pay — you're keeping the cut) are NOT a real cost.
     let total: f64 = payments.iter().filter(|p| !p.kept).map(|p| p.amount).sum();
@@ -5388,6 +5388,7 @@ pub async fn set_supplier_payment_kept(id: String, payment_id: String, kept: boo
     let mut payments = df.supplier_payments.clone();
     {
         let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
+        if is_buy_line(p) { return Err(BUY_LINE_LOCKED.into()); }
         if is_resold_line(p) { return Err(RESOLD_LINE_LOCKED.into()); }
         p.kept = kept;
         if kept { p.paid = false; p.paid_at = None; }
@@ -5405,7 +5406,7 @@ pub async fn set_supplier_payment_kept(id: String, payment_id: String, kept: boo
 /// snapshot moves with the deal. (R-400: this used to write `total_cost = total_supplier_cost`,
 /// which threw away any bank-verified cost and every shipping amount, and never touched the
 /// invoice.) `write_sp` has already stored the edited lines and `total_supplier_cost`.
-fn recalc_completed_deal_flow(id: &str, _gross: f64, payments: &[SupplierPayment]) -> Result<(), String> {
+pub(crate) fn recalc_completed_deal_flow(id: &str, _gross: f64, payments: &[SupplierPayment]) -> Result<(), String> {
     let typed: f64 = payments.iter().filter(|p| !p.kept).map(|p| p.amount).sum();
     let goods = {
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -5745,6 +5746,7 @@ pub async fn update_supplier_payment(id: String, payment_id: String, input: Supp
     let mut payments = df.supplier_payments.clone();
     let supplier_name_for_price: String;
     let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
+    if is_buy_line(p) { return Err(BUY_LINE_LOCKED.into()); }
     if is_resold_line(p) { return Err(RESOLD_LINE_LOCKED.into()); }
     let old_amount = p.amount;
 
@@ -5825,6 +5827,7 @@ pub async fn remove_supplier_payment(id: String, payment_id: String) -> Result<(
     if df.stage == "complete" { return Err("Cannot modify completed deal flow".into()); }
 
     let mut payments = df.supplier_payments.clone();
+    if payments.iter().any(|p| p.id == payment_id && is_buy_line(p)) { return Err(BUY_LINE_LOCKED.into()); }
     if let Some(line) = payments.iter().find(|p| p.id == payment_id && is_resold_line(p)).cloned() {
         // R-438: removing either half of a resold pair undoes the whole move (the phone in the
         // App Store has a Remove button on these lines and no Undo); a half on its own never goes.
@@ -5862,6 +5865,7 @@ pub async fn mark_supplier_payment_paid(id: String, payment_id: String) -> Resul
 
     let mut payments = df.supplier_payments.clone();
     let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
+    if is_buy_line(p) { return Err(BUY_LINE_LOCKED.into()); }
     if (p.amount < 0.0 && is_resold_line(p)) || is_bought_back_line(p) { return Err(RESOLD_LINE_LOCKED.into()); }
     if p.paid { return Err("Payment already marked as paid".into()); }
     let paid_now = Utc::now().to_rfc3339();
@@ -5901,6 +5905,7 @@ pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Res
 
     let now = Utc::now().to_rfc3339();
     // R-438: refused before anything is written (it used to wipe a completed deal's figures first).
+    if df.supplier_payments.iter().any(|p| p.id == payment_id && is_buy_line(p)) { return Err(BUY_LINE_LOCKED.into()); }
     if df.supplier_payments.iter().any(|p| p.id == payment_id && ((p.amount < 0.0 && is_resold_line(p)) || is_bought_back_line(p))) { return Err(RESOLD_LINE_LOCKED.into()); }
 
     // Cascade: if complete, wipe completion data first so the deal re-opens
@@ -6499,6 +6504,16 @@ pub(crate) fn is_bought_back_line(p: &SupplierPayment) -> bool {
 }
 
 /// Shown verbatim on every surface, the phone in the App Store included (identical on the server).
+/// R-488: a cost line a buy wrote on an order's deal (`buy_core::LINE_NOTE_PREFIX`). Its amount,
+/// paid state and bank link follow the buy, so it is changed on the buy, never on its own.
+pub(crate) fn is_buy_line(p: &SupplierPayment) -> bool {
+    p.notes.as_deref().map_or(false, crate::buy_core::is_buy_note)
+}
+
+/// Shown verbatim on every surface (identical to the server's).
+pub(crate) const BUY_LINE_LOCKED: &str =
+    "This cost comes from a buy in the Warehouse. Change it on that product's or delivery's Buy tab.";
+
 const RESOLD_LINE_LOCKED: &str =
     "This cost is one half of a resold move, so it cannot be changed on its own. Remove it to undo the whole move, or use Undo on the deal's refund step.";
 

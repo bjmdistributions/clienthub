@@ -45,7 +45,10 @@ const POLL_SECS: u64 = 20;
 /// them from the server's snapshot (an older device dead-letters their events). Without it a sale
 /// made on the phone would read as stock still there on a desktop that updated later.
 /// "9" adds `warehouse_load_pallets` (R-535: where each pallet stands, full or not) for the same reason.
-const HEAL_GENERATION: &str = "9";
+/// "10" adds `warehouse_buys` and `warehouse_buy_orders` (R-488: what a product or a delivery cost,
+/// and the orders taken from it), so a desktop that updates after a buy was recorded on the phone
+/// shows the same cost.
+const HEAL_GENERATION: &str = "10";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -92,6 +95,9 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "warehouse_load_outs",
     // A delivery's pallets as records (R-535).
     "warehouse_load_pallets",
+    // What a product or a delivery cost, and its orders (R-488).
+    "warehouse_buys",
+    "warehouse_buy_orders",
     // Freight bookings (R-400): the Logistics screen's rows, one per truck.
     "freight_bookings",
     // The logistics payee's pay record (R-401), server-authored like the bookings.
@@ -1545,6 +1551,8 @@ async fn auto_heal_if_behind() {
         "warehouse_loads", "warehouse_cases", "warehouse_load_outs",
         // R-535: a delivery's pallet records (generation 9).
         "warehouse_load_pallets",
+        // R-488: what a product or a delivery cost, and its orders (generation 10).
+        "warehouse_buys", "warehouse_buy_orders",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -2812,8 +2820,15 @@ mod r400_sync_tests {
     #[test]
     fn r535_pallet_records_force_one_more_restore_per_device() {
         assert_ne!(HEAL_GENERATION, "8", "devices healed under generation 8 never compared the pallet records");
-        assert_eq!(HEAL_GENERATION, "9");
         assert!(SNAPSHOT_TABLES.contains(&"warehouse_load_pallets"));
+    }
+
+    /// R-488: a buy reaches a desktop that updates after it was recorded on the phone.
+    #[test]
+    fn r488_buys_force_one_more_restore_per_device() {
+        assert_eq!(HEAL_GENERATION, "10", "devices healed under generation 9 never compared the buys");
+        assert!(SNAPSHOT_TABLES.contains(&"warehouse_buys"));
+        assert!(SNAPSHOT_TABLES.contains(&"warehouse_buy_orders"));
     }
 
     #[tokio::test]
