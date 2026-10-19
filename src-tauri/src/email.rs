@@ -598,6 +598,45 @@ pub async fn send_threaded(
     Ok(())
 }
 
+/// R-546: one cold email from the Cold calls queue. Sent over the same SMTP login as everything else, but
+/// from the address and name the workspace set for cold email, plain text only, with a Message-ID made
+/// here and returned, so the queue can record it: a bump replies into that thread and a reply is matched
+/// back to it. Gmail sends as `from` only when it is the login or a verified *Send mail as* on it.
+pub async fn send_outreach(
+    to: &str, subject: &str, body: &str, from: &str, from_name: &str, in_reply_to: Option<&str>,
+) -> Result<String> {
+    let settings = load_settings()?;
+    let pass_or_token = match settings.auth_method {
+        AuthMethod::Password => cred("smtp_pass")?,
+        AuthMethod::Oauth2 => oauth2_access_token().await?,
+    };
+    let from_addr = if from.trim().is_empty() { settings.user.trim() } else { from.trim() };
+    let domain = from_addr.rsplit('@').next().filter(|d| !d.is_empty()).unwrap_or("localhost");
+    let message_id = format!("<{}@{}>", uuid::Uuid::new_v4(), domain);
+    let name = Some(from_name.trim()).filter(|n| !n.is_empty()).map(str::to_string);
+    let mut builder = Message::builder()
+        .from(lettre::message::Mailbox::new(name, from_addr.parse()?))
+        .to(to.parse()?)
+        .subject(subject)
+        .message_id(Some(message_id.clone()));
+    if from_addr != settings.user.trim() {
+        builder = builder.reply_to(from_addr.parse()?);
+    }
+    if let Some(mid) = in_reply_to.map(str::trim).filter(|m| !m.is_empty()) {
+        use lettre::message::header::{InReplyTo, References};
+        let v = if mid.starts_with('<') { mid.to_string() } else { format!("<{mid}>") };
+        builder = builder.header(InReplyTo::from(v.clone())).header(References::from(v));
+    }
+    let email = builder.body(body.to_string())?;
+    let creds = Credentials::new(settings.user.clone(), pass_or_token);
+    let mut mailer_builder = AsyncSmtpTransport::<Tokio1Executor>::relay(&settings.smtp_host)?.credentials(creds);
+    if matches!(settings.auth_method, AuthMethod::Oauth2) {
+        mailer_builder = mailer_builder.authentication(vec![Mechanism::Xoauth2]);
+    }
+    mailer_builder.build().send(email).await?;
+    Ok(message_id)
+}
+
 // ---------- OAuth2 ----------
 
 /// Cache of live access tokens, keyed by credential prefix.

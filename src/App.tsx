@@ -6,7 +6,7 @@ import {
   Mail,
   Settings as SettingsIcon,
   LayoutDashboard,
-  RefreshCw, RotateCw, LogOut,
+  RefreshCw, RotateCw, LogOut, PhoneCall,
   PanelLeftClose, PanelLeftOpen,
   Briefcase,
   BarChart3,
@@ -64,6 +64,7 @@ import LotEngineView from "./components/LotEngineView";
 import ShowPackingView from "./components/ShowPackingView";
 import WarehouseView from "./components/WarehouseView";
 import RenewalsView from "./components/RenewalsView";
+import ColdCallsView from "./components/ColdCallsView";
 import WhatsAppSharePanel from "./components/WhatsAppSharePanel";
 import CloseoutView from "./components/CloseoutView";
 import BriefView from "./components/BriefView";
@@ -144,7 +145,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "coldcalls" | "inventory" | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety" | "settings";
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -823,7 +824,9 @@ export default function App() {
       { id: "approvals", label: "Notifications", icon: Bell },
       { id: "portals", label: "Customer portals", icon: DoorOpen },
     ] },
-    { id: "suppliers", label: "Suppliers", icon: Package },
+    { id: "suppliers", label: "Suppliers", icon: Package, children: [
+      { id: "coldcalls", label: "Cold calls", icon: PhoneCall }, // R-546
+    ] },
     { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
       { id: "warehouse", label: "Warehouse", icon: WarehouseIcon },
       { id: "renewals", label: "Renewals", icon: RotateCw },
@@ -887,6 +890,7 @@ export default function App() {
     : id === "manifest" ? canViewTab(me, "inventory" as any) // analyzer rides inventory access
     : id === "lotengine" ? canViewTab(me, "inventory" as any) // so does the lot engine
     : id === "warehouse" ? canViewTab(me, "inventory" as any) // and the warehouse (R-326)
+    : id === "coldcalls" ? canViewTab(me, "suppliers" as any) // R-546: sourcing suppliers, the bar /api/outreach asks for
     : id === "renewals" ? isAdmin(me) // R-466: the stale-listing requests are read for admins only, here and on the bell
     // Show packing (R-271/R-272): rides inventory access, plus the plan entitlement
     // itself — whether the add-on is turned ON for this org is a state the view
@@ -1218,6 +1222,7 @@ export default function App() {
             {t === "inventory"  && <InventoryView />}
             {t === "warehouse"  && <WarehouseView />}
             {t === "renewals"   && <RenewalsView />}
+            {t === "coldcalls"  && <ColdCallsView />}
             {t === "manifest"   && <ManifestView onNavigate={(to) => setTab(to, true)} />}
             {t === "lotengine"  && <LotEngineView me={me} />}
             {t === "showpacking" && <ShowPackingView me={me} />}

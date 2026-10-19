@@ -46,6 +46,7 @@ mod secret_store;
 mod show_packing;
 mod shipments;
 mod freight;
+mod outreach;
 mod deal_files;
 mod warehouse;
 mod warehouse_core;
@@ -531,6 +532,8 @@ fn main() {
             // OS notification on each new lead) + a long safety-net sweep. Replaces
             // the old fixed 5-minute poll.
             email::spawn_realtime_watchers(app.handle().clone());
+            // R-546: this computer sends the Cold calls queue, when switched on in Cold calls settings.
+            outreach::spawn_pump();
             // R-318: so a Priority1 "Delivered" email can raise its own notification.
             shipments::set_app(app.handle().clone());
             // R-449: so a bill change can tell the sidebar badge and the open Bills screen.
@@ -1326,6 +1329,9 @@ fn main() {
             shipments::scan_priority1_mail,
             // Logistics (R-400)
             freight::logistics_request,
+            outreach::outreach_request,
+            outreach::outreach_pump_get,
+            outreach::outreach_pump_set,
             freight::logistics_save_file,
             deal_files::deal_files_request,
             deal_files::deal_files_save_as,
