@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import StatusPill from "./StatusPill";
+import BuysView from "./BuysView";
 import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotPriceTier, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus, LotMatch } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { formatLocation, parseLocation, isCanonicalLocation } from "../lib/location";
@@ -148,6 +149,20 @@ function useDismiss(ref: React.RefObject<HTMLElement>, open: boolean, close: () 
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
   }, [open, close, ref]);
+}
+
+/** R-488: the Warehouse's products and deliveries, folded or open (remembered on this device). */
+function InWarehouse() {
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem("inventory_warehouse_open") !== "0"; } catch { return true; } });
+  const flip = () => { const v = !open; setOpen(v); try { localStorage.setItem("inventory_warehouse_open", v ? "1" : "0"); } catch { /* ignore */ } };
+  return (
+    <div className="mb-4">
+      <button onClick={flip} className="flex items-center gap-1.5 text-[13px] font-semibold text-ink mb-2">
+        <ChevronDown size={14} className={`text-muted transition-transform duration-[130ms] ${open ? "" : "-rotate-90"}`} /> In the warehouse
+      </button>
+      {open && <BuysView compact />}
+    </div>
+  );
 }
 
 export default function InventoryView() {
@@ -627,6 +642,9 @@ export default function InventoryView() {
           </span>
         </button>
       )}
+
+      {/* R-488: the stock in hand, from the Warehouse's own rows, with what each buy cost and made. */}
+      {!selectMode && <InWarehouse />}
 
       {/* Band B — toolbar */}
       {!selectMode && (

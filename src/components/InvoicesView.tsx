@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow } from "../lib/api";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow, type BuyBrief } from "../lib/api";
+import { canSeePayments } from "../lib/dealPayments";
+import { useSessionMe } from "../lib/useSessionMe";
 import { parseLineItems, queryTokens, matchesAllTokens, matchingItems, describeItem, isNoiseItem } from "../lib/itemSearch";
 import { fmtAmount, localDay, projectedCostOf } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -684,6 +686,23 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
   // R-519 phase 2: a delivery line's pairs are fixed (qty is read-only); a deleted line takes none.
   const dlTakes = !initial && prefill?.delivery ? items.filter((it) => it.dl && it.qty > 0).flatMap((it) => it.dl!.takes) : [];
   const dlPairs = dlTakes.reduce((a, x) => a + x.pairs, 0);
+  // R-488: the stock's buy. Once the stock has left, this order's share of what the stock cost goes on
+  // its deal (worked out by buy_core.rs); the share can be typed here instead, never on the invoice.
+  const me = useSessionMe();
+  const seesCost = canSeePayments(me);
+  const buyItem = !initial ? prefill?.warehouse?.item_id ?? "" : "";
+  const buyLoad = !initial ? prefill?.delivery?.load_id ?? "" : "";
+  const [buy, setBuy] = useState<BuyBrief | null>(null);
+  const [buyCost, setBuyCost] = useState<number | null>(null);
+  const [typingCost, setTypingCost] = useState(false);
+  useEffect(() => {
+    if (!buyItem && !buyLoad) return;
+    api.warehouseBuyFor({ itemId: buyItem || undefined, loadId: buyLoad || undefined }).then((r) => setBuy(r.buy)).catch(() => setBuy(null));
+  }, [buyItem, buyLoad]);
+  const builtCount = !initial && prefill?.built ? (prefill.lines || []).reduce((a, l) => a + Math.max(0, Math.round(l.qty || 0)), 0) : 0;
+  const buyCount = buyLoad ? dlPairs : whUnits > 0 ? whUnits : builtCount;
+  const buyGoods = buyCost ?? (buy ? Math.round(buyCount * buy.unit_goods * 100) / 100 : 0);
+  const buyShip = buy ? Math.round(buyCount * buy.unit_ship * 100) / 100 : 0;
   const [submitting, setSubmitting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [templates, setTemplates]   = useState<LineItemTemplate[]>([]);
@@ -820,11 +839,14 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
         }
         // R-326: the invoice exists, so its boxes leave the warehouse now — read from the
         // lines as saved, so an edited quantity or a deleted line is what counts.
+        // R-488: what actually left (a shortfall takes less), for this order's share of the buy.
+        let taken = prefill?.built && !whOut.length ? builtCount : 0;
         const wh = prefill?.warehouse;
         if (wh && whOut.length) {
           const number = await api.getInvoice(invId).then((v) => v?.number).catch(() => "");
           await api.warehouseAdjust(wh.item_id, whOut, { reference: number || undefined, note: "Invoiced" })
             .then((r) => {
+              taken = Math.max(0, whUnits - r.short.reduce((a, x) => a + Math.max(0, x.wanted - x.taken), 0));
               if (r.short.length) toast(`Invoice created. Short on the shelf: ${r.short.map((x) => `${x.name} had ${x.taken} of ${x.wanted} units`).join(", ")}`, "error");
               else toast(`${whUnits.toLocaleString()} units of ${wh.item_name} taken out of the warehouse`);
             })
@@ -838,6 +860,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
           await api.takeLoadPairs(dl.load_id, { invoiceId: invId, reference: number || "", note: "Invoiced", takes: dlTakes })
             .then((d) => {
               const short = (d.short ?? []).reduce((a, x) => a + (x.asked - x.taken), 0);
+              taken = Math.max(0, dlPairs - short);
               if (short > 0) toast(`Invoice created. ${(dlPairs - short).toLocaleString()} pairs taken off the delivery; ${short.toLocaleString()} were no longer there (sold on another device).`, "error");
               else toast(`Invoice created. ${dlPairs.toLocaleString()} pairs taken off the delivery ${dl.load_name}.`);
               try { localStorage.removeItem(pickKey(dl.load_id)); } catch { /* ignore */ }
@@ -854,6 +877,10 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
               } catch { /* ignore */ }
               toast(`Invoice created, but the pairs have not left the delivery yet (${e}). Open the delivery, Sell, to finish.`, "error");
             });
+        }
+        if (buy && taken > 0) {
+          await api.addWarehouseBuyOrder(buy.id, invId, taken, buyCost)
+            .catch((e: any) => toast(`Invoice created, but its cost did not reach the deal (${e}). The stock's Buy tab can add it.`, "error"));
         }
         // R-348: the pallets that were built go onto this order, each with its label and link.
         if (prefill?.pallets && prefill.pallets.pallets.length) {
@@ -1005,6 +1032,31 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
             <><strong className="font-semibold">Built in the warehouse.</strong> These boxes came off the shelf as they were grabbed, so creating this invoice takes nothing more.</>
           ) : (
             <>No warehouse lines are left on this invoice, so nothing will be taken off the shelf.</>
+          )}
+        </div>
+      )}
+
+      {!initial && (buyItem || buyLoad) && buyCount > 0 && (
+        <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl text-[13px] text-ink">
+          {!buy ? (
+            <>No buy is recorded for this stock, so no cost goes on this order's deal. <span className="text-muted">Record what you paid on its Buy tab in the Warehouse.</span></>
+          ) : !seesCost ? (
+            <>This order's share of what {buy.name} cost goes on its deal.</>
+          ) : (
+            <span className="inline-flex items-center gap-2 flex-wrap">
+              <span><strong className="font-semibold">Its cost.</strong> {fmtAmount(buyGoods)} for {buyCount.toLocaleString()} {buyLoad ? (buyCount === 1 ? "pair" : "pairs") : (buyCount === 1 ? "unit" : "units")} from {buy.name}{buyShip > 0 ? `, and ${fmtAmount(buyShip)} shipping in` : ""}{buyCost !== null ? " (typed)" : ""}.</span>
+              <span className="text-muted">It goes on this order's deal, never on the invoice.</span>
+              {typingCost ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <NumberInput value={buyGoods} onValue={(v) => setBuyCost(v)} autoFocus
+                    className="w-28 h-8 px-2 border border-line rounded-lg text-[13px] tabular-nums bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                  <button type="button" onClick={() => setTypingCost(false)} className="text-[12.5px] text-accent-hover">Done</button>
+                  {buyCost !== null && <button type="button" onClick={() => { setBuyCost(null); setTypingCost(false); }} className="text-[12.5px] text-muted">Use the buy's cost</button>}
+                </span>
+              ) : (
+                <button type="button" onClick={() => setTypingCost(true)} className="text-[12.5px] text-accent-hover hover:underline">Change it</button>
+              )}
+            </span>
           )}
         </div>
       )}

@@ -398,6 +398,9 @@ export interface WhTag { section_id: string; name: string; boxes: Record<string,
 /** R-519 phase 2: the pairs a delivery line takes once the invoice exists, and what they cost. */
 export interface DlTag { takes: CaseLine[]; cost: number }
 
+/** R-488: another screen asks the Warehouse to open one product or delivery ({ kind, id }), read once. */
+export const WAREHOUSE_OPEN_KEY = "warehouse_open";
+
 export interface InvoicePrefill {
   lines: (LineItem & { wh?: WhTag; dl?: DlTag })[];
   /** A warehouse product's lines (R-326). Absent on a delivery's lines. */

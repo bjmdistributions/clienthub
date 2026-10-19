@@ -20,6 +20,7 @@ import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges, useDe
 import DealShipping, { MoveToLogistics } from "./DealShipping";
 import StepBar from "./StepBar";
 import { Seg } from "./bills/ui";
+import BuysView from "./BuysView";
 import { openLoadInLogistics } from "./LogisticsPayCarriers";
 import { dealMatchesQuery } from "../lib/logisticsSearch";
 import { canPayCarriers } from "../lib/logisticsCarriers";
@@ -143,7 +144,8 @@ export default function DealFlowView() {
     buyer_target?: number; buyer_paired?: number; buyer_left?: number; supplier_target?: number; supplier_paired?: number; supplier_left?: number; cost_kept?: boolean;
     buyer_due?: boolean; supplier_due?: boolean; supplier_cost_missing?: boolean; supplier_kept?: boolean }>>({});
   // R-479: Pipeline (the lists below) or Payments (the same active deals, grouped by what payment is still needed).
-  const [view, setView] = useState<"pipeline" | "payments">("pipeline");
+  // R-488: Inventory, the stock in hand with what each buy cost and made; its sales are deals in the pipeline.
+  const [view, setView] = useState<"pipeline" | "payments" | "inventory">("pipeline");
   // R-479: loads made by "Move to Logistics" in this session, so the row shows its number before sync brings the load in.
   const [moved, setMoved] = useState<Record<string, { id: string; number: string }>>({});
   const me = useSessionMe();
@@ -402,7 +404,7 @@ export default function DealFlowView() {
 
   // R-479: the Payments view is all dollars, so its switch shows only to whoever may see deal dollars.
   const showPayments = canSeePayments(me);
-  const mode = showPayments ? view : "pipeline";
+  const mode = view === "payments" && !showPayments ? "pipeline" : view;
   // A row on the Payments view opens its deal on Link financials. The card lives in the pipeline, so this goes back
   // there and asks for the card the way another screen does (`openTarget`); a card in a folded group is unfolded by
   // the effect above, and linking a payment reloads `recon`, so the Payments view is current when it is switched back.
@@ -567,20 +569,24 @@ export default function DealFlowView() {
           </button>
         )}
       </div>
-      {showPayments && (
-        <Seg value={mode} onChange={setView} options={[{ value: "pipeline", label: "Pipeline" }, { value: "payments", label: "Payments" }]} />
-      )}
+      <Seg value={mode} onChange={setView} options={[
+        { value: "pipeline", label: "Pipeline" },
+        ...(showPayments ? [{ value: "payments" as const, label: "Payments" }] : []),
+        { value: "inventory", label: "Inventory" },
+      ]} />
       </div>
+
+      {mode === "inventory" && <BuysView search={search} />}
 
       {/* Priority1 shipments that arrived by email and are not on a deal yet (R-277). Above the six sections so they run
           on without a break (R-486). */}
-      <UnlinkedShipments onChange={load} />
+      {mode !== "inventory" && <UnlinkedShipments onChange={load} />}
 
       {/* ── The six Pipeline sections (R-486) ───────────────────────────────────────── */}
       {mode === "pipeline" && DEAL_SECTIONS.map(renderSection)}
 
       {/* ── Active deals ──────────────────────────────────────────────── */}
-      {mode === "payments" ? (
+      {mode === "inventory" ? null : mode === "payments" ? (
         <PaymentsView deals={active} recon={recon} invoices={invoices} searching={!!search}
           canMove={canPayCarriers(me)} moved={moved} onOpen={openOnLink}
           onMoved={(f, made) => { setMoved((m) => ({ ...m, [f.id]: { id: made.id, number: loadNumber(made) } })); load(); }} />
@@ -598,7 +604,7 @@ export default function DealFlowView() {
       ) : null}
 
       {/* ── Completed deals drawer ──────────────────────────────────────── */}
-      {totalCompleted > 0 && (
+      {mode !== "inventory" && totalCompleted > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
           <div {...barToggle(() => setDrawerOpen(!drawerOpen))}
             className="w-full flex items-center justify-between px-5 py-3.5 cursor-pointer hover:bg-surface-2/40 transition-colors">
@@ -645,7 +651,7 @@ export default function DealFlowView() {
           ordinary card whose pill carries the refund amount — the refund itself is a
           step inside that card, beside Link financials, so the deal's payments and
           links are still there to read. */}
-      {refundAll.length > 0 && (
+      {mode !== "inventory" && refundAll.length > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
           <div {...barToggle(() => setRefundsOpen(!refundsOpen))}
             className="w-full flex items-center justify-between px-5 py-3.5 cursor-pointer hover:bg-surface-2/40 transition-colors">

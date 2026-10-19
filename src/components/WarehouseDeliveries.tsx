@@ -11,7 +11,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api } from "../lib/api";
 import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PicturesAdded, type WhCase } from "../lib/deliveries";
-import { INVOICE_PREFILL_KEY, type InvoicePrefill } from "../lib/warehouse";
+import { INVOICE_PREFILL_KEY, WAREHOUSE_OPEN_KEY, type InvoicePrefill } from "../lib/warehouse";
+import BuyPanel from "./BuyPanel";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
 import Switch from "./Switch";
@@ -70,6 +71,15 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
     onDropUsed();
   }, [dropped, onDropUsed]);
   const open = (id: string) => api.getWarehouseLoad(id).then((d) => setDetail(d)).catch((e) => toast(String(e), "error"));
+  // R-488: Deal Flow's Inventory view (or the Inventory screen) asked for one delivery.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(WAREHOUSE_OPEN_KEY);
+      const want = raw ? JSON.parse(raw) : null;
+      if (want?.kind === "load" && want.id) { localStorage.removeItem(WAREHOUSE_OPEN_KEY); open(want.id); }
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (preview) {
     return <ManifestPreview key={preview.n} read={preview.read} fileName={preview.fileName} path={preview.path} onCancel={() => { setPreview(null); onImportEnded("cancelled"); }}
@@ -347,7 +357,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
   const lines = useMemo(() => L.lines ?? [], [L.lines]);
   const idx = useMemo(() => Object.fromEntries(lines.map((l) => [l.id, l])) as Record<string, LoadLine>, [lines]);
   const counts = useMemo(() => Object.fromEntries(d.tally.counts.map((c) => [c.line_id, c])) as Record<string, LineCount>, [d.tally.counts]);
-  const [tab, setTab] = useState<"pallets" | "check" | "sell">("pallets");
+  const [tab, setTab] = useState<"pallets" | "check" | "sell" | "buy">("pallets");
   const pallets: PalletView[] = d.pallets ?? [];
   const [pallet, setPallet] = useState<number | null>(() => (d.pallets ?? [])[0]?.pallet ?? null);
   const [draft, setDraftRaw] = useState<Draft | null>(null);
@@ -473,7 +483,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
           {L.archived && <p className="text-[12px] text-warning-ink mt-1">This delivery was removed. Bring it back to add cases.</p>}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Seg size="md" value={tab} onChange={setTab} options={[{ key: "pallets", label: "Pallets" }, { key: "check", label: "Against the manifest" }, { key: "sell", label: "Sell" }]} />
+          <Seg size="md" value={tab} onChange={setTab} options={[{ key: "pallets", label: "Pallets" }, { key: "check", label: "Against the manifest" }, { key: "sell", label: "Sell" }, { key: "buy", label: "Buy" }]} />
           {renaming == null && <button onClick={() => setRenaming(L.name)} className={WH_BTN_SECONDARY}>Rename</button>}
           {live && <button onClick={() => setAddingLine("")} className={WH_BTN_SECONDARY}>Add a style not on the manifest</button>}
           {live && <button onClick={addPictures} disabled={picBusy} className={WH_BTN_SECONDARY} title="Choose the manifest file: each picture goes on the style on its row">{picBusy ? "Adding pictures…" : "Add pictures from the sheet"}</button>}
@@ -497,7 +507,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
         } catch (e) { toast(String(e), "error"); }
       }} />}
 
-      {tab === "check" ? <CheckView lines={lines} counts={counts} totals={T} pallets={pallets} /> : tab === "sell" ? <SellView d={d} lines={lines} merge={merge} live={live} /> : (
+      {tab === "buy" ? <BuyPanel loadId={L.id} stockName={L.name} unit="pairs" defaultUnits={T.expected} /> : tab === "check" ? <CheckView lines={lines} counts={counts} totals={T} pallets={pallets} /> : tab === "sell" ? <SellView d={d} lines={lines} merge={merge} live={live} /> : (
         <div className="grid gap-4 grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)]">
           <div className="space-y-2">
             {live && <button onClick={startPallet} disabled={palletBusy} className={`${WH_BTN_SECONDARY} w-full justify-center`}><Plus size={14} /> Start pallet {nextPallet}</button>}

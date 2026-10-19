@@ -6,6 +6,7 @@
 //                   (R-334's lean), sent as it is or opened in Pick an order to adjust.
 //   Measurements  — the pallet and each box size measured; what fits, in 3D (R-346).
 //   History       — every move, with Put back.
+//   Buy           — what it cost, and what each order sent to an invoice from it made (R-488).
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, Archive, ArchiveRestore, Check, FileText, MoreHorizontal, Pencil, Search, SlidersHorizontal, Undo2 } from "lucide-react";
@@ -20,6 +21,7 @@ import {
 } from "../lib/warehouse";
 import { toast } from "./Toast";
 import PalletsTab from "./WarehousePallets";
+import BuyPanel from "./BuyPanel";
 import { feet, fitTypes, inches, readyFor, type FitPallet } from "../lib/palletFit";
 
 const PalletView3D = lazy(() => import("./PalletView3D"));
@@ -30,7 +32,13 @@ import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0, p
 const BAR = { background: "rgb(var(--c-chart-1))" };
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const cap = (s: string) => s.replace(/^./, (c) => c.toUpperCase());
-type Tab = "shelf" | "pick" | "plan" | "pallets" | "history";
+type Tab = "shelf" | "pick" | "plan" | "pallets" | "history" | "buy";
+
+/** R-488: units already sent out on invoices (a move that names one, not put back), so a buy recorded
+ *  after some of it sold starts from everything that was bought. */
+const soldUnits = (item: WarehouseItem) =>
+  item.log.filter((m) => m.kind === "out" && !m.undone && (m.reference || "").trim())
+    .reduce((a, m) => a + m.lines.reduce((b, l) => b + Math.max(0, -(l.units || 0)), 0), 0);
 
 /**
  * Where a team's boxes are on the maps (R-339, R-340). With boxes recorded on its pallets, the
@@ -138,6 +146,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
     { key: "plan", label: "Plan a load" },
     { key: "pallets", label: "Measurements" },
     { key: "history", label: "History" },
+    { key: "buy", label: "Buy" },
   ];
 
   return (
@@ -197,6 +206,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
       {tab === "plan" && <PlanTab item={item} layouts={layouts} onChanged={onChanged} onAdjust={(p) => { setPick(p); setTab("pick"); }} />}
       {tab === "pallets" && <PalletsTab item={item} onChanged={onChanged} />}
       {tab === "history" && <History item={item} onChanged={onChanged} />}
+      {tab === "buy" && <BuyPanel itemId={item.id} stockName={item.name} unit="units" defaultUnits={t.units + soldUnits(item)} />}
     </div>
   );
 }

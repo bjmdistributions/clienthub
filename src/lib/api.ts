@@ -2846,6 +2846,41 @@ export interface UnallocatedTxn {
   allocated: number;   // total claimed across all deals
   unallocated: number; // money still free to allocate anywhere (original − allocated)
 }
+/** R-488: a buy, what one warehouse product or one delivery cost (buy_core.rs works every share out). */
+export type BuyKind = "goods" | "ship";
+export interface BuyInput {
+  item_id?: string; load_id?: string; name?: string; supplier_id?: string; supplier_name?: string;
+  units_bought?: number; goods_total?: number; ship_total?: number; notes?: string;
+}
+export interface BuyRollup {
+  bought: number; sold: number; left: number; goods_total: number; ship_total: number; unit_cost: number;
+  goods_paid: number; ship_paid: number; cost_sold: number; sales: number; received: number; other_cost: number;
+  refunds: number; made_on_sold: number; made_so_far: number; sold_out: boolean; oversold: boolean;
+}
+export interface BuyOrder {
+  id: string; invoice_id: string; number: string; client: string; stage: string; voided: boolean; count: number;
+  undone: boolean; own_cost: boolean; typed: boolean; deal_flow_id?: string | null; goods: number; ship: number;
+  goods_paid: boolean; ship_paid: boolean; past_bought: boolean; cost: number; sales: number; received: number;
+  other_cost: number; refunds: number; made: number; created_at: string;
+}
+export interface BuyPayment {
+  txn_id: string; kind: BuyKind; amount: number; posted_at: string; name: string; cash: boolean; booked_here: number; booked_elsewhere: number;
+}
+export interface BuyDetail {
+  buy: {
+    id: string; item_id: string; load_id: string; stock_name: string; name: string; supplier_id: string; supplier_name: string;
+    units_bought: number; goods_total: number; ship_total: number; notes: string; archived: boolean; created_at: string; updated_at: string;
+  };
+  rollup: BuyRollup; unit_goods: number; unit_ship: number; orders: BuyOrder[]; payments: BuyPayment[];
+  missing: { invoice_id: string; number: string; count: number; own_cost: boolean }[];
+  in_step: boolean; can_book_bank?: boolean;
+}
+export interface BuyBrief { id: string; name: string; units_bought: number; sold: number; unit_goods: number; unit_ship: number }
+export interface StockWithBuy {
+  kind: "item" | "load"; id: string; name: string; left: number; unit: "units" | "pairs"; updated_at: string;
+  buy: { id: string; name: string; supplier_name: string; rollup: BuyRollup; orders: number; in_step: boolean; missing: number } | null;
+}
+
 export interface UnallocatedBankTxns {
   money_in: UnallocatedTxn[];
   money_out: UnallocatedTxn[];
@@ -3999,6 +4034,24 @@ export const api = {
   takeLoadPairs: (loadId: string, o: { invoiceId?: string; reference?: string; note?: string; takes: CaseLine[] }) =>
     invoke<LoadDetail>("take_load_pairs", { loadId, invoiceId: o.invoiceId ?? null, reference: o.reference ?? null, note: o.note ?? null, takes: o.takes }),
   undoLoadOut: (loadId: string, outId: string) => invoke<LoadDetail>("undo_load_out", { loadId, outId }),
+  /** R-488: every product and delivery, each with its buy when one is recorded. */
+  listWarehouseBuys: () => invoke<{ stock: StockWithBuy[] }>("list_warehouse_buys"),
+  /** R-488: the live buy on a product or a delivery (the invoice form's cost line). */
+  warehouseBuyFor: (o: { itemId?: string; loadId?: string }) =>
+    invoke<{ buy: BuyBrief | null }>("warehouse_buy_for", { itemId: o.itemId ?? null, loadId: o.loadId ?? null }),
+  getWarehouseBuy: (id: string) => invoke<BuyDetail>("get_warehouse_buy", { id }),
+  createWarehouseBuy: (input: BuyInput) => invoke<BuyDetail>("create_warehouse_buy", { input }),
+  updateWarehouseBuy: (id: string, input: BuyInput) => invoke<BuyDetail>("update_warehouse_buy", { id, input }),
+  archiveWarehouseBuy: (id: string) => invoke<void>("archive_warehouse_buy", { id }),
+  payWarehouseBuy: (id: string, kind: BuyKind, o: { txnId?: string; cashAmount?: number; cashDate?: string }) =>
+    invoke<BuyDetail>("pay_warehouse_buy", { id, kind, txnId: o.txnId ?? null, cashAmount: o.cashAmount ?? null, cashDate: o.cashDate ?? null }),
+  unpayWarehouseBuy: (id: string, txnId: string) => invoke<BuyDetail>("unpay_warehouse_buy", { id, txnId }),
+  addWarehouseBuyOrder: (id: string, invoiceId: string, count: number, goodsTyped?: number | null) =>
+    invoke<string>("add_warehouse_buy_order", { id, invoiceId, count, goodsTyped: goodsTyped ?? null }),
+  updateWarehouseBuyOrder: (id: string, orderId: string, patch: { goodsTyped?: number; clearTyped?: boolean; undone?: boolean }) =>
+    invoke<BuyDetail>("update_warehouse_buy_order", { id, orderId, goodsTyped: patch.goodsTyped ?? null, clearTyped: patch.clearTyped ?? null, undone: patch.undone ?? null }),
+  addMissingWarehouseBuyOrders: (id: string) => invoke<BuyDetail>("add_missing_warehouse_buy_orders", { id }),
+  applyWarehouseBuy: (id: string) => invoke<BuyDetail>("apply_warehouse_buy", { id }),
   warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
   warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
     invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),

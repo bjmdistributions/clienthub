@@ -8,7 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, ClipboardPaste, FileSpreadsheet, Plus, Trash2, Warehouse as WarehouseIcon } from "lucide-react";
 import { api } from "../lib/api";
-import { itemTotals, rowsFromText, sectionUnits, shares, type BoxType, type SheetRead, type WarehouseItem, type WhSection } from "../lib/warehouse";
+import { WAREHOUSE_OPEN_KEY, itemTotals, rowsFromText, sectionUnits, shares, type BoxType, type SheetRead, type WarehouseItem, type WhSection } from "../lib/warehouse";
 import type { ManifestRead } from "../lib/deliveries";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
@@ -40,6 +40,16 @@ export default function WarehouseView() {
     try { const v = localStorage.getItem("warehouse_view"); return v === "map" || v === "pallets" || v === "deliveries" ? v : "products"; } catch { return "products"; }
   });
   const pickView = (v: "products" | "map" | "pallets" | "deliveries") => { setView(v); setOpenId(null); try { localStorage.setItem("warehouse_view", v); } catch { /* ignore */ } };
+  // R-488: another screen asked for one product or delivery (BuysView `openInWarehouse`). A delivery
+  // is opened by the Deliveries view itself, which reads the same key.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(WAREHOUSE_OPEN_KEY);
+      const want = raw ? JSON.parse(raw) : null;
+      if (want?.kind === "item" && want.id) { localStorage.removeItem(WAREHOUSE_OPEN_KEY); setView("products"); setOpenId(want.id); }
+      else if (want?.kind === "load") setView("deliveries");
+    } catch { /* ignore */ }
+  }, []);
   // R-539: a sheet that reads as a delivery's manifest opens as a delivery, wherever it was imported.
   const [dropped, setDropped] = useState<{ path: string; n: number; read: ManifestRead } | null>(null);
   const viewRef = useRef(view);
