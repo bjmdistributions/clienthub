@@ -268,7 +268,7 @@ pub async fn warehouse_adjust(
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut item = load(&conn, &id)?;
     // R-488: a move put back that an invoice made gives that order back to the product's buy.
-    let undone_ref = undo_of.as_deref().and_then(|u| item.log.iter().find(|m| m.id == u && !m.undone).map(|m| m.reference.clone())).unwrap_or_default();
+    let undone_ref = undo_of.as_deref().and_then(|u| item.log.iter().find(|m| m.id == u && !m.undone && m.kind == "out").map(|m| m.reference.clone())).unwrap_or_default();
     let changes = match undo_of.as_deref() {
         Some(u) => match item.log.iter().find(|m| m.id == u) {
             Some(m) if m.undone => return Err("That move was already put back.".into()),

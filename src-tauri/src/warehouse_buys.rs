@@ -180,13 +180,11 @@ fn allocs_where(c: &rusqlite::Connection, clause: &str, params: &[&dyn rusqlite:
     rows.map(|it| it.filter_map(|x| x.ok()).collect()).unwrap_or_default()
 }
 
-/// Every booking the buy owns: what it holds on itself, and its bookings on its orders' deals.
-fn owned_allocs(c: &rusqlite::Connection, buy_id: &str, deals: &[String]) -> Vec<Alloc> {
-    let mut v = allocs_where(c, "a.deal_flow_id=?1 AND a.role='adjustment'", &[&buy_id]);
-    for d in deals {
-        v.extend(allocs_where(c, "a.deal_flow_id=?1 AND a.role IN ('supplier_payment','fee') AND a.note LIKE 'Buy: %'", &[d]));
-    }
-    v
+/// Every booking the buy owns, on itself and on its orders' deals: the ids it gives them all start
+/// `alloc_<buy id>_` (`buy_core::alloc_id`), so two buys on one deal never take each other's.
+fn owned_allocs(c: &rusqlite::Connection, buy_id: &str) -> Vec<Alloc> {
+    let prefix = core::alloc_prefix(buy_id);
+    allocs_where(c, "substr(a.id, 1, length(?1)) = ?1", &[&prefix])
 }
 
 fn kind_of(a: &Alloc) -> Kind {
@@ -382,7 +380,10 @@ fn alloc_cols(a: &Alloc, updated_at: &str) -> Map<String, Value> {
 fn alloc_create(a: &Alloc) -> Result<(), String> {
     conn()?
         .execute(
-            "INSERT INTO bank_allocation (id, org_id, bank_txn_id, deal_flow_id, amount, role, note, created_by, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+            // The id is the same on every device (`buy_core::alloc_id`), so a booking another device
+            // already wrote is brought to what is wanted rather than refused.
+            "INSERT INTO bank_allocation (id, org_id, bank_txn_id, deal_flow_id, amount, role, note, created_by, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) \
+             ON CONFLICT(id) DO UPDATE SET bank_txn_id=excluded.bank_txn_id, deal_flow_id=excluded.deal_flow_id, amount=excluded.amount, role=excluded.role, note=excluded.note, updated_at=excluded.updated_at",
             rusqlite::params![a.id, a.org_id, a.txn_id, a.deal, a.amount, a.role, a.note, a.created_by, a.created_at],
         )
         .map_err(|e| e.to_string())?;
@@ -426,7 +427,13 @@ struct Worked {
     rows: BTreeMap<String, (Kind, TxnInfo)>,
     plan: core::Plan,
     wants: Vec<Want>,
+    /// Per deal: the lines this buy's order on it should carry, the lines it carries now, the order.
     lines: BTreeMap<String, (Vec<SupplierPayment>, Vec<SupplierPayment>, String)>,
+}
+
+/// Whether a cost line is this order's (each buy writes only its own two ids on a deal).
+fn is_ours(p: &SupplierPayment, order_id: &str) -> bool {
+    p.id == core::goods_line_id(order_id) || p.id == core::ship_line_id(order_id)
 }
 
 fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unlink: Option<&str>) -> Result<Worked, String> {
@@ -438,14 +445,22 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
             deal_of_order.insert(o.id.clone(), d);
         }
     }
-    let deals: Vec<String> = deal_of_order.values().cloned().collect::<BTreeSet<_>>().into_iter().collect();
-    let owned = owned_allocs(c, &b.id, &deals);
+    let owned = owned_allocs(c, &b.id);
     let owned_ids: BTreeSet<String> = owned.iter().map(|a| a.id.clone()).collect();
     let mut kinds: BTreeMap<String, Kind> = BTreeMap::new();
     for a in &owned {
         kinds.entry(a.txn_id.clone()).or_insert(kind_of(a));
     }
     if let Some((t, k)) = link {
+        if let Some(have) = kinds.get(t) {
+            if *have != k {
+                return Err(match have {
+                    Kind::Goods => "That bank row already pays the goods on this buy. Take it off first to use it for the shipping in.",
+                    Kind::Ship => "That bank row already pays the shipping in on this buy. Take it off first to use it for the goods.",
+                }
+                .into());
+            }
+        }
         kinds.insert(t.to_string(), k);
     }
     if let Some(t) = unlink {
@@ -486,7 +501,8 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
             .unwrap_or_else(|_| ("[]".into(), String::new()));
         let now_lines: Vec<SupplierPayment> = serde_json::from_str(&sp).unwrap_or_default();
         let want_lines = plan.orders.iter().find(|p| p.id == o.id).map(|p| wanted_lines(&b, p)).unwrap_or_default();
-        lines.insert(d.clone(), (want_lines, now_lines, stage));
+        let _ = stage;
+        lines.insert(d.clone(), (want_lines, now_lines, o.id.clone()));
     }
     Ok(Worked { b, ords, deal_of_order, owned, rows, plan, wants, lines })
 }
@@ -539,19 +555,15 @@ fn same_line(a: &SupplierPayment, b: &SupplierPayment) -> bool {
         && a.quantity == b.quantity
 }
 
-fn is_ours(p: &SupplierPayment) -> bool {
-    p.id.starts_with("buyg-") || p.id.starts_with("buys-")
-}
-
-fn merged(want: &[SupplierPayment], now_lines: &[SupplierPayment]) -> Option<Vec<SupplierPayment>> {
-    let ours_now: Vec<&SupplierPayment> = now_lines.iter().filter(|p| is_ours(p)).collect();
+fn merged(want: &[SupplierPayment], now_lines: &[SupplierPayment], order_id: &str) -> Option<Vec<SupplierPayment>> {
+    let ours_now: Vec<&SupplierPayment> = now_lines.iter().filter(|p| is_ours(p, order_id)).collect();
     let unchanged = ours_now.len() == want.len() && want.iter().all(|w| ours_now.iter().any(|n| n.id == w.id && same_line(n, w)));
     if unchanged {
         return None;
     }
     let mut out: Vec<SupplierPayment> = Vec::new();
     for p in now_lines {
-        if !is_ours(p) {
+        if !is_ours(p, order_id) {
             out.push(p.clone());
         } else if let Some(w) = want.iter().find(|w| w.id == p.id) {
             out.push(w.clone());
@@ -575,7 +587,7 @@ fn in_step(w: &Worked) -> bool {
         *wanted.entry((x.deal.clone(), x.txn_id.clone(), x.role.to_string())).or_default() += x.amount;
     }
     let bank_ok = owned.len() == wanted.len() && wanted.iter().all(|(k, v)| owned.get(k).map_or(false, |o| (o - v).abs() <= core::CENT));
-    bank_ok && w.lines.values().all(|(want, now_lines, _)| merged(want, now_lines).is_none())
+    bank_ok && w.lines.values().all(|(want, now_lines, oid)| merged(want, now_lines, oid).is_none())
 }
 
 /// Write the plan: deals for orders that have none, the bank bookings (when this person may book
@@ -630,7 +642,7 @@ fn apply(buy_id: &str, link: Option<(&str, Kind)>, unlink: Option<&str>) -> Resu
                 }
                 (None, Some(x)) => {
                     let a = Alloc {
-                        id: format!("alloc_{}", uuid::Uuid::new_v4().simple()),
+                        id: core::alloc_id(&w.b.id, &x.deal, &x.txn_id, x.role),
                         org_id: org.clone(),
                         txn_id: x.txn_id.clone(),
                         deal: x.deal.clone(),
@@ -648,8 +660,8 @@ fn apply(buy_id: &str, link: Option<(&str, Kind)>, unlink: Option<&str>) -> Resu
         }
     }
 
-    for (deal, (want, now_lines, _)) in &w.lines {
-        if let Some(next) = merged(want, now_lines) {
+    for (deal, (want, now_lines, oid)) in &w.lines {
+        if let Some(next) = merged(want, now_lines, oid) {
             let invoice_id: String = conn()?.query_row("SELECT COALESCE(invoice_id,'') FROM deal_flows WHERE id=?1", [deal], |r| r.get(0)).unwrap_or_default();
             crate::commands::write_sp(deal, &next, &invoice_id)?;
             touched.insert(deal.clone());
@@ -886,8 +898,23 @@ fn check_money(units: f64, goods: f64, ship: f64) -> Result<(), String> {
 
 fn new_order(buy_id: &str, invoice_id: &str, count: f64, goods_typed: Option<f64>, own_cost: bool, at: &str) -> Result<String, String> {
     let oid = core::order_id(invoice_id, buy_id);
-    if conn()?.query_row("SELECT 1 FROM warehouse_buy_orders WHERE id=?1", [&oid], |_| Ok(())).is_ok() {
-        return Ok(oid);
+    let undone: Option<bool> = conn()?
+        .query_row("SELECT COALESCE(undone,0) FROM warehouse_buy_orders WHERE id=?1", [&oid], |r| Ok(r.get::<_, i64>(0)? != 0))
+        .ok();
+    match undone {
+        Some(false) => return Ok(oid),
+        // Put back, then the stock went out on the same invoice again: the order is back.
+        Some(true) => {
+            let mut cols = Map::new();
+            cols.insert("count".into(), json!(count));
+            cols.insert("goods_typed".into(), goods_typed.map(|g| json!(core::r2(g))).unwrap_or(Value::Null));
+            cols.insert("undone".into(), json!(0));
+            cols.insert("undone_at".into(), json!(""));
+            cols.insert("updated_at".into(), json!(now()));
+            put(ORDERS, &oid, cols, false)?;
+            return Ok(oid);
+        }
+        None => {}
     }
     let t = now();
     let mut cols = Map::new();
@@ -968,9 +995,15 @@ pub async fn update_warehouse_buy(id: String, input: BuyInput) -> Result<Value, 
     if let Some(n) = input.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         cols.insert("name".into(), json!(n));
     }
-    if let Some(s) = input.supplier_name.as_deref() {
-        cols.insert("supplier_name".into(), json!(s.trim()));
-        cols.insert("supplier_id".into(), json!(input.supplier_id.clone().unwrap_or_default()));
+    // The supplier's id follows its name: kept while the name is unchanged, cleared when another name
+    // is typed without one.
+    if let Some(s) = input.supplier_name.as_deref().map(str::trim) {
+        if s != b.supplier_name {
+            cols.insert("supplier_name".into(), json!(s));
+            cols.insert("supplier_id".into(), json!(input.supplier_id.clone().unwrap_or_default()));
+        } else if let Some(id) = input.supplier_id.as_deref().filter(|i| !i.is_empty()) {
+            cols.insert("supplier_id".into(), json!(id));
+        }
     }
     cols.insert("units_bought".into(), json!(units));
     cols.insert("goods_total".into(), json!(goods));

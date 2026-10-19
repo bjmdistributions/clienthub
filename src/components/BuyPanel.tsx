@@ -87,7 +87,12 @@ function BuyForm({ unit, stockName, defaultUnits, detail, onSave, onCancel }: {
     return () => clearTimeout(t);
   }, [supplier, b?.supplier_name]);
 
-  const setUnitsKeep = (n: number) => { setUnits(n); setTotal(Math.round(n * each * 100) / 100); };
+  // A corrected count never changes what was paid: the price a unit follows the total.
+  const setUnitsKeep = (n: number) => {
+    setUnits(n);
+    if (total > 0) setEach(n > 0 ? Math.round((total / n) * 10000) / 10000 : 0);
+    else setTotal(Math.round(n * each * 100) / 100);
+  };
   const setEachKeep = (v: number) => { setEach(v); setTotal(Math.round(units * v * 100) / 100); };
   const setTotalKeep = (v: number) => { setTotal(v); setEach(units > 0 ? Math.round((v / units) * 10000) / 10000 : 0); };
   const landed = units > 0 ? (total + ship) / units : 0;

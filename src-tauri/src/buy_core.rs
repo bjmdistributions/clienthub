@@ -366,6 +366,22 @@ pub fn order_id(invoice_id: &str, buy_id: &str) -> String {
     format!("bo-{invoice_id}-{buy_id}")
 }
 
+/// The id of a bank booking a buy makes: the same on every device for the same deal, row and
+/// role, so two devices writing at once write one row, and every booking a buy owns starts with
+/// `alloc_<buy id>_` (`alloc_prefix`) so two buys on one deal never touch each other's.
+pub fn alloc_id(buy_id: &str, deal: &str, txn_id: &str, role: &str) -> String {
+    // FNV-1a, 64 bits: a stable hash the same in both crates (no hasher seed).
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in deal.bytes().chain([0u8]).chain(txn_id.bytes()).chain([0u8]).chain(role.bytes()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{}{:016x}", alloc_prefix(buy_id), h)
+}
+pub fn alloc_prefix(buy_id: &str) -> String {
+    format!("alloc_{buy_id}_")
+}
+
 /// The ids of the two cost lines a buy writes on an order's deal.
 pub fn goods_line_id(order_id: &str) -> String {
     format!("buyg-{order_id}")
@@ -530,6 +546,16 @@ mod tests {
         assert!(p.sold == 0.0 && p.sold.is_sign_positive(), "an empty sum must not serialise as -0.0");
         assert!(r2(-0.0).is_sign_positive());
         assert_eq!(serde_json::to_string(&p.sold).unwrap(), "0.0");
+    }
+
+    #[test]
+    fn a_booking_id_is_the_same_everywhere_and_names_its_buy() {
+        let a = alloc_id("buy_1", "deal_1", "txn_1", "supplier_payment");
+        assert_eq!(a, alloc_id("buy_1", "deal_1", "txn_1", "supplier_payment"));
+        assert!(a.starts_with(&alloc_prefix("buy_1")));
+        assert_ne!(a, alloc_id("buy_1", "deal_1", "txn_1", "fee"));
+        assert_ne!(a, alloc_id("buy_2", "deal_1", "txn_1", "supplier_payment"));
+        assert_eq!(a, "alloc_buy_1_".to_string() + &a[12..]);
     }
 
     #[test]
