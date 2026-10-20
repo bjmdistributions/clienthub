@@ -1,20 +1,23 @@
 // Warehouse (R-326..R-330): stock Jack physically holds, counted in boxes of several sizes.
 // This file is the shell — Products and Map, the product cards, and the product form. One
-// product's screen is WarehouseProduct.tsx; the map is WarehouseMap.tsx; importing a sheet is
+// product's screen is WarehouseProduct.tsx; the map is the floor plan (WarehouseFloor.tsx, R-550)
+// with the grid maps under Spot maps (WarehouseMap.tsx); importing a sheet is
 // WarehouseImport.tsx; the rules are lib/warehouse.ts and warehouse_core.rs.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, ClipboardPaste, FileSpreadsheet, Plus, Trash2, Warehouse as WarehouseIcon } from "lucide-react";
+import { ArrowLeft, ChevronRight, ClipboardPaste, FileSpreadsheet, Plus, Trash2, Warehouse as WarehouseIcon } from "lucide-react";
 import { api } from "../lib/api";
 import { WAREHOUSE_OPEN_KEY, itemTotals, rowsFromText, sectionUnits, shares, type BoxType, type SheetRead, type WarehouseItem, type WhSection } from "../lib/warehouse";
 import type { ManifestRead } from "../lib/deliveries";
+import type { DeliveryOpen, FloorRequest } from "../lib/floor";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import WarehouseImport from "./WarehouseImport";
 import ProductScreen, { CountsGrid, Seg } from "./WarehouseProduct";
+import WarehouseFloor from "./WarehouseFloor";
 import WarehouseMap from "./WarehouseMap";
 import WarehouseOrders from "./WarehouseOrders";
 import WarehouseDeliveries from "./WarehouseDeliveries";
@@ -50,6 +53,14 @@ export default function WarehouseView() {
       else if (want?.kind === "load") setView("deliveries");
     } catch { /* ignore */ }
   }, []);
+  // R-550: the floor plan and Deliveries hand each other pallets. The floor plan asks Deliveries to open a
+  // delivery on a pallet (into the box editor, and back after) and Deliveries asks the floor plan to show or place one.
+  const [floorReq, setFloorReq] = useState<FloorRequest | null>(null);
+  const [deliveryReq, setDeliveryReq] = useState<DeliveryOpen | null>(null);
+  const showOnFloor = useCallback((r: FloorRequest) => { setFloorReq(r); setView("map"); setOpenId(null); }, []);
+  const openDelivery = useCallback((o: DeliveryOpen) => { setDeliveryReq(o); setView("deliveries"); setOpenId(null); }, []);
+  const floorUsed = useCallback(() => setFloorReq(null), []);
+  const deliveryUsed = useCallback(() => setDeliveryReq(null), []);
   // R-539: a sheet that reads as a delivery's manifest opens as a delivery, wherever it was imported.
   const [dropped, setDropped] = useState<{ path: string; n: number; read: ManifestRead } | null>(null);
   const viewRef = useRef(view);
@@ -251,7 +262,10 @@ export default function WarehouseView() {
         </div>
       </div>
 
-      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onDropUsed={() => setDropped(null)} onImport={pickSheet} onAsStock={asStock} onImportEnded={importEnded} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <WarehouseMap items={items || []} /> : <>
+      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onDropUsed={() => setDropped(null)} onImport={pickSheet} onAsStock={asStock} onImportEnded={importEnded} open={deliveryReq} onOpenUsed={deliveryUsed} onFloor={showOnFloor} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <>
+        <WarehouseFloor request={floorReq} onRequestUsed={floorUsed} onOpenDelivery={openDelivery} />
+        <SpotMaps items={items || []} />
+      </> : <>
       {items === null ? (
         <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
           {[0, 1].map((i) => <div key={i} className="h-[112px] bg-surface-2 rounded-xl animate-pulse" />)}
@@ -289,6 +303,23 @@ export default function WarehouseView() {
         </div>
       )}
       </>}
+    </div>
+  );
+}
+
+// R-550: the grid maps of pallet spots and shelving, unchanged, under the floor plan. Closed until opened
+// (and remembered), so the floor plan has the screen and its own "Draw your warehouse" is the only one.
+const SPOT_MAPS_KEY = "warehouse_spot_maps";
+function SpotMaps({ items }: { items: WarehouseItem[] }) {
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem(SPOT_MAPS_KEY) === "1"; } catch { return false; } });
+  const toggle = () => { setOpen(!open); try { localStorage.setItem(SPOT_MAPS_KEY, open ? "0" : "1"); } catch { /* ignore */ } };
+  return (
+    <div className="mt-8">
+      <button onClick={toggle} aria-expanded={open} className="inline-flex items-center gap-1.5 text-[14px] font-semibold text-ink">
+        <ChevronRight size={14} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} /> Spot maps
+      </button>
+      <p className="text-[12px] text-muted mt-0.5">The grid maps of pallet spots and shelving, each spot marked with what sits on it.</p>
+      {open && <div className="mt-3"><WarehouseMap items={items} /></div>}
     </div>
   );
 }

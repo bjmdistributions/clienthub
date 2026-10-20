@@ -2586,4 +2586,31 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_warehouse_buy_orders_buy ON warehouse_buy_orders(buy_id);
         "#,
     ),
+    (
+        118,
+        // R-550: the floor plan. A building drawn to scale (warehouse_floors, one row per building,
+        // its doors and rooms in shape_json as floor_core::FloorShape) and where each delivery pallet
+        // stands on one (four columns on warehouse_load_pallets, written together by a place and
+        // never by a pallet's own create, so a device that has not seen a placement cannot blank
+        // it). Synced (sync.rs ALLOWED_TABLES, netsync SNAPSHOT_TABLES) and mirrored in clienthub-api
+        // schema.sql and its sync.rs ALTER list, which must be deployed first. Never put a semicolon
+        // inside a comment here, the runner splits on it.
+        r#"
+        CREATE TABLE IF NOT EXISTS warehouse_floors (
+            id TEXT PRIMARY KEY,
+            name TEXT DEFAULT '',
+            width REAL DEFAULT 0,
+            depth REAL DEFAULT 0,
+            shape_json TEXT DEFAULT '{}',
+            archived INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        ALTER TABLE warehouse_load_pallets ADD COLUMN floor_id TEXT DEFAULT '';
+        ALTER TABLE warehouse_load_pallets ADD COLUMN x REAL DEFAULT 0;
+        ALTER TABLE warehouse_load_pallets ADD COLUMN y REAL DEFAULT 0;
+        ALTER TABLE warehouse_load_pallets ADD COLUMN turned INTEGER DEFAULT 0;
+        "#,
+    ),
 ];

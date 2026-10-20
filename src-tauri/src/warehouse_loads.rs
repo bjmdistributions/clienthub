@@ -8,6 +8,7 @@
 
 use crate::case_core::{self as core, Case, CaseLine, LoadLine, Out, PalletRecord, PalletView, Stock, Tally, TakeShort, Totals};
 use crate::db::pool;
+use crate::floor_core::{self as floor, FloorPallet};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -46,6 +47,9 @@ pub struct LoadDetail {
     pub pallets: Vec<PalletView>,
     /// Locations used most recently on any delivery, for the quick choices.
     pub recent_locations: Vec<String>,
+    /// The number of the pallet a start just made (`start_load_pallet` only, R-550).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started: Option<i64>,
 }
 
 /// An out as the screen sees it: the row, plus its invoice's state ("live", "voided",
@@ -163,6 +167,59 @@ fn recent_locations(conn: &rusqlite::Connection) -> Vec<String> {
     out
 }
 
+/// Where each of a delivery's pallet records says it stands, by pallet number (R-550): floor id, x, y
+/// and turned. A pallet with no record (known only through its boxes) stands nowhere.
+fn pallet_spots(conn: &rusqlite::Connection, load_id: &str) -> Result<std::collections::HashMap<i64, (String, f64, f64, bool)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(number,0), COALESCE(floor_id,''), COALESCE(x,0), COALESCE(y,0), COALESCE(turned,0) \
+             FROM warehouse_load_pallets WHERE load_id = ?1 AND COALESCE(archived,0) = 0",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([load_id], |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, f64>(2)?, r.get::<_, f64>(3)?, r.get::<_, i64>(4)? != 0))))
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Every pallet of every delivery that is not removed, placed on a floor plan or not (R-550): the
+/// counts are what Deliveries shows (`pallet_views`), joined with the position on its row. Newest
+/// delivery first, then pallet number. A pallet whose `floor_id` names a removed or unknown building
+/// is still listed with that id: the screen counts it as not on the floor plan.
+pub(crate) fn floor_pallets(conn: &rusqlite::Connection) -> Result<Vec<FloorPallet>, String> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {LOAD_COLS} FROM warehouse_loads WHERE COALESCE(archived,0) = 0 ORDER BY created_at DESC, id"))
+        .map_err(|e| e.to_string())?;
+    let loads: Vec<LoadRow> = stmt.query_map([], map_load).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let mut out = Vec::new();
+    for l in loads {
+        let id = l.head.id;
+        let tally = core::tally(&l.lines, &cases(conn, &id)?);
+        let spots = pallet_spots(conn, &id)?;
+        for v in core::pallet_views(&pallet_records(conn, &id)?, &tally.pallets) {
+            let (floor_id, x, y, turned) = spots.get(&v.pallet).cloned().unwrap_or_default();
+            out.push(FloorPallet {
+                id: core::pallet_id(&id, v.pallet),
+                load_id: id.clone(),
+                load_name: l.head.name.clone(),
+                number: v.pallet,
+                location: v.location,
+                closed: v.closed,
+                note: v.note,
+                floor_id,
+                x,
+                y,
+                turned,
+                boxes: v.boxes,
+                loose: v.loose,
+                pairs: v.pairs,
+                styles: v.styles,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// The columns of a new pallet record: only what a new pallet needs. Location, full and note are
 /// left to the schema's defaults, so a create from a device that had not yet seen this pallet can
 /// never blank a location another device set (last writer wins per column).
@@ -181,17 +238,77 @@ fn pallet_row_exists(conn: &rusqlite::Connection, id: &str) -> bool {
     conn.query_row("SELECT COUNT(*) FROM warehouse_load_pallets WHERE id = ?1", [id], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
 }
 
-/// Write a new pallet, or bring a removed one with that number back.
-fn put_new_pallet(conn: &rusqlite::Connection, load_id: &str, number: i64, t: &str) -> Result<(), String> {
+/// Where a pallet is to stand on a floor plan (R-550). An empty `floor_id` is off the floor plan.
+struct Spot {
+    floor_id: String,
+    x: f64,
+    y: f64,
+    turned: bool,
+}
+
+impl Spot {
+    fn off() -> Spot {
+        Spot { floor_id: String::new(), x: 0.0, y: 0.0, turned: false }
+    }
+}
+
+/// A spot checked before anything is written: the building must exist and not be removed, and the
+/// spot is pulled inside its walls (`floor_core::clean_spot`). An empty `floor_id` takes the pallet
+/// off the floor plan. Nothing refuses overlap: pallets may touch or stand over one another.
+fn resolve_spot(conn: &rusqlite::Connection, floor_id: &str, x: Option<f64>, y: Option<f64>, turned: Option<bool>) -> Result<Spot, String> {
+    let floor_id = floor_id.trim();
+    if floor_id.is_empty() {
+        return Ok(Spot::off());
+    }
+    let f = crate::warehouse_floors::floor(conn, floor_id)?;
+    if f.archived {
+        return Err("That building was removed.".into());
+    }
+    let (x, y) = match (x, y) {
+        (Some(x), Some(y)) => (x, y),
+        _ => return Err("Say where on the floor plan it stands.".into()),
+    };
+    let turned = turned.unwrap_or(false);
+    let (x, y) = floor::clean_spot(f.width, f.depth, x, y, turned)?;
+    Ok(Spot { floor_id: f.id, x, y, turned })
+}
+
+/// A place writes all four columns together, so one event moves a pallet and two phones moving two
+/// pallets never overwrite each other.
+fn put_spot(cols: &mut Map<String, Value>, s: &Spot) {
+    cols.insert("floor_id".into(), json!(s.floor_id));
+    cols.insert("x".into(), json!(s.x));
+    cols.insert("y".into(), json!(s.y));
+    cols.insert("turned".into(), json!(s.turned as i64));
+}
+
+/// Write a new pallet, or bring a removed one with that number back. A pallet started at a spot
+/// carries all four placement columns, one started anywhere else carries none (see `pallet_cols`).
+fn put_new_pallet(conn: &rusqlite::Connection, load_id: &str, number: i64, t: &str, spot: Option<&Spot>) -> Result<(), String> {
     let pid = core::pallet_id(load_id, number);
     if pallet_row_exists(conn, &pid) {
         let mut cols = Map::new();
         cols.insert("archived".into(), json!(0));
         cols.insert("updated_at".into(), json!(t));
+        match spot {
+            Some(s) => put_spot(&mut cols, s),
+            // The number of a removed pallet is a new pallet: it does not stand where that one did.
+            None if stands_on_a_floor(conn, &pid) => put_spot(&mut cols, &Spot::off()),
+            None => {}
+        }
         write(conn, PALLETS, &pid, cols, false)
     } else {
-        write(conn, PALLETS, &pid, pallet_cols(load_id, number, t), true)
+        let mut cols = pallet_cols(load_id, number, t);
+        if let Some(s) = spot {
+            put_spot(&mut cols, s);
+        }
+        write(conn, PALLETS, &pid, cols, true)
     }
+}
+
+/// Whether a pallet's row says it stands on a floor plan (removed or not).
+fn stands_on_a_floor(conn: &rusqlite::Connection, id: &str) -> bool {
+    conn.query_row("SELECT COALESCE(floor_id,'') <> '' FROM warehouse_load_pallets WHERE id = ?1", [id], |r| r.get::<_, bool>(0)).unwrap_or(false)
 }
 
 pub(crate) fn outs(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Out>, String> {
@@ -257,7 +374,7 @@ fn detail(conn: &rusqlite::Connection, id: &str, with_lines: bool) -> Result<Loa
         })
         .collect();
     let pallets = core::pallet_views(&pallet_records(conn, id)?, &tally.pallets);
-    Ok(LoadDetail { load: head, cases: cs, tally, outs, stock, short: None, pallets, recent_locations: recent_locations(conn) })
+    Ok(LoadDetail { load: head, cases: cs, tally, outs, stock, short: None, pallets, recent_locations: recent_locations(conn), started: None })
 }
 
 fn json_str<T: Serialize>(v: &T) -> Value {
@@ -275,7 +392,7 @@ fn to_sql(v: &Value) -> rusqlite::types::Value {
 }
 
 /// Write the columns and record them for sync.
-fn write(conn: &rusqlite::Connection, table: &str, id: &str, cols: Map<String, Value>, create: bool) -> Result<(), String> {
+pub(crate) fn write(conn: &rusqlite::Connection, table: &str, id: &str, cols: Map<String, Value>, create: bool) -> Result<(), String> {
     let keys: Vec<&String> = cols.keys().collect();
     let params: Vec<rusqlite::types::Value> = cols.values().map(to_sql).collect();
     if create {
@@ -297,7 +414,7 @@ fn write(conn: &rusqlite::Connection, table: &str, id: &str, cols: Map<String, V
     crate::sync::record_upsert(table, id, cols).map_err(|e| e.to_string())
 }
 
-fn now() -> String {
+pub(crate) fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
@@ -733,9 +850,21 @@ pub async fn undo_load_out(load_id: String, out_id: String) -> Result<LoadDetail
     detail(&conn, &load_id, false)
 }
 
+/// Where a new pallet is to stand on a floor plan (R-550).
+#[derive(Debug, Deserialize)]
+pub struct Place {
+    pub floor_id: String,
+    pub x: f64,
+    pub y: f64,
+    #[serde(default)]
+    pub turned: bool,
+}
+
 /// Start the next pallet, empty (R-535). Its number is one more than any pallet the delivery has.
+/// With a `place` (R-550) it starts standing there: the spot is checked before anything is written,
+/// and the answer carries the new pallet's number as `started`.
 #[tauri::command]
-pub async fn start_load_pallet(load_id: String) -> Result<LoadDetail, String> {
+pub async fn start_load_pallet(load_id: String, place: Option<Place>) -> Result<LoadDetail, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let l = load(&conn, &load_id)?;
     if l.head.archived {
@@ -745,14 +874,22 @@ pub async fn start_load_pallet(load_id: String) -> Result<LoadDetail, String> {
     if n > 999 {
         return Err("Pallet numbers run from 1 to 999.".into());
     }
-    put_new_pallet(&conn, &load_id, n, &now())?;
-    detail(&conn, &load_id, false)
+    let spot = match place.filter(|p| !p.floor_id.trim().is_empty()) {
+        Some(p) => Some(resolve_spot(&conn, &p.floor_id, Some(p.x), Some(p.y), Some(p.turned))?),
+        None => None,
+    };
+    put_new_pallet(&conn, &load_id, n, &now(), spot.as_ref())?;
+    let mut d = detail(&conn, &load_id, false)?;
+    d.started = Some(n);
+    Ok(d)
 }
 
 /// Where a pallet stands, its note, full or not (R-535). The record is made the first time any of
-/// them is set; "Pallet full" can also start the next pallet.
+/// them is set; "Pallet full" can also start the next pallet. With a `floor_id` (R-550) it is placed
+/// on that floor plan at `x`, `y` (feet, its top-left corner), `turned` or not, all four written
+/// together, and an empty `floor_id` takes it off the floor plan.
 #[tauri::command]
-pub async fn save_load_pallet(load_id: String, number: i64, location: Option<String>, note: Option<String>, closed: Option<bool>, start_next: Option<bool>, archived: Option<bool>) -> Result<LoadDetail, String> {
+pub async fn save_load_pallet(load_id: String, number: i64, location: Option<String>, note: Option<String>, closed: Option<bool>, start_next: Option<bool>, archived: Option<bool>, floor_id: Option<String>, x: Option<f64>, y: Option<f64>, turned: Option<bool>) -> Result<LoadDetail, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     if !(1..=999).contains(&number) {
         return Err("Pallet numbers run from 1 to 999.".into());
@@ -761,6 +898,12 @@ pub async fn save_load_pallet(load_id: String, number: i64, location: Option<Str
     if l.head.archived {
         return Err("This delivery was removed. Bring it back first.".into());
     }
+    // Same answers as the server for a placement half sent.
+    let spot = match floor_id.as_deref() {
+        Some(f) => Some(resolve_spot(&conn, f, x, y, turned)?),
+        None if x.is_none() && y.is_none() && turned.is_none() => None,
+        None => return Err("Say which building it stands in.".into()),
+    };
     let t = now();
     let records = pallet_records(&conn, &load_id)?;
     let have = cases(&conn, &load_id)?;
@@ -786,12 +929,15 @@ pub async fn save_load_pallet(load_id: String, number: i64, location: Option<Str
     if let Some(c) = closed {
         cols.insert("closed".into(), json!(c as i64));
     }
+    if let Some(s) = &spot {
+        put_spot(&mut cols, s);
+    }
     cols.insert("updated_at".into(), json!(t));
     write(&conn, PALLETS, &pid, cols, !exists)?;
     if start_next {
         let n = core::next_pallet(&pallet_records(&conn, &load_id)?, &have);
         if n <= 999 {
-            put_new_pallet(&conn, &load_id, n, &t)?;
+            put_new_pallet(&conn, &load_id, n, &t, None)?;
         }
     }
     detail(&conn, &load_id, false)
@@ -892,21 +1038,239 @@ mod tests {
         let b = d.cases.iter().find(|c| !c.is_loose()).unwrap();
         assert_eq!(b.number, 1);
         assert_eq!((d.pallets[0].boxes, d.pallets[0].loose, d.pallets[0].pairs), (1, 2, 4));
-        let d = save_load_pallet(id.clone(), 1, Some("  Dock door ".into()), None, Some(true), Some(true), None).await.unwrap();
+        let d = save_load_pallet(id.clone(), 1, Some("  Dock door ".into()), None, Some(true), Some(true), None, None, None, None, None).await.unwrap();
         assert_eq!(d.pallets.iter().map(|p| (p.pallet, p.location.as_str(), p.closed)).collect::<Vec<_>>(), vec![(1, "Dock door", true), (2, "", false)]);
         assert_eq!(d.recent_locations, vec!["Dock door".to_string()]);
         // A second Pallet full on 1 (a retry) starts nothing more.
-        let d = save_load_pallet(id.clone(), 1, None, None, Some(true), Some(true), None).await.unwrap();
+        let d = save_load_pallet(id.clone(), 1, None, None, Some(true), Some(true), None, None, None, None, None).await.unwrap();
         assert_eq!(d.pallets.len(), 2);
-        let d = start_load_pallet(id.clone()).await.unwrap();
+        let d = start_load_pallet(id.clone(), None).await.unwrap();
         assert_eq!(d.pallets.last().unwrap().pallet, 3);
         assert_eq!(d.tally.totals.cases, 1);
         // An empty pallet can be removed and its number comes back with the next start; one with boxes cannot.
-        let d = save_load_pallet(id.clone(), 3, None, None, None, None, Some(true)).await.unwrap();
+        let d = save_load_pallet(id.clone(), 3, None, None, None, None, Some(true), None, None, None, None).await.unwrap();
         assert_eq!(d.pallets.len(), 2);
-        assert!(save_load_pallet(id.clone(), 1, None, None, None, None, Some(true)).await.is_err());
-        let d = start_load_pallet(id.clone()).await.unwrap();
+        assert!(save_load_pallet(id.clone(), 1, None, None, None, None, Some(true), None, None, None, None).await.is_err());
+        let d = start_load_pallet(id.clone(), None).await.unwrap();
         assert_eq!(d.pallets.iter().map(|p| p.pallet).collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    // ---- R-550: the floor plan --------------------------------------------------------------
+
+    use crate::warehouse_floors::{create_warehouse_floor, list_warehouse_floors, update_warehouse_floor};
+
+    /// The columns of the last event written for a row, exactly as they were queued for sync.
+    fn last_event(table: &str, row_id: &str) -> Map<String, Value> {
+        let conn = pool().get().unwrap();
+        let mut stmt = conn.prepare("SELECT event_json FROM netsync_outbound ORDER BY rowid DESC").unwrap();
+        let rows: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        for j in rows {
+            let v: Value = serde_json::from_str(&j).unwrap();
+            if v["op"]["table"] == table && v["op"]["row_id"] == row_id {
+                return v["op"]["columns"].as_object().unwrap().clone();
+            }
+        }
+        panic!("no event for {table} {row_id}");
+    }
+
+    /// One pallet as the floor plan lists it.
+    async fn on_plan(load_id: &str, number: i64) -> FloorPallet {
+        list_warehouse_floors().await.unwrap().pallets.into_iter().find(|p| p.load_id == load_id && p.number == number).expect("pallet is listed")
+    }
+
+    const SPOT_COLS: [&str; 4] = ["floor_id", "x", "y", "turned"];
+
+    /// A building is drawn, changed and removed: its size, doors and rooms are always cleaned, a
+    /// create carries every column, and a change writes only what changed.
+    #[tokio::test]
+    async fn a_building_is_drawn_changed_and_removed() {
+        let _db = crate::db::init_test_store();
+        assert!(create_warehouse_floor("Main".into(), 5.0, 60.0, None).await.is_err());
+        let shape = floor::FloorShape {
+            doors: vec![floor::Door { side: "top".into(), at: 95.0, width: 12.0, kind: "garage".into(), ..Default::default() }],
+            areas: vec![floor::Area { kind: "office".into(), x: 90.0, y: 50.0, w: 15.0, d: 12.0, ..Default::default() }],
+        };
+        let f = create_warehouse_floor("  Main\n building ".into(), 100.0, 60.0, Some(shape)).await.unwrap().floor;
+        assert!(f.id.starts_with("flr-"));
+        assert_eq!((f.name.as_str(), f.width, f.depth, f.archived), ("Main building", 100.0, 60.0, false));
+        // The garage door and the office are pulled inside the walls.
+        assert_eq!((f.shape.doors[0].at, f.shape.areas[0].x, f.shape.areas[0].y, f.shape.areas[0].label.as_str()), (88.0, 85.0, 48.0, "Office"));
+        let ev = last_event("warehouse_floors", &f.id);
+        for k in ["name", "width", "depth", "shape_json", "archived", "created_at", "updated_at"] {
+            assert!(ev.contains_key(k), "a create event carries {k}");
+        }
+        // Shrinking pulls the door and the room inside the new walls, and writes only what changed.
+        let g = update_warehouse_floor(f.id.clone(), None, Some(60.0), None, None, None).await.unwrap().floor;
+        assert_eq!((g.width, g.depth, g.name.as_str()), (60.0, 60.0, "Main building"));
+        assert_eq!((g.shape.doors[0].at, g.shape.areas[0].x), (48.0, 45.0));
+        let ev = last_event("warehouse_floors", &f.id);
+        assert!(ev.contains_key("width") && ev.contains_key("shape_json") && ev.contains_key("updated_at"));
+        assert!(!ev.contains_key("name") && !ev.contains_key("depth") && !ev.contains_key("archived"));
+        // A size outside 10 to 1,000 ft is refused and changes nothing.
+        assert!(update_warehouse_floor(f.id.clone(), None, Some(2000.0), None, None, None).await.is_err());
+        assert!(update_warehouse_floor("flr-nope".into(), Some("x".into()), None, None, None, None).await.is_err());
+        // Removed, still listed (with its flag), and brought back.
+        let r = update_warehouse_floor(f.id.clone(), None, None, None, None, Some(true)).await.unwrap().floor;
+        assert!(r.archived);
+        assert!(list_warehouse_floors().await.unwrap().floors.iter().any(|x| x.id == f.id && x.archived));
+        let r = update_warehouse_floor(f.id.clone(), None, None, None, None, Some(false)).await.unwrap().floor;
+        assert!(!r.archived);
+        assert_eq!(r.shape, g.shape);
+    }
+
+    /// A pallet is placed on a building (pulled inside the walls, turned, taken off), a removed or
+    /// unknown building is refused before anything is written, a removed pallet placed again comes
+    /// back, and a place is one event with all four columns.
+    #[tokio::test]
+    async fn a_pallet_is_placed_on_a_floor_plan() {
+        let _db = crate::db::init_test_store();
+        let fl = create_warehouse_floor("Main".into(), 100.0, 60.0, None).await.unwrap().floor;
+        let d = create_warehouse_load("Truck".into(), "t.xlsx".into(), vec![line("a", "K1", &[("7", 4)])]).await.unwrap();
+        let id = d.load.id.clone();
+        let pid = core::pallet_id(&id, 1);
+        // The pallet's own create carries no placement, so it can never blank one set elsewhere.
+        let ev = last_event(PALLETS, &pid);
+        assert!(!SPOT_COLS.iter().any(|k| ev.contains_key(*k)));
+        assert_eq!(pallet_cols(&id, 1, "t").keys().filter(|k| SPOT_COLS.contains(&k.as_str())).count(), 0);
+        assert_eq!(on_plan(&id, 1).await.floor_id, "");
+
+        // Placed past the corner: pulled inside the walls, all four columns in one event.
+        let place = |f: &str, x: f64, y: f64, turned: Option<bool>| save_load_pallet(id.clone(), 1, None, None, None, None, None, Some(f.to_string()), Some(x), Some(y), turned);
+        place(&fl.id, 98.0, 59.0, None).await.unwrap();
+        let p = on_plan(&id, 1).await;
+        assert_eq!((p.floor_id.as_str(), p.x, p.y, p.turned), (fl.id.as_str(), 96.0, 56.67, false));
+        let ev = last_event(PALLETS, &pid);
+        assert_eq!(ev["floor_id"], json!(fl.id));
+        assert_eq!((ev["x"].as_f64(), ev["y"].as_f64(), ev["turned"].as_i64()), (Some(96.0), Some(56.67), Some(0)));
+        assert!(SPOT_COLS.iter().all(|k| ev.contains_key(*k)));
+        // Turned: its footprint swaps, and it is kept inside the walls the other way round.
+        place(&fl.id, 98.0, 59.0, Some(true)).await.unwrap();
+        let p = on_plan(&id, 1).await;
+        assert_eq!((p.x, p.y, p.turned), (96.67, 56.0, true));
+        // Pallets may stand over one another: a second one on the same spot is not refused.
+        let d = start_load_pallet(id.clone(), Some(Place { floor_id: fl.id.clone(), x: 96.67, y: 56.0, turned: true })).await.unwrap();
+        assert_eq!(d.started, Some(2));
+        assert_eq!((on_plan(&id, 2).await.x, on_plan(&id, 2).await.y), (96.67, 56.0));
+        // Taken off the floor plan: all four written, blank.
+        place("", 5.0, 5.0, Some(true)).await.unwrap();
+        let p = on_plan(&id, 1).await;
+        assert_eq!((p.floor_id.as_str(), p.x, p.y, p.turned), ("", 0.0, 0.0, false));
+        let ev = last_event(PALLETS, &pid);
+        assert_eq!((ev["floor_id"].as_str(), ev["x"].as_f64(), ev["y"].as_f64(), ev["turned"].as_i64()), (Some(""), Some(0.0), Some(0.0), Some(0)));
+
+        // An unknown building, a spot with no position and a removed building are refused, and the
+        // pallet stays where it was.
+        place(&fl.id, 10.0, 10.0, None).await.unwrap();
+        assert_eq!(place("flr-nope", 1.0, 1.0, None).await.unwrap_err(), "No such building.");
+        let no_x = save_load_pallet(id.clone(), 1, None, None, None, None, None, Some(fl.id.clone()), None, Some(1.0), None).await;
+        assert_eq!(no_x.unwrap_err(), "Say where on the floor plan it stands.");
+        let no_floor = save_load_pallet(id.clone(), 1, None, None, None, None, None, None, Some(1.0), Some(1.0), None).await;
+        assert_eq!(no_floor.unwrap_err(), "Say which building it stands in.");
+        update_warehouse_floor(fl.id.clone(), None, None, None, None, Some(true)).await.unwrap();
+        assert_eq!(place(&fl.id, 1.0, 1.0, None).await.unwrap_err(), "That building was removed.");
+        let p = on_plan(&id, 1).await;
+        assert_eq!((p.floor_id.as_str(), p.x, p.y), (fl.id.as_str(), 10.0, 10.0));
+        update_warehouse_floor(fl.id.clone(), None, None, None, None, Some(false)).await.unwrap();
+
+        // A removed pallet placed again comes back, standing there.
+        save_load_pallet(id.clone(), 1, None, None, None, None, Some(true), None, None, None, None).await.unwrap();
+        assert!(get_warehouse_load(id.clone()).await.unwrap().pallets.iter().all(|p| p.pallet != 1));
+        place(&fl.id, 20.0, 20.0, None).await.unwrap();
+        assert!(get_warehouse_load(id.clone()).await.unwrap().pallets.iter().any(|p| p.pallet == 1));
+        assert_eq!((on_plan(&id, 1).await.x, on_plan(&id, 1).await.y), (20.0, 20.0));
+
+        // A pallet known only through its boxes has no record: placing it makes one, in one create event.
+        let boxed = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }];
+        save_warehouse_case(id.clone(), None, 5, boxed, None, None, None).await.unwrap();
+        assert_eq!(on_plan(&id, 5).await.floor_id, "");
+        save_load_pallet(id.clone(), 5, None, None, None, None, None, Some(fl.id.clone()), Some(30.0), Some(30.0), Some(true)).await.unwrap();
+        let ev = last_event(PALLETS, &core::pallet_id(&id, 5));
+        assert!(["load_id", "number", "archived", "created_at", "updated_at"].iter().chain(SPOT_COLS.iter()).all(|k| ev.contains_key(*k)));
+        let p = on_plan(&id, 5).await;
+        assert_eq!((p.floor_id.as_str(), p.x, p.y, p.turned, p.boxes, p.pairs), (fl.id.as_str(), 30.0, 30.0, true, 1, 2));
+    }
+
+    /// A pallet started at a spot stands there from its first event, a refused spot writes nothing,
+    /// and a pallet started anywhere else carries no placement (even on a removed pallet's number).
+    #[tokio::test]
+    async fn a_pallet_starts_on_the_floor_plan() {
+        let _db = crate::db::init_test_store();
+        let fl = create_warehouse_floor("Main".into(), 100.0, 60.0, None).await.unwrap().floor;
+        let d = create_warehouse_load("Truck".into(), "t.xlsx".into(), vec![line("a", "K1", &[("7", 4)])]).await.unwrap();
+        let id = d.load.id.clone();
+        let d = start_load_pallet(id.clone(), Some(Place { floor_id: fl.id.clone(), x: 10.0, y: 10.0, turned: true })).await.unwrap();
+        assert_eq!(d.started, Some(2));
+        assert_eq!(d.pallets.iter().map(|p| p.pallet).collect::<Vec<_>>(), vec![1, 2]);
+        let p = on_plan(&id, 2).await;
+        assert_eq!((p.floor_id.as_str(), p.x, p.y, p.turned), (fl.id.as_str(), 10.0, 10.0, true));
+        let ev = last_event(PALLETS, &core::pallet_id(&id, 2));
+        assert!(["load_id", "number", "archived", "created_at", "updated_at"].iter().chain(SPOT_COLS.iter()).all(|k| ev.contains_key(*k)));
+        // Refused spots (unknown building, removed building) write nothing: no pallet 3 appears.
+        assert_eq!(start_load_pallet(id.clone(), Some(Place { floor_id: "flr-nope".into(), x: 1.0, y: 1.0, turned: false })).await.unwrap_err(), "No such building.");
+        let gone = create_warehouse_floor("Old".into(), 50.0, 50.0, None).await.unwrap().floor;
+        update_warehouse_floor(gone.id.clone(), None, None, None, None, Some(true)).await.unwrap();
+        assert_eq!(start_load_pallet(id.clone(), Some(Place { floor_id: gone.id.clone(), x: 1.0, y: 1.0, turned: false })).await.unwrap_err(), "That building was removed.");
+        assert_eq!(get_warehouse_load(id.clone()).await.unwrap().pallets.len(), 2);
+        // Started anywhere else: no placement in the create event, and an answer that names the pallet.
+        let d = start_load_pallet(id.clone(), None).await.unwrap();
+        assert_eq!(d.started, Some(3));
+        assert!(!SPOT_COLS.iter().any(|k| last_event(PALLETS, &core::pallet_id(&id, 3)).contains_key(*k)));
+        assert_eq!(on_plan(&id, 3).await.floor_id, "");
+        // Pallet 3 is placed and removed: its number comes back as a new pallet, standing nowhere.
+        save_load_pallet(id.clone(), 3, None, None, None, None, None, Some(fl.id.clone()), Some(20.0), Some(20.0), None).await.unwrap();
+        save_load_pallet(id.clone(), 3, None, None, None, None, Some(true), None, None, None, None).await.unwrap();
+        let d = start_load_pallet(id.clone(), None).await.unwrap();
+        assert_eq!(d.started, Some(3));
+        let p = on_plan(&id, 3).await;
+        assert_eq!((p.floor_id.as_str(), p.x, p.y), ("", 0.0, 0.0));
+    }
+
+    /// The list joins every pallet's position with the counts Deliveries shows, newest delivery
+    /// first and then by number, leaves a removed delivery's pallets out, and still lists a pallet
+    /// whose building was removed (the screen puts it in the tray).
+    #[tokio::test]
+    async fn the_floor_list_joins_positions_with_counts() {
+        let _db = crate::db::init_test_store();
+        let fl = create_warehouse_floor("Main".into(), 100.0, 60.0, None).await.unwrap().floor;
+        let lines = || vec![line("a", "K1", &[("7", 4), ("8", 2)]), line("b", "K2", &[("S", 3)])];
+        let older = create_warehouse_load("Older".into(), "o.xlsx".into(), lines()).await.unwrap().load.id;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let newer = create_warehouse_load("Newer".into(), "n.xlsx".into(), lines()).await.unwrap().load.id;
+        let c = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }, CaseLine { line_id: "b".into(), size: "S".into(), pairs: 1 }];
+        save_warehouse_case(older.clone(), None, 1, c.clone(), None, Some(2), None).await.unwrap();
+        save_warehouse_case(older.clone(), None, 2, c.clone(), None, Some(1), Some("loose".into())).await.unwrap();
+        // "Dock door", the location the R-535 test uses: the tests share one database, and a second
+        // location here would show in that test's recent locations when the two run at once.
+        save_load_pallet(older.clone(), 2, Some("Dock door".into()), None, Some(true), None, None, Some(fl.id.clone()), Some(12.0), Some(8.0), Some(true)).await.unwrap();
+        start_load_pallet(newer.clone(), Some(Place { floor_id: fl.id.clone(), x: 40.0, y: 20.0, turned: false })).await.unwrap();
+
+        let all = list_warehouse_floors().await.unwrap();
+        let mine: Vec<&FloorPallet> = all.pallets.iter().filter(|p| p.load_id == older || p.load_id == newer).collect();
+        // Newest delivery first, then pallet number.
+        assert_eq!(mine.iter().map(|p| (p.load_name.as_str(), p.number)).collect::<Vec<_>>(), vec![("Newer", 1), ("Newer", 2), ("Older", 1), ("Older", 2)]);
+        // The counts are exactly what the delivery's own screen shows.
+        let d = get_warehouse_load(older.clone()).await.unwrap();
+        for v in &d.pallets {
+            let p = mine.iter().find(|p| p.load_id == older && p.number == v.pallet).unwrap();
+            assert_eq!((p.boxes, p.loose, p.pairs, p.styles, p.closed, p.location.as_str()), (v.boxes, v.loose, v.pairs, v.styles, v.closed, v.location.as_str()));
+            assert_eq!(p.id, core::pallet_id(&older, v.pallet));
+        }
+        let two = mine.iter().find(|p| p.load_id == older && p.number == 2).unwrap();
+        assert_eq!((two.boxes, two.loose, two.pairs, two.closed, two.location.as_str()), (0, 3, 3, true, "Dock door"));
+        assert_eq!((two.floor_id.as_str(), two.x, two.y, two.turned), (fl.id.as_str(), 12.0, 8.0, true));
+        let one = mine.iter().find(|p| p.load_id == older && p.number == 1).unwrap();
+        assert_eq!((one.boxes, one.pairs, one.floor_id.as_str()), (2, 6, ""));
+        let n2 = mine.iter().find(|p| p.load_id == newer && p.number == 2).unwrap();
+        assert_eq!((n2.floor_id.as_str(), n2.x, n2.y, n2.turned, n2.pairs), (fl.id.as_str(), 40.0, 20.0, false, 0));
+
+        // A removed building keeps its pallets' floor_id in the list.
+        update_warehouse_floor(fl.id.clone(), None, None, None, None, Some(true)).await.unwrap();
+        let all = list_warehouse_floors().await.unwrap();
+        assert!(all.floors.iter().any(|f| f.id == fl.id && f.archived));
+        assert_eq!(on_plan(&older, 2).await.floor_id, fl.id);
+        // A removed delivery's pallets are not listed.
+        update_warehouse_load(newer.clone(), None, None, Some(true)).await.unwrap();
+        assert!(list_warehouse_floors().await.unwrap().pallets.iter().all(|p| p.load_id != newer));
     }
 
     /// R-537 on the real sheet, read locally only: `R519_SHEET=path cargo test real_sheet_pictures

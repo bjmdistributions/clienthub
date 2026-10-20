@@ -12,6 +12,7 @@ import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api } from "../lib/api";
 import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, WAREHOUSE_OPEN_KEY, type InvoicePrefill } from "../lib/warehouse";
+import { standsOn, type DeliveryOpen, type FloorRequest } from "../lib/floor";
 import BuyPanel from "./BuyPanel";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
@@ -29,7 +30,7 @@ type Draft = { id: string | null; number: number | null; kind: "box" | "loose"; 
 const blocksOf = (contents: CaseLine[]): Block[] => byStyle(contents).map((g) => ({ line_id: g.line_id, qty: Object.fromEntries(g.sizes) }));
 const draftTotal = (d: Draft) => d.blocks.reduce((a, b) => a + Object.values(b.qty).reduce((x, y) => x + (y || 0), 0), 0);
 
-export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onAsStock, onImportEnded }: {
+export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onAsStock, onImportEnded, open: openReq, onOpenUsed, onFloor }: {
   dropped: { path: string; n: number; read: ManifestRead } | null;
   /** The sheet was opened: forget it, so coming back to Deliveries never opens it again. */
   onDropUsed: () => void;
@@ -39,9 +40,15 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
   onAsStock: (path: string) => void;
   /** R-539: the delivery import was saved or cancelled. */
   onImportEnded: (how: "saved" | "cancelled") => void;
+  /** R-550: the floor plan asked for a delivery on one of its pallets (into the box editor when `kind` is set, and back to the floor plan after). */
+  open: DeliveryOpen | null;
+  onOpenUsed: () => void;
+  /** R-550: show a pallet on the floor plan, or get ready to place it there. */
+  onFloor: (r: FloorRequest) => void;
 }) {
   const [list, setList] = useState<LoadSummary[] | null>(null);
   const [detail, setDetail] = useState<LoadDetail | null>(null);
+  const [start, setStart] = useState<DeliveryOpen | null>(null);
   const [preview, setPreview] = useState<{ read: ManifestRead; fileName: string; path: string; n: number } | null>(null);
   const [showRemoved, setShowRemoved] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -71,6 +78,12 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
     onDropUsed();
   }, [dropped, onDropUsed]);
   const open = (id: string) => api.getWarehouseLoad(id).then((d) => setDetail(d)).catch((e) => toast(String(e), "error"));
+  // R-550: the floor plan asked for this delivery on one pallet, once.
+  useEffect(() => {
+    if (!openReq) return;
+    onOpenUsed();
+    api.getWarehouseLoad(openReq.loadId).then((d) => { setStart(openReq); setDetail(d); }).catch((e) => toast(String(e), "error"));
+  }, [openReq, onOpenUsed]);
   // R-488: Deal Flow's Inventory view (or the Inventory screen) asked for one delivery.
   useEffect(() => {
     try {
@@ -88,7 +101,7 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
       onAsStock={() => { const p = preview.path; setPreview(null); onAsStock(p); }} />;
   }
   if (detail) {
-    return <DeliveryScreen d={detail} merge={merge} setEditing={setEditing} onBack={() => { setDetail(null); loadList(); }} />;
+    return <DeliveryScreen d={detail} merge={merge} setEditing={setEditing} start={start} onFloor={onFloor} onBack={() => { setDetail(null); setStart(null); loadList(); }} />;
   }
 
   const live = (list || []).filter((d) => !d.archived), gone = (list || []).filter((d) => d.archived);
@@ -352,15 +365,36 @@ function ManifestPreview({ read, fileName, path, onCancel, onSaved, onLate, onAs
 
 // ---- One delivery: its pallets, and against the manifest -------------------------------
 
-function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge: (d: LoadDetail) => void; setEditing: (b: boolean) => void; onBack: () => void }) {
+/** R-550: which of a delivery's pallets stand on a live building (pallet number to building id). */
+function useOnFloor(loadId: string): Record<number, string> {
+  const [placed, setPlaced] = useState<Record<number, string>>({});
+  useEffect(() => {
+    let alive = true;
+    let un: (() => void) | undefined;
+    const load = () => api.listWarehouseFloors().then((f) => {
+      if (!alive) return;
+      const buildings = f.floors.filter((x) => !x.archived);
+      setPlaced(Object.fromEntries(f.pallets.filter((p) => p.load_id === loadId && standsOn(p, buildings)).map((p) => [p.number, p.floor_id])));
+    }).catch(() => {});
+    void load();
+    listen("netsync-applied", () => { void load(); }).then((u) => { if (alive) un = u; else u(); }).catch(() => {});
+    return () => { alive = false; un?.(); };
+  }, [loadId]);
+  return placed;
+}
+
+function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor }: { d: LoadDetail; merge: (d: LoadDetail) => void; setEditing: (b: boolean) => void; onBack: () => void; start: DeliveryOpen | null; onFloor: (r: FloorRequest) => void }) {
   const L = d.load, T = d.tally.totals;
   const lines = useMemo(() => L.lines ?? [], [L.lines]);
   const idx = useMemo(() => Object.fromEntries(lines.map((l) => [l.id, l])) as Record<string, LoadLine>, [lines]);
   const counts = useMemo(() => Object.fromEntries(d.tally.counts.map((c) => [c.line_id, c])) as Record<string, LineCount>, [d.tally.counts]);
   const [tab, setTab] = useState<"pallets" | "check" | "sell" | "buy">("pallets");
   const pallets: PalletView[] = d.pallets ?? [];
-  const [pallet, setPallet] = useState<number | null>(() => (d.pallets ?? [])[0]?.pallet ?? null);
-  const [draft, setDraftRaw] = useState<Draft | null>(null);
+  const [pallet, setPallet] = useState<number | null>(() => start?.pallet ?? (d.pallets ?? [])[0]?.pallet ?? null);
+  // R-550: opened from the floor plan on one pallet, straight into the box editor, and back there after.
+  const [draft, setDraftRaw] = useState<Draft | null>(() => (start?.kind ? { id: null, number: null, kind: start.kind, pallet: String(start.pallet), blocks: [], notes: "", copies: "1" } : null));
+  const [back, setBack] = useState(!!start?.back);
+  useEffect(() => { if (start?.kind) setEditing(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [saved, setSaved] = useState<number[] | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [addingLine, setAddingLine] = useState<string | null>(null);
@@ -368,6 +402,12 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
   const setDraft = (x: Draft | null) => { setDraftRaw(x); setEditing(!!x); };
   const live = !L.archived;
   const nextPallet = pallets.reduce((a, p) => Math.max(a, p.pallet), 0) + 1;
+  // R-550: back to the floor plan with the pallet selected, and each pallet's line to it.
+  const toFloor = (n: number) => { setBack(false); onFloor({ kind: "show", palletId: `pal-${L.id}-${n}` }); };
+  const placed = useOnFloor(L.id);
+  const floorLine = (n: number) => (live ? (placed[n]
+    ? <button onClick={() => onFloor({ kind: "show", palletId: `pal-${L.id}-${n}` })} className="text-[12px] text-accent hover:text-accent-hover">On the floor plan</button>
+    : <button onClick={() => onFloor({ kind: "place", palletId: `pal-${L.id}-${n}` })} className="text-[12px] text-muted hover:text-ink-2">Put on the floor plan</button>) : null);
 
   // R-537: the sheet's pictures. Fetch the ones this computer lacks (a phone added them), then
   // show them; Add pictures from the sheet puts them on a delivery saved without.
@@ -445,6 +485,14 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
       const next = await api.saveWarehouseCase(L.id, { caseId: draft.id, pallet: p, contents, notes: draft.notes, copies: draft.id || draft.kind === "loose" ? 1 : Math.max(1, parseInt(draft.copies, 10) || 1), kind: draft.kind });
       merge(next);
       setPallet(p);
+      // R-550: a box or loose items added from the floor plan are saved once, and it comes back.
+      if (back && !draft.id) {
+        const added = next.cases.filter((c) => !before.has(c.id));
+        setDraft(null); setSaved(null);
+        toast(draft.kind === "loose" ? `Loose items saved on pallet ${p}` : added.length === 1 ? `Box ${added[0].number} saved on pallet ${p}` : `${added.length} boxes saved on pallet ${p}`);
+        toFloor(p);
+        return;
+      }
       if (draft.id) { setDraft(null); toast("Saved"); return; }
       // Loose items are one row a save: back to the pallet, so the same items are not saved twice.
       if (draft.kind === "loose") { setDraft(null); toast(`Loose items saved on pallet ${p}`); return; }
@@ -512,12 +560,15 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
           <div className="space-y-2">
             {live && <button onClick={startPallet} disabled={palletBusy} className={`${WH_BTN_SECONDARY} w-full justify-center`}><Plus size={14} /> Start pallet {nextPallet}</button>}
             {pallets.map((p) => (
-              <button key={p.pallet} onClick={() => { setPallet(p.pallet); setDraft(null); setSaved(null); setLocDraft(null); setAsking(null); }}
-                className={`${WH_CARD} w-full text-left px-3 py-2.5 transition-colors ${pallet === p.pallet ? "ring-2 ring-accent/40 border-accent/40" : "hover:border-accent/30"}`}>
-                <div className="flex justify-between items-baseline gap-2"><span className="text-[13px] font-semibold text-ink">Pallet {p.pallet}{p.location && <span className="font-normal text-muted"> at {p.location}</span>}</span><span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(p.pairs)}</span> pairs</span></div>
-                <div className="text-[11.5px] text-muted mt-0.5">{palletMeta(p, money)}</div>
-                <div className="flex gap-1 mt-1">{p.closed ? <StatusPill tone="neutral">Full</StatusPill> : <StatusPill tone="success">Open</StatusPill>}{!p.location && <StatusPill tone="warning">No location</StatusPill>}</div>
-              </button>
+              <div key={p.pallet} className={`${WH_CARD} transition-colors ${pallet === p.pallet ? "ring-2 ring-accent/40 border-accent/40" : "hover:border-accent/30"}`}>
+                <button onClick={() => { setPallet(p.pallet); setDraft(null); setSaved(null); setLocDraft(null); setAsking(null); }}
+                  className={`w-full text-left px-3 pt-2.5 ${live ? "pb-1.5" : "pb-2.5"}`}>
+                  <div className="flex justify-between items-baseline gap-2"><span className="text-[13px] font-semibold text-ink">Pallet {p.pallet}{p.location && <span className="font-normal text-muted"> at {p.location}</span>}</span><span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(p.pairs)}</span> pairs</span></div>
+                  <div className="text-[11.5px] text-muted mt-0.5">{palletMeta(p, money)}</div>
+                  <div className="flex gap-1 mt-1">{p.closed ? <StatusPill tone="neutral">Full</StatusPill> : <StatusPill tone="success">Open</StatusPill>}{!p.location && <StatusPill tone="warning">No location</StatusPill>}</div>
+                </button>
+                {live && <div className="px-3 pb-2.5">{floorLine(p.pallet)}</div>}
+              </div>
             ))}
             {!pallets.length && <p className="text-[12.5px] text-muted px-1">No pallets yet. Start pallet 1, then add each box on it as it comes off the truck.</p>}
           </div>
@@ -525,7 +576,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
           <div className="min-w-0 space-y-3">
             {draft ? (
               <CaseEditor draft={draft} setDraft={setDraft} lines={lines} idx={idx} counts={counts} cases={d.cases} saved={saved}
-                onSave={saveCase} onRemove={draft.id ? removeCase : undefined} onClose={() => { setDraft(null); setSaved(null); }}
+                onSave={saveCase} onRemove={draft.id ? removeCase : undefined} onClose={() => { setDraft(null); setSaved(null); if (back && start) toFloor(start.pallet); }}
                 onNotListed={(q) => setAddingLine(q)} />
             ) : pallet != null && (
               <>
@@ -533,6 +584,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack }: { d: LoadDetail; merge
                   <div>
                     <div className="text-[15px] font-semibold text-ink">Pallet {pallet}{ps?.location && <span className="font-normal text-muted"> at {ps.location}</span>}</div>
                     {ps && <div className="text-[12px] text-muted tabular-nums">{palletMeta(ps, money)}{ps.pairs ? ` · ${n0(ps.pairs)} pairs · ${money(ps.msrp)} MSRP` : ""} · {ps.closed ? "full" : "open"}</div>}
+                    {floorLine(pallet)}
                   </div>
                   {live && <div className="flex gap-2">
                     <button onClick={() => startCase(null, "box")} className={WH_BTN_PRIMARY}><Plus size={14} /> Add a box</button>

@@ -52,6 +52,11 @@ mod warehouse;
 mod warehouse_core;
 mod pallet_fit;
 mod case_core;
+// R-550: the floor plan. floor_core.rs is byte-identical on the server (`snap` is the drag rule the
+// screens copy, so it is not called from Rust).
+#[allow(dead_code)]
+mod floor_core;
+mod warehouse_floors;
 mod warehouse_loads;
 // R-488: what a product or a delivery cost, and each order's share on its deal (buy_core.rs is
 // byte-identical on the server).
@@ -1387,6 +1392,9 @@ fn main() {
             warehouse_buys::apply_warehouse_buy,
             warehouse_loads::start_load_pallet,
             warehouse_loads::save_load_pallet,
+            warehouse_floors::list_warehouse_floors,
+            warehouse_floors::create_warehouse_floor,
+            warehouse_floors::update_warehouse_floor,
             // Bills (R-449)
             bills::bills_list,
             bills::bills_alerts,

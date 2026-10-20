@@ -48,7 +48,10 @@ const POLL_SECS: u64 = 20;
 /// "10" adds `warehouse_buys` and `warehouse_buy_orders` (R-488: what a product or a delivery cost,
 /// and the orders taken from it), so a desktop that updates after a buy was recorded on the phone
 /// shows the same cost.
-const HEAL_GENERATION: &str = "10";
+/// "11" adds `warehouse_floors` (R-550: the buildings drawn on the floor plan) and the four placement
+/// columns on `warehouse_load_pallets`, so a desktop that updates after a floor plan was drawn on the
+/// phone restores the buildings and where each pallet stands from the server's snapshot.
+const HEAL_GENERATION: &str = "11";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -95,6 +98,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "warehouse_load_outs",
     // A delivery's pallets as records (R-535).
     "warehouse_load_pallets",
+    // The floor plan's buildings (R-550).
+    "warehouse_floors",
     // What a product or a delivery cost, and its orders (R-488).
     "warehouse_buys",
     "warehouse_buy_orders",
@@ -1551,6 +1556,8 @@ async fn auto_heal_if_behind() {
         "warehouse_loads", "warehouse_cases", "warehouse_load_outs",
         // R-535: a delivery's pallet records (generation 9).
         "warehouse_load_pallets",
+        // R-550: the floor plan's buildings (generation 11).
+        "warehouse_floors",
         // R-488: what a product or a delivery cost, and its orders (generation 10).
         "warehouse_buys", "warehouse_buy_orders",
     ];
@@ -2826,9 +2833,18 @@ mod r400_sync_tests {
     /// R-488: a buy reaches a desktop that updates after it was recorded on the phone.
     #[test]
     fn r488_buys_force_one_more_restore_per_device() {
-        assert_eq!(HEAL_GENERATION, "10", "devices healed under generation 9 never compared the buys");
+        assert_ne!(HEAL_GENERATION, "9", "devices healed under generation 9 never compared the buys");
         assert!(SNAPSHOT_TABLES.contains(&"warehouse_buys"));
         assert!(SNAPSHOT_TABLES.contains(&"warehouse_buy_orders"));
+    }
+
+    /// R-550: the floor plan's buildings and where each pallet stands reach a desktop that updates
+    /// after they were drawn on the phone.
+    #[test]
+    fn r550_floor_plan_forces_one_more_restore_per_device() {
+        assert_eq!(HEAL_GENERATION, "11", "devices healed under generation 10 never compared the floor plan");
+        assert!(SNAPSHOT_TABLES.contains(&"warehouse_floors"));
+        assert!(SNAPSHOT_TABLES.contains(&"warehouse_load_pallets"));
     }
 
     #[tokio::test]

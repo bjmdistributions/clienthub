@@ -5,6 +5,7 @@ import { bolPdfPath } from "./logisticsBols";
 import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
 import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, PalletSpec, WarehousePallet } from "./palletFit";
 import type { CaseLine, LoadDetail, LoadLine, LoadSummary, ManifestRead, NewLine, PicturesAdded } from "./deliveries";
+import type { Floor, FloorList, FloorShape, PalletSpot } from "./floor";
 
 // R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
 // are server-proxied and don't exist until Pass 2. Every wrapper below routes
@@ -4024,11 +4025,17 @@ export const api = {
   /** A new case (with `copies` identical ones), or a change to one saved when caseId is given. Answers without the lines. */
   saveWarehouseCase: (loadId: string, c: { caseId?: string | null; pallet: number; contents: CaseLine[]; notes?: string; copies?: number; kind?: "box" | "loose" }) =>
     invoke<LoadDetail>("save_warehouse_case", { loadId, caseId: c.caseId ?? null, pallet: c.pallet, contents: c.contents, notes: c.notes ?? null, copies: c.copies ?? null, kind: c.kind ?? null }),
-  /** R-535: start the next pallet, empty. */
-  startLoadPallet: (loadId: string) => invoke<LoadDetail>("start_load_pallet", { loadId }),
-  /** R-535: where a pallet stands, its note, full or not; startNext also starts the next pallet. */
-  saveLoadPallet: (loadId: string, number: number, patch: { location?: string; note?: string; closed?: boolean; startNext?: boolean; archived?: boolean }) =>
-    invoke<LoadDetail>("save_load_pallet", { loadId, number, location: patch.location ?? null, note: patch.note ?? null, closed: patch.closed ?? null, startNext: patch.startNext ?? null, archived: patch.archived ?? null }),
+  /** R-535: start the next pallet, empty. R-550: with a `place` it starts standing on that floor plan; the answer names it as `started`. */
+  startLoadPallet: (loadId: string, place?: PalletSpot) => invoke<LoadDetail>("start_load_pallet", { loadId, place: place ?? null }),
+  /** R-535: where a pallet stands, its note, full or not; startNext also starts the next pallet. R-550: floorId, x, y and turned place it on a floor plan (all four together), floorId "" takes it off. */
+  saveLoadPallet: (loadId: string, number: number, patch: { location?: string; note?: string; closed?: boolean; startNext?: boolean; archived?: boolean; floorId?: string; x?: number; y?: number; turned?: boolean }) =>
+    invoke<LoadDetail>("save_load_pallet", { loadId, number, location: patch.location ?? null, note: patch.note ?? null, closed: patch.closed ?? null, startNext: patch.startNext ?? null, archived: patch.archived ?? null, floorId: patch.floorId ?? null, x: patch.x ?? null, y: patch.y ?? null, turned: patch.turned ?? null }),
+  /** R-550: every building (removed ones too) and every pallet of every delivery, placed or not. */
+  listWarehouseFloors: () => invoke<FloorList>("list_warehouse_floors"),
+  createWarehouseFloor: (name: string, width: number, depth: number, shape: FloorShape) =>
+    invoke<{ floor: Floor }>("create_warehouse_floor", { name, width, depth, shape }),
+  updateWarehouseFloor: (id: string, patch: { name?: string; width?: number; depth?: number; shape?: FloorShape; archived?: boolean }) =>
+    invoke<{ floor: Floor }>("update_warehouse_floor", { id, name: patch.name ?? null, width: patch.width ?? null, depth: patch.depth ?? null, shape: patch.shape ?? null, archived: patch.archived ?? null }),
   removeWarehouseCase: (loadId: string, caseId: string) => invoke<LoadDetail>("remove_warehouse_case", { loadId, caseId }),
   /** R-519 phase 2: an invoice's pairs leave the delivery (one out per invoice, so a retry takes nothing twice). */
   takeLoadPairs: (loadId: string, o: { invoiceId?: string; reference?: string; note?: string; takes: CaseLine[] }) =>

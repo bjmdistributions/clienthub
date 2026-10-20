@@ -26,6 +26,8 @@ export type LoadDetail = {
   load: LoadHead; cases: WhCase[]; tally: { counts: LineCount[]; pallets: PalletSum[]; totals: LoadTotals };
   outs: LoadOut[]; stock: Stock; short?: TakeShort[];
   pallets: PalletView[]; recent_locations: string[];
+  /** The number of the pallet a start just made (R-550: start_load_pallet only). */
+  started?: number;
 };
 export type LoadSummary = Omit<LoadHead, "lines"> & { totals: LoadTotals };
 /**
