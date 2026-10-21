@@ -23,6 +23,15 @@
 //! A shipping share that no shipping payment covers is written on the deal as a typed `other`
 //! cost; one a payment covers is not written as a line at all, since the `fee` link already counts
 //! it and the line would count it twice on a deal whose goods are not linked.
+//!
+//! R-551: the trucks. A buy brought in by logistics loads (`freight_bookings.buy_id`) takes its
+//! shipping in from them (`truck_cost`, `ship_in`): each truck at what its carrier was paid (a tied
+//! bank row sets that), else its carrier rate, else the carrier cost its quote was built on. A typed
+//! shipping in stands only while the buy has no truck. His markup on those trucks is his pay, never a
+//! bank row of the buy, so it is not in `ship` and never covered: it is laid on the orders like the
+//! shipping in (`OrderPlan::markup`), counted in the cost of a unit and in the rollup, and each runtime
+//! takes an order's markup off the top of that order's owner split as logistics pay, the way his
+//! markup on any truck is taken.
 
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +66,9 @@ pub struct Totals {
     pub units: f64,
     pub goods: f64,
     pub ship: f64,
+    /// R-551: his markup on the trucks that brought the buy in, while the logistics pay rule pays it
+    /// (0 otherwise). Laid on the orders like `ship`, never covered by a bank row.
+    pub markup: f64,
 }
 
 /// One order, in the order they were taken.
@@ -95,6 +107,9 @@ pub struct OrderPlan {
     /// nothing is written for it.
     pub goods: f64,
     pub ship: f64,
+    /// R-551: the order's share of his markup on the trucks (0 for an `own_cost` order, which keeps
+    /// its own typed cost and takes nothing of the buy's).
+    pub markup: f64,
     pub goods_slices: Vec<Slice>,
     pub ship_slices: Vec<Slice>,
     pub goods_paid: bool,
@@ -123,35 +138,43 @@ pub struct Plan {
     pub oversold: bool,
     pub unit_goods: f64,
     pub unit_ship: f64,
+    /// R-551: his markup on the trucks, a unit.
+    pub unit_markup: f64,
     /// What the buy's rows have paid towards the goods and the shipping, never more than each total.
     pub goods_paid: f64,
     pub ship_paid: f64,
 }
 
-/// Each order's goods and shipping share, in order.
-fn shares(t: &Totals, orders: &[OrderIn]) -> Vec<(f64, f64, bool)> {
+/// Each order's goods, shipping and markup share, in order.
+fn shares(t: &Totals, orders: &[OrderIn]) -> Vec<(f64, f64, f64, bool)> {
     let units = t.units.max(0.0);
-    let (ug, us) = if units > 0.0 { (t.goods / units, t.ship / units) } else { (0.0, 0.0) };
-    let (mut sold, mut g_sum, mut s_sum) = (0.0_f64, 0.0_f64, 0.0_f64);
+    let (ug, us, um) = if units > 0.0 { (t.goods / units, t.ship / units, t.markup / units) } else { (0.0, 0.0, 0.0) };
+    let (mut sold, mut g_sum, mut s_sum, mut m_sum) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
     let mut out = Vec::with_capacity(orders.len());
     for o in orders {
         let count = o.count.max(0.0);
         let before = sold;
         sold += count;
         let typed = o.goods_typed.map(|g| r2(g.max(0.0)));
-        let (g, s, past) = if units <= 0.0 {
-            (typed.unwrap_or(0.0), 0.0, false)
+        let (g, s, m, past) = if units <= 0.0 {
+            (typed.unwrap_or(0.0), 0.0, 0.0, false)
         } else if before >= units - 1e-9 {
-            (typed.unwrap_or(0.0), 0.0, true)
+            (typed.unwrap_or(0.0), 0.0, 0.0, true)
         } else if sold >= units - 1e-9 {
             // The last of what was bought: whatever is left of each total.
-            (typed.unwrap_or_else(|| r2((t.goods - g_sum).max(0.0))), r2((t.ship - s_sum).max(0.0)), false)
+            (
+                typed.unwrap_or_else(|| r2((t.goods - g_sum).max(0.0))),
+                r2((t.ship - s_sum).max(0.0)),
+                r2((t.markup - m_sum).max(0.0)),
+                false,
+            )
         } else {
-            (typed.unwrap_or_else(|| r2(count * ug)), r2(count * us), false)
+            (typed.unwrap_or_else(|| r2(count * ug)), r2(count * us), r2(count * um), false)
         };
         g_sum += g;
         s_sum += s;
-        out.push((g, s, past));
+        m_sum += m;
+        out.push((g, s, m, past));
     }
     out
 }
@@ -213,12 +236,13 @@ pub fn plan(t: &Totals, orders: &[OrderIn], rows: &[RowIn]) -> Plan {
     let (mut goods_open, mut ship_open) = (true, true);
     let (mut goods_taken, mut ship_taken) = (0.0_f64, 0.0_f64);
     let mut out = Vec::with_capacity(orders.len());
-    for (o, (g, s, past)) in orders.iter().zip(sh) {
+    for (o, (g, s, m, past)) in orders.iter().zip(sh) {
         let mut p = OrderPlan {
             id: o.id.clone(),
             count: o.count.max(0.0),
             goods: g,
             ship: s,
+            markup: if o.own_cost { 0.0 } else { m },
             goods_slices: Vec::new(),
             ship_slices: Vec::new(),
             goods_paid: false,
@@ -265,6 +289,7 @@ pub fn plan(t: &Totals, orders: &[OrderIn], rows: &[RowIn]) -> Plan {
         oversold: units > 0.0 && sold > units + 1e-9,
         unit_goods: if units > 0.0 { t.goods / units } else { 0.0 },
         unit_ship: if units > 0.0 { t.ship / units } else { 0.0 },
+        unit_markup: if units > 0.0 { t.markup / units } else { 0.0 },
         goods_paid: r2(goods_taken + goods_held),
         ship_paid: r2(ship_taken + ship_held),
         orders: out,
@@ -305,11 +330,13 @@ pub struct Rollup {
     pub left: f64,
     pub goods_total: f64,
     pub ship_total: f64,
-    /// (goods + shipping in) / units bought.
+    /// R-551: his markup on the trucks that brought it in.
+    pub markup_total: f64,
+    /// (goods + shipping in + his markup on the trucks) / units bought.
     pub unit_cost: f64,
     pub goods_paid: f64,
     pub ship_paid: f64,
-    /// The orders' shares (or their own typed cost).
+    /// The orders' shares, his markup on the trucks included (or their own typed cost).
     pub cost_sold: f64,
     pub sales: f64,
     pub received: f64,
@@ -333,7 +360,8 @@ pub fn rollup(t: &Totals, p: &Plan, money: &[OrderMoney], left: f64) -> Rollup {
         left,
         goods_total: r2(t.goods),
         ship_total: r2(t.ship),
-        unit_cost: if t.units > 0.0 { (t.goods + t.ship) / t.units } else { 0.0 },
+        markup_total: r2(t.markup),
+        unit_cost: if t.units > 0.0 { (t.goods + t.ship + t.markup) / t.units } else { 0.0 },
         goods_paid: p.goods_paid,
         ship_paid: p.ship_paid,
         oversold: p.oversold,
@@ -342,7 +370,7 @@ pub fn rollup(t: &Totals, p: &Plan, money: &[OrderMoney], left: f64) -> Rollup {
     };
     for o in &p.orders {
         let m = money.iter().find(|m| m.id == o.id).cloned().unwrap_or_default();
-        let cost = if o.own_cost { r2(m.own_cost) } else { r2(o.goods + o.ship) };
+        let cost = if o.own_cost { r2(m.own_cost) } else { r2(o.goods + o.ship + o.markup) };
         let made = r2(m.sales - cost - m.other_cost - m.refunds);
         r.cost_sold += cost;
         r.sales += m.sales;
@@ -357,8 +385,84 @@ pub fn rollup(t: &Totals, p: &Plan, money: &[OrderMoney], left: f64) -> Rollup {
     r.other_cost = r2(r.other_cost);
     r.refunds = r2(r.refunds);
     r.made_on_sold = r2(r.sales - r.cost_sold - r.other_cost - r.refunds);
-    r.made_so_far = r2(r.received - t.goods - t.ship - r.other_cost - r.refunds);
+    r.made_so_far = r2(r.received - t.goods - t.ship - t.markup - r.other_cost - r.refunds);
     r
+}
+
+/// R-551: one truck bringing a buy in, as the runtime reads it off `freight_bookings`.
+#[derive(Debug, Clone, Default)]
+pub struct TruckIn {
+    /// `freight_bookings.status`.
+    pub status: String,
+    pub archived: bool,
+    /// `paid_amount`: what the carrier was paid (tying a bank row in Pay carriers sets it).
+    pub paid: Option<f64>,
+    /// `quoted_cost`: the carrier rate.
+    pub rate: Option<f64>,
+    /// `quote_cost`: the carrier cost the quote was built on.
+    pub quote_cost: Option<f64>,
+    /// `markup_amount`: his markup on this truck.
+    pub markup: Option<f64>,
+}
+
+impl TruckIn {
+    /// Neither removed nor cancelled. A truck still waiting for its quote is live and costs nothing yet.
+    pub fn live(&self) -> bool {
+        !self.archived && self.status != "cancelled"
+    }
+}
+
+/// What one truck's carrier costs the buy: what it was paid, else its carrier rate, else the carrier cost
+/// its quote was built on, else nothing yet. A cancelled or removed truck costs nothing. A recorded $0 is
+/// not a payment (the R-533 rule), so the truck still counts at its rate.
+pub fn truck_carrier(t: &TruckIn) -> f64 {
+    if !t.live() {
+        return 0.0;
+    }
+    let some = |x: Option<f64>| x.filter(|v| v.is_finite() && *v > CENT);
+    r2(some(t.paid).or(some(t.rate)).or(some(t.quote_cost)).unwrap_or(0.0))
+}
+
+/// A buy's trucks, totalled.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct TruckCost {
+    /// Trucks neither removed nor cancelled.
+    pub live: usize,
+    /// Live trucks with a carrier figure (paid, a rate or a quote).
+    pub priced: usize,
+    /// Live trucks whose carrier was paid.
+    pub paid: usize,
+    pub carrier: f64,
+    /// His markup on the live trucks, when `pays_markup` (the logistics pay rule is on and paying);
+    /// 0 otherwise.
+    pub markup: f64,
+}
+
+pub fn truck_cost(trucks: &[TruckIn], pays_markup: bool) -> TruckCost {
+    let mut c = TruckCost::default();
+    let (mut carrier, mut markup) = (0.0_f64, 0.0_f64);
+    for t in trucks.iter().filter(|t| t.live()) {
+        c.live += 1;
+        let x = truck_carrier(t);
+        if x > CENT {
+            c.priced += 1;
+        }
+        if t.paid.map_or(false, |p| p.is_finite() && p > CENT) {
+            c.paid += 1;
+        }
+        carrier += x;
+        if pays_markup {
+            markup += t.markup.filter(|m| m.is_finite() && *m > 0.0).unwrap_or(0.0);
+        }
+    }
+    c.carrier = r2(carrier);
+    c.markup = r2(markup);
+    c
+}
+
+/// The buy's shipping in: its trucks' carriers once it has a truck, the typed figure only while it has none.
+pub fn ship_in(typed: f64, trucks: &TruckCost) -> f64 {
+    if trucks.live > 0 { trucks.carrier } else { r2(typed.max(0.0)) }
 }
 
 /// The id of an order: one per invoice and buy, so a retry never records it twice.
@@ -427,7 +531,7 @@ mod tests {
     #[test]
     fn a_unit_costs_what_was_paid_plus_shipping_in_over_the_units() {
         // Jack's example: 110,000 pairs at $1.25 and $3,000 shipping in.
-        let t = Totals { units: 110_000.0, goods: 137_500.0, ship: 3_000.0 };
+        let t = Totals { units: 110_000.0, goods: 137_500.0, ship: 3_000.0, markup: 0.0 };
         let p = plan(&t, &[o("a", 1_000.0)], &[]);
         assert_eq!(p.orders[0].goods, 1_250.0);
         assert_eq!(p.orders[0].ship, 27.27);
@@ -437,7 +541,7 @@ mod tests {
 
     #[test]
     fn the_last_order_takes_what_is_left_so_shares_never_pass_what_was_paid() {
-        let t = Totals { units: 3.0, goods: 100.0, ship: 10.0 };
+        let t = Totals { units: 3.0, goods: 100.0, ship: 10.0, markup: 0.0 };
         let p = plan(&t, &[o("a", 1.0), o("b", 1.0), o("c", 1.0)], &[]);
         let g: Vec<f64> = p.orders.iter().map(|x| x.goods).collect();
         assert_eq!(g, vec![33.33, 33.33, 33.34]);
@@ -447,7 +551,7 @@ mod tests {
 
     #[test]
     fn an_order_past_what_was_bought_takes_nothing_and_says_so() {
-        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0 };
+        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0, markup: 0.0 };
         let p = plan(&t, &[o("a", 8.0), o("b", 4.0), o("c", 1.0)], &[]);
         assert_eq!(p.orders[0].goods, 80.0);
         assert_eq!(p.orders[1].goods, 20.0, "crossing the line takes the rest");
@@ -458,7 +562,7 @@ mod tests {
 
     #[test]
     fn a_typed_share_stands_and_the_last_order_takes_what_it_left() {
-        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0 };
+        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0, markup: 0.0 };
         let mut a = o("a", 5.0);
         a.goods_typed = Some(60.0);
         let p = plan(&t, &[a, o("b", 5.0)], &[]);
@@ -468,7 +572,7 @@ mod tests {
 
     #[test]
     fn a_wire_covers_the_oldest_orders_in_full_and_holds_the_rest() {
-        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0 };
+        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0, markup: 0.0 };
         let rows = [row("w1", Kind::Goods, 100.0, "2026-10-01")];
         let p = plan(&t, &[o("a", 2.0), o("b", 3.0)], &rows);
         assert_eq!(p.orders[0].goods_slices, vec![Slice { txn_id: "w1".into(), amount: 20.0 }]);
@@ -480,7 +584,7 @@ mod tests {
 
     #[test]
     fn a_deposit_and_a_balance_fill_in_date_order_and_an_order_never_part_covered() {
-        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0 };
+        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0, markup: 0.0 };
         let rows = [row("bal", Kind::Goods, 30.0, "2026-10-05"), row("dep", Kind::Goods, 40.0, "2026-10-01")];
         let p = plan(&t, &[o("a", 5.0), o("b", 3.0), o("c", 1.0)], &rows);
         // a: 50 = 40 deposit + 10 balance; b: 30 > the 20 left, so b and every later order wait.
@@ -494,14 +598,14 @@ mod tests {
 
     #[test]
     fn a_row_bigger_than_the_buy_holds_only_the_buy_and_leaves_the_rest_unbooked() {
-        let t = Totals { units: 1.0, goods: 100.0, ship: 0.0 };
+        let t = Totals { units: 1.0, goods: 100.0, ship: 0.0, markup: 0.0 };
         let p = plan(&t, &[], &[row("w", Kind::Goods, 150.0, "2026-10-01")]);
         assert_eq!(p.held, vec![Held { txn_id: "w".into(), kind: Kind::Goods, amount: 100.0 }]);
     }
 
     #[test]
     fn shipping_in_is_its_own_leg_on_its_own_rows() {
-        let t = Totals { units: 4.0, goods: 40.0, ship: 8.0 };
+        let t = Totals { units: 4.0, goods: 40.0, ship: 8.0, markup: 0.0 };
         let rows = [row("w", Kind::Goods, 40.0, "2026-10-01"), row("f", Kind::Ship, 8.0, "2026-10-15")];
         let p = plan(&t, &[o("a", 1.0)], &rows);
         assert_eq!(p.orders[0].goods_slices, vec![Slice { txn_id: "w".into(), amount: 10.0 }]);
@@ -513,7 +617,7 @@ mod tests {
 
     #[test]
     fn an_order_with_its_own_cost_takes_its_share_but_is_never_covered() {
-        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0 };
+        let t = Totals { units: 10.0, goods: 100.0, ship: 0.0, markup: 0.0 };
         let mut a = o("a", 5.0);
         a.own_cost = true;
         let p = plan(&t, &[a, o("b", 5.0)], &[row("w", Kind::Goods, 100.0, "2026-10-01")]);
@@ -525,7 +629,7 @@ mod tests {
 
     #[test]
     fn the_rollup_counts_the_unsold_stock_at_nothing_until_it_sells() {
-        let t = Totals { units: 10.0, goods: 100.0, ship: 10.0 };
+        let t = Totals { units: 10.0, goods: 100.0, ship: 10.0, markup: 0.0 };
         let p = plan(&t, &[o("a", 5.0)], &[]);
         let m = [OrderMoney { id: "a".into(), sales: 120.0, received: 120.0, other_cost: 5.0, ..Default::default() }];
         let r = rollup(&t, &p, &m, 5.0);
@@ -542,7 +646,7 @@ mod tests {
 
     #[test]
     fn nothing_sold_reads_as_a_plain_zero() {
-        let p = plan(&Totals { units: 5.0, goods: 10.0, ship: 0.0 }, &[], &[]);
+        let p = plan(&Totals { units: 5.0, goods: 10.0, ship: 0.0, markup: 0.0 }, &[], &[]);
         assert!(p.sold == 0.0 && p.sold.is_sign_positive(), "an empty sum must not serialise as -0.0");
         assert!(r2(-0.0).is_sign_positive());
         assert_eq!(serde_json::to_string(&p.sold).unwrap(), "0.0");
@@ -556,6 +660,66 @@ mod tests {
         assert_ne!(a, alloc_id("buy_1", "deal_1", "txn_1", "fee"));
         assert_ne!(a, alloc_id("buy_2", "deal_1", "txn_1", "supplier_payment"));
         assert_eq!(a, "alloc_buy_1_".to_string() + &a[12..]);
+    }
+
+    fn truck(status: &str, paid: Option<f64>, rate: Option<f64>, quote_cost: Option<f64>, markup: Option<f64>) -> TruckIn {
+        TruckIn { status: status.into(), archived: false, paid, rate, quote_cost, markup }
+    }
+
+    #[test]
+    fn a_truck_costs_what_was_paid_else_its_rate_else_its_quote() {
+        assert_eq!(truck_carrier(&truck("delivered", Some(1_740.0), Some(1_750.0), Some(1_700.0), None)), 1_740.0);
+        assert_eq!(truck_carrier(&truck("booked", None, Some(1_750.0), Some(1_700.0), None)), 1_750.0);
+        assert_eq!(truck_carrier(&truck("quoted", None, None, Some(1_700.0), None)), 1_700.0);
+        assert_eq!(truck_carrier(&truck("quote", None, None, None, None)), 0.0, "waiting for its quote");
+        assert_eq!(truck_carrier(&truck("booked", Some(0.0), Some(1_750.0), None, None)), 1_750.0, "a $0 is not a payment");
+        assert_eq!(truck_carrier(&truck("cancelled", Some(500.0), Some(1_750.0), None, None)), 0.0);
+        let mut gone = truck("booked", None, Some(900.0), None, None);
+        gone.archived = true;
+        assert_eq!(truck_carrier(&gone), 0.0);
+    }
+
+    #[test]
+    fn two_trucks_make_the_shipping_in_and_a_typed_figure_stands_only_without_one() {
+        let ts = [
+            truck("quoted", None, None, Some(1_600.0), Some(150.0)),
+            truck("booked", None, Some(1_700.0), Some(1_650.0), Some(150.0)),
+            truck("cancelled", None, Some(9_999.0), None, Some(99.0)),
+        ];
+        let c = truck_cost(&ts, true);
+        assert_eq!(c, TruckCost { live: 2, priced: 2, paid: 0, carrier: 3_300.0, markup: 300.0 });
+        assert_eq!(truck_cost(&ts, false).markup, 0.0, "no markup while the pay rule does not pay it");
+        assert_eq!(ship_in(3_000.0, &c), 3_300.0);
+        assert_eq!(ship_in(3_000.0, &TruckCost::default()), 3_000.0);
+        let waiting = truck_cost(&[truck("quote", None, None, None, None)], true);
+        assert_eq!((waiting.live, waiting.priced, ship_in(3_000.0, &waiting)), (1, 0, 0.0), "a truck sent replaces the typed figure");
+    }
+
+    #[test]
+    fn his_markup_is_laid_on_the_orders_like_the_shipping_and_never_covered() {
+        // Jack's plan example: 110,000 pairs at $1.25, two trucks: carriers $3,300 and his $300 markup.
+        let t = Totals { units: 110_000.0, goods: 137_500.0, ship: 3_300.0, markup: 300.0 };
+        let p = plan(&t, &[o("a", 1_000.0)], &[row("f", Kind::Ship, 3_300.0, "2026-10-30")]);
+        assert_eq!(p.orders[0].ship, 30.0);
+        assert_eq!(p.orders[0].markup, 2.73);
+        assert!(p.orders[0].ship_paid, "the carrier row covers the shipping, the markup is not a bank cost");
+        assert!(((p.unit_goods + p.unit_ship + p.unit_markup) - 1.282_727).abs() < 1e-5);
+        let m = [OrderMoney { id: "a".into(), sales: 2_000.0, received: 2_000.0, ..Default::default() }];
+        let r = rollup(&t, &p, &m, 109_000.0);
+        assert_eq!(r.markup_total, 300.0);
+        assert_eq!(r.cost_sold, 1_282.73);
+        assert_eq!(r.made_on_sold, 717.27);
+        assert_eq!(r.made_so_far, r2(2_000.0 - 137_500.0 - 3_300.0 - 300.0));
+    }
+
+    #[test]
+    fn the_last_order_takes_what_is_left_of_the_markup_and_an_own_cost_order_none() {
+        let t = Totals { units: 3.0, goods: 30.0, ship: 0.0, markup: 10.0 };
+        let mut b = o("b", 1.0);
+        b.own_cost = true;
+        let p = plan(&t, &[o("a", 1.0), b, o("c", 1.0)], &[]);
+        let m: Vec<f64> = p.orders.iter().map(|x| x.markup).collect();
+        assert_eq!(m, vec![3.33, 0.0, 3.34], "b keeps its own cost; c takes what is left after a and b's shares");
     }
 
     #[test]

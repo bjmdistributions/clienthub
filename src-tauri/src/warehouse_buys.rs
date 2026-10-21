@@ -473,7 +473,7 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
         }
     }
     let live: Vec<&OrderRow> = ords.iter().filter(|o| !o.undone && deal_of_order.contains_key(&o.id)).collect();
-    let t = core::Totals { units: b.units, goods: b.goods, ship: b.ship };
+    let t = core::Totals { units: b.units, goods: b.goods, ship: b.ship, markup: 0.0 };
     let ins: Vec<core::OrderIn> = live.iter().map(|o| core::OrderIn { id: o.id.clone(), count: o.count, goods_typed: o.goods_typed, own_cost: o.own_cost }).collect();
     let rins: Vec<core::RowIn> = rows
         .iter()
@@ -724,7 +724,7 @@ fn order_money(c: &rusqlite::Connection, deal: &str, plan: &core::OrderPlan) -> 
 
 fn detail(c: &rusqlite::Connection, id: &str) -> Result<Value, String> {
     let w = work(c, id, None, None)?;
-    let t = core::Totals { units: w.b.units, goods: w.b.goods, ship: w.b.ship };
+    let t = core::Totals { units: w.b.units, goods: w.b.goods, ship: w.b.ship, markup: 0.0 };
     let (left, stock_name) = stock_left(c, &w.b);
     let money: Vec<core::OrderMoney> = w.plan.orders.iter().filter_map(|p| w.deal_of_order.get(&p.id).map(|d| order_money(c, d, p))).collect();
     let roll = core::rollup(&t, &w.plan, &money, left);
