@@ -10,7 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, ChevronRight, Plus, Warehouse } from "lucide-react";
 import { api, type ComingBuy, type StockWithBuy } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { OPEN_BUY_KEY, openManifestForBuy } from "../lib/buyLoads";
+import { OPEN_BUY_KEY, openManifestForBuy, perUnit } from "../lib/buyLoads";
 import { canSeePayments } from "../lib/dealPayments";
 import { useSessionMe } from "../lib/useSessionMe";
 import BuyPanel, { NewBuyForm } from "./BuyPanel";
@@ -142,7 +142,7 @@ export default function BuysView({ search = "", compact = false }: { search?: st
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">{n0(s.left)} {s.unit}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">{r ? `${n0(r.sold)} of ${n0(r.bought)}` : "–"}</td>
-                    {numbers && <td className="px-3 py-2.5 text-right tabular-nums">{r ? fmtAmount(r.unit_cost) : "–"}</td>}
+                    {numbers && <td className="px-3 py-2.5 text-right tabular-nums">{r ? perUnit(r.unit_cost) : "–"}</td>}
                     {numbers && (
                       <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${r && r.sold > 0 ? (r.made_on_sold >= 0 ? "text-success-ink" : "text-danger-ink") : "text-muted"}`}>
                         {r && r.sold > 0 ? fmtAmount(r.made_on_sold) : "–"}

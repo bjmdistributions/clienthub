@@ -489,7 +489,9 @@ function OrderRow({ o, d, numbers, busy, run }: {
 function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k: string, f: () => Promise<BuyDetail | void>) => Promise<void> }) {
   const [adding, setAdding] = useState<BuyKind | null>(null);
   const r = d.rollup;
-  const group = (kind: BuyKind) => d.payments.filter((p) => p.kind === kind);
+  // R-551: a bank row a truck's carrier was paid with is shown (and taken off) on that truck, in Shipping in.
+  const onTruck = new Set(d.trucks.filter((t) => t.status !== "cancelled" && t.bank_txn_id).map((t) => t.bank_txn_id));
+  const group = (kind: BuyKind) => d.payments.filter((p) => p.kind === kind && !(kind === "ship" && onTruck.has(p.txn_id)));
   const section = (kind: BuyKind, title: string, paid: number, total: number) => (
     <div className="min-w-0">
       <div className="flex items-center justify-between gap-2">
