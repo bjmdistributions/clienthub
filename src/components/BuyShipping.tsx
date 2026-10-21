@@ -16,6 +16,8 @@ import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD } from "./warehouseUi";
 // so far, his markup on them, and tying each carrier's bank payment, which pays the buy's shipping in. This desktop never
 // writes a truck: Send to logistics asks the server, and the trucks come back through sync.
 
+/** A truck whose carrier can be paid: sent to book or later (the server refuses a quote). */
+const BOOKED_OR_LATER = ["requested", "booked", "picked_up", "delivered"];
 const GHOST = "px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap";
 
 export default function ShippingIn({ d, numbers, onChanged }: { d: BuyDetail; numbers: boolean; onChanged: () => void }) {
@@ -59,7 +61,7 @@ export default function ShippingIn({ d, numbers, onChanged }: { d: BuyDetail; nu
         {!dead && attach && numbers && (
           tied
             ? <button type="button" onClick={() => controls.unlink(target(t))} disabled={controls.busy} className={GHOST}>Take the bank payment off</button>
-            : t.rate > 0.005 && <button type="button" onClick={() => controls.link(target(t))} disabled={controls.busy} className={GHOST}>Tie the bank payment</button>
+            : BOOKED_OR_LATER.includes(t.status) && <button type="button" onClick={() => controls.link(target(t))} disabled={controls.busy} className={GHOST}>Tie the bank payment</button>
         )}
       </div>
     );

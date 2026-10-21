@@ -17,6 +17,7 @@ import BuyPanel from "./BuyPanel";
 import ComingBuys from "./ComingBuys";
 import { canSeePayments } from "../lib/dealPayments";
 import { openBuyInDealFlow } from "../lib/buyLoads";
+import { can, isAdmin } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
@@ -149,9 +150,9 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
       {coming.length > 0 && (
         <div className="mb-4">
           <ComingBuys items={coming} numbers={numbers} onOpen={(b) => openBuyInDealFlow(b.id)}
-            action={(b) => (
+            action={isAdmin(me) || can(me, "deal_flow:edit") ? (b) => (
               <button type="button" onClick={(e) => { e.stopPropagation(); onAddManifest({ id: b.id, name: b.name }); }} className={WH_BTN_PRIMARY}>Add the manifest</button>
-            )} />
+            ) : undefined} />
         </div>
       )}
       {list === null ? <div className="text-[13px] text-muted">Loading…</div> : live.length ? (

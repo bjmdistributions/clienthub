@@ -592,9 +592,26 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
     let tc = truck_cost_of(&trucks);
     let t = totals_of(&b, &tc);
     let ins: Vec<core::OrderIn> = live.iter().map(|o| core::OrderIn { id: o.id.clone(), count: o.count, goods_typed: o.goods_typed, own_cost: o.own_cost }).collect();
+    // R-551: a row a carrier was paid with books no more for the buy than its trucks were paid from it, so the rest of a
+    // shared charge stays free for whatever else it paid. A row tied on the buy itself (before it had trucks) keeps its room.
+    let tied = |txn: &str| -> Option<f64> {
+        let on: Vec<&TruckFull> = trucks.iter().filter(|t| t.truck_in().live() && t.bank_txn_id == txn).collect();
+        if on.is_empty() {
+            None
+        } else {
+            Some(core::total(on.iter().map(|t| t.paid.unwrap_or(0.0).max(0.0))))
+        }
+    };
     let rins: Vec<core::RowIn> = rows
         .iter()
-        .map(|(id, (k, i))| core::RowIn { txn_id: id.clone(), kind: *k, room: core::r2(i.amount - i.others), posted_at: i.posted_at.clone() })
+        .map(|(id, (k, i))| {
+            let room = core::r2(i.amount - i.others);
+            let room = match tied(id) {
+                Some(paid) => core::r2(room.min(paid)),
+                None => room,
+            };
+            core::RowIn { txn_id: id.clone(), kind: *k, room, posted_at: i.posted_at.clone() }
+        })
         .collect();
     let plan = core::plan(&t, &ins, &rins);
     let mut wants = Vec::new();

@@ -963,7 +963,8 @@ export default function LogisticsBookingForm({
   };
 
   const remove = async () => {
-    if (!confirm(`Remove booking ${loadNumber(booking)}? It leaves the list and the deal's shipping figures. The record is kept, but it cannot be brought back from the app.`)) return;
+    const leaves = booking.buy ? "the buy's shipping in" : "the deal's shipping figures";
+    if (!confirm(`Remove booking ${loadNumber(booking)}? It leaves the list and ${leaves}. The record is kept, but it cannot be brought back from the app.`)) return;
     try {
       await api.logistics.remove(booking.id);
       toast("Booking removed");

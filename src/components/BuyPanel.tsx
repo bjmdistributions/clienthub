@@ -12,6 +12,7 @@ import { api, type BuyDetail, type BuyInput, type BuyKind, type BuyOrder, type U
 import { fmtAmount, localDay } from "../lib/format";
 import { buySteps, costEachLine, perUnit, type StepKey } from "../lib/buyLoads";
 import { canSeePayments } from "../lib/dealPayments";
+import { can, isAdmin } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import BuyShipping from "./BuyShipping";
 import NumberInput from "./NumberInput";
@@ -76,7 +77,7 @@ export default function BuyPanel({ itemId, loadId, buyId, stockName, unit = "uni
     <BuyView
       d={detail} unit={detail.buy.load_id ? "pairs" : detail.buy.item_id ? "units" : unit} numbers={numbers}
       onEdit={() => setEditing(true)} onChanged={changed} onReload={load} onRemoved={() => { setDetail(null); onChanged?.(); }}
-      onAddManifest={onAddManifest} onOpenWarehouse={onOpenWarehouse}
+      onAddManifest={isAdmin(me) || can(me, "deal_flow:edit") ? onAddManifest : undefined} onOpenWarehouse={onOpenWarehouse}
     />
   );
 }
@@ -510,7 +511,7 @@ function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k
             </span>
           </div>
         ))}
-        {d.can_book_bank !== false && (
+        {d.can_book_bank !== false && !(kind === "ship" && d.truck_cost.live > 0) && (
           adding === kind
             ? <PayPicker kind={kind} buyId={d.buy.id} onDone={(v) => { setAdding(null); if (v) run("pay", async () => v); }} onCancel={() => setAdding(null)} />
             : <button onClick={() => setAdding(kind)} className="inline-flex items-center gap-1.5 text-[12.5px] text-accent-hover hover:underline"><Plus size={13} /> Add a payment</button>
@@ -522,9 +523,9 @@ function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k
   const byTruck = d.truck_cost.live > 0;
   return (
     <div className={`${WH_CARD} p-4`}>
-      <div className={`grid grid-cols-1 ${byTruck ? "" : "md:grid-cols-2"} gap-5`}>
+      <div className={`grid grid-cols-1 ${byTruck && group("ship").length === 0 ? "" : "md:grid-cols-2"} gap-5`}>
         {section("goods", "Paid to the supplier", r.goods_paid, r.goods_total)}
-        {!byTruck && section("ship", "Paid for the shipping in", r.ship_paid, r.ship_total)}
+        {(!byTruck || group("ship").length > 0) && section("ship", "Paid for the shipping in", r.ship_paid, r.ship_total)}
       </div>
       {d.can_book_bank === false && <p className="text-[12px] text-muted mt-3">Tying a bank payment to a buy needs the Financials switch on your role.</p>}
     </div>
