@@ -11,6 +11,7 @@ import { ArrowLeft, ChevronRight, ClipboardPaste, FileSpreadsheet, Plus, Trash2,
 import { api } from "../lib/api";
 import { WAREHOUSE_OPEN_KEY, itemTotals, rowsFromText, sectionUnits, shares, type BoxType, type SheetRead, type WarehouseItem, type WhSection } from "../lib/warehouse";
 import type { ManifestRead } from "../lib/deliveries";
+import { ADD_MANIFEST_KEY } from "../lib/buyLoads";
 import type { DeliveryOpen, FloorRequest } from "../lib/floor";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
@@ -38,6 +39,12 @@ export default function WarehouseView() {
   const [importing, setImporting] = useState<{ read: SheetRead; fileName: string; targetId: string | null } | null>(null);
   const [pasting, setPasting] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // R-551: the buy the import in hand is for (Add the manifest on a buy still on the way). The delivery or product it makes
+  // becomes that buy's stock. A ref beside the state because the import's own callbacks outlive the render that made them.
+  const [forBuy, setForBuyState] = useState<{ id: string; name: string } | null>(null);
+  const forBuyRef = useRef<{ id: string; name: string } | null>(null);
+  const setForBuy = (b: { id: string; name: string } | null) => { forBuyRef.current = b; setForBuyState(b); };
+  const [buyTab, setBuyTab] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [view, setView] = useState<"products" | "map" | "pallets" | "deliveries">(() => {
     try { const v = localStorage.getItem("warehouse_view"); return v === "map" || v === "pallets" || v === "deliveries" ? v : "products"; } catch { return "products"; }
@@ -117,6 +124,7 @@ export default function WarehouseView() {
     const o = originRef.current;
     originRef.current = null;
     if (how === "saved") { try { localStorage.setItem("warehouse_view", "deliveries"); } catch { /* ignore */ } return; }
+    setForBuy(null);   // R-551: cancelled, so the manifest was for no buy after all
     if (o && o.view !== "deliveries") { setView(o.view); setOpenId(o.openId); }
   };
   // Not a delivery: the column picker for the product the import began on.
@@ -130,7 +138,28 @@ export default function WarehouseView() {
   const pickSheet = async () => {
     const f = await openDialog({ multiple: false, filters: [{ name: "Spreadsheet", extensions: SHEET_EXTS }] });
     if (typeof f === "string") openSheet(f);
+    else setForBuy(null);   // R-551: no sheet picked, so the manifest was for no buy after all
   };
+  // R-551: the stock the import made becomes the buy's. Answers whether it did (a refusal is shown, in the server's words).
+  const attachBuy = async (o: { itemId?: string; loadId?: string }): Promise<boolean> => {
+    const b = forBuyRef.current;
+    if (!b) return false;
+    setForBuy(null);
+    try { await api.attachWarehouseBuy(b.id, o); toast(`Added to ${b.name}`); return true; }
+    catch (e) { toast(String(e), "error"); return false; }
+  };
+  const addManifestFor = (b: { id: string; name: string }) => { setForBuy(b); pickSheet(); };
+  // R-551: Add the manifest from Deal Flow's Inventory lands here and opens the import at once.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(ADD_MANIFEST_KEY);
+      if (!raw) return;
+      localStorage.removeItem(ADD_MANIFEST_KEY);
+      const b = JSON.parse(raw);
+      if (b?.id) { setView("deliveries"); setOpenId(null); addManifestFor({ id: String(b.id), name: String(b.name || "") }); }
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Drop a spreadsheet anywhere on the Warehouse to import it. Tauri hands over paths; the
   // HTML5 drop event would hand over a File with no path.
@@ -172,12 +201,14 @@ export default function WarehouseView() {
         fileName={importing.fileName}
         items={(items || []).filter((i) => !i.archived)}
         defaultTargetId={importing.targetId}
-        onClose={() => setImporting(null)}
+        onClose={() => { setImporting(null); setForBuy(null); }}
         onImported={(it) => {
           put(it); setImporting(null);
           // A stock import shows its product among the products.
           setView("products"); try { localStorage.setItem("warehouse_view", "products"); } catch { /* ignore */ }
           setOpenId(it.id);
+          // R-551: and is the stock of the buy it was imported for.
+          attachBuy({ itemId: it.id }).then((ok) => { if (ok) setBuyTab(true); });
         }}
       />
     );
@@ -226,9 +257,10 @@ export default function WarehouseView() {
           key={open.id}
           item={open}
           importButtons={importButtons}
-          onBack={() => setOpenId(null)}
+          onBack={() => { setOpenId(null); setBuyTab(false); }}
           onEdit={() => setEditing(open)}
           onChanged={put}
+          openOnBuy={buyTab}
         />
       </>
     );
@@ -262,7 +294,8 @@ export default function WarehouseView() {
         </div>
       </div>
 
-      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onDropUsed={() => setDropped(null)} onImport={pickSheet} onAsStock={asStock} onImportEnded={importEnded} open={deliveryReq} onOpenUsed={deliveryUsed} onFloor={showOnFloor} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <>
+      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onDropUsed={() => setDropped(null)} onImport={pickSheet} onAsStock={asStock} onImportEnded={importEnded} open={deliveryReq} onOpenUsed={deliveryUsed} onFloor={showOnFloor}
+        forBuy={forBuy} onAddManifest={addManifestFor} attachBuy={attachBuy} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <>
         <WarehouseFloor request={floorReq} onRequestUsed={floorUsed} onOpenDelivery={openDelivery} />
         <SpotMaps items={items || []} />
       </> : <>

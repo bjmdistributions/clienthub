@@ -9,11 +9,15 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
-import { api } from "../lib/api";
+import { api, type ComingBuy } from "../lib/api";
 import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, WAREHOUSE_OPEN_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { standsOn, type DeliveryOpen, type FloorRequest } from "../lib/floor";
 import BuyPanel from "./BuyPanel";
+import ComingBuys from "./ComingBuys";
+import { canSeePayments } from "../lib/dealPayments";
+import { openBuyInDealFlow } from "../lib/buyLoads";
+import { useSessionMe } from "../lib/useSessionMe";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
 import Switch from "./Switch";
@@ -30,7 +34,7 @@ type Draft = { id: string | null; number: number | null; kind: "box" | "loose"; 
 const blocksOf = (contents: CaseLine[]): Block[] => byStyle(contents).map((g) => ({ line_id: g.line_id, qty: Object.fromEntries(g.sizes) }));
 const draftTotal = (d: Draft) => d.blocks.reduce((a, b) => a + Object.values(b.qty).reduce((x, y) => x + (y || 0), 0), 0);
 
-export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onAsStock, onImportEnded, open: openReq, onOpenUsed, onFloor }: {
+export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onAsStock, onImportEnded, open: openReq, onOpenUsed, onFloor, forBuy, onAddManifest, attachBuy }: {
   dropped: { path: string; n: number; read: ManifestRead } | null;
   /** The sheet was opened: forget it, so coming back to Deliveries never opens it again. */
   onDropUsed: () => void;
@@ -45,7 +49,17 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
   onOpenUsed: () => void;
   /** R-550: show a pallet on the floor plan, or get ready to place it there. */
   onFloor: (r: FloorRequest) => void;
+  /** R-551: the buy the manifest being imported is for, if it was started from one still on the way. */
+  forBuy: { id: string; name: string } | null;
+  /** R-551: Add the manifest on a buy still on the way: the one import, for that buy. */
+  onAddManifest: (b: { id: string; name: string }) => void;
+  /** R-551: the delivery the import made becomes that buy's stock. true once it has. */
+  attachBuy: (o: { loadId: string }) => Promise<boolean>;
 }) {
+  const me = useSessionMe();
+  const numbers = canSeePayments(me);
+  const [coming, setComing] = useState<ComingBuy[]>([]);
+  const [onBuyTab, setOnBuyTab] = useState(false);
   const [list, setList] = useState<LoadSummary[] | null>(null);
   const [detail, setDetail] = useState<LoadDetail | null>(null);
   const [start, setStart] = useState<DeliveryOpen | null>(null);
@@ -53,7 +67,11 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
   const [showRemoved, setShowRemoved] = useState(false);
   const [editing, setEditing] = useState(false);
 
-  const loadList = useCallback(() => api.listWarehouseLoads().then(setList).catch((e) => { toast(`Couldn't load the deliveries: ${e}`, "error"); setList([]); }), []);
+  const loadList = useCallback(() => {
+    // R-551: the buys still on the way sit above the deliveries.
+    api.listWarehouseBuys().then((r) => setComing(r.coming ?? [])).catch(() => {});
+    return api.listWarehouseLoads().then(setList).catch((e) => { toast(`Couldn't load the deliveries: ${e}`, "error"); setList([]); });
+  }, []);
   useEffect(() => { loadList(); }, [loadList]);
 
   // A case save answers without the lines (they did not change): keep the ones on hand.
@@ -95,13 +113,17 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
   }, []);
 
   if (preview) {
-    return <ManifestPreview key={preview.n} read={preview.read} fileName={preview.fileName} path={preview.path} onCancel={() => { setPreview(null); onImportEnded("cancelled"); }}
-      onSaved={(d, msg) => { setPreview(null); setDetail(d); loadList(); toast(msg); onImportEnded("saved"); }}
+    return <ManifestPreview key={preview.n} read={preview.read} fileName={preview.fileName} path={preview.path} forBuyName={forBuy?.name} onCancel={() => { setPreview(null); onImportEnded("cancelled"); }}
+      onSaved={(d, msg) => {
+        setPreview(null); setDetail(d); loadList(); toast(msg); onImportEnded("saved");
+        // R-551: the delivery is the buy's stock now, and opens on the buy.
+        if (forBuy) attachBuy({ loadId: d.load.id }).then((ok) => { if (ok) setOnBuyTab(true); });
+      }}
       onLate={(msg) => { loadList(); toast(msg); }}
       onAsStock={() => { const p = preview.path; setPreview(null); onAsStock(p); }} />;
   }
   if (detail) {
-    return <DeliveryScreen d={detail} merge={merge} setEditing={setEditing} start={start} onFloor={onFloor} onBack={() => { setDetail(null); setStart(null); loadList(); }} />;
+    return <DeliveryScreen d={detail} merge={merge} setEditing={setEditing} start={start} onFloor={onFloor} openOnBuy={onBuyTab} onBack={() => { setDetail(null); setStart(null); setOnBuyTab(false); loadList(); }} />;
   }
 
   const live = (list || []).filter((d) => !d.archived), gone = (list || []).filter((d) => d.archived);
@@ -124,6 +146,14 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
         <p className="text-[12.5px] text-muted max-w-[640px]">Import a delivery's manifest: every page is read, each style and colour with its cost, MSRP and the pairs expected in each size, whichever rows it takes on the sheet. Then add each box onto its pallet as the truck is unloaded.</p>
         <button onClick={onImport} className={WH_BTN_PRIMARY} title="Or drop the file anywhere on this screen"><FileSpreadsheet size={14} /> Import a sheet</button>
       </div>
+      {coming.length > 0 && (
+        <div className="mb-4">
+          <ComingBuys items={coming} numbers={numbers} onOpen={(b) => openBuyInDealFlow(b.id)}
+            action={(b) => (
+              <button type="button" onClick={(e) => { e.stopPropagation(); onAddManifest({ id: b.id, name: b.name }); }} className={WH_BTN_PRIMARY}>Add the manifest</button>
+            )} />
+        </div>
+      )}
       {list === null ? <div className="text-[13px] text-muted">Loading…</div> : live.length ? (
         <div className="grid gap-3 grid-cols-1 xl:grid-cols-2">{live.map(card)}</div>
       ) : <div className={`${WH_CARD} p-6 text-[13px] text-muted text-center`}>No deliveries yet. Drop a manifest here or use Import a sheet.</div>}
@@ -203,7 +233,7 @@ function PhotoView({ l, onClose }: { l: LoadLine; onClose: () => void }) {
 // R-537: one card a page, each saying plainly whether it is imported. A totals page is never
 // imported; each page of styles has its own switch, on at first; a page that repeats all the
 // others is off at first. Only the pages switched on are saved, and their pictures with them.
-function ManifestPreview({ read, fileName, path, onCancel, onSaved, onLate, onAsStock }: { read: ManifestRead; fileName: string; path: string; onCancel: () => void; onSaved: (d: LoadDetail, msg: string) => void; onLate: (msg: string) => void; onAsStock: () => void }) {
+function ManifestPreview({ read, fileName, path, forBuyName, onCancel, onSaved, onLate, onAsStock }: { read: ManifestRead; fileName: string; path: string; forBuyName?: string; onCancel: () => void; onSaved: (d: LoadDetail, msg: string) => void; onLate: (msg: string) => void; onAsStock: () => void }) {
   const [listed, setListed] = useState<string | null>(null);
   const [name, setName] = useState(fileName.replace(/\.[^.]+$/, ""));
   const [busy, setBusy] = useState(false);
@@ -242,6 +272,7 @@ function ManifestPreview({ read, fileName, path, onCancel, onSaved, onLate, onAs
     <div className="max-w-[920px]">
       <button onClick={onCancel} disabled={busy} className="inline-flex items-center gap-1 text-[12.5px] text-muted hover:text-ink-2 mb-3 disabled:opacity-50"><ArrowLeft size={13} /> Deliveries</button>
       <h2 className="text-[18px] font-semibold text-ink tracking-tight">Import a delivery</h2>
+      {forBuyName && <p className="text-[13px] text-ink-2 mt-1">The delivery this makes becomes the stock of {forBuyName}.</p>}
       <p className="text-[13px] text-ink-2 mt-1">{fileName} has {many(read.tabs.length, "page", "pages")}. {pages.length ? `${many(pages.length, "page has", "pages have")} styles to import` : "No page has styles to import"}{ignored.length ? `, and ${many(ignored.length, "page is", "pages are")} ignored` : ""}. Check each page below.</p>
       <p className="text-[12.5px] text-muted mt-1">Each style is read from its own rows, however many it takes: the row of sizes above it, or one size a row. Every style below says which rows. <button onClick={onAsStock} disabled={busy} className="text-accent hover:underline disabled:opacity-50">Not a delivery? Choose the columns of a stock sheet instead</button></p>
 
@@ -383,12 +414,14 @@ function useOnFloor(loadId: string): Record<number, string> {
   return placed;
 }
 
-function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor }: { d: LoadDetail; merge: (d: LoadDetail) => void; setEditing: (b: boolean) => void; onBack: () => void; start: DeliveryOpen | null; onFloor: (r: FloorRequest) => void }) {
+function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBuy }: { d: LoadDetail; merge: (d: LoadDetail) => void; setEditing: (b: boolean) => void; onBack: () => void; start: DeliveryOpen | null; onFloor: (r: FloorRequest) => void; openOnBuy?: boolean }) {
   const L = d.load, T = d.tally.totals;
   const lines = useMemo(() => L.lines ?? [], [L.lines]);
   const idx = useMemo(() => Object.fromEntries(lines.map((l) => [l.id, l])) as Record<string, LoadLine>, [lines]);
   const counts = useMemo(() => Object.fromEntries(d.tally.counts.map((c) => [c.line_id, c])) as Record<string, LineCount>, [d.tally.counts]);
   const [tab, setTab] = useState<"pallets" | "check" | "sell" | "buy">("pallets");
+  // R-551: a buy was just attached to this delivery (Add the manifest): show it.
+  useEffect(() => { if (openOnBuy) setTab("buy"); }, [openOnBuy]);
   const pallets: PalletView[] = d.pallets ?? [];
   const [pallet, setPallet] = useState<number | null>(() => start?.pallet ?? (d.pallets ?? [])[0]?.pallet ?? null);
   // R-550: opened from the floor plan on one pallet, straight into the box editor, and back there after.

@@ -2613,4 +2613,18 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_load_pallets ADD COLUMN turned INTEGER DEFAULT 0;
         "#,
     ),
+    (
+        119,
+        // R-551: a truck can bring a buy in. buy_id is the buy (warehouse_buys.id) a truck brings in,
+        // with deal_flow_id empty on such a truck, and bank_txn_id is the bank row that paid its carrier
+        // (always empty on a deal's truck, whose links are bank_allocation rows named by the load code).
+        // Both are written only by the server, like every freight_bookings column, and reach this
+        // device through sync (the heal generation 12 restores them on a device that already holds
+        // the rows). Mirrored in clienthub-api schema.sql and its sync.rs ALTER list, which must be
+        // deployed first. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        ALTER TABLE freight_bookings ADD COLUMN buy_id TEXT DEFAULT '';
+        ALTER TABLE freight_bookings ADD COLUMN bank_txn_id TEXT DEFAULT '';
+        "#,
+    ),
 ];

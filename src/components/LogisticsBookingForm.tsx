@@ -25,6 +25,7 @@ import { can } from "../lib/permissions";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
 import { openLogisticsHit, startBolFromLoad } from "../lib/logisticsSearch";
 import { rateConPath } from "../lib/logisticsBols";
+import { buyLabelOf, openBuyInDealFlow } from "../lib/buyLoads";
 import { ADDRESS_HINT, addressNote, keptPickupRows, relabelAddressGap } from "../lib/fullAddress";
 import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
@@ -698,7 +699,7 @@ export default function LogisticsBookingForm({
   const [error, setError] = useState("");
   const [rateBusy, setRateBusy] = useState(false);
   const startSection = (b: FreightBooking): LoadSection =>
-    initialStep ?? firstSection(loadProgress(factsOf(b, {}, known), b.can_see_deal), b.can_see_deal);
+    initialStep ?? firstSection(loadProgress(factsOf(b, {}, known), b.can_see_deal, !!b.buy), b.can_see_deal);
   const [step, setStep] = useState<LoadSection>(() => startSection(booking));
   const me = useSessionMe();
   const { list: carriers, error: carriersError, reload: reloadCarriers } = useCarriers();
@@ -734,6 +735,8 @@ export default function LogisticsBookingForm({
   useEffect(() => { body.current?.scrollTo({ top: 0 }); }, [step]);
 
   const full = booking.can_see_deal;           // Jack: sees the deal, so his dates move it
+  // R-551: a truck that brings a buy in has no deal, no invoice and no customer: its flow is quote, book, pickup, delivery, pay.
+  const buying = !!booking.buy;
   const lg = isLogisticsSide(booking);
   const noMoney = moneyHidden(booking);
   const dirty = (Object.keys(base) as (keyof Draft)[]).some((k) => draftChanged(base, draft, k));
@@ -921,7 +924,7 @@ export default function LogisticsBookingForm({
   const reloadLoad = async () => {
     try { takeServerCopy(await api.logistics.get(booking.id)); } catch (e) { toast(String(e), "error"); }
   };
-  const payFor: PayTarget = { bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost, linked: paidStateOf(booking) === "part" ? booking.paid_amount : null };
+  const payFor: PayTarget = { bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost, linked: paidStateOf(booking) === "part" ? booking.paid_amount : null, buy: !!booking.buy };
 
   // ── the gate (R-464) ────────────────────────────────────────────────────
   const gate = bookGate(factsOf(booking, {}, known));
@@ -969,6 +972,8 @@ export default function LogisticsBookingForm({
     } catch (e) { toast(String(e), "error"); }
   };
 
+  /** R-551: a truck that brings a buy in opens the buy (Deal Flow, Inventory) where a deal's load opens its deal. */
+  const openBuy = () => { if (booking.buy) leaveFor(() => { openBuyInDealFlow(booking.buy!.id); onClose(); }); };
   const openDeal = () => {
     if (booking.deal?.invoice_number) {
       try { localStorage.setItem("dealflow_invoice_filter", booking.deal.invoice_number); } catch { /* ignore */ }
@@ -1045,8 +1050,8 @@ export default function LogisticsBookingForm({
     localDay(),
   );
   // R-464: the tracker reads the draft's status and actual days, so it moves as they are typed.
-  const stages = loadProgress(factsOf(booking, { status: draft.status, picked_up_at: draft.picked_up_at, delivered_at: draft.delivered_at }, known), full);
-  const sections = sectionsFor(full);
+  const stages = loadProgress(factsOf(booking, { status: draft.status, picked_up_at: draft.picked_up_at, delivered_at: draft.delivered_at }, known), full, buying);
+  const sections = sectionsFor(full, buying);
   const here: LoadSection = sections.some((s) => s.key === step) ? step : "quote";
   const lane = booking.can_see_addresses ? laneLabel(booking.pickup_address, booking.delivery_address) : "";
   const route = routeLabel(booking);
@@ -1249,7 +1254,7 @@ export default function LogisticsBookingForm({
         {atQuote && (
           <div className="flex items-center gap-2 flex-wrap">
             {!noMoney && <button type="button" onClick={() => save({ withQuote: true })} disabled={saving} className={btnPrimary}>Submit quote</button>}
-            {full && booking.quote_amount != null && (
+            {full && !buying && booking.quote_amount != null && (
               <button type="button" onClick={() => setStep("invoice")} className="text-[12.5px] text-accent font-medium hover:underline whitespace-nowrap">Next: the invoice</button>
             )}
           </div>
@@ -1270,7 +1275,7 @@ export default function LogisticsBookingForm({
     <div className="rounded-xl border border-line bg-surface-2/50 px-4 py-3 space-y-3">
       <div className="text-[13px] font-medium text-ink">Send to book</div>
       <ul className="space-y-1.5 list-none m-0 p-0">
-        {GATE_ITEMS.map((g) => {
+        {GATE_ITEMS.filter((g) => !buying || g.key === "quote").map((g) => {
           const ok = !gate.missing.includes(g.key);
           return (
             <li key={g.key} className={`flex items-center gap-2 text-[12.5px] ${ok ? "text-ink-2" : "text-muted"}`}>
@@ -1690,7 +1695,7 @@ export default function LogisticsBookingForm({
 
         <div ref={body} className="flex-1 min-h-0 overflow-y-auto">
           <div className="max-w-[1120px] mx-auto w-full px-6 py-5 space-y-6">
-            {full && atQuote && paid && (
+            {full && atQuote && paid && !buying && (
               <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink" role="status">{PAID_BANNER}</div>
             )}
 
@@ -1698,6 +1703,14 @@ export default function LogisticsBookingForm({
               <div className="text-[12.5px] text-ink-2 min-w-0">
                 <span className="font-medium text-ink">{booking.deal.invoice_number || "Deal"}</span>
                 {booking.deal.client_name ? <span className="text-muted">{" "}for {booking.deal.client_name}</span> : null}
+              </div>
+            )}
+            {booking.buy && (
+              <div className="text-[12.5px] text-ink-2 min-w-0">
+                {full
+                  ? <button type="button" onClick={openBuy} title="Open the buy in Deal Flow, Inventory"
+                      className="font-medium text-ink hover:text-accent-hover hover:underline text-left">{buyLabelOf(booking)}</button>
+                  : <span className="font-medium text-ink">{buyLabelOf(booking)}</span>}
               </div>
             )}
 
@@ -1740,9 +1753,9 @@ export default function LogisticsBookingForm({
               )}
               {full && (
                 <>
-                  <button type="button" onClick={openDeal}
+                  <button type="button" onClick={buying ? openBuy : openDeal}
                     className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors">
-                    <ExternalLink size={12} /> Open the deal
+                    <ExternalLink size={12} /> {buying ? "Open the buy" : "Open the deal"}
                   </button>
                   <button type="button" onClick={remove}
                     className="flex items-center gap-1 text-[12px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 h-8 rounded-lg transition-colors">

@@ -5,6 +5,7 @@ import { loadTime24 } from "../lib/time24";
 import { localDay } from "../lib/format";
 import { can, isAdmin, isLogisticsOnly } from "../lib/permissions";
 import { canViewFreightMap } from "../lib/freightMap";
+import { buyLabelOf } from "../lib/buyLoads";
 import { OPEN_CARRIER_KEY, OPEN_LOAD_KEY, canPayCarriers, canSeePayCarriers, parseOpenLoad } from "../lib/logisticsCarriers";
 import {
   BOARD, BOARD_WORD, arrivesToday, boardKey, boardNeeds, boardSort, dueLabel, dueTone, firstName, groupOf, isHot, isLogisticsSide, isNewToday, loadHaystack,
@@ -45,7 +46,7 @@ export function BookingRow({ b, group, onOpen }: { b: FreightBooking; group: Gro
   const dates = timingLine(b);
   // R-478: where it goes, city and state, so the lane reads at a glance.
   const lane = rowLane(b);
-  const who = b.deal ? [b.deal.invoice_number, b.deal.client_name].filter(Boolean).join(" for ") : "";
+  const who = b.deal ? [b.deal.invoice_number, b.deal.client_name].filter(Boolean).join(" for ") : buyLabelOf(b);
   const note = b.request_note.trim().split("\n")[0];
   const files = b.files?.length ?? 0;
   return (
@@ -98,7 +99,7 @@ function BoardCard({ b, onOpen, done, canPay }: { b: FreightBooking; onOpen: () 
   const tone = toneOf(k);
   const route = routeLabel(b);
   const lane = rowLane(b);
-  const when = [timingLine(b) || "No dates yet", b.deal?.client_name].filter(Boolean).join(" · ");
+  const when = [timingLine(b) || "No dates yet", b.deal?.client_name || buyLabelOf(b)].filter(Boolean).join(" · ");
   const today = localDay();
   const arriving = !done && b.status !== "delivered" && arrivesToday(b, today);
   const fresh = !done && isNewToday(b);

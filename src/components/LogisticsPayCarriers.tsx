@@ -10,6 +10,7 @@ import {
 import { fmtDayLabel, paidStateOf, paidView, type LoadStep, type PaidFacts, type PaidView } from "../lib/logisticsLoad";
 import { useNetsyncApplied } from "../lib/useNetsyncApplied";
 import { useSessionMe } from "../lib/useSessionMe";
+import { openBuyInDealFlow } from "../lib/buyLoads";
 import { canAttachPayments } from "../lib/logisticsCarriers";
 import { LogisticsModal, modalGhost, modalPrimary } from "./LogisticsCarriers";
 import NumberInput from "./NumberInput";
@@ -59,7 +60,11 @@ export function useCarrierPay(enabled: boolean) {
 
 /** The load a payment control acts on. `rate` is the carrier rate and `linked` what a part-linked load already has linked
  *  to the bank, for the amount a link opens with (the rest of the rate). */
-export interface PayTarget { bookingId: string; label: string; rate: number | null; linked?: number | null }
+export interface PayTarget {
+  bookingId: string; label: string; rate: number | null; linked?: number | null;
+  /** R-551: a truck that brings a buy in: its payment is the buy's shipping in, not a line on a deal. */
+  buy?: boolean;
+}
 
 /** The bank rows that look like this payment (money out, with money left on it, around the pay day). Picking one
  *  asks for the amount to book on this load, then books it against the deal as shipping and marks the load paid.
@@ -120,7 +125,9 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
                 target.rate != null ? `Carrier rate ${fmtAmount(target.rate)}.` : "",
                 target.linked != null && target.linked > 0.005 ? `${fmtAmount(target.linked)} already linked.` : "",
               ].filter(Boolean).join(" ")}
-              {" "}Linking books this amount on the deal as shipping and marks the load paid.
+              {target.buy
+                ? " Linking marks this truck paid and counts the amount in the buy's shipping in."
+                : " Linking books this amount on the deal as shipping and marks the load paid."}
             </div>
           </div>
         </>
@@ -279,7 +286,13 @@ function Who({ r, onOpen }: { r: CarrierPayRow; onOpen: () => void }) {
         <button type="button" onClick={onOpen} className="font-mono text-[12px] text-accent hover:underline flex-shrink-0" title="Open the load on its Pay step">{r.load_number}</button>
         <span className="text-[13.5px] font-medium text-ink truncate min-w-0">{r.carrier || "Carrier not named"}</span>
       </div>
-      <div className="text-[12px] text-muted mt-0.5 truncate">{[r.route, r.deal_label].filter(Boolean).join(" · ")}</div>
+      <div className="text-[12px] text-muted mt-0.5 truncate">
+        {r.route}{r.route && r.deal_label ? " · " : ""}
+        {/* R-551: a truck that brings a buy in reads "Coming in: <name>", and opens the buy where a deal's label would open its deal. */}
+        {r.buy_id && r.deal_label
+          ? <button type="button" onClick={() => openBuyInDealFlow(r.buy_id!)} title="Open the buy in Deal Flow, Inventory" className="hover:text-accent-hover hover:underline">{r.deal_label}</button>
+          : r.deal_label}
+      </div>
     </div>
   );
 }
@@ -295,6 +308,7 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
   const today = localDay();
   const targetOf = (r: CarrierPayRow): PayTarget => ({
     bookingId: r.booking_id, label: `${r.carrier || "Carrier"}, ${r.load_number}`, rate: r.rate, linked: paidStateOf(r) === "part" ? r.paid_amount : null,
+    buy: !!r.buy_id,
   });
   const sum = useMemo(() => toPaySummary(data?.to_pay ?? [], today), [data, today]);
 

@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow, type BuyBrief } from "../lib/api";
 import { canSeePayments } from "../lib/dealPayments";
+import { chargingOf, invoiceCost, invoiceCostLines } from "../lib/buyLoads";
 import { useSessionMe } from "../lib/useSessionMe";
 import { parseLineItems, queryTokens, matchesAllTokens, matchingItems, describeItem, isNoiseItem } from "../lib/itemSearch";
 import { fmtAmount, localDay, projectedCostOf } from "../lib/format";
@@ -702,7 +703,10 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
   const builtCount = !initial && prefill?.built ? (prefill.lines || []).reduce((a, l) => a + Math.max(0, Math.round(l.qty || 0)), 0) : 0;
   const buyCount = buyLoad ? dlPairs : whUnits > 0 ? whUnits : builtCount;
   const buyGoods = buyCost ?? (buy ? Math.round(buyCount * buy.unit_goods * 100) / 100 : 0);
-  const buyShip = buy ? Math.round(buyCount * buy.unit_ship * 100) / 100 : 0;
+  // R-551: the cost each (goods, shipping in and his markup), what the order costs, and the profit against what the lines charge
+  // (shipping lines left out: that truck's cost is not known yet), live as the lines change. Never on the PDF.
+  const buyMath = buy ? invoiceCost({ unitGoods: buy.unit_goods, unitShip: buy.unit_ship, unitMarkup: buy.unit_markup ?? 0, count: buyCount, goodsTyped: buyCost, charging: chargingOf(items) }) : null;
+  const buyLines = buy && buyMath ? invoiceCostLines(buyMath, { count: buyCount, unitShip: buy.unit_ship, unitMarkup: buy.unit_markup ?? 0, typed: buyCost !== null }) : null;
   const [submitting, setSubmitting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [templates, setTemplates]   = useState<LineItemTemplate[]>([]);
@@ -1043,9 +1047,13 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
           ) : !seesCost ? (
             <>This order's share of what {buy.name} cost goes on its deal.</>
           ) : (
-            <span className="inline-flex items-center gap-2 flex-wrap">
-              <span><strong className="font-semibold">Its cost.</strong> {fmtAmount(buyGoods)} for {buyCount.toLocaleString()} {buyLoad ? (buyCount === 1 ? "pair" : "pairs") : (buyCount === 1 ? "unit" : "units")} from {buy.name}{buyShip > 0 ? `, and ${fmtAmount(buyShip)} shipping in` : ""}{buyCost !== null ? " (typed)" : ""}.</span>
-              <span className="text-muted">It goes on this order's deal, never on the invoice.</span>
+            <span className="inline-flex items-center gap-x-2 gap-y-1 flex-wrap">
+              <span className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 basis-full tabular-nums">
+                <strong className="font-semibold">Your cost</strong><span>{buyLines?.[0]}</span>
+                <span aria-hidden />
+                <span>{buyLines?.[1]}</span>
+              </span>
+              <span className="text-muted">From {buy.name}. It goes on this order's deal, never on the invoice.</span>
               {typingCost ? (
                 <span className="inline-flex items-center gap-1.5">
                   <NumberInput value={buyGoods} onValue={(v) => setBuyCost(v)} autoFocus

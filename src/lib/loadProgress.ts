@@ -78,10 +78,13 @@ function teamStages(b: ProgressFacts): { rows: Row[]; pastQuote: boolean; legacy
 
 /** The stages of a load, each done, current, still to do, or skipped. The person who can see the deal gets
  *  eight; the logistics person gets six, with stages 2 to 4 folded into "With the team" (no money words). */
-export function loadProgress(b: ProgressFacts, teamView: boolean): Stage[] {
+export function loadProgress(b: ProgressFacts, teamView: boolean, buying = false): Stage[] {
   const { rows: all, pastQuote, legacy } = teamStages(b);
   let rows: Row[] = all;
-  if (!teamView) {
+  if (buying) {
+    // R-551: a truck that brings a buy in has no invoice to send and no customer to pay: five stages for everyone.
+    rows = all.filter((r) => r.key !== "charge" && r.key !== "sent" && r.key !== "paid");
+  } else if (!teamView) {
     const live = all.slice(1, 4).filter((r) => !r.skipped);
     // The team's part is skipped on a load from before this flow, done once the team has sent it on (or every
     // part of it that applied is done), and otherwise still to do. What the logistics person cannot see
@@ -105,11 +108,11 @@ export function loadProgress(b: ProgressFacts, teamView: boolean): Stage[] {
 
 export type LoadSection = "quote" | "invoice" | "book" | "pickup" | "delivery" | "pay";
 
-/** The tabs: Invoice is the team's. */
-export function sectionsFor(teamView: boolean): { key: LoadSection; label: string }[] {
+/** The tabs: Invoice is the team's, and a truck that brings a buy in has no invoice (R-551). */
+export function sectionsFor(teamView: boolean, buying = false): { key: LoadSection; label: string }[] {
   return [
     { key: "quote", label: "Quote" },
-    ...(teamView ? [{ key: "invoice" as LoadSection, label: "Invoice" }] : []),
+    ...(teamView && !buying ? [{ key: "invoice" as LoadSection, label: "Invoice" }] : []),
     { key: "book", label: "Book" },
     { key: "pickup", label: "Pickup" },
     { key: "delivery", label: "Delivery" },

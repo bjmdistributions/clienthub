@@ -13,6 +13,7 @@ import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 import { fmtDay } from "./LogisticsBookingForm";
+import { comingLabel, payLineWho } from "../lib/buyLoads";
 
 // R-401: everything the logistics pay puts on a screen. The rule is one setting the server
 // owns, and every figure here is worked out there (the desktop's own copy of the rule only
@@ -599,7 +600,7 @@ function LoadRow({ l }: { l: LogisticsPayTrackerLine }) {
     return (
       <div className="py-2.5 text-[12.5px] min-w-0 flex items-baseline justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-ink font-medium truncate">{l.invoice_number}{l.client_name ? ` for ${l.client_name}` : ""}</div>
+          <div className="text-ink font-medium truncate">{payLineWho(l)}</div>
           <div className="text-[11px] text-muted truncate">{l.booking_codes.length > 0 ? `${l.booking_codes.join(", ")} · ` : ""}Taken back: booking cancelled or invoice voided</div>
         </div>
         <div className="tabular-nums text-ink font-semibold flex-shrink-0">{signed(l.owed)}</div>
@@ -611,7 +612,7 @@ function LoadRow({ l }: { l: LogisticsPayTrackerLine }) {
     <div className="py-2.5 text-[12.5px] min-w-0">
       <div className="flex items-baseline justify-between gap-3 min-w-0">
         <div className="min-w-0">
-          <div className="text-ink font-medium truncate">{l.invoice_number}{l.client_name ? ` for ${l.client_name}` : ""}</div>
+          <div className="text-ink font-medium truncate">{payLineWho(l)}</div>
           <div className="text-[11px] text-muted truncate">{l.booking_codes.join(", ")} · earned {fmtDay(l.earned_on)}</div>
         </div>
         <div className="text-right flex-shrink-0">
@@ -626,7 +627,7 @@ function LoadRow({ l }: { l: LogisticsPayTrackerLine }) {
         </div>
       ) : (
         <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-          <span>Charged {fmtAmount(l.charged)}</span>
+          {!l.buy_name && <span>Charged {fmtAmount(l.charged)}</span>}
           {l.rule === "markup" && l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>}
           <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>
           {l.rule !== "markup" && <span className={l.surplus < 0 ? "text-danger-ink" : ""}>Profit {signed(l.surplus)}</span>}
@@ -648,7 +649,7 @@ function TrackedRow({ l }: { l: LogisticsPayTrackerLine }) {
     <div className="py-2.5 text-[12.5px] min-w-0">
       <div className="flex items-baseline justify-between gap-3 min-w-0">
         <div className="min-w-0">
-          <div className="text-ink font-medium truncate">{l.invoice_number}{l.client_name ? ` for ${l.client_name}` : ""}</div>
+          <div className="text-ink font-medium truncate">{payLineWho(l)}</div>
           <div className="text-[11px] text-muted truncate">{l.booking_codes.join(", ")} · earned {fmtDay(l.earned_on)}</div>
         </div>
         <div className="text-right flex-shrink-0">
@@ -821,7 +822,7 @@ export function LogisticsPayTrackerPanel() {
           <div className="divide-y divide-line">
             {pending.map((l) => (
               <div key={l.deal_flow_id} className="px-4 py-2.5 flex items-baseline justify-between gap-3 text-[12.5px]">
-                <span className="min-w-0 truncate text-ink-2">{l.invoice_number}{l.client_name ? ` for ${l.client_name}` : ""} · {l.booking_codes.join(", ")}</span>
+                <span className="min-w-0 truncate text-ink-2">{payLineWho(l)} · {l.booking_codes.join(", ")}</span>
                 <span className="text-muted flex-shrink-0">Charged {fmtAmount(l.charged)}, not counted until the bank payment is linked</span>
               </div>
             ))}
@@ -944,7 +945,7 @@ export function YourPayCard() {
             <div className="divide-y divide-line">
               {loads.map((l) => {
                 // The server already leaves a name empty when his switch is off.
-                const route = [l.pickup_name, l.delivery_name].filter(Boolean).join(" to ");
+                const route = [l.buy_name ? comingLabel(l.buy_name) : "", [l.pickup_name, l.delivery_name].filter(Boolean).join(" to ")].filter(Boolean).join(" · ");
                 return (
                   <div key={l.code} className="px-4 py-2.5 flex items-center gap-3 min-w-0">
                     <div className="min-w-0 flex-1">

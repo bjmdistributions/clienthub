@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { api, type LogisticsWeek } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
+import { comingLabel } from "../lib/buyLoads";
 import { amountProblem, bookedDayLabel, byBookedDay, hasNextWeek, paidLine, shiftDay, weekPill, weekRange } from "../lib/logisticsWeek";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
@@ -128,7 +129,7 @@ export function LogisticsWeekView({ startDay, onOpenLoad, framed = true }: {
                     <Row key={l.id} {...(onOpenLoad ? { type: "button" as const, onClick: () => onOpenLoad(l.id) } : {})}
                       className={`w-full flex items-baseline gap-3 py-1.5 min-w-0 text-left rounded-md ${onOpenLoad ? "hover:bg-surface-2/70 px-1.5 -mx-1.5 transition-colors duration-[130ms]" : ""}`}>
                       <span className="font-mono text-[13px] text-muted flex-shrink-0">{l.code}</span>
-                      <span className="text-[14px] text-ink truncate min-w-0 flex-1">{l.lane}</span>
+                      <span className="text-[14px] text-ink truncate min-w-0 flex-1">{[l.buy_name ? comingLabel(l.buy_name) : "", l.lane].filter(Boolean).join(" · ")}</span>
                       {w.money && <span className="text-[14px] font-semibold tabular-nums text-ink flex-shrink-0">{l.commission == null ? "Waiting" : fmtAmount(l.commission)}</span>}
                     </Row>
                   );

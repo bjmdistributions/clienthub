@@ -394,6 +394,18 @@ impl PaySettings {
     pub fn tracks(&self) -> bool {
         self.surplus_mode == "track"
     }
+
+    /// R-551: the rule is on and either tracks the surplus or has a payee to pay. Twin of the server's `active`.
+    pub fn active(&self) -> bool {
+        self.enabled && (self.tracks() || !self.payee_id.is_empty())
+    }
+}
+
+/// R-551: whether his markup on a buy's trucks counts (the logistics pay rule is on and paying, not track-only).
+/// Twin of the server's `warehouse_buys::pays_markup`.
+pub fn pays_markup() -> bool {
+    let s = read_pay_settings();
+    s.active() && !s.tracks()
 }
 
 /// The org's logistics pay rule from the local settings table (the server writes it and it
@@ -734,7 +746,31 @@ fn cut_as(conn: &rusqlite::Connection, deal_flow_id: &str, completing: bool) -> 
     if !s.enabled {
         return None;
     }
-    Some(deal_pay_as(conn, deal_flow_id, &s, completing).and_then(|d| d.pay).unwrap_or(0.0))
+    // R-551: the orders on this deal that took stock a buy's trucks brought in carry their share of his markup on those
+    // trucks, taken off the top of the owner split like his markup on any truck (0 while the rule is not paying).
+    let buy_markup = crate::warehouse_buys::markup_on_deal(conn, deal_flow_id);
+    Some(cents(deal_pay_as(conn, deal_flow_id, &s, completing).and_then(|d| d.pay).unwrap_or(0.0) + buy_markup))
+}
+
+/// R-551: a deal's logistics pay line with the markup share of the buys its orders took stock from added to what he is paid
+/// (`buy_markup`, on its own so a screen can say where it came from). A deal with no booked truck of its own but a share has a
+/// line made of just that.
+fn with_buy_markup(line: Option<DealPay>, buy: f64) -> Option<Value> {
+    match line {
+        Some(d) => {
+            let mut v = d.to_json();
+            if buy > 0.005 {
+                v["pay"] = json!(d.pay.map(|p| cents(p + buy)));
+                v["buy_markup"] = json!(buy);
+            }
+            Some(v)
+        }
+        None if buy > 0.005 => Some(json!({
+            "charged": 0.0, "charged_source": "none", "freight": 0.0, "freight_source": "paid", "surplus": 0.0, "pay": buy, "rule": "markup",
+            "pending": false, "earned_on": "", "due_date": "", "booking_codes": Vec::<String>::new(), "markup": buy, "buy_markup": buy,
+        })),
+        None => None,
+    }
 }
 
 /// One deal's logistics pay line for the deal page: the figures behind it, or `null` when the
@@ -743,9 +779,9 @@ fn cut_as(conn: &rusqlite::Connection, deal_flow_id: &str, completing: bool) -> 
 pub async fn get_deal_logistics_pay(deal_flow_id: String) -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let settings = read_pay_settings();
-    Ok(match deal_pay(&conn, &deal_flow_id, &settings) {
-        Some(d) => {
-            let mut v = d.to_json();
+    let buy = crate::warehouse_buys::markup_on_deal(&conn, &deal_flow_id);
+    Ok(match with_buy_markup(deal_pay(&conn, &deal_flow_id, &settings), buy) {
+        Some(mut v) => {
             v["payee_name"] = json!(settings.payee_name);
             v["surplus_mode"] = json!(settings.surplus_mode);
             v

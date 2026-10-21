@@ -8613,7 +8613,8 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
     // R-401: the logistics pay is a cut off the top too, before the owner split. Pending (the
     // freight amount is not known yet) counts as 0.
     let logistics_line = crate::freight::deal_pay(&conn, &deal_flow_id, &crate::freight::read_pay_settings());
-    let logistics_pay = logistics_line.as_ref().and_then(|l| l.pay).unwrap_or(0.0);
+    // R-551: and his share of the markup on the trucks that brought in the stock this deal's orders took (0 unless the rule pays).
+    let logistics_pay = logistics_line.as_ref().and_then(|l| l.pay).unwrap_or(0.0) + crate::warehouse_buys::markup_on_deal(&conn, &deal_flow_id);
     let remaining = crate::freight::owner_remainder(eff_net, cut, logistics_pay);
     // Split the remaining net across the shares captured at completion
     // (metadata.payout_recipients) so the deal keeps the split it was agreed

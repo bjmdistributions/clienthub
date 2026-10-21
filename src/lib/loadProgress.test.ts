@@ -360,3 +360,28 @@ describe("the markup", () => {
     expect(actualCost({})).toBeNull();
   });
 });
+
+// R-551: a truck that brings a buy in. The server reads its invoice as sent and paid and its charge as ours.
+describe("a truck that brings a buy in", () => {
+  const buyTruck = (over: Partial<ProgressFacts> = {}): ProgressFacts => flow({ shipping_charge: "own", invoice_sent: true, deal_paid: true, ...over });
+  it("has no invoice stages, for the team or for logistics", () => {
+    for (const team of [true, false]) {
+      expect(states(loadProgress(buyTruck({ status: "quote", quote_amount: null }), team, true))).toBe("quote:current booked:todo pickup:todo delivery:todo carrier:todo");
+    }
+  });
+  it("goes quote, booked, picked up, delivered, carrier paid", () => {
+    expect(states(loadProgress(buyTruck({ status: "booked" }), true, true))).toBe("quote:done booked:done pickup:current delivery:todo carrier:todo");
+    expect(states(loadProgress(buyTruck({ status: "delivered", delivered_at: "2026-10-23" }), true, true))).toBe("quote:done booked:done pickup:done delivery:done carrier:current");
+  });
+  it("is not asked to wait for a quote on an invoice: its book gate is the quote alone", () => {
+    expect(bookGate(buyTruck({ status: "quoted" })).ok).toBe(true);
+    expect(bookGate(buyTruck({ status: "quote", quote_amount: null })).first).toBe("quote");
+  });
+  it("has no Invoice tab", () => {
+    expect(sectionsFor(true, true).map((s) => s.key)).toEqual(["quote", "book", "pickup", "delivery", "pay"]);
+    expect(sectionsFor(true).map((s) => s.key)).toContain("invoice");
+  });
+  it("a deal's load still has eight stages", () => {
+    expect(loadProgress(flow(), true, false)).toHaveLength(8);
+  });
+});

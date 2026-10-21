@@ -119,10 +119,13 @@ function Tile({ label, value, sub }: { label: string; value: string; sub?: strin
   );
 }
 
-export default function ProductScreen({ item, importButtons, onBack, onEdit, onChanged }: {
+export default function ProductScreen({ item, importButtons, onBack, onEdit, onChanged, openOnBuy }: {
   item: WarehouseItem; importButtons: ReactNode; onBack: () => void; onEdit: () => void; onChanged: (it: WarehouseItem) => void;
+  /** R-551: a buy was just attached to this product (Add the manifest): show it. */
+  openOnBuy?: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("shelf");
+  useEffect(() => { if (openOnBuy) setTab("buy"); }, [openOnBuy]);
   const [pick, setPick] = useState<HandPick>(emptyPick());
   const [menu, setMenu] = useState(false);
   const layouts = useLayouts(item.updated_at);

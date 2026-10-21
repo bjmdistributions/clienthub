@@ -3,13 +3,17 @@
 //   With a buy: what it has made, the payments that paid it, and every order with its share.
 // Every share and figure is worked out by buy_core.rs (the same file on the desktop and the server);
 // this screen only draws them and sends what was typed.
+// R-551: a buy may be opened by itself (`buyId`), before its stock is here: it then has no product or delivery. Across the
+// top four steps (Paid, Shipping in, Arrived, Selling), then the Shipping in section with its trucks (BuyShipping).
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Banknote, Pencil, Plus, RefreshCw, Search, X } from "lucide-react";
 import { api, type BuyDetail, type BuyInput, type BuyKind, type BuyOrder, type UnallocatedTxn } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
+import { buySteps, costEachLine, perUnit, type StepKey } from "../lib/buyLoads";
 import { canSeePayments } from "../lib/dealPayments";
 import { useSessionMe } from "../lib/useSessionMe";
+import BuyShipping from "./BuyShipping";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
@@ -17,11 +21,18 @@ import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0 } 
 
 type Unit = "units" | "pairs";
 const one = (u: Unit) => (u === "pairs" ? "pair" : "unit");
-/** A price a unit: cents as usual, and up to four places under a dollar ($0.0273), never fewer than two. */
-const per = (n: number) => (Math.abs(n) < 1 && Math.abs(n) > 0 ? `$${n.toFixed(4).replace(/(\.\d\d\d*?)0+$/, "$1")}` : fmtAmount(n));
+/** A price a unit: cents as usual, and up to four places under $10 ($1.2827), never fewer than two. */
+const per = perUnit;
 
-export default function BuyPanel({ itemId, loadId, stockName, unit, defaultUnits, onChanged }: {
-  itemId?: string; loadId?: string; stockName: string; unit: Unit; defaultUnits: number; onChanged?: () => void;
+export default function BuyPanel({ itemId, loadId, buyId, stockName, unit = "units", defaultUnits = 0, onChanged, onAddManifest, onOpenWarehouse }: {
+  itemId?: string; loadId?: string;
+  /** R-551: open this buy itself. A buy still on the way has no product or delivery to find it by. */
+  buyId?: string;
+  stockName: string; unit?: Unit; defaultUnits?: number; onChanged?: () => void;
+  /** R-551: Add the manifest, on a buy still on the way (the Warehouse's one import, for this buy). */
+  onAddManifest?: (b: { id: string; name: string }) => void;
+  /** R-551: Open in the Warehouse, once the buy is on its stock. Absent where the screen is the Warehouse itself. */
+  onOpenWarehouse?: (d: BuyDetail) => void;
 }) {
   const me = useSessionMe();
   const numbers = canSeePayments(me);
@@ -30,10 +41,10 @@ export default function BuyPanel({ itemId, loadId, stockName, unit, defaultUnits
 
   const load = useCallback(async () => {
     try {
-      const { buy } = await api.warehouseBuyFor({ itemId, loadId });
-      setDetail(buy ? await api.getWarehouseBuy(buy.id) : null);
+      const id = buyId ?? (await api.warehouseBuyFor({ itemId, loadId })).buy?.id;
+      setDetail(id ? await api.getWarehouseBuy(id) : null);
     } catch (e) { toast(`Couldn't load what this cost: ${e}`, "error"); setDetail(null); }
-  }, [itemId, loadId]);
+  }, [itemId, loadId, buyId]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     let un: (() => void) | undefined;
@@ -44,6 +55,7 @@ export default function BuyPanel({ itemId, loadId, stockName, unit, defaultUnits
   const changed = (d: BuyDetail) => { setDetail(d); onChanged?.(); };
 
   if (detail === undefined) return <div className="text-[13px] text-muted py-10 text-center">Loading…</div>;
+  if (detail === null && buyId) return <div className="text-[13px] text-muted py-10 text-center">That buy is no longer here.</div>;
   if (detail === null || editing) {
     return (
       <BuyForm
@@ -60,32 +72,109 @@ export default function BuyPanel({ itemId, loadId, stockName, unit, defaultUnits
       />
     );
   }
-  return <BuyView d={detail} unit={unit} numbers={numbers} onEdit={() => setEditing(true)} onChanged={changed} onRemoved={() => { setDetail(null); onChanged?.(); }} />;
+  return (
+    <BuyView
+      d={detail} unit={detail.buy.load_id ? "pairs" : detail.buy.item_id ? "units" : unit} numbers={numbers}
+      onEdit={() => setEditing(true)} onChanged={changed} onReload={load} onRemoved={() => { setDetail(null); onChanged?.(); }}
+      onAddManifest={onAddManifest} onOpenWarehouse={onOpenWarehouse}
+    />
+  );
 }
 
 // ─── Recording or changing what was paid ─────────────────────────────────────────
+
+/** The supplier, searched as it is typed. The one field a buy has for who it was bought from (R-551: a new buy uses it too). */
+export function SupplierField({ name, saved, onChange }: {
+  name: string; /** The name already saved on the buy, which needs no search. */ saved?: string; onChange: (name: string, id: string) => void;
+}) {
+  const [results, setResults] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    if (!name.trim() || name === saved) { setResults([]); return; }
+    const t = setTimeout(() => api.searchSuppliers(name).then((r) => setResults(r.slice(0, 6))).catch(() => setResults([])), 250);
+    return () => clearTimeout(t);
+  }, [name, saved]);
+  return (
+    <label className="block relative">
+      <span className="text-[12px] font-medium text-ink-2">Supplier</span>
+      <input value={name} onChange={(e) => onChange(e.target.value, "")} placeholder="Who you bought it from"
+        className={`${WH_INPUT} mt-1`} style={WH_INPUT_BG} />
+      {results.length > 0 && (
+        <div className="absolute z-20 left-0 right-0 mt-1 bg-surface border border-line rounded-lg shadow-lg overflow-hidden">
+          {results.map((s) => (
+            <button key={s.id} type="button" onClick={() => { onChange(s.name, s.id); setResults([]); }}
+              className="w-full text-left px-3 py-2 text-[13px] text-ink hover:bg-surface-2">{s.name}</button>
+          ))}
+        </div>
+      )}
+    </label>
+  );
+}
+
+/** R-551: start a buy before its stock is here: what it is, who from, what you pay for the load, and how many if you know. */
+export function NewBuyForm({ onSaved, onCancel }: { onSaved: (d: BuyDetail) => void; onCancel: () => void }) {
+  const [name, setName] = useState("");
+  const [supplier, setSupplier] = useState("");
+  const [supplierId, setSupplierId] = useState("");
+  const [total, setTotal] = useState<number>(0);
+  const [units, setUnits] = useState<number>(0);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (!name.trim()) { toast("Say what it is.", "error"); return; }
+    setBusy(true);
+    try {
+      onSaved(await api.createWarehouseBuy({ name: name.trim(), supplier_name: supplier.trim(), supplier_id: supplierId || undefined, goods_total: total, units_bought: units > 0 ? units : 0 }));
+    } catch (e) { toast(String(e), "error"); setBusy(false); }
+  };
+  return (
+    <div className={`${WH_CARD} p-5 space-y-5 max-w-[720px]`}>
+      <div>
+        <h3 className="text-[15px] font-semibold text-ink">New buy</h3>
+        <p className="text-[12.5px] text-muted mt-1 leading-relaxed">
+          Start it before the stock is here. Send it to logistics to bring it in, then add its manifest when it arrives: the delivery it makes becomes this buy's stock.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <label className="block">
+          <span className="text-[12px] font-medium text-ink-2">What it is</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="Like: Nike shoes, 110 pallets" className={`${WH_INPUT} mt-1`} style={WH_INPUT_BG} />
+        </label>
+        <SupplierField name={supplier} onChange={(n, i) => { setSupplier(n); setSupplierId(i); }} />
+        <label className="block">
+          <span className="text-[12px] font-medium text-ink-2">What you pay for the load</span>
+          <NumberInput value={total} onValue={setTotal} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
+          <span className="block text-[11.5px] text-muted mt-1">The total for the goods, without the shipping.</span>
+        </label>
+        <label className="block">
+          <span className="text-[12px] font-medium text-ink-2">How many (if you know)</span>
+          <NumberInput integer value={units || ""} onValue={setUnits} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
+          <span className="block text-[11.5px] text-muted mt-1">Leave it empty and the manifest fills it in.</span>
+        </label>
+      </div>
+      <div className="flex items-center justify-end gap-2 border-t border-line pt-4">
+        <button onClick={onCancel} disabled={busy} className={WH_BTN_SECONDARY}>Cancel</button>
+        <button onClick={save} disabled={busy} className={WH_BTN_PRIMARY}>{busy ? "Saving…" : "Save the buy"}</button>
+      </div>
+    </div>
+  );
+}
 
 function BuyForm({ unit, stockName, defaultUnits, detail, onSave, onCancel }: {
   unit: Unit; stockName: string; defaultUnits: number; detail: BuyDetail | null;
   onSave: (input: BuyInput) => Promise<void>; onCancel?: () => void;
 }) {
   const b = detail?.buy;
+  // R-551: a buy still on the way may leave how many were bought empty, and a buy with a live truck takes its shipping in from them.
+  const onTheWay = !!b?.on_the_way;
+  const shipLocked = (detail?.truck_cost.live ?? 0) > 0;
   const [supplier, setSupplier] = useState(b?.supplier_name ?? "");
   const [supplierId, setSupplierId] = useState(b?.supplier_id ?? "");
-  const [results, setResults] = useState<{ id: string; name: string }[]>([]);
   const [units, setUnits] = useState<number>(b?.units_bought ?? Math.max(0, Math.round(defaultUnits)));
   const [total, setTotal] = useState<number>(b?.goods_total ?? 0);
   const [each, setEach] = useState<number>(b && b.units_bought > 0 ? Math.round((b.goods_total / b.units_bought) * 10000) / 10000 : 0);
-  const [ship, setShip] = useState<number>(b?.ship_total ?? 0);
+  const [ship, setShip] = useState<number>(b?.ship_typed ?? 0);
   const [name, setName] = useState(b?.name ?? stockName);
   const [notes, setNotes] = useState(b?.notes ?? "");
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!supplier.trim() || supplier === b?.supplier_name) { setResults([]); return; }
-    const t = setTimeout(() => api.searchSuppliers(supplier).then((r) => setResults(r.slice(0, 6))).catch(() => setResults([])), 250);
-    return () => clearTimeout(t);
-  }, [supplier, b?.supplier_name]);
 
   // A corrected count never changes what was paid: the price a unit follows the total.
   const setUnitsKeep = (n: number) => {
@@ -95,13 +184,16 @@ function BuyForm({ unit, stockName, defaultUnits, detail, onSave, onCancel }: {
   };
   const setEachKeep = (v: number) => { setEach(v); setTotal(Math.round(units * v * 100) / 100); };
   const setTotalKeep = (v: number) => { setTotal(v); setEach(units > 0 ? Math.round((v / units) * 10000) / 10000 : 0); };
-  const landed = units > 0 ? (total + ship) / units : 0;
+  const landed = units > 0 ? (total + (shipLocked ? (b?.ship_total ?? 0) : ship)) / units : 0;
 
   const save = async () => {
-    if (!(units > 0)) { toast(`Enter how many ${unit} were bought.`, "error"); return; }
+    if (!(units > 0) && !onTheWay) { toast(`Enter how many ${unit} were bought.`, "error"); return; }
     setBusy(true);
     try {
-      await onSave({ name: name.trim() || stockName, supplier_name: supplier.trim(), supplier_id: supplierId || undefined, units_bought: units, goods_total: total, ship_total: ship, notes });
+      await onSave({
+        name: name.trim() || stockName, supplier_name: supplier.trim(), supplier_id: supplierId || undefined, units_bought: units > 0 ? units : 0, goods_total: total,
+        ...(shipLocked ? {} : { ship_total: ship }), notes,
+      });
     } catch (e) { toast(String(e), "error"); }
     finally { setBusy(false); }
   };
@@ -115,41 +207,41 @@ function BuyForm({ unit, stockName, defaultUnits, detail, onSave, onCancel }: {
         </p>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <label className="block relative">
-          <span className="text-[12px] font-medium text-ink-2">Supplier</span>
-          <input value={supplier} onChange={(e) => { setSupplier(e.target.value); setSupplierId(""); }} placeholder="Who you bought it from"
-            className={`${WH_INPUT} mt-1`} style={WH_INPUT_BG} />
-          {results.length > 0 && (
-            <div className="absolute z-20 left-0 right-0 mt-1 bg-surface border border-line rounded-lg shadow-lg overflow-hidden">
-              {results.map((s) => (
-                <button key={s.id} onClick={() => { setSupplier(s.name); setSupplierId(s.id); setResults([]); }}
-                  className="w-full text-left px-3 py-2 text-[13px] text-ink hover:bg-surface-2">{s.name}</button>
-              ))}
-            </div>
-          )}
-        </label>
+        <SupplierField name={supplier} saved={b?.supplier_name} onChange={(n, i) => { setSupplier(n); setSupplierId(i); }} />
         <label className="block">
           <span className="text-[12px] font-medium text-ink-2">Name</span>
           <input value={name} onChange={(e) => setName(e.target.value)} className={`${WH_INPUT} mt-1`} style={WH_INPUT_BG} />
         </label>
         <label className="block">
-          <span className="text-[12px] font-medium text-ink-2">How many {unit} you bought</span>
-          <NumberInput integer value={units} onValue={setUnitsKeep} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
+          <span className="text-[12px] font-medium text-ink-2">How many {unit} you bought{onTheWay ? " (if you know)" : ""}</span>
+          <NumberInput integer value={onTheWay && !units ? "" : units} onValue={setUnitsKeep} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
+          {onTheWay && <span className="block text-[11.5px] text-muted mt-1">Leave it empty and the manifest fills it in.</span>}
         </label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="block">
-            <span className="text-[12px] font-medium text-ink-2">Paid a {one(unit)}</span>
-            <NumberInput value={each} onValue={setEachKeep} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
-          </label>
-          <label className="block">
+          {!onTheWay && (
+            <label className="block">
+              <span className="text-[12px] font-medium text-ink-2">Paid a {one(unit)}</span>
+              <NumberInput value={each} onValue={setEachKeep} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
+            </label>
+          )}
+          <label className={`block ${onTheWay ? "col-span-2" : ""}`}>
             <span className="text-[12px] font-medium text-ink-2">Paid in all</span>
             <NumberInput value={total} onValue={setTotalKeep} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
           </label>
         </div>
         <label className="block">
           <span className="text-[12px] font-medium text-ink-2">Shipping in</span>
-          <NumberInput value={ship} onValue={setShip} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
-          <span className="block text-[11.5px] text-muted mt-1">What it cost to get it here. Leave it at 0 until you know it: adding it later updates every order already sold.</span>
+          {shipLocked ? (
+            <>
+              <div className={`${WH_INPUT} mt-1 flex items-center tabular-nums text-ink-2 bg-surface-2`}>{fmtAmount(b?.ship_total ?? 0)}</div>
+              <span className="block text-[11.5px] text-muted mt-1">From the trucks. It follows what each one costs, so there is nothing to type here.</span>
+            </>
+          ) : (
+            <>
+              <NumberInput value={ship} onValue={setShip} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
+              <span className="block text-[11.5px] text-muted mt-1">What it cost to get it here. Leave it at 0 until you know it: adding it later updates every order already sold. Once you send it to logistics, the trucks set it.</span>
+            </>
+          )}
         </label>
         <label className="block">
           <span className="text-[12px] font-medium text-ink-2">Notes</span>
@@ -158,7 +250,7 @@ function BuyForm({ unit, stockName, defaultUnits, detail, onSave, onCancel }: {
       </div>
       <div className="flex items-center justify-between gap-3 flex-wrap border-t border-line pt-4">
         <div className="text-[13px] text-ink-2 tabular-nums">
-          {units > 0 ? <>Each {one(unit)} costs <span className="font-semibold text-ink">{per(landed)}</span>{ship > 0 ? " with the shipping in" : ""}</> : "Enter how many were bought"}
+          {units > 0 ? <>Each {one(unit)} costs <span className="font-semibold text-ink">{per(landed)}</span>{(shipLocked ? (b?.ship_total ?? 0) : ship) > 0 ? " with the shipping in" : ""}</> : onTheWay ? "The manifest fills in how many were bought" : "Enter how many were bought"}
         </div>
         <div className="flex items-center gap-2">
           {onCancel && <button onClick={onCancel} className={WH_BTN_SECONDARY}>Cancel</button>}
@@ -182,8 +274,12 @@ function Tile({ label, value, sub, tone }: { label: string; value: string; sub?:
   );
 }
 
-function BuyView({ d, unit, numbers, onEdit, onChanged, onRemoved }: {
-  d: BuyDetail; unit: Unit; numbers: boolean; onEdit: () => void; onChanged: (d: BuyDetail) => void; onRemoved: () => void;
+/** R-551: where each step of a buy lives on its screen; clicking a step scrolls to it. */
+const SECTION: Record<StepKey, string> = { paid: "buy-sec-paid", ship: "buy-sec-ship", arrived: "buy-sec-arrived", selling: "buy-sec-selling" };
+
+function BuyView({ d, unit, numbers, onEdit, onChanged, onReload, onRemoved, onAddManifest, onOpenWarehouse }: {
+  d: BuyDetail; unit: Unit; numbers: boolean; onEdit: () => void; onChanged: (d: BuyDetail) => void; onReload: () => void; onRemoved: () => void;
+  onAddManifest?: (b: { id: string; name: string }) => void; onOpenWarehouse?: (d: BuyDetail) => void;
 }) {
   const r = d.rollup;
   const b = d.buy;
@@ -196,8 +292,10 @@ function BuyView({ d, unit, numbers, onEdit, onChanged, onRemoved }: {
   };
   const live = d.orders.filter((o) => !o.undone);
   const back = d.orders.filter((o) => o.undone);
-  const canRemove = live.length === 0 && d.payments.length === 0;
+  const canRemove = live.length === 0 && d.payments.length === 0 && d.truck_cost.live === 0;
   const m = (n: number) => (numbers ? fmtAmount(n) : "–");
+  const steps = buySteps(d, numbers);
+  const goTo = (k: StepKey) => document.getElementById(SECTION[k])?.scrollIntoView({ behavior: "smooth", block: "start" });
 
   return (
     <div className="space-y-4">
@@ -205,8 +303,9 @@ function BuyView({ d, unit, numbers, onEdit, onChanged, onRemoved }: {
         <div className="min-w-0">
           <h3 className="text-[15px] font-semibold text-ink">{b.name}</h3>
           <p className="text-[12.5px] text-muted mt-0.5">
-            {b.supplier_name ? `Bought from ${b.supplier_name}: ` : "Bought: "}
-            {n0(r.bought)} {unit} for {m(r.goods_total)}{r.ship_total > 0 ? `, and ${m(r.ship_total)} shipping in` : ", shipping in not added yet"}
+            {b.on_the_way
+              ? <>{b.supplier_name ? `Bought from ${b.supplier_name}: ` : "Bought: "}{b.units_bought > 0 ? `${n0(r.bought)} ${unit} for ` : ""}{m(r.goods_total)}{r.ship_total > 0 ? `, and ${m(r.ship_total)} shipping in so far` : ", no truck yet"}</>
+              : <>{b.supplier_name ? `Bought from ${b.supplier_name}: ` : "Bought: "}{n0(r.bought)} {unit} for {m(r.goods_total)}{r.ship_total > 0 ? `, and ${m(r.ship_total)} shipping in` : ", shipping in not added yet"}</>}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -215,18 +314,49 @@ function BuyView({ d, unit, numbers, onEdit, onChanged, onRemoved }: {
         </div>
       </div>
 
-      {numbers && (
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-          <Tile label="Made on what is sold" value={fmtAmount(r.made_on_sold)} tone={r.made_on_sold >= 0 ? "good" : "bad"}
-            sub={`${m(r.sales)} sold, ${m(r.cost_sold)} of it cost`} />
-          <Tile label={r.sold_out ? "Made on this buy" : "Made so far"} value={fmtAmount(r.made_so_far)} tone={r.made_so_far >= 0 ? "good" : "bad"}
-            sub={r.sold_out ? "Everything is sold: this is the exact profit, once every buyer has paid" : "Money in less everything it cost, with what is left counted at nothing"} />
-          <Tile label={`Cost a ${one(unit)}`} value={per(r.unit_cost)}
-            sub={r.ship_total > 0 ? `${per(d.unit_goods)} paid, ${per(d.unit_ship)} shipping in` : "Shipping in not added yet"} />
-          <Tile label="Sold" value={`${n0(r.sold)} of ${n0(r.bought)}`} sub={`${n0(r.left)} ${unit} left on hand`} />
-        </div>
+      <ol className="grid grid-cols-2 xl:grid-cols-4 gap-2 list-none m-0 p-0" aria-label="Where this buy is">
+        {steps.map((s) => (
+          <li key={s.key} className="min-w-0">
+            <button type="button" onClick={() => goTo(s.key)}
+              className={`${WH_CARD} w-full text-left px-3.5 py-2.5 hover:bg-surface-2/60 transition-colors duration-[130ms]`}>
+              <span className="flex items-center justify-between gap-2">
+                <span className="text-[12.5px] font-semibold text-ink">{s.label}</span>
+                <StatusPill tone={s.tone}>{s.word}</StatusPill>
+              </span>
+              <span className="block text-[12px] text-muted mt-1 truncate min-h-[16px]">{s.line}</span>
+            </button>
+          </li>
+        ))}
+      </ol>
+
+      {b.on_the_way ? (
+        numbers && (
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+            <Tile label="You pay for the load" value={fmtAmount(b.goods_total)} sub={r.goods_paid > 0 ? `${fmtAmount(r.goods_paid)} paid` : "Not paid yet"} />
+            <Tile label="Shipping in so far" value={fmtAmount(b.ship_total)} sub={d.truck_cost.live > 0 ? `${d.truck_cost.live} ${d.truck_cost.live === 1 ? "truck" : "trucks"}` : "No truck yet"} />
+            {b.markup_total > 0 && <Tile label="His markup on the trucks" value={fmtAmount(b.markup_total)} sub="Counted in the cost" />}
+            <Tile label={`Cost a ${one(unit)}`} value={b.units_bought > 0 ? per(r.unit_cost) : "Not known yet"} sub={b.units_bought > 0 ? undefined : "The manifest fills in how many"} />
+          </div>
+        )
+      ) : (
+        <>
+          {numbers && (
+            <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+              <Tile label="Made on what is sold" value={fmtAmount(r.made_on_sold)} tone={r.made_on_sold >= 0 ? "good" : "bad"}
+                sub={`${m(r.sales)} sold, ${m(r.cost_sold)} of it cost`} />
+              <Tile label={r.sold_out ? "Made on this buy" : "Made so far"} value={fmtAmount(r.made_so_far)} tone={r.made_so_far >= 0 ? "good" : "bad"}
+                sub={r.sold_out ? "Everything is sold: this is the exact profit, once every buyer has paid" : "Money in less everything it cost, with what is left counted at nothing"} />
+              <Tile label={`Cost a ${one(unit)}`} value={per(r.unit_cost)}
+                sub={r.ship_total > 0 ? undefined : "Shipping in not added yet"} />
+              <Tile label="Sold" value={`${n0(r.sold)} of ${n0(r.bought)}`} sub={`${n0(r.left)} ${unit} left on hand`} />
+            </div>
+          )}
+          {!numbers && <Tile label="Sold" value={`${n0(r.sold)} of ${n0(r.bought)}`} sub={`${n0(r.left)} ${unit} left on hand`} />}
+        </>
       )}
-      {!numbers && <Tile label="Sold" value={`${n0(r.sold)} of ${n0(r.bought)}`} sub={`${n0(r.left)} ${unit} left on hand`} />}
+      {numbers && b.units_bought > 0 && (
+        <p className="text-[12.5px] text-ink-2 tabular-nums">{costEachLine({ goods: d.unit_goods, ship: d.unit_ship, markup: d.unit_markup }, one(unit))}</p>
+      )}
 
       {r.oversold && (
         <Notice tone="warning">More {unit} were sold than this buy says were bought. Check how many were bought: the orders past it carry no cost.</Notice>
@@ -245,9 +375,26 @@ function BuyView({ d, unit, numbers, onEdit, onChanged, onRemoved }: {
         </Notice>
       )}
 
-      {numbers && <Payments d={d} busy={busy} run={run} />}
+      <div id={SECTION.paid} className="scroll-mt-4">{numbers && <Payments d={d} busy={busy} run={run} />}</div>
 
-      <div className={`${WH_CARD} overflow-hidden`}>
+      <BuyShipping d={d} numbers={numbers} onChanged={onReload} />
+
+      <div id={SECTION.arrived} className={`${WH_CARD} px-4 py-3 scroll-mt-4`}>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold text-ink">Arrived</div>
+            <p className="text-[12.5px] text-muted mt-0.5">
+              {b.on_the_way
+                ? "The stock is not here yet. When the truck is unloaded, add the manifest: the delivery it makes becomes this buy's stock."
+                : `In the warehouse${b.stock_name ? `: ${b.stock_name}` : ""}.`}
+            </p>
+          </div>
+          {b.on_the_way && onAddManifest && <button type="button" onClick={() => onAddManifest({ id: b.id, name: b.name })} className={WH_BTN_PRIMARY}>Add the manifest</button>}
+          {!b.on_the_way && onOpenWarehouse && <button type="button" onClick={() => onOpenWarehouse(d)} className={WH_BTN_SECONDARY}>Open in the Warehouse</button>}
+        </div>
+      </div>
+
+      <div id={SECTION.selling} className={`${WH_CARD} overflow-hidden scroll-mt-4`}>
         <div className="px-4 py-3 border-b border-line flex items-center justify-between">
           <span className="text-[13px] font-semibold text-ink">Orders from this buy</span>
           <span className="text-[12px] text-muted">{live.length} {live.length === 1 ? "order" : "orders"}</span>
@@ -371,11 +518,13 @@ function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k
       </div>
     </div>
   );
+  // R-551: with trucks the shipping in is paid per truck (Tie the bank payment, in the Shipping in section below).
+  const byTruck = d.truck_cost.live > 0;
   return (
     <div className={`${WH_CARD} p-4`}>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      <div className={`grid grid-cols-1 ${byTruck ? "" : "md:grid-cols-2"} gap-5`}>
         {section("goods", "Paid to the supplier", r.goods_paid, r.goods_total)}
-        {section("ship", "Shipping in", r.ship_paid, r.ship_total)}
+        {!byTruck && section("ship", "Paid for the shipping in", r.ship_paid, r.ship_total)}
       </div>
       {d.can_book_bank === false && <p className="text-[12px] text-muted mt-3">Tying a bank payment to a buy needs the Financials switch on your role.</p>}
     </div>

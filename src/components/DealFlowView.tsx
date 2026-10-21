@@ -25,6 +25,7 @@ import { openLoadInLogistics } from "./LogisticsPayCarriers";
 import { dealMatchesQuery } from "../lib/logisticsSearch";
 import { canPayCarriers } from "../lib/logisticsCarriers";
 import { loadNumber } from "../lib/logisticsLoad";
+import { OPEN_BUY_KEY } from "../lib/buyLoads";
 import { pipelineSplit } from "../lib/dealLane";
 import { SECTIONS as DEAL_SECTIONS, carrierHold, describeDeal, payFactsOf, type DealCtx, type DealDescription, type DealSection, type LineTone } from "../lib/dealSections";
 import { useSessionMe } from "../lib/useSessionMe";
@@ -248,6 +249,8 @@ export default function DealFlowView() {
       const raw = localStorage.getItem("dealflow_open_section");
       if (raw) { openTarget = JSON.parse(raw); localStorage.removeItem("dealflow_open_section"); }
     } catch { openTarget = null; }
+    // R-551: a truck in Logistics (or the Warehouse) asked for its buy: Inventory opens on it, and reads the key itself.
+    try { if (localStorage.getItem(OPEN_BUY_KEY)) setView("inventory"); } catch { /* ignore */ }
   }, []);
   useEffect(() => {
     const onOpen = () => {

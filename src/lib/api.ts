@@ -2857,26 +2857,47 @@ export interface BuyRollup {
   bought: number; sold: number; left: number; goods_total: number; ship_total: number; unit_cost: number;
   goods_paid: number; ship_paid: number; cost_sold: number; sales: number; received: number; other_cost: number;
   refunds: number; made_on_sold: number; made_so_far: number; sold_out: boolean; oversold: boolean;
+  /** R-551: his markup on the trucks that brought it in, counted in the cost a unit. */
+  markup_total: number;
 }
 export interface BuyOrder {
   id: string; invoice_id: string; number: string; client: string; stage: string; voided: boolean; count: number;
-  undone: boolean; own_cost: boolean; typed: boolean; deal_flow_id?: string | null; goods: number; ship: number;
+  undone: boolean; own_cost: boolean; typed: boolean; deal_flow_id?: string | null; goods: number; ship: number; markup: number;
   goods_paid: boolean; ship_paid: boolean; past_bought: boolean; cost: number; sales: number; received: number;
   other_cost: number; refunds: number; made: number; created_at: string;
 }
 export interface BuyPayment {
   txn_id: string; kind: BuyKind; amount: number; posted_at: string; name: string; cash: boolean; booked_here: number; booked_elsewhere: number;
 }
+/** R-551: one truck that brings a buy in, as the screens list it. `rate` is what its carrier costs (paid, else the rate, else
+ *  the quote's carrier cost); `paid` is null until its carrier is paid. `truck_no` is its place among the buy's live trucks
+ *  (0 once cancelled) and `trucks` how many are live. */
+export interface TruckRow {
+  id: string; code: string; status: FreightStatus; truck_no: number; trucks: number; carrier: string; rate: number;
+  paid: number | null; markup: number | null; quote_amount: number | null; bank_txn_id: string;
+  pickup_date: string; delivery_date: string; delivery_window: string; delivery_appt_time: string; delivered_at: string; delivered_time: string;
+}
+/** R-551: what a buy's live trucks cost: how many, how many have a price, how many are paid, the carriers and his markup. */
+export interface TruckCost { live: number; priced: number; paid: number; carrier: number; markup: number }
 export interface BuyDetail {
   buy: {
     id: string; item_id: string; load_id: string; stock_name: string; name: string; supplier_id: string; supplier_name: string;
-    units_bought: number; goods_total: number; ship_total: number; notes: string; archived: boolean; created_at: string; updated_at: string;
+    units_bought: number; goods_total: number;
+    /** The shipping in: what the trucks cost once the buy has one, else the typed figure (`ship_typed`). */
+    ship_total: number; ship_typed: number; markup_total: number;
+    notes: string; archived: boolean; on_the_way: boolean; created_at: string; updated_at: string;
   };
-  rollup: BuyRollup; unit_goods: number; unit_ship: number; orders: BuyOrder[]; payments: BuyPayment[];
+  rollup: BuyRollup; unit_goods: number; unit_ship: number; unit_markup: number; trucks: TruckRow[]; truck_cost: TruckCost;
+  orders: BuyOrder[]; payments: BuyPayment[];
   missing: { invoice_id: string; number: string; count: number; own_cost: boolean }[];
   in_step: boolean; can_book_bank?: boolean;
 }
-export interface BuyBrief { id: string; name: string; units_bought: number; sold: number; unit_goods: number; unit_ship: number }
+export interface BuyBrief { id: string; name: string; units_bought: number; sold: number; unit_goods: number; unit_ship: number; unit_markup: number }
+/** R-551: a buy started before its stock is here (On the way). */
+export interface ComingBuy {
+  id: string; name: string; supplier_id: string; supplier_name: string; goods_total: number; units_bought: number; created_at: string;
+  truck_cost: TruckCost; trucks: TruckRow[]; goods_paid: number;
+}
 export interface StockWithBuy {
   kind: "item" | "load"; id: string; name: string; left: number; unit: "units" | "pairs"; updated_at: string;
   buy: { id: string; name: string; supplier_name: string; rollup: BuyRollup; orders: number; in_step: boolean; missing: number } | null;
@@ -3431,6 +3452,8 @@ export interface FreightBooking {
   tracking: FreightTracking | null;
   /** Only for someone who may see deals. There is no deal_flow_id key for anyone else. */
   deal: { id: string; invoice_number: string; client_name: string; stage: string } | null;
+  /** R-551: the buy this truck brings in (its name is the product's, never its money), null on a deal's load. `deal` is null then. */
+  buy?: { id: string; name: string; truck_no: number; trucks: number; supplier_name: string } | null;
 }
 /** R-458: one file on a booking. The bytes stay on the server, sealed. */
 export interface FreightFile { id: string; name: string; mime: string; size: number; by: string; at: string; kind?: FreightFileKind }
@@ -3446,7 +3469,7 @@ export interface FreightStop {
 /** The fields a person can write. Only the ones present are saved. */
 export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "id" | "code" | "booked_at" | "created_by_name" | "updated_by_name" | "created_at" | "updated_at" |
-  "can_see_names" | "can_see_addresses" | "can_see_deal" | "can_see_money" | "tracking" | "deal" |
+  "can_see_names" | "can_see_addresses" | "can_see_deal" | "can_see_money" | "tracking" | "deal" | "buy" |
   "shipping_billed" | "trucks_on_deal" | "freight_by_team" | "files" | "paid_amount" | "paid_at" | "paid_method" | "paid_note" | "paid_state" |
   "load_number" | "quoted_at" | "quoted_by_name" | "quote_invoiced_at" | "quote_invoiced_amount" | "sent_to_book_at" |
   "pickup_number_confirmed_at" | "pickup_number_confirmed_by" | "paperwork" | "bols" | "carrier_pay_method" | "deal_paid" | "bank_linked" |
@@ -3552,6 +3575,8 @@ export interface CarrierPayRow {
   bank_linked: "" | "linked" | "partial" | "none";
   /** R-470: absent on an older server (read through paidStateOf). */
   paid_state?: PaidState;
+  /** R-551: a truck that brings a buy in: `deal_label` then reads "Coming in: <name>" and these name the buy. */
+  buy_id?: string; buy_name?: string;
 }
 /** R-470: `to_link` holds the loads marked paid but not linked to the bank. Absent on an older server. */
 export interface CarrierPayResponse { to_pay: CarrierPayRow[]; to_link?: CarrierPayRow[]; paid: CarrierPayRow[] }
@@ -3605,6 +3630,8 @@ export interface FreightPrefill {
   delivery_address: string;
   pickup_options: { name: string; address: string }[];
 }
+/** R-551: where a buy's trucks go (the supplier is the pickup, the company the delivery). */
+export type BuyPrefill = Omit<FreightPrefill, "pickup_options">;
 
 // ===== Logistics pay (R-401) =====
 // The person doing logistics earns a share of the shipping profit (what the customer was charged
@@ -3644,6 +3671,8 @@ export interface LogisticsPayTrackerLine {
   deal_flow_id: string;
   invoice_number: string;
   client_name: string;
+  /** R-551: the buy's name when this line is a buy that trucks bring in (`client_name` then reads "Coming in: <name>"), "" on a deal. */
+  buy_name?: string;
   booking_codes: string[];
   earned_on: string;
   due_date: string;
@@ -3718,13 +3747,15 @@ export interface LogisticsPayMine {
   due_now_total?: number;
   method?: string;
   dates?: { pay_date: string; total: number; status: "paid" | "due" | "upcoming"; paid_at: string }[];
-  loads?: { code: string; pickup_name: string; delivery_name: string; earned_on: string; due_date: string; amount: number; status: "earned" | "pending" | "paid" }[];
+  loads?: { code: string; buy_name?: string; pickup_name: string; delivery_name: string; earned_on: string; due_date: string; amount: number; status: "earned" | "pending" | "paid" }[];
 }
 /** R-542: one truck on the Logistics timeline: booked on `booked_on`, with his commission on it (null when the
  *  person viewing may not see his pay, or the load waits on the freight amount). `lane` is "" without the address switch. */
 export interface LogisticsWeekLoad {
   id: string;
   code: string;
+  /** R-551: the buy's name when the truck brings a buy in, "" on a deal's. */
+  buy_name?: string;
   booked_on: string;
   lane: string;
   commission: number | null;
@@ -4042,7 +4073,7 @@ export const api = {
     invoke<LoadDetail>("take_load_pairs", { loadId, invoiceId: o.invoiceId ?? null, reference: o.reference ?? null, note: o.note ?? null, takes: o.takes }),
   undoLoadOut: (loadId: string, outId: string) => invoke<LoadDetail>("undo_load_out", { loadId, outId }),
   /** R-488: every product and delivery, each with its buy when one is recorded. */
-  listWarehouseBuys: () => invoke<{ stock: StockWithBuy[] }>("list_warehouse_buys"),
+  listWarehouseBuys: () => invoke<{ stock: StockWithBuy[]; coming: ComingBuy[] }>("list_warehouse_buys"),
   /** R-488: the live buy on a product or a delivery (the invoice form's cost line). */
   warehouseBuyFor: (o: { itemId?: string; loadId?: string }) =>
     invoke<{ buy: BuyBrief | null }>("warehouse_buy_for", { itemId: o.itemId ?? null, loadId: o.loadId ?? null }),
@@ -4050,6 +4081,11 @@ export const api = {
   createWarehouseBuy: (input: BuyInput) => invoke<BuyDetail>("create_warehouse_buy", { input }),
   updateWarehouseBuy: (id: string, input: BuyInput) => invoke<BuyDetail>("update_warehouse_buy", { id, input }),
   archiveWarehouseBuy: (id: string) => invoke<void>("archive_warehouse_buy", { id }),
+  /** R-551: a buy still on the way gets the delivery or product its manifest made. */
+  attachWarehouseBuy: (id: string, o: { itemId?: string; loadId?: string }) =>
+    invoke<BuyDetail>("attach_warehouse_buy", { id, itemId: o.itemId ?? null, loadId: o.loadId ?? null }),
+  /** R-551: send what is queued to the server and wait for it, so a buy is there before its trucks are asked for. */
+  pushAndWait: () => invoke<number>("netsync_push_wait"),
   payWarehouseBuy: (id: string, kind: BuyKind, o: { txnId?: string; cashAmount?: number; cashDate?: string }) =>
     invoke<BuyDetail>("pay_warehouse_buy", { id, kind, txnId: o.txnId ?? null, cashAmount: o.cashAmount ?? null, cashDate: o.cashDate ?? null }),
   unpayWarehouseBuy: (id: string, txnId: string) => invoke<BuyDetail>("unpay_warehouse_buy", { id, txnId }),
@@ -4190,6 +4226,10 @@ export const api = {
     get: (id: string) => logisticsRequest<FreightBooking>("GET", `/api/logistics/bookings/${encodeURIComponent(id)}`),
     prefill: (dealFlowId: string) =>
       logisticsRequest<FreightPrefill>("GET", `/api/logistics/prefill/${encodeURIComponent(dealFlowId)}`),
+    /** R-551: where a buy's trucks go, and a buy sent to logistics: `trucks` (1 to 6) loads, each its own quote, all for `buyId` and no deal. */
+    prefillBuy: (buyId: string) => logisticsRequest<BuyPrefill>("GET", `/api/logistics/prefill-buy/${encodeURIComponent(buyId)}`),
+    createForBuy: (buyId: string, trucks: number, fields: FreightBookingPatch) =>
+      logisticsRequest<{ bookings: FreightBooking[] }>("POST", "/api/logistics/bookings", { today: localDay(), buy_id: buyId, trucks, ...fields }),
     /** "Send to logistics": needs deal edit access. Names and addresses left out are prefilled. */
     create: (dealFlowId: string, fields: FreightBookingPatch) =>
       logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { today: localDay(), deal_flow_id: dealFlowId, ...fields }),

@@ -3,6 +3,7 @@ import { ArrowDown, Banknote, Truck } from "lucide-react";
 import { api, openDealFlow, type FreightBooking } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import { dashboardLoads, laneEnds, loadCard, loadNumber, type CardTone } from "../lib/logisticsLoad";
+import { buyLabelOf, openBuyInDealFlow } from "../lib/buyLoads";
 import { routeLabel, timingLine } from "./LogisticsBookingForm";
 import { openLoadInLogistics } from "./LogisticsPayCarriers";
 
@@ -32,16 +33,18 @@ function LoadSquare({ b, today, i }: { b: FreightBooking; today: string; i: numb
   const route = routeLabel(b);
   const pay = c.steps[0] === "Delivered";
   const sub = c.sub || timingLine(b);
-  const who = b.deal ? [b.deal.invoice_number, b.deal.client_name].filter(Boolean).join(" · ") : "";
+  const who = b.deal ? [b.deal.invoice_number, b.deal.client_name].filter(Boolean).join(" · ") : buyLabelOf(b);
   const Icon = pay ? Banknote : Truck;
   const deal = b.can_see_deal && b.deal?.invoice_number ? b.deal.invoice_number : "";
-  const open = () => (deal ? openDealFlow(deal, "shipping") : openLoadInLogistics(b.id));
+  // R-551: a truck that brings a buy in opens the buy, where a deal's load opens its deal.
+  const buyId = b.can_see_deal && b.buy ? b.buy.id : "";
+  const open = () => (deal ? openDealFlow(deal, "shipping") : buyId ? openBuyInDealFlow(buyId) : openLoadInLogistics(b.id));
   // A div, not a button: the card holds the Load button, and a button cannot hold another.
   return (
     <div
       role="button" tabIndex={0} onClick={open}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } }}
-      title={deal ? `Open ${deal} in Deal Flow` : "Open the load"}
+      title={deal ? `Open ${deal} in Deal Flow` : buyId ? "Open the buy in Deal Flow" : "Open the load"}
       style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
       className="dash-load glass group relative rounded-2xl p-4 aspect-square flex flex-col text-left cursor-pointer
         ring-1 ring-line hover:-translate-y-0.5 hover:shadow-lg transition-[transform,box-shadow] duration-[130ms] min-w-0
@@ -54,7 +57,7 @@ function LoadSquare({ b, today, i }: { b: FreightBooking; today: string; i: numb
         <span className="w-9 h-9 rounded-xl grid place-items-center flex-shrink-0" style={{ background: `rgb(${t.fill} / 0.16)`, color: `rgb(${t.ink})` }}>
           <Icon size={17} strokeWidth={2} />
         </span>
-        {deal ? (
+        {deal || buyId ? (
           <button type="button" onClick={(e) => { e.stopPropagation(); openLoadInLogistics(b.id); }}
             title="Open the load in Logistics"
             className="tabular-nums text-[11.5px] text-muted hover:text-ink truncate px-1.5 h-6 rounded-md hover:bg-surface-2 transition-colors duration-[130ms]">

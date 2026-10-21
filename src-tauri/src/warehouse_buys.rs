@@ -22,6 +22,13 @@
 //!
 //! A buy is a reader, never a deal: no deal flow row is made for it, so no profit reader can count
 //! it. Every order stays an ordinary invoice and deal flow.
+//!
+//! R-551: a buy may be started before its stock is here (On the way: no `item_id` and no `load_id`, and 0
+//! units until the stock is attached) and is brought in on logistics trucks (`freight_bookings.buy_id`,
+//! no deal). Its shipping in follows those trucks (`buy_core::truck_cost`, `ship_in`) and his markup on
+//! them is laid on the orders like the shipping in. This desktop never writes a truck (the server does,
+//! and the desktop's copy arrives through sync): it reads them here to price the buy, and the server
+//! prices the same orders again whenever a truck changes.
 use crate::buy_core::{self as core, Kind};
 use crate::commands::SupplierPayment;
 use crate::db::pool;
@@ -131,6 +138,110 @@ fn orders(c: &rusqlite::Connection, buy_id: &str) -> Vec<OrderRow> {
         })
     });
     rows.map(|it| it.filter_map(|x| x.ok()).collect()).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------------------
+// Trucks (R-551)
+
+/// One truck bringing a buy in (`freight_bookings.buy_id`), as the screens and the plan read it.
+#[derive(Clone, Debug, Default)]
+struct TruckFull {
+    id: String,
+    code: String,
+    status: String,
+    archived: bool,
+    paid: Option<f64>,
+    /// `quoted_cost`: the carrier rate.
+    rate: Option<f64>,
+    /// `quote_cost`: the carrier cost its quote was built on.
+    quote_cost: Option<f64>,
+    markup: Option<f64>,
+    quote_amount: Option<f64>,
+    carrier: String,
+    bank_txn_id: String,
+    pickup_date: String,
+    delivery_date: String,
+    delivery_window: String,
+    delivery_appt_time: String,
+    delivered_at: String,
+    delivered_time: String,
+}
+
+impl TruckFull {
+    fn truck_in(&self) -> core::TruckIn {
+        core::TruckIn { status: self.status.clone(), archived: self.archived, paid: self.paid, rate: self.rate, quote_cost: self.quote_cost, markup: self.markup }
+    }
+}
+
+/// A buy's trucks, oldest first (`created_at`, then id), the removed ones too (they cost nothing).
+fn trucks_of(c: &rusqlite::Connection, buy_id: &str) -> Vec<TruckFull> {
+    let Ok(mut st) = c.prepare(
+        "SELECT id, COALESCE(load_number,''), status, COALESCE(archived,0), paid_amount, quoted_cost, quote_cost, markup_amount, quote_amount, \
+                COALESCE(carrier,''), COALESCE(bank_txn_id,''), COALESCE(pickup_date,''), COALESCE(delivery_date,''), COALESCE(delivery_window,''), \
+                COALESCE(delivery_appt_time,''), COALESCE(delivered_at,''), COALESCE(delivered_time,'') \
+         FROM freight_bookings WHERE buy_id=?1 ORDER BY created_at, id",
+    ) else {
+        return Vec::new();
+    };
+    let rows = st.query_map([buy_id], |r| {
+        let id: String = r.get(0)?;
+        let number: String = r.get(1)?;
+        Ok(TruckFull {
+            code: crate::freight::booking_code_of(&id, &number),
+            id,
+            status: r.get(2)?,
+            archived: r.get::<_, i64>(3)? != 0,
+            paid: r.get(4)?,
+            rate: r.get(5)?,
+            quote_cost: r.get(6)?,
+            markup: r.get(7)?,
+            quote_amount: r.get(8)?,
+            carrier: r.get(9)?,
+            bank_txn_id: r.get(10)?,
+            pickup_date: r.get(11)?,
+            delivery_date: r.get(12)?,
+            delivery_window: r.get(13)?,
+            delivery_appt_time: r.get(14)?,
+            delivered_at: r.get(15)?,
+            delivered_time: r.get(16)?,
+        })
+    });
+    rows.map(|it| it.filter_map(|x| x.ok()).collect()).unwrap_or_default()
+}
+
+/// What a buy's trucks cost (`buy_core::truck_cost`): his markup on them counts only while the logistics pay rule is on and
+/// paying (the server's `pays_markup`).
+fn truck_cost_of(trucks: &[TruckFull]) -> core::TruckCost {
+    let ins: Vec<core::TruckIn> = trucks.iter().map(TruckFull::truck_in).collect();
+    core::truck_cost(&ins, crate::freight::pays_markup())
+}
+
+/// The buy's totals: its goods, its shipping in (the trucks once it has one) and his markup on them.
+fn totals_of(b: &BuyRow, tc: &core::TruckCost) -> core::Totals {
+    core::Totals { units: b.units, goods: b.goods, ship: core::ship_in(b.ship, tc), markup: tc.markup }
+}
+
+/// The trucks as the screens list them (`TruckRow`): the removed ones left out, `truck_no` the place among the live ones (0 for
+/// a cancelled one) and `trucks` how many are live.
+fn truck_rows(trucks: &[TruckFull], tc: &core::TruckCost) -> Vec<Value> {
+    let mut place = 0;
+    trucks
+        .iter()
+        .filter(|t| !t.archived)
+        .map(|t| {
+            let live = t.truck_in().live();
+            if live {
+                place += 1;
+            }
+            json!({
+                "id": t.id, "code": t.code, "status": t.status, "truck_no": if live { place } else { 0 }, "trucks": tc.live,
+                "carrier": t.carrier, "rate": core::truck_carrier(&t.truck_in()), "paid": t.paid, "markup": t.markup,
+                "quote_amount": t.quote_amount, "bank_txn_id": t.bank_txn_id, "pickup_date": t.pickup_date,
+                "delivery_date": t.delivery_date, "delivery_window": t.delivery_window, "delivery_appt_time": t.delivery_appt_time,
+                "delivered_at": t.delivered_at, "delivered_time": t.delivered_time,
+            })
+        })
+        .collect()
 }
 
 /// The deal of an invoice: the one every list shows (highest stage, newest on a tie).
@@ -425,6 +536,10 @@ struct Worked {
     deal_of_order: BTreeMap<String, String>,
     owned: Vec<Alloc>,
     rows: BTreeMap<String, (Kind, TxnInfo)>,
+    /// R-551: what the buy cost (its shipping in follows its trucks), its trucks and what they cost.
+    t: core::Totals,
+    trucks: Vec<TruckFull>,
+    tc: core::TruckCost,
     plan: core::Plan,
     wants: Vec<Want>,
     /// Per deal: the lines this buy's order on it should carry, the lines it carries now, the order.
@@ -473,7 +588,9 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
         }
     }
     let live: Vec<&OrderRow> = ords.iter().filter(|o| !o.undone && deal_of_order.contains_key(&o.id)).collect();
-    let t = core::Totals { units: b.units, goods: b.goods, ship: b.ship, markup: 0.0 };
+    let trucks = trucks_of(c, &b.id);
+    let tc = truck_cost_of(&trucks);
+    let t = totals_of(&b, &tc);
     let ins: Vec<core::OrderIn> = live.iter().map(|o| core::OrderIn { id: o.id.clone(), count: o.count, goods_typed: o.goods_typed, own_cost: o.own_cost }).collect();
     let rins: Vec<core::RowIn> = rows
         .iter()
@@ -504,7 +621,7 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
         let _ = stage;
         lines.insert(d.clone(), (want_lines, now_lines, o.id.clone()));
     }
-    Ok(Worked { b, ords, deal_of_order, owned, rows, plan, wants, lines })
+    Ok(Worked { b, ords, deal_of_order, owned, rows, t, trucks, tc, plan, wants, lines })
 }
 
 fn line(id: String, amount: f64, count: f64, paid: bool, paid_at: &str, category: &str, supplier: (&str, Option<String>), note: String) -> SupplierPayment {
@@ -684,6 +801,45 @@ fn apply(buy_id: &str, link: Option<(&str, Kind)>, unlink: Option<&str>) -> Resu
     Ok(())
 }
 
+/// R-551: each live order of a buy with the deal it lands on and its share of his markup on the buy's trucks, worked out
+/// exactly as `work` builds it (the buy's totals and every live order, in order, since an order's share depends on those
+/// taken before it). Empty when the trucks carry no markup for the buy to count (the logistics pay rule is not paying, or none
+/// is on them). Twin of the server's `markup_shares`.
+fn markup_shares(c: &rusqlite::Connection, b: &BuyRow) -> Vec<(String, f64)> {
+    let tc = truck_cost_of(&trucks_of(c, &b.id));
+    if tc.markup <= core::CENT {
+        return Vec::new();
+    }
+    let ords = orders(c, &b.id);
+    let live: Vec<(&OrderRow, Option<String>)> = ords.iter().filter(|o| !o.undone).map(|o| (o, deal_of(c, &o.invoice_id))).filter(|(_, d)| d.is_some()).collect();
+    let ins: Vec<core::OrderIn> = live.iter().map(|(o, _)| core::OrderIn { id: o.id.clone(), count: o.count, goods_typed: o.goods_typed, own_cost: o.own_cost }).collect();
+    let plan = core::plan(&totals_of(b, &tc), &ins, &[]);
+    live.iter().zip(plan.orders.iter()).filter_map(|((_, d), p)| d.clone().map(|d| (d, p.markup))).collect()
+}
+
+/// R-551: his markup on the trucks that brought in the stock the orders of one deal took, summed. Feeds the cut taken off the
+/// deal's owner split (`freight::cut_as`). 0 while the logistics pay rule is not paying.
+pub(crate) fn markup_on_deal(c: &rusqlite::Connection, deal: &str) -> f64 {
+    let invoice: Option<String> = c
+        .query_row("SELECT COALESCE(invoice_id,'') FROM deal_flows WHERE id=?1", [deal], |r| r.get(0))
+        .ok()
+        .filter(|i: &String| !i.is_empty());
+    let Some(invoice) = invoice else { return 0.0 };
+    let buy_ids: Vec<String> = c
+        .prepare(
+            "SELECT DISTINCT o.buy_id FROM warehouse_buy_orders o JOIN warehouse_buys b ON b.id=o.buy_id \
+             WHERE o.invoice_id=?1 AND COALESCE(o.undone,0)=0 AND COALESCE(b.archived,0)=0",
+        )
+        .and_then(|mut st| st.query_map([&invoice], |r| r.get::<_, String>(0)).map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    let mut sum = 0.0;
+    for id in buy_ids {
+        let Ok(b) = buy(c, &id) else { continue };
+        sum += markup_shares(c, &b).into_iter().filter(|(d, _)| d == deal).map(|(_, m)| m).sum::<f64>();
+    }
+    core::r2(sum)
+}
+
 // ---------------------------------------------------------------------------------------
 // Reading for the screens
 
@@ -724,7 +880,7 @@ fn order_money(c: &rusqlite::Connection, deal: &str, plan: &core::OrderPlan) -> 
 
 fn detail(c: &rusqlite::Connection, id: &str) -> Result<Value, String> {
     let w = work(c, id, None, None)?;
-    let t = core::Totals { units: w.b.units, goods: w.b.goods, ship: w.b.ship, markup: 0.0 };
+    let t = w.t.clone();
     let (left, stock_name) = stock_left(c, &w.b);
     let money: Vec<core::OrderMoney> = w.plan.orders.iter().filter_map(|p| w.deal_of_order.get(&p.id).map(|d| order_money(c, d, p))).collect();
     let roll = core::rollup(&t, &w.plan, &money, left);
@@ -748,7 +904,7 @@ fn detail(c: &rusqlite::Connection, id: &str) -> Result<Value, String> {
             json!({
                 "id": o.id, "invoice_id": o.invoice_id, "number": number, "client": client, "stage": stage, "voided": voided,
                 "count": o.count, "undone": o.undone, "own_cost": o.own_cost, "typed": o.goods_typed.is_some(), "deal_flow_id": deal,
-                "goods": p.map(|p| p.goods).unwrap_or(0.0), "ship": p.map(|p| p.ship).unwrap_or(0.0),
+                "goods": p.map(|p| p.goods).unwrap_or(0.0), "ship": p.map(|p| p.ship).unwrap_or(0.0), "markup": p.map(|p| p.markup).unwrap_or(0.0),
                 "goods_paid": p.map(|p| p.goods_paid).unwrap_or(false), "ship_paid": p.map(|p| p.ship_paid).unwrap_or(false),
                 "past_bought": p.map(|p| p.past_bought).unwrap_or(false),
                 "cost": f.map(|f| f.cost).unwrap_or(0.0), "sales": f.map(|f| f.sales).unwrap_or(0.0),
@@ -780,11 +936,13 @@ fn detail(c: &rusqlite::Connection, id: &str) -> Result<Value, String> {
         "buy": {
             "id": w.b.id, "item_id": w.b.item_id, "load_id": w.b.load_id, "stock_name": stock_name, "name": w.b.name,
             "supplier_id": w.b.supplier_id, "supplier_name": w.b.supplier_name, "units_bought": w.b.units,
-            "goods_total": w.b.goods, "ship_total": w.b.ship, "notes": w.b.notes, "archived": w.b.archived,
+            "goods_total": w.b.goods, "ship_total": w.t.ship, "ship_typed": w.b.ship, "markup_total": w.t.markup, "notes": w.b.notes,
+            "archived": w.b.archived, "on_the_way": w.b.item_id.is_empty() && w.b.load_id.is_empty(),
             "created_at": w.b.created_at, "updated_at": w.b.updated_at,
         },
         "rollup": roll,
-        "unit_goods": w.plan.unit_goods, "unit_ship": w.plan.unit_ship,
+        "unit_goods": w.plan.unit_goods, "unit_ship": w.plan.unit_ship, "unit_markup": w.plan.unit_markup,
+        "trucks": truck_rows(&w.trucks, &w.tc), "truck_cost": w.tc,
         "orders": orders_json,
         "payments": payments,
         "missing": missing,
@@ -845,7 +1003,21 @@ pub async fn list_warehouse_buys() -> Result<Value, String> {
             stock.push(json!({ "kind": "load", "id": id, "name": name, "left": load_pairs_left(&c, &id, &lines), "unit": "pairs", "updated_at": up, "buy": b.map(|b| summary(&c, b)) }));
         }
     }
-    Ok(json!({ "stock": stock }))
+    // R-551: the buys started before their stock is here, newest first (`buys` is read newest first).
+    let coming: Vec<Value> = buys
+        .iter()
+        .filter(|b| b.item_id.is_empty() && b.load_id.is_empty())
+        .filter_map(|b| {
+            work(&c, &b.id, None, None).ok().map(|w| {
+                json!({
+                    "id": b.id, "name": b.name, "supplier_id": b.supplier_id, "supplier_name": b.supplier_name,
+                    "goods_total": b.goods, "units_bought": b.units, "created_at": b.created_at,
+                    "truck_cost": w.tc, "trucks": truck_rows(&w.trucks, &w.tc), "goods_paid": w.plan.goods_paid,
+                })
+            })
+        })
+        .collect();
+    Ok(json!({ "stock": stock, "coming": coming }))
 }
 
 /// The live buy on a product or a delivery, for the invoice form's cost line.
@@ -855,8 +1027,10 @@ pub async fn warehouse_buy_for(item_id: Option<String>, load_id: Option<String>)
     let Some(b) = buy_for(&c, item_id.as_deref().unwrap_or(""), load_id.as_deref().unwrap_or("")) else { return Ok(json!({ "buy": null })) };
     let units = b.units.max(0.0);
     let sold = core::total(orders(&c, &b.id).iter().filter(|o| !o.undone).map(|o| o.count));
-    let (ug, us) = if units > 0.0 { (b.goods / units, b.ship / units) } else { (0.0, 0.0) };
-    Ok(json!({ "buy": { "id": b.id, "name": b.name, "units_bought": b.units, "sold": sold, "unit_goods": ug, "unit_ship": us } }))
+    let tc = truck_cost_of(&trucks_of(&c, &b.id));
+    let ship = core::ship_in(b.ship, &tc);
+    let (ug, us, um) = if units > 0.0 { (b.goods / units, ship / units, tc.markup / units) } else { (0.0, 0.0, 0.0) };
+    Ok(json!({ "buy": { "id": b.id, "name": b.name, "units_bought": b.units, "sold": sold, "unit_goods": ug, "unit_ship": us, "unit_markup": um } }))
 }
 
 #[tauri::command]
@@ -886,8 +1060,10 @@ pub struct BuyInput {
     pub notes: Option<String>,
 }
 
-fn check_money(units: f64, goods: f64, ship: f64) -> Result<(), String> {
-    if !(units > 0.0) || !units.is_finite() {
+/// `allow_unknown_units`: a buy still on the way (no stock yet) may leave how many were bought as 0, which the stock fills in
+/// once it is attached.
+fn check_money(units: f64, goods: f64, ship: f64, allow_unknown_units: bool) -> Result<(), String> {
+    if !units.is_finite() || units < 0.0 || (units == 0.0 && !allow_unknown_units) {
         return Err("Enter how many were bought.".into());
     }
     if !(goods >= 0.0) || !goods.is_finite() || !(ship >= 0.0) || !ship.is_finite() {
@@ -932,14 +1108,41 @@ fn new_order(buy_id: &str, invoice_id: &str, count: f64, goods_typed: Option<f64
 }
 
 /// Record a buy on a product or a delivery. The orders already taken from it come with it,
-/// except that a deal whose supplier cost was typed by hand keeps that cost.
+/// except that a deal whose supplier cost was typed by hand keeps that cost. R-551: with neither a product nor a delivery it
+/// is a buy still on the way: it needs a name, and how many were bought may be left 0 until its stock is attached.
 #[tauri::command]
 pub async fn create_warehouse_buy(input: BuyInput) -> Result<Value, String> {
     let (item_id, load_id) = (input.item_id.unwrap_or_default(), input.load_id.unwrap_or_default());
     let (units, goods, ship) = (input.units_bought.unwrap_or(0.0), core::r2(input.goods_total.unwrap_or(0.0)), core::r2(input.ship_total.unwrap_or(0.0)));
-    check_money(units, goods, ship)?;
-    if item_id.is_empty() == load_id.is_empty() {
+    if !item_id.is_empty() && !load_id.is_empty() {
         return Err("Choose the product or the delivery this buy is for.".into());
+    }
+    let on_the_way = item_id.is_empty() && load_id.is_empty();
+    if on_the_way && input.name.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        return Err("Say what it is.".into());
+    }
+    check_money(units, goods, ship, on_the_way)?;
+    if on_the_way {
+        let id = format!("buy_{}", uuid::Uuid::new_v4().simple());
+        let t = now();
+        let by = crate::employees::session_actor().map(|(s, _)| s).unwrap_or_default();
+        let mut cols = Map::new();
+        cols.insert("item_id".into(), json!(""));
+        cols.insert("load_id".into(), json!(""));
+        cols.insert("name".into(), json!(input.name.as_deref().map(str::trim).unwrap_or("")));
+        cols.insert("supplier_id".into(), json!(input.supplier_id.unwrap_or_default()));
+        cols.insert("supplier_name".into(), json!(input.supplier_name.unwrap_or_default().trim()));
+        cols.insert("units_bought".into(), json!(units));
+        cols.insert("goods_total".into(), json!(goods));
+        cols.insert("ship_total".into(), json!(ship));
+        cols.insert("notes".into(), json!(input.notes.unwrap_or_default()));
+        cols.insert("archived".into(), json!(0));
+        cols.insert("created_by".into(), json!(by));
+        cols.insert("created_at".into(), json!(t));
+        cols.insert("updated_at".into(), json!(t));
+        put(BUYS, &id, cols, true)?;
+        apply(&id, None, None)?;
+        return detail(&*conn()?, &id);
     }
     let (stock_name, cands) = {
         let c = conn()?;
@@ -986,11 +1189,21 @@ pub async fn create_warehouse_buy(input: BuyInput) -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn update_warehouse_buy(id: String, input: BuyInput) -> Result<Value, String> {
-    let b = buy(&*conn()?, &id)?;
+    let (b, live_trucks) = {
+        let c = conn()?;
+        let b = buy(&c, &id)?;
+        let live = trucks_of(&c, &id).iter().filter(|t| t.truck_in().live()).count();
+        (b, live)
+    };
     let units = input.units_bought.unwrap_or(b.units);
     let goods = core::r2(input.goods_total.unwrap_or(b.goods));
     let ship = core::r2(input.ship_total.unwrap_or(b.ship));
-    check_money(units, goods, ship)?;
+    // R-551: a buy with no stock yet may leave how many were bought at 0, and once it has stock it must be more.
+    check_money(units, goods, ship, b.item_id.is_empty() && b.load_id.is_empty())?;
+    // R-551: while the buy has a truck its shipping in is what the trucks cost, so a different typed figure has no effect.
+    if live_trucks > 0 && (ship - b.ship).abs() > core::CENT {
+        return Err("This buy's shipping in comes from its trucks.".into());
+    }
     let mut cols = Map::new();
     if let Some(n) = input.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         cols.insert("name".into(), json!(n));
@@ -1017,11 +1230,83 @@ pub async fn update_warehouse_buy(id: String, input: BuyInput) -> Result<Value, 
     detail(&*conn()?, &id)
 }
 
+/// R-551: a buy still on the way gets its stock, the product or the delivery its manifest made. Exactly one of `item_id` and
+/// `load_id`. The stock must be here, not removed and not already carry a buy. When how many were bought is still 0 it becomes
+/// the stock's count (a delivery: the pairs its manifest expects, a product: the units on the shelf). Orders already taken from
+/// that stock come onto the buy as `create_warehouse_buy` brings them.
+#[tauri::command]
+pub async fn attach_warehouse_buy(id: String, item_id: Option<String>, load_id: Option<String>) -> Result<Value, String> {
+    let (item_id, load_id) = (item_id.unwrap_or_default().trim().to_string(), load_id.unwrap_or_default().trim().to_string());
+    if item_id.is_empty() == load_id.is_empty() {
+        return Err("Choose the product or the delivery this buy is for.".into());
+    }
+    const GONE: &str = "That stock is no longer in the warehouse.";
+    let (units, cands) = {
+        let c = conn()?;
+        let b = buy(&c, &id)?;
+        if b.archived {
+            return Err("That buy was removed.".into());
+        }
+        if !b.item_id.is_empty() || !b.load_id.is_empty() {
+            return Err("This buy is already on its stock.".into());
+        }
+        let count = if !item_id.is_empty() {
+            let row: Option<(String, String, i64)> = c
+                .query_row(
+                    "SELECT COALESCE(sections_json,'[]'), COALESCE(box_types_json,'[]'), COALESCE(archived,0) FROM warehouse_items WHERE id=?1",
+                    [&item_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .ok();
+            match row {
+                Some((sections, types, 0)) => item_units(&sections, &types),
+                _ => return Err(GONE.into()),
+            }
+        } else {
+            let row: Option<(String, i64)> = c
+                .query_row("SELECT COALESCE(lines_json,'[]'), COALESCE(archived,0) FROM warehouse_loads WHERE id=?1", [&load_id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .ok();
+            match row {
+                Some((lines, 0)) => {
+                    let lines: Vec<crate::case_core::LoadLine> = serde_json::from_str(&lines).unwrap_or_default();
+                    lines.iter().map(|l| l.expected()).sum::<i64>() as f64
+                }
+                _ => return Err(GONE.into()),
+            }
+        };
+        if buy_for(&c, &item_id, &load_id).is_some() {
+            return Err("This stock already has its buy. Change that one instead.".into());
+        }
+        let units = if b.units > 0.0 { b.units } else { count };
+        if !(units > 0.0) {
+            return Err("Enter how many were bought on the buy first.".into());
+        }
+        let probe = BuyRow { item_id: item_id.clone(), load_id: load_id.clone(), units, ..b };
+        let cands: Vec<(Candidate, bool)> = candidates(&c, &probe, &[]).into_iter().map(|m| { let own = has_own_cost(&c, &m.invoice_id); (m, own) }).collect();
+        (units, cands)
+    };
+    let mut cols = Map::new();
+    cols.insert("item_id".into(), json!(item_id));
+    cols.insert("load_id".into(), json!(load_id));
+    cols.insert("units_bought".into(), json!(units));
+    cols.insert("updated_at".into(), json!(now()));
+    put(BUYS, &id, cols, false)?;
+    for (m, own) in cands {
+        new_order(&id, &m.invoice_id, m.count, None, own, &m.at)?;
+    }
+    apply(&id, None, None)?;
+    detail(&*conn()?, &id)
+}
+
 /// Remove a buy recorded by mistake: only while nothing hangs on it. Archived, never deleted.
 #[tauri::command]
 pub async fn archive_warehouse_buy(id: String) -> Result<(), String> {
     {
         let w = work(&*conn()?, &id, None, None)?;
+        // R-551: its trucks are cancelled or removed in Logistics first (a removed buy would orphan them).
+        if w.tc.live > 0 {
+            return Err("Cancel its trucks in Logistics first.".into());
+        }
         if w.ords.iter().any(|o| !o.undone) || !w.owned.is_empty() {
             return Err("This buy has orders or a payment on it. Put the orders back and take the payments off first.".into());
         }
@@ -1040,7 +1325,16 @@ pub async fn pay_warehouse_buy(id: String, kind: Kind, txn_id: Option<String>, c
     if !crate::employees::session_can_book_bank() {
         return Err(NEEDS_FINANCIALS.into());
     }
-    let b = buy(&*conn()?, &id)?;
+    let (b, live_trucks) = {
+        let c = conn()?;
+        let b = buy(&c, &id)?;
+        let live = trucks_of(&c, &id).iter().filter(|t| t.truck_in().live()).count();
+        (b, live)
+    };
+    // R-551: with trucks the shipping in is paid per truck, in Pay carriers or on the truck.
+    if kind == Kind::Ship && live_trucks > 0 {
+        return Err("Tie the carrier payment to its truck.".into());
+    }
     let txn = match (txn_id.as_deref().map(str::trim).filter(|s| !s.is_empty()), cash_amount) {
         (Some(t), _) => {
             let dir: String = conn()?
@@ -1070,6 +1364,11 @@ pub async fn pay_warehouse_buy(id: String, kind: Kind, txn_id: Option<String>, c
 pub async fn unpay_warehouse_buy(id: String, txn_id: String) -> Result<Value, String> {
     if !crate::employees::session_can_book_bank() {
         return Err(NEEDS_FINANCIALS.into());
+    }
+    // R-551: a bank row a truck's carrier was paid with is taken off that truck (Pay carriers), which untangles both.
+    let tied = trucks_of(&*conn()?, &id).iter().any(|t| !t.archived && !t.bank_txn_id.is_empty() && t.bank_txn_id == txn_id);
+    if tied {
+        return Err("That payment is tied to a truck. Take it off the truck in Pay carriers.".into());
     }
     apply(&id, None, Some(&txn_id))?;
     detail(&*conn()?, &id)
@@ -1260,5 +1559,227 @@ mod tests {
         assert!(v["in_step"].as_bool().unwrap());
         assert_eq!(v["rollup"]["sold"].as_f64().unwrap(), 4.0);
         assert_eq!(v["rollup"]["left"].as_f64().unwrap(), 6.0);
+    }
+
+    // ── R-551: a buy started before its stock is here, brought in on trucks ─────────────────
+
+    fn on_the_way(name: &str, goods: f64, units: f64) -> BuyInput {
+        BuyInput {
+            item_id: None, load_id: None, name: Some(name.into()), supplier_id: None, supplier_name: Some("Lamo".into()),
+            units_bought: Some(units), goods_total: Some(goods), ship_total: None, notes: None,
+        }
+    }
+
+    /// A truck bringing `buy` in, straight into the local copy: `rate` is both its carrier rate and the carrier cost its
+    /// quote was built on, `markup` his markup on it. A booked, picked up or delivered one carries a booking day.
+    fn truck(buy: &str, status: &str, rate: Option<f64>, markup: Option<f64>, created: &str) -> String {
+        let id = format!("fb_{}", uuid::Uuid::new_v4().simple());
+        let booked = if matches!(status, "booked" | "picked_up" | "delivered") { "2026-10-05" } else { "" };
+        conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO freight_bookings (id, buy_id, status, quoted_cost, quote_cost, markup_amount, booked_at, carrier, created_at, updated_at) \
+                 VALUES (?1,?2,?3,?4,?4,?5,?6,'Test Freight',?7,?7)",
+                rusqlite::params![id, buy, status, rate, markup, booked, created],
+            )
+            .unwrap();
+        id
+    }
+
+    fn truck_set(id: &str, sets: &str) {
+        conn().unwrap().execute(&format!("UPDATE freight_bookings SET {sets} WHERE id=?1"), [id]).unwrap();
+    }
+
+    /// The logistics pay rule as the server writes it into the settings; put back to nothing when dropped, so no other test
+    /// reads it.
+    struct Rule;
+    impl Rule {
+        fn set(json: &str) -> Rule {
+            conn().unwrap().execute("INSERT INTO settings (key, value) VALUES ('logistics_pay', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json]).unwrap();
+            Rule
+        }
+    }
+    impl Drop for Rule {
+        fn drop(&mut self) {
+            if let Ok(c) = conn() {
+                let _ = c.execute("DELETE FROM settings WHERE key='logistics_pay'", []);
+            }
+        }
+    }
+    const PAYS: &str = r#"{"enabled":true,"payee_id":"lp_sample","surplus_mode":"pay"}"#;
+
+    fn ship_line(invoice_id: &str) -> Option<SupplierPayment> {
+        let c = conn().unwrap();
+        let d = deal_of(&c, invoice_id)?;
+        crate::commands::read_df(&d).ok()?.supplier_payments.into_iter().find(|p| p.id.starts_with("buys-"))
+    }
+
+    /// A delivery whose manifest expects `pairs` pairs, with them received.
+    async fn delivery(name: &str, pairs: i64) -> String {
+        use crate::case_core::{CaseLine, LoadLine, SizeQty};
+        let line = LoadLine { id: "a".into(), brand: "Acme".into(), style: "K1".into(), cost: 10.0, sizes: vec![SizeQty { size: "7".into(), qty: pairs }], ..Default::default() };
+        let d = create_warehouse_load(name.into(), "t.xlsx".into(), vec![line]).await.unwrap();
+        let load = d.load.id.clone();
+        save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs }], None, None, None).await.unwrap();
+        load
+    }
+
+    fn pairs_of(n: i64) -> Vec<crate::case_core::CaseLine> {
+        vec![crate::case_core::CaseLine { line_id: "a".into(), size: "7".into(), pairs: n }]
+    }
+
+    fn id_of(v: &Value) -> String {
+        v["buy"]["id"].as_str().unwrap().to_string()
+    }
+
+    /// A buy begun on its own, with no stock and no count, reads On the way; its trucks set its shipping in (the quoted ones
+    /// count, a quote still waiting costs nothing, a cancelled one is out); a typed figure, removing it and paying its shipping
+    /// by hand are refused while a truck is live; then its stock is attached and takes the count from it.
+    #[tokio::test]
+    async fn a_buy_on_the_way_follows_its_trucks_and_takes_its_stock() {
+        let _db = crate::db::init_test_store();
+        let _off = Rule::set(r#"{"enabled":false}"#);
+
+        let v = create_warehouse_buy(on_the_way("Sample hats", 1000.0, 0.0)).await.unwrap();
+        let id = id_of(&v);
+        assert_eq!((v["buy"]["on_the_way"].as_bool(), v["buy"]["units_bought"].as_f64()), (Some(true), Some(0.0)));
+        assert_eq!(v["trucks"].as_array().unwrap().len(), 0);
+        assert_eq!(create_warehouse_buy(on_the_way("  ", 5.0, 0.0)).await.unwrap_err(), "Say what it is.");
+        assert_eq!(create_warehouse_buy(on_the_way("Sample", 5.0, -1.0)).await.unwrap_err(), "Enter how many were bought.");
+        let mut with_stock = on_the_way("Sample", 5.0, 0.0);
+        with_stock.load_id = Some("no-such-delivery".into());
+        assert_eq!(create_warehouse_buy(with_stock).await.unwrap_err(), "Enter how many were bought.", "a buy with stock still needs its count");
+
+        let l = list_warehouse_buys().await.unwrap();
+        assert!(l["coming"].as_array().unwrap().iter().any(|b| b["id"] == id.as_str()), "it is listed under On the way");
+        assert!(!l["stock"].as_array().unwrap().iter().any(|s| s["buy"]["id"] == id.as_str()), "and not among the stock");
+
+        // One truck quoted with his markup, one still waiting for its quote.
+        let t1 = truck(&id, "quoted", Some(1750.0), Some(20.0), "2026-10-05T10:00:00Z");
+        let t2 = truck(&id, "quote", None, None, "2026-10-05T10:00:01Z");
+        let v = get_warehouse_buy(id.clone()).await.unwrap();
+        assert_eq!((v["truck_cost"]["live"].as_i64(), v["truck_cost"]["priced"].as_i64(), v["truck_cost"]["carrier"].as_f64()), (Some(2), Some(1), Some(1750.0)));
+        assert_eq!((v["buy"]["ship_total"].as_f64(), v["buy"]["ship_typed"].as_f64()), (Some(1750.0), Some(0.0)), "a quoted truck counts at once");
+        assert_eq!(v["buy"]["markup_total"].as_f64(), Some(0.0), "his markup counts only while the rule pays");
+        let rows = v["trucks"].as_array().unwrap();
+        assert_eq!((rows[0]["truck_no"].as_i64(), rows[1]["truck_no"].as_i64(), rows[0]["trucks"].as_i64()), (Some(1), Some(2), Some(2)));
+        assert_eq!(rows[0]["code"].as_str().map(|c| c.starts_with("L-")), Some(true), "no load number yet reads the id-derived code");
+
+        // The second truck is quoted, and the rule pays him: both counted, and his markup too.
+        truck_set(&t2, "status='quoted', quoted_cost=1850, quote_cost=1850, markup_amount=10");
+        let _pays = Rule::set(PAYS);
+        let v = get_warehouse_buy(id.clone()).await.unwrap();
+        assert_eq!((v["buy"]["ship_total"].as_f64(), v["buy"]["markup_total"].as_f64()), (Some(3600.0), Some(30.0)));
+
+        // While a truck is live the typed shipping in, removing the buy and paying its shipping by hand are refused.
+        let mut typed = on_the_way("Sample hats", 1000.0, 0.0);
+        typed.ship_total = Some(5.0);
+        assert_eq!(update_warehouse_buy(id.clone(), typed).await.unwrap_err(), "This buy's shipping in comes from its trucks.");
+        let rename = on_the_way("Sample hats, renamed", 1000.0, 0.0);
+        assert_eq!(update_warehouse_buy(id.clone(), rename).await.unwrap()["buy"]["name"], "Sample hats, renamed");
+        assert_eq!(archive_warehouse_buy(id.clone()).await.unwrap_err(), "Cancel its trucks in Logistics first.");
+        assert_eq!(pay_warehouse_buy(id.clone(), Kind::Ship, Some("w-r551".into()), None, None).await.unwrap_err(), "Tie the carrier payment to its truck.");
+        truck_set(&t1, "bank_txn_id='w-r551'");
+        assert_eq!(unpay_warehouse_buy(id.clone(), "w-r551".into()).await.unwrap_err(), "That payment is tied to a truck. Take it off the truck in Pay carriers.");
+
+        // A truck cancelled costs nothing and has no place among the live ones.
+        truck_set(&t2, "status='cancelled'");
+        let v = get_warehouse_buy(id.clone()).await.unwrap();
+        assert_eq!((v["buy"]["ship_total"].as_f64(), v["buy"]["markup_total"].as_f64(), v["truck_cost"]["live"].as_i64()), (Some(1750.0), Some(20.0), Some(1)));
+        assert_eq!(v["trucks"][1]["truck_no"].as_i64(), Some(0));
+
+        // Ten pairs are sold before the buy has its stock: attaching the delivery brings that order in and takes the count.
+        let load = delivery("Shoe delivery R551", 10).await;
+        invoice("r551a", "R551-A", 900.0);
+        take_load_pairs(load.clone(), Some("r551a".into()), Some("R551-A".into()), None, pairs_of(4)).await.unwrap();
+        let v = attach_warehouse_buy(id.clone(), None, Some(load.clone())).await.unwrap();
+        assert_eq!((v["buy"]["load_id"].as_str(), v["buy"]["units_bought"].as_f64(), v["buy"]["on_the_way"].as_bool()), (Some(load.as_str()), Some(10.0), Some(false)));
+        assert_eq!(v["orders"].as_array().unwrap().len(), 1, "the order already sold from it came with it");
+        assert_eq!((v["unit_goods"].as_f64(), v["unit_ship"].as_f64(), v["unit_markup"].as_f64()), (Some(100.0), Some(175.0), Some(2.0)));
+        assert_eq!((v["orders"][0]["ship"].as_f64(), v["orders"][0]["markup"].as_f64()), (Some(700.0), Some(8.0)));
+        assert_eq!(v["rollup"]["unit_cost"].as_f64(), Some(277.0), "goods, shipping in and his markup, over the pairs");
+        assert_eq!(ship_line("r551a").map(|p| p.amount), Some(700.0));
+        let brief = warehouse_buy_for(None, Some(load.clone())).await.unwrap();
+        assert_eq!((brief["buy"]["unit_ship"].as_f64(), brief["buy"]["unit_markup"].as_f64()), (Some(175.0), Some(2.0)));
+
+        // The carrier is paid $50 less: the shipping in, and the order already sold, follow it.
+        truck_set(&t1, "paid_amount=1700, paid_at='2026-10-20'");
+        let v = apply_warehouse_buy(id.clone()).await.unwrap();
+        assert_eq!((v["buy"]["ship_total"].as_f64(), v["unit_ship"].as_f64()), (Some(1700.0), Some(170.0)));
+        assert_eq!(ship_line("r551a").map(|p| p.amount), Some(680.0));
+
+        // Attaching again, or another buy to the same stock, or to nothing, is refused.
+        assert_eq!(attach_warehouse_buy(id.clone(), None, Some(load.clone())).await.unwrap_err(), "This buy is already on its stock.");
+        let other = id_of(&create_warehouse_buy(on_the_way("Sample caps", 50.0, 0.0)).await.unwrap());
+        assert_eq!(attach_warehouse_buy(other.clone(), None, Some(load)).await.unwrap_err(), "This stock already has its buy. Change that one instead.");
+        assert_eq!(attach_warehouse_buy(other.clone(), Some("a".into()), Some("b".into())).await.unwrap_err(), "Choose the product or the delivery this buy is for.");
+        assert_eq!(attach_warehouse_buy(other.clone(), Some("no-such-product".into()), None).await.unwrap_err(), "That stock is no longer in the warehouse.");
+        conn().unwrap().execute("INSERT INTO warehouse_items (id, name, sections_json, created_at, updated_at) VALUES ('wi-r551-empty','Empty shelf','[]','t','t')", []).unwrap();
+        assert_eq!(attach_warehouse_buy(other, Some("wi-r551-empty".into()), None).await.unwrap_err(), "Enter how many were bought on the buy first.");
+    }
+
+    /// A product's units fill in a count left at 0, and a count that was typed stands.
+    #[tokio::test]
+    async fn attaching_a_product_takes_its_units_only_when_no_count_was_typed() {
+        let _db = crate::db::init_test_store();
+        let shelf = r#"[{"id":"s1","name":"Shelf","loose":12}]"#;
+        for (id, name) in [("wi-r551-hats", "Hats"), ("wi-r551-caps", "Caps")] {
+            conn().unwrap().execute("INSERT INTO warehouse_items (id, name, sections_json, created_at, updated_at) VALUES (?1,?2,?3,'t','t')", rusqlite::params![id, name, shelf]).unwrap();
+        }
+        let blank = id_of(&create_warehouse_buy(on_the_way("Hat pallets", 600.0, 0.0)).await.unwrap());
+        let v = attach_warehouse_buy(blank, Some("wi-r551-hats".into()), None).await.unwrap();
+        assert_eq!((v["buy"]["item_id"].as_str(), v["buy"]["units_bought"].as_f64(), v["unit_goods"].as_f64()), (Some("wi-r551-hats"), Some(12.0), Some(50.0)));
+        let typed = id_of(&create_warehouse_buy(on_the_way("Cap pallets", 600.0, 20.0)).await.unwrap());
+        let v = attach_warehouse_buy(typed, Some("wi-r551-caps".into()), None).await.unwrap();
+        assert_eq!((v["buy"]["units_bought"].as_f64(), v["unit_goods"].as_f64()), (Some(20.0), Some(30.0)), "the count typed on the buy wins");
+    }
+
+    /// His markup on the trucks that brought a buy in is laid on its orders and taken off the top of each order's owner split
+    /// as logistics pay: 4 of 10 pairs carry 4/10 of $30, the last order the rest. It counts only while the rule pays.
+    #[tokio::test]
+    async fn his_markup_on_a_buys_trucks_is_taken_off_each_orders_deal() {
+        let _db = crate::db::init_test_store();
+        let load = delivery("Shoe delivery R551 cut", 10).await;
+        invoice("r551c1", "R551-C1", 500.0);
+        invoice("r551c2", "R551-C2", 900.0);
+        take_load_pairs(load.clone(), Some("r551c1".into()), Some("R551-C1".into()), None, pairs_of(4)).await.unwrap();
+        take_load_pairs(load.clone(), Some("r551c2".into()), Some("R551-C2".into()), None, pairs_of(6)).await.unwrap();
+        let mut input = on_the_way("Cut shoes", 100.0, 10.0);
+        input.load_id = Some(load);
+        let buy_id = id_of(&create_warehouse_buy(input).await.unwrap());
+        truck(&buy_id, "booked", Some(80.0), Some(20.0), "2026-10-05T10:00:00Z");
+        let cheap = truck(&buy_id, "booked", Some(90.0), Some(10.0), "2026-10-05T10:00:01Z");
+        let (da, db_) = { let c = conn().unwrap(); (deal_of(&c, "r551c1").unwrap(), deal_of(&c, "r551c2").unwrap()) };
+        let share = |d: &str| markup_on_deal(&conn().unwrap(), d);
+
+        {
+            let _rule = Rule::set(r#"{"enabled":false}"#);
+            assert_eq!((share(&da), share(&db_)), (0.0, 0.0), "the rule is off");
+            assert_eq!(crate::freight::logistics_cut(&conn().unwrap(), &da), None);
+        }
+        {
+            let _rule = Rule::set(r#"{"enabled":true,"surplus_mode":"track"}"#);
+            assert_eq!(share(&da), 0.0, "tracked, not paid: nothing is taken off");
+        }
+        {
+            let _rule = Rule::set(r#"{"enabled":true,"surplus_mode":"pay"}"#);
+            assert_eq!(share(&da), 0.0, "paying needs a payee");
+        }
+        let _rule = Rule::set(PAYS);
+        assert_eq!((share(&da), share(&db_)), (12.0, 18.0));
+        assert_eq!(share("df-no-such-deal"), 0.0);
+        assert_eq!(crate::freight::logistics_cut(&conn().unwrap(), &da), Some(12.0));
+        assert_eq!(crate::freight::logistics_cut_on_completion(&conn().unwrap(), &db_), Some(18.0));
+        let line = crate::freight::get_deal_logistics_pay(da.clone()).await.unwrap();
+        assert_eq!((line["pay"].as_f64(), line["buy_markup"].as_f64(), line["rule"].as_str()), (Some(12.0), Some(12.0), Some("markup")));
+        let payout = crate::commands::deal_flow_payout(db_.clone()).await.unwrap();
+        assert_eq!(payout["logistics_pay"].as_f64(), Some(18.0));
+
+        // An order put back leaves the share to the one that stays: the 6 pairs left carry 6/10 of the $30.
+        update_warehouse_buy_order(buy_id.clone(), core::order_id("r551c1", &buy_id), None, None, Some(true)).await.unwrap();
+        assert_eq!((share(&da), share(&db_)), (0.0, 18.0));
+        // A truck cancelled takes its markup out.
+        truck_set(&cheap, "status='cancelled'");
+        assert_eq!(share(&db_), 12.0, "6 of the 10 pairs carry 6/10 of the $20 of markup left");
     }
 }

@@ -51,11 +51,14 @@ const POLL_SECS: u64 = 20;
 /// "11" adds `warehouse_floors` (R-550: the buildings drawn on the floor plan) and the four placement
 /// columns on `warehouse_load_pallets`, so a desktop that updates after a floor plan was drawn on the
 /// phone restores the buildings and where each pallet stands from the server's snapshot.
-const HEAL_GENERATION: &str = "11";
+/// "12" is the same kind of pass for the R-551 columns on `freight_bookings` (`buy_id`, the buy a truck
+/// brings in, and `bank_txn_id`, the bank row that paid its carrier). A column-only change: the refresh
+/// list below stays `freight_bookings` alone.
+const HEAL_GENERATION: &str = "12";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
-/// workspace. Generations "6" (R-459) and "7" (R-464): `freight_bookings`, which only flows server to device, so the
+/// workspace. Generations "6" (R-459), "7" (R-464) and "12" (R-551): `freight_bookings`, which only flows server to device, so the
 /// server's copy is always the one to keep. Empty for a generation that only widens the tables.
 const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings"];
 
@@ -1199,6 +1202,13 @@ pub async fn netsync_sync_now() -> Result<serde_json::Value, String> {
     let pushed = push_pending().await.map_err(|e| e.to_string())?;
     let pulled = pull_apply().await.map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "pushed": pushed, "pulled": pulled }))
+}
+
+/// R-551: push every queued local event and wait until the server has taken them. A buy's trucks are asked for on the server,
+/// which must know the buy first, so Send to logistics waits on this instead of the fire-and-forget `push_now`.
+#[tauri::command]
+pub async fn netsync_push_wait() -> Result<usize, String> {
+    push_pending().await.map_err(|e| e.to_string())
 }
 
 /// Repair a device that has fallen behind the server — e.g. earlier apply
@@ -2842,9 +2852,18 @@ mod r400_sync_tests {
     /// after they were drawn on the phone.
     #[test]
     fn r550_floor_plan_forces_one_more_restore_per_device() {
-        assert_eq!(HEAL_GENERATION, "11", "devices healed under generation 10 never compared the floor plan");
+        assert_ne!(HEAL_GENERATION, "10", "devices healed under generation 10 never compared the floor plan");
         assert!(SNAPSHOT_TABLES.contains(&"warehouse_floors"));
         assert!(SNAPSHOT_TABLES.contains(&"warehouse_load_pallets"));
+    }
+
+    /// R-551: the `buy_id` and `bank_txn_id` columns reach a device that already holds the rows only
+    /// through a restore, so generation 12 forces one more pass and still refreshes nothing but
+    /// `freight_bookings`.
+    #[test]
+    fn r551_new_booking_columns_force_one_more_restore_per_device() {
+        assert_eq!(HEAL_GENERATION, "12", "devices healed under generation 11 do not have the R-551 columns");
+        assert_eq!(HEAL_REFRESH_TABLES, &["freight_bookings"], "a column-only generation refreshes only the table that gained columns");
     }
 
     #[tokio::test]

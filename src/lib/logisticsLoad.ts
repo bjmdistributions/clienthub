@@ -673,7 +673,7 @@ export function loadHaystack(b: FreightBooking): string {
   return [
     b.load_number, b.code, b.bol, b.pro, b.pickup_number, b.reference, b.carrier, b.broker, b.equipment,
     b.pickup_name, b.delivery_name, b.pickup_address, b.delivery_address, b.request_note,
-    b.deal?.invoice_number, b.deal?.client_name,
+    b.deal?.invoice_number, b.deal?.client_name, b.buy?.name,
     ...stopsOf(b).flatMap((x) => [x.name, x.address, x.pickup_number]),
   ].filter(Boolean).join(" ").toLowerCase();
 }
