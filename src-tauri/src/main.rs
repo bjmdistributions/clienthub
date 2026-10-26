@@ -24,6 +24,7 @@ mod google_contacts;
 mod invoice;
 mod lot_engine;
 mod lot_export_pdf;
+mod lot_import;
 mod lot_store;
 mod manifest;
 mod manifest_images;
@@ -1035,6 +1036,9 @@ fn main() {
             resync_inventory,
             import_lot_photos,
             stage_pasted_image,
+            lot_import::save_lot_import_template,
+            lot_import::read_lot_import_sheet,
+            lot_import::fetch_lot_import_files,
             get_load_inbox,
             list_inbound_loads,
             approve_inbound_load,

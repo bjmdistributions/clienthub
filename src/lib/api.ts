@@ -5134,6 +5134,12 @@ export const api = {
   // Lots whose media hasn't fully synced (a file missing on this device, or still uploading).
   listMediaSyncIssues: () => invoke<{ lot_id: string; missing_local: boolean; pending_upload: boolean }[]>("list_media_sync_issues"),
   importLotPhotos: (lotId: string, paths: string[]) => invoke<string[]>("import_lot_photos", { lotId, paths }),
+  // R-557: lots from a spreadsheet. The template, a dropped sheet as text, and a row's
+  // photo or manifest references turned into files on this computer.
+  saveLotImportTemplate: (path: string) => invoke<void>("save_lot_import_template", { path }),
+  readLotImportSheet: (path: string) => invoke<{ sheet: string; rows: string[][] }>("read_lot_import_sheet", { path }),
+  fetchLotImportFiles: (refs: string[], baseDir: string, kind: "photo" | "manifest") =>
+    invoke<{ reference: string; path: string | null; error: string | null }[]>("fetch_lot_import_files", { refs, baseDir, kind }),
   // Clipboard-pasted image -> temp file path, so it can then go through importLotPhotos
   // like any picked or dragged file. Used by paste-a-load (copy an image in WhatsApp Web).
   stagePastedImage: (dataBase64: string, ext?: string | null) =>
