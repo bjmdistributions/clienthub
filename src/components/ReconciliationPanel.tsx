@@ -247,6 +247,9 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
           onAddManual={addManual}
           noPair={onlyBuy}
         >
+          {onlyBuy && buys.length === 0 && (
+            <div className="mt-2 text-[11.5px] text-muted">The goods cost comes from a buy in the Warehouse, so its supplier is paid on that buy, in Deal Flow, Inventory.</div>
+          )}
           {buys.map((b) => (
             <div key={b.id} className="mt-2 rounded-lg border border-line-2 px-3 py-2 space-y-2">
               <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -568,6 +571,9 @@ function LegBlock({
 
 // ── A paired transaction row: payer/desc + date on the left, amount + unpair right ──
 function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: string) => void; busy: boolean }) {
+  // R-552: a buy's booking is one slice of a payment the buy spreads over every order; taking it off takes all of it off.
+  const ofBuy = a.id.startsWith("alloc_") && (a.note || "").startsWith("Buy: ");
+  const [sure, setSure] = useState(false);
   const manual = a.source_format === "manual_cash";
   const payer = a.counterparty_name?.trim() || a.description?.trim() || (manual ? "Cash" : "Bank transaction");
   const sign = a.direction === "out" ? "−" : "";
@@ -607,11 +613,18 @@ function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: st
         )}
       </div>
       <span className={`text-[13px] font-semibold tabular-nums ${clr}`}>{sign}{fmtAmount(a.amount)}</span>
+      {sure && (
+        <span className="flex items-center gap-1.5 flex-shrink-0 text-[11.5px]">
+          <span className="text-muted">Off the buy, every order?</span>
+          <button type="button" onClick={() => { setSure(false); onUnpair(a.id); }} disabled={busy} className="h-7 px-2 rounded-md bg-danger-bg text-danger-ink font-medium">Take off</button>
+          <button type="button" onClick={() => setSure(false)} className="h-7 px-2 rounded-md text-muted hover:text-ink-2">Keep</button>
+        </span>
+      )}
       <button
         type="button"
-        onClick={() => onUnpair(a.id)}
+        onClick={() => (ofBuy && !sure ? setSure(true) : onUnpair(a.id))}
         disabled={busy}
-        title="Unpair"
+        title={ofBuy ? "Take this payment off the buy: it comes off every order sold from it, not only this one" : "Unpair"}
         className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-danger-ink hover:bg-danger-bg disabled:opacity-50 transition-colors flex-shrink-0"
       >
         <Trash2 size={12} />

@@ -506,7 +506,9 @@ function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k
           <div key={p.txn_id} className="flex items-center justify-between gap-2 text-[12.5px] bg-surface-2 rounded-lg px-3 py-2">
             <span className="min-w-0 truncate text-ink-2">{p.posted_at.slice(0, 10)} · {p.name || (p.cash ? "Cash" : "Bank payment")}{p.cash ? " (cash)" : ""}</span>
             <span className="flex items-center gap-2 flex-shrink-0">
-              <span className="tabular-nums text-ink" title={p.booked_here < p.amount - 0.005 ? "The rest of this payment is free to book in Financials" : undefined}>
+              <span className="tabular-nums text-ink" title={p.booked_here < p.amount - 0.005
+                ? (p.amount - p.booked_here - p.booked_elsewhere > 0.005 ? `${fmtAmount(p.amount - p.booked_here - p.booked_elsewhere)} of it is free to book in Financials` : "The rest of it is booked elsewhere in Financials")
+                : undefined}>
                 {p.booked_here < p.amount - 0.005 ? `${fmtAmount(p.booked_here)} of ${fmtAmount(p.amount)}` : fmtAmount(p.amount)}
               </span>
               {d.can_book_bank !== false && (

@@ -1428,12 +1428,6 @@ pub async fn pay_warehouse_buy(
         Kind::Ship => (w.t.ship, w.plan.ship_paid),
     };
     let (_, raise) = core::pay_take(total, paid, room, take)?;
-    if let Some(cost) = raise {
-        let mut cols = Map::new();
-        cols.insert(if kind == Kind::Goods { "goods_total" } else { "ship_total" }.into(), json!(cost));
-        cols.insert("updated_at".into(), json!(now()));
-        put(BUYS, &id, cols, false)?;
-    }
     let txn = match (txn_id, cash_amount) {
         (Some(t), _) => t,
         (None, Some(a)) => {
@@ -1446,6 +1440,12 @@ pub async fn pay_warehouse_buy(
         }
         _ => return Err("Choose the bank row that paid it, or enter the cash paid.".into()),
     };
+    if let Some(cost) = raise {
+        let mut cols = Map::new();
+        cols.insert(if kind == Kind::Goods { "goods_total" } else { "ship_total" }.into(), json!(cost));
+        cols.insert("updated_at".into(), json!(now()));
+        put(BUYS, &id, cols, false)?;
+    }
     apply(&id, Some((&txn, kind)), None)?;
     detail(&*conn()?, &id)
 }
