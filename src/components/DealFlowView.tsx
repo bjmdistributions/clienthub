@@ -10,6 +10,7 @@ import {
   type FreightBooking, type FreightFile, type DealReconciliation,
 } from "../lib/api";
 import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, isShippingLine, owedToSupplier } from "../lib/format";
+import { legLine, openLegs, type LegKey } from "../lib/dealLegs";
 import { toast } from "./Toast";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
@@ -777,7 +778,8 @@ function DealLines({ lines }: { lines: DealDescription }) {
 // buyer, the supplier to pay, or all linked. It reads the bank links only (`reconciliation_status_all`), the same truth as
 // the Link financials step, so a deal is never "All linked" here and flagged on the Completed drawer later. Shipping is
 // tracked in Logistics and is not part of any figure. The grouping rule and the wording live in lib/dealPayments.ts.
-const LEG_TONE: Record<LegTone, string> = { owed: "text-warning-ink", done: "text-success-ink", quiet: "text-muted" };
+// R-555: a payment with nothing linked reads red, one part linked amber.
+const LEG_TONE: Record<LegTone, string> = { owed: "text-danger-ink", part: "text-warning-ink", done: "text-success-ink", quiet: "text-muted" };
 
 function LegLine({ leg }: { leg: PaymentLeg }) {
   return (
@@ -2123,14 +2125,6 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
 // linked transaction already says the money landed, and Review & complete records the
 // payment on the deal and the invoice when the deal closes, from any open stage.
 function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: () => void; onAdvance: () => void }) {
-  const meta = (() => { try { return JSON.parse((flow as any).metadata || "{}"); } catch { return {}; } })();
-  const [noBuyer,    setNoBuyer]    = useState<boolean>(!!meta.no_buyer_link);
-  const [noSupplier, setNoSupplier] = useState<boolean>(!!meta.no_supplier_link);
-  const [noShipping, setNoShipping] = useState<boolean>(!!meta.no_shipping_link);
-  const saveNa = async (nb: boolean, ns: boolean, nsh: boolean = noShipping) => {
-    setNoBuyer(nb); setNoSupplier(ns); setNoShipping(nsh);
-    try { await api.setDealLinkNa(flow.id, nb, ns, nsh); onReload(); } catch (e: any) { toast(String(e), "error"); }
-  };
   return (
     <div className="space-y-4">
       <div>
@@ -2139,26 +2133,7 @@ function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: 
 
       <ReconciliationPanel flow={flow} onChange={onReload} />
 
-      {/* "Didn't happen" — mark a leg as having no bank record to link (cash, etc.) so
-          this deal stops being flagged as needing financials. */}
-      <div className="rounded-lg border border-line bg-surface px-3 py-2.5">
-        <div className="text-[12px] font-medium text-muted mb-2">No bank record for a leg? Mark it so this deal isn't flagged.</div>
-        <div className="flex flex-wrap gap-2">
-          <button onClick={() => saveNa(!noBuyer, noSupplier, noShipping)}
-            className={`inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${noBuyer ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
-            {noBuyer ? <Check size={12} /> : <X size={12} />} No buyer payment to link
-          </button>
-          <button onClick={() => saveNa(noBuyer, !noSupplier, noShipping)}
-            className={`inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${noSupplier ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
-            {noSupplier ? <Check size={12} /> : <X size={12} />} No supplier payment to link
-          </button>
-          <button onClick={() => saveNa(noBuyer, noSupplier, !noShipping)}
-            className={`inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${noShipping ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
-            {noShipping ? <Check size={12} /> : <X size={12} />} No bank link for shipping
-          </button>
-        </div>
-      </div>
-
+      {/* R-555: a payment with nothing to link is marked "No payment recorded" with a note on its own line above. */}
       <DealNotes flow={flow} onReload={onReload} />
 
       <div className="flex items-center justify-end pt-1">
@@ -2201,21 +2176,19 @@ function DealNotes({ flow, onReload }: { flow: DealFlow; onReload: () => void })
 // ─── Section 4: Profit from financials ────────────────────────────────────
 function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => void }) {
   const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
-  useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id]);
+  useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id, flow.updated_at]);
 
   const p = recon?.pieces;
   const rd = recon?.record;
-  const anyLinked = !!p && ((p.buyer_paired || 0) + (p.supplier_paired || 0) + (p.fee_paired || 0) + (p.shipping_paired || 0) + (p.refund_total || 0) + (p.refund_in || 0) > 0.005);
-  // R-553: the profit counts each leg's linked payments once linked, its projection until then.
-  const basis = rd ? legBasis(rd) : anyLinked ? "from bank" : "entered";
-  const actual   = recon?.actual_profit ?? 0;
-  const expected = recon?.expected_profit ?? (flow.invoice_total - projectedCostOf(flow));
-  const variance = actual - expected;
-  // R-400: the cost behind "expected", split the way the deal keeps it. A completed deal
-  // reads what was recorded (total cost less its shipping leg); an open one reads the estimate.
-  const isDone   = flow.stage === "complete";
-  const costShip = isDone ? (flow.shipping_cost ?? 0) : shippingEstimateOf(flow);
-  const costGoods = isDone ? flow.total_cost - costShip : projectedCostOf(flow) - costShip;
+  // R-555 (Jack: "Linked money, always"): green is the profit from linked payments, what completion books. Beside it, faded,
+  // what the deal comes to if every payment is made as entered.
+  const actual = recon?.actual_profit ?? 0;
+  const projected = recon?.projected_profit ?? recon?.expected_profit ?? (flow.invoice_total - projectedCostOf(flow));
+  const differs = Math.abs(projected - actual) >= 0.5;
+  const legs = recon?.legs;
+  const keys: LegKey[] = ["buyer", "supplier", "shipping"];
+  const open = legs ? keys.filter((k) => legs[k] && (legs[k].state === "missing" || legs[k].state === "part")) : [];
+  const marked = legs ? keys.filter((k) => legs[k]?.state === "marked") : [];
 
   return (
     <div className="space-y-4">
@@ -2225,34 +2198,40 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
 
       <div className="grid grid-cols-2 gap-2">
         <div className="rounded-xl border border-line bg-surface px-4 py-3">
-          <div className="text-[11px] text-muted">Profit ({basis})</div>
+          <div className="text-[11px] text-muted">Profit from linked payments</div>
           <div className={`text-[22px] font-bold tabular-nums mt-0.5 ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
             {actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}
           </div>
+          <div className="text-[11px] text-muted mt-0.5">What gets booked</div>
         </div>
-        <div className="rounded-xl border border-line bg-surface px-4 py-3">
-          <div className="text-[11px] text-muted">Expected (entered)</div>
-          <div className="text-[22px] font-bold tabular-nums mt-0.5 text-ink-2">{fmtAmount(expected)}</div>
-          {Math.abs(variance) >= 0.5 && (
-            <div className={`text-[11px] tabular-nums mt-0.5 ${variance >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
-              {variance >= 0 ? "+" : "−"}{fmtAmount(Math.abs(variance))} vs expected
-            </div>
-          )}
+        <div className="rounded-xl border border-line-2 bg-surface-2/40 px-4 py-3 opacity-70">
+          <div className="text-[11px] text-faint">Projected</div>
+          <div className="text-[22px] font-bold tabular-nums mt-0.5 text-muted">{projected < 0 ? "−" : ""}{fmtAmount(Math.abs(projected))}</div>
+          <div className="text-[11px] text-faint mt-0.5">{differs ? "If every payment is made as entered" : "The same: every payment is linked or marked"}</div>
         </div>
       </div>
 
-      <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
-        <div className="text-[12px] font-medium text-muted mb-1">{isDone ? "Recorded cost" : "Expected cost"}</div>
-        <Row label="Supplier and other costs" value={fmtAmount(costGoods)} clr="text-ink-2" />
-        <Row label="Shipping" value={fmtAmount(costShip)} clr="text-ink-2" />
-      </div>
+      {open.length > 0 && legs && (
+        <div className="rounded-lg border border-danger/30 bg-danger-bg px-3 py-2.5 text-[12.5px] space-y-1">
+          <div className="text-[12px] font-semibold text-danger-ink">{open.length === 1 ? "A payment is not linked yet" : `${open.length} payments are not linked yet`}</div>
+          {open.map((k) => (
+            <div key={k} className={legs[k].state === "missing" ? "text-danger-ink" : "text-warning-ink"}>{legLine(k, legs[k])}</div>
+          ))}
+          <div className="text-[11.5px] text-ink-2 pt-0.5">Link it in Link financials, add it by hand there if it was cash, or mark it No payment recorded with a note.</div>
+        </div>
+      )}
+      {marked.length > 0 && legs && (
+        <div className="rounded-lg border border-line bg-surface px-3 py-2 text-[12px] text-muted space-y-0.5">
+          {marked.map((k) => <div key={k}>{legLine(k, legs[k])}</div>)}
+        </div>
+      )}
 
       {rd && p && (
         <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
           <div className="text-[12px] font-medium text-muted mb-1">How the profit adds up</div>
-          <Row label="Revenue" note={rd.buyer_linked ? "linked" : "invoice, not linked yet"} value={`+${fmtAmount(rd.gross)}`} clr="text-success-ink" />
-          <Row label="Supplier and other costs" note={supplierNote(rd, p.supplier_paired)} value={`−${fmtAmount(rd.goods)}`} clr="text-danger-ink" />
-          {(rd.shipping > 0.005 || rd.shipping_projected) && <Row label="Shipping" note={shippingNote(rd)} value={`−${fmtAmount(rd.shipping)}`} clr="text-danger-ink" />}
+          <Row label="Revenue" note={rd.buyer_linked ? "linked" : "nothing linked"} value={`+${fmtAmount(rd.gross)}`} clr="text-success-ink" />
+          <Row label="Supplier and other costs" note={rd.supplier_linked ? (rd.supplier_part_linked ? "part linked" : "linked") : "nothing linked"} value={`−${fmtAmount(rd.goods)}`} clr="text-danger-ink" />
+          {(rd.shipping > 0.005 || rd.shipping_linked) && <Row label="Shipping" note="linked" value={`−${fmtAmount(rd.shipping)}`} clr="text-danger-ink" />}
           {p.refund_total > 0.005 && <Row label="Refunds paid" value={`−${fmtAmount(p.refund_total)}`} clr="text-danger-ink" />}
           <div className="flex items-center justify-between pt-1.5 border-t border-line-2">
             <span className="font-semibold text-ink">Profit</span>
@@ -2262,7 +2241,7 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
       )}
 
       <div className="flex items-center justify-between pt-1">
-        <span className="text-[11.5px] text-muted">{recon?.fully_reconciled ? "Fully reconciled with the bank" : "You can complete now and finish linking later"}</span>
+        <span className="text-[11.5px] text-muted">{open.length ? "Link or mark every payment to complete it" : recon?.fully_reconciled ? "Fully reconciled with the bank" : "Every payment is linked or marked"}</span>
         <button onClick={onAdvance}
           className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
           Review &amp; complete <Check size={14} strokeWidth={2.5} />
@@ -2279,26 +2258,6 @@ function Row({ label, value, clr, note }: { label: string; value: string; clr: s
       <span className={`tabular-nums ${clr}`}>{value}</span>
     </div>
   );
-}
-
-// R-553: where a deal's profit comes from, leg by leg. Every leg with money on it linked reads "from bank", none linked
-// reads "projected", anything between says so.
-type DealRecord = NonNullable<DealReconciliation["record"]>;
-function legBasis(rd: DealRecord): string {
-  const supplierDone = rd.supplier_linked || rd.goods <= 0.005;
-  const shippingDone = !rd.shipping_projected && (rd.shipping_linked || rd.shipping <= 0.005);
-  if (rd.buyer_linked && supplierDone && shippingDone) return "from bank";
-  if (!rd.buyer_linked && !rd.supplier_linked && !rd.supplier_part_linked && !rd.shipping_linked) return "projected";
-  return "bank where linked, projected where not";
-}
-function supplierNote(rd: DealRecord, linkedSoFar: number): string {
-  if (rd.supplier_linked) return "linked";
-  if (rd.supplier_part_linked) return `typed, ${fmtAmount(linkedSoFar)} linked so far`;
-  return rd.goods > 0.005 ? "typed, not linked yet" : "none entered";
-}
-function shippingNote(rd: DealRecord): string {
-  if (rd.shipping_projected) return "expected, carrier not paid yet";
-  return rd.shipping_linked ? "linked" : "paid";
 }
 
 // ─── Panel 4: Complete deal ───────────────────────────────────────────────
@@ -2375,11 +2334,12 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
     : projectedCostOf(flow) - shippingEstimateOf(flow);
   const recCost = recGoods + recShip;
   const recNet  = isComplete ? flow.net_profit    : recRev - recCost;
-  const basis = isComplete ? "from bank" : rd ? legBasis(waiveCarrier ? { ...rd, shipping_projected: false, shipping: rd.shipping_known } : rd) : "projected";
+  // R-555: only linked money is recorded, and every payment is linked or marked before the deal completes. The carrier of a
+  // deal on Logistics keeps its own question below (Mark done, or why no carrier is paid).
+  const open = isComplete ? [] : openLegs(recon?.legs, !!flow.shipping_mode);
+  const basis = isComplete || open.length === 0 ? "from bank" : "open";
   const revFromBank = !!rd?.buyer_linked;
-  const costBasis = !rd ? "projected"
-    : (rd.supplier_linked || rd.goods <= 0.005) && (!rd.shipping_projected || waiveCarrier) ? "from bank"
-    : rd.supplier_linked || rd.supplier_part_linked || rd.shipping_linked ? "part projected" : "projected";
+  const costBasis = !rd ? "linked" : rd.supplier_linked || rd.goods <= 0.005 ? "linked" : "nothing linked";
   const refundTotal = pc?.refund_total ?? 0;
   // R-438: shown after refunds, as every other screen counts them (R-436). The stored figures
   // stay before refunds; the refund comes off once, here, on display.
@@ -2494,9 +2454,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         <div className="text-[12px] text-muted mt-0.5">
           {isComplete
             ? "Recorded from the linked bank transactions, saved with the deal so it never disappears."
-            : basis === "from bank"
-              ? "These are the real bank numbers that get recorded and shown everywhere."
-              : "Where a payment is not linked yet, this counts what it is expected to cost. Link it in Link financials and the figures follow the bank."}
+            : "Only linked payments are recorded. Every payment is linked, added by hand, or marked No payment recorded before the deal completes."}
         </div>
       </div>
 
@@ -2506,10 +2464,10 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           <span className="text-[12.5px] font-semibold text-ink-2">{isComplete ? "Recorded profit" : "What gets recorded"}</span>
           {basis === "from bank"
             ? <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-success-ink"><CheckCircle2 size={12} /> From bank{recon?.fully_reconciled ? " · fully reconciled" : ""}</span>
-            : <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warning-ink"><AlertTriangle size={12} /> {basis === "projected" ? "Projected" : "Part projected"}</span>}
+            : <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-danger-ink"><AlertTriangle size={12} /> {open.length === 1 ? "A payment is open" : `${open.length} payments are open`}</span>}
         </div>
         <div className="grid grid-cols-3 gap-2">
-          <RecCell label="Revenue" value={fmtAmount(showRev)} sub={refundTotal > 0.005 ? `after ${fmtAmount(refundTotal)} refunded` : isComplete ? undefined : (revFromBank ? "from bank" : "projected")} />
+          <RecCell label="Revenue" value={fmtAmount(showRev)} sub={refundTotal > 0.005 ? `after ${fmtAmount(refundTotal)} refunded` : isComplete ? undefined : (revFromBank ? "linked" : "nothing linked")} />
           <RecCell label="Cost"    value={fmtAmount(recCost)} sub={isComplete ? undefined : costBasis} />
           <RecCell label={showNet >= 0 ? "Profit" : "Loss"} value={fmtAmount(showNet)} sub={`${showRev > 0 ? ((showNet / showRev) * 100).toFixed(1) : "0.0"}% margin`} clr={showNet >= 0 ? "text-success-ink" : "text-danger-ink"} big />
         </div>
@@ -2517,16 +2475,23 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           <Row label="Supplier and other costs" value={fmtAmount(recGoods)} clr="text-ink-2" />
           <Row label="Shipping" value={fmtAmount(recShip)} clr="text-ink-2" />
         </div>
-        {(rd ? rd.shipping_projected : (flow.carrier_owing ?? flow.logistics_unpaid ?? 0) > 0) && !waiveCarrier && (
-          <div className="mt-2.5 flex items-start gap-1.5 text-[11.5px] text-warning-ink">
-            <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-            <span>The carrier is not paid yet, so shipping counts what it is expected to cost until its payment is linked.</span>
+        {open.length > 0 && recon?.legs && (
+          <div className="mt-2.5 rounded-lg border border-danger/30 bg-danger-bg px-3 py-2 text-[12px] space-y-0.5">
+            {open.map((k: LegKey) => (
+              <div key={k} className={recon.legs![k].state === "missing" ? "text-danger-ink" : "text-warning-ink"}>{legLine(k, recon.legs![k])}</div>
+            ))}
+            <div className="text-[11.5px] text-ink-2 pt-0.5">Link it in Link financials, add it by hand there if it was cash, or mark it No payment recorded with a note.</div>
           </div>
         )}
-        {rd?.supplier_part_linked && (
+        {!isComplete && carrierDue && !waiveCarrier && (
           <div className="mt-2.5 flex items-start gap-1.5 text-[11.5px] text-warning-ink">
             <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-            <span>The supplier is not paid in full yet ({fmtAmount(pc?.supplier_paired ?? 0)} linked), so the typed cost counts until the linked payments cover it.</span>
+            <span>The carrier is not paid yet, so shipping counts nothing until its payment is linked.</span>
+          </div>
+        )}
+        {!isComplete && recon?.projected_profit !== undefined && Math.abs(recon.projected_profit - showNet) >= 0.5 && (
+          <div className="mt-2.5 text-[11.5px] text-faint">
+            Projected if every payment is made as entered: {recon.projected_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(recon.projected_profit))}
           </div>
         )}
         {refundTotal > 0.005 && (
@@ -2703,12 +2668,14 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
               {holdMode ? "Everything but the carrier payment is linked to this deal" : "This is all the money that will ever be linked to this deal"}
             </span>
           </button>
-          <button onClick={handleCompleteClick} disabled={saving || !moneyLinked || gateBlocks || carrierBlocks || (holdMode && held)}
-            title={gateBlocks ? `Held until ${dayLabel(gate!.date)}, override above with a reason`
+          <button onClick={handleCompleteClick} disabled={saving || open.length > 0 || !moneyLinked || gateBlocks || carrierBlocks || (holdMode && held)}
+            title={open.length > 0 ? "Link or mark every payment first"
+              : gateBlocks ? `Held until ${dayLabel(gate!.date)}, override above with a reason`
               : !moneyLinked ? "Confirm all money is linked first"
               : carrierBlocks ? "Say why no carrier is paid first" : undefined}
             className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[14px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-            {gateBlocks ? `Complete deal: held until ${dayLabel(gate!.date)}`
+            {open.length > 0 ? "Complete deal: link or mark every payment first"
+              : gateBlocks ? `Complete deal: held until ${dayLabel(gate!.date)}`
               : !moneyLinked ? "Complete deal: confirm money linked above"
               : holdMode ? (held ? "Marked done: waiting for the carrier payment" : "Mark done: completes when the carrier is paid")
               : `Complete deal: record ${fmtAmount(recNet)} profit`}

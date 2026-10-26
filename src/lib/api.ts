@@ -7,6 +7,7 @@ import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, P
 import type { CaseLine, LoadDetail, LoadLine, LoadSummary, ManifestRead, NewLine, PickPlan, PicturesAdded } from "./deliveries";
 import type { Floor, FloorList, FloorShape, PalletSpot } from "./floor";
 import type { BuyTake } from "./buyPay";
+import type { DealLegs } from "./dealLegs";
 
 // R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
 // are server-proxied and don't exist until Pass 2. Every wrapper below routes
@@ -2977,6 +2978,12 @@ export interface DealReconciliation {
     buyer_linked: boolean; supplier_linked: boolean; supplier_part_linked: boolean;
     shipping_projected: boolean; shipping_linked: boolean;
   };
+  /** R-555: what the deal comes to if every payment is made as entered (after refunds), shown faded beside the profit
+   *  from linked payments (`actual_profit`, what completion books, and `record` since R-555 is linked money only). */
+  projected_profit?: number;
+  projected?: { gross: number; goods: number; shipping: number; cost: number; net: number };
+  /** R-555: each money leg: linked, part linked, missing, marked "No payment recorded" (with Jack's note), or nothing expected. */
+  legs?: DealLegs;
 }
 export interface MoneyConfig {
   bank_balance: number;
@@ -4165,8 +4172,9 @@ export const api = {
   recalcDealFromBank: (id: string) => invoke<any>("recalc_deal_from_bank", { id }),
   cleanupOrphanAllocations: () => invoke<number>("cleanup_orphan_allocations"),
   resyncAllCompletedDeals: () => invoke<number>("resync_all_completed_deals"),
-  setDealLinkNa: (id: string, noBuyer: boolean, noSupplier: boolean, noShipping?: boolean) =>
-    invoke<void>("set_deal_link_na", { id, noBuyer, noSupplier, noShipping }),
+  /** R-555: `notes` carries Jack's note per leg marked "No payment recorded" ({ supplier: "Paid on another deal" }). */
+  setDealLinkNa: (id: string, noBuyer: boolean, noSupplier: boolean, noShipping?: boolean, notes?: Partial<Record<"buyer" | "supplier" | "shipping", string>>) =>
+    invoke<void>("set_deal_link_na", { id, noBuyer, noSupplier, noShipping, notes: notes ?? null }),
   setRefundDone: (id: string, done: boolean) => invoke<void>("set_refund_done", { id, done }),
   // R-451: "it's a real loss" on the refund step (false takes the answer back).
   setRefundLossAck: (dealFlowId: string, ack: boolean) => invoke<void>("set_refund_loss_ack", { dealFlowId, ack }),

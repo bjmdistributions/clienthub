@@ -956,6 +956,9 @@ mod tests {
              VALUES (?1, ?2, ?3, '2026-09-01', '2026-09-01', '[]', 6000, 10000, 10000, ?4, ?5, ?6, '2026-09-05')",
             rusqlite::params![id, format!("inv-fr-{tag}"), stage, total_cost, 10000.0 - total_cost, shipping_cost],
         ).unwrap();
+        drop(conn);
+        // R-555: only linked money counts, so the buyer and the supplier are paid through the bank.
+        crate::commands::settle_for_test(&id);
         id
     }
 

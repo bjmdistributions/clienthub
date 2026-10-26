@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search } from "lucide-react";
 import { api, DealFlow, DealAllocation, BankTxn, resoldMoves, type BuyChoice } from "../lib/api";
 import { PayPicker } from "./BuyPanel";
+import { LEG_NAME, type LegKey, type LegView } from "../lib/dealLegs";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 
@@ -173,6 +174,28 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
     setBusy(false);
   };
 
+  // R-555: a leg with no payment to link is marked "No payment recorded" with a note, and stops reading as missing. The
+  // figure does not move: only linked money counts either way. The carrier of a deal on Logistics is answered on Review &
+  // complete instead (Mark done, or why no carrier is paid).
+  const meta = (() => { try { return JSON.parse((flow as any).metadata || "{}"); } catch { return {}; } })();
+  const setMark = async (key: LegKey, on: boolean, note = "") => {
+    if (busy) return;
+    const flags = { buyer: !!meta.no_buyer_link, supplier: !!meta.no_supplier_link, shipping: !!meta.no_shipping_link, [key]: on };
+    setBusy(true);
+    try {
+      await api.setDealLinkNa(flow.id, flags.buyer, flags.supplier, flags.shipping, on ? { [key]: note } : undefined);
+      await load();
+      onChange?.();
+      toast(on ? `${LEG_NAME[key]}: marked no payment recorded` : `${LEG_NAME[key]}: mark taken off`);
+    } catch (e: any) { toast(String(e), "error"); }
+    setBusy(false);
+  };
+  const markOf = (key: LegKey) => {
+    const view = recon?.legs?.[key];
+    if (!view || (key === "shipping" && flow.shipping_mode)) return undefined;
+    return { view, onMark: (note: string) => setMark(key, true, note), onUnmark: () => setMark(key, false) };
+  };
+
   // ── manual (non-bank) lines ──
   // Which leg currently has its "add by hand" form open. Only one at a time, and
   // never at the same time as the bank picker.
@@ -222,6 +245,7 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
           onClose={closePicker}
           onUnpair={unpair}
           pairLabel="Pair payment"
+          mark={markOf("buyer")}
           manualOpen={manualLeg === "buyer_payment"}
           onOpenManual={() => { setManualLeg("buyer_payment"); closePicker(); }}
           onCloseManual={() => setManualLeg(null)}
@@ -241,6 +265,7 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
           onUnpair={unpair}
           pairLabel="Pair supplier payment"
           elsewhere={elsewhereText}
+          mark={onlyBuy ? undefined : markOf("supplier")}
           manualOpen={manualLeg === "supplier_payment"}
           onOpenManual={() => { setManualLeg("supplier_payment"); closePicker(); }}
           onCloseManual={() => setManualLeg(null)}
@@ -285,6 +310,7 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
           onUnpair={unpair}
           pairLabel="Pair shipping payment"
           quietWhenEmpty
+          mark={markOf("shipping")}
           manualOpen={manualLeg === "shipping"}
           onOpenManual={() => { setManualLeg("shipping"); closePicker(); }}
           onCloseManual={() => setManualLeg(null)}
@@ -488,7 +514,7 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
 // ── One money leg: title, paired rows or empty state, inline picker ──
 function LegBlock({
   title, leg, rows, picker, busy, flow, onOpen, onClose, onUnpair, pairLabel,
-  manualOpen, onOpenManual, onCloseManual, onAddManual, quietWhenEmpty, elsewhere, noPair, children,
+  manualOpen, onOpenManual, onCloseManual, onAddManual, quietWhenEmpty, elsewhere, noPair, children, mark,
 }: {
   title: string;
   leg: Leg;
@@ -511,7 +537,11 @@ function LegBlock({
   /** R-552: the leg is paid somewhere else (a Warehouse buy), so it offers no pairing of its own. */
   noPair?: boolean;
   children?: ReactNode;
+  /** R-555: where the leg stands (red missing, amber part linked) and "No payment recorded" with a note. */
+  mark?: { view: LegView; onMark: (note: string) => void; onUnmark: () => void };
 }) {
+  const [marking, setMarking] = useState(false);
+  const [note, setNote] = useState("");
   const paired = rows.length > 0;
   const sum = rows.reduce((s, a) => s + a.amount, 0);
   const complete = (!!elsewhere && !paired) || (leg.target > 0 ? sum >= leg.target - 0.5 : paired);
@@ -521,16 +551,24 @@ function LegBlock({
   const over = paired && leg.target > 0 && sum > leg.target + 0.5;
   const open = picker?.role === leg.role;
   const quiet = !!quietWhenEmpty && !paired && !(leg.target > 0.005);
+  const state = mark?.view.state;
+  const marked = state === "marked";
   return (
     <div className="px-4 py-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          {quiet ? null : complete
+          {quiet ? null : marked ? <CheckCircle2 size={14} className="text-muted flex-shrink-0" />
+            : complete
             ? <CheckCircle2 size={14} className="text-success-ink flex-shrink-0" />
-            : <AlertTriangle size={14} className="text-warning-ink flex-shrink-0" />}
+            : <AlertTriangle size={14} className={`${state === "missing" ? "text-danger-ink" : "text-warning-ink"} flex-shrink-0`} />}
           <span className="text-[13px] font-medium text-ink truncate">{title}</span>
           {quiet && <span className="text-[11px] text-muted">Nothing to pair yet</span>}
-          {!paired && !quiet && !elsewhere && <span className="text-[11px] text-warning-ink">Not paired</span>}
+          {marked && <span className="text-[11px] text-muted">No payment recorded</span>}
+          {!paired && !quiet && !elsewhere && !marked && (
+            <span className={`text-[11px] font-medium ${state === "missing" ? "text-danger-ink" : "text-warning-ink"}`}>
+              {state === "missing" ? `Missing, ${fmtAmount(mark!.view.expected)} expected` : "Not paired"}
+            </span>
+          )}
           {partial && leg.target > 0 && (
             <span className="text-[11px] text-warning-ink tabular-nums">
               Partially paired · {fmtAmount(sum)} of {fmtAmount(leg.target)}
@@ -549,6 +587,28 @@ function LegBlock({
       </div>
 
       {!!elsewhere && !paired && <div className="mt-1 text-[11.5px] text-muted">{elsewhere}</div>}
+      {mark && marked && (
+        <div className="mt-1.5 flex items-center justify-between gap-2 text-[11.5px] text-muted">
+          <span className="min-w-0">No payment recorded{mark.view.note ? `: ${mark.view.note}` : ""}. Only what is linked counts.</span>
+          <button onClick={mark.onUnmark} disabled={busy} className="flex-shrink-0 hover:text-ink-2 hover:underline">Take the mark off</button>
+        </div>
+      )}
+      {mark && (state === "missing" || state === "part") && !marking && (
+        <button onClick={() => { setMarking(true); setNote(""); }} disabled={busy}
+          className="mt-1.5 text-[11.5px] text-muted hover:text-ink-2 hover:underline">
+          {state === "part" ? "No more payment to record" : "No payment recorded"}
+        </button>
+      )}
+      {mark && marking && (
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <input autoFocus value={note} onChange={(e) => setNote(e.target.value)} placeholder="Why, in a few words (shown on the deal)"
+            onKeyDown={(e) => { if (e.key === "Enter" && note.trim()) { mark.onMark(note.trim()); setMarking(false); } if (e.key === "Escape") setMarking(false); }}
+            className="flex-1 min-w-[200px] border border-line px-2.5 h-8 rounded-lg text-[12px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40" />
+          <button onClick={() => { mark.onMark(note.trim()); setMarking(false); }} disabled={busy || !note.trim()}
+            className="h-8 px-3 rounded-lg bg-accent text-on-accent text-[12px] font-medium disabled:opacity-50">Save</button>
+          <button onClick={() => setMarking(false)} className="h-8 px-2 text-[12px] text-muted hover:text-ink-2">Cancel</button>
+        </div>
+      )}
       {children}
       {paired && (
         <div className="mt-2 space-y-1.5">

@@ -923,6 +923,7 @@ pub fn spawn_loop(app: tauri::AppHandle) {
                 heal_checked = true;
                 auto_heal_if_behind().await;
                 r553_carrier_pass();
+                r555_linked_pass();
             }
             // Push org-shared config AFTER pull, so the down-path has applied any sibling
             // admin's change to our local settings first and we never push a staler value.
@@ -1551,6 +1552,22 @@ fn r553_carrier_pass() {
             state_set("r553_carrier_pass", "1");
         }
         Err(e) => tracing::warn!("R-553: completed deals not re-derived yet: {}", e),
+    }
+}
+
+/// R-555: once per device, after the first pull (and after R-553's pass), re-derive every completed deal from what is
+/// linked, so a deal booked on a typed cost that was never paid books the linked figure. What each was booked on before is
+/// kept on the deal. Retried on the next launch if it could not run.
+fn r555_linked_pass() {
+    if state_get("r555_linked_pass").as_deref() == Some("1") {
+        return;
+    }
+    match crate::commands::resync_completed_deals_linked() {
+        Ok(n) => {
+            tracing::info!("R-555: {} completed deal(s) re-derived from linked payments", n);
+            state_set("r555_linked_pass", "1");
+        }
+        Err(e) => tracing::warn!("R-555: completed deals not re-derived yet: {}", e),
     }
 }
 

@@ -69,14 +69,15 @@ describe("the row wording", () => {
   it("buyer: none, partial, done, acknowledged", () => {
     expect(buyerLeg(fig(), false)).toEqual({ text: "Buyer: nothing linked, $10,000 due", note: "", tone: "owed" });
     expect(buyerLeg(fig(buyerPart), false).text).toBe("Buyer: $4,000 of $10,000 linked, $6,000 due");
+    expect(buyerLeg(fig(buyerPart), false).tone).toBe("part");
     expect(buyerLeg(fig(buyerDone), false)).toEqual({ text: "Buyer: $10,000 linked", note: "", tone: "done" });
-    expect(buyerLeg(fig({ no_buyer_link: true, buyer_left: 0 }), false)).toEqual({ text: "Buyer: no bank record", note: "", tone: "quiet" });
+    expect(buyerLeg(fig({ no_buyer_link: true, buyer_left: 0 }), false)).toEqual({ text: "Buyer: no payment recorded", note: "", tone: "quiet" });
   });
   it("supplier: none, partial, done, acknowledged, cost not entered", () => {
     expect(supplierLeg(fig())).toEqual({ text: "Supplier: nothing linked, $7,000 to pay", note: "", tone: "owed" });
     expect(supplierLeg(fig(supplierPart)).text).toBe("Supplier: $2,000 of $7,000 linked, $5,000 to pay");
     expect(supplierLeg(fig(supplierDone))).toEqual({ text: "Supplier: $7,000 linked", note: "", tone: "done" });
-    expect(supplierLeg(fig({ no_supplier_link: true, supplier_left: 0 }))).toEqual({ text: "Supplier: no bank record", note: "", tone: "quiet" });
+    expect(supplierLeg(fig({ no_supplier_link: true, supplier_left: 0 }))).toEqual({ text: "Supplier: no payment recorded", note: "", tone: "quiet" });
     expect(supplierLeg(fig({ supplier_target: 0, supplier_left: 0 }))).toEqual({ text: "Supplier: cost not entered yet", note: "", tone: "owed" });
   });
   it("a cost that was all kept reads as kept, nothing to pay, and not as an owed line", () => {

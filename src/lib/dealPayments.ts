@@ -78,7 +78,8 @@ export const money = (n: number): string => {
   return s.endsWith(".00") ? s.slice(0, -3) : s;
 };
 
-export type LegTone = "owed" | "done" | "quiet";
+/** R-555: `owed` is a payment with nothing linked (red), `part` one part linked (amber). */
+export type LegTone = "owed" | "part" | "done" | "quiet";
 /** One line under a deal: `text` is the sentence, `note` is the quiet suffix to show after it (may be empty). */
 export interface PaymentLeg { text: string; note: string; tone: LegTone }
 
@@ -88,13 +89,14 @@ export const MARKED_PAID_NOTE = "marked paid, not linked to a bank payment";
  *  short, the line says so in a quiet suffix instead of hiding the difference. */
 export function buyerLeg(r: PaymentFigures, markedPaid: boolean): PaymentLeg {
   if (r.buyer_left > OWED) {
-    const text = r.buyer_paired > LINKED
+    const part = r.buyer_paired > LINKED;
+    const text = part
       ? `Buyer: ${money(r.buyer_paired)} of ${money(r.buyer_target)} linked, ${money(r.buyer_left)} due`
       : `Buyer: nothing linked, ${money(r.buyer_left)} due`;
-    return { text, note: markedPaid ? MARKED_PAID_NOTE : "", tone: "owed" };
+    return { text, note: markedPaid ? MARKED_PAID_NOTE : "", tone: part ? "part" : "owed" };
   }
   if (r.buyer_paired > LINKED) return { text: `Buyer: ${money(r.buyer_paired)} linked`, note: "", tone: "done" };
-  if (r.no_buyer_link) return { text: "Buyer: no bank record", note: "", tone: "quiet" };
+  if (r.no_buyer_link) return { text: "Buyer: no payment recorded", note: "", tone: "quiet" };
   return { text: "Buyer: nothing due", note: "", tone: "quiet" };
 }
 
@@ -102,15 +104,16 @@ export function buyerLeg(r: PaymentFigures, markedPaid: boolean): PaymentLeg {
 export function supplierLeg(r: PaymentFigures): PaymentLeg {
   if (costNotEntered(r)) return { text: "Supplier: cost not entered yet", note: "", tone: "owed" };
   if (r.supplier_left > OWED) {
-    const text = r.supplier_paired > LINKED
+    const part = r.supplier_paired > LINKED;
+    const text = part
       ? `Supplier: ${money(r.supplier_paired)} of ${money(r.supplier_target)} linked, ${money(r.supplier_left)} to pay`
       : `Supplier: nothing linked, ${money(r.supplier_left)} to pay`;
-    return { text, note: "", tone: "owed" };
+    return { text, note: "", tone: part ? "part" : "owed" };
   }
   if (r.supplier_paired > LINKED) return { text: `Supplier: ${money(r.supplier_paired)} linked`, note: "", tone: "done" };
   // Same order as the website: a cost that was all kept reads as kept, ahead of the no-bank-record note.
   if (r.cost_kept && r.supplier_target <= LINKED) return { text: "Supplier: kept, nothing to pay", note: "", tone: "quiet" };
-  if (r.no_supplier_link) return { text: "Supplier: no bank record", note: "", tone: "quiet" };
+  if (r.no_supplier_link) return { text: "Supplier: no payment recorded", note: "", tone: "quiet" };
   return { text: "Supplier: nothing to pay", note: "", tone: "quiet" };
 }
 
