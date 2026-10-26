@@ -13,6 +13,10 @@ export type LoadLine = {
   rows?: number[]; sizes_row?: number;
 };
 export type CaseLine = { line_id: string; size: string; pairs: number };
+/** R-554: one box (or a pallet's loose items) on a pick list and what to take from it (case_core::PickBox). */
+export type PickBox = { case_id: string; pallet: number; number: number; code: string; loose: boolean; location: string; whole: boolean; assumed: boolean; pairs: number; takes: CaseLine[] };
+/** R-554: a pick list, pallet by pallet in the order they stand (case_core::Plan). */
+export type PickPlan = { boxes: PickBox[]; short: TakeShort[]; unnamed: CaseLine[]; pallets: number; pairs: number };
 /** A box, or (kind "loose", number 0) items on the pallet with no box (R-535). */
 export type WhCase = { id: string; pallet: number; number: number; contents: CaseLine[]; notes: string; created_at: string; updated_at: string; kind?: string;
   /** R-554: the code written on the carton in sharpie (A3-7); "" on a box made before codes. */

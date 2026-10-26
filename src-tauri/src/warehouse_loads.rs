@@ -829,7 +829,9 @@ pub async fn take_load_pairs(load_id: String, invoice_id: Option<String>, refere
         return Err("This delivery was removed. Bring it back first.".into());
     }
     let cs = cases(&conn, &load_id)?;
-    let (taken, short) = core::take(&l.lines, &cs, &os, &takes)?;
+    // R-554: each pair from the box the pick plan names (the plan the Sell tab showed).
+    let asked: Vec<core::Take> = takes.into_iter().map(|t| core::Take { line_id: t.line_id, size: t.size, pairs: t.pairs, case_id: String::new() }).collect();
+    let (taken, short) = core::take(&l.lines, &cs, &pallet_records(&conn, &load_id)?, &os, &asked)?;
     if !taken.is_empty() {
         let t = now();
         let mut cols = Map::new();
@@ -849,6 +851,26 @@ pub async fn take_load_pairs(load_id: String, invoice_id: Option<String>, refere
     let mut d = detail(&conn, &load_id, false)?;
     d.short = Some(short);
     Ok(d)
+}
+
+/// R-554: the pick list for the pairs picked so far: which boxes to take, pallet by pallet in the
+/// order they stand. Nothing is written; the order records this same plan when its invoice exists.
+/// The server's twin is `POST /api/warehouse/loads/:id/plan`.
+#[tauri::command]
+pub async fn plan_load_pick(load_id: String, takes: Vec<CaseLine>) -> Result<core::Plan, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let l = load(&conn, &load_id)?;
+    core::allocate(&l.lines, &cases(&conn, &load_id)?, &pallet_records(&conn, &load_id)?, &outs(&conn, &load_id)?, &takes)
+}
+
+/// R-554: a sold order's pick list, rebuilt from the boxes it recorded, each where it stands now.
+/// The server's twin is `GET /api/warehouse/loads/:id/outs/:out_id/pick`.
+#[tauri::command]
+pub async fn load_out_pick(load_id: String, out_id: String) -> Result<core::Plan, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    load(&conn, &load_id)?;
+    let o = outs(&conn, &load_id)?.into_iter().find(|o| o.id == out_id).ok_or("That order is no longer on this delivery.")?;
+    Ok(core::out_pick(&cases(&conn, &load_id)?, &pallet_records(&conn, &load_id)?, &o))
 }
 
 /// Put back: the out's pairs are on the delivery again. A set-once flag, so two devices pressing

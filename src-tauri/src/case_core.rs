@@ -1749,7 +1749,7 @@ pub struct Out {
     #[serde(default)]
     pub note: String,
     #[serde(default)]
-    pub takes: Vec<CaseLine>,
+    pub takes: Vec<Take>,
     #[serde(default)]
     pub pairs: i64,
     /// What the pairs cost (each pair at its line's cost when taken).
@@ -1874,9 +1874,10 @@ pub struct TakeShort {
     pub taken: i64,
 }
 
-/// What an order takes: every style and size asked for, as far as what is left goes. Unknown
-/// styles or sizes are refused; nothing goes below zero.
-pub fn take(lines: &[LoadLine], cases: &[Case], outs: &[Out], asked: &[CaseLine]) -> Result<(Vec<CaseLine>, Vec<TakeShort>), String> {
+/// What an order asks for, checked and merged: unknown styles or sizes are refused, and the list
+/// comes back in manifest order (line, then the line's own size order), so the same order always
+/// plans the same way whatever order a screen sent it in.
+fn asked_pairs(lines: &[LoadLine], asked: &[CaseLine]) -> Result<Vec<CaseLine>, String> {
     let mut want: Vec<CaseLine> = Vec::new();
     for a in asked {
         let line = lines.iter().find(|l| l.id == a.line_id).ok_or("A style in this order is no longer on the delivery.")?;
@@ -1901,26 +1902,33 @@ pub fn take(lines: &[LoadLine], cases: &[Case], outs: &[Out], asked: &[CaseLine]
     if want.len() > MAX_TAKES {
         return Err(format!("More than {MAX_TAKES} styles and sizes in one order."));
     }
-    let st = stock(lines, cases, outs);
-    let left = |line_id: &str, size: &str| -> i64 {
-        st.lines.iter().find(|l| l.line_id == line_id).and_then(|l| l.sizes.iter().find(|z| z.size == size)).map(|z| z.left).unwrap_or(0)
+    let rank = |c: &CaseLine| {
+        let k = lines.iter().position(|l| l.id == c.line_id).unwrap_or(usize::MAX);
+        let z = lines.get(k).and_then(|l| l.sizes.iter().position(|s| s.size == c.size)).unwrap_or(usize::MAX);
+        (k, z)
     };
-    let mut taken = Vec::new();
-    let mut short = Vec::new();
-    for w in want {
-        let n = w.pairs.min(left(&w.line_id, &w.size));
-        if n < w.pairs {
-            short.push(TakeShort { line_id: w.line_id.clone(), size: w.size.clone(), asked: w.pairs, taken: n });
-        }
-        if n > 0 {
-            taken.push(CaseLine { line_id: w.line_id, size: w.size, pairs: n });
+    want.sort_by_key(rank);
+    Ok(want)
+}
+
+/// What an order takes: every style and size asked for, as far as what is left goes, each pair
+/// from a box named by the pick plan (R-554: `allocate`, so the pick list shown before the invoice
+/// is what the order records). Unknown styles or sizes are refused; nothing goes below zero. A box
+/// named in the request is not trusted: the plan is worked out again from what is left now.
+pub fn take(lines: &[LoadLine], cases: &[Case], records: &[PalletRecord], outs: &[Out], asked: &[Take]) -> Result<(Vec<Take>, Vec<TakeShort>), String> {
+    let asked: Vec<CaseLine> = asked.iter().map(|t| CaseLine { line_id: t.line_id.clone(), size: t.size.clone(), pairs: t.pairs }).collect();
+    let plan = allocate(lines, cases, records, outs, &asked)?;
+    let mut taken: Vec<Take> = Vec::new();
+    for b in &plan.boxes {
+        for t in &b.takes {
+            taken.push(Take { line_id: t.line_id.clone(), size: t.size.clone(), pairs: t.pairs, case_id: b.case_id.clone() });
         }
     }
-    Ok((taken, short))
+    Ok((taken, plan.short))
 }
 
 /// What the taken pairs cost, each at its line's cost, to the cent.
-pub fn takes_cost(lines: &[LoadLine], takes: &[CaseLine]) -> f64 {
+pub fn takes_cost(lines: &[LoadLine], takes: &[Take]) -> f64 {
     let c: f64 = takes.iter().map(|t| t.pairs as f64 * lines.iter().find(|l| l.id == t.line_id).map(|l| l.cost).unwrap_or(0.0)).sum();
     (c * 100.0).round() / 100.0
 }
@@ -1950,6 +1958,308 @@ pub fn describe_oversold(lines: &[LoadLine], over: &[Oversold]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+// ---------------------------------------------------------------------------------------
+// Where to pick from (R-554 part 2): stock box by box, and the pick plan
+// ---------------------------------------------------------------------------------------
+//
+// A take names the box its pairs came from (`Take.case_id`, written when the order is taken).
+// What is left in a box is its contents less the takes that name it. Takes that name no box
+// (every sale before R-554, or one from a device that had not updated) are charged to boxes in a
+// fixed order, lowest pallet then lowest box, loose items last, and those boxes are `assumed`
+// (count them), so the boxes always add up to what `stock` says is left. `allocate` chooses the
+// boxes for an order and `take` records exactly that plan.
+
+/// One style and size an order took, and the box (or loose items) it came from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Take {
+    pub line_id: String,
+    pub size: String,
+    pub pairs: i64,
+    /// "" on a take made before R-554: it named no box.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub case_id: String,
+}
+
+/// One style and size in one box (or loose items), and what is left of it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BoxLeft {
+    pub case_id: String,
+    pub line_id: String,
+    pub size: String,
+    pub left: i64,
+    /// Pairs from an older sale that named no box were charged here: count this box.
+    pub assumed: bool,
+}
+
+/// Boxes in the fixed order: lowest pallet, its boxes by number, then its loose items.
+fn box_key(c: &Case) -> (i64, bool, i64, String) {
+    (c.pallet, c.is_loose(), c.number, c.id.clone())
+}
+
+/// What is left in every box, style and size (rows with nothing left are kept, at 0).
+pub fn box_stock(lines: &[LoadLine], cases: &[Case], outs: &[Out]) -> Vec<BoxLeft> {
+    let known: BTreeSet<&str> = lines.iter().map(|l| l.id.as_str()).collect();
+    let mut order: Vec<&Case> = cases.iter().collect();
+    order.sort_by_key(|c| box_key(c));
+    let mut rows: Vec<BoxLeft> = Vec::new();
+    for c in &order {
+        for x in c.contents.iter().filter(|x| x.pairs > 0 && known.contains(x.line_id.as_str())) {
+            match rows.iter_mut().find(|r| r.case_id == c.id && r.line_id == x.line_id && r.size == x.size) {
+                Some(r) => r.left += x.pairs,
+                None => rows.push(BoxLeft { case_id: c.id.clone(), line_id: x.line_id.clone(), size: x.size.clone(), left: x.pairs, assumed: false }),
+            }
+        }
+    }
+    // Named takes come off their own box; what names no box (or more than the box holds) waits.
+    let mut unnamed: BTreeMap<(String, String), i64> = BTreeMap::new();
+    for o in outs.iter().filter(|o| !o.undone) {
+        for t in o.takes.iter().filter(|t| t.pairs > 0) {
+            let mut rest = t.pairs;
+            if !t.case_id.is_empty() {
+                if let Some(r) = rows.iter_mut().find(|r| r.case_id == t.case_id && r.line_id == t.line_id && r.size == t.size) {
+                    let n = rest.min(r.left);
+                    r.left -= n;
+                    rest -= n;
+                }
+            }
+            if rest > 0 {
+                *unnamed.entry((t.line_id.clone(), t.size.clone())).or_insert(0) += rest;
+            }
+        }
+    }
+    for ((line_id, size), mut n) in unnamed {
+        for r in rows.iter_mut().filter(|r| r.line_id == line_id && r.size == size) {
+            if n == 0 {
+                break;
+            }
+            let k = n.min(r.left);
+            if k > 0 {
+                r.left -= k;
+                r.assumed = true;
+                n -= k;
+            }
+        }
+    }
+    rows
+}
+
+/// One box (or a pallet's loose items) on a pick list, and what to take from it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PickBox {
+    pub case_id: String,
+    pub pallet: i64,
+    /// The box's number on its pallet; 0 for loose items.
+    pub number: i64,
+    pub code: String,
+    pub loose: bool,
+    /// Where its pallet stands (its location, A3), "" when not said.
+    pub location: String,
+    /// Every pair still in it is taken: take the box as it is.
+    pub whole: bool,
+    /// Older sales were charged to this box by guess: count it before taking.
+    pub assumed: bool,
+    pub pairs: i64,
+    pub takes: Vec<CaseLine>,
+}
+
+/// A pick list: the boxes to go to, pallet by pallet in the order they stand (A2 before A10),
+/// what could not be found, and the totals.
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct Plan {
+    pub boxes: Vec<PickBox>,
+    pub short: Vec<TakeShort>,
+    /// Pairs an older sale took without naming a box (a sold order's list only).
+    pub unnamed: Vec<CaseLine>,
+    pub pallets: usize,
+    pub pairs: i64,
+}
+
+/// "A2" before "A10": text compared as text, runs of digits as numbers. An empty location last.
+fn natural_key(s: &str) -> (bool, Vec<(String, u64)>) {
+    let mut parts: Vec<(String, u64)> = Vec::new();
+    let mut text = String::new();
+    let mut num = String::new();
+    for ch in s.trim().to_ascii_uppercase().chars() {
+        if ch.is_ascii_digit() {
+            if !text.is_empty() {
+                parts.push((std::mem::take(&mut text), 0));
+            }
+            num.push(ch);
+        } else {
+            if !num.is_empty() {
+                parts.push((String::new(), num.parse().unwrap_or(u64::MAX)));
+                num.clear();
+            }
+            text.push(ch);
+        }
+    }
+    if !text.is_empty() {
+        parts.push((text, 0));
+    }
+    if !num.is_empty() {
+        parts.push((String::new(), num.parse().unwrap_or(u64::MAX)));
+    }
+    (s.trim().is_empty(), parts)
+}
+
+/// The boxes of a plan in walking order: by where their pallet stands, then pallet, then box, loose last.
+fn sort_pick(boxes: &mut [PickBox]) {
+    boxes.sort_by(|a, b| (natural_key(&a.location), a.pallet, a.loose, a.number).cmp(&(natural_key(&b.location), b.pallet, b.loose, b.number)));
+}
+
+fn pick_box(c: &Case, records: &[PalletRecord], whole: bool, assumed: bool, takes: Vec<CaseLine>) -> PickBox {
+    let location = records.iter().find(|r| r.number == c.pallet).map(|r| r.location.clone()).unwrap_or_default();
+    PickBox {
+        case_id: c.id.clone(),
+        pallet: c.pallet,
+        number: c.number,
+        code: c.code.clone(),
+        loose: c.is_loose(),
+        location,
+        whole,
+        assumed,
+        pairs: takes.iter().map(|t| t.pairs).sum(),
+        takes,
+    }
+}
+
+/// Which boxes to take an order from (R-554). First whole boxes: a box whose every pair left is
+/// wanted is taken as it is, the pallets holding most of the order first, so the list has the
+/// fewest stops. Then, style and size by style and size, loose items, then boxes already on the
+/// list, then boxes on pallets already on the list, then the box holding most of it. What no box
+/// holds comes back in `short`. A box charged by guess for an older sale is never taken whole.
+pub fn allocate(lines: &[LoadLine], cases: &[Case], records: &[PalletRecord], outs: &[Out], asked: &[CaseLine]) -> Result<Plan, String> {
+    let want = asked_pairs(lines, asked)?;
+    let mut need: BTreeMap<(String, String), i64> = want.iter().map(|w| ((w.line_id.clone(), w.size.clone()), w.pairs)).collect();
+    let mut left = box_stock(lines, cases, outs);
+    let case_of = |id: &str| cases.iter().find(|c| c.id == id);
+    let mut taken: Vec<(String, CaseLine)> = Vec::new();
+    let mut used_boxes: BTreeSet<String> = BTreeSet::new();
+    let mut used_pallets: BTreeSet<i64> = BTreeSet::new();
+
+    // Whole boxes, pallets holding most of the order first.
+    let mut score: BTreeMap<i64, i64> = BTreeMap::new();
+    for r in &left {
+        if let (Some(n), Some(c)) = (need.get(&(r.line_id.clone(), r.size.clone())), case_of(&r.case_id)) {
+            *score.entry(c.pallet).or_insert(0) += r.left.min(*n);
+        }
+    }
+    let mut boxes: Vec<&Case> = cases.iter().filter(|c| !c.is_loose()).collect();
+    boxes.sort_by(|a, b| {
+        let sa = score.get(&a.pallet).copied().unwrap_or(0);
+        let sb = score.get(&b.pallet).copied().unwrap_or(0);
+        sb.cmp(&sa).then(box_key(a).cmp(&box_key(b)))
+    });
+    for c in boxes {
+        let items: Vec<&BoxLeft> = left.iter().filter(|r| r.case_id == c.id && r.left > 0).collect();
+        if items.is_empty() || items.iter().any(|r| r.assumed) {
+            continue;
+        }
+        if items.iter().all(|r| need.get(&(r.line_id.clone(), r.size.clone())).copied().unwrap_or(0) >= r.left) {
+            for r in &items {
+                *need.get_mut(&(r.line_id.clone(), r.size.clone())).unwrap() -= r.left;
+                taken.push((c.id.clone(), CaseLine { line_id: r.line_id.clone(), size: r.size.clone(), pairs: r.left }));
+            }
+            used_boxes.insert(c.id.clone());
+            used_pallets.insert(c.pallet);
+        }
+    }
+    for (cid, t) in &taken {
+        if let Some(r) = left.iter_mut().find(|r| &r.case_id == cid && r.line_id == t.line_id && r.size == t.size) {
+            r.left -= t.pairs;
+        }
+    }
+
+    // The rest, style and size by style and size.
+    for w in &want {
+        let key = (w.line_id.clone(), w.size.clone());
+        let mut n = need.get(&key).copied().unwrap_or(0);
+        if n <= 0 {
+            continue;
+        }
+        let mut cands: Vec<usize> = (0..left.len()).filter(|&i| left[i].line_id == w.line_id && left[i].size == w.size && left[i].left > 0).collect();
+        cands.sort_by(|&i, &j| {
+            let (a, b) = (&left[i], &left[j]);
+            let (ca, cb) = (case_of(&a.case_id), case_of(&b.case_id));
+            let rank = |r: &BoxLeft, c: Option<&Case>| {
+                let loose = c.map(|c| c.is_loose()).unwrap_or(false);
+                let pallet = c.map(|c| c.pallet).unwrap_or(0);
+                (!loose, !used_boxes.contains(&r.case_id), !used_pallets.contains(&pallet), std::cmp::Reverse(r.left))
+            };
+            rank(a, ca).cmp(&rank(b, cb)).then(ca.map(box_key).cmp(&cb.map(box_key)))
+        });
+        for i in cands {
+            if n == 0 {
+                break;
+            }
+            let k = n.min(left[i].left);
+            left[i].left -= k;
+            n -= k;
+            taken.push((left[i].case_id.clone(), CaseLine { line_id: w.line_id.clone(), size: w.size.clone(), pairs: k }));
+            used_boxes.insert(left[i].case_id.clone());
+            if let Some(c) = case_of(&left[i].case_id) {
+                used_pallets.insert(c.pallet);
+            }
+        }
+        need.insert(key, n);
+    }
+
+    let mut plan = Plan::default();
+    for w in &want {
+        let n = need.get(&(w.line_id.clone(), w.size.clone())).copied().unwrap_or(0);
+        if n > 0 {
+            plan.short.push(TakeShort { line_id: w.line_id.clone(), size: w.size.clone(), asked: w.pairs, taken: w.pairs - n });
+        }
+    }
+    let stock_left = box_stock(lines, cases, outs);
+    for cid in taken.iter().map(|(c, _)| c.clone()).collect::<BTreeSet<_>>() {
+        let Some(c) = case_of(&cid) else { continue };
+        let mut takes: Vec<CaseLine> = Vec::new();
+        for (_, t) in taken.iter().filter(|(c2, _)| *c2 == cid) {
+            match takes.iter_mut().find(|x| x.line_id == t.line_id && x.size == t.size) {
+                Some(x) => x.pairs += t.pairs,
+                None => takes.push(t.clone()),
+            }
+        }
+        let had: Vec<&BoxLeft> = stock_left.iter().filter(|r| r.case_id == cid && r.left > 0).collect();
+        let whole = !c.is_loose() && had.iter().all(|r| takes.iter().any(|t| t.line_id == r.line_id && t.size == r.size && t.pairs >= r.left));
+        let assumed = had.iter().any(|r| r.assumed);
+        plan.boxes.push(pick_box(c, records, whole, assumed, takes));
+    }
+    sort_pick(&mut plan.boxes);
+    plan.pallets = plan.boxes.iter().map(|b| b.pallet).collect::<BTreeSet<_>>().len();
+    plan.pairs = plan.boxes.iter().map(|b| b.pairs).sum();
+    Ok(plan)
+}
+
+/// The pick list of an order already taken, rebuilt from what it recorded: each box it named, where
+/// that box stands now. Pairs it took without naming a box (before R-554) come back in `unnamed`.
+pub fn out_pick(cases: &[Case], records: &[PalletRecord], out: &Out) -> Plan {
+    let mut plan = Plan::default();
+    let mut by: BTreeMap<String, Vec<CaseLine>> = BTreeMap::new();
+    for t in out.takes.iter().filter(|t| t.pairs > 0) {
+        let c = (!t.case_id.is_empty()).then(|| cases.iter().find(|c| c.id == t.case_id)).flatten();
+        let into = match c {
+            Some(c) => by.entry(c.id.clone()).or_default(),
+            None => &mut plan.unnamed,
+        };
+        match into.iter_mut().find(|x| x.line_id == t.line_id && x.size == t.size) {
+            Some(x) => x.pairs += t.pairs,
+            None => into.push(CaseLine { line_id: t.line_id.clone(), size: t.size.clone(), pairs: t.pairs }),
+        }
+    }
+    for (cid, takes) in by {
+        let Some(c) = cases.iter().find(|c| c.id == cid) else { continue };
+        let all: i64 = c.contents.iter().map(|x| x.pairs).sum();
+        let got: i64 = takes.iter().map(|t| t.pairs).sum();
+        plan.boxes.push(pick_box(c, records, !c.is_loose() && got >= all && all > 0, false, takes));
+    }
+    sort_pick(&mut plan.boxes);
+    plan.pallets = plan.boxes.iter().map(|b| b.pallet).collect::<BTreeSet<_>>().len();
+    plan.pairs = plan.boxes.iter().map(|b| b.pairs).sum::<i64>() + plan.unnamed.iter().map(|t| t.pairs).sum::<i64>();
+    plan
 }
 
 #[cfg(test)]
@@ -2067,8 +2377,15 @@ mod tests {
         assert_eq!(next_number(&cases, 5, ""), 1);
     }
 
+    /// An order that took these pairs naming no box, as every order before R-554 did.
     fn sold(id: &str, takes: Vec<CaseLine>) -> Out {
+        sold_t(id, takes.into_iter().map(|t| Take { line_id: t.line_id, size: t.size, pairs: t.pairs, case_id: String::new() }).collect())
+    }
+    fn sold_t(id: &str, takes: Vec<Take>) -> Out {
         Out { id: id.into(), pairs: takes.iter().map(|t| t.pairs).sum(), takes, ..Default::default() }
+    }
+    fn tk(line: &str, size: &str, pairs: i64, case_id: &str) -> Take {
+        Take { line_id: line.into(), size: size.into(), pairs, case_id: case_id.into() }
     }
     fn cl(line: &str, size: &str, pairs: i64) -> CaseLine {
         CaseLine { line_id: line.into(), size: size.into(), pairs }
@@ -2079,26 +2396,128 @@ mod tests {
         let lines = read_manifest(&sample()).lines;
         let a = lines[0].id.clone();
         let cases = vec![Case { id: "c1".into(), pallet: 1, number: 1, contents: vec![cl(&a, "S", 4), cl(&a, "M", 6)], ..Default::default() }];
-        let (taken, short) = take(&lines, &cases, &[], &[cl(&a, "S", 3), cl(&a, "M", 9)]).unwrap();
-        assert_eq!(taken, vec![cl(&a, "S", 3), cl(&a, "M", 6)]);
+        let (taken, short) = take(&lines, &cases, &[], &[], &[tk(&a, "S", 3, ""), tk(&a, "M", 9, "")]).unwrap();
+        assert_eq!(taken, vec![tk(&a, "S", 3, "c1"), tk(&a, "M", 6, "c1")]);
         assert_eq!(short, vec![TakeShort { line_id: a.clone(), size: "M".into(), asked: 9, taken: 6 }]);
         assert_eq!(takes_cost(&lines, &taken), 94.5);
-        let mut outs = vec![sold("o1", taken)];
+        let mut outs = vec![sold_t("o1", taken)];
         let s = stock(&lines, &cases, &outs);
         assert_eq!((s.received, s.out, s.left), (10, 9, 1));
         assert_eq!(s.lines[0].sizes.iter().map(|z| (z.size.as_str(), z.left)).collect::<Vec<_>>(), vec![("XS", 0), ("S", 1), ("M", 0), ("L", 0)]);
         assert_eq!(s.groups[0], GroupLeft { brand: "Acme Hash".into(), group: "KIDS".into(), styles: 1, left: 1 });
         assert_eq!(s.groups.iter().map(|g| g.left).sum::<i64>(), s.left);
         // Nothing left in M: a second order gets none of it.
-        let (taken2, short2) = take(&lines, &cases, &outs, &[cl(&a, "M", 1)]).unwrap();
+        let (taken2, short2) = take(&lines, &cases, &[], &outs, &[tk(&a, "M", 1, "")]).unwrap();
         assert!(taken2.is_empty());
         assert_eq!(short2[0].taken, 0);
         outs[0].undone = true;
         assert_eq!(stock(&lines, &cases, &outs).left, 10);
         // What was received never moves.
         assert_eq!(tally(&lines, &cases).totals.received, 10);
-        assert!(take(&lines, &cases, &[], &[cl(&a, "XXL", 1)]).is_err());
-        assert!(take(&lines, &cases, &[], &[]).is_err());
+        assert!(take(&lines, &cases, &[], &[], &[tk(&a, "XXL", 1, "")]).is_err());
+        assert!(take(&lines, &cases, &[], &[], &[]).is_err());
+    }
+
+    /// R-554: two lines, three pallets. Pallet 1 at A10: box 1 all K100 S, box 2 K100 S and M.
+    /// Pallet 2 at A2: box 1 K200, loose K100 S. Pallet 3 (no location): box 1 K100 M.
+    fn yard() -> (Vec<LoadLine>, Vec<Case>, Vec<PalletRecord>) {
+        let lines = read_manifest(&sample()).lines;
+        let (a, b) = (lines[0].id.clone(), lines[1].id.clone());
+        let c = |id: &str, pallet: i64, number: i64, kind: &str, contents: Vec<CaseLine>| Case {
+            id: id.into(), pallet, number, contents, kind: kind.into(), code: if kind == "loose" { String::new() } else { format!("P{pallet}-{number}") }, ..Default::default()
+        };
+        let cases = vec![
+            c("p1b1", 1, 1, "box", vec![cl(&a, "S", 6)]),
+            c("p1b2", 1, 2, "box", vec![cl(&a, "S", 2), cl(&a, "M", 4)]),
+            c("p2b1", 2, 1, "box", vec![cl(&b, "7", 5)]),
+            c("p2l", 2, 0, "loose", vec![cl(&a, "S", 3)]),
+            c("p3b1", 3, 1, "box", vec![cl(&a, "M", 8)]),
+        ];
+        let records = vec![
+            PalletRecord { number: 1, location: "A10".into(), ..Default::default() },
+            PalletRecord { number: 2, location: "A2".into(), ..Default::default() },
+        ];
+        (lines, cases, records)
+    }
+
+    #[test]
+    fn the_pick_plan_takes_whole_boxes_first_then_loose_then_the_fewest_boxes() {
+        let (lines, cases, records) = yard();
+        let (a, b) = (lines[0].id.clone(), lines[1].id.clone());
+        // 6 of S and 5 of K200: box p1b1 whole (all its 6 S) and p2b1 whole.
+        let p = allocate(&lines, &cases, &records, &[], &[cl(&a, "S", 6), cl(&b, "7", 5)]).unwrap();
+        let rows: Vec<(&str, bool, i64)> = p.boxes.iter().map(|x| (x.case_id.as_str(), x.whole, x.pairs)).collect();
+        // Walking order: A2 before A10.
+        assert_eq!(rows, vec![("p2b1", true, 5), ("p1b1", true, 6)]);
+        assert_eq!((p.pallets, p.pairs, p.short.len()), (2, 11, 0));
+        assert_eq!((p.boxes[0].location.as_str(), p.boxes[0].code.as_str()), ("A2", "P2-1"));
+        // 4 of S: no box is wholly wanted, so loose items first (3), then the box with most (p1b1).
+        let p = allocate(&lines, &cases, &records, &[], &[cl(&a, "S", 4)]).unwrap();
+        let rows: Vec<(&str, bool, bool, i64)> = p.boxes.iter().map(|x| (x.case_id.as_str(), x.loose, x.whole, x.pairs)).collect();
+        assert_eq!(rows, vec![("p2l", true, false, 3), ("p1b1", false, false, 1)]);
+        // More than there is: what no box holds is short.
+        let p = allocate(&lines, &cases, &records, &[], &[cl(&a, "M", 20)]).unwrap();
+        assert_eq!(p.short, vec![TakeShort { line_id: a.clone(), size: "M".into(), asked: 20, taken: 12 }]);
+        // The pallet without a location goes last.
+        assert_eq!(p.boxes.last().map(|x| (x.case_id.as_str(), x.location.as_str())), Some(("p3b1", "")));
+        // The same order in any order plans the same way.
+        let x = allocate(&lines, &cases, &records, &[], &[cl(&b, "7", 2), cl(&a, "S", 4)]).unwrap();
+        let y = allocate(&lines, &cases, &records, &[], &[cl(&a, "S", 1), cl(&a, "S", 3), cl(&b, "7", 2)]).unwrap();
+        assert_eq!(x, y);
+        assert!(allocate(&lines, &cases, &records, &[], &[cl(&a, "XXL", 1)]).is_err());
+    }
+
+    #[test]
+    fn boxes_add_up_to_what_is_left_and_older_sales_are_charged_in_a_fixed_order() {
+        let (lines, cases, records) = yard();
+        let a = lines[0].id.clone();
+        // An order taken now names its boxes; the box view and the delivery view agree.
+        let (taken, _) = take(&lines, &cases, &records, &[], &[tk(&a, "S", 7, "")]).unwrap();
+        assert!(taken.iter().all(|t| !t.case_id.is_empty()));
+        // An older sale named no box: 4 of S charged to the lowest pallet's first box.
+        let outs = vec![sold_t("new", taken), sold("old", vec![cl(&a, "S", 4)])];
+        let bs = box_stock(&lines, &cases, &outs);
+        let st = stock(&lines, &cases, &outs);
+        for l in &st.lines {
+            for z in &l.sizes {
+                let sum: i64 = bs.iter().filter(|r| r.line_id == l.line_id && r.size == z.size).map(|r| r.left).sum();
+                assert_eq!(sum, z.left, "{} {}", l.line_id, z.size);
+            }
+        }
+        assert!(bs.iter().any(|r| r.assumed));
+        // A box charged by guess is never offered whole.
+        let p = allocate(&lines, &cases, &records, &outs, &[cl(&a, "S", 1)]).unwrap();
+        assert!(p.boxes.iter().all(|x| !x.whole || !x.assumed));
+        // Put back frees the named pairs in both views.
+        let mut back = outs.clone();
+        back[0].undone = true;
+        back[1].undone = true;
+        let bs = box_stock(&lines, &cases, &back);
+        assert_eq!(bs.iter().filter(|r| r.line_id == a && r.size == "S").map(|r| r.left).sum::<i64>(), 11);
+        assert!(bs.iter().all(|r| !r.assumed));
+    }
+
+    #[test]
+    fn a_sold_orders_pick_list_is_rebuilt_from_the_boxes_it_named() {
+        let (lines, cases, records) = yard();
+        let (a, b) = (lines[0].id.clone(), lines[1].id.clone());
+        let (taken, _) = take(&lines, &cases, &records, &[], &[tk(&a, "S", 6, ""), tk(&b, "7", 2, "")]).unwrap();
+        let o = sold_t("o", taken);
+        let p = out_pick(&cases, &records, &o);
+        assert_eq!(p.boxes.iter().map(|x| (x.case_id.as_str(), x.whole, x.pairs)).collect::<Vec<_>>(), vec![("p2b1", false, 2), ("p1b1", true, 6)]);
+        assert_eq!((p.pairs, p.pallets, p.unnamed.len()), (8, 2, 0));
+        // An older order shows what it took without a box.
+        let p = out_pick(&cases, &records, &sold("old", vec![cl(&a, "M", 3)]));
+        assert_eq!((p.boxes.len(), p.unnamed, p.pairs), (0, vec![cl(&a, "M", 3)], 3));
+        // An old row deserializes with no box named, and a named take keeps its box.
+        let t: Take = serde_json::from_str(r#"{"line_id":"x","size":"7","pairs":2}"#).unwrap();
+        assert_eq!(t.case_id, "");
+        assert_eq!(serde_json::to_string(&tk("x", "7", 2, "")).unwrap(), r#"{"line_id":"x","size":"7","pairs":2}"#);
+        assert!(serde_json::to_string(&tk("x", "7", 2, "b1")).unwrap().contains(r#""case_id":"b1""#));
+        // A2 before A10, and an empty location last.
+        let mut locs = vec!["A10", "", "A2", "B1", "a3"];
+        locs.sort_by_key(|l| natural_key(l));
+        assert_eq!(locs, vec!["A2", "a3", "A10", "B1", ""]);
     }
 
     #[test]

@@ -1379,6 +1379,8 @@ fn main() {
             warehouse_loads::remove_warehouse_case,
             warehouse_loads::take_load_pairs,
             warehouse_loads::undo_load_out,
+            warehouse_loads::plan_load_pick,
+            warehouse_loads::load_out_pick,
             warehouse_buys::list_warehouse_buys,
             warehouse_buys::warehouse_buy_for,
             warehouse_buys::warehouse_buy_choices,

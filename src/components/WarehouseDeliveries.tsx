@@ -10,7 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api, type ComingBuy } from "../lib/api";
-import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PicturesAdded, type WhCase } from "../lib/deliveries";
+import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PickPlan, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, WAREHOUSE_OPEN_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { standsOn, type DeliveryOpen, type FloorRequest } from "../lib/floor";
 import BuyPanel from "./BuyPanel";
@@ -897,6 +897,77 @@ function CheckView({ lines, counts, totals: T, pallets }: { lines: LoadLine[]; c
 // invoice exists; the invoice form then takes the pairs (take_load_pairs). The phone twin is
 // whdSell* in www/app.js.
 
+/** R-554: a pick list, pallet by pallet in the order they stand. A tick only says you have it: it is kept on this computer. */
+function PickListView({ plan, title, tickKey, loadId, lines, backLabel, onBack }: {
+  plan: PickPlan; title: string; tickKey: string; loadId: string; lines: LoadLine[]; backLabel: string; onBack: () => void;
+}) {
+  const store = `warehouse_pick_ticks:${loadId}`;
+  const [ticks, setTicks] = useState<string[]>(() => { const v = readJson<{ key?: string; ids?: string[] }>(store, {}); return v.key === tickKey && Array.isArray(v.ids) ? v.ids : []; });
+  const toggle = (id: string) => {
+    const next = ticks.includes(id) ? ticks.filter((x) => x !== id) : [...ticks, id];
+    setTicks(next);
+    try { localStorage.setItem(store, JSON.stringify({ key: tickKey, ids: next })); } catch { /* ignore */ }
+  };
+  const idx = useMemo(() => Object.fromEntries(lines.map((l) => [l.id, l])) as Record<string, LoadLine>, [lines]);
+  const name = (id: string) => (idx[id] ? lineTitle(idx[id]) : "A style no longer listed");
+  const groups: { pallet: number; location: string; boxes: PickPlan["boxes"] }[] = [];
+  for (const b of plan.boxes) {
+    let g = groups.find((x) => x.pallet === b.pallet);
+    if (!g) { g = { pallet: b.pallet, location: b.location, boxes: [] }; groups.push(g); }
+    g.boxes.push(b);
+  }
+  const nBoxes = plan.boxes.filter((b) => !b.loose).length;
+  const left = plan.short.filter((x) => x.asked > x.taken);
+  return (
+    <div className="max-w-[760px]">
+      <button onClick={onBack} className="inline-flex items-center gap-1 text-[12.5px] text-muted hover:text-ink-2 mb-3"><ArrowLeft size={13} /> {backLabel}</button>
+      <div className={`${WH_CARD} p-4 mb-4`}>
+        <div className="text-[15px] font-semibold text-ink">{title}</div>
+        <p className="text-[12.5px] text-muted mt-0.5 tabular-nums">{many(plan.pallets, "pallet", "pallets")}, {many(nBoxes, "box", "boxes")}, {n0(plan.pairs)} {plan.pairs === 1 ? "pair" : "pairs"}. Click a box when you have it.</p>
+        {plan.boxes.some((b) => b.assumed) && <p className="text-[12.5px] text-warning-ink mt-1">Some boxes say Count this box first: an older sale took pairs without saying from which box, so what is in them is a guess.</p>}
+      </div>
+      {groups.map((g) => (
+        <div key={g.pallet} className="mb-4">
+          <div className="text-[13.5px] font-semibold text-ink mb-1.5">Go to {g.location || `pallet ${g.pallet}`}{g.location && <span className="font-normal text-muted"> pallet {g.pallet}</span>}</div>
+          <div className={`${WH_CARD} overflow-hidden`}>
+            {g.boxes.map((b) => {
+              const on = ticks.includes(b.case_id);
+              return (
+                <button key={b.case_id} onClick={() => toggle(b.case_id)} aria-pressed={on} className="w-full text-left flex gap-3 px-4 py-3 border-b border-line last:border-b-0 hover:bg-surface-2 transition-colors">
+                  <span className={`mt-0.5 w-5 h-5 rounded-md border-2 flex-shrink-0 ${on ? "bg-success border-success" : "border-line-3"}`} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex justify-between items-baseline gap-3">
+                      <span className={`text-[13.5px] font-semibold ${on ? "text-muted line-through" : "text-ink"}`}>{b.loose ? "Loose items" : `Box ${b.code || b.number}`}</span>
+                      <span className="text-[13px] font-semibold text-ink whitespace-nowrap">{b.whole ? "Take the whole box" : b.loose ? `Take ${n0(b.pairs)}` : `Open it, take ${n0(b.pairs)}`}</span>
+                    </span>
+                    {byStyle(b.takes).map((s) => <span key={s.line_id} className="block text-[12px] text-muted mt-0.5"><span className="text-ink-2 font-medium">{name(s.line_id)}</span>: {s.sizes.map(([z, n]) => `${z} × ${n}`).join(" · ")}</span>)}
+                    {b.assumed && <span className="block mt-1"><StatusPill tone="warning">Count this box first</StatusPill></span>}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      {left.length > 0 && (
+        <div className={`${WH_CARD} p-4 mb-4`}>
+          <div className="text-[13.5px] font-semibold text-ink">Not on any box</div>
+          <p className="text-[12px] text-muted mt-0.5">These pairs were sold since, or never came in.</p>
+          {left.map((x) => <div key={`${x.line_id}/${x.size}`} className="text-[12.5px] text-muted mt-1"><span className="text-ink-2 font-medium">{name(x.line_id)}</span> size {x.size}: {n0(x.asked - x.taken)} of {n0(x.asked)} not found</div>)}
+        </div>
+      )}
+      {plan.unnamed.length > 0 && (
+        <div className={`${WH_CARD} p-4 mb-4`}>
+          <div className="text-[13.5px] font-semibold text-ink">Taken before boxes were tracked</div>
+          {byStyle(plan.unnamed).map((s) => <div key={s.line_id} className="text-[12.5px] text-muted mt-1"><span className="text-ink-2 font-medium">{name(s.line_id)}</span>: {s.sizes.map(([z, n]) => `${z} × ${n}`).join(" · ")}</div>)}
+          <p className="text-[12px] text-muted mt-1">This order did not say which boxes these came from.</p>
+        </div>
+      )}
+      {!plan.boxes.length && !left.length && !plan.unnamed.length && <p className="text-[13px] text-muted">Nothing to pick.</p>}
+    </div>
+  );
+}
+
 function readJson<T>(key: string, fallback: T): T {
   try { const v = JSON.parse(localStorage.getItem(key) || "null"); return v ?? fallback; } catch { return fallback; }
 }
@@ -925,6 +996,20 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
   };
   const [sureDrop, setSureDrop] = useState(false);
   const setPick = (p: Pick) => { setPickRaw(p); try { localStorage.setItem(pickKey(loadId), JSON.stringify(p)); } catch { /* ignore */ } };
+  // R-554: where to pick, box by box (case_core::allocate); the order records the same boxes.
+  const [pickList, setPickList] = useState<{ plan: PickPlan; title: string; key: string; from: "list" | "tray" } | null>(null);
+  const openPickList = async (outId?: string) => {
+    try {
+      if (outId) {
+        const o = d.outs.find((x) => x.id === outId);
+        setPickList({ plan: await api.loadOutPick(loadId, outId), title: `Pick list for ${o?.reference || "this order"}`, key: `out:${outId}`, from: tray ? "tray" : "list" });
+      } else {
+        const takes: CaseLine[] = Object.entries(pick).flatMap(([lid, sizes]) => Object.entries(sizes).filter(([, n]) => n > 0).map(([size, pairs]) => ({ line_id: lid, size, pairs })));
+        setPickList({ plan: await api.planLoadPick(loadId, takes), title: "Where to pick", key: `pick:${takes.map((t) => `${t.line_id}/${t.size}/${t.pairs}`).sort().join("|")}`, from: tray ? "tray" : "list" });
+      }
+      setTray(false);
+    } catch (e) { toast(String(e), "error"); }
+  };
 
   // A pick never asks for more than is left now (another device may have sold some).
   useEffect(() => {
@@ -993,6 +1078,9 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
     try { merge(await api.undoLoadOut(loadId, o.id)); setSureUndo(null); toast("Put back"); } catch (e) { toast(String(e), "error"); }
   };
 
+  if (pickList) return <PickListView plan={pickList.plan} title={pickList.title} tickKey={pickList.key} loadId={loadId} lines={lines}
+    backLabel={pickList.from === "tray" ? "Price the order" : "Back to picking"} onBack={() => { setTray(pickList.from === "tray"); setPickList(null); }} />;
+
   if (tray) {
     return (
       <div className="max-w-[760px]">
@@ -1031,6 +1119,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
           <div className="flex gap-2 mt-3">
             <button onClick={send} disabled={!ready} className={WH_BTN_PRIMARY}>Send to invoice</button>
             <button onClick={() => setTray(false)} className={WH_BTN_SECONDARY}>Back to picking</button>
+            <button onClick={() => { void openPickList(); }} className={WH_BTN_SECONDARY}>Where to pick</button>
           </div>
         </div>
       </div>
@@ -1067,6 +1156,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
           {totalPairs > 0 && (sureClear
             ? <><button onClick={() => { setPick({}); setSureClear(false); }} className={WH_BTN_SECONDARY}>Clear the pick</button><button onClick={() => setSureClear(false)} className={WH_BTN_SECONDARY}>Keep it</button></>
             : <button onClick={() => setSureClear(true)} className={WH_BTN_SECONDARY}>Clear</button>)}
+          <button onClick={() => { void openPickList(); }} disabled={!totalPairs} className={WH_BTN_SECONDARY}>Where to pick</button>
           <button onClick={() => setTray(true)} disabled={!totalPairs || !live || !!pending} className={WH_BTN_PRIMARY} title={pending ? "Finish the saved invoice above first" : undefined}>Price it</button>
         </div>
       </div>
@@ -1149,6 +1239,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
               {live && !o.undone && (sureUndo === o.id
                 ? <><button onClick={() => undo(o)} className={WH_BTN_SECONDARY} title="The pairs count as on this delivery again. The invoice is not changed.">Put {n0(o.pairs)} pairs back</button><button onClick={() => setSureUndo(null)} className={WH_BTN_SECONDARY}>Keep them out</button></>
                 : <button onClick={() => setSureUndo(o.id)} className={WH_BTN_SECONDARY}>Put back</button>)}
+              {!o.undone && <button onClick={() => { void openPickList(o.id); }} className={WH_BTN_SECONDARY}>Pick list</button>}
             </div>
           ))}
         </div>

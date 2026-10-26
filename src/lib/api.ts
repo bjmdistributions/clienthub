@@ -4,7 +4,7 @@ import { queryText } from "./logisticsCarriers";
 import { bolPdfPath } from "./logisticsBols";
 import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
 import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, PalletSpec, WarehousePallet } from "./palletFit";
-import type { CaseLine, LoadDetail, LoadLine, LoadSummary, ManifestRead, NewLine, PicturesAdded } from "./deliveries";
+import type { CaseLine, LoadDetail, LoadLine, LoadSummary, ManifestRead, NewLine, PickPlan, PicturesAdded } from "./deliveries";
 import type { Floor, FloorList, FloorShape, PalletSpot } from "./floor";
 import type { BuyTake } from "./buyPay";
 
@@ -4095,6 +4095,10 @@ export const api = {
   takeLoadPairs: (loadId: string, o: { invoiceId?: string; reference?: string; note?: string; takes: CaseLine[] }) =>
     invoke<LoadDetail>("take_load_pairs", { loadId, invoiceId: o.invoiceId ?? null, reference: o.reference ?? null, note: o.note ?? null, takes: o.takes }),
   undoLoadOut: (loadId: string, outId: string) => invoke<LoadDetail>("undo_load_out", { loadId, outId }),
+  /** R-554: where to pick the pairs picked so far, box by box (case_core::allocate); writes nothing. */
+  planLoadPick: (loadId: string, takes: CaseLine[]) => invoke<PickPlan>("plan_load_pick", { loadId, takes }),
+  /** R-554: a sold order's pick list, from the boxes it recorded. */
+  loadOutPick: (loadId: string, outId: string) => invoke<PickPlan>("load_out_pick", { loadId, outId }),
   /** R-488: every product and delivery, each with its buy when one is recorded. */
   listWarehouseBuys: () => invoke<{ stock: StockWithBuy[]; coming: ComingBuy[] }>("list_warehouse_buys"),
   /** R-488: the live buy on a product or a delivery (the invoice form's cost line). */
