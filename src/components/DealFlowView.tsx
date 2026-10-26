@@ -1214,8 +1214,9 @@ function DealFlowCard({
               const raw  = flow.invoice_total - projectedCostOf(flow);
               const proj = raw - refundPaid;
               return (
-                <span className={`flex items-baseline gap-1.5 text-[11px] font-semibold tabular-nums ${proj >= 0 ? "text-success-ink" : "text-danger-ink"}`}
-                  title="Projected profit: revenue minus supplier and shipping costs entered so far, minus anything refunded">
+                // R-555: green is only ever linked money, so a projection reads faded.
+                <span className="flex items-baseline gap-1.5 text-[11px] font-medium tabular-nums text-faint"
+                  title="Projected profit: revenue minus supplier and shipping costs entered so far, minus anything refunded. What gets booked is the linked payments.">
                   {refundPaid > 0.005 && (
                     <span className="text-[10px] font-medium text-muted line-through decoration-danger-ink decoration-[1.5px]">{fmtAmount(raw)}</span>
                   )}
