@@ -916,6 +916,7 @@ pub fn spawn_loop(app: tauri::AppHandle) {
             if !heal_checked {
                 heal_checked = true;
                 auto_heal_if_behind().await;
+                r553_carrier_pass();
             }
             // Push org-shared config AFTER pull, so the down-path has applied any sibling
             // admin's change to our local settings first and we never push a staler value.
@@ -1529,6 +1530,22 @@ fn local_counts() -> HashMap<String, i64> {
         }
     }
     out
+}
+
+/// R-553: once per device, after the first pull, re-derive the completed deals that ship through Logistics, so one
+/// completed while its carrier was still owed shows the carrier's expected cost instead of $0. Retried on the next launch
+/// if it could not run.
+fn r553_carrier_pass() {
+    if state_get("r553_carrier_pass").as_deref() == Some("1") {
+        return;
+    }
+    match crate::commands::resync_completed_shipping_deals() {
+        Ok(n) => {
+            tracing::info!("R-553: {} completed deal(s) re-derived", n);
+            state_set("r553_carrier_pass", "1");
+        }
+        Err(e) => tracing::warn!("R-553: completed deals not re-derived yet: {}", e),
+    }
 }
 
 /// After the initial bootstrap pull, compare the server's `clients` count to this

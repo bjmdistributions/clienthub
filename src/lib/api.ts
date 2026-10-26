@@ -2969,6 +2969,14 @@ export interface DealReconciliation {
   expected_before_refunds?: number;
   /** R-438: this deal's goods cost moved to the deal it was resold on, so its supplier leg is there. */
   resold_away?: boolean;
+  /** R-553: what `actual_profit` is built from (before refunds), leg by leg: each leg counts its linked payments once
+   *  they are linked (the supplier's once they cover the typed cost), its projection until then. What Review & complete
+   *  shows and records. `shipping_known` is the shipping a "No carrier to pay" answer records. Absent on an older backend. */
+  record?: {
+    gross: number; goods: number; shipping: number; shipping_known: number; cost: number; net: number;
+    buyer_linked: boolean; supplier_linked: boolean; supplier_part_linked: boolean;
+    shipping_projected: boolean; shipping_linked: boolean;
+  };
 }
 export interface MoneyConfig {
   bank_balance: number;

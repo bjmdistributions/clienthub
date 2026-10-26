@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit, isResoldLine, allocateDealPayout, dealPayoutIncluded, dealPayoutRecipients,
-  type FreightBooking, type FreightFile,
+  type FreightBooking, type FreightFile, type DealReconciliation,
 } from "../lib/api";
 import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, isShippingLine, owedToSupplier } from "../lib/format";
 import { toast } from "./Toast";
@@ -2204,7 +2204,10 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
   useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id]);
 
   const p = recon?.pieces;
+  const rd = recon?.record;
   const anyLinked = !!p && ((p.buyer_paired || 0) + (p.supplier_paired || 0) + (p.fee_paired || 0) + (p.shipping_paired || 0) + (p.refund_total || 0) + (p.refund_in || 0) > 0.005);
+  // R-553: the profit counts each leg's linked payments once linked, its projection until then.
+  const basis = rd ? legBasis(rd) : anyLinked ? "from bank" : "entered";
   const actual   = recon?.actual_profit ?? 0;
   const expected = recon?.expected_profit ?? (flow.invoice_total - projectedCostOf(flow));
   const variance = actual - expected;
@@ -2222,7 +2225,7 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
 
       <div className="grid grid-cols-2 gap-2">
         <div className="rounded-xl border border-line bg-surface px-4 py-3">
-          <div className="text-[11px] text-muted">Actual profit {anyLinked ? "(from bank)" : "(entered)"}</div>
+          <div className="text-[11px] text-muted">Profit ({basis})</div>
           <div className={`text-[22px] font-bold tabular-nums mt-0.5 ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
             {actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}
           </div>
@@ -2244,17 +2247,15 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
         <Row label="Shipping" value={fmtAmount(costShip)} clr="text-ink-2" />
       </div>
 
-      {anyLinked && p && (
+      {rd && p && (
         <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
-          <div className="text-[12px] font-medium text-muted mb-1">From linked transactions</div>
-          <Row label="Payments received" value={`+${fmtAmount(p.buyer_paired)}`} clr="text-success-ink" />
-          <Row label="Paid to supplier" value={`−${fmtAmount(p.supplier_paired)}`} clr="text-danger-ink" />
-          {(p.shipping_paired ?? 0) > 0.005 && <Row label="Paid to carrier" value={`−${fmtAmount(p.shipping_paired ?? 0)}`} clr="text-danger-ink" />}
-          {p.fee_paired > 0.005 && <Row label="Wire fees" value={`−${fmtAmount(p.fee_paired)}`} clr="text-danger-ink" />}
+          <div className="text-[12px] font-medium text-muted mb-1">How the profit adds up</div>
+          <Row label="Revenue" note={rd.buyer_linked ? "linked" : "invoice, not linked yet"} value={`+${fmtAmount(rd.gross)}`} clr="text-success-ink" />
+          <Row label="Supplier and other costs" note={supplierNote(rd, p.supplier_paired)} value={`−${fmtAmount(rd.goods)}`} clr="text-danger-ink" />
+          {(rd.shipping > 0.005 || rd.shipping_projected) && <Row label="Shipping" note={shippingNote(rd)} value={`−${fmtAmount(rd.shipping)}`} clr="text-danger-ink" />}
           {p.refund_total > 0.005 && <Row label="Refunds paid" value={`−${fmtAmount(p.refund_total)}`} clr="text-danger-ink" />}
-          {p.refund_in > 0.005 && <Row label="Supplier refund received" value={`+${fmtAmount(p.refund_in)}`} clr="text-success-ink" />}
           <div className="flex items-center justify-between pt-1.5 border-t border-line-2">
-            <span className="font-semibold text-ink">Actual profit</span>
+            <span className="font-semibold text-ink">Profit</span>
             <span className={`font-bold tabular-nums ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}</span>
           </div>
         </div>
@@ -2271,13 +2272,33 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
   );
 }
 
-function Row({ label, value, clr }: { label: string; value: string; clr: string }) {
+function Row({ label, value, clr, note }: { label: string; value: string; clr: string; note?: string }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-ink-2">{label}</span>
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-ink-2">{label}{note && <span className="text-muted">, {note}</span>}</span>
       <span className={`tabular-nums ${clr}`}>{value}</span>
     </div>
   );
+}
+
+// R-553: where a deal's profit comes from, leg by leg. Every leg with money on it linked reads "from bank", none linked
+// reads "projected", anything between says so.
+type DealRecord = NonNullable<DealReconciliation["record"]>;
+function legBasis(rd: DealRecord): string {
+  const supplierDone = rd.supplier_linked || rd.goods <= 0.005;
+  const shippingDone = !rd.shipping_projected && (rd.shipping_linked || rd.shipping <= 0.005);
+  if (rd.buyer_linked && supplierDone && shippingDone) return "from bank";
+  if (!rd.buyer_linked && !rd.supplier_linked && !rd.supplier_part_linked && !rd.shipping_linked) return "projected";
+  return "bank where linked, projected where not";
+}
+function supplierNote(rd: DealRecord, linkedSoFar: number): string {
+  if (rd.supplier_linked) return "linked";
+  if (rd.supplier_part_linked) return `typed, ${fmtAmount(linkedSoFar)} linked so far`;
+  return rd.goods > 0.005 ? "typed, not linked yet" : "none entered";
+}
+function shippingNote(rd: DealRecord): string {
+  if (rd.shipping_projected) return "expected, carrier not paid yet";
+  return rd.shipping_linked ? "linked" : "paid";
 }
 
 // ─── Panel 4: Complete deal ───────────────────────────────────────────────
@@ -2335,33 +2356,30 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const canComplete = flow.stage === "invoiced" || flow.stage === "payment_received" || flow.stage === "supplier_paid";
   const isComplete  = flow.stage === "complete";
 
-  // What gets recorded — the BANK numbers. A completed deal shows its permanent
-  // recorded figures (captured at completion, survive even if statements are lost).
-  // An open deal previews from live links, falling back to the entered figure only
-  // for a leg with nothing linked yet.
+  // What gets recorded. A completed deal shows its permanent recorded figures (captured at
+  // completion, survive even if statements are lost). R-553: an open deal previews exactly what
+  // completion records, worked out by the backend leg by leg: a leg's linked payments once they
+  // are linked (the supplier's once they cover the typed cost), what it is expected to cost until
+  // then, so an unpaid carrier or a supplier paid only a deposit no longer reads as profit. Until
+  // the reconciliation loads (or on an older backend) the projection stands in.
   const pc = recon?.pieces;
-  const buyerBank = pc?.buyer_paired ?? 0;
-  const costBank  = (pc?.supplier_paired ?? 0) + (pc?.fee_paired ?? 0);
-  const shipBank  = pc?.shipping_paired ?? 0;
-  const revFromBank  = buyerBank > 0.005;
-  const costFromBank = costBank > 0.005 || shipBank > 0.005;
-  // Nothing recorded as received yet (a deal still at `invoiced`) previews the invoice
-  // total — the same figure completion falls back to when no buyer payment is linked.
-  const recRev  = isComplete ? flow.gross_revenue
-    : revFromBank ? buyerBank
-    : flow.payment_received_amount > 0.005 ? flow.payment_received_amount : flow.invoice_total;
-  // R-400: the cost is two legs. Shipping is the bank link when there is one, else what the
-  // logistics person typed as paid (a typed freight line stays inside the supplier leg until
-  // a booking replaces it), and it sits outside the goods figure exactly as completion records it.
+  const rd = recon?.record;
+  const waiveCarrier = carrierDue && noCarrier;
+  const recRev  = isComplete ? flow.gross_revenue : rd ? rd.gross : flow.invoice_total;
+  // R-400: the cost is two legs, and shipping sits outside the goods figure exactly as completion records it.
   const recShip = isComplete ? (flow.shipping_cost ?? 0)
-    : shipBank > 0.005 ? shipBank
-    : flow.shipping_mode ? (flow.logistics_paid ?? 0) : 0;
+    : rd ? (waiveCarrier ? rd.shipping_known : rd.shipping)
+    : shippingEstimateOf(flow);
   const recGoods = isComplete ? flow.total_cost - recShip
-    : costBank > 0.005 ? costBank
-    : flow.total_supplier_cost - (flow.shipping_mode ? (flow.freight_typed ?? 0) : 0);
+    : rd ? rd.goods
+    : projectedCostOf(flow) - shippingEstimateOf(flow);
   const recCost = recGoods + recShip;
   const recNet  = isComplete ? flow.net_profit    : recRev - recCost;
-  const bankBacked = isComplete ? true : (revFromBank || costFromBank);
+  const basis = isComplete ? "from bank" : rd ? legBasis(waiveCarrier ? { ...rd, shipping_projected: false, shipping: rd.shipping_known } : rd) : "projected";
+  const revFromBank = !!rd?.buyer_linked;
+  const costBasis = !rd ? "projected"
+    : (rd.supplier_linked || rd.goods <= 0.005) && (!rd.shipping_projected || waiveCarrier) ? "from bank"
+    : rd.supplier_linked || rd.supplier_part_linked || rd.shipping_linked ? "part projected" : "projected";
   const refundTotal = pc?.refund_total ?? 0;
   // R-438: shown after refunds, as every other screen counts them (R-436). The stored figures
   // stay before refunds; the refund comes off once, here, on display.
@@ -2476,9 +2494,9 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         <div className="text-[12px] text-muted mt-0.5">
           {isComplete
             ? "Recorded from the linked bank transactions, saved with the deal so it never disappears."
-            : bankBacked
+            : basis === "from bank"
               ? "These are the real bank numbers that get recorded and shown everywhere."
-              : "No bank transactions linked yet. These use your entered figures. Link them in step 2 for bank-accurate profit."}
+              : "Where a payment is not linked yet, this counts what it is expected to cost. Link it in Link financials and the figures follow the bank."}
         </div>
       </div>
 
@@ -2486,23 +2504,29 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       <div className={`rounded-xl border p-4 ${showNet >= 0 ? "border-line" : "border-danger/40"} bg-surface`}>
         <div className="flex items-center justify-between mb-3">
           <span className="text-[12.5px] font-semibold text-ink-2">{isComplete ? "Recorded profit" : "What gets recorded"}</span>
-          {bankBacked
+          {basis === "from bank"
             ? <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-success-ink"><CheckCircle2 size={12} /> From bank{recon?.fully_reconciled ? " · fully reconciled" : ""}</span>
-            : <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warning-ink"><AlertTriangle size={12} /> Entered figures</span>}
+            : <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warning-ink"><AlertTriangle size={12} /> {basis === "projected" ? "Projected" : "Part projected"}</span>}
         </div>
         <div className="grid grid-cols-3 gap-2">
-          <RecCell label="Revenue" value={fmtAmount(showRev)} sub={refundTotal > 0.005 ? `after ${fmtAmount(refundTotal)} refunded` : isComplete ? undefined : (revFromBank ? "from bank" : "entered")} />
-          <RecCell label="Cost"    value={fmtAmount(recCost)} sub={isComplete ? undefined : (costFromBank ? "from bank" : "entered")} />
+          <RecCell label="Revenue" value={fmtAmount(showRev)} sub={refundTotal > 0.005 ? `after ${fmtAmount(refundTotal)} refunded` : isComplete ? undefined : (revFromBank ? "from bank" : "projected")} />
+          <RecCell label="Cost"    value={fmtAmount(recCost)} sub={isComplete ? undefined : costBasis} />
           <RecCell label={showNet >= 0 ? "Profit" : "Loss"} value={fmtAmount(showNet)} sub={`${showRev > 0 ? ((showNet / showRev) * 100).toFixed(1) : "0.0"}% margin`} clr={showNet >= 0 ? "text-success-ink" : "text-danger-ink"} big />
         </div>
         <div className="mt-3 space-y-1 text-[12px]">
           <Row label="Supplier and other costs" value={fmtAmount(recGoods)} clr="text-ink-2" />
           <Row label="Shipping" value={fmtAmount(recShip)} clr="text-ink-2" />
         </div>
-        {(flow.carrier_owing ?? flow.logistics_unpaid ?? 0) > 0 && (
+        {(rd ? rd.shipping_projected : (flow.carrier_owing ?? flow.logistics_unpaid ?? 0) > 0) && !waiveCarrier && (
           <div className="mt-2.5 flex items-start gap-1.5 text-[11.5px] text-warning-ink">
             <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-            <span>Shipping is not paid in full yet. Profit updates by itself when the bank payment is linked.</span>
+            <span>The carrier is not paid yet, so shipping counts what it is expected to cost until its payment is linked.</span>
+          </div>
+        )}
+        {rd?.supplier_part_linked && (
+          <div className="mt-2.5 flex items-start gap-1.5 text-[11.5px] text-warning-ink">
+            <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+            <span>The supplier is not paid in full yet ({fmtAmount(pc?.supplier_paired ?? 0)} linked), so the typed cost counts until the linked payments cover it.</span>
           </div>
         )}
         {refundTotal > 0.005 && (
