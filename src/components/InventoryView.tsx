@@ -9,8 +9,10 @@ import { lotUnitPrice, priceTiers, palletPrice, lotPriceBlock } from "../lib/pri
 import { lotTags, dedupeTags, suggestTags, toggleTag, isTagged } from "../lib/tags";
 import LocationField from "./LocationField";
 import LocationCleanup from "./LocationCleanup";
+import LotImport from "./LotImport";
+import type { LotDraft } from "../lib/lotImport";
 import { buildNewsletterBody, LotBlockInput } from "../lib/newsletter";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook, MapPin } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook, MapPin, FileSpreadsheet } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -179,6 +181,7 @@ export default function InventoryView() {
   const [prefillTotal, setPrefillTotal] = useState(0);                   // how many loads this paste produced, for "load 2 of 5"
   const [prefillFrom, setPrefillFrom] = useState<"paste" | "split">("paste"); // what produced the batch, for the form's label
   const [pasting, setPasting] = useState(false);
+  const [importing, setImporting] = useState(false); // R-557: lots from a spreadsheet
   const [blastLot, setBlastLot] = useState<Lot | null>(null);
   const [showSold, setShowSold] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -546,6 +549,10 @@ export default function InventoryView() {
                 className="flex items-center gap-1.5 border border-accent/40 text-accent px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-accent/10 transition-colors">
                 <Clipboard size={13} /> Paste a load
               </button>
+              <button onClick={() => setImporting(true)} title="Add many lots at once from a spreadsheet"
+                className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors">
+                <FileSpreadsheet size={13} /> Import
+              </button>
               <button onClick={startAdd} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
                 <Plus size={14} /> Add lot
               </button>
@@ -781,6 +788,7 @@ export default function InventoryView() {
             <p className="text-[13px] text-muted max-w-xs">Add your first lot, or paste a supplier message and let it fill the form.</p>
             <div className="flex items-center gap-2 mt-4">
               <button onClick={() => setPasting(true)} className="flex items-center gap-1.5 border border-accent/40 text-accent px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-accent/10 transition-colors"><Clipboard size={13} /> Paste a load</button>
+              <button onClick={() => setImporting(true)} className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"><FileSpreadsheet size={13} /> Import a spreadsheet</button>
               <button onClick={startAdd} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5"><Plus size={14} /> Add lot</button>
             </div>
           </div>
@@ -813,6 +821,13 @@ export default function InventoryView() {
         onClose={() => setPasting(false)}
         onParsed={(pfs) => { setPasting(false); setEditing(null); setPrefill(pfs[0] ?? null); setPrefillQueue(pfs.slice(1)); setPrefillTotal(pfs.length); setPrefillFrom("paste"); setPrefillSeq((s) => s + 1); setShowForm(true); }}
       />}
+
+      {importing && <LotImport lots={lots} categories={categoryOptions} suppliers={suppliers}
+        onClose={() => setImporting(false)} onAdded={load}
+        renderEditor={(pf, label, onSave, onClose) => (
+          <LotForm prefill={pf} draft={{ label, onSave }} onClose={onClose}
+            deals={deals} suppliers={suppliers} categories={categoryOptions} mediaBase={mediaBase} lots={lots} />
+        )} />}
 
       {blastLot && <BlastLoadModal lot={blastLot} onClose={() => setBlastLot(null)} onSent={() => { setBlastLot(null); load(); }} />}
 
@@ -1542,7 +1557,9 @@ function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
   );
 }
 
-function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, lots, pasteIndex = 0, pasteTotal = 0, batchFrom = "paste" }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string; lots: Lot[]; pasteIndex?: number; pasteTotal?: number; batchFrom?: "paste" | "split" }) {
+// R-557: `draft` opens the form on a spreadsheet row being imported. Saving hands the row
+// back exactly as a create would have stored it, and nothing is written until the import adds it.
+function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, lots, pasteIndex = 0, pasteTotal = 0, batchFrom = "paste", draft }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string; lots: Lot[]; pasteIndex?: number; pasteTotal?: number; batchFrom?: "paste" | "split"; draft?: { label: string; onSave: (d: LotDraft & { photo_paths: string[] }) => void } }) {
   const [name, setName] = useState(initial?.name ?? prefill?.name ?? "");
   const [desc, setDesc] = useState(initial?.description ?? prefill?.description ?? "");
   const [category, setCategory] = useState(initial?.category ?? prefill?.category ?? "");
@@ -1551,8 +1568,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const [supplier, setSupplier] = useState(initial?.supplier ?? prefill?.supplier ?? "");
   const [location, setLocation] = useState(initial?.location ?? prefill?.location ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? prefill?.notes ?? "");
-  const [sentWa, setSentWa] = useState(initial?.sent_whatsapp ?? false);
-  const [sentEmail, setSentEmail] = useState(initial?.sent_email ?? false);
+  const [sentWa, setSentWa] = useState(initial?.sent_whatsapp ?? prefill?.sent_whatsapp ?? false);
+  const [sentEmail, setSentEmail] = useState(initial?.sent_email ?? prefill?.sent_email ?? false);
   const [photos, setPhotos] = useState<string[]>(() => {
     // A manifest split (R-379) hands a new lot the paths of photos taken from its lines.
     if (!initial && Array.isArray((prefill as any)?.photo_paths)) return (prefill as any).photo_paths;
@@ -1765,7 +1782,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     JSON.stringify(cats) !== initialSnapshot.cats || JSON.stringify(tags) !== initialSnapshot.tags ||
     condition !== initialSnapshot.condition;
   const requestClose = () => {
-    if (isDirty() && !confirm("Discard this lot? Your changes will be lost.")) return;
+    if (isDirty() && !confirm(draft ? "Discard your changes to this row?" : "Discard this lot? Your changes will be lost.")) return;
     onClose();
   };
 
@@ -1874,7 +1891,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // being touched, so the parse runs here too.
       const locParts = parseLocation(location);
       const locClean = formatLocation(locParts.city, locParts.state);
-      if (initial) {
+      if (draft) {
+        draft.onSave({ name: name.trim(), description: desc || null, category: primaryCat || null, quantity: effQty, total_cost: cost, asking_price: effAsk, price_type: storedPriceType, notes: notes.trim() || null, supplier: supplier.trim() || null, location: locClean || null, details_json: detailsJson ?? null, manifest_file: newManifestFile, sent_whatsapp: sentWa, sent_email: sentEmail, photo_paths: photos });
+      } else if (initial) {
         await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: primaryCat || null, quantity: effQty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: locClean || null, priceType: storedPriceType, detailsJson });
       } else {
         // Duplicate guard: warn (don't block) if a still-listed lot already has this
@@ -1892,7 +1911,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       }
       // Persist every typed-in category so each is a reusable pick next time (idempotent —
       // create_category dedupes case-insensitively).
-      cleanCats.forEach((c) => api.createCategory({ label: c }).catch(() => {}));
+      if (!draft) cleanCats.forEach((c) => api.createCategory({ label: c }).catch(() => {}));
       onClose();
     } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
@@ -1909,7 +1928,10 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 <h3 className="text-[15px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
                 {/* Stepping through a pasted batch: say which load this is, so a long
                     paste never leaves you guessing how many are still to come. */}
-                {!initial && pasteTotal > 0 && (
+                {draft && (
+                  <span className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums flex-shrink-0">{draft.label}</span>
+                )}
+                {!initial && !draft && pasteTotal > 0 && (
                   <span className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums flex-shrink-0">
                     {batchFrom === "split"
                       ? (pasteTotal > 1 ? `Split ${pasteIndex} of ${pasteTotal}` : "From a manifest split")
@@ -1920,6 +1942,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
               <p className="text-[11.5px] text-muted mt-0.5">
                 {initial
                   ? "Update this inventory lot."
+                  : draft
+                    ? "From your spreadsheet. Changes stay in the import until you add the lots."
                   : pasteTotal > 0
                     ? `${batchFrom === "split" ? "Filled in from the manifest split, with its own manifest file and photos. Check it before saving." : "Filled in from the text you pasted. Check it before saving."}${pasteTotal > 1 ? " Saving opens the next one." : ""}`
                     : "Add a lot to your inventory. Only a name is required."}
@@ -2247,7 +2271,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
           <div className="max-w-[860px] mx-auto w-full flex justify-end gap-2 px-6 py-3.5">
             <button onClick={requestClose} className="px-4 h-9 text-[13px] text-ink-2 border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
             <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-              {saving ? "Saving…" : initial ? "Save changes" : "Create lot"}
+              {saving ? "Saving…" : initial ? "Save changes" : draft ? "Save row" : "Create lot"}
             </button>
           </div>
         </div>
