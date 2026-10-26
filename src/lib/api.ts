@@ -6,6 +6,7 @@ import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, War
 import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, PalletSpec, WarehousePallet } from "./palletFit";
 import type { CaseLine, LoadDetail, LoadLine, LoadSummary, ManifestRead, NewLine, PicturesAdded } from "./deliveries";
 import type { Floor, FloorList, FloorShape, PalletSpot } from "./floor";
+import type { BuyTake } from "./buyPay";
 
 // R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
 // are server-proxied and don't exist until Pass 2. Every wrapper below routes
@@ -2892,6 +2893,11 @@ export interface BuyDetail {
   missing: { invoice_id: string; number: string; count: number; own_cost: boolean }[];
   in_step: boolean; can_book_bank?: boolean;
 }
+/** R-552: a buy a payment can be tied to, with what each leg cost and what is booked on it. */
+export interface BuyChoice {
+  id: string; name: string; supplier_name: string; stock_name: string; on_the_way: boolean; trucks: number;
+  goods_total: number; goods_paid: number; ship_total: number; ship_paid: number;
+}
 export interface BuyBrief { id: string; name: string; units_bought: number; sold: number; unit_goods: number; unit_ship: number; unit_markup: number }
 /** R-551: a buy started before its stock is here (On the way). */
 export interface ComingBuy {
@@ -4086,8 +4092,11 @@ export const api = {
     invoke<BuyDetail>("attach_warehouse_buy", { id, itemId: o.itemId ?? null, loadId: o.loadId ?? null }),
   /** R-551: send what is queued to the server and wait for it, so a buy is there before its trucks are asked for. */
   pushAndWait: () => invoke<number>("netsync_push_wait"),
-  payWarehouseBuy: (id: string, kind: BuyKind, o: { txnId?: string; cashAmount?: number; cashDate?: string }) =>
-    invoke<BuyDetail>("pay_warehouse_buy", { id, kind, txnId: o.txnId ?? null, cashAmount: o.cashAmount ?? null, cashDate: o.cashDate ?? null }),
+  /** R-552: `take` says how a payment past what is left books: all of it (the cost rises) or only what is left. */
+  payWarehouseBuy: (id: string, kind: BuyKind, o: { txnId?: string; cashAmount?: number; cashDate?: string; take?: BuyTake }) =>
+    invoke<BuyDetail>("pay_warehouse_buy", { id, kind, txnId: o.txnId ?? null, cashAmount: o.cashAmount ?? null, cashDate: o.cashDate ?? null, take: o.take ?? null }),
+  /** R-552: the live buys a payment can be tied to (Financials), or the ones a deal's invoice took stock from. */
+  warehouseBuyChoices: (dealFlowId?: string) => invoke<BuyChoice[]>("warehouse_buy_choices", { dealFlowId: dealFlowId ?? null }),
   unpayWarehouseBuy: (id: string, txnId: string) => invoke<BuyDetail>("unpay_warehouse_buy", { id, txnId }),
   addWarehouseBuyOrder: (id: string, invoiceId: string, count: number, goodsTyped?: number | null) =>
     invoke<string>("add_warehouse_buy_order", { id, invoiceId, count, goodsTyped: goodsTyped ?? null }),
@@ -4855,8 +4864,8 @@ export const api = {
   // Idempotent; returns how many allocations were removed.
   healOverallocatedTxns: () =>
     invoke<number>("heal_overallocated_txns"),
-  unallocatedBankTxns: (dealFlowId?: string) =>
-    invoke<UnallocatedBankTxns>("unallocated_bank_txns", { dealFlowId }),
+  unallocatedBankTxns: (dealFlowId?: string, withTransfers?: boolean) =>
+    invoke<UnallocatedBankTxns>("unallocated_bank_txns", { dealFlowId, withTransfers: withTransfers ?? null }),
   addCashTransaction: (amount: number, direction: "in" | "out", postedAt: string, counterparty?: string, note?: string) =>
     invoke<string>("add_cash_transaction", { amount, direction, postedAt, counterparty: counterparty ?? null, note: note ?? null }),
   // A money line on a deal that never hit the bank statement (cash on the side, an

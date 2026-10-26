@@ -18535,6 +18535,10 @@ async fn allocate_bank_txn_inner(
 /// Remove an allocation.
 #[tauri::command]
 pub async fn remove_bank_allocation(id: String) -> Result<(), String> {
+    // R-552: a booking a buy made goes with the whole payment off the buy, or the buy reads out of step.
+    if let Some((buy_id, txn)) = crate::warehouse_buys::booking_of_buy(&id) {
+        return crate::warehouse_buys::take_off(&buy_id, &txn);
+    }
     // Capture the deal — and the refund pairing — before deleting, so we can re-derive
     // its numbers after.
     let alloc: Option<(Option<String>, String, Option<String>)> = {
@@ -19089,9 +19093,11 @@ pub async fn heal_overallocated_txns() -> Result<i64, String> {
 /// `money_out` feeds the supplier / fee / refund-out pickers. When `deal_flow_id`
 /// is omitted (browse mode) only txns with no allocation at all are returned.
 #[tauri::command]
-pub async fn unallocated_bank_txns(deal_flow_id: Option<String>) -> Result<Value, String> {
+pub async fn unallocated_bank_txns(deal_flow_id: Option<String>, with_transfers: Option<bool>) -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let this = deal_flow_id.unwrap_or_default();
+    // R-552: a buy's payment picker shows the transfers too. An outgoing wire to a supplier is often labelled one by the bank.
+    let transfers = with_transfers.unwrap_or(false) as i64;
     let mut stmt = conn.prepare(
         "SELECT bt.id, bt.posted_at, bt.amount, bt.direction, bt.description,
                 bt.counterparty_name, bt.wire_ref, bt.rail, bt.category,
@@ -19111,6 +19117,7 @@ pub async fn unallocated_bank_txns(deal_flow_id: Option<String>) -> Result<Value
          -- Hide the guess, never the human's own work: a transaction the user has
          -- reviewed, or that is already tied to this deal, is always offered.
          WHERE (bt.category != 'internal_transfer'
+                OR ?2 = 1
                 OR COALESCE(bt.reviewed,0) = 1
                 OR EXISTS (SELECT 1 FROM bank_allocation a
                             WHERE a.bank_txn_id = bt.id AND a.deal_flow_id = ?1))
@@ -19121,7 +19128,7 @@ pub async fn unallocated_bank_txns(deal_flow_id: Option<String>) -> Result<Value
                           WHERE a.bank_txn_id = bt.id), 0)) > 0.005
          ORDER BY bt.posted_at DESC, bt.created_at DESC",
     ).map_err(|e| e.to_string())?;
-    let rows: Vec<Value> = stmt.query_map([&this], |r| {
+    let rows: Vec<Value> = stmt.query_map(rusqlite::params![this, transfers], |r| {
         let amount: f64 = r.get(2)?;
         let mine: f64 = r.get(9)?;
         let total_alloc: f64 = r.get(10)?;

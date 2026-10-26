@@ -11,6 +11,7 @@ import { Banknote, Pencil, Plus, RefreshCw, Search, X } from "lucide-react";
 import { api, type BuyDetail, type BuyInput, type BuyKind, type BuyOrder, type UnallocatedTxn } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import { buySteps, costEachLine, perUnit, type StepKey } from "../lib/buyLoads";
+import { legOf, payChoice, rowMatches, supplierFirst, type BuyTake, type PayChoice } from "../lib/buyPay";
 import { canSeePayments } from "../lib/dealPayments";
 import { can, isAdmin } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
@@ -497,7 +498,7 @@ function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k
       <div className="flex items-center justify-between gap-2">
         <span className="text-[13px] font-semibold text-ink">{title}</span>
         <span className={`text-[12px] tabular-nums ${total > 0 && paid + 0.005 >= total ? "text-success-ink" : "text-muted"}`}>
-          {total > 0 ? `${fmtAmount(paid)} of ${fmtAmount(total)} paid` : "Nothing to pay yet"}
+          {total > 0 ? `${fmtAmount(paid)} of ${fmtAmount(total)} paid` : kind === "goods" ? "No price yet: what you pay becomes the cost" : "Nothing to pay yet"}
         </span>
       </div>
       <div className="mt-2 space-y-1.5">
@@ -505,7 +506,9 @@ function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k
           <div key={p.txn_id} className="flex items-center justify-between gap-2 text-[12.5px] bg-surface-2 rounded-lg px-3 py-2">
             <span className="min-w-0 truncate text-ink-2">{p.posted_at.slice(0, 10)} · {p.name || (p.cash ? "Cash" : "Bank payment")}{p.cash ? " (cash)" : ""}</span>
             <span className="flex items-center gap-2 flex-shrink-0">
-              <span className="tabular-nums text-ink">{fmtAmount(p.amount)}</span>
+              <span className="tabular-nums text-ink" title={p.booked_here < p.amount - 0.005 ? "The rest of this payment is free to book in Financials" : undefined}>
+                {p.booked_here < p.amount - 0.005 ? `${fmtAmount(p.booked_here)} of ${fmtAmount(p.amount)}` : fmtAmount(p.amount)}
+              </span>
               {d.can_book_bank !== false && (
                 <button title="Take this payment off the buy" disabled={busy === p.txn_id}
                   onClick={() => run(p.txn_id, () => api.unpayWarehouseBuy(d.buy.id, p.txn_id))} className="text-faint hover:text-danger-ink"><X size={13} /></button>
@@ -515,7 +518,7 @@ function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k
         ))}
         {d.can_book_bank !== false && !(kind === "ship" && d.truck_cost.live > 0) && (
           adding === kind
-            ? <PayPicker kind={kind} buyId={d.buy.id} onDone={(v) => { setAdding(null); if (v) run("pay", async () => v); }} onCancel={() => setAdding(null)} />
+            ? <PayPicker kind={kind} buy={{ id: d.buy.id, supplier: d.buy.supplier_name, ...legOf(r, kind) }} onDone={(v) => { setAdding(null); if (v) run("pay", async () => v); }} onCancel={() => setAdding(null)} />
             : <button onClick={() => setAdding(kind)} className="inline-flex items-center gap-1.5 text-[12.5px] text-accent-hover hover:underline"><Plus size={13} /> Add a payment</button>
         )}
       </div>
@@ -534,52 +537,106 @@ function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k
   );
 }
 
-/** Pick the bank row that paid it, or say it was paid in cash. */
-function PayPicker({ kind, buyId, onDone, onCancel }: { kind: BuyKind; buyId: string; onDone: (d: BuyDetail | null) => void; onCancel: () => void }) {
+/** R-552: a payment more than is left to pay on the buy is booked as Jack says, each time: all of it (the buy's cost rises)
+ *  or only what is left (the rest stays free in Financials). The buy's picker, Financials' Inventory buy and a sold deal's
+ *  Link a payment to the buy all ask with this. */
+export function PayAsk({ choice, busy, onTake, onCancel }: {
+  choice: Extract<PayChoice, { kind: "ask" }>; busy: boolean; onTake: (t: BuyTake) => void; onCancel: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-warning/30 bg-warning-bg px-3 py-2.5 space-y-2 text-[12.5px] text-warning-ink">
+      <p className="leading-relaxed">
+        {choice.left > 0
+          ? `This payment is ${fmtAmount(choice.room)} and ${fmtAmount(choice.left)} is left to pay on this buy.`
+          : `This buy is already paid in full, and this payment is ${fmtAmount(choice.room)}.`}
+      </p>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button disabled={busy} onClick={() => onTake("all")} className={WH_BTN_PRIMARY}>Book all of it, the cost becomes {fmtAmount(choice.raisesTo)}</button>
+        {choice.left > 0 && <button disabled={busy} onClick={() => onTake("left")} className={WH_BTN_SECONDARY}>Book only {fmtAmount(choice.left)}, the rest stays free</button>}
+        <button disabled={busy} onClick={onCancel} className="text-[12px] px-1 hover:underline">Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/** R-552: what to say once a payment is on the buy. */
+export function paidToast(d: BuyDetail, kind: BuyKind, raised: boolean) {
+  const leg = legOf(d.rollup, kind);
+  toast(raised
+    ? `Booked. What the buy cost is now ${fmtAmount(leg.total)}, what you have paid. Change it if the price is more.`
+    : `Booked. ${fmtAmount(leg.paid)} of ${fmtAmount(leg.total)} paid.`);
+}
+
+type PayWith = { txnId?: string; cashAmount?: number; cashDate?: string };
+
+/** Pick the bank row that paid it, or say it was paid in cash. R-552: every money out not booked yet, the transfers too (an
+ *  outgoing wire is often labelled one), the buy's supplier first; a payment past what is left asks before it books. */
+export function PayPicker({ kind, buy, onDone, onCancel }: {
+  kind: BuyKind; buy: { id: string; supplier: string; total: number; paid: number }; onDone: (d: BuyDetail | null) => void; onCancel: () => void;
+}) {
   const [rows, setRows] = useState<UnallocatedTxn[] | null>(null);
   const [q, setQ] = useState("");
   const [cash, setCash] = useState(false);
   const [amount, setAmount] = useState(0);
   const [date, setDate] = useState(localDay());
   const [busy, setBusy] = useState(false);
-  useEffect(() => { api.unallocatedBankTxns().then((r) => setRows(r.money_out.filter((t) => t.unallocated > 0.005))).catch(() => setRows([])); }, []);
+  const [asking, setAsking] = useState<{ key: string; choice: Extract<PayChoice, { kind: "ask" }>; o: PayWith } | null>(null);
+  useEffect(() => { api.unallocatedBankTxns(undefined, true).then((r) => setRows(r.money_out.filter((t) => t.unallocated > 0.005))).catch(() => setRows([])); }, []);
   const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = (rows || []).filter((t) => words.every((w) => `${t.counterparty_name} ${t.description} ${t.amount.toFixed(2)} ${t.posted_at}`.toLowerCase().includes(w))).slice(0, 30);
-  const pay = async (o: { txnId?: string; cashAmount?: number; cashDate?: string }) => {
+  const shown = supplierFirst(rows || [], buy.supplier).filter((t) => rowMatches(words, t)).slice(0, 50);
+  const send = async (o: PayWith, take?: BuyTake, raised = false) => {
     setBusy(true);
-    try { onDone(await api.payWarehouseBuy(buyId, kind, o)); }
+    try { const d = await api.payWarehouseBuy(buy.id, kind, { ...o, take }); paidToast(d, kind, raised); onDone(d); }
     catch (e) { toast(String(e), "error"); setBusy(false); }
   };
+  const pick = (key: string, room: number, o: PayWith) => {
+    const c = payChoice(buy.total, buy.paid, room);
+    if (c.kind === "none") { toast("That payment is already booked in full in Financials. Take it off there first.", "error"); return; }
+    if (c.kind === "ask") { setAsking({ key, choice: c, o }); return; }
+    send(o, undefined, c.raisesTo !== undefined);
+  };
+  const ask = (key: string) => asking?.key === key
+    ? <PayAsk choice={asking.choice} busy={busy} onTake={(t) => send(asking.o, t, t === "all")} onCancel={() => setAsking(null)} />
+    : null;
   return (
     <div className="border border-line rounded-lg p-3 space-y-2">
       <div className="flex items-center gap-2">
-        <button onClick={() => setCash(false)} aria-pressed={!cash} className={`text-[12px] px-2.5 h-7 rounded-md ${!cash ? "bg-surface-2 text-ink font-medium" : "text-muted"}`}>A bank payment</button>
-        <button onClick={() => setCash(true)} aria-pressed={cash} className={`text-[12px] px-2.5 h-7 rounded-md ${cash ? "bg-surface-2 text-ink font-medium" : "text-muted"}`}>Paid in cash</button>
-        <button onClick={onCancel} className="ml-auto text-faint hover:text-ink-2"><X size={14} /></button>
+        <button onClick={() => { setCash(false); setAsking(null); }} aria-pressed={!cash} className={`text-[12px] px-2.5 h-7 rounded-md ${!cash ? "bg-surface-2 text-ink font-medium" : "text-muted"}`}>A bank payment</button>
+        <button onClick={() => { setCash(true); setAsking(null); }} aria-pressed={cash} className={`text-[12px] px-2.5 h-7 rounded-md ${cash ? "bg-surface-2 text-ink font-medium" : "text-muted"}`}>Paid in cash</button>
+        <button onClick={onCancel} aria-label="Close" className="ml-auto text-faint hover:text-ink-2"><X size={14} /></button>
       </div>
       {cash ? (
-        <div className="flex items-end gap-2 flex-wrap">
-          <label className="block"><span className="text-[12px] text-muted">Amount</span>
-            <NumberInput value={amount} onValue={setAmount} className={`${WH_INPUT} w-32 mt-1 tabular-nums`} style={WH_INPUT_BG} /></label>
-          <label className="block"><span className="text-[12px] text-muted">Paid on</span>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${WH_INPUT} w-40 mt-1`} style={WH_INPUT_BG} /></label>
-          <button disabled={busy || !(amount > 0)} onClick={() => pay({ cashAmount: amount, cashDate: date })} className={WH_BTN_PRIMARY}><Banknote size={13} /> Save</button>
-        </div>
+        <>
+          <div className="flex items-end gap-2 flex-wrap">
+            <label className="block"><span className="text-[12px] text-muted">Amount</span>
+              <NumberInput value={amount} onValue={(v) => { setAmount(v); setAsking(null); }} className={`${WH_INPUT} w-32 mt-1 tabular-nums`} style={WH_INPUT_BG} /></label>
+            <label className="block"><span className="text-[12px] text-muted">Paid on</span>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${WH_INPUT} w-40 mt-1`} style={WH_INPUT_BG} /></label>
+            <button disabled={busy || !(amount > 0)} onClick={() => pick("cash", amount, { cashAmount: amount, cashDate: date })} className={WH_BTN_PRIMARY}><Banknote size={13} /> Save</button>
+          </div>
+          {ask("cash")}
+        </>
       ) : (
         <>
           <div className="relative">
             <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name, amount or date" className={`${WH_INPUT} pl-8`} style={WH_INPUT_BG} />
+            <input value={q} onChange={(e) => { setQ(e.target.value); setAsking(null); }} placeholder="Search by name, amount or date" className={`${WH_INPUT} pl-8`} style={WH_INPUT_BG} />
           </div>
-          <div className="max-h-56 overflow-y-auto space-y-1">
+          <div className="max-h-72 overflow-y-auto space-y-1">
             {rows === null ? <p className="text-[12px] text-muted py-2">Loading…</p>
               : shown.length === 0 ? <p className="text-[12px] text-muted py-2">No money out that is not booked yet{q ? " matches that" : ""}.</p>
               : shown.map((t) => (
-                <button key={t.id} disabled={busy} onClick={() => pay({ txnId: t.id })}
-                  className="w-full flex items-center justify-between gap-2 text-left text-[12.5px] px-3 py-2 rounded-lg hover:bg-surface-2">
-                  <span className="min-w-0 truncate text-ink-2">{t.posted_at.slice(0, 10)} · {t.counterparty_name || t.description}</span>
-                  <span className="tabular-nums text-ink flex-shrink-0">{fmtAmount(t.unallocated)}{t.unallocated < t.original - 0.005 ? ` of ${fmtAmount(t.original)}` : ""}</span>
-                </button>
+                <div key={t.id} className="space-y-1">
+                  <button disabled={busy} onClick={() => pick(t.id, t.unallocated, { txnId: t.id })}
+                    className={`w-full flex items-center justify-between gap-2 text-left text-[12.5px] px-3 py-2 rounded-lg hover:bg-surface-2 ${asking?.key === t.id ? "bg-surface-2" : ""}`}>
+                    <span className="min-w-0">
+                      <span className="block truncate text-ink-2">{t.posted_at.slice(0, 10)} · {t.counterparty_name || t.description}</span>
+                      {t.category === "internal_transfer" && <span className="block text-[11px] text-muted">Labelled a transfer by the bank</span>}
+                    </span>
+                    <span className="tabular-nums text-ink flex-shrink-0">{fmtAmount(t.unallocated)}{t.unallocated < t.original - 0.005 ? ` of ${fmtAmount(t.original)}` : ""}</span>
+                  </button>
+                  {ask(t.id)}
+                </div>
               ))}
           </div>
         </>

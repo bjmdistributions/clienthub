@@ -32,6 +32,10 @@
 //! shipping in (`OrderPlan::markup`), counted in the cost of a unit and in the rollup, and each runtime
 //! takes an order's markup off the top of that order's owner split as logistics pay, the way his
 //! markup on any truck is taken.
+//!
+//! R-552: a payment tied to a buy books in full or says why, never nothing (`pay_take`). With no cost
+//! typed the cost becomes what was paid; a payment past what is left books all of it (the cost rises)
+//! or only what is left, as Jack chooses each time.
 
 use serde::{Deserialize, Serialize};
 
@@ -517,6 +521,53 @@ pub fn is_buy_note(note: &str) -> bool {
     note.starts_with(LINE_NOTE_PREFIX)
 }
 
+/// R-552: the buy that made a bank booking, read off its id (`alloc_<buy id>_<16 hex>`, `alloc_id`). None for any
+/// other booking, so Financials can take a buy's payment off the whole buy instead of one slice of it.
+pub fn buy_of_alloc(alloc_id: &str) -> Option<&str> {
+    let rest = alloc_id.strip_prefix("alloc_")?;
+    let (buy, hash) = rest.rsplit_once('_')?;
+    (!buy.is_empty() && hash.len() == 16 && hash.chars().all(|c| c.is_ascii_hexdigit())).then_some(buy)
+}
+
+/// R-552: how a payment past what is left to pay on a buy is booked. Jack chooses each time.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Take {
+    /// Book the whole payment: what the buy cost rises to what has been paid.
+    All,
+    /// Book only what is left to pay; the rest of the payment stays free in Financials.
+    Left,
+}
+
+/// Shown verbatim on every surface.
+pub const PAY_NO_ROOM: &str = "That payment is already booked in full in Financials. Take it off there first.";
+pub const PAY_PAID_IN_FULL: &str =
+    "This buy is already paid in full, so nothing is left for this payment. Book all of it to raise what the buy cost.";
+pub const PAY_ALREADY_HERE: &str = "That payment is already on this buy.";
+
+/// R-552: tying a payment to a buy books all of it or says why not; it is never dropped. `total` is what the buy cost for
+/// that leg, `paid` what is booked on it now, `room` what the payment still has free. Returns what it books and, when the
+/// buy's cost has to rise for it, the new cost. No cost yet: the cost becomes what has been paid. A payment past what is
+/// left books all of it (`Take::All`) or only what is left (`Take::Left`, and no choice reads as that).
+pub fn pay_take(total: f64, paid: f64, room: f64, take: Option<Take>) -> Result<(f64, Option<f64>), &'static str> {
+    let room = r2(room);
+    if room <= CENT {
+        return Err(PAY_NO_ROOM);
+    }
+    if total <= CENT {
+        return Ok((room, Some(r2(paid.max(0.0) + room))));
+    }
+    let left = r2((total - paid).max(0.0));
+    if room <= left + CENT {
+        return Ok((room, None));
+    }
+    match take {
+        Some(Take::All) => Ok((room, Some(r2(paid.max(0.0) + room)))),
+        _ if left <= CENT => Err(PAY_PAID_IN_FULL),
+        _ => Ok((left, None)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,5 +781,36 @@ mod tests {
         assert_eq!(held_kind(&held_note("x", Kind::Ship)), Kind::Ship);
         assert_eq!(held_kind(&held_note("x", Kind::Goods)), Kind::Goods);
         assert_eq!(order_id("inv1", "buy1"), "bo-inv1-buy1");
+    }
+
+    #[test]
+    fn a_bookings_buy_is_read_off_its_id_and_no_other_booking_has_one() {
+        let a = alloc_id("buy_7f3a-1", "deal1", "txn1", "supplier_payment");
+        assert_eq!(buy_of_alloc(&a), Some("buy_7f3a-1"));
+        assert_eq!(buy_of_alloc("alloc_3f2b8c1e-9d4a-4b7e-8f00-123456789abc"), None, "a hand booking's uuid id");
+        assert_eq!(buy_of_alloc("alloc__0123456789abcdef"), None);
+        assert_eq!(buy_of_alloc("bt_x_0123456789abcdef"), None);
+    }
+
+    #[test]
+    fn a_deposit_then_the_final_payment_both_book() {
+        assert_eq!(pay_take(50_000.0, 0.0, 10_000.0, None), Ok((10_000.0, None)), "the deposit");
+        assert_eq!(pay_take(50_000.0, 10_000.0, 40_000.0, None), Ok((40_000.0, None)), "the final payment, exactly what is left");
+    }
+
+    #[test]
+    fn with_no_cost_typed_the_cost_becomes_what_was_paid() {
+        assert_eq!(pay_take(0.0, 0.0, 10_000.0, None), Ok((10_000.0, Some(10_000.0))));
+        assert_eq!(pay_take(0.0, 0.0, 10_000.0, Some(Take::Left)), Ok((10_000.0, Some(10_000.0))));
+    }
+
+    #[test]
+    fn a_payment_past_what_is_left_books_all_or_only_what_is_left_and_never_nothing() {
+        assert_eq!(pay_take(10_000.0, 10_000.0, 40_000.0, Some(Take::All)), Ok((40_000.0, Some(50_000.0))), "the cost rises");
+        assert_eq!(pay_take(50_000.0, 45_000.0, 12_000.0, Some(Take::Left)), Ok((5_000.0, None)), "the rest stays free");
+        assert_eq!(pay_take(50_000.0, 45_000.0, 12_000.0, None), Ok((5_000.0, None)));
+        assert_eq!(pay_take(10_000.0, 10_000.0, 40_000.0, None), Err(PAY_PAID_IN_FULL), "paid in full says so");
+        assert_eq!(pay_take(10_000.0, 10_000.0, 40_000.0, Some(Take::Left)), Err(PAY_PAID_IN_FULL));
+        assert_eq!(pay_take(50_000.0, 0.0, 0.004, None), Err(PAY_NO_ROOM), "nothing free on the row");
     }
 }

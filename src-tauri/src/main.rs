@@ -1381,6 +1381,7 @@ fn main() {
             warehouse_loads::undo_load_out,
             warehouse_buys::list_warehouse_buys,
             warehouse_buys::warehouse_buy_for,
+            warehouse_buys::warehouse_buy_choices,
             warehouse_buys::get_warehouse_buy,
             warehouse_buys::create_warehouse_buy,
             warehouse_buys::update_warehouse_buy,

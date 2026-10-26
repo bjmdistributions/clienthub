@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search } from "lucide-react";
-import { api, DealFlow, DealAllocation, BankTxn, resoldMoves } from "../lib/api";
+import { api, DealFlow, DealAllocation, BankTxn, resoldMoves, type BuyChoice } from "../lib/api";
+import { PayPicker } from "./BuyPanel";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 
@@ -51,6 +52,20 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
   }, [flow.id, flow.updated_at, reloadKey]);
 
   useEffect(() => { load(); }, [load]);
+
+  // R-552: a sale from a Warehouse buy has its goods cost from the buy, so the supplier is paid on the buy, which spreads
+  // each payment over every order. Pairing it on this one sale would count it twice.
+  const buyLines = (flow.supplier_payments || []).filter((p) => (p.notes || "").startsWith("Buy: "));
+  const onlyBuy = buyLines.length > 0
+    && !(flow.supplier_payments || []).some((p) => !(p.notes || "").startsWith("Buy: ") && (p.category ?? "supplier") === "supplier");
+  const [buys, setBuys] = useState<BuyChoice[]>([]);
+  const [paying, setPaying] = useState<string | null>(null);
+  const loadBuys = useCallback(() => {
+    if (!buyLines.length) { setBuys([]); return; }
+    api.warehouseBuyChoices(flow.id).then(setBuys).catch(() => setBuys([]));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flow.id, flow.updated_at, buyLines.length, reloadKey]);
+  useEffect(() => { loadBuys(); }, [loadBuys]);
 
   const byRole = (role: string) => allocs.filter((a) => a.role === role);
   const buyer = byRole("buyer_payment");
@@ -230,7 +245,28 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
           onOpenManual={() => { setManualLeg("supplier_payment"); closePicker(); }}
           onCloseManual={() => setManualLeg(null)}
           onAddManual={addManual}
-        />
+          noPair={onlyBuy}
+        >
+          {buys.map((b) => (
+            <div key={b.id} className="mt-2 rounded-lg border border-line-2 px-3 py-2 space-y-2">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span className="min-w-0 text-[12px] text-ink-2 leading-snug">
+                  The goods cost comes from the buy <span className="font-medium text-ink">{b.name}</span>, so its supplier is paid there:{" "}
+                  <span className="tabular-nums">{b.goods_total > 0.005 ? `${fmtAmount(b.goods_paid)} of ${fmtAmount(b.goods_total)} paid` : "no price yet"}</span>.
+                </span>
+                {paying !== b.id && (
+                  <button onClick={() => setPaying(b.id)} className="flex-shrink-0 h-7 px-2.5 rounded-md border border-line text-[12px] font-medium text-ink-2 hover:border-line-3 inline-flex items-center gap-1">
+                    <Plus size={12} /> Link a payment to the buy
+                  </button>
+                )}
+              </div>
+              {paying === b.id && (
+                <PayPicker kind="goods" buy={{ id: b.id, supplier: b.supplier_name, total: b.goods_total, paid: b.goods_paid }}
+                  onDone={() => { setPaying(null); loadBuys(); void load(); onChange?.(); }} onCancel={() => setPaying(null)} />
+              )}
+            </div>
+          ))}
+        </LegBlock>
 
         {/* Shipping payment (money-out): what the carrier was paid, separate from the supplier.
             A deal that ships nothing has no target and stays quiet. */}
@@ -449,7 +485,7 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
 // ── One money leg: title, paired rows or empty state, inline picker ──
 function LegBlock({
   title, leg, rows, picker, busy, flow, onOpen, onClose, onUnpair, pairLabel,
-  manualOpen, onOpenManual, onCloseManual, onAddManual, quietWhenEmpty, elsewhere,
+  manualOpen, onOpenManual, onCloseManual, onAddManual, quietWhenEmpty, elsewhere, noPair, children,
 }: {
   title: string;
   leg: Leg;
@@ -469,6 +505,9 @@ function LegBlock({
   quietWhenEmpty?: boolean;
   /** R-438: the leg is settled on another deal (a resold move); says where instead of "Not paired". */
   elsewhere?: string;
+  /** R-552: the leg is paid somewhere else (a Warehouse buy), so it offers no pairing of its own. */
+  noPair?: boolean;
+  children?: ReactNode;
 }) {
   const paired = rows.length > 0;
   const sum = rows.reduce((s, a) => s + a.amount, 0);
@@ -501,12 +540,13 @@ function LegBlock({
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <ManualButton active={manualOpen} onOpen={onOpenManual} onClose={onCloseManual} />
-          <PairButton active={open} label={paired ? "Pair another" : pairLabel} onOpen={() => onOpen(leg)} onClose={onClose} />
+          {!noPair && <ManualButton active={manualOpen} onOpen={onOpenManual} onClose={onCloseManual} />}
+          {!noPair && <PairButton active={open} label={paired ? "Pair another" : pairLabel} onOpen={() => onOpen(leg)} onClose={onClose} />}
         </div>
       </div>
 
       {!!elsewhere && !paired && <div className="mt-1 text-[11.5px] text-muted">{elsewhere}</div>}
+      {children}
       {paired && (
         <div className="mt-2 space-y-1.5">
           {rows.map((a) => <PairedRow key={a.id} a={a} onUnpair={onUnpair} busy={busy} />)}

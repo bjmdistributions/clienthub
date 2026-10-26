@@ -1050,6 +1050,44 @@ pub async fn warehouse_buy_for(item_id: Option<String>, load_id: Option<String>)
     Ok(json!({ "buy": { "id": b.id, "name": b.name, "units_bought": b.units, "sold": sold, "unit_goods": ug, "unit_ship": us, "unit_markup": um } }))
 }
 
+/// R-552: every live buy a payment can be tied to, with what each leg cost and what is booked on it: Financials' Inventory
+/// buy and a sold deal's Link a payment to the buy read this. With a deal, only the buys its invoice took stock from.
+#[tauri::command]
+pub async fn warehouse_buy_choices(deal_flow_id: Option<String>) -> Result<Value, String> {
+    let c = conn()?;
+    let ids: Vec<String> = match deal_flow_id.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => {
+            let invoice: String = c.query_row("SELECT COALESCE(invoice_id,'') FROM deal_flows WHERE id=?1", [d], |r| r.get(0)).unwrap_or_default();
+            if invoice.is_empty() {
+                Vec::new()
+            } else {
+                c.prepare(
+                    "SELECT DISTINCT o.buy_id FROM warehouse_buy_orders o JOIN warehouse_buys b ON b.id=o.buy_id                      WHERE o.invoice_id=?1 AND COALESCE(o.undone,0)=0 AND COALESCE(b.archived,0)=0",
+                )
+                .and_then(|mut st| st.query_map([&invoice], |r| r.get::<_, String>(0)).map(|it| it.filter_map(|x| x.ok()).collect()))
+                .unwrap_or_default()
+            }
+        }
+        None => c
+            .prepare("SELECT id FROM warehouse_buys WHERE COALESCE(archived,0)=0 ORDER BY created_at DESC")
+            .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default(),
+    };
+    let out: Vec<Value> = ids
+        .iter()
+        .filter_map(|id| work(&c, id, None, None).ok())
+        .map(|w| {
+            let (_, stock_name) = stock_left(&c, &w.b);
+            json!({
+                "id": w.b.id, "name": w.b.name, "supplier_name": w.b.supplier_name, "stock_name": stock_name,
+                "on_the_way": w.b.item_id.is_empty() && w.b.load_id.is_empty(), "trucks": w.tc.live,
+                "goods_total": w.t.goods, "goods_paid": w.plan.goods_paid, "ship_total": w.t.ship, "ship_paid": w.plan.ship_paid,
+            })
+        })
+        .collect();
+    Ok(json!(out))
+}
+
 #[tauri::command]
 pub async fn get_warehouse_buy(id: String) -> Result<Value, String> {
     detail(&*conn()?, &id)
@@ -1338,7 +1376,14 @@ pub async fn archive_warehouse_buy(id: String) -> Result<(), String> {
 
 /// Tie a bank row (or a cash payment) to the buy, for the goods or the shipping in.
 #[tauri::command]
-pub async fn pay_warehouse_buy(id: String, kind: Kind, txn_id: Option<String>, cash_amount: Option<f64>, cash_date: Option<String>) -> Result<Value, String> {
+pub async fn pay_warehouse_buy(
+    id: String,
+    kind: Kind,
+    txn_id: Option<String>,
+    cash_amount: Option<f64>,
+    cash_date: Option<String>,
+    take: Option<core::Take>,
+) -> Result<Value, String> {
     if !crate::employees::session_can_book_bank() {
         return Err(NEEDS_FINANCIALS.into());
     }
@@ -1352,17 +1397,46 @@ pub async fn pay_warehouse_buy(id: String, kind: Kind, txn_id: Option<String>, c
     if kind == Kind::Ship && live_trucks > 0 {
         return Err("Tie the carrier payment to its truck.".into());
     }
-    let txn = match (txn_id.as_deref().map(str::trim).filter(|s| !s.is_empty()), cash_amount) {
+    // R-552: what the payment has free, worked out before anything is written, so a refusal leaves no cash row behind.
+    let txn_id = txn_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let room = match (&txn_id, cash_amount) {
         (Some(t), _) => {
-            let dir: String = conn()?
-                .query_row("SELECT COALESCE(direction,'') FROM bank_txn WHERE id=?1", [t], |r| r.get(0))
+            let c = conn()?;
+            let (dir, amount): (String, f64) = c
+                .query_row("SELECT COALESCE(direction,''), COALESCE(amount,0) FROM bank_txn WHERE id=?1", [t], |r| Ok((r.get(0)?, r.get(1)?)))
                 .map_err(|_| "That bank row is no longer here.".to_string())?;
             if dir != "out" {
                 return Err("Choose money that went out, not money that came in.".into());
             }
-            t.to_string()
+            if let Some(a) = owned_allocs(&c, &id).into_iter().find(|a| &a.txn_id == t) {
+                return Err(match kind_of(&a) {
+                    k if k == kind => core::PAY_ALREADY_HERE,
+                    Kind::Goods => "That bank row already pays the goods on this buy. Take it off first to use it for the shipping in.",
+                    Kind::Ship => "That bank row already pays the shipping in on this buy. Take it off first to use it for the goods.",
+                }
+                .into());
+            }
+            core::r2(amount - core::total(allocs_where(&c, "a.bank_txn_id=?1", &[t]).iter().map(|a| a.amount)))
         }
-        (None, Some(a)) if a > 0.0 && a.is_finite() => {
+        (None, Some(a)) if a > 0.0 && a.is_finite() => core::r2(a),
+        _ => return Err("Choose the bank row that paid it, or enter the cash paid.".into()),
+    };
+    // R-552: it books in full or says why. No cost typed, or Book all of it: what the buy cost rises to what was paid.
+    let w = work(&*conn()?, &id, None, None)?;
+    let (total, paid) = match kind {
+        Kind::Goods => (w.t.goods, w.plan.goods_paid),
+        Kind::Ship => (w.t.ship, w.plan.ship_paid),
+    };
+    let (_, raise) = core::pay_take(total, paid, room, take)?;
+    if let Some(cost) = raise {
+        let mut cols = Map::new();
+        cols.insert(if kind == Kind::Goods { "goods_total" } else { "ship_total" }.into(), json!(cost));
+        cols.insert("updated_at".into(), json!(now()));
+        put(BUYS, &id, cols, false)?;
+    }
+    let txn = match (txn_id, cash_amount) {
+        (Some(t), _) => t,
+        (None, Some(a)) => {
             let desc = match kind {
                 Kind::Goods => format!("Cash paid for {}", b.name),
                 Kind::Ship => format!("Cash paid for shipping in, {}", b.name),
@@ -1379,16 +1453,31 @@ pub async fn pay_warehouse_buy(id: String, kind: Kind, txn_id: Option<String>, c
 /// Take a bank row off the buy: every booking the buy made on it goes.
 #[tauri::command]
 pub async fn unpay_warehouse_buy(id: String, txn_id: String) -> Result<Value, String> {
+    take_off(&id, &txn_id)?;
+    detail(&*conn()?, &id)
+}
+
+/// Take a bank row off the buy, on the buy or from Financials (R-552: a booking a buy made is one slice of a payment it
+/// spreads over its orders, so Financials takes the whole payment off, never the slice alone).
+pub(crate) fn take_off(id: &str, txn_id: &str) -> Result<(), String> {
     if !crate::employees::session_can_book_bank() {
         return Err(NEEDS_FINANCIALS.into());
     }
     // R-551: a bank row a truck's carrier was paid with is taken off that truck (Pay carriers), which untangles both.
-    let tied = trucks_of(&*conn()?, &id).iter().any(|t| !t.archived && !t.bank_txn_id.is_empty() && t.bank_txn_id == txn_id);
+    let tied = trucks_of(&*conn()?, id).iter().any(|t| !t.archived && !t.bank_txn_id.is_empty() && t.bank_txn_id == txn_id);
     if tied {
         return Err("That payment is tied to a truck. Take it off the truck in Pay carriers.".into());
     }
-    apply(&id, None, Some(&txn_id))?;
-    detail(&*conn()?, &id)
+    apply(id, None, Some(txn_id))
+}
+
+/// R-552: the live buy a bank booking was made by, and the row it books, for Financials' Remove. None for any other booking.
+pub(crate) fn booking_of_buy(alloc_id: &str) -> Option<(String, String)> {
+    let buy_id = core::buy_of_alloc(alloc_id)?;
+    let c = conn().ok()?;
+    let b = buy(&c, buy_id).ok().filter(|b| !b.archived)?;
+    let txn: String = c.query_row("SELECT COALESCE(bank_txn_id,'') FROM bank_allocation WHERE id=?1", [alloc_id], |r| r.get(0)).ok()?;
+    (!txn.is_empty()).then_some((b.id, txn))
 }
 
 /// An invoice took stock from the buy: record the order and write its cost. Made by the invoice
@@ -1556,7 +1645,7 @@ mod tests {
 
         // The wire pays the goods: both orders covered in full.
         conn().unwrap().execute("INSERT INTO bank_txn (id,direction,amount,posted_at) VALUES ('w1','out',12.5,'2026-10-02')", []).unwrap();
-        let v = pay_warehouse_buy(v["buy"]["id"].as_str().unwrap().to_string(), Kind::Goods, Some("w1".into()), None, None).await.unwrap();
+        let v = pay_warehouse_buy(v["buy"]["id"].as_str().unwrap().to_string(), Kind::Goods, Some("w1".into()), None, None, None).await.unwrap();
         assert!(v["in_step"].as_bool().unwrap());
         let (da, db_) = { let c = conn().unwrap(); (deal_of(&c, "ia").unwrap(), deal_of(&c, "ib").unwrap()) };
         let mut want = vec![("supplier_payment".to_string(), da.clone(), 5.0), ("supplier_payment".to_string(), db_.clone(), 7.5)];
@@ -1695,7 +1784,7 @@ mod tests {
         let rename = on_the_way("Sample hats, renamed", 1000.0, 0.0);
         assert_eq!(update_warehouse_buy(id.clone(), rename).await.unwrap()["buy"]["name"], "Sample hats, renamed");
         assert_eq!(archive_warehouse_buy(id.clone()).await.unwrap_err(), "Cancel its trucks in Logistics first.");
-        assert_eq!(pay_warehouse_buy(id.clone(), Kind::Ship, Some("w-r551".into()), None, None).await.unwrap_err(), "Tie the carrier payment to its truck.");
+        assert_eq!(pay_warehouse_buy(id.clone(), Kind::Ship, Some("w-r551".into()), None, None, None).await.unwrap_err(), "Tie the carrier payment to its truck.");
         truck_set(&t1, "bank_txn_id='w-r551'");
         assert_eq!(unpay_warehouse_buy(id.clone(), "w-r551".into()).await.unwrap_err(), "That payment is tied to a truck. Take it off the truck in Pay carriers.");
 
@@ -1798,5 +1887,69 @@ mod tests {
         // A truck cancelled takes its markup out.
         truck_set(&cheap, "status='cancelled'");
         assert_eq!(share(&db_), 12.0, "6 of the 10 pairs carry 6/10 of the $20 of markup left");
+    }
+
+    fn out_row(id: &str, amount: f64, at: &str) {
+        conn().unwrap().execute("INSERT INTO bank_txn (id,direction,amount,posted_at) VALUES (?1,'out',?2,?3)", rusqlite::params![id, amount, at]).unwrap();
+    }
+    fn goods_paid(v: &Value) -> (f64, f64) {
+        (v["rollup"]["goods_paid"].as_f64().unwrap(), v["rollup"]["goods_total"].as_f64().unwrap())
+    }
+
+    /// R-552: a deposit and then the final payment both book, on a buy with no price typed (the price becomes what was paid)
+    /// and on one with a price (a payment past it books all of it or only what is left, as asked); nothing is ever dropped,
+    /// a buy paid in full says so, and taking a payment off in Financials takes all of it off the buy.
+    #[tokio::test]
+    async fn r552_a_deposit_and_the_final_payment_always_book() {
+        let _db = crate::db::init_test_store();
+
+        // No price typed: the deposit becomes the price; the final payment asks, and Book all raises it.
+        let id = id_of(&create_warehouse_buy(on_the_way("Sample tees", 0.0, 0.0)).await.unwrap());
+        out_row("dep", 10_000.0, "2026-10-01");
+        out_row("fin", 40_000.0, "2026-10-09");
+        let v = pay_warehouse_buy(id.clone(), Kind::Goods, Some("dep".into()), None, None, None).await.unwrap();
+        assert_eq!(goods_paid(&v), (10_000.0, 10_000.0), "no price typed: the price is what was paid");
+        assert_eq!(v["payments"].as_array().unwrap().len(), 1, "the deposit shows on the buy");
+        assert_eq!(bookings("dep"), vec![("adjustment".into(), id.clone(), 10_000.0)], "held on the buy until the stock sells");
+        assert_eq!(pay_warehouse_buy(id.clone(), Kind::Goods, Some("fin".into()), None, None, None).await.unwrap_err(), core::PAY_PAID_IN_FULL);
+        assert_eq!(bookings("fin"), vec![], "a refusal writes nothing");
+        let v = pay_warehouse_buy(id.clone(), Kind::Goods, Some("fin".into()), None, None, Some(core::Take::All)).await.unwrap();
+        assert_eq!(goods_paid(&v), (50_000.0, 50_000.0));
+        assert_eq!(v["payments"].as_array().unwrap().len(), 2);
+        assert_eq!(pay_warehouse_buy(id.clone(), Kind::Goods, Some("fin".into()), None, None, None).await.unwrap_err(), core::PAY_ALREADY_HERE);
+        assert_eq!(
+            pay_warehouse_buy(id.clone(), Kind::Ship, Some("fin".into()), None, None, None).await.unwrap_err(),
+            "That bank row already pays the goods on this buy. Take it off first to use it for the shipping in."
+        );
+
+        // A price typed: the deposit and the exact rest need no question; a bigger final payment books only what is left.
+        let id2 = id_of(&create_warehouse_buy(on_the_way("Sample hoodies", 50_000.0, 0.0)).await.unwrap());
+        out_row("dep2", 10_000.0, "2026-10-01");
+        out_row("fin2", 45_000.0, "2026-10-09");
+        let v = pay_warehouse_buy(id2.clone(), Kind::Goods, Some("dep2".into()), None, None, None).await.unwrap();
+        assert_eq!(goods_paid(&v), (10_000.0, 50_000.0));
+        let v = pay_warehouse_buy(id2.clone(), Kind::Goods, Some("fin2".into()), None, None, Some(core::Take::Left)).await.unwrap();
+        assert_eq!(goods_paid(&v), (50_000.0, 50_000.0), "only what was left");
+        let fin = v["payments"].as_array().unwrap().iter().find(|p| p["txn_id"] == "fin2").unwrap().clone();
+        assert_eq!((fin["amount"].as_f64(), fin["booked_here"].as_f64()), (Some(45_000.0), Some(40_000.0)), "the rest stays free");
+
+        // Financials' bin on one of the buy's bookings takes the whole payment off the buy.
+        let held = allocs_where(&conn().unwrap(), "a.bank_txn_id=?1", &[&"fin2"]).remove(0);
+        crate::commands::remove_bank_allocation(held.id).await.unwrap();
+        assert_eq!(bookings("fin2"), vec![]);
+        assert_eq!(goods_paid(&get_warehouse_buy(id2.clone()).await.unwrap()), (10_000.0, 50_000.0));
+
+        // Cash past what is left asks the same way, and a refusal leaves no cash row behind.
+        let before: i64 = conn().unwrap().query_row("SELECT COUNT(*) FROM bank_txn", [], |r| r.get(0)).unwrap();
+        let v = pay_warehouse_buy(id2.clone(), Kind::Goods, None, Some(45_000.0), Some("2026-10-10".into()), Some(core::Take::All)).await.unwrap();
+        assert_eq!(goods_paid(&v), (55_000.0, 55_000.0), "Book all raises the price to what was paid");
+        assert_eq!(pay_warehouse_buy(id2.clone(), Kind::Goods, None, Some(5.0), None, None).await.unwrap_err(), core::PAY_PAID_IN_FULL);
+        let after: i64 = conn().unwrap().query_row("SELECT COUNT(*) FROM bank_txn", [], |r| r.get(0)).unwrap();
+        assert_eq!(after, before + 1, "one cash row, for the payment that booked");
+
+        // The choices Financials lists carry each leg's price and what is paid.
+        let c = warehouse_buy_choices(None).await.unwrap();
+        let b = c.as_array().unwrap().iter().find(|b| b["id"] == id2.as_str()).unwrap().clone();
+        assert_eq!((b["goods_total"].as_f64(), b["goods_paid"].as_f64(), b["on_the_way"].as_bool()), (Some(55_000.0), Some(55_000.0), Some(true)));
     }
 }

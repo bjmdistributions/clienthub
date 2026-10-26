@@ -16,6 +16,7 @@ import { listen } from "@tauri-apps/api/event";
 import { toast } from "./Toast";
 import PersonPickerModal, { PersonRef, personKey } from "./PersonPicker";
 import DealPicker, { DealPickerPage } from "./DealPicker";
+import FinancialsBuyTarget from "./FinancialsBuyTarget";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
 import AccountantChanges from "./AccountantChanges";
@@ -343,6 +344,12 @@ const ROLES: { value: string; label: string; hint?: string }[] = [
 ];
 
 const roleLabel = (v: string) => ROLES.find((r) => r.value === v)?.label ?? v;
+// R-552: a buy's bookings (buy_core: notes `Buy: ` on an order's deal, `Held as stock: ` on the buy itself).
+const BUY_NOTE = "Buy: ";
+const HELD = /^Held as stock(?:, shipping in)?: /;
+const heldOnBuy = (note?: string | null) => (HELD.test(note || "") ? (note || "").replace(HELD, "") : "");
+const isBuyBooking = (a: { id: string; note?: string | null }) =>
+  a.id.startsWith("alloc_") && (HELD.test(a.note || "") || (a.note || "").startsWith(BUY_NOTE));
 export const catLabel = (v: string) => CATEGORIES.find((c) => c.value === v)?.label ?? (v || "Uncategorized");
 // Identify a deal by its BUYER first — an invoice number alone is meaningless when
 // scanning for the right deal to tie a payment to.
@@ -1066,7 +1073,7 @@ export default function FinancialsView() {
     setFromDate(""); setToDate("");
   }, []);
 
-  const [targetType, setTargetType]   = useState<"deal" | "loan" | "expense">("deal");
+  const [targetType, setTargetType]   = useState<"deal" | "loan" | "expense" | "buy">("deal");
   const [dealQuery, setDealQuery]     = useState("");
   const [selectedDeal, setSelectedDeal] = useState<DealFlow | null>(null);
   const [loanQuery, setLoanQuery]     = useState("");
@@ -5841,6 +5848,7 @@ export default function FinancialsView() {
               onCreateRule={createRule}
               newDealBusy={newDealBusy}
               onCreateDeal={createDealFromTxn}
+              onBuyLinked={() => refreshRows([openTxn.id])}
             />
           </div>
         </div>
@@ -6095,8 +6103,8 @@ function AllocationPanel(props: {
   txn: BankTxn;
   allocs: BankAllocation[];
   loading: boolean;
-  targetType: "deal" | "loan" | "expense";
-  setTargetType: (v: "deal" | "loan" | "expense") => void;
+  targetType: "deal" | "loan" | "expense" | "buy";
+  setTargetType: (v: "deal" | "loan" | "expense" | "buy") => void;
   dealPool: DealFlow[];
   dealCandidates: BankSuggestCandidate[];
   dealQuery: string;
@@ -6125,13 +6133,27 @@ function AllocationPanel(props: {
   onCreateRule: (matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string, direction: string, autoBook?: boolean) => void;
   newDealBusy: boolean;
   onCreateDeal: (t: BankTxn, name: string, buyer: string, sale: number, note: string) => Promise<boolean>;
+  /** R-552: the row was tied to an inventory buy. */
+  onBuyLinked: () => void;
 }) {
   const {
     txn, allocs, loading, targetType, setTargetType, dealPool, dealCandidates, dealQuery, setDealQuery,
     selectedDeal, onPickDeal, filteredLoans, loanQuery, setLoanQuery, loanListOpen, setLoanListOpen, selectedLoan, onPickLoan,
     amountStr, setAmountStr, role, setRole, note, setNote, allowSplit, setAllowSplit, busy, onSubmit, onRemove, onUntagLoan, onCreateRule,
-    newDealBusy, onCreateDeal,
+    newDealBusy, onCreateDeal, onBuyLinked,
   } = props;
+
+  // R-552: a deal sold from a buy has its goods cost from the buy, so a supplier payment for it is tied to the buy (which
+  // spreads it over every order) rather than to this one sale, where it would be counted twice.
+  const [buyPre, setBuyPre] = useState<string | undefined>(undefined);
+  const fromBuy = !!selectedDeal && (selectedDeal.supplier_payments || []).some((p) => (p.notes || "").startsWith(BUY_NOTE));
+  const toBuy = async () => {
+    try {
+      const mine = await api.warehouseBuyChoices(selectedDeal?.id);
+      setBuyPre(mine.length === 1 ? mine[0].id : undefined);
+    } catch { setBuyPre(undefined); }
+    setTargetType("buy");
+  };
 
   // R-517: the deal list as a full page, with each invoice's items. The dropdown beside the amount box
   // is too narrow to tell two deals for the same buyer apart.
@@ -6268,18 +6290,27 @@ function AllocationPanel(props: {
               {allocs.map((a) => (
                 <div key={a.id} className="flex items-center gap-3 px-3 py-2">
                   <div className="min-w-0 flex-1">
-                    <div className="text-[12px] font-medium text-ink truncate">
-                      {a.deal_name?.trim() || a.invoice_number || "Deal"}
-                      {a.client_name && <span className="text-muted font-normal"> · {a.client_name}</span>}
-                    </div>
-                    <div className="text-[11px] text-muted">
-                      {roleLabel(a.role)}{a.invoice_number ? ` · ${a.invoice_number}` : ""}{a.note ? ` · ${a.note}` : ""}
-                    </div>
+                    {heldOnBuy(a.note) ? (
+                      <>
+                        <div className="text-[12px] font-medium text-ink truncate">Buy: {heldOnBuy(a.note)}</div>
+                        <div className="text-[11px] text-muted">Held on the buy until its stock sells</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-[12px] font-medium text-ink truncate">
+                          {a.deal_name?.trim() || a.invoice_number || "Deal"}
+                          {a.client_name && <span className="text-muted font-normal"> · {a.client_name}</span>}
+                        </div>
+                        <div className="text-[11px] text-muted">
+                          {roleLabel(a.role)}{a.invoice_number ? ` · ${a.invoice_number}` : ""}{a.note ? ` · ${a.note}` : ""}
+                        </div>
+                      </>
+                    )}
                   </div>
                   <div className="text-[12px] font-semibold text-ink tabular-nums flex-shrink-0">{fmtAmount(a.amount)}</div>
                   <button
                     onClick={() => onRemove(a.id)}
-                    title="Remove this link"
+                    title={isBuyBooking(a) ? "Take this payment off the buy (all of it, from every order)" : "Remove this link"}
                     className="flex-shrink-0 w-6 h-6 rounded-md inline-flex items-center justify-center text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"
                   >
                     <Trash2 size={13} />
@@ -6296,10 +6327,12 @@ function AllocationPanel(props: {
 
       {/* Where this transaction belongs */}
       <div className="flex gap-1 flex-wrap">
-        {([["deal", "Deal"], ["loan", "Loan"], ["expense", "Expense / income"]] as const).map(([v, label]) => (
+        {([["deal", "Deal"], ["loan", "Loan"], ["expense", "Expense / income"], ["buy", "Inventory buy"]] as const)
+          .filter(([v]) => v !== "buy" || txn.direction === "out")
+          .map(([v, label]) => (
           <button
             key={v}
-            onClick={() => setTargetType(v)}
+            onClick={() => { if (v === "buy") setBuyPre(undefined); setTargetType(v); }}
             className={`px-3 h-9 rounded-lg text-[12px] font-medium transition-colors ${
               targetType === v ? "bg-accent text-on-accent" : "bg-surface border border-line text-muted hover:border-line-3"
             }`}
@@ -6378,6 +6411,12 @@ function AllocationPanel(props: {
             <p className="text-[11.5px] text-muted -mt-0.5">
               {ROLES.find((r) => r.value === role)?.hint}
             </p>
+          )}
+          {fromBuy && role === "supplier_payment" && (
+            <div className="flex items-center justify-between gap-3 flex-wrap rounded-lg border border-warning/30 bg-warning-bg px-3 py-2 text-[12px] text-warning-ink">
+              <span className="min-w-0 leading-relaxed">This sale's goods cost comes from a buy in the Warehouse. Link the payment to the buy, which spreads it over every order, or it counts twice.</span>
+              <button onClick={toBuy} className="flex-shrink-0 h-7 px-2.5 rounded-md bg-accent text-on-accent text-[12px] font-medium hover:bg-accent-hover">Link it to the buy</button>
+            </div>
           )}
           {/* Split one payment across multiple deals — allocate a partial amount to
               each; the backend keeps the running total within the transaction. */}
@@ -6467,6 +6506,10 @@ function AllocationPanel(props: {
           </p>
           {renderRememberRow()}
         </>
+      )}
+
+      {targetType === "buy" && txn.direction === "out" && (
+        <FinancialsBuyTarget key={`${txn.id}:${buyPre ?? ""}`} txn={txn} preselect={buyPre} onDone={onBuyLinked} />
       )}
 
       {/* Create a deal retroactively from this transaction */}
