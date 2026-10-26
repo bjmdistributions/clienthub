@@ -879,6 +879,9 @@ pub fn spawn_loop(app: tauri::AppHandle) {
         // while already signed in never does again. Once per launch, gated by HEAL_GENERATION, so it
         // costs nothing unless this build widened what heal covers (it did: freight_bookings).
         let mut heal_checked = false;
+        // R-555: the once-per-computer re-work of completed deals waits for a pull that reached the server, so it never
+        // runs on a stale copy of the links (an app opened offline) and pushes that over the server's figures.
+        let mut linked_checked = false;
         loop {
             interval.tick().await;
             // Runs on the first tick (an immediate baseline at startup) and every
@@ -899,8 +902,10 @@ pub fn spawn_loop(app: tauri::AppHandle) {
             // their inline upload (offline, 5xx, app closed) keep retrying until the server
             // confirms them — the byte equivalent of push_pending.
             push_media_pending().await;
+            let mut pulled = false;
             match pull_apply().await {
                 Ok(n) if n > 0 => {
+                    pulled = true;
                     // Remote changes landed locally — nudge the front-end to re-read
                     // (bell counts, approvals list, client list) from post-sync state.
                     let _ = app.emit("netsync-applied", n);
@@ -916,13 +921,16 @@ pub fn spawn_loop(app: tauri::AppHandle) {
                         }
                     });
                 }
-                Ok(_) => {}
+                Ok(_) => pulled = true,
                 Err(e) => tracing::warn!("netsync pull: {}", e),
             }
             if !heal_checked {
                 heal_checked = true;
                 auto_heal_if_behind().await;
                 r553_carrier_pass();
+            }
+            if pulled && !linked_checked {
+                linked_checked = true;
                 r555_linked_pass();
             }
             // Push org-shared config AFTER pull, so the down-path has applied any sibling

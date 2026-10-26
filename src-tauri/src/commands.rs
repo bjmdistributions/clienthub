@@ -6031,7 +6031,7 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     // booking replaces it), and the shipping leg is added on top of it.
     // R-553: the typed supplier cost stands until it is paid in full, and a load still owed counts its expected cost
     // unless this completion (or an earlier one) says there is no carrier to pay.
-    let rule = LegRule { supplier_until_paid: true, carrier_waived: carrier_entry.is_some() || carrier_waived_in(&deal_metadata(&df)), linked_only: true };
+    let rule = LegRule { supplier_until_paid: true, carrier_waived: carrier_entry.is_some() || carrier_waived_in(&deal_metadata(&df)), linked_only: true, keep_vanished: false };
     let (gross, total_cost, net, shipping_leg, shipping_mode) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let goods = df.total_supplier_cost - ship_facts(&conn, &id).typed_freight_dropped();
@@ -6228,6 +6228,9 @@ pub struct LegRule {
     pub supplier_until_paid: bool,
     pub carrier_waived: bool,
     pub linked_only: bool,
+    /// R-555: a leg whose links all point at bank rows that are gone keeps the figure on the books. Only a completed
+    /// deal has books to keep; on an open deal such a leg is simply not linked.
+    pub keep_vanished: bool,
 }
 
 /// R-553: the metadata key completion stamps, so a later resync counts the deal under `supplier_until_paid` too.
@@ -6235,7 +6238,7 @@ const SUPPLIER_UNTIL_PAID: &str = "supplier_until_paid";
 
 /// R-555: the rule a deal is shown and booked under: only what is linked, every deal, open or completed.
 fn leg_rule_of(df: &DealFlow) -> LegRule {
-    LegRule { linked_only: true, ..projected_rule_of(df) }
+    LegRule { linked_only: true, keep_vanished: df.stage == "complete", ..projected_rule_of(df) }
 }
 
 /// R-553, kept as the projection R-555 shows faded beside the linked figure: what the deal comes to if every payment is
@@ -6243,7 +6246,7 @@ fn leg_rule_of(df: &DealFlow) -> LegRule {
 /// carrier's.
 fn projected_rule_of(df: &DealFlow) -> LegRule {
     let meta = deal_metadata(df);
-    LegRule { supplier_until_paid: true, carrier_waived: carrier_waived_in(&meta), linked_only: false }
+    LegRule { supplier_until_paid: true, carrier_waived: carrier_waived_in(&meta), linked_only: false, keep_vanished: false }
 }
 
 /// R-553: a "No carrier to pay" answer (an override with basis `carrier`) is among the deal's recorded overrides.
@@ -6338,7 +6341,7 @@ fn deal_bank_actuals(
             let sql = format!(
                 "SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role IN ({roles}) \
                    AND NOT EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
-            exists(&sql)
+            rule.keep_vanished && exists(&sql)
         };
         let shipping_leg = facts.leg();
         let rev = if has_rev_link { buyer } else if vanished("'buyer_payment'") { manual_gross } else { 0.0 };
@@ -6370,7 +6373,8 @@ fn deal_bank_actuals(
     // the reconciliation's supplier target); until then the typed cost stands.
     let supplier_target = entered_goods - if facts.mode() { 0.0 } else { facts.freight_typed };
     let supplier_linked = has_supplier_link && (!rule.supplier_until_paid || supplier >= supplier_target - 0.5);
-    let rev  = if has_rev_link  { buyer } else { manual_gross };
+    // R-555: the projection is the deal as entered, so a buyer deposit does not stand in for the invoice.
+    let rev  = if has_rev_link  { buyer.max(manual_gross) } else { manual_gross };
     let cost = recorded_cost(has_cost_link, supplier_linked, supplier, fee, refund_in, entered_goods, recorded_goods, shipping_leg);
     DealActuals {
         gross: r2(rev), cost: r2(cost), net: r2(rev - cost), any_link,
@@ -19552,7 +19556,9 @@ fn deal_legs(conn: &rusqlite::Connection, deal_flow_id: &str) -> Result<DealLegs
     let supplier_expected = if resold_away { 0.0 } else { (supplier_cost - facts.freight_typed).max(0.0) };
     // A load still owed expects what it is expected to cost; a deal off Logistics expects its typed freight.
     let shipping_expected = if facts.mode() { if facts.unpaid > 0 { facts.estimate() } else { facts.paid } } else { facts.freight_typed };
-    let shipping_linked = if facts.mode() { facts.leg() } else { role_sum("shipping") };
+    let supplier_linked = role_sum("supplier_payment");
+    // Off Logistics, freight paid inside a supplier wire pays the shipping leg (the reconciliation's `shipping_ok`).
+    let shipping_linked = if facts.mode() { facts.leg() } else { role_sum("shipping") + (supplier_linked - supplier_expected).max(0.0) };
     let carrier_reason: String = meta.get("gate_overrides").and_then(|a| a.as_array())
         .and_then(|a| a.iter().rev().find(|o| o.get("basis").and_then(|b| b.as_str()) == Some("carrier")))
         .and_then(|o| o.get("reason").and_then(|r| r.as_str())).unwrap_or("").to_string();
@@ -19562,7 +19568,7 @@ fn deal_legs(conn: &rusqlite::Connection, deal_flow_id: &str) -> Result<DealLegs
     };
     Ok(DealLegs {
         buyer: view(buyer_expected, role_sum("buyer_payment"), flag("no_buyer_link"), note("buyer")),
-        supplier: view(supplier_expected, role_sum("supplier_payment"), flag("no_supplier_link"), note("supplier")),
+        supplier: view(supplier_expected, supplier_linked, flag("no_supplier_link"), note("supplier")),
         shipping: view(shipping_expected, shipping_linked, shipping_marked, { let n = note("shipping"); if n.is_empty() { carrier_reason } else { n } }),
         shipping_mode: facts.mode(),
     })
@@ -29216,6 +29222,8 @@ mod r400_shipping_tests {
         let id = deal("r553b", vec![line("a", "supplier", 2440.0, false)], "complete");
         pool().get().unwrap().execute(
             "UPDATE deal_flows SET gross_revenue=2915, total_cost=2440, net_profit=475 WHERE id=?1", [&id]).unwrap();
+        pool().get().unwrap().execute(
+            "UPDATE invoices SET total=2915 WHERE id=(SELECT invoice_id FROM deal_flows WHERE id=?1)", [&id]).unwrap();
         link(&id, "buyer_payment", 2915.0);
         // The once-per-device pass netsync runs after the first pull.
         assert!(resync_completed_deals_linked().unwrap() >= 1);
@@ -29250,6 +29258,35 @@ mod r400_shipping_tests {
             [format!("txn_{id}_buyer_payment"), format!("txn_{id}_supplier_payment")]).unwrap();
         assert!(!resync_completed_deal_if_changed(&id).unwrap(), "nothing moves");
         assert_eq!(books(&id), (6000.0, 4000.0, None, Some(6000.0)));
+    }
+
+    /// R-555: freight typed off Logistics and paid inside the supplier's wire pays the shipping leg (the reconciliation's
+    /// `shipping_ok`), so completion does not ask for a shipping payment that was made. Twin of the server's.
+    #[tokio::test]
+    async fn r555_freight_paid_inside_the_supplier_wire_settles_the_shipping_leg() {
+        let _db = crate::db::init_test_store();
+        let id = deal("r555f", vec![line("a", "supplier", 6000.0, false), line("b", "freight", 500.0, false)], "supplier_paid");
+        link(&id, "buyer_payment", 10000.0);
+        link(&id, "supplier_payment", 6500.0);
+        let r = deal_reconciliation(id.clone()).await.unwrap();
+        assert_eq!((r["legs"]["supplier"]["state"].clone(), r["legs"]["shipping"]["state"].clone()), (json!("linked"), json!("linked")));
+        complete_deal_flow(id.clone(), None, None, None, None, None).await.unwrap();
+        assert_eq!(books(&id).1, 3500.0);
+    }
+
+    /// R-555: the projection is the deal as entered, so a buyer deposit does not stand in for the invoice; and on an open
+    /// deal a link whose bank row is gone is simply not linked (only a completed deal's books are kept). Twin of the server's.
+    #[tokio::test]
+    async fn r555_the_projection_counts_the_invoice_and_an_open_deal_keeps_no_vanished_link() {
+        let _db = crate::db::init_test_store();
+        let id = deal("r555p", vec![line("a", "supplier", 6000.0, false)], "supplier_paid");
+        link(&id, "buyer_payment", 3000.0);
+        let r = deal_reconciliation(id.clone()).await.unwrap();
+        assert_eq!((r["actual_profit"].clone(), r["projected_profit"].clone()), (json!(3000.0), json!(4000.0)));
+        link(&id, "supplier_payment", 6000.0);
+        pool().get().unwrap().execute("DELETE FROM bank_txn WHERE id=?1", [format!("txn_{id}_supplier_payment")]).unwrap();
+        let r = deal_reconciliation(id.clone()).await.unwrap();
+        assert_eq!((r["record"]["goods"].clone(), r["legs"]["supplier"]["state"].clone()), (json!(0.0), json!("missing")));
     }
 
     /// R-555: completing asks for every payment to be linked or marked; a marked one completes on what is linked.

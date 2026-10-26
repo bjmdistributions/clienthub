@@ -265,7 +265,7 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
           onUnpair={unpair}
           pairLabel="Pair supplier payment"
           elsewhere={elsewhereText}
-          mark={onlyBuy ? undefined : markOf("supplier")}
+          mark={markOf("supplier")}
           manualOpen={manualLeg === "supplier_payment"}
           onOpenManual={() => { setManualLeg("supplier_payment"); closePicker(); }}
           onCloseManual={() => setManualLeg(null)}

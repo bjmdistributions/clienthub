@@ -2218,7 +2218,13 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
           {open.map((k) => (
             <div key={k} className={legs[k].state === "missing" ? "text-danger-ink" : "text-warning-ink"}>{legLine(k, legs[k])}</div>
           ))}
-          <div className="text-[11.5px] text-ink-2 pt-0.5">Link it in Link financials, add it by hand there if it was cash, or mark it No payment recorded with a note.</div>
+          {open.some((k) => !(k === "shipping" && flow.shipping_mode)) && (
+            <div className="text-[11.5px] text-ink-2 pt-0.5">Link it in Link financials, add it by hand there if it was cash, or mark it No payment recorded with a note.</div>
+          )}
+          {/* A Logistics carrier has its own question on completion (Mark done, or why no carrier is paid). */}
+          {flow.shipping_mode && open.includes("shipping") && (
+            <div className="text-[11.5px] text-ink-2 pt-0.5">The carrier counts once its payment is linked, from Pay carriers or Financials. Completing asks about it.</div>
+          )}
         </div>
       )}
       {marked.length > 0 && legs && (
@@ -2552,14 +2558,14 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       {overrides.length > 0 && (
         <div className="rounded-lg border border-warning bg-warning-bg/50 px-3 py-2.5">
           <div className="text-[12px] font-medium text-warning-ink mb-1.5">
-            {overrides.some((o: any) => o.basis === "carrier") ? "Completed with an override" : `Completed before its ${overrides.length === 1 ? "date" : "dates"}`}
+            {overrides.some((o: any) => o.basis === "carrier" || o.basis === "payments") ? "Completed with an override" : `Completed before its ${overrides.length === 1 ? "date" : "dates"}`}
           </div>
           <div className="space-y-1">
             {overrides.map((o: any, i: number) => (
               <div key={i} className="text-[11.5px] text-ink-2">
                 <span className="font-medium">{o.by || "Unknown"}</span>
                 {o.at ? ` · ${new Date(o.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
-                {o.basis === "carrier" ? " · no carrier paid" : ""}
+                {o.basis === "carrier" ? " · no carrier paid" : o.basis === "payments" ? " · no payment recorded" : ""}
                 {o.blocked_until ? ` · held until ${dayLabel(o.blocked_until)}` : ""}
                 {o.reason ? ` · ${o.reason}` : ""}
               </div>
