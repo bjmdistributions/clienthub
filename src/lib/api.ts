@@ -4068,8 +4068,17 @@ export const api = {
     invoke<LoadDetail>("update_warehouse_load", { id, name: patch.name ?? null, notes: patch.notes ?? null, archived: patch.archived ?? null }),
   addWarehouseLoadLine: (id: string, line: NewLine) => invoke<LoadDetail>("add_warehouse_load_line", { id, line }),
   /** A new case (with `copies` identical ones), or a change to one saved when caseId is given. Answers without the lines. */
-  saveWarehouseCase: (loadId: string, c: { caseId?: string | null; pallet: number; contents: CaseLine[]; notes?: string; copies?: number; kind?: "box" | "loose" }) =>
-    invoke<LoadDetail>("save_warehouse_case", { loadId, caseId: c.caseId ?? null, pallet: c.pallet, contents: c.contents, notes: c.notes ?? null, copies: c.copies ?? null, kind: c.kind ?? null }),
+  saveWarehouseCase: (loadId: string, c: { caseId?: string | null; pallet: number; contents: CaseLine[]; notes?: string; copies?: number; kind?: "box" | "loose"; code?: string }) =>
+    invoke<LoadDetail>("save_warehouse_case", { loadId, caseId: c.caseId ?? null, pallet: c.pallet, contents: c.contents, notes: c.notes ?? null, copies: c.copies ?? null, kind: c.kind ?? null, code: c.code ?? null }),
+  /** R-554: how a pallet's boxes stack (rows stacked up, boxes in each row) and its empty boxes made, each with its code, until it has `count`. */
+  setPalletBoxes: (loadId: string, number: number, rows: number, perRow: number, count?: number) =>
+    invoke<LoadDetail>("set_pallet_boxes", { loadId, number, rows, perRow, count: count ?? null }),
+  /** R-554: a row of a delivery's pallets drawn where it was measured; answers the whole floor plan. */
+  drawPalletRow: (floorId: string, r: { loadId: string; name?: string; x: number; y: number; across: boolean; count: number; turned: boolean; gap: number }) =>
+    invoke<FloorList>("draw_pallet_row", { floorId, loadId: r.loadId, name: r.name ?? null, x: r.x, y: r.y, across: r.across, count: r.count, turned: r.turned, gap: r.gap }),
+  /** R-554: a row laid out again from a new corner, or removed (only when nothing is on it). */
+  changePalletRow: (floorId: string, name: string, patch: { x?: number; y?: number; across?: boolean; turned?: boolean; gap?: number; remove?: boolean }) =>
+    invoke<FloorList>("change_pallet_row", { floorId, name, x: patch.x ?? null, y: patch.y ?? null, across: patch.across ?? null, turned: patch.turned ?? null, gap: patch.gap ?? null, remove: patch.remove ?? null }),
   /** R-535: start the next pallet, empty. R-550: with a `place` it starts standing on that floor plan; the answer names it as `started`. */
   startLoadPallet: (loadId: string, place?: PalletSpot) => invoke<LoadDetail>("start_load_pallet", { loadId, place: place ?? null }),
   /** R-535: where a pallet stands, its note, full or not; startNext also starts the next pallet. R-550: floorId, x, y and turned place it on a floor plan (all four together), floorId "" takes it off. */

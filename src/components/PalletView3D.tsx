@@ -22,7 +22,7 @@ interface Props {
 }
 
 /** "r g b" or "var(--x)" → 0..255 triplet (three.js cannot read CSS variables). */
-function triplet(c: string): [number, number, number] {
+export function triplet(c: string): [number, number, number] {
   let s = (c || "").trim();
   const m = s.match(/^var\((--[^)]+)\)$/);
   if (m) s = getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim();

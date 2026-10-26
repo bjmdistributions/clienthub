@@ -123,6 +123,10 @@ pub struct Case {
     /// has number 0 and never takes a box number. Its pairs count like any box's.
     #[serde(default)]
     pub kind: String,
+    /// R-554: the code written on the carton in sharpie (A3-7). Set when the box is made and never
+    /// changed by the app afterwards, so a moved box keeps it. "" on a box made before codes.
+    #[serde(default)]
+    pub code: String,
 }
 
 impl Case {
@@ -1385,6 +1389,16 @@ pub fn parse_sizes(text: &str) -> Vec<SizeQty> {
 /// What a case holds, checked against the delivery's lines: every style on it, every size on
 /// its scale, nothing below zero; zeros dropped and the same style and size merged.
 pub fn clean_contents(lines: &[LoadLine], contents: &[CaseLine]) -> Result<Vec<CaseLine>, String> {
+    let out = clean_filling(lines, contents)?;
+    if out.is_empty() {
+        return Err("Put at least one pair in the case.".into());
+    }
+    Ok(out)
+}
+
+/// R-554: what a box that already exists holds, which may be nothing: a box counted onto its
+/// pallet and not filled yet, or one emptied again. Otherwise the same rules as `clean_contents`.
+pub fn clean_filling(lines: &[LoadLine], contents: &[CaseLine]) -> Result<Vec<CaseLine>, String> {
     let mut out: Vec<CaseLine> = Vec::new();
     for c in contents {
         let line = lines.iter().find(|l| l.id == c.line_id).ok_or("A style in this case is no longer on the delivery.")?;
@@ -1404,9 +1418,6 @@ pub fn clean_contents(lines: &[LoadLine], contents: &[CaseLine]) -> Result<Vec<C
         }
     }
     let total: i64 = out.iter().map(|c| c.pairs).sum();
-    if total == 0 {
-        return Err("Put at least one pair in the case.".into());
-    }
     if total > MAX_PAIRS_PER_CASE {
         return Err(format!("More than {MAX_PAIRS_PER_CASE} pairs in one case."));
     }
@@ -1445,6 +1456,12 @@ pub struct PalletRecord {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
+    /// R-554: how its boxes stack, in Jack's words rows (layers, stacked up) of `per_layer` boxes.
+    /// 0 when not said. A picture only: nothing is counted from them.
+    #[serde(default)]
+    pub layers: i64,
+    #[serde(default)]
+    pub per_layer: i64,
 }
 
 pub fn pallet_id(load_id: &str, number: i64) -> String {
@@ -1454,6 +1471,64 @@ pub fn pallet_id(load_id: &str, number: i64) -> String {
 /// A location as stored: one line, trimmed, at most 40 characters.
 pub fn clean_location(s: &str) -> String {
     one_line(s).chars().take(MAX_LOCATION).collect()
+}
+
+// R-554: box codes. Jack writes each box's code on the carton in sharpie, so the code is the
+// pallet's short name and the box's number (A3-7), given once when the box is made.
+
+pub const MAX_CODE: usize = 16;
+/// A pallet's boxes are set up as 1 to 30 rows (stacked) of 1 to 40 boxes, at most 300 in all.
+pub const MAX_BOX_ROWS: i64 = 30;
+pub const MAX_PER_ROW: i64 = 40;
+pub const MAX_BOXES: i64 = 300;
+
+/// A code as stored: one line, at most 16 characters.
+pub fn clean_code(s: &str) -> String {
+    one_line(s).chars().take(MAX_CODE).collect()
+}
+
+/// The short name a pallet's box codes start with: its location when that is a short code (1 to 8
+/// letters, digits or dashes, as a row names it: A3), else P and its number.
+pub fn pallet_label(location: &str, number: i64) -> String {
+    let l = location.trim();
+    if !l.is_empty() && l.chars().count() <= 8 && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        l.to_string()
+    } else {
+        format!("P{number}")
+    }
+}
+
+pub fn box_code(label: &str, number: i64) -> String {
+    format!("{label}-{number}")
+}
+
+/// Whether `rows` rows of `per_row` boxes, `count` in all, can be set up on a pallet that already
+/// has `have` boxes. The top row may be short, so `count` runs from one more than the rows below
+/// it hold up to every row full; never fewer than the boxes already on it.
+pub fn check_box_setup(label: &str, rows: i64, per_row: i64, count: i64, have: usize) -> Result<(), String> {
+    if !(1..=MAX_BOX_ROWS).contains(&rows) {
+        return Err(format!("Say how many rows of boxes are stacked, 1 to {MAX_BOX_ROWS}."));
+    }
+    if !(1..=MAX_PER_ROW).contains(&per_row) {
+        return Err(format!("Say how many boxes are in each row, 1 to {MAX_PER_ROW}."));
+    }
+    let full = rows * per_row;
+    if full > MAX_BOXES {
+        return Err(format!("A pallet holds at most {MAX_BOXES} boxes here."));
+    }
+    let least = (rows - 1) * per_row + 1;
+    if count < least || count > full {
+        let held = if rows == 1 { format!("1 row of {per_row} holds") } else { format!("{rows} rows of {per_row} hold") };
+        return Err(if least == full {
+            format!("{held} {full} {}.", if full == 1 { "box" } else { "boxes" })
+        } else {
+            format!("{held} {least} to {full} boxes (the top row can be short).")
+        });
+    }
+    if (count as usize) < have {
+        return Err(format!("{label} already has {have} boxes. Remove the extra boxes first."));
+    }
+    Ok(())
 }
 
 /// One pallet as the screens show it: its record (when there is one) and what is on it.
@@ -1466,12 +1541,17 @@ pub struct PalletView {
     /// False for a pallet known only through its boxes (no record yet).
     pub recorded: bool,
     pub boxes: usize,
+    /// R-554: boxes with at least one pair in them (the rest are counted on, not filled yet).
+    pub filled: usize,
     /// Pairs on the pallet with no box.
     pub loose: i64,
     pub pairs: i64,
     pub styles: usize,
     pub cost: f64,
     pub msrp: f64,
+    /// R-554: how its boxes stack (0 when not said).
+    pub layers: i64,
+    pub per_layer: i64,
 }
 
 /// Every pallet, recorded or known through its boxes, lowest number first.
@@ -1491,11 +1571,14 @@ pub fn pallet_views(records: &[PalletRecord], sums: &[PalletSum]) -> Vec<PalletV
                 note: r.map(|r| r.note.clone()).unwrap_or_default(),
                 recorded: r.is_some(),
                 boxes: s.map(|s| s.cases).unwrap_or(0),
+                filled: s.map(|s| s.filled).unwrap_or(0),
                 loose: s.map(|s| s.loose).unwrap_or(0),
                 pairs: s.map(|s| s.pairs).unwrap_or(0),
                 styles: s.map(|s| s.styles).unwrap_or(0),
                 cost: s.map(|s| s.cost).unwrap_or(0.0),
                 msrp: s.map(|s| s.msrp).unwrap_or(0.0),
+                layers: r.map(|r| r.layers).unwrap_or(0),
+                per_layer: r.map(|r| r.per_layer).unwrap_or(0),
             }
         })
         .collect()
@@ -1543,6 +1626,8 @@ pub struct PalletSum {
     pub pallet: i64,
     /// Boxes on the pallet (loose rows are not boxes).
     pub cases: usize,
+    /// R-554: boxes with at least one pair in them.
+    pub filled: usize,
     pub pairs: i64,
     /// Pairs on the pallet with no box (R-535).
     pub loose: i64,
@@ -1579,9 +1664,12 @@ pub fn tally(lines: &[LoadLine], cases: &[Case]) -> Tally {
     let mut on: Vec<Vec<i64>> = vec![Vec::new(); lines.len()];
     let mut pallets: BTreeMap<i64, (PalletSum, Vec<usize>)> = BTreeMap::new();
     for c in cases {
-        let p = pallets.entry(c.pallet).or_insert((PalletSum { pallet: c.pallet, cases: 0, pairs: 0, loose: 0, styles: 0, cost: 0.0, msrp: 0.0 }, Vec::new()));
+        let p = pallets.entry(c.pallet).or_insert((PalletSum { pallet: c.pallet, cases: 0, filled: 0, pairs: 0, loose: 0, styles: 0, cost: 0.0, msrp: 0.0 }, Vec::new()));
         if !c.is_loose() {
             p.0.cases += 1;
+            if c.contents.iter().any(|x| x.pairs > 0) {
+                p.0.filled += 1;
+            }
         }
         for x in &c.contents {
             let k = match idx.get(x.line_id.as_str()) {
@@ -2082,6 +2170,56 @@ mod tests {
         assert_eq!(pallet_id("L", 7), "pal-L-7");
         assert_eq!(clean_location("  Row  B,\n spot 4 "), "Row B, spot 4");
         assert_eq!(clean_location(&"x".repeat(60)).chars().count(), MAX_LOCATION);
+    }
+
+    #[test]
+    fn boxes_can_be_counted_on_before_they_are_filled_and_carry_their_code() {
+        let lines = read_manifest(&sample()).lines;
+        let a = lines[0].id.clone();
+        // A new box needs a pair; a box that exists may hold nothing.
+        assert!(clean_contents(&lines, &[]).is_err());
+        assert!(clean_contents(&lines, &[cl(&a, "S", 0)]).is_err());
+        assert_eq!(clean_filling(&lines, &[]).unwrap(), vec![]);
+        assert_eq!(clean_filling(&lines, &[cl(&a, "S", 0)]).unwrap(), vec![]);
+        assert_eq!(clean_filling(&lines, &[cl(&a, "S", 2), cl(&a, "S", 1)]).unwrap(), vec![cl(&a, "S", 3)]);
+        assert!(clean_filling(&lines, &[cl(&a, "XXL", 1)]).is_err());
+        // Empty boxes are boxes, not pairs, and not filled.
+        let cases = vec![
+            Case { id: "b1".into(), pallet: 1, number: 1, contents: vec![cl(&a, "S", 4)], code: "A1-1".into(), ..Default::default() },
+            Case { id: "b2".into(), pallet: 1, number: 2, code: "A1-2".into(), ..Default::default() },
+            Case { id: "b3".into(), pallet: 1, number: 3, ..Default::default() },
+            Case { id: "l1".into(), pallet: 1, kind: "loose".into(), contents: vec![cl(&a, "M", 2)], ..Default::default() },
+        ];
+        let t = tally(&lines, &cases);
+        assert_eq!((t.pallets[0].cases, t.pallets[0].filled, t.pallets[0].pairs, t.totals.received), (3, 1, 6, 6));
+        assert_eq!(stock(&lines, &cases, &[]).left, 6);
+        assert_eq!(next_number(&cases, 1, ""), 4);
+        let rec = vec![PalletRecord { id: pallet_id("L", 1), number: 1, location: "A1".into(), layers: 4, per_layer: 6, ..Default::default() }];
+        let v = pallet_views(&rec, &t.pallets);
+        assert_eq!((v[0].boxes, v[0].filled, v[0].layers, v[0].per_layer), (3, 1, 4, 6));
+        // An old box with no code reads as one with an empty code.
+        let old: Case = serde_json::from_str(r#"{"id":"x","pallet":1,"number":1}"#).unwrap();
+        assert_eq!(old.code, "");
+        // Codes: the pallet's short name and the box's number.
+        assert_eq!(pallet_label("A3", 7), "A3");
+        assert_eq!(pallet_label(" B-12 ", 7), "B-12");
+        assert_eq!(pallet_label("", 7), "P7");
+        assert_eq!(pallet_label("Back by the office", 2), "P2");
+        assert_eq!(pallet_label("ABCDEFGHI", 2), "P2");
+        assert_eq!(box_code("A3", 7), "A3-7");
+        assert_eq!(clean_code("  a3 - 7\n"), "a3 - 7");
+        assert_eq!(clean_code(&"x".repeat(30)).chars().count(), MAX_CODE);
+        // Setting boxes up: 4 rows of 6 hold 19 to 24, never fewer than are on it.
+        assert!(check_box_setup("A3", 4, 6, 24, 0).is_ok());
+        assert!(check_box_setup("A3", 4, 6, 19, 0).is_ok());
+        assert!(check_box_setup("A3", 4, 6, 18, 0).unwrap_err().contains("19 to 24"));
+        assert!(check_box_setup("A3", 4, 6, 25, 0).is_err());
+        assert!(check_box_setup("A3", 1, 1, 1, 0).is_ok());
+        assert!(check_box_setup("A3", 1, 6, 6, 0).is_ok());
+        assert!(check_box_setup("A3", 2, 6, 7, 8).unwrap_err().contains("A3 already has 8 boxes"));
+        assert!(check_box_setup("A3", 0, 6, 6, 0).is_err());
+        assert!(check_box_setup("A3", 3, 0, 1, 0).is_err());
+        assert!(check_box_setup("A3", 30, 40, 1200, 0).unwrap_err().contains("at most 300"));
     }
 
     #[test]

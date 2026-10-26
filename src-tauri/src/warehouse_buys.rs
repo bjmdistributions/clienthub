@@ -1623,7 +1623,7 @@ mod tests {
         let line = LoadLine { id: "a".into(), brand: "Acme".into(), style: "K1".into(), cost: 10.0, sizes: vec![SizeQty { size: "7".into(), qty: 10 }], ..Default::default() };
         let d = create_warehouse_load("Shoe truck".into(), "t.xlsx".into(), vec![line]).await.unwrap();
         let load = d.load.id.clone();
-        save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 10 }], None, None, None).await.unwrap();
+        save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 10 }], None, None, None, None).await.unwrap();
         invoice("ia", "A-1", 50.0);
         invoice("ib", "B-1", 90.0);
         take_load_pairs(load.clone(), Some("ia".into()), Some("A-1".into()), None, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 4 }]).await.unwrap();
@@ -1726,7 +1726,7 @@ mod tests {
         let line = LoadLine { id: "a".into(), brand: "Acme".into(), style: "K1".into(), cost: 10.0, sizes: vec![SizeQty { size: "7".into(), qty: pairs }], ..Default::default() };
         let d = create_warehouse_load(name.into(), "t.xlsx".into(), vec![line]).await.unwrap();
         let load = d.load.id.clone();
-        save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs }], None, None, None).await.unwrap();
+        save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs }], None, None, None, None).await.unwrap();
         load
     }
 

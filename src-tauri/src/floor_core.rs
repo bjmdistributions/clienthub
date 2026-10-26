@@ -125,10 +125,15 @@ pub struct FloorPallet {
     pub y: f64,
     pub turned: bool,
     pub boxes: usize,
+    /// R-554: boxes with at least one pair in them.
+    pub filled: usize,
     /// Pairs on the pallet with no box.
     pub loose: i64,
     pub pairs: i64,
     pub styles: usize,
+    /// R-554: how its boxes stack, rows (layers) of `per_layer`; 0 when not said.
+    pub layers: i64,
+    pub per_layer: i64,
 }
 
 /// A rectangle on the floor, in feet: top-left corner, then its size along x and y.
@@ -287,6 +292,101 @@ pub fn clean_spot(width: f64, depth: f64, x: f64, y: f64, turned: bool) -> Resul
     Ok((feet(clamp(x, 0.0, width - w)), feet(clamp(y, 0.0, depth - d))))
 }
 
+// R-554: rows of pallets. A row is measured: its first pallet's corner in feet from the left and
+// top walls, the way it runs (across, along the top wall, or down, along the left wall), how many
+// pallets, which way they face, and the gap between them. It is drawn exactly or refused with the
+// reason, never pulled inside the walls, because the numbers were measured in the building.
+
+pub const MAX_ROW: i64 = 60;
+/// The gap between two pallets in a row, at most 10 ft.
+pub const MAX_GAP: f64 = 10.0;
+pub const MAX_ROW_NAME: usize = 3;
+
+/// Feet as the screens write them: "120 ft", "12.5 ft".
+fn ft_text(v: f64) -> String {
+    let t = (v * 10.0).round() / 10.0;
+    if t.fract() == 0.0 { format!("{} ft", t as i64) } else { format!("{t:.1} ft") }
+}
+
+/// Each pallet's corner (x, y), first to last, for a row starting with its first pallet's corner
+/// at (x, y). Refused, saying why, when it runs past a wall or starts outside them.
+#[allow(clippy::too_many_arguments)]
+pub fn row_spots(width: f64, depth: f64, x: f64, y: f64, across: bool, count: i64, turned: bool, gap: f64) -> Result<Vec<(f64, f64)>, String> {
+    if !(1..=MAX_ROW).contains(&count) {
+        return Err(format!("A row is 1 to {MAX_ROW} pallets."));
+    }
+    if !x.is_finite() || !y.is_finite() || !gap.is_finite() {
+        return Err("That spot is not on the floor plan.".into());
+    }
+    if !(0.0..=MAX_GAP).contains(&gap) {
+        return Err("The gap between pallets is 0 to 120 inches.".into());
+    }
+    let (x, y, gap) = (feet(x), feet(y), feet(gap));
+    if x < 0.0 || y < 0.0 || x >= width || y >= depth {
+        return Err("The first pallet's corner is outside the walls.".into());
+    }
+    let (w, d) = footprint(turned);
+    // Along the row and across it, the start, the room there is, and the wall it runs to.
+    let (along, room, wall) = if across { (w, width - x, "right") } else { (d, depth - y, "bottom") };
+    let (thick, side_room, side_wall) = if across { (d, depth - y, "bottom") } else { (w, width - x, "right") };
+    const E: f64 = 0.005;
+    if thick > side_room + E {
+        return Err(format!(
+            "The row is {} wide, and where it starts there is only {} to the {side_wall} wall.",
+            ft_text(thick), ft_text(side_room)
+        ));
+    }
+    let length = along * count as f64 + gap * (count - 1) as f64;
+    if length > room + E {
+        let fit = (((room + gap + E) / (along + gap)).floor() as i64).max(0);
+        return Err(format!(
+            "{count} pallets need {}, and from where the row starts there is {} to the {wall} wall. {fit} would fit.",
+            ft_text(length), ft_text(room)
+        ));
+    }
+    let step = along + gap;
+    Ok((0..count)
+        .map(|i| if across { (feet(x + step * i as f64), y) } else { (x, feet(y + step * i as f64)) })
+        .collect())
+}
+
+/// A row's name as stored: 1 to 3 letters, upper case.
+pub fn clean_row_name(s: &str) -> Result<String, String> {
+    let n = s.trim().to_ascii_uppercase();
+    if n.is_empty() || n.len() > MAX_ROW_NAME || !n.chars().all(|c| c.is_ascii_uppercase()) {
+        return Err("Name the row with 1 to 3 letters, like A or BB.".into());
+    }
+    Ok(n)
+}
+
+/// The row a pallet's location puts it in, and its place there: "A12" is row A, pallet 12.
+pub fn row_of(location: &str) -> Option<(String, i64)> {
+    let l = location.trim();
+    let letters: String = l.chars().take_while(|c| c.is_ascii_uppercase()).collect();
+    let digits = &l[letters.len()..];
+    if letters.is_empty() || letters.len() > MAX_ROW_NAME || digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) || digits.starts_with('0') {
+        return None;
+    }
+    digits.parse::<i64>().ok().map(|n| (letters, n))
+}
+
+/// The first row name not in `used`: A to Z, then AA, AB and on.
+pub fn next_row_name(used: &[String]) -> String {
+    let at = |mut i: usize| {
+        let mut s = Vec::new();
+        loop {
+            s.push(b'A' + (i % 26) as u8);
+            if i < 26 {
+                break;
+            }
+            i = i / 26 - 1;
+        }
+        s.reverse();
+        String::from_utf8(s).unwrap_or_default()
+    };
+    (0..18_278).map(at).find(|n| !used.contains(n)).unwrap_or_else(|| "ZZZ".into())
+}
+
 /// The nearest edge within the tolerance, as the new start of a span of length `len` at `at`:
 /// either its start or its end lands on the edge. None when no edge is that close.
 fn snap_axis(at: f64, len: f64, edges: &[f64]) -> Option<f64> {
@@ -429,6 +529,61 @@ mod tests {
         // Never outside the walls.
         let s = snap(100.0, 60.0, pallet_rect(-7.0, 70.0, true), &[]);
         assert_eq!((s.x, s.y), (0.0, 56.0));
+    }
+
+    #[test]
+    fn a_row_is_drawn_exactly_where_it_was_measured_or_not_at_all() {
+        // Across, touching: 4 ft apart from 6 ft in.
+        let r = row_spots(100.0, 60.0, 6.0, 10.0, true, 3, false, 0.0).unwrap();
+        assert_eq!(r, vec![(6.0, 10.0), (10.0, 10.0), (14.0, 10.0)]);
+        // Down, turned (48 in down the row), 6 inches apart.
+        let r = row_spots(100.0, 60.0, 2.0, 0.0, false, 3, true, 0.5).unwrap();
+        assert_eq!(r, vec![(2.0, 0.0), (2.0, 4.5), (2.0, 9.0)]);
+        // Down, not turned: 40 inches each, stored to the hundredth.
+        let r = row_spots(100.0, 60.0, 0.0, 0.0, false, 3, false, 0.0).unwrap();
+        assert_eq!(r, vec![(0.0, 0.0), (0.0, 3.33), (0.0, 6.67)]);
+        // Exactly to the wall fits.
+        assert_eq!(row_spots(100.0, 60.0, 60.0, 0.0, true, 10, false, 0.0).unwrap().last(), Some(&(96.0, 0.0)));
+        // One more is past the wall, and it says how many would fit.
+        let e = row_spots(100.0, 60.0, 60.0, 0.0, true, 11, false, 0.0).unwrap_err();
+        assert!(e.contains("11 pallets need 44 ft") && e.contains("40 ft to the right wall") && e.contains("10 would fit"), "{e}");
+        let e = row_spots(100.0, 60.0, 0.0, 50.0, false, 4, false, 1.0).unwrap_err();
+        assert!(e.contains("bottom wall") && e.contains("2 would fit"), "{e}");
+        // Too near the side wall for a pallet at all.
+        assert!(row_spots(100.0, 60.0, 0.0, 58.0, true, 1, false, 0.0).unwrap_err().contains("3.3 ft wide"));
+        assert!(row_spots(100.0, 60.0, 98.0, 0.0, false, 1, false, 0.0).unwrap_err().contains("right wall"));
+        // Outside the walls, nonsense, too many, too wide a gap.
+        assert!(row_spots(100.0, 60.0, -1.0, 0.0, true, 1, false, 0.0).is_err());
+        assert!(row_spots(100.0, 60.0, 100.0, 0.0, true, 1, false, 0.0).is_err());
+        assert!(row_spots(100.0, 60.0, f64::NAN, 0.0, true, 1, false, 0.0).is_err());
+        assert!(row_spots(100.0, 60.0, 0.0, 0.0, true, 0, false, 0.0).is_err());
+        assert!(row_spots(1000.0, 60.0, 0.0, 0.0, true, MAX_ROW + 1, false, 0.0).is_err());
+        assert!(row_spots(100.0, 60.0, 0.0, 0.0, true, 2, false, 10.5).is_err());
+        assert!(row_spots(100.0, 60.0, 0.0, 0.0, true, 2, false, -0.5).is_err());
+    }
+
+    #[test]
+    fn rows_are_named_with_letters_and_pallets_belong_to_them_by_location() {
+        assert_eq!(clean_row_name(" b ").unwrap(), "B");
+        assert_eq!(clean_row_name("aa").unwrap(), "AA");
+        assert!(clean_row_name("").is_err());
+        assert!(clean_row_name("A1").is_err());
+        assert!(clean_row_name("ABCD").is_err());
+        assert_eq!(row_of("A12"), Some(("A".into(), 12)));
+        assert_eq!(row_of(" BB3 "), Some(("BB".into(), 3)));
+        assert_eq!(row_of("A"), None);
+        assert_eq!(row_of("12"), None);
+        assert_eq!(row_of("A01"), None);
+        assert_eq!(row_of("a3"), None);
+        assert_eq!(row_of("A3 by the door"), None);
+        assert_eq!(row_of("ABCD1"), None);
+        assert_eq!(next_row_name(&[]), "A");
+        assert_eq!(next_row_name(&["A".into(), "C".into()]), "B");
+        let all: Vec<String> = (b'A'..=b'Z').map(|c| (c as char).to_string()).collect();
+        assert_eq!(next_row_name(&all), "AA");
+        let mut more = all.clone();
+        more.push("AA".into());
+        assert_eq!(next_row_name(&more), "AB");
     }
 
     #[test]

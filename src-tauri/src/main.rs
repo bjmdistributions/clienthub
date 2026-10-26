@@ -1395,9 +1395,12 @@ fn main() {
             warehouse_buys::apply_warehouse_buy,
             warehouse_loads::start_load_pallet,
             warehouse_loads::save_load_pallet,
+            warehouse_loads::set_pallet_boxes,
             warehouse_floors::list_warehouse_floors,
             warehouse_floors::create_warehouse_floor,
             warehouse_floors::update_warehouse_floor,
+            warehouse_floors::draw_pallet_row,
+            warehouse_floors::change_pallet_row,
             // Bills (R-449)
             bills::bills_list,
             bills::bills_alerts,

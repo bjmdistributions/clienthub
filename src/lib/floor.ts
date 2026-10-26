@@ -33,6 +33,8 @@ export interface FloorPallet {
   id: string; load_id: string; load_name: string; number: number; location: string; closed: boolean; note: string;
   floor_id: string; x: number; y: number; turned: boolean;
   boxes: number; loose: number; pairs: number; styles: number;
+  /** R-554: boxes with at least one pair in them, and how the boxes stack (rows of per_layer; 0 when not said). */
+  filled: number; layers: number; per_layer: number;
 }
 export interface FloorList { floors: Floor[]; pallets: FloorPallet[] }
 /** Where a new pallet is to stand (start_load_pallet's `place`). */
@@ -126,7 +128,9 @@ export const standsOn = (p: FloorPallet, live: Floor[]) => !!p.floor_id && live.
 /** What the screens ask for across Warehouse views (WarehouseView hands them on). */
 export type FloorRequest = { kind: "show" | "place"; palletId: string };
 /** Open a delivery on a pallet, optionally straight into the box editor (kind), and come back to the floor plan when `back` is a pallet id. */
-export type DeliveryOpen = { loadId: string; pallet: number; kind?: "box" | "loose"; back?: string };
+export type DeliveryOpen = { loadId: string; pallet: number; kind?: "box" | "loose"; back?: string;
+  /** R-554: open this box in the editor (filling a box counted on from the floor plan). */
+  caseId?: string };
 
 /** A pallet as drawn: pulled inside the walls (floor_core::clean_spot, without the rounding to stored feet). */
 export function insideRect(p: Pick<FloorPallet, "x" | "y" | "turned">, width: number, depth: number): Rect {
@@ -156,6 +160,74 @@ export function cutOff(shape: FloorShape, pallets: FloorPallet[], width: number,
     rooms: shape.areas.filter((a) => out(areaRect(a))).length,
     doors: shape.doors.filter((d) => d.at + d.width > wallLength(width, depth, d.side) + E).length,
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// R-554: rows of pallets and box codes. Copies of floor_core::row_spots, row_of, next_row_name and
+// case_core::pallet_label (the server checks a row again before it is drawn; these only draw it as it
+// is typed). The phone's copies are whfRowSpots, whfRowOf, whfNextRow and whfLabel. CHANGE ALL THREE.
+
+export const MAX_ROW = 60;
+/** The gap between two pallets in a row, at most 10 ft. */
+export const MAX_GAP = 10;
+/** One row of boxes is drawn 12 inches high in 3D, on a 5 inch deck. */
+export const ROW_HEIGHT = 1;
+export const DECK_HEIGHT = 5 / 12;
+
+/** floor_core::ft_text: "120 ft", "12.5 ft", with no thousands separator. */
+const ftText = (v: number) => { const t = round(v * 10) / 10; return `${Number.isInteger(t) ? t : t.toFixed(1)} ft`; };
+
+/** Each pallet's corner, first to last, or why the row cannot be drawn there (floor_core::row_spots). */
+export function rowSpots(width: number, depth: number, x: number, y: number, across: boolean, count: number, turned: boolean, gap: number): { spots: [number, number][]; length: number } | { error: string } {
+  if (!(Number.isInteger(count) && count >= 1 && count <= MAX_ROW)) return { error: `A row is 1 to ${MAX_ROW} pallets.` };
+  if (![x, y, gap].every(Number.isFinite)) return { error: "That spot is not on the floor plan." };
+  if (!(gap >= 0 && gap <= MAX_GAP)) return { error: "The gap between pallets is 0 to 120 inches." };
+  x = hundredth(x); y = hundredth(y); gap = hundredth(gap);
+  if (x < 0 || y < 0 || x >= width || y >= depth) return { error: "The first pallet's corner is outside the walls." };
+  const [w, d] = footprint(turned);
+  const E = 0.005;
+  const along = across ? w : d, room = across ? width - x : depth - y, wall = across ? "right" : "bottom";
+  const thick = across ? d : w, sideRoom = across ? depth - y : width - x, sideWall = across ? "bottom" : "right";
+  if (thick > sideRoom + E) return { error: `The row is ${ftText(thick)} wide, and where it starts there is only ${ftText(sideRoom)} to the ${sideWall} wall.` };
+  const length = along * count + gap * (count - 1);
+  if (length > room + E) {
+    const fit = Math.max(0, Math.floor((room + gap + E) / (along + gap)));
+    return { error: `${count} pallets need ${ftText(length)}, and from where the row starts there is ${ftText(room)} to the ${wall} wall. ${fit} would fit.` };
+  }
+  const step = along + gap;
+  const spots: [number, number][] = [];
+  for (let i = 0; i < count; i++) spots.push(across ? [hundredth(x + step * i), y] : [x, hundredth(y + step * i)]);
+  return { spots, length };
+}
+
+/** "A12" is row A, pallet 12 (floor_core::row_of). */
+export function rowOf(location: string): [string, number] | null {
+  const m = /^([A-Z]{1,3})([1-9][0-9]*)$/.exec((location || "").trim());
+  return m ? [m[1], Number(m[2])] : null;
+}
+
+/** The first row name not in `used`: A to Z, then AA, AB and on (floor_core::next_row_name). */
+export function nextRowName(used: string[]): string {
+  const at = (i: number) => { let s = ""; for (;;) { s = String.fromCharCode(65 + (i % 26)) + s; if (i < 26) break; i = Math.floor(i / 26) - 1; } return s; };
+  const taken = new Set(used);
+  for (let i = 0; i < 18278; i++) if (!taken.has(at(i))) return at(i);
+  return "ZZZ";
+}
+
+/** The short name a pallet's box codes start with (case_core::pallet_label): its location when that is a short code, else P and its number. */
+export function palletLabel(p: Pick<FloorPallet, "location" | "number">): string {
+  const l = (p.location || "").trim();
+  return l && l.length <= 8 && /^[A-Za-z0-9-]+$/.test(l) ? l : `P${p.number}`;
+}
+
+/** How one row of n boxes covers a w by d deck: the columns and rows that keep each box nearest square, then leave the fewest gaps. The phone's whfGrid is the same. */
+export function boxGrid(n: number, w: number, d: number): { cols: number; rows: number } {
+  let best: { cols: number; rows: number; score: number } | null = null;
+  for (let c = 1; c <= n; c++) {
+    const r = Math.ceil(n / c), score = Math.abs(Math.log((w / c) / (d / r))) + (c * r - n) * 0.35;
+    if (!best || score < best.score - 1e-9) best = { cols: c, rows: r, score };
+  }
+  return best ? { cols: best.cols, rows: best.rows } : { cols: 1, rows: 1 };
 }
 
 /** A room held inside the walls the way floor_core::clean_floor holds it: at least 1 ft each way, no bigger than the building, kept inside, to the hundredth. */

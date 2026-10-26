@@ -54,13 +54,19 @@ const POLL_SECS: u64 = 20;
 /// "12" is the same kind of pass for the R-551 columns on `freight_bookings` (`buy_id`, the buy a truck
 /// brings in, and `bank_txn_id`, the bank row that paid its carrier). A column-only change: the refresh
 /// list below stays `freight_bookings` alone.
-const HEAL_GENERATION: &str = "12";
+/// "13" is the same kind of pass for the R-554 columns: `warehouse_cases.code` (the code written on a
+/// box) and `warehouse_load_pallets.layers`/`per_layer` (how its boxes stack), so a desktop that updates
+/// after boxes were set up on the phone shows their codes. `freight_bookings` stays in the refresh list
+/// for a device that skips generation 12.
+const HEAL_GENERATION: &str = "13";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
 /// workspace. Generations "6" (R-459), "7" (R-464) and "12" (R-551): `freight_bookings`, which only flows server to device, so the
-/// server's copy is always the one to keep. Empty for a generation that only widens the tables.
-const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings"];
+/// server's copy is always the one to keep. Generation "13" (R-554) adds `warehouse_cases` and
+/// `warehouse_load_pallets`, whose new columns are written on the phone. Empty for a generation that
+/// only widens the tables.
+const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings", "warehouse_cases", "warehouse_load_pallets"];
 
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
 /// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`
@@ -2828,7 +2834,7 @@ mod r400_sync_tests {
     #[test]
     fn r459_new_booking_columns_force_one_restore_per_device() {
         assert_ne!(HEAL_GENERATION, "5", "devices healed under generation 5 do not have the R-459 columns");
-        assert_eq!(HEAL_REFRESH_TABLES, &["freight_bookings"], "a column-only generation refreshes only the table that gained columns");
+        assert!(HEAL_REFRESH_TABLES.contains(&"freight_bookings"), "a column-only generation refreshes the table that gained columns");
     }
 
     /// R-464/R-465: the shipping charge, override and markup columns also reach a device that
@@ -2837,7 +2843,7 @@ mod r400_sync_tests {
     #[test]
     fn r464_new_booking_columns_force_one_more_restore_per_device() {
         assert_ne!(HEAL_GENERATION, "6", "devices healed under generation 6 do not have the R-464 and R-465 columns");
-        assert_eq!(HEAL_REFRESH_TABLES, &["freight_bookings"], "a column-only generation refreshes only the table that gained columns");
+        assert!(HEAL_REFRESH_TABLES.contains(&"freight_bookings"), "a column-only generation refreshes the table that gained columns");
     }
 
     /// R-519 phase 2: a desktop that updates after sales were made on the phone must restore them,
@@ -2879,8 +2885,19 @@ mod r400_sync_tests {
     /// `freight_bookings`.
     #[test]
     fn r551_new_booking_columns_force_one_more_restore_per_device() {
-        assert_eq!(HEAL_GENERATION, "12", "devices healed under generation 11 do not have the R-551 columns");
-        assert_eq!(HEAL_REFRESH_TABLES, &["freight_bookings"], "a column-only generation refreshes only the table that gained columns");
+        assert_ne!(HEAL_GENERATION, "11", "devices healed under generation 11 do not have the R-551 columns");
+        assert!(HEAL_REFRESH_TABLES.contains(&"freight_bookings"), "a device skipping generation 12 still gets the R-551 columns");
+    }
+
+    /// R-554: a box's code and how a pallet's boxes stack reach a desktop that already holds the rows
+    /// only through a restore, so generation 13 refreshes the two delivery tables that gained columns.
+    #[test]
+    fn r554_box_codes_force_one_more_restore_per_device() {
+        assert_eq!(HEAL_GENERATION, "13", "devices healed under generation 12 do not have the R-554 columns");
+        for t in ["warehouse_cases", "warehouse_load_pallets"] {
+            assert!(HEAL_REFRESH_TABLES.contains(&t), "{t} gained columns in R-554");
+            assert!(SNAPSHOT_TABLES.contains(&t));
+        }
     }
 
     #[tokio::test]

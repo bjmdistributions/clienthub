@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cutOff, firstFree, fitArea, fitDoor, footprint, ft, hundredth, insideRect, overlaps, palletRect, snap, standsOn, type Floor, type FloorDoor, type FloorPallet, type FloorShape } from "./floor";
+import { boxGrid, cutOff, firstFree, fitArea, fitDoor, footprint, ft, hundredth, insideRect, nextRowName, overlaps, palletLabel, palletRect, rowOf, rowSpots, snap, standsOn, type Floor, type FloorDoor, type FloorPallet, type FloorShape } from "./floor";
 
 // The cases mirror floor_core.rs's own tests: `snap` here is a copy of floor_core::snap.
 
@@ -69,7 +69,7 @@ describe("feet as the screens say them", () => {
 
 describe("a pallet on a removed or unknown building is in the tray", () => {
   const live: Floor[] = [{ id: "flr-1", name: "Main", width: 100, depth: 60, shape: { doors: [], areas: [] }, archived: false, updated_at: "" }];
-  const p = (floor_id: string): FloorPallet => ({ id: "pal-x-1", load_id: "x", load_name: "X", number: 1, location: "", closed: false, note: "", floor_id, x: 0, y: 0, turned: false, boxes: 0, loose: 0, pairs: 0, styles: 0 });
+  const p = (floor_id: string): FloorPallet => ({ id: "pal-x-1", load_id: "x", load_name: "X", number: 1, location: "", closed: false, note: "", floor_id, x: 0, y: 0, turned: false, boxes: 0, loose: 0, pairs: 0, styles: 0, filled: 0, layers: 0, per_layer: 0 });
   it("stands only on a live building", () => {
     expect([standsOn(p("flr-1"), live), standsOn(p("flr-gone"), live), standsOn(p(""), live)]).toEqual([true, false, false]);
   });
@@ -90,7 +90,7 @@ describe("doors and a smaller building", () => {
   });
   it("counts what a shrink would leave outside the walls", () => {
     const shape: FloorShape = { doors: [door("g", "top", 88, 12)], areas: [{ id: "o", kind: "office", label: "Office", x: 85, y: 48, w: 15, d: 12 }] };
-    const p = (x: number, y: number): FloorPallet => ({ id: "p", load_id: "x", load_name: "X", number: 1, location: "", closed: false, note: "", floor_id: "f", x, y, turned: false, boxes: 0, loose: 0, pairs: 0, styles: 0 });
+    const p = (x: number, y: number): FloorPallet => ({ id: "p", load_id: "x", load_name: "X", number: 1, location: "", closed: false, note: "", floor_id: "f", x, y, turned: false, boxes: 0, loose: 0, pairs: 0, styles: 0, filled: 0, layers: 0, per_layer: 0 });
     expect(cutOff(shape, [p(10, 10), p(55, 10)], 100, 60)).toEqual({ pallets: 0, rooms: 0, doors: 0 });
     expect(cutOff(shape, [p(10, 10), p(55, 10)], 60, 60)).toEqual({ pallets: 0, rooms: 1, doors: 1 });
     expect(cutOff(shape, [p(10, 10), p(55, 10)], 58, 60)).toEqual({ pallets: 1, rooms: 1, doors: 1 });
@@ -106,5 +106,56 @@ describe("a room is held inside the walls", () => {
     expect(fitArea(100, 60, a)).toEqual({ ...a, x: 80, y: 0 });
     expect(fitArea(100, 60, { ...a, w: 0.2, d: 200 })).toMatchObject({ w: 1, d: 60, y: 0 });
     expect(fitArea(100, 60, { ...a, x: NaN })).toBeNull();
+  });
+});
+
+// R-554: the same cases as floor_core.rs's row tests and case_core.rs's pallet_label.
+describe("a row is drawn exactly where it was measured or not at all (floor_core::row_spots)", () => {
+  const spots = (r: ReturnType<typeof rowSpots>) => ("spots" in r ? r.spots : r.error);
+  it("lays pallets out across or down, touching or apart", () => {
+    expect(spots(rowSpots(100, 60, 6, 10, true, 3, false, 0))).toEqual([[6, 10], [10, 10], [14, 10]]);
+    expect(spots(rowSpots(100, 60, 2, 0, false, 3, true, 0.5))).toEqual([[2, 0], [2, 4.5], [2, 9]]);
+    expect(spots(rowSpots(100, 60, 0, 0, false, 3, false, 0))).toEqual([[0, 0], [0, 3.33], [0, 6.67]]);
+    const r = rowSpots(100, 60, 60, 0, true, 10, false, 0);
+    expect("spots" in r && r.spots[9]).toEqual([96, 0]);
+  });
+  it("says why a row cannot be drawn, and how many would fit", () => {
+    const e = spots(rowSpots(100, 60, 60, 0, true, 11, false, 0)) as string;
+    expect(e).toContain("11 pallets need 44 ft");
+    expect(e).toContain("40 ft to the right wall");
+    expect(e).toContain("10 would fit");
+    const e2 = spots(rowSpots(100, 60, 0, 50, false, 4, false, 1)) as string;
+    expect(e2).toContain("bottom wall");
+    expect(e2).toContain("2 would fit");
+    expect(spots(rowSpots(100, 60, 0, 58, true, 1, false, 0))).toContain("3.3 ft wide");
+    expect(spots(rowSpots(100, 60, 98, 0, false, 1, false, 0))).toContain("right wall");
+    for (const bad of [rowSpots(100, 60, -1, 0, true, 1, false, 0), rowSpots(100, 60, 100, 0, true, 1, false, 0), rowSpots(100, 60, NaN, 0, true, 1, false, 0),
+      rowSpots(100, 60, 0, 0, true, 0, false, 0), rowSpots(1000, 60, 0, 0, true, 61, false, 0), rowSpots(100, 60, 0, 0, true, 2, false, 10.5), rowSpots(100, 60, 0, 0, true, 2, false, -0.5)]) {
+      expect("error" in bad).toBe(true);
+    }
+  });
+  it("names rows with letters and finds a pallet's row by its location", () => {
+    expect(rowOf("A12")).toEqual(["A", 12]);
+    expect(rowOf(" BB3 ")).toEqual(["BB", 3]);
+    for (const no of ["A", "12", "A01", "a3", "A3 by the door", "ABCD1"]) expect(rowOf(no)).toBeNull();
+    expect(nextRowName([])).toBe("A");
+    expect(nextRowName(["A", "C"])).toBe("B");
+    const all = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
+    expect(nextRowName(all)).toBe("AA");
+    expect(nextRowName([...all, "AA"])).toBe("AB");
+  });
+  it("starts a pallet's box codes with its short name (case_core::pallet_label)", () => {
+    expect(palletLabel({ location: "A3", number: 7 })).toBe("A3");
+    expect(palletLabel({ location: " B-12 ", number: 7 })).toBe("B-12");
+    expect(palletLabel({ location: "", number: 7 })).toBe("P7");
+    expect(palletLabel({ location: "Back by the office", number: 2 })).toBe("P2");
+    expect(palletLabel({ location: "ABCDEFGHI", number: 2 })).toBe("P2");
+  });
+  it("lays a row of boxes out to fill the deck", () => {
+    expect(boxGrid(6, 4, 40 / 12)).toEqual({ cols: 3, rows: 2 });
+    expect(boxGrid(4, 4, 40 / 12)).toEqual({ cols: 2, rows: 2 });
+    expect(boxGrid(1, 4, 40 / 12)).toEqual({ cols: 1, rows: 1 });
+    const g = boxGrid(5, 4, 40 / 12);
+    expect(g.cols * g.rows).toBeGreaterThanOrEqual(5);
   });
 });

@@ -14,9 +14,13 @@ export type LoadLine = {
 };
 export type CaseLine = { line_id: string; size: string; pairs: number };
 /** A box, or (kind "loose", number 0) items on the pallet with no box (R-535). */
-export type WhCase = { id: string; pallet: number; number: number; contents: CaseLine[]; notes: string; created_at: string; updated_at: string; kind?: string };
+export type WhCase = { id: string; pallet: number; number: number; contents: CaseLine[]; notes: string; created_at: string; updated_at: string; kind?: string;
+  /** R-554: the code written on the carton in sharpie (A3-7); "" on a box made before codes. */
+  code?: string };
 /** A pallet as the screens show it: its record (where it stands, full or not) and what is on it (R-535). */
-export type PalletView = { pallet: number; location: string; closed: boolean; note: string; recorded: boolean; boxes: number; loose: number; pairs: number; styles: number; cost: number; msrp: number };
+export type PalletView = { pallet: number; location: string; closed: boolean; note: string; recorded: boolean; boxes: number; loose: number; pairs: number; styles: number; cost: number; msrp: number;
+  /** R-554: boxes with at least one pair in them, and how the boxes stack (rows of per_layer; 0 when not said). */
+  filled?: number; layers?: number; per_layer?: number };
 export type SizeCount = { size: string; expected: number; received: number };
 export type LineCount = { line_id: string; sizes: SizeCount[]; expected: number; received: number; pallets: number[] };
 export type PalletSum = { pallet: number; cases: number; pairs: number; styles: number; cost: number; msrp: number };

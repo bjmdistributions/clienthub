@@ -30,7 +30,11 @@ const money = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDi
 const many = (n: number, one: string, more: string) => `${n0(n)} ${n === 1 ? one : more}`;
 
 type Block = { line_id: string; qty: Record<string, number>; all?: boolean };
-type Draft = { id: string | null; number: number | null; kind: "box" | "loose"; pallet: string; blocks: Block[]; notes: string; copies: string };
+type Draft = { id: string | null; number: number | null; kind: "box" | "loose"; pallet: string; blocks: Block[]; notes: string; copies: string;
+  /** R-554: the code on the box (A3-7), shown and changeable on a box that exists. */
+  code?: string };
+/** A box as the screens name it: its code when it has one (R-554), else its number. */
+const boxName = (c: { kind?: string; code?: string; number: number }) => (c.kind === "loose" ? "Loose items" : `Box ${c.code || c.number}`);
 
 const blocksOf = (contents: CaseLine[]): Block[] => byStyle(contents).map((g) => ({ line_id: g.line_id, qty: Object.fromEntries(g.sizes) }));
 const draftTotal = (d: Draft) => d.blocks.reduce((a, b) => a + Object.values(b.qty).reduce((x, y) => x + (y || 0), 0), 0);
@@ -426,9 +430,14 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
   const pallets: PalletView[] = d.pallets ?? [];
   const [pallet, setPallet] = useState<number | null>(() => start?.pallet ?? (d.pallets ?? [])[0]?.pallet ?? null);
   // R-550: opened from the floor plan on one pallet, straight into the box editor, and back there after.
-  const [draft, setDraftRaw] = useState<Draft | null>(() => (start?.kind ? { id: null, number: null, kind: start.kind, pallet: String(start.pallet), blocks: [], notes: "", copies: "1" } : null));
+  // R-554: or straight into one box (filling a box counted on from the floor plan).
+  const [draft, setDraftRaw] = useState<Draft | null>(() => {
+    const c = start?.caseId ? d.cases.find((x) => x.id === start.caseId) : undefined;
+    if (c) return { id: c.id, number: c.number, kind: c.kind === "loose" ? "loose" : "box", pallet: String(c.pallet), blocks: blocksOf(c.contents), notes: c.notes, copies: "1", code: c.code ?? "" };
+    return start?.kind ? { id: null, number: null, kind: start.kind, pallet: String(start.pallet), blocks: [], notes: "", copies: "1" } : null;
+  });
   const [back, setBack] = useState(!!start?.back);
-  useEffect(() => { if (start?.kind) setEditing(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (start?.kind || start?.caseId) setEditing(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [saved, setSaved] = useState<number[] | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [addingLine, setAddingLine] = useState<string | null>(null);
@@ -483,7 +492,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
   };
   const startCase = (c: WhCase | null, kind: "box" | "loose" = "box") => {
     setSaved(null);
-    setDraft(c ? { id: c.id, number: c.number, kind: c.kind === "loose" ? "loose" : "box", pallet: String(c.pallet), blocks: blocksOf(c.contents), notes: c.notes, copies: "1" }
+    setDraft(c ? { id: c.id, number: c.number, kind: c.kind === "loose" ? "loose" : "box", pallet: String(c.pallet), blocks: blocksOf(c.contents), notes: c.notes, copies: "1", code: c.code ?? "" }
       : { id: null, number: null, kind, pallet: String(pallet ?? nextPallet), blocks: [], notes: "", copies: "1" });
   };
   // R-535: pallets as records: start one, set where it stands, mark it full.
@@ -511,23 +520,30 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
     if (!draft) return;
     const contents: CaseLine[] = [];
     draft.blocks.forEach((b) => Object.entries(b.qty).forEach(([size, pairs]) => { if (pairs > 0) contents.push({ line_id: b.line_id, size, pairs }); }));
-    if (!contents.length) { toast(draft.kind === "loose" ? "Put at least one pair in." : "Put at least one pair in the box.", "error"); return; }
+    // R-554: a box that exists may be saved empty (counted on its pallet, not filled yet).
+    if (!contents.length && !(draft.id && draft.kind === "box")) { toast(draft.kind === "loose" ? "Put at least one pair in." : "Put at least one pair in the box.", "error"); return; }
     const p = parseInt(draft.pallet, 10);
     if (!(p >= 1)) { toast("Type the pallet number.", "error"); return; }
     try {
       const before = new Set(d.cases.map((c) => c.id));
-      const next = await api.saveWarehouseCase(L.id, { caseId: draft.id, pallet: p, contents, notes: draft.notes, copies: draft.id || draft.kind === "loose" ? 1 : Math.max(1, parseInt(draft.copies, 10) || 1), kind: draft.kind });
+      const was = draft.id ? d.cases.find((c) => c.id === draft.id) : undefined;
+      const code = was && draft.kind === "box" && (draft.code ?? "") !== (was.code ?? "") ? draft.code ?? "" : undefined;
+      const next = await api.saveWarehouseCase(L.id, { caseId: draft.id, pallet: p, contents, notes: draft.notes, copies: draft.id || draft.kind === "loose" ? 1 : Math.max(1, parseInt(draft.copies, 10) || 1), kind: draft.kind, code });
       merge(next);
       setPallet(p);
-      // R-550: a box or loose items added from the floor plan are saved once, and it comes back.
-      if (back && !draft.id) {
+      const mine = draft.id ? next.cases.find((c) => c.id === draft.id) : undefined;
+      const mc = (mine?.code ?? "").toLowerCase();
+      const dupe = !!mc && next.cases.some((c) => c.id !== mine?.id && c.kind !== "loose" && (c.code ?? "").toLowerCase() === mc);
+      // R-550: a box or loose items added from the floor plan are saved once, and it comes back. R-554: so is a box filled from there.
+      if (back) {
         const added = next.cases.filter((c) => !before.has(c.id));
         setDraft(null); setSaved(null);
-        toast(draft.kind === "loose" ? `Loose items saved on pallet ${p}` : added.length === 1 ? `Box ${added[0].number} saved on pallet ${p}` : `${added.length} boxes saved on pallet ${p}`);
+        toast(mine ? (dupe ? `${boxName(mine)} saved. Another box has the code ${mine.code} too.` : `${boxName(mine)} saved`)
+          : draft.kind === "loose" ? `Loose items saved on pallet ${p}` : added.length === 1 ? `${boxName(added[0])} saved on pallet ${p}` : `${added.length} boxes saved on pallet ${p}`, dupe ? "error" : undefined);
         toFloor(p);
         return;
       }
-      if (draft.id) { setDraft(null); toast("Saved"); return; }
+      if (draft.id) { setDraft(null); toast(dupe && mine ? `Saved. Another box has the code ${mine.code} too.` : "Saved", dupe ? "error" : undefined); return; }
       // Loose items are one row a save: back to the pallet, so the same items are not saved twice.
       if (draft.kind === "loose") { setDraft(null); toast(`Loose items saved on pallet ${p}`); return; }
       // The next case starts with the same pairs: most cases off one truck are the same pack.
@@ -640,7 +656,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
                 )}
                 {cs.map((c) => (
                   <button key={c.id} onClick={() => live && startCase(c)} disabled={!live} className={`${WH_CARD} w-full text-left p-3.5 hover:border-accent/30 transition-colors disabled:hover:border-line`}>
-                    <div className="flex justify-between items-baseline gap-3"><span className="text-[13px] font-semibold text-ink">{c.kind === "loose" ? "Loose items" : `Box ${c.number}`}</span><span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(c.contents.reduce((a, x) => a + x.pairs, 0))}</span> {c.contents.reduce((a, x) => a + x.pairs, 0) === 1 ? "pair" : "pairs"}</span></div>
+                    <div className="flex justify-between items-baseline gap-3"><span className="text-[13px] font-semibold text-ink">{boxName(c)}</span>{c.contents.length ? <span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(c.contents.reduce((a, x) => a + x.pairs, 0))}</span> {c.contents.reduce((a, x) => a + x.pairs, 0) === 1 ? "pair" : "pairs"}</span> : <StatusPill tone="neutral">Empty</StatusPill>}</div>
                     {byStyle(c.contents).map((g) => {
                       const l = idx[g.line_id];
                       return <div key={g.line_id} className="text-[12px] text-muted mt-1"><span className="text-ink-2 font-medium">{l ? lineTitle(l) : "A style no longer listed"}</span>{l?.description ? ` ${l.description}` : ""}: {g.sizes.map(([s, n]) => `${s} × ${n}`).join(" · ")}</div>;
@@ -702,14 +718,15 @@ function CaseEditor({ draft, setDraft, lines, idx, counts, cases, saved, onSave,
         <div className="text-[12px] text-muted">The next case starts with the same pairs. Change what differs, or save it as it is.</div>
       </div>}
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="text-[15px] font-semibold text-ink">{draft.kind === "loose" ? `Loose items on pallet ${draft.pallet}` : draft.id ? `Box ${draft.number}` : "New box"}</div>
+        <div className="text-[15px] font-semibold text-ink">{draft.kind === "loose" ? `Loose items on pallet ${draft.pallet}` : draft.id ? `Box ${draft.code || draft.number}` : "New box"}</div>
         <div className="flex items-end gap-3 flex-wrap">
           <label className="text-[12px] text-muted">Pallet<input value={draft.pallet} inputMode="numeric" onChange={(e) => setDraft({ ...draft, pallet: e.target.value.replace(/\D/g, "") })} style={WH_INPUT_BG} className={`${WH_INPUT} w-20 mt-1 tabular-nums`} /></label>
+          {draft.id && draft.kind === "box" && <label className="text-[12px] text-muted">Code on the box<input value={draft.code ?? ""} maxLength={16} onChange={(e) => setDraft({ ...draft, code: e.target.value })} style={WH_INPUT_BG} className={`${WH_INPUT} w-28 mt-1`} /></label>}
           {!draft.id && draft.kind !== "loose" && <label className="text-[12px] text-muted">Boxes exactly like this<input value={draft.copies} inputMode="numeric" onChange={(e) => setDraft({ ...draft, copies: e.target.value.replace(/\D/g, "") })} style={WH_INPUT_BG} className={`${WH_INPUT} w-24 mt-1 tabular-nums`} /></label>}
           {!draft.id && recent.length > 0 && <label className="text-[12px] text-muted">Same as an earlier box
             <select value="" onChange={(e) => { const c = cases.find((x) => x.id === e.target.value); if (c) setDraft({ ...draft, blocks: blocksOf(c.contents) }); }} style={WH_INPUT_BG} className={`${WH_INPUT} w-56 mt-1`}>
               <option value="">Choose a case…</option>
-              {recent.map((c) => <option key={c.id} value={c.id}>Pallet {c.pallet}, case {c.number}: {c.contents.reduce((a, x) => a + x.pairs, 0)} pairs</option>)}
+              {recent.map((c) => <option key={c.id} value={c.id}>Pallet {c.pallet}, {c.kind === "loose" ? "loose items" : `box ${c.code || c.number}`}: {c.contents.reduce((a, x) => a + x.pairs, 0)} pairs</option>)}
             </select></label>}
         </div>
       </div>
@@ -763,7 +780,7 @@ function CaseEditor({ draft, setDraft, lines, idx, counts, cases, saved, onSave,
       <label className="block mt-3 max-w-[560px] text-[12px] text-muted">Note<input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Optional, for example the label on the case" style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`} /></label>
 
       <div className="flex flex-wrap items-center gap-2 mt-4">
-        <button onClick={onSave} disabled={!total} className={WH_BTN_PRIMARY}>{draft.id ? "Save changes" : draft.kind === "loose" ? "Save loose items" : "Save box"}</button>
+        <button onClick={onSave} disabled={!total && !(draft.id && draft.kind === "box")} className={WH_BTN_PRIMARY}>{draft.id ? "Save changes" : draft.kind === "loose" ? "Save loose items" : "Save box"}</button>
         <button onClick={onClose} className={WH_BTN_SECONDARY}>{draft.id || !saved ? "Cancel" : "Done"}</button>
         {onRemove && (sure ? <><button onClick={onRemove} className={WH_BTN_SECONDARY}>{draft.kind === "loose" ? "Remove these loose items" : `Remove box ${draft.number}`}</button><button onClick={() => setSure(false)} className={WH_BTN_SECONDARY}>Keep it</button></>
           : <button onClick={() => setSure(true)} className={WH_BTN_SECONDARY} title="Its pairs come off the received counts. The other boxes keep their numbers.">Remove</button>)}

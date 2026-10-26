@@ -73,8 +73,8 @@ pub struct LoadSummary {
     pub totals: Totals,
 }
 
-struct LoadRow {
-    head: LoadHead,
+pub(crate) struct LoadRow {
+    pub(crate) head: LoadHead,
     lines: Vec<LoadLine>,
 }
 
@@ -97,7 +97,7 @@ fn map_load(r: &rusqlite::Row) -> rusqlite::Result<LoadRow> {
     })
 }
 
-fn load(conn: &rusqlite::Connection, id: &str) -> Result<LoadRow, String> {
+pub(crate) fn load(conn: &rusqlite::Connection, id: &str) -> Result<LoadRow, String> {
     conn.query_row(&format!("SELECT {LOAD_COLS} FROM warehouse_loads WHERE id = ?1"), [id], map_load)
         .map_err(|_| "That delivery is no longer there.".to_string())
 }
@@ -105,7 +105,7 @@ fn load(conn: &rusqlite::Connection, id: &str) -> Result<LoadRow, String> {
 pub(crate) fn cases(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Case>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, COALESCE(pallet,1), COALESCE(number,1), COALESCE(contents_json,'[]'), COALESCE(notes,''), created_at, updated_at, COALESCE(kind,'box') \
+            "SELECT id, COALESCE(pallet,1), COALESCE(number,1), COALESCE(contents_json,'[]'), COALESCE(notes,''), created_at, updated_at, COALESCE(kind,'box'), COALESCE(code,'') \
              FROM warehouse_cases WHERE load_id = ?1 AND COALESCE(archived,0) = 0 ORDER BY pallet, number, created_at",
         )
         .map_err(|e| e.to_string())?;
@@ -121,6 +121,7 @@ pub(crate) fn cases(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Ca
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
                 kind: r.get(7)?,
+                code: r.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -128,11 +129,11 @@ pub(crate) fn cases(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Ca
 }
 
 /// A delivery's pallet records (R-535), not removed ones.
-fn pallet_records(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<PalletRecord>, String> {
+pub(crate) fn pallet_records(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<PalletRecord>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, COALESCE(number,0), COALESCE(location,''), COALESCE(closed,0), COALESCE(note,''), created_at, updated_at \
-             FROM warehouse_load_pallets WHERE load_id = ?1 AND COALESCE(archived,0) = 0 ORDER BY number",
+            "SELECT id, COALESCE(number,0), COALESCE(location,''), COALESCE(closed,0), COALESCE(note,''), created_at, updated_at, \
+             COALESCE(layers,0), COALESCE(per_layer,0) FROM warehouse_load_pallets WHERE load_id = ?1 AND COALESCE(archived,0) = 0 ORDER BY number",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -145,6 +146,8 @@ fn pallet_records(conn: &rusqlite::Connection, load_id: &str) -> Result<Vec<Pall
                 note: r.get(4)?,
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
+                layers: r.get(7)?,
+                per_layer: r.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -211,9 +214,12 @@ pub(crate) fn floor_pallets(conn: &rusqlite::Connection) -> Result<Vec<FloorPall
                 y,
                 turned,
                 boxes: v.boxes,
+                filled: v.filled,
                 loose: v.loose,
                 pairs: v.pairs,
                 styles: v.styles,
+                layers: v.layers,
+                per_layer: v.per_layer,
             });
         }
     }
@@ -223,7 +229,7 @@ pub(crate) fn floor_pallets(conn: &rusqlite::Connection) -> Result<Vec<FloorPall
 /// The columns of a new pallet record: only what a new pallet needs. Location, full and note are
 /// left to the schema's defaults, so a create from a device that had not yet seen this pallet can
 /// never blank a location another device set (last writer wins per column).
-fn pallet_cols(load_id: &str, number: i64, t: &str) -> Map<String, Value> {
+pub(crate) fn pallet_cols(load_id: &str, number: i64, t: &str) -> Map<String, Value> {
     let mut cols = Map::new();
     cols.insert("load_id".into(), json!(load_id));
     cols.insert("number".into(), json!(number));
@@ -234,16 +240,16 @@ fn pallet_cols(load_id: &str, number: i64, t: &str) -> Map<String, Value> {
 }
 
 /// Whether a pallet row exists at all, removed ones included (its id is fixed by its number).
-fn pallet_row_exists(conn: &rusqlite::Connection, id: &str) -> bool {
+pub(crate) fn pallet_row_exists(conn: &rusqlite::Connection, id: &str) -> bool {
     conn.query_row("SELECT COUNT(*) FROM warehouse_load_pallets WHERE id = ?1", [id], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
 }
 
 /// Where a pallet is to stand on a floor plan (R-550). An empty `floor_id` is off the floor plan.
-struct Spot {
-    floor_id: String,
-    x: f64,
-    y: f64,
-    turned: bool,
+pub(crate) struct Spot {
+    pub(crate) floor_id: String,
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) turned: bool,
 }
 
 impl Spot {
@@ -275,7 +281,7 @@ fn resolve_spot(conn: &rusqlite::Connection, floor_id: &str, x: Option<f64>, y: 
 
 /// A place writes all four columns together, so one event moves a pallet and two phones moving two
 /// pallets never overwrite each other.
-fn put_spot(cols: &mut Map<String, Value>, s: &Spot) {
+pub(crate) fn put_spot(cols: &mut Map<String, Value>, s: &Spot) {
     cols.insert("floor_id".into(), json!(s.floor_id));
     cols.insert("x".into(), json!(s.x));
     cols.insert("y".into(), json!(s.y));
@@ -706,7 +712,7 @@ pub async fn add_warehouse_load_line(id: String, line: NewLine) -> Result<LoadDe
 
 /// Save a case: a new one (and as many identical copies as asked), or a change to one saved.
 #[tauri::command]
-pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, pallet: i64, contents: Vec<CaseLine>, notes: Option<String>, copies: Option<i64>, kind: Option<String>) -> Result<LoadDetail, String> {
+pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, pallet: i64, contents: Vec<CaseLine>, notes: Option<String>, copies: Option<i64>, kind: Option<String>, code: Option<String>) -> Result<LoadDetail, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     if !(1..=999).contains(&pallet) {
         return Err("Pallet numbers run from 1 to 999.".into());
@@ -719,13 +725,15 @@ pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, palle
     if l.head.archived {
         return Err("This delivery was removed. Bring it back first.".into());
     }
-    let contents = core::clean_contents(&l.lines, &contents)?;
+    let asked = contents;
     let notes = notes.unwrap_or_default().trim().to_string();
     let mut have = cases(&conn, &load_id)?;
     let t = now();
     match case_id.as_deref().filter(|s| !s.is_empty()) {
         Some(cid) => {
             let old = have.iter().find(|c| c.id == cid).cloned().ok_or("That case is no longer there.")?;
+            // R-554: a box that exists may be left empty (counted on, not filled yet).
+            let contents = if old.is_loose() { core::clean_contents(&l.lines, &asked)? } else { core::clean_filling(&l.lines, &asked)? };
             // Never fewer pairs than were already sold (R-519 phase 2).
             let after: Vec<Case> = have.iter().map(|c| if c.id == cid { Case { contents: contents.clone(), ..c.clone() } } else { c.clone() }).collect();
             let bad = core::newly_oversold(&l.lines, &have, &after, &outs(&conn, &load_id)?);
@@ -739,14 +747,25 @@ pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, palle
             }
             cols.insert("contents_json".into(), json_str(&contents));
             cols.insert("notes".into(), json!(notes));
+            if let Some(code) = &code {
+                if !old.is_loose() {
+                    cols.insert("code".into(), json!(core::clean_code(code)));
+                }
+            }
             cols.insert("updated_at".into(), json!(t));
             write(&conn, CASES, cid, cols, false)?;
         }
         None => {
+            let contents = core::clean_contents(&l.lines, &asked)?;
             // R-535: loose items on the pallet are one row with no box number.
             let loose = kind.as_deref() == Some("loose");
+            // R-554: each box gets its code, the pallet's short name and its number, unless one was given.
+            let loc = pallet_records(&conn, &load_id)?.into_iter().find(|r| r.number == pallet).map(|r| r.location).unwrap_or_default();
+            let label = core::pallet_label(&loc, pallet);
+            let given = code.as_deref().map(core::clean_code).filter(|c| !c.is_empty() && copies == 1);
             for _ in 0..(if loose { 1 } else { copies }) {
                 let number = if loose { 0 } else { core::next_number(&have, pallet, "") };
+                let code = if loose { String::new() } else { given.clone().unwrap_or_else(|| core::box_code(&label, number)) };
                 let cid = uuid::Uuid::new_v4().to_string();
                 let mut cols = Map::new();
                 cols.insert("load_id".into(), json!(load_id));
@@ -755,11 +774,12 @@ pub async fn save_warehouse_case(load_id: String, case_id: Option<String>, palle
                 cols.insert("contents_json".into(), json_str(&contents));
                 cols.insert("notes".into(), json!(notes));
                 cols.insert("kind".into(), json!(if loose { "loose" } else { "box" }));
+                cols.insert("code".into(), json!(code));
                 cols.insert("archived".into(), json!(0));
                 cols.insert("created_at".into(), json!(t));
                 cols.insert("updated_at".into(), json!(t));
                 write(&conn, CASES, &cid, cols, true)?;
-                have.push(Case { id: cid, pallet, number, kind: if loose { "loose".into() } else { "box".into() }, ..Default::default() });
+                have.push(Case { id: cid, pallet, number, kind: if loose { "loose".into() } else { "box".into() }, code, ..Default::default() });
             }
         }
     }
@@ -943,6 +963,68 @@ pub async fn save_load_pallet(load_id: String, number: i64, location: Option<Str
     detail(&conn, &load_id, false)
 }
 
+/// R-554: say how a pallet's boxes stack (rows stacked up, boxes in each row) and make its empty boxes,
+/// each with its code (the pallet's short name and the box's number), until it has `count` (every row
+/// full when not given). A box already on it with no code gets one. The record is made if there is
+/// none. Never fewer boxes than are on it. The server's twin is `POST .../pallets/:number/boxes`.
+#[tauri::command]
+pub async fn set_pallet_boxes(load_id: String, number: i64, rows: i64, per_row: i64, count: Option<i64>) -> Result<LoadDetail, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    if !(1..=999).contains(&number) {
+        return Err("Pallet numbers run from 1 to 999.".into());
+    }
+    let l = load(&conn, &load_id)?;
+    if l.head.archived {
+        return Err("This delivery was removed. Bring it back first.".into());
+    }
+    let records = pallet_records(&conn, &load_id)?;
+    let mut have = cases(&conn, &load_id)?;
+    let rec = records.iter().find(|r| r.number == number);
+    if rec.is_none() && !have.iter().any(|c| c.pallet == number) {
+        return Err(format!("There is no pallet {number} on this delivery."));
+    }
+    let label = core::pallet_label(rec.map(|r| r.location.as_str()).unwrap_or(""), number);
+    let on: Vec<Case> = have.iter().filter(|c| c.pallet == number && !c.is_loose()).cloned().collect();
+    let count = count.unwrap_or(rows * per_row);
+    core::check_box_setup(&label, rows, per_row, count, on.len())?;
+    let t = now();
+    let pid = core::pallet_id(&load_id, number);
+    let exists = pallet_row_exists(&conn, &pid);
+    let mut cols = if exists { Map::new() } else { pallet_cols(&load_id, number, &t) };
+    if exists && rec.is_none() {
+        cols.insert("archived".into(), json!(0));
+    }
+    cols.insert("layers".into(), json!(rows));
+    cols.insert("per_layer".into(), json!(per_row));
+    cols.insert("updated_at".into(), json!(t));
+    write(&conn, PALLETS, &pid, cols, !exists)?;
+    for c in on.iter().filter(|c| c.code.is_empty()) {
+        let mut cols = Map::new();
+        cols.insert("code".into(), json!(core::box_code(&label, c.number)));
+        cols.insert("updated_at".into(), json!(t));
+        write(&conn, CASES, &c.id, cols, false)?;
+    }
+    for _ in on.len()..(count as usize) {
+        let n = core::next_number(&have, number, "");
+        let cid = uuid::Uuid::new_v4().to_string();
+        let code = core::box_code(&label, n);
+        let mut cols = Map::new();
+        cols.insert("load_id".into(), json!(load_id));
+        cols.insert("pallet".into(), json!(number));
+        cols.insert("number".into(), json!(n));
+        cols.insert("contents_json".into(), json!("[]"));
+        cols.insert("notes".into(), json!(""));
+        cols.insert("kind".into(), json!("box"));
+        cols.insert("code".into(), json!(code));
+        cols.insert("archived".into(), json!(0));
+        cols.insert("created_at".into(), json!(t));
+        cols.insert("updated_at".into(), json!(t));
+        write(&conn, CASES, &cid, cols, true)?;
+        have.push(Case { id: cid, pallet: number, number: n, kind: "box".into(), code, ..Default::default() });
+    }
+    detail(&conn, &load_id, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,23 +1049,23 @@ mod tests {
         let id = d.load.id.clone();
         assert_eq!(d.tally.totals.expected, 9);
         let c = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }, CaseLine { line_id: "b".into(), size: "S".into(), pairs: 1 }];
-        let d = save_warehouse_case(id.clone(), None, 1, c.clone(), None, Some(3), None).await.unwrap();
+        let d = save_warehouse_case(id.clone(), None, 1, c.clone(), None, Some(3), None, None).await.unwrap();
         assert!(d.load.lines.is_none());
         assert_eq!(d.cases.iter().map(|x| (x.pallet, x.number)).collect::<Vec<_>>(), vec![(1, 1), (1, 2), (1, 3)]);
         assert_eq!(d.tally.totals.received, 9);
         let moved = d.cases[1].id.clone();
-        let d = save_warehouse_case(id.clone(), Some(moved.clone()), 2, c.clone(), Some("dented".into()), None, None).await.unwrap();
+        let d = save_warehouse_case(id.clone(), Some(moved.clone()), 2, c.clone(), Some("dented".into()), None, None, None).await.unwrap();
         let m = d.cases.iter().find(|x| x.id == moved).unwrap();
         assert_eq!((m.pallet, m.number, m.notes.as_str()), (2, 1, "dented"));
         let d = remove_warehouse_case(id.clone(), d.cases[0].id.clone()).await.unwrap();
         assert_eq!(d.cases.len(), 2);
         assert_eq!(d.tally.totals.received, 6);
-        assert!(save_warehouse_case(id.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "12".into(), pairs: 1 }], None, None, None).await.is_err());
+        assert!(save_warehouse_case(id.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "12".into(), pairs: 1 }], None, None, None, None).await.is_err());
         let d = add_warehouse_load_line(id.clone(), NewLine { style: "X9".into(), sizes: "5, 6".into(), brand: "Acme".into(), group: String::new(), color: String::new(), description: String::new(), cost: 0.0, msrp: 0.0 }).await.unwrap();
         assert_eq!(d.load.lines.as_ref().unwrap().len(), 3);
         let d = update_warehouse_load(id.clone(), None, None, Some(true)).await.unwrap();
         assert!(d.load.archived);
-        assert!(save_warehouse_case(id.clone(), None, 1, c, None, None, None).await.is_err());
+        assert!(save_warehouse_case(id.clone(), None, 1, c, None, None, None, None).await.is_err());
         let all = list_warehouse_loads().await.unwrap();
         assert!(all.iter().any(|x| x.id == id && x.totals.cases == 2));
     }
@@ -996,7 +1078,7 @@ mod tests {
         let d = create_warehouse_load("Truck".into(), "t.xlsx".into(), vec![line("a", "K1", &[("7", 4), ("8", 2)])]).await.unwrap();
         let id = d.load.id.clone();
         let c = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 3 }, CaseLine { line_id: "a".into(), size: "8".into(), pairs: 2 }];
-        let d = save_warehouse_case(id.clone(), None, 1, c, None, None, None).await.unwrap();
+        let d = save_warehouse_case(id.clone(), None, 1, c, None, None, None, None).await.unwrap();
         let case_id = d.cases[0].id.clone();
         assert_eq!(d.stock.left, 5);
         let want = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }, CaseLine { line_id: "a".into(), size: "8".into(), pairs: 5 }];
@@ -1010,7 +1092,7 @@ mod tests {
         assert_eq!((d.stock.left, d.outs.len()), (1, 1));
         // Cutting the case below what was sold is refused; so is removing it.
         let less = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 1 }];
-        assert!(save_warehouse_case(id.clone(), Some(case_id.clone()), 1, less, None, None, None).await.is_err());
+        assert!(save_warehouse_case(id.clone(), Some(case_id.clone()), 1, less, None, None, None, None).await.is_err());
         assert!(remove_warehouse_case(id.clone(), case_id.clone()).await.is_err());
         let out_id = d.outs[0].out.id.clone();
         let d = undo_load_out(id.clone(), out_id.clone()).await.unwrap();
@@ -1030,11 +1112,11 @@ mod tests {
         let id = d.load.id.clone();
         assert_eq!(d.pallets.iter().map(|p| (p.pallet, p.recorded, p.pairs)).collect::<Vec<_>>(), vec![(1, true, 0)]);
         let loose = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }];
-        let d = save_warehouse_case(id.clone(), None, 1, loose, None, Some(5), Some("loose".into())).await.unwrap();
+        let d = save_warehouse_case(id.clone(), None, 1, loose, None, Some(5), Some("loose".into()), None).await.unwrap();
         assert_eq!(d.cases.len(), 1);
         assert_eq!((d.cases[0].number, d.cases[0].kind.as_str()), (0, "loose"));
         let boxed = vec![CaseLine { line_id: "a".into(), size: "8".into(), pairs: 2 }];
-        let d = save_warehouse_case(id.clone(), None, 1, boxed, None, None, None).await.unwrap();
+        let d = save_warehouse_case(id.clone(), None, 1, boxed, None, None, None, None).await.unwrap();
         let b = d.cases.iter().find(|c| !c.is_loose()).unwrap();
         assert_eq!(b.number, 1);
         assert_eq!((d.pallets[0].boxes, d.pallets[0].loose, d.pallets[0].pairs), (1, 2, 4));
@@ -1057,7 +1139,7 @@ mod tests {
 
     // ---- R-550: the floor plan --------------------------------------------------------------
 
-    use crate::warehouse_floors::{create_warehouse_floor, list_warehouse_floors, update_warehouse_floor};
+    use crate::warehouse_floors::{change_pallet_row, create_warehouse_floor, draw_pallet_row, list_warehouse_floors, update_warehouse_floor};
 
     /// The columns of the last event written for a row, exactly as they were queued for sync.
     fn last_event(table: &str, row_id: &str) -> Map<String, Value> {
@@ -1181,7 +1263,7 @@ mod tests {
 
         // A pallet known only through its boxes has no record: placing it makes one, in one create event.
         let boxed = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }];
-        save_warehouse_case(id.clone(), None, 5, boxed, None, None, None).await.unwrap();
+        save_warehouse_case(id.clone(), None, 5, boxed, None, None, None, None).await.unwrap();
         assert_eq!(on_plan(&id, 5).await.floor_id, "");
         save_load_pallet(id.clone(), 5, None, None, None, None, None, Some(fl.id.clone()), Some(30.0), Some(30.0), Some(true)).await.unwrap();
         let ev = last_event(PALLETS, &core::pallet_id(&id, 5));
@@ -1237,8 +1319,8 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         let newer = create_warehouse_load("Newer".into(), "n.xlsx".into(), lines()).await.unwrap().load.id;
         let c = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }, CaseLine { line_id: "b".into(), size: "S".into(), pairs: 1 }];
-        save_warehouse_case(older.clone(), None, 1, c.clone(), None, Some(2), None).await.unwrap();
-        save_warehouse_case(older.clone(), None, 2, c.clone(), None, Some(1), Some("loose".into())).await.unwrap();
+        save_warehouse_case(older.clone(), None, 1, c.clone(), None, Some(2), None, None).await.unwrap();
+        save_warehouse_case(older.clone(), None, 2, c.clone(), None, Some(1), Some("loose".into()), None).await.unwrap();
         // "Dock door", the location the R-535 test uses: the tests share one database, and a second
         // location here would show in that test's recent locations when the two run at once.
         save_load_pallet(older.clone(), 2, Some("Dock door".into()), None, Some(true), None, None, Some(fl.id.clone()), Some(12.0), Some(8.0), Some(true)).await.unwrap();
@@ -1271,6 +1353,54 @@ mod tests {
         // A removed delivery's pallets are not listed.
         update_warehouse_load(newer.clone(), None, None, Some(true)).await.unwrap();
         assert!(list_warehouse_floors().await.unwrap().pallets.iter().all(|p| p.load_id != newer));
+    }
+
+    /// R-554: a row of a delivery's pallets is drawn where it was measured (pallet 1, waiting for the
+    /// truck, first), carries on, moves as one and is removed only when empty; a pallet's boxes are set
+    /// up empty with their codes and filled one by one. The server's twins are its route tests.
+    #[tokio::test]
+    async fn rows_of_pallets_and_boxes_with_codes() {
+        let _db = crate::db::init_test_store();
+        let fl = create_warehouse_floor("Rows".into(), 100.0, 60.0, None).await.unwrap().floor;
+        let load = create_warehouse_load("Row truck".into(), "r.xlsx".into(), vec![line("a", "K1", &[("7", 40), ("8", 40)])]).await.unwrap().load.id;
+        let mine = |l: &crate::warehouse_floors::FloorList| -> Vec<(i64, String, f64, f64)> {
+            l.pallets.iter().filter(|p| p.load_id == load).map(|p| (p.number, p.location.clone(), p.x, p.y)).collect()
+        };
+        let l = draw_pallet_row(fl.id.clone(), load.clone(), None, 6.0, 10.0, true, 3, false, None).await.unwrap();
+        assert_eq!(mine(&l), vec![(1, "A1".into(), 6.0, 10.0), (2, "A2".into(), 10.0, 10.0), (3, "A3".into(), 14.0, 10.0)]);
+        let l = draw_pallet_row(fl.id.clone(), load.clone(), Some("a".into()), 18.0, 10.0, true, 1, false, None).await.unwrap();
+        assert_eq!(mine(&l).last().cloned(), Some((4, "A4".into(), 18.0, 10.0)));
+        let e = draw_pallet_row(fl.id.clone(), load.clone(), None, 90.0, 30.0, true, 4, false, None).await.unwrap_err();
+        assert!(e.contains("2 would fit"), "{e}");
+        let l = change_pallet_row(fl.id.clone(), "A".into(), Some(6.0), Some(20.0), Some(true), Some(false), Some(0.5), None).await.unwrap();
+        assert_eq!(mine(&l).iter().map(|r| (r.2, r.3)).collect::<Vec<_>>(), vec![(6.0, 20.0), (10.5, 20.0), (15.0, 20.0), (19.5, 20.0)]);
+
+        // Pallet A2: 2 rows of 3, six empty boxes coded A2-1 to A2-6.
+        let d = set_pallet_boxes(load.clone(), 2, 2, 3, None).await.unwrap();
+        let codes: Vec<String> = d.cases.iter().map(|c| c.code.clone()).collect();
+        assert_eq!(codes, vec!["A2-1", "A2-2", "A2-3", "A2-4", "A2-5", "A2-6"]);
+        let v = d.pallets.iter().find(|p| p.pallet == 2).unwrap();
+        assert_eq!((v.boxes, v.filled, v.layers, v.per_layer), (6, 0, 2, 3));
+        // Filled, then emptied again; a new box still needs a pair and takes the next code.
+        let b2 = d.cases[1].id.clone();
+        let d = save_warehouse_case(load.clone(), Some(b2.clone()), 2, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 4 }], None, None, None, None).await.unwrap();
+        assert_eq!((d.pallets.iter().find(|p| p.pallet == 2).unwrap().filled, d.stock.left), (1, 4));
+        let d = save_warehouse_case(load.clone(), Some(b2.clone()), 2, vec![], None, None, None, Some(" x 9 ".into())).await.unwrap();
+        assert_eq!((d.pallets.iter().find(|p| p.pallet == 2).unwrap().filled, d.cases[1].code.as_str()), (0, "x 9"));
+        assert!(save_warehouse_case(load.clone(), None, 2, vec![], None, None, None, None).await.is_err());
+        let d = save_warehouse_case(load.clone(), None, 2, vec![CaseLine { line_id: "a".into(), size: "8".into(), pairs: 2 }], None, None, None, None).await.unwrap();
+        assert_eq!(d.cases.last().map(|c| c.code.as_str()), Some("A2-7"));
+        assert!(set_pallet_boxes(load.clone(), 2, 2, 3, None).await.unwrap_err().contains("A2 already has 7 boxes"));
+        let d = set_pallet_boxes(load.clone(), 2, 3, 3, None).await.unwrap();
+        assert_eq!(d.cases.iter().filter(|c| c.pallet == 2).count(), 9);
+        let fp = list_warehouse_floors().await.unwrap().pallets.into_iter().find(|p| p.load_id == load && p.number == 2).unwrap();
+        assert_eq!((fp.boxes, fp.filled, fp.layers, fp.per_layer), (9, 1, 3, 3));
+
+        // A row with boxes on it stays; an empty one goes.
+        assert!(change_pallet_row(fl.id.clone(), "A".into(), None, None, None, None, None, Some(true)).await.unwrap_err().contains("A2 still has boxes"));
+        draw_pallet_row(fl.id.clone(), load.clone(), Some("B".into()), 50.0, 0.0, false, 2, true, Some(0.5)).await.unwrap();
+        let l = change_pallet_row(fl.id.clone(), "B".into(), None, None, None, None, None, Some(true)).await.unwrap();
+        assert!(mine(&l).iter().all(|r| !r.1.starts_with('B')));
     }
 
     /// R-537 on the real sheet, read locally only: `R519_SHEET=path cargo test real_sheet_pictures

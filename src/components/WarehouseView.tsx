@@ -1,13 +1,13 @@
 // Warehouse (R-326..R-330): stock Jack physically holds, counted in boxes of several sizes.
 // This file is the shell — Products and Map, the product cards, and the product form. One
-// product's screen is WarehouseProduct.tsx; the map is the floor plan (WarehouseFloor.tsx, R-550)
-// with the grid maps under Spot maps (WarehouseMap.tsx); importing a sheet is
+// product's screen is WarehouseProduct.tsx; the map is the floor plan (WarehouseFloor.tsx, R-550; the
+// grid maps under Spot maps went in R-554: everything stands on the plan, in feet); importing a sheet is
 // WarehouseImport.tsx; the rules are lib/warehouse.ts and warehouse_core.rs.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, ChevronRight, ClipboardPaste, FileSpreadsheet, Plus, Trash2, Warehouse as WarehouseIcon } from "lucide-react";
+import { ArrowLeft, ClipboardPaste, FileSpreadsheet, Plus, Trash2, Warehouse as WarehouseIcon } from "lucide-react";
 import { api } from "../lib/api";
 import { WAREHOUSE_OPEN_KEY, itemTotals, rowsFromText, sectionUnits, shares, type BoxType, type SheetRead, type WarehouseItem, type WhSection } from "../lib/warehouse";
 import type { ManifestRead } from "../lib/deliveries";
@@ -19,7 +19,6 @@ import StatusPill from "./StatusPill";
 import WarehouseImport from "./WarehouseImport";
 import ProductScreen, { CountsGrid, Seg } from "./WarehouseProduct";
 import WarehouseFloor from "./WarehouseFloor";
-import WarehouseMap from "./WarehouseMap";
 import WarehouseOrders from "./WarehouseOrders";
 import WarehouseDeliveries from "./WarehouseDeliveries";
 import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0, newId, plural } from "./warehouseUi";
@@ -297,7 +296,6 @@ export default function WarehouseView() {
       {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onDropUsed={() => setDropped(null)} onImport={pickSheet} onAsStock={asStock} onImportEnded={importEnded} open={deliveryReq} onOpenUsed={deliveryUsed} onFloor={showOnFloor}
         forBuy={forBuy} onAddManifest={addManifestFor} attachBuy={attachBuy} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <>
         <WarehouseFloor request={floorReq} onRequestUsed={floorUsed} onOpenDelivery={openDelivery} />
-        <SpotMaps items={items || []} />
       </> : <>
       {items === null ? (
         <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
@@ -336,23 +334,6 @@ export default function WarehouseView() {
         </div>
       )}
       </>}
-    </div>
-  );
-}
-
-// R-550: the grid maps of pallet spots and shelving, unchanged, under the floor plan. Closed until opened
-// (and remembered), so the floor plan has the screen and its own "Draw your warehouse" is the only one.
-const SPOT_MAPS_KEY = "warehouse_spot_maps";
-function SpotMaps({ items }: { items: WarehouseItem[] }) {
-  const [open, setOpen] = useState(() => { try { return localStorage.getItem(SPOT_MAPS_KEY) === "1"; } catch { return false; } });
-  const toggle = () => { setOpen(!open); try { localStorage.setItem(SPOT_MAPS_KEY, open ? "0" : "1"); } catch { /* ignore */ } };
-  return (
-    <div className="mt-8">
-      <button onClick={toggle} aria-expanded={open} className="inline-flex items-center gap-1.5 text-[14px] font-semibold text-ink">
-        <ChevronRight size={14} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} /> Spot maps
-      </button>
-      <p className="text-[12px] text-muted mt-0.5">The grid maps of pallet spots and shelving, each spot marked with what sits on it.</p>
-      {open && <div className="mt-3"><WarehouseMap items={items} /></div>}
     </div>
   );
 }

@@ -2627,4 +2627,17 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE freight_bookings ADD COLUMN bank_txn_id TEXT DEFAULT '';
         "#,
     ),
+    (
+        120,
+        // R-554: a box's code, written on the carton in sharpie (set when the box is made, never changed
+        // by the app afterwards), and how a pallet's boxes stack: rows (layers) of per_layer boxes, 0 when
+        // not said. Synced like the rest of both rows, and mirrored in clienthub-api schema.sql and its
+        // sync.rs ALTER list, which must be deployed first. Heal generation 13 restores them on a device
+        // that already holds the rows. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        ALTER TABLE warehouse_cases ADD COLUMN code TEXT DEFAULT '';
+        ALTER TABLE warehouse_load_pallets ADD COLUMN layers INTEGER DEFAULT 0;
+        ALTER TABLE warehouse_load_pallets ADD COLUMN per_layer INTEGER DEFAULT 0;
+        "#,
+    ),
 ];
