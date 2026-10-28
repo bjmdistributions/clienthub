@@ -17,12 +17,12 @@ const when = (iso: string | null) => {
 
 export function museInstructions(address: string, key: string): string {
   return [
-    "Every day, put the deals posted in the WhatsApp group into the Ecliptr lot import template, one row per deal, with photos as web links.",
-    "Then upload the file to Ecliptr with this command:",
+    "Every day, put the deals posted in the WhatsApp group into the Ecliptr lot import template, one row per deal, with photos as public web links.",
+    "Save it as a CSV file (UTF-8), then upload it to Ecliptr with this command:",
     "",
-    `curl -X POST ${address} -H "Authorization: Bearer ${key}" --data-binary @lots.xlsx`,
+    `curl -X POST ${address} -H "Authorization: Bearer ${key}" --data-binary @lots.csv`,
     "",
-    "The answer says how many lots were added. Never send this key to anyone or put it in a chat.",
+    "The answer says how many rows were accepted and which were refused. Never send this key to anyone or put it in a chat.",
   ].join("\n");
 }
 
@@ -69,7 +69,7 @@ export default function LotFeedPanel() {
       <div>
         <p className="text-[13.5px] font-semibold text-ink">Send it automatically</p>
         <p className="text-[12.5px] text-muted mt-1 leading-relaxed">
-          A private upload address Muse can send the filled template to every day. It can only add lots. It cannot read anything in Ecliptr: no lots, prices, customers or money.
+          A private upload address Muse can send the filled template to every day, saved as CSV. It can only add lots. It cannot read anything in Ecliptr: no lots, prices, customers or money.
         </p>
       </div>
       {error && <p className="text-[12.5px] text-danger-ink">{error}</p>}
