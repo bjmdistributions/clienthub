@@ -5,6 +5,7 @@ import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf
 import { canAttachPayments, canChangePaidOn, canRecordOn, carrierByName, laneEnds } from "../lib/logisticsCarriers";
 import { CATCH_UP_STEPS, blankCatchUp, catchUpFields, catchUpProblem, dayLabel, type CatchUpForm } from "../lib/catchUpLoad";
 import { ADDRESS_HINT, addressNote, relabelPickupError } from "../lib/fullAddress";
+import { bolNote, sendMissing } from "../lib/bookingText";
 import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, milWindow, paidStateOf, paidView, pickupNumberUnconfirmed, time24On } from "../lib/logisticsLoad";
 import { invoiceWasSent, loadProgress, withDealFacts } from "../lib/loadProgress";
 import { useSessionMe } from "../lib/useSessionMe";
@@ -139,6 +140,26 @@ function AddressNote({ value }: { value: string }) {
   return note ? <div className="text-[11px] text-muted">{note}</div> : null;
 }
 
+/** Today, Tomorrow or a date. A second click on the chip that is on clears it. */
+export function DayChips({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {([["Today", 0], ["Tomorrow", 1]] as const).map(([word, add]) => {
+        const d = new Date(); d.setDate(d.getDate() + add);
+        const v = localDay(d);
+        const on = value === v;
+        return (
+          <button key={word} type="button" aria-pressed={on} onClick={() => onChange(on ? "" : v)}
+            className={`h-8 px-3 rounded-lg border text-[12px] transition-colors ${on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+            {word}
+          </button>
+        );
+      })}
+      <input type="date" className={`${inp} w-auto`} aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} />
+    </div>
+  );
+}
+
 function SendSheet({ flow, billed, moving, onClose, onSent }: {
   flow: DealFlow; billed: number | null; moving?: boolean; onClose: () => void; onSent: (made?: FreightBooking) => void;
 }) {
@@ -147,10 +168,12 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
   const [err, setErr] = useState("");
   // A refusal ("Pick the carrier.") is about the form as it was sent, so it goes once the form is changed.
   const setCatchUp = (patch: Partial<CatchUpForm>) => { setCu((c) => ({ ...c, ...patch })); setErr(""); };
-  const [pickup, setPickup] = useState({ name: "", address: "" });
+  const [pickup, setPickup] = useState({ name: "", address: "", phone: "" });
   // R-452: more pickups on the same truck, one delivery.
   const [stops, setStops] = useState<FreightStop[]>([]);
-  const [delivery, setDelivery] = useState({ name: "", address: "" });
+  // R-558: everything the booking message needs: the pickup phone, who gets the BOL, the delivery phone, day and time.
+  const [bolTo, setBolTo] = useState("");
+  const [delivery, setDelivery] = useState({ name: "", address: "", phone: "", date: "", window: "", notes: "" });
   const [freight, setFreight] = useState({ pallets: "", pieces: "", weight_lbs: "", freight_class: "", dimensions: "", commodity: "", accessorials: "", equipment: "" });
   const [note, setNote] = useState("");
   // R-458: everything logistics needs in one send: how urgent, the day and the times, and the papers.
@@ -178,8 +201,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
       .then((p) => {
         if (dead) return;
         setPre(p);
-        setPickup({ name: p.pickup_name, address: p.pickup_address });
-        setDelivery({ name: p.delivery_name, address: p.delivery_address });
+        setPickup((x) => ({ ...x, name: p.pickup_name, address: p.pickup_address }));
+        setDelivery((x) => ({ ...x, name: p.delivery_name, address: p.delivery_address }));
       })
       .catch((e) => { if (!dead) { setErr(String(e)); setPre({ pickup_name: "", pickup_address: "", delivery_name: "", delivery_address: "", pickup_options: [] }); } });
     return () => { dead = true; };
@@ -188,6 +211,13 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
   const missing = byTeam && !(freight.pallets.trim() && freight.weight_lbs.trim() && freight.dimensions.trim());
   const send = async () => {
     if (moving) { const problem = catchUpProblem(cu, localDay()); if (problem) { setErr(problem); return; } }
+    // R-558: a quote is asked only with everything the booking message carries. A load already moving is logged as it is.
+    const gap = moving ? "" : sendMissing({
+      pickup_name: pickup.name, pickup_address: pickup.address, pickup_phone: pickup.phone, pickup_date: when.date, pickup_window: when.window,
+      bol_to: bolTo, delivery_name: delivery.name, delivery_address: delivery.address, delivery_phone: delivery.phone, delivery_date: delivery.date,
+      equipment: freight.equipment, pallets: freight.pallets, weight_lbs: freight.weight_lbs, dimensions: freight.dimensions,
+    }, byTeam);
+    if (gap) { setErr(gap); return; }
     if (missing) { setErr("Fill in the pallets, pallet dimensions and weight first."); return; }
     setBusy(true); setErr("");
     // The sheet index of each extra pickup that is sent (a blank row is dropped); the server counts only those.
@@ -198,9 +228,12 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
       const made = await api.logistics.create(flow.id, {
         ...lead,
         pickup_window: when.window.trim(),
-        pickup_name: pickup.name, pickup_address: pickup.address,
+        pickup_name: pickup.name, pickup_address: pickup.address, pickup_phone: pickup.phone.trim(),
+        ...(bolTo.trim() ? { pickup_notes: bolNote(bolTo) } : {}),
         extra_pickups: sent.map((i) => ({ ...stops[i], name: stops[i].name.trim(), address: stops[i].address.trim(), window: stops[i].window.trim() })),
-        delivery_name: delivery.name, delivery_address: delivery.address,
+        delivery_name: delivery.name, delivery_address: delivery.address, delivery_phone: delivery.phone.trim(),
+        delivery_window: delivery.window.trim(), delivery_notes: delivery.notes.trim(),
+        ...(!moving && delivery.date ? { delivery_date: delivery.date } : {}),
         pallets: freight.pallets.trim(), pieces: freight.pieces.trim(), weight_lbs: freight.weight_lbs.trim(),
         freight_class: freight.freight_class.trim(), dimensions: freight.dimensions.trim(),
         commodity: freight.commodity.trim(), accessorials: freight.accessorials.trim(), equipment: freight.equipment,
@@ -260,22 +293,9 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                 </span>
               </label>
               <div className="space-y-2">
-                <div className="text-[12px] font-medium text-ink-2">When it needs picking up</div>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {([["Today", 0], ["Tomorrow", 1]] as const).map(([label, add]) => {
-                    const d = new Date(); d.setDate(d.getDate() + add);
-                    const v = localDay(d);
-                    const on = when.date === v;
-                    return (
-                      <button key={label} type="button" aria-pressed={on} onClick={() => setWhen((w) => ({ ...w, date: on ? "" : v }))}
-                        className={`h-8 px-3 rounded-lg border text-[12px] transition-colors ${on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
-                        {label}
-                      </button>
-                    );
-                  })}
-                  <input type="date" className={`${inp} w-auto`} aria-label="Pickup day" value={when.date} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, date: v })); }} />
-                </div>
-                <div className="text-[11px] text-muted">Leave it empty and logistics sets the day. The day moves the deal's pickup date.</div>
+                <div className="text-[12px] font-medium text-ink-2">When it needs picking up (required)</div>
+                <DayChips label="Pickup day" value={when.date} onChange={(v) => setWhen((w) => ({ ...w, date: v }))} />
+                <div className="text-[11px] text-muted">The day moves the deal's pickup date.</div>
               </div>
               </>
               )}
@@ -284,7 +304,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                 {options.length > 1 && (
                   <select className={inp} aria-label="Pickup from"
                     value={options.findIndex((o) => o.name === pickup.name && o.address === pickup.address)}
-                    onChange={(e) => { const o = options[Number(e.target.value)]; if (o) setPickup({ name: o.name, address: o.address }); }}>
+                    onChange={(e) => { const o = options[Number(e.target.value)]; if (o) setPickup((x) => ({ ...x, name: o.name, address: o.address })); }}>
                     {options.findIndex((o) => o.name === pickup.name && o.address === pickup.address) < 0 && <option value={-1}>Edited</option>}
                     {options.map((o, i) => <option key={i} value={i}>{o.name || o.address || "Pickup"}</option>)}
                   </select>
@@ -295,6 +315,8 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                 <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={when.window} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, window: v })); }}
                   onFocus={(e) => { winWas.current = e.target.value; }}
                   onBlur={() => { if (!time24On() || when.window === winWas.current) return; const t = milWindow(when.window); if (t && t !== when.window) setWhen((w) => ({ ...w, window: t })); }} />
+                <input className={inp} placeholder="Phone" aria-label="Pickup phone" value={pickup.phone} onChange={(e) => setPickup({ ...pickup, phone: e.target.value })} />
+                <input className={inp} type="email" placeholder="Send the BOL to, an email address" aria-label="Send the BOL to" value={bolTo} onChange={(e) => setBolTo(e.target.value)} />
               </div>
               {stops.map((x, i) => (
                 <div key={i} className="space-y-2">
@@ -322,6 +344,10 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                 <input className={inp} placeholder="Name" value={delivery.name} onChange={(e) => setDelivery({ ...delivery, name: e.target.value })} />
                 <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label="Delivery address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
                 <AddressNote value={delivery.address} />
+                {!moving && <DayChips label="Delivery day" value={delivery.date} onChange={(v) => setDelivery((x) => ({ ...x, date: v }))} />}
+                <input className={inp} placeholder="Time, like ASAP or before 3 pm" aria-label="Delivery time" value={delivery.window} onChange={(e) => setDelivery({ ...delivery, window: e.target.value })} />
+                <input className={inp} placeholder="Phone the driver calls" aria-label="Delivery phone" value={delivery.phone} onChange={(e) => setDelivery({ ...delivery, phone: e.target.value })} />
+                <input className={inp} placeholder="For the driver, like: call 15 minutes out" aria-label="Delivery note" value={delivery.notes} onChange={(e) => setDelivery({ ...delivery, notes: e.target.value })} />
               </div>
               {lane && <RateCard by={lane} onOpenCarrier={setCarrierId} />}
               <div className="space-y-2">
@@ -352,7 +378,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                     <input className={inp} value={freight.commodity} onChange={(e) => setF({ commodity: e.target.value })} />
                   </div>
                   <div className="min-w-0 col-span-2">
-                    <label className="block text-[12px] text-muted mb-1">Equipment</label>
+                    <label className="block text-[12px] text-muted mb-1">Equipment{moving ? "" : " (required)"}</label>
                     <EquipmentSelect value={freight.equipment} onChange={(v) => setF({ equipment: v })} />
                   </div>
                 </div>

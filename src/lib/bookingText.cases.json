@@ -1,0 +1,89 @@
+{
+  "_note": "R-558: invented loads. Read by bookingText.test.ts (desktop) and the website's lgBookingText / lgSendMissing check. Every value is made up.",
+  "text": [
+    {
+      "name": "the whole load, in the shape Jack gave",
+      "load": {
+        "pickup_name": "Harbor Pallet Co", "pickup_address": "100 Example Rd, Springfield, KY 40000", "pickup_phone": "555-010-2000",
+        "pickup_date": "2026-10-28", "pickup_window": "12:30-1:30PM", "pickup_notes": "Send BOL to: dock@example.com with me in copy",
+        "delivery_name": "Sample Warehouse", "delivery_address": "200 Test Ave # G, Lakeview, IL, 60000", "delivery_phone": "555-010-3000",
+        "delivery_date": "2026-10-28", "delivery_window": "ASAP", "delivery_notes": "driver to call when 15 minutes out",
+        "equipment": "Dry van 53 ft", "pallets": "26", "weight_lbs": "13000", "dimensions": "48 x 40 x 81"
+      },
+      "text": "Pickup location:\nHarbor Pallet Co\n100 Example Rd, Springfield, KY 40000\n555-010-2000\nPick up 12:30-1:30PM 10/28\nSend BOL to: dock@example.com with me in copy\n\nDeliver to:\nSample Warehouse\n200 Test Ave # G, Lakeview, IL, 60000\n\nDry van 53 ft\nPallets: 26\nWeight: 13,000 lbs\nDimensions: 48 x 40 x 81\nDelivery: ASAP Oct 28, 2026\nCall 555-010-3000 (driver to call when 15 minutes out)"
+    },
+    {
+      "name": "a second pickup, an address on two lines, a weight typed with its unit, no delivery time or note",
+      "load": {
+        "pickup_name": "North Yard", "pickup_address": "1 First St\nUnit 4, Townsville, OH 43000", "pickup_phone": "555-010-4000",
+        "pickup_date": "2026-11-03", "pickup_window": "before 4 pm", "pickup_notes": "",
+        "extra_pickups": [{ "name": "South Yard", "address": "2 Second St, Townsville, OH 43001", "phone": "", "window": "after 1 pm", "notes": "" }],
+        "delivery_name": "Sample Warehouse", "delivery_address": "200 Test Ave, Lakeview, IL 60000", "delivery_phone": "555-010-3000",
+        "delivery_date": "2026-11-04", "delivery_window": "", "delivery_notes": "",
+        "equipment": "Reefer", "pallets": "4", "weight_lbs": "2,400 lbs", "dimensions": "48 x 40 x 60"
+      },
+      "text": "Pickup location:\nNorth Yard\n1 First St\nUnit 4, Townsville, OH 43000\n555-010-4000\nPick up before 4 pm 11/3\n\nPickup location 2:\nSouth Yard\n2 Second St, Townsville, OH 43001\nPick up after 1 pm\n\nDeliver to:\nSample Warehouse\n200 Test Ave, Lakeview, IL 60000\n\nReefer\nPallets: 4\nWeight: 2,400 lbs\nDimensions: 48 x 40 x 60\nDelivery: Nov 4, 2026\nCall 555-010-3000"
+    },
+    {
+      "name": "an older load sent before any of this was required: only what it has, no empty lines",
+      "load": {
+        "pickup_name": "", "pickup_address": "9 Old Rd, Smalltown, PA 19000", "pickup_phone": "", "pickup_date": "", "pickup_window": "", "pickup_notes": "",
+        "delivery_name": "Sample Warehouse", "delivery_address": "", "delivery_phone": "", "delivery_date": "", "delivery_window": "",
+        "delivery_notes": "Dock 3", "equipment": "", "pallets": "", "weight_lbs": "", "dimensions": ""
+      },
+      "text": "Pickup location:\n9 Old Rd, Smalltown, PA 19000\n\nDeliver to:\nSample Warehouse\n\nDock 3"
+    }
+  ],
+  "send": [
+    {
+      "name": "everything there",
+      "byTeam": true,
+      "form": {
+        "pickup_name": "A", "pickup_address": "B", "pickup_phone": "C", "pickup_date": "2026-10-28", "pickup_window": "noon", "bol_to": "x@example.com",
+        "delivery_name": "D", "delivery_address": "E", "delivery_phone": "F", "delivery_date": "2026-10-29", "equipment": "Dry van 53 ft",
+        "pallets": "1", "weight_lbs": "2", "dimensions": "3"
+      },
+      "says": ""
+    },
+    {
+      "name": "names each missing field in order",
+      "byTeam": true,
+      "form": {
+        "pickup_name": "A", "pickup_address": "B", "pickup_phone": " ", "pickup_date": "2026-10-28", "pickup_window": "noon", "bol_to": "x@example.com",
+        "delivery_name": "D", "delivery_address": "E", "delivery_phone": "F", "delivery_date": "", "equipment": "",
+        "pallets": "1", "weight_lbs": "", "dimensions": "3"
+      },
+      "says": "Fill in the pickup phone, the delivery day, the equipment and the weight first."
+    },
+    {
+      "name": "the freight is not asked for while logistics fills it in",
+      "byTeam": false,
+      "form": {
+        "pickup_name": "A", "pickup_address": "B", "pickup_phone": "C", "pickup_date": "2026-10-28", "pickup_window": "noon", "bol_to": "x@example.com",
+        "delivery_name": "D", "delivery_address": "E", "delivery_phone": "F", "delivery_date": "2026-10-29", "equipment": "Flatbed",
+        "pallets": "", "weight_lbs": "", "dimensions": ""
+      },
+      "says": ""
+    },
+    {
+      "name": "one missing field",
+      "byTeam": false,
+      "form": {
+        "pickup_name": "A", "pickup_address": "B", "pickup_phone": "C", "pickup_date": "2026-10-28", "pickup_window": "noon", "bol_to": "",
+        "delivery_name": "D", "delivery_address": "E", "delivery_phone": "F", "delivery_date": "2026-10-29", "equipment": "Flatbed",
+        "pallets": "", "weight_lbs": "", "dimensions": ""
+      },
+      "says": "Fill in who gets the BOL first."
+    },
+    {
+      "name": "the BOL goes to an email address",
+      "byTeam": false,
+      "form": {
+        "pickup_name": "A", "pickup_address": "B", "pickup_phone": "C", "pickup_date": "2026-10-28", "pickup_window": "noon", "bol_to": "the dock",
+        "delivery_name": "D", "delivery_address": "E", "delivery_phone": "F", "delivery_date": "2026-10-29", "equipment": "Flatbed",
+        "pallets": "", "weight_lbs": "", "dimensions": ""
+      },
+      "says": "Write the email address the BOL goes to."
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Check, X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload, Send } from "lucide-react";
+import { ArrowLeft, Check, Copy, X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload, Send } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api, type FreightBooking, type FreightBookingPatch, type FreightFile, type FreightFileKind, type FreightInvoiceLine,
@@ -28,6 +28,8 @@ import { rateConPath } from "../lib/logisticsBols";
 import { buyLabelOf, openBuyInDealFlow } from "../lib/buyLoads";
 import { ADDRESS_HINT, addressNote, keptPickupRows, relabelAddressGap } from "../lib/fullAddress";
 import { useSessionMe } from "../lib/useSessionMe";
+import { bookingText } from "../lib/bookingText";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 import StatusPill from "./StatusPill";
 import { CarrierFactsList, CarrierFillButton, CarrierHost, CarrierPicker, useCarriers } from "./LogisticsCarriers";
 import { RateCard } from "./LogisticsRates";
@@ -581,6 +583,27 @@ const pastQuote = (status: string): boolean => statusRank(status) >= statusRank(
 const g2 = "grid grid-cols-1 min-[976px]:grid-cols-2 gap-3";
 const btnPrimary = "bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap";
 const btnGhost = "px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap";
+
+/** R-558: the first thing on a load: everything a carrier needs, as one message, and Copy. Read from what is saved. */
+function BookingMessage({ booking }: { booking: FreightBooking }) {
+  const text = bookingText(booking);
+  if (!text) return null;
+  const copy = async () => { if (await copyText(text)) toast("Copied"); else toast(COPY_FAILED, "error"); };
+  return (
+    <div className="rounded-xl border border-line bg-surface-2 px-4 py-3.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[14px] font-semibold text-ink">Booking details</div>
+          <div className="text-[12px] text-muted mt-0.5">Copy it and send it out to get the truck booked.</div>
+        </div>
+        <button type="button" onClick={copy} className={`flex items-center gap-1.5 flex-shrink-0 ${btnPrimary}`}>
+          <Copy size={14} /> Copy
+        </button>
+      </div>
+      <div className="mt-3 whitespace-pre-wrap break-words text-[14px] leading-[1.55] text-ink select-text">{text}</div>
+    </div>
+  );
+}
 
 /** R-502: "Mark as on the way" and "Mark as delivered". A status is never moved on with a day made up for it (it used
  *  to take today, which stamped a load that was logged afterwards with the day it was typed in), so this asks for the
@@ -1696,6 +1719,7 @@ export default function LogisticsBookingForm({
 
         <div ref={body} className="flex-1 min-h-0 overflow-y-auto">
           <div className="max-w-[1120px] mx-auto w-full px-6 py-5 space-y-6">
+            <BookingMessage booking={booking} />
             {full && atQuote && paid && !buying && (
               <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink" role="status">{PAID_BANNER}</div>
             )}

@@ -3,7 +3,10 @@ import { X } from "lucide-react";
 import { api, type FreightBooking } from "../lib/api";
 import { localDay } from "../lib/format";
 import { ADDRESS_HINT, addressNote } from "../lib/fullAddress";
+import { bolNote, sendMissing } from "../lib/bookingText";
 import NumberInput from "./NumberInput";
+import { DayChips } from "./DealShipping";
+import { EquipmentSelect } from "./LogisticsBookingForm";
 import { toast } from "./Toast";
 
 // R-551: send a buy to logistics. The sheet a deal uses (DealShipping's SendSheet), for stock that is coming in to us: the
@@ -32,9 +35,11 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
   const [trucks, setTrucks] = useState(1);
   const [day, setDay] = useState("");
   const [urgent, setUrgent] = useState(false);
-  const [pickup, setPickup] = useState({ name: "", address: "" });
-  const [delivery, setDelivery] = useState({ name: "", address: "" });
-  const [freight, setFreight] = useState({ pallets: "", weight_lbs: "", dimensions: "" });
+  const [pickup, setPickup] = useState({ name: "", address: "", phone: "", date: "", window: "" });
+  // R-558: everything the booking message needs, as on a deal's Send to logistics.
+  const [bolTo, setBolTo] = useState("");
+  const [delivery, setDelivery] = useState({ name: "", address: "", phone: "", window: "", notes: "" });
+  const [freight, setFreight] = useState({ pallets: "", weight_lbs: "", dimensions: "", equipment: "" });
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   // Until the setting is read, the default (on) holds.
@@ -55,23 +60,29 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
       try {
         const p = await api.logistics.prefillBuy(buy.id);
         if (dead) return;
-        setPickup({ name: p.pickup_name, address: p.pickup_address });
-        setDelivery({ name: p.delivery_name, address: p.delivery_address });
+        setPickup((x) => ({ ...x, name: p.pickup_name, address: p.pickup_address }));
+        setDelivery((x) => ({ ...x, name: p.delivery_name, address: p.delivery_address }));
       } catch (e) { if (!dead) setErr(String(e)); }
       if (!dead) setReady(true);
     })();
     return () => { dead = true; };
   }, [buy.id]);
 
-  const missing = byTeam && !(freight.pallets.trim() && freight.weight_lbs.trim() && freight.dimensions.trim());
   const send = async () => {
-    if (missing) { setErr("Fill in the pallets, pallet dimensions and weight first."); return; }
+    const gap = sendMissing({
+      pickup_name: pickup.name, pickup_address: pickup.address, pickup_phone: pickup.phone, pickup_date: pickup.date, pickup_window: pickup.window,
+      bol_to: bolTo, delivery_name: delivery.name, delivery_address: delivery.address, delivery_phone: delivery.phone, delivery_date: day,
+      equipment: freight.equipment, pallets: freight.pallets, weight_lbs: freight.weight_lbs, dimensions: freight.dimensions,
+    }, byTeam);
+    if (gap) { setErr(gap); return; }
     setBusy(true); setErr("");
     const ask = () => api.logistics.createForBuy(buy.id, trucks, {
       urgent, delivery_date: day,
-      pickup_name: pickup.name, pickup_address: pickup.address,
-      delivery_name: delivery.name, delivery_address: delivery.address,
-      pallets: freight.pallets.trim(), weight_lbs: freight.weight_lbs.trim(), dimensions: freight.dimensions.trim(),
+      pickup_name: pickup.name, pickup_address: pickup.address, pickup_phone: pickup.phone.trim(),
+      pickup_date: pickup.date, pickup_window: pickup.window.trim(), pickup_notes: bolNote(bolTo),
+      delivery_name: delivery.name, delivery_address: delivery.address, delivery_phone: delivery.phone.trim(),
+      delivery_window: delivery.window.trim(), delivery_notes: delivery.notes.trim(),
+      pallets: freight.pallets.trim(), weight_lbs: freight.weight_lbs.trim(), dimensions: freight.dimensions.trim(), equipment: freight.equipment,
       request_note: note.trim(),
     });
     try {
@@ -116,7 +127,7 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
                 </div>
               </div>
               <div className="space-y-2">
-                <div className="text-[12px] font-medium text-ink-2">Deliver on</div>
+                <div className="text-[12px] font-medium text-ink-2">Deliver on (required)</div>
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {([["Today", 0], ["Tomorrow", 1]] as const).map(([label, add]) => {
                     const d = new Date(); d.setDate(d.getDate() + add);
@@ -125,7 +136,7 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
                   })}
                   <input type="date" className={`${inp} w-auto`} aria-label="Delivery day" value={day} onChange={(e) => setDay(e.target.value)} />
                 </div>
-                <div className="text-[11px] text-muted">{trucks > 1 ? "All the trucks come this day, at different times." : "Leave it empty and logistics sets the day."}</div>
+                {trucks > 1 && <div className="text-[11px] text-muted">All the trucks come this day, at different times.</div>}
               </div>
               <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${urgent ? "border-danger-ink/30 bg-danger-bg" : "border-line hover:bg-surface-2"}`}>
                 <input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} className="w-4 h-4 mt-0.5 accent-danger" />
@@ -139,12 +150,19 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
                 <input className={inp} placeholder="Name" aria-label="Pickup name" value={pickup.name} onChange={(e) => setPickup({ ...pickup, name: e.target.value })} />
                 <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label="Pickup address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
                 <AddressNote value={pickup.address} />
+                <DayChips label="Pickup day" value={pickup.date} onChange={(v) => setPickup((x) => ({ ...x, date: v }))} />
+                <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={pickup.window} onChange={(e) => setPickup({ ...pickup, window: e.target.value })} />
+                <input className={inp} placeholder="Phone" aria-label="Pickup phone" value={pickup.phone} onChange={(e) => setPickup({ ...pickup, phone: e.target.value })} />
+                <input className={inp} type="email" placeholder="Send the BOL to, an email address" aria-label="Send the BOL to" value={bolTo} onChange={(e) => setBolTo(e.target.value)} />
               </div>
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Delivery</div>
                 <input className={inp} placeholder="Name" aria-label="Delivery name" value={delivery.name} onChange={(e) => setDelivery({ ...delivery, name: e.target.value })} />
                 <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label="Delivery address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
                 <AddressNote value={delivery.address} />
+                <input className={inp} placeholder="Time, like ASAP or before 3 pm" aria-label="Delivery time" value={delivery.window} onChange={(e) => setDelivery({ ...delivery, window: e.target.value })} />
+                <input className={inp} placeholder="Phone the driver calls" aria-label="Delivery phone" value={delivery.phone} onChange={(e) => setDelivery({ ...delivery, phone: e.target.value })} />
+                <input className={inp} placeholder="For the driver, like: call 15 minutes out" aria-label="Delivery note" value={delivery.notes} onChange={(e) => setDelivery({ ...delivery, notes: e.target.value })} />
               </div>
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Freight on each truck</div>
@@ -161,8 +179,12 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
                     <label className="block text-[12px] text-muted mb-1">Pallet dimensions (L x W x H in){byTeam ? " (required)" : ""}</label>
                     <input className={inp} placeholder="48 x 40 x 60" value={freight.dimensions} onChange={(e) => setF({ dimensions: e.target.value })} />
                   </div>
+                  <div className="min-w-0 col-span-2">
+                    <label className="block text-[12px] text-muted mb-1">Equipment (required)</label>
+                    <EquipmentSelect value={freight.equipment} onChange={(v) => setF({ equipment: v })} />
+                  </div>
                 </div>
-                {trucks > 1 && <div className="text-[11px] text-muted">Each truck gets the pallets, weight and dimensions above. Your logistics person sets each truck's time.</div>}
+                {trucks > 1 && <div className="text-[11px] text-muted">Each truck gets the freight and the pickup time above. Your logistics person changes each truck's time.</div>}
               </div>
               <div>
                 <label className="block text-[12px] font-medium text-ink-2 mb-1">Note for logistics</label>
