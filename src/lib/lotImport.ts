@@ -13,6 +13,7 @@ import type { Lot, LotDetails, LotOption, LotPriceTier, LotVariant } from "./api
 import spec from "./lotImportTemplate.json";
 import { dedupeTags } from "./tags";
 import { formatLocation, parseLocation } from "./location";
+import { MAX_EXPIRE_DAYS } from "./lotTimer";
 
 /** One spreadsheet row as the lot form would save it, plus the files that ride along. It is
  *  also the shape the form takes as a prefill, so a row opens in the full form unchanged. */
@@ -345,6 +346,11 @@ export function parseRow(cells: string[], h: HeaderMatch, line: number, ctx: Imp
   const moqOut = rungs.length ? rungs[0].min_qty : 0;
   const cleanTiers = rungs.filter((t) => t.price > 0).map((t) => ({ min_qty: t.min_qty, price: t.price }));
   const openToOffers = yes("open_to_offers", "Open to offers");
+  // R-559: the form's "Comes off after N days". Whole days, 1 to MAX_EXPIRE_DAYS.
+  const expireTyped = num("expire_days", "Off the site after (days)");
+  if (expireTyped < 0) problems.push("Off the site after (days) cannot be below 0");
+  const expireDays = expireTyped > 0 ? Math.min(Math.ceil(expireTyped), MAX_EXPIRE_DAYS) : 0;
+  if (expireTyped > MAX_EXPIRE_DAYS) notes.push(`Off the site after was capped at ${MAX_EXPIRE_DAYS} days`);
   const detailsObj: LotDetails = { pallets: pallets || null, msrp: msrp || null, avg_msrp: null, moq: moqOut || null, size_run: [] };
   if (cleanTiers.length) detailsObj.price_tiers = cleanTiers;
   if (qtyApprox) detailsObj.qty_approx = true;
@@ -361,11 +367,12 @@ export function parseRow(cells: string[], h: HeaderMatch, line: number, ctx: Imp
   }
   if (priceTextClean) detailsObj.price_text = priceTextClean;
   if (openToOffers) detailsObj.open_to_offers = true;
+  if (expireDays > 0) detailsObj.expire_days = expireDays;
   if (hasVariants) { detailsObj.options = cleanOptions; detailsObj.variants = cleanVariants; }
   if (cats.length) detailsObj.categories = cats;
   if (tags.length) detailsObj.tags = tags;
   if (condition) detailsObj.condition = condition;
-  const hasDetails = !!pallets || !!msrp || !!moqOut || cleanTiers.length > 0 || qtyApprox || !!priceTextClean || hasVariants || openToOffers || cats.length > 0 || tags.length > 0 || !!condition || (mode === "per_pallet" && ask > 0);
+  const hasDetails = !!pallets || !!msrp || !!moqOut || cleanTiers.length > 0 || qtyApprox || !!priceTextClean || hasVariants || openToOffers || cats.length > 0 || tags.length > 0 || !!condition || (mode === "per_pallet" && ask > 0) || expireDays > 0;
 
   const manifestRefs = splitRefs(get("manifest"));
   if (manifestRefs.length > 1) notes.push("Only the first manifest is attached");

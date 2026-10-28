@@ -367,6 +367,13 @@ describe("each kind's group, label and urgency", () => {
     expect(requestRow({ id: "a", kind: "client_add", summary: "New client", created_at: "" })).toBeNull();
     expect(requestRow({ id: "a", kind: "listing_stale", summary: "Renew or mark sold: Box lot", created_at: "" })).toBeNull();
   });
+  it("R-559: Muse's requests are rows that need you, under Team requests", () => {
+    const n = requestRow({ id: "a", kind: "lot_feed_new", summary: "New from Muse: Sample hats, $4 a unit", created_at: "" });
+    expect([n?.group, n?.label, n?.urgency, n?.subject]).toEqual(["requests", "New from Muse", "needs", "Sample hats, $4 a unit"]);
+    const r = requestRow({ id: "b", kind: "lot_feed_repeat", summary: "Already listed: Sample hats. Price changed from $4 a unit to $3 a unit", created_at: "" });
+    expect([r?.label, r?.subject]).toEqual(["Already listed", "Sample hats. Price changed from $4 a unit to $3 a unit"]);
+    expect(bellCountOf({ pendingCustomers: 0, requests: [{ kind: "lot_feed_new" }, { kind: "lot_feed_repeat" }], notices: [] })).toBe(2);
+  });
   it("every row key is its own, so two sources never collide", () => {
     expect(new Set([noticeRow(note("1", "bill_due"))!.key, customerRow({ id: "1", name: "A" }).key, requestRow({ id: "1", kind: "unsubscribe", summary: "", created_at: "" })!.key]).size).toBe(3);
   });

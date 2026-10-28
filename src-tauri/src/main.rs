@@ -1040,6 +1040,7 @@ fn main() {
             lot_import::read_lot_import_sheet,
             lot_import::fetch_lot_import_files,
             get_load_inbox,
+            lot_feed,
             list_inbound_loads,
             approve_inbound_load,
             reject_inbound_load,

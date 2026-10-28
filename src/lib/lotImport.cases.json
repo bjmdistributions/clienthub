@@ -1,0 +1,466 @@
+{
+  "headers": [
+    "Name",
+    "Categories",
+    "Tags",
+    "Description",
+    "Condition",
+    "Location",
+    "Quantity",
+    "Pallets",
+    "Quantity is",
+    "Per pallet up to",
+    "At least this many",
+    "Variant options",
+    "Variants",
+    "MSRP (total retail)",
+    "Price type",
+    "Selling price",
+    "Custom price text",
+    "Minimum order",
+    "Volume pricing",
+    "Open to offers",
+    "Off the site after (days)",
+    "Photos",
+    "Manifest",
+    "Notes",
+    "Sent on WhatsApp",
+    "Emailed",
+    "Supplier",
+    "Your cost",
+    "Your cost per unit"
+  ],
+  "ctx": {
+    "categories": [
+      "Clothing",
+      "Home & kitchen",
+      "Shoes"
+    ],
+    "suppliers": [
+      "Sample Supply Co"
+    ],
+    "tags": [
+      "Nike"
+    ]
+  },
+  "rows": [
+    {
+      "label": "per pallet quantity and price",
+      "input": {
+        "Name": "Sample sneakers, shelf pulls",
+        "Categories": "shoes, Home and kitchen",
+        "Tags": "nike, Running",
+        "Condition": "shelf pulls",
+        "Location": "edison nj",
+        "Quantity": "450",
+        "Pallets": "4",
+        "Quantity is": "Per pallet",
+        "Per pallet up to": "500",
+        "Price type": "Per pallet",
+        "Selling price": "$6,200",
+        "Your cost": "18000",
+        "Photos": "https://x.test/a,b.jpg, https://x.test/c.png\nfront.jpg",
+        "Off the site after (days)": "2",
+        "Open to offers": "Yes",
+        "Sent on WhatsApp": "maybe"
+      },
+      "expect": {
+        "name": "Sample sneakers, shelf pulls",
+        "description": null,
+        "category": "Shoes",
+        "quantity": 1800,
+        "total_cost": 18000,
+        "asking_price": 24800,
+        "price_type": "total",
+        "notes": null,
+        "supplier": null,
+        "location": "Edison, NJ",
+        "sent_whatsapp": false,
+        "sent_email": false,
+        "details": {
+          "pallets": 4,
+          "msrp": null,
+          "avg_msrp": null,
+          "moq": null,
+          "size_run": [],
+          "qty_basis": "per_pallet",
+          "qty_per_pallet": 450,
+          "qty_per_pallet_max": 500,
+          "price_basis": "per_pallet",
+          "price_per_pallet": 6200,
+          "open_to_offers": true,
+          "expire_days": 2,
+          "categories": [
+            "Shoes",
+            "Home & kitchen"
+          ],
+          "tags": [
+            "Nike",
+            "Running"
+          ],
+          "condition": "Shelf pulls"
+        },
+        "photos": [
+          "https://x.test/a",
+          "b.jpg",
+          "https://x.test/c.png",
+          "front.jpg"
+        ],
+        "manifest": null,
+        "problems": [],
+        "notes_out": [
+          "Sent on WhatsApp \"maybe\" was read as No"
+        ]
+      }
+    },
+    {
+      "label": "custom text price from words",
+      "input": {
+        "Name": "Sample hats",
+        "Quantity": "300",
+        "Selling price": "Best offer",
+        "Supplier": "sample supply co"
+      },
+      "expect": {
+        "name": "Sample hats",
+        "description": null,
+        "category": null,
+        "quantity": 300,
+        "total_cost": 0,
+        "asking_price": 0,
+        "price_type": "custom",
+        "notes": null,
+        "supplier": "Sample Supply Co",
+        "location": null,
+        "sent_whatsapp": false,
+        "sent_email": false,
+        "details": {
+          "pallets": null,
+          "msrp": null,
+          "avg_msrp": null,
+          "moq": null,
+          "size_run": [],
+          "price_text": "Best offer"
+        },
+        "photos": [],
+        "manifest": null,
+        "problems": [],
+        "notes_out": []
+      }
+    },
+    {
+      "label": "variants carry the quantity and the ladder starts the MOQ",
+      "input": {
+        "Name": "Sample tees",
+        "Variant options": "Color, Size",
+        "Variants": "Black / M: 600 at 4.75; Navy / M: 500",
+        "Quantity": "900",
+        "Minimum order": "200",
+        "Volume pricing": "2000+ at 4.00, 5000+ at 3.50",
+        "Selling price": "5",
+        "Price type": "each",
+        "Your cost": "2,200"
+      },
+      "expect": {
+        "name": "Sample tees",
+        "description": null,
+        "category": null,
+        "quantity": 1100,
+        "total_cost": 2,
+        "asking_price": 5,
+        "price_type": "per_unit",
+        "notes": null,
+        "supplier": null,
+        "location": null,
+        "sent_whatsapp": false,
+        "sent_email": false,
+        "details": {
+          "pallets": null,
+          "msrp": null,
+          "avg_msrp": null,
+          "moq": 200,
+          "size_run": [],
+          "price_tiers": [
+            {
+              "min_qty": 2000,
+              "price": 4
+            },
+            {
+              "min_qty": 5000,
+              "price": 3.5
+            }
+          ],
+          "options": [
+            {
+              "name": "Color",
+              "values": [
+                "Black",
+                "Navy"
+              ]
+            },
+            {
+              "name": "Size",
+              "values": [
+                "M"
+              ]
+            }
+          ],
+          "variants": [
+            {
+              "values": [
+                "Black",
+                "M"
+              ],
+              "qty": 600,
+              "price": 4.75
+            },
+            {
+              "values": [
+                "Navy",
+                "M"
+              ],
+              "qty": 500,
+              "price": null
+            }
+          ]
+        },
+        "photos": [],
+        "manifest": null,
+        "problems": [],
+        "notes_out": [
+          "Quantity 900 was replaced by the variants' 1,100"
+        ]
+      }
+    },
+    {
+      "label": "bad cells are problems",
+      "input": {
+        "Name": "",
+        "Quantity": "lots",
+        "Price type": "by the crate",
+        "Selling price": "12",
+        "Volume pricing": "cheap",
+        "Variants": "Red: 5",
+        "Off the site after (days)": "-3"
+      },
+      "expect": {
+        "name": "",
+        "description": null,
+        "category": null,
+        "quantity": 0,
+        "total_cost": 0,
+        "asking_price": 12,
+        "price_type": "per_unit",
+        "notes": null,
+        "supplier": null,
+        "location": null,
+        "sent_whatsapp": false,
+        "sent_email": false,
+        "details": null,
+        "photos": [],
+        "manifest": null,
+        "problems": [
+          "No name",
+          "Quantity is not a number: \"lots\"",
+          "Price type \"by the crate\" is not one of Per unit, Fixed total, Per pallet, Custom text",
+          "Couldn't read the volume pricing \"cheap\". Write it like 2000+ at 4.00; 5000+ at 3.50",
+          "Variants need the Variant options column filled in, like Color, Size",
+          "Off the site after (days) is not a number: \"-3\""
+        ],
+        "notes_out": [
+          "No price type, so the price was read as per unit",
+          "No quantity"
+        ]
+      }
+    },
+    {
+      "label": "per pallet price with no pallets",
+      "input": {
+        "Name": "Sample mixed lot",
+        "Price type": "Per pallet",
+        "Selling price": "1500",
+        "Quantity": "20",
+        "Quantity is": "Per pallet",
+        "Location": "Warehouse B",
+        "Manifest": "a.pdf; b.pdf",
+        "Emailed": "yes"
+      },
+      "expect": {
+        "name": "Sample mixed lot",
+        "description": null,
+        "category": null,
+        "quantity": 20,
+        "total_cost": 0,
+        "asking_price": 1500,
+        "price_type": "total",
+        "notes": null,
+        "supplier": null,
+        "location": "Warehouse B",
+        "sent_whatsapp": false,
+        "sent_email": true,
+        "details": {
+          "pallets": null,
+          "msrp": null,
+          "avg_msrp": null,
+          "moq": null,
+          "size_run": [],
+          "qty_basis": "per_pallet",
+          "qty_per_pallet": 20,
+          "price_basis": "per_pallet",
+          "price_per_pallet": 1500
+        },
+        "photos": [],
+        "manifest": "a.pdf",
+        "problems": [
+          "A per-pallet price needs a pallet count"
+        ],
+        "notes_out": [
+          "Location \"Warehouse B\" has no state",
+          "Quantity per pallet with no pallet count, so it was taken as the whole load",
+          "Only the first manifest is attached"
+        ]
+      }
+    },
+    {
+      "label": "cost per unit on a whole load, and a capped timer",
+      "input": {
+        "Name": "Sample kitchen",
+        "Price type": "Fixed total",
+        "Selling price": "9000",
+        "Quantity": "1,000",
+        "Your cost per unit": "3.5",
+        "Your cost": "4000",
+        "Off the site after (days)": "900",
+        "At least this many": "y",
+        "MSRP (total retail)": "45000",
+        "Custom price text": ""
+      },
+      "expect": {
+        "name": "Sample kitchen",
+        "description": null,
+        "category": null,
+        "quantity": 1000,
+        "total_cost": 4000,
+        "asking_price": 9000,
+        "price_type": "total",
+        "notes": null,
+        "supplier": null,
+        "location": null,
+        "sent_whatsapp": false,
+        "sent_email": false,
+        "details": {
+          "pallets": null,
+          "msrp": 45000,
+          "avg_msrp": null,
+          "moq": null,
+          "size_run": [],
+          "qty_approx": true,
+          "expire_days": 365
+        },
+        "photos": [],
+        "manifest": null,
+        "problems": [],
+        "notes_out": [
+          "Your cost and Your cost per unit disagree; the whole-load figure was used",
+          "Off the site after was capped at 365 days"
+        ]
+      }
+    },
+    {
+      "label": "per unit cost divided out",
+      "input": {
+        "Name": "Sample toys",
+        "Quantity": "250",
+        "Selling price": "4",
+        "Your cost": "3",
+        "Location": "Los Angeles, california",
+        "Description": "Assorted toys",
+        "Notes": "Sealed"
+      },
+      "expect": {
+        "name": "Sample toys",
+        "description": "Assorted toys",
+        "category": null,
+        "quantity": 250,
+        "total_cost": 0.012,
+        "asking_price": 4,
+        "price_type": "per_unit",
+        "notes": "Sealed",
+        "supplier": null,
+        "location": "Los Angeles, CA",
+        "sent_whatsapp": false,
+        "sent_email": false,
+        "details": null,
+        "photos": [],
+        "manifest": null,
+        "problems": [],
+        "notes_out": [
+          "No price type, so the price was read as per unit",
+          "Your cost 3 is less than one unit's price. If that is the cost of each unit, put it in Your cost per unit"
+        ]
+      }
+    }
+  ],
+  "duplicates": [
+    {
+      "label": "same name and price",
+      "a": {
+        "name": "Sample blue hats",
+        "quantity": 100,
+        "asking_price": 4,
+        "supplier": null,
+        "location": null
+      },
+      "b": {
+        "name": "Sample Blue Hats",
+        "quantity": 50,
+        "asking_price": 4,
+        "supplier": null,
+        "location": null
+      },
+      "expect": {
+        "strength": "same",
+        "why": "Same name, same price"
+      }
+    },
+    {
+      "label": "similar name, two figures",
+      "a": {
+        "name": "Sample blue hats lot",
+        "quantity": 100,
+        "asking_price": 4,
+        "supplier": "Sample Co",
+        "location": "Edison, NJ"
+      },
+      "b": {
+        "name": "Sample blue hat lots",
+        "quantity": 100,
+        "asking_price": 3,
+        "supplier": "sample co",
+        "location": "Edison, NJ"
+      },
+      "expect": {
+        "strength": "same",
+        "why": "Similar name, same quantity, supplier and location"
+      }
+    },
+    {
+      "label": "nothing alike",
+      "a": {
+        "name": "Sample tees",
+        "quantity": 10,
+        "asking_price": 2,
+        "supplier": null,
+        "location": null
+      },
+      "b": {
+        "name": "Garden hoses",
+        "quantity": 10,
+        "asking_price": 2,
+        "supplier": null,
+        "location": null
+      },
+      "expect": null
+    }
+  ]
+}

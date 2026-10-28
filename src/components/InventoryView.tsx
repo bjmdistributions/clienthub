@@ -7,12 +7,13 @@ import { formatLocation, parseLocation, isCanonicalLocation } from "../lib/locat
 import { categoryMenu, isPicked, toggleCategory, lotCategories } from "../lib/categories";
 import { lotUnitPrice, priceTiers, palletPrice, lotPriceBlock } from "../lib/price";
 import { lotTags, dedupeTags, suggestTags, toggleTag, isTagged } from "../lib/tags";
+import { MAX_EXPIRE_DAYS, timeLeft } from "../lib/lotTimer";
 import LocationField from "./LocationField";
 import LocationCleanup from "./LocationCleanup";
 import LotImport from "./LotImport";
 import type { LotDraft } from "../lib/lotImport";
 import { buildNewsletterBody, LotBlockInput } from "../lib/newsletter";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook, MapPin, FileSpreadsheet } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook, MapPin, FileSpreadsheet, Clock } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -930,6 +931,7 @@ function LotCard({
   // Custom-priced lots show a free-text price verbatim (no per-unit / profit math).
   const isCustom = lot.price_type === "custom";
   const stale = isStale(lot);
+  const offIn = timeLeft(lot);
   const sold = lot.status === "sold";
   const archived = lot.status === "archived";
   const reserved = lot.status === "reserved";
@@ -1084,7 +1086,14 @@ function LotCard({
             <Facebook size={11} /> FB {lot.sent_facebook && <Check size={10} />}
           </button>
           <div className="flex-1" />
-          {stale && (
+          {offIn && (
+            <button onClick={(e) => { stop(e); onRenew(); }}
+              title={offIn === "now" ? "Coming off the site now. Renew to keep it up." : `Comes off the site in ${offIn}. Renew to start its time again.`}
+              className="flex items-center gap-1 text-[10px] text-ink-2 bg-surface-2 border border-line px-2 h-6 rounded-full hover:text-ink transition-colors tabular-nums whitespace-nowrap">
+              <Clock size={11} /> {offIn === "now" ? "Coming off" : `Off in ${offIn}`}
+            </button>
+          )}
+          {stale && !offIn && (
             <button onClick={(e) => { stop(e); onRenew(); }}
               title={`Last shared ${daysSince(lot.updated_at)} days ago, renew to reset freshness (no email sent).`}
               className="flex items-center gap-1 text-[10px] text-warning-ink bg-warning-bg border border-warning px-2 h-6 rounded-full hover:opacity-90 transition-opacity">
@@ -1691,6 +1700,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   // Third price mode: a free-text price shown verbatim (no per-unit math).
   const [priceText, setPriceText] = useState<string>(details0.price_text ?? "");
   const [openToOffers, setOpenToOffers] = useState<boolean>(details0.open_to_offers ?? false);
+  // R-559: 0 = stays up until taken down; N = comes off the site N days after its last renewal.
+  const [expireDays, setExpireDays] = useState<number>(Math.min(Math.max(0, Math.floor(details0.expire_days ?? 0)), MAX_EXPIRE_DAYS));
   const [dragActive, setDragActive] = useState(false); // dropzone highlight while dragging files
 
   const pickManifest = async () => {
@@ -1762,7 +1773,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
 
   // Confirm before discarding an edited form — a stray backdrop click can't close it.
   const initialSnapshot = useRef({
-    name, desc, category, qty, cost, ask, priceMode, priceText, openToOffers,
+    name, desc, category, qty, cost, ask, priceMode, priceText, openToOffers, expireDays,
     supplier, location, notes, sentWa, sentEmail,
     photos: photos.length, pallets, msrp, qtyApprox, tiers: JSON.stringify(tiers), sizeRun: JSON.stringify(sizeRun),
     variants: JSON.stringify({ options, variants }),
@@ -1771,7 +1782,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const isDirty = () =>
     name !== initialSnapshot.name || desc !== initialSnapshot.desc || category !== initialSnapshot.category ||
     qty !== initialSnapshot.qty || cost !== initialSnapshot.cost || ask !== initialSnapshot.ask ||
-    priceMode !== initialSnapshot.priceMode || priceText !== initialSnapshot.priceText || openToOffers !== initialSnapshot.openToOffers ||
+    priceMode !== initialSnapshot.priceMode || priceText !== initialSnapshot.priceText || openToOffers !== initialSnapshot.openToOffers || expireDays !== initialSnapshot.expireDays ||
     supplier !== initialSnapshot.supplier || location !== initialSnapshot.location || notes !== initialSnapshot.notes ||
     sentWa !== initialSnapshot.sentWa || sentEmail !== initialSnapshot.sentEmail ||
     qtyBasis !== initialSnapshot.qtyBasis || perPallet !== initialSnapshot.perPallet ||
@@ -1863,6 +1874,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       }
       if (priceTextClean) detailsObj.price_text = priceTextClean;
       if (openToOffers) detailsObj.open_to_offers = true;
+      if (expireDays > 0) detailsObj.expire_days = Math.min(expireDays, MAX_EXPIRE_DAYS);
       if (hasVariants) { detailsObj.options = cleanOptions; detailsObj.variants = cleanVariants; }
       if (cleanCats.length) detailsObj.categories = cleanCats;
       if (cleanTags.length) detailsObj.tags = cleanTags;
@@ -1884,7 +1896,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // Preserve a manifest summary seeded from the analyzer (or a prior save) — the save
       // rebuilds detailsObj from fields, so it would otherwise be dropped.
       if (details0.manifest) detailsObj.manifest = details0.manifest;
-      const hasDetails = !!pallets || !!msrp || !!moqOut || cleanTiers.length > 0 || qtyApprox || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || cleanTags.length > 0 || !!conditionClean || showPrev || perPalletPriced;
+      const hasDetails = !!pallets || !!msrp || !!moqOut || cleanTiers.length > 0 || qtyApprox || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || cleanTags.length > 0 || !!conditionClean || showPrev || perPalletPriced || expireDays > 0 || !!details0.expire_days;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       // Canonicalise on the way out. LocationField already emits the right shape,
       // but a PREFILLED lot (paste-a-load) can reach save without the field ever
@@ -2166,6 +2178,27 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 <span className="block text-[11px] text-muted mt-0.5">Shows a “Make an offer” form on your storefront so buyers can send you a price.</span>
               </span>
             </label>
+            <div className="rounded-lg border border-line bg-surface-2/50 px-3 py-2.5">
+              <div className="text-[12.5px] font-medium text-ink">On the site</div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-1.5 text-[12.5px] text-ink-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="lot-expire" className="accent-accent" checked={expireDays === 0} onChange={() => setExpireDays(0)} />
+                  Stays up until I take it down
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="lot-expire" className="accent-accent" checked={expireDays > 0} onChange={() => setExpireDays(expireDays > 0 ? expireDays : 2)} />
+                  Comes off after
+                  <input type="number" min={1} max={MAX_EXPIRE_DAYS} step={1} value={expireDays > 0 ? expireDays : ""} placeholder="2"
+                    onFocus={() => { if (expireDays === 0) setExpireDays(2); }}
+                    onChange={(e) => { const n = Math.floor(Number(e.target.value)); setExpireDays(Number.isFinite(n) && n > 0 ? Math.min(n, MAX_EXPIRE_DAYS) : 1); }}
+                    className="w-16 h-8 px-2 rounded-lg border border-line bg-surface text-[13px] text-ink tabular-nums" />
+                  {expireDays === 1 ? "day" : "days"}
+                </label>
+              </div>
+              {expireDays > 0 && (
+                <span className="block text-[11px] text-muted mt-1.5">Taken off the site and archived {expireDays === 1 ? "a day" : `${expireDays} days`} after it was last renewed or edited. Renew starts the time again. You can restore it from archived.</span>
+              )}
+            </div>
           </div>
 
           <div className="pt-5 border-t border-line-2 space-y-3">

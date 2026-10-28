@@ -329,7 +329,12 @@ export const GROUP_LABEL: Record<NoticeGroup, string> = {
 export type Urgency = "overdue" | "needs" | "info";
 const URGENCY_RANK: Record<Urgency, number> = { overdue: 0, needs: 1, info: 2 };
 
-export type RowKind = TeamNoticeKind | "supply_lead" | "supplier_profile" | "pending_customer" | "client_delete" | "unsubscribe";
+export type RowKind = TeamNoticeKind | "supply_lead" | "supplier_profile" | "pending_customer" | "client_delete" | "unsubscribe" | "lot_feed_new" | "lot_feed_repeat";
+
+/** R-559: the two requests the Muse upload raises. A deal Muse sent while approval is on, and a
+ *  deal it sent that is already listed. Both are answered on the request; the server does the work. */
+export const FEED_KINDS = ["lot_feed_new", "lot_feed_repeat"] as const;
+export const isFeedKind = (k: string): k is (typeof FEED_KINDS)[number] => (FEED_KINDS as readonly string[]).includes(k);
 
 const ROW_INFO: Record<RowKind, { group: NoticeGroup; label: string; urgency: Urgency }> = {
   bill_overdue: { group: "bills", label: NOTICE_KIND_LABEL.bill_overdue, urgency: "overdue" },
@@ -345,6 +350,8 @@ const ROW_INFO: Record<RowKind, { group: NoticeGroup; label: string; urgency: Ur
   pending_customer: { group: "customers", label: "To review", urgency: "needs" },
   client_delete: { group: "requests", label: "Delete request", urgency: "needs" },
   unsubscribe: { group: "requests", label: "Unsubscribed", urgency: "info" },
+  lot_feed_new: { group: "requests", label: "New from Muse", urgency: "needs" },
+  lot_feed_repeat: { group: "requests", label: "Already listed", urgency: "needs" },
   supply_lead: { group: "leads", label: "New lead", urgency: "needs" },
   supplier_profile: { group: "leads", label: "Supplier details", urgency: "info" },
 };
@@ -405,10 +412,12 @@ export function customerRow(c: { id: string; name: string; created_at?: string }
 /** An approval request as a row: a deletion to decide, or an unsubscribe to clear. Anything else (a new
  *  client, a listing to renew) is shown some other way, so null. */
 export function requestRow(a: { id: string; kind: string; summary: string; created_at: string }): NoticeRow | null {
-  if (a.kind !== "client_delete" && a.kind !== "unsubscribe") return null;
+  if (a.kind !== "client_delete" && a.kind !== "unsubscribe" && !isFeedKind(a.kind)) return null;
   const subject = a.kind === "client_delete"
     ? text(a.summary).replace(/^Delete client:\s*/i, "")
-    : text(a.summary).replace(/\s+unsubscribed from email$/i, "");
+    : isFeedKind(a.kind)
+      ? text(a.summary).replace(/^(New from Muse|Already listed):\s*/i, "")
+      : text(a.summary).replace(/\s+unsubscribed from email$/i, "");
   return { key: `a:${a.id}`, ...ROW_INFO[a.kind], kind: a.kind, subject: subject || text(a.summary), dueDay: "", createdAt: a.created_at || "" };
 }
 
@@ -493,7 +502,7 @@ export function bellCountOf(a: {
   notices: readonly { kind: string; status?: string }[];
 }): number {
   const waiting = a.notices.filter((n) => n.status !== "acknowledged" && (n.kind === "supply_lead" || isNeedsYouKind(n.kind))).length;
-  const deletions = a.requests.filter((r) => r.kind === "client_delete").length;
+  const deletions = a.requests.filter((r) => r.kind === "client_delete" || isFeedKind(r.kind)).length;
   return a.pendingCustomers + deletions + (a.requests.some(isRenewal) ? 1 : 0) + waiting;
 }
 

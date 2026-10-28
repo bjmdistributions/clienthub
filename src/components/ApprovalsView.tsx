@@ -247,6 +247,14 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
         <button onClick={() => quick(r.a!.id, false)} className={BTN_LINE}>Reject</button>
       </>);
     }
+    // R-559: the server adds the lot, or renews it with its new price, once the answer reaches it.
+    if (r.a?.kind === "lot_feed_new" || r.a?.kind === "lot_feed_repeat") {
+      const repeat = r.a.kind === "lot_feed_repeat";
+      return (<>
+        <button onClick={() => quick(r.a!.id, true)} className={BTN_SOLID}>{repeat ? "Reset time" : "Add"}</button>
+        <button onClick={() => quick(r.a!.id, false)} className={BTN_LINE}>{repeat ? "Remove duplicate" : "Discard"}</button>
+      </>);
+    }
     if (r.a) return clear(() => clearRequest(r.a!));
     const n = r.n!;
     if (r.group === "leads") {

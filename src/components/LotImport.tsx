@@ -17,6 +17,7 @@ import { lotCategories } from "../lib/categories";
 import { lotTags } from "../lib/tags";
 import { parseSheet, markDuplicates, ImportRow, LotDraft, PhotoRef } from "../lib/lotImport";
 import StatusPill from "./StatusPill";
+import LotFeedPanel from "./LotFeedPanel";
 import { toast } from "./Toast";
 
 const SHEET_EXT = /\.(xlsx|xlsm|xls|csv|tsv)$/i;
@@ -311,6 +312,7 @@ export default function LotImport({ lots, categories, suppliers, onClose, onAdde
                 <FileDown size={14} /> {savingTemplate ? "Saving…" : "Download"}
               </button>
             </div>
+            <LotFeedPanel />
           </div>
         ) : (
           <div className="max-w-[1040px] mx-auto px-6 py-5">

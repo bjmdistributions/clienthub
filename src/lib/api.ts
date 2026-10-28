@@ -2118,6 +2118,8 @@ export interface LotDetails {
   // The quantity is a FLOOR, not an exact count — "20,000+". `quantity` still holds the
   // number typed, so nothing that sums stock changes; this only says how to read it.
   qty_approx?: boolean | null;
+  // R-559: comes off the site this many days after its last renewal (updated_at). Absent = stays up.
+  expire_days?: number | null;
   // Volume price breaks, ascending, per-unit prices. Absent on a lot that sells at one
   // price. See LotPriceTier for why the last row needs no upper bound.
   price_tiers?: LotPriceTier[] | null;
@@ -2501,6 +2503,21 @@ export interface ParsedLoad {
 /// A forwarded supplier post waiting to be turned into inventory. Lives on the
 /// server (it can arrive while this computer is asleep); nothing exists as a lot
 /// until it's approved. `photos` are server-relative `media/inbound/...` paths.
+// R-559: the Muse upload address, as the server answers it (clienthub-api routes/lot_feed.rs).
+export interface LotFeedSettings {
+  on: boolean;
+  review: boolean;
+  expire_days: number;
+  made_at: string | null;
+  last_upload_at: string | null;
+  last_result: {
+    rows: number; added: number; waiting_for_approval: number; already_listed: number;
+    repeated_in_file: number; rows_with_photo_problems: number; refused: { row: number; why: string }[];
+  } | null;
+  address?: string;
+  key?: string;
+}
+
 export interface InboundLoad {
   id: string;
   source: string;
@@ -4664,6 +4681,9 @@ export const api = {
   // Load inbox — supplier posts forwarded from a phone, waiting for approval.
   // `server` is the base URL the inbound photos are served from.
   getLoadInbox: () => invoke<{ token: string; url: string | null; server: string | null }>("get_load_inbox"),
+  // R-559: the Muse upload address (server side). `key` is only on the answer to "key", once.
+  lotFeed: (action: "get" | "set" | "key" | "off", body?: { review?: boolean; expire_days?: number }) =>
+    invoke<LotFeedSettings>("lot_feed", { action, body: body ?? null }),
   listInboundLoads: () => invoke<InboundLoad[]>("list_inbound_loads"),
   approveInboundLoad: (id: string, lots: ApproveLotInput[]) => invoke<string[]>("approve_inbound_load", { id, lots }),
   rejectInboundLoad: (id: string) => invoke<void>("reject_inbound_load", { id }),

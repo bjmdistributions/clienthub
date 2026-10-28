@@ -10744,6 +10744,32 @@ pub async fn list_inbound_loads() -> Result<Vec<Value>, String> {
     resp.json::<Vec<Value>>().await.map_err(|e| e.to_string())
 }
 
+/// R-559: the Muse upload address's settings, kept on the server (clienthub-api
+/// routes/lot_feed.rs) and changed only by an admin. The key comes back from "key" alone,
+/// once, and is never stored here.
+#[tauri::command]
+pub async fn lot_feed(action: String, body: Option<Value>) -> Result<Value, String> {
+    let (base, token) = inbox_server()?;
+    let http = inbox_http()?;
+    let req = match action.as_str() {
+        "get" => http.get(format!("{base}/api/inventory/feed/settings")),
+        "set" => http.post(format!("{base}/api/inventory/feed/settings")).json(&body.unwrap_or_else(|| json!({}))),
+        "key" => http.post(format!("{base}/api/inventory/feed/key")).json(&json!({})),
+        "off" => http.post(format!("{base}/api/inventory/feed/off")).json(&json!({})),
+        _ => return Err("Unknown action".into()),
+    };
+    let resp = req.bearer_auth(&token).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let mut v: Value = resp.json().await.map_err(|_| format!("The server answered {status}. It may need updating."))?;
+    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        return Err(err.to_string());
+    }
+    if let Some(o) = v.as_object_mut() {
+        o.insert("address".into(), json!(format!("{base}/api/inventory/feed")));
+    }
+    Ok(v)
+}
+
 /// Turn a candidate into one or more real lots. The server creates them (through the
 /// oplog) and copies the forwarded photos into each lot's media folder; we then pull
 /// so they appear on this computer straight away instead of at the next sync tick.

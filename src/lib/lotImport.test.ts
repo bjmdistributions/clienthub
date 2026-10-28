@@ -119,6 +119,16 @@ describe("a row saves what the lot form would save", () => {
     expect(r.draft.details_json).toBe(null);
   });
 
+  it("R-559: Off the site after (days) becomes the form's timer; empty stays up", () => {
+    expect(det(one({ Name: "Sample", Quantity: "5", "Off the site after (days)": "2" })).expire_days).toBe(2);
+    expect(det(one({ Name: "Sample", Quantity: "5", "Off the site after (days)": "1.5" })).expire_days).toBe(2);
+    const big = one({ Name: "Sample", Quantity: "5", "Off the site after (days)": "900" });
+    expect(det(big).expire_days).toBe(365);
+    expect(big.notes.join(" ")).toContain("capped at 365");
+    expect(one({ Name: "Sample", Quantity: "5", "Off the site after (days)": "-1" }).problems.length).toBeGreaterThan(0);
+    expect(one({ Name: "Sample", Quantity: "5" }).draft.details_json).toBe(null);
+  });
+
   it("several photos per lot, and the yes/no columns", () => {
     const r = one({ Name: "Sample", Photos: "front.jpg\nside.jpg\nhttps://x.test/back.png", "Sent on WhatsApp": "Yes", Emailed: "maybe" });
     expect(r.photos.map((p) => p.ref)).toEqual(["front.jpg", "side.jpg", "https://x.test/back.png"]);
