@@ -21,9 +21,32 @@ jobs:
       contents: write
     outputs:
       release_id: ${{ steps.draft.outputs.result }}
+      notes: ${{ steps.notes.outputs.body }}
     steps:
+      # R-561: the release notes are the tagged commit's message, so the in-app "Ecliptr
+      # updated" card has something to show. fetch-depth 1 is enough: a tag push checks out
+      # the tagged commit itself, so HEAD is the commit the tag points at.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - id: notes
+        run: |
+          # `|| true`: the step runs under pipefail, and grep exits 1 when every line is a trailer.
+          body="$(git log -1 --format=%B HEAD | { grep -v -i '^Co-Authored-By:' || true; } | cat -s)"
+          if [ -z "$body" ]; then
+            body='Download the installer for your platform below. See https://ecliptr.app/download to get set up.'
+          fi
+          {
+            echo 'body<<ECLIPTR_NOTES_EOF'
+            printf '%s\n' "$body"
+            echo 'ECLIPTR_NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - id: draft
         uses: actions/github-script@v7
+        env:
+          RELEASE_NOTES: ${{ steps.notes.outputs.body }}
         with:
           result-encoding: string
           script: |
@@ -33,11 +56,18 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo, per_page: 100,
             });
             const found = existing.find(r => r.tag_name === tag && r.draft);
-            if (found) { core.info(`Reusing draft ${found.id} for ${tag}`); return String(found.id); }
+            if (found) {
+              core.info(`Reusing draft ${found.id} for ${tag}`);
+              await github.rest.repos.updateRelease({
+                owner: context.repo.owner, repo: context.repo.repo,
+                release_id: found.id, body: process.env.RELEASE_NOTES,
+              });
+              return String(found.id);
+            }
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner, repo: context.repo.repo,
               tag_name: tag, name: `Ecliptr ${tag}`,
-              body: 'Download the installer for your platform below. See https://ecliptr.app/download to get set up.',
+              body: process.env.RELEASE_NOTES,
               draft: true, prerelease: false,
             });
             core.info(`Created draft ${data.id} for ${tag}`);
@@ -99,6 +129,8 @@ jobs:
           # releaseId, NOT tagName: with a tag the action looks for the draft and
           # creates one when it does not see it, which is the race above.
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          # The same text the draft was created with, so latest.json's notes carry it.
+          releaseBody: ${{ needs.create-release.outputs.notes }}
           # Built as a draft so a half-finished release can never reach the updater.
           # Both matrix legs upload into the same draft; the `publish` job below flips
           # it public only once BOTH have succeeded. See that job for why.

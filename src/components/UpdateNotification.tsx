@@ -1,113 +1,75 @@
 import { useEffect, useState } from "react";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { Download, X, Check } from "lucide-react";
+import { Download } from "lucide-react";
 import { api } from "../lib/api";
+import { checkNow, downloadIfNeeded, installNow, friendlyError, useUpdateState, getUpdateState, mayAutoInstall, readAttempts } from "../lib/updater";
 
-// R-409: one update check per launch, shared by every mount. This banner used to be
-// remounted on every tab click, and each mount hid it and ran check() again two seconds
-// later, so it popped back in and pushed the page down each time ("the top bar flashes
-// repeatedly"). A remount now renders the answer it already has, at once.
-let checking: Promise<any> | null = null;
-let known: any = null;
-function checkOnce(): Promise<any> {
-  if (!checking) {
-    checking = new Promise((r) => setTimeout(r, 2000))
-      .then(() => check())
-      .then((u) => { known = u ?? null; return known; })
-      .catch((e: any) => { console.warn("Update check failed:", e?.message ?? e); return null; });
-  }
-  return checking;
+// R-409: one update check per launch, shared by every mount. This used to be remounted on
+// every tab click, and each mount hid it and ran check() again two seconds later, so it
+// popped back in and pushed the page down each time ("the top bar flashes repeatedly").
+// The check, the download and the state now live in lib/updater, so a remount renders the
+// answer it already has, at once.
+//
+// R-561: a visible card instead of a thin strip. It floats in the corner, so it never
+// moves the page. The update downloads quietly in the background; the card appears when
+// it is ready (or when the download failed). Later hides it for this session only.
+const RECHECK_MS = 4 * 60 * 60 * 1000;
+let recheckTimer: ReturnType<typeof setInterval> | null = null;
+let laterVersion: string | null = null;
+
+// A remount (leaving the globe tab) does not re-download after a failure; the 4-hour re-check does.
+function lookForUpdate(force: boolean) {
+  checkNow(force).then((u) => { if (u && (force || getUpdateState().phase !== "error")) downloadIfNeeded(); });
 }
-const offered = (u: any) => (u && localStorage.getItem("clienthub_update_dismissed") !== u.version ? u : null);
 
 export default function UpdateNotification() {
-  const [update, setUpdate] = useState<any>(() => offered(known));
-  const [dismissed, setDismissed] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [installing, setInstalling] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const st = useUpdateState();
+  const [later, setLater] = useState(laterVersion);
 
   useEffect(() => {
-    let live = true;
-    checkOnce().then((u) => { if (live) setUpdate(offered(u)); });
-    return () => { live = false; };
+    lookForUpdate(false);
+    if (!recheckTimer) recheckTimer = setInterval(() => lookForUpdate(true), RECHECK_MS);
   }, []);
 
-  if (!update || dismissed) return null;
+  const u = st.update;
+  if (!u || later === u.version) return null;
+  if (st.phase !== "ready" && st.phase !== "installing" && st.phase !== "error") return null;
 
-  const handleInstall = async () => {
-    setError(null);
-    setDownloading(true);
-    let total = 0, got = 0;
-    try {
-      await update.downloadAndInstall((e: any) => {
-        // Tauri v2 emits Started / Progress / Finished with payload on `e.data`.
-        if (e.event === "Started") total = e.data?.contentLength ?? 0;
-        if (e.event === "Progress") {
-          got += e.data?.chunkLength ?? 0;
-          if (total > 0) setProgress(Math.round((got / total) * 100));
-        }
-        if (e.event === "Finished") { setDownloading(false); setInstalling(true); }
-      });
-      await relaunch();
-    } catch (err: any) {
-      // Never swallow silently — a signing-key mismatch or download failure must
-      // be visible, not look like a no-op click.
-      setDownloading(false);
-      setInstalling(false);
-      setError(err?.message ?? String(err));
-      console.error("Update failed:", err);
-    }
-  };
-
-  const handleLater = () => {
-    setDismissed(true);
-    localStorage.setItem("clienthub_update_dismissed", update.version);
-  };
-
+  const error = st.phase === "error" ? st.error : null;
+  const installing = st.phase === "installing";
+  const handleLater = () => { laterVersion = u.version; setLater(u.version); };
   // Fallback when the in-app updater can't write in place (common on macOS when the
   // app is quarantined/translocated): send the user to the download page, which
-  // starts a direct download of the newest installer — never a GitHub page.
+  // starts a direct download of the newest installer, never a GitHub page.
   const openDownload = () => { api.openExternal("https://ecliptr.app/download").catch(() => {}); };
-  const friendlyError = (e: string) =>
-    /read-only|os error 30/i.test(e)
-      ? "macOS is running Ecliptr from a read-only spot, so it can't update itself. Tap Download update, then in Finder drag Ecliptr into Applications and reopen it from there. (Re-downloading into Downloads won't fix it: it must live in Applications.)"
-      : `Update failed: ${e}`;
 
   return (
-    <div className="sticky top-0 z-50 flex items-center justify-between px-5 py-3"
-      style={{ background: "var(--accent-tint)", borderBottom: "1px solid var(--accent-glow)" }}>
-      <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
-          style={{ background: "var(--accent-600)" }}>
-          <Download size={14} className="text-on-accent" />
+    <div className="fixed bottom-5 right-5 z-50 w-[340px] max-w-[calc(100vw-2.5rem)] rounded-2xl border border-line bg-surface p-4 shadow-xl" role="status">
+      <div className="flex items-start gap-3">
+        <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full" style={{ background: "var(--accent-600)" }}>
+          <Download size={16} className="text-on-accent" />
         </div>
-        <div>
-          <p className="text-[13px] font-semibold" style={{ color: "var(--t-tx1)" }}>Ecliptr {update.version} is available</p>
-          <p className="text-[11px]" style={{ color: error ? "var(--danger, #ef4444)" : "var(--t-tx3)" }}>
-            {error ? friendlyError(error) : installing ? "Installing… app will restart" : downloading ? `Downloading… ${progress}%` : "Update now to get the latest features and fixes"}
+        <div className="min-w-0">
+          <p className="text-[14px] font-semibold text-ink">
+            {error ? `Ecliptr ${u.version} is available` : `Ecliptr ${u.version} is ready`}
+          </p>
+          <p className="mt-0.5 text-[12px] leading-snug" style={{ color: error ? "var(--danger, #ef4444)" : "var(--t-tx3)" }}>
+            {error ? friendlyError(error) : installing ? "Restarting…" : mayAutoInstall(readAttempts(), u.version) ? "It installs the next time you open Ecliptr." : "Restart now to install it."}
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2 flex-shrink-0">
+      <div className="mt-3 flex items-center justify-end gap-2">
         {!installing && (
-          <button onClick={handleLater} className="h-8 px-3 rounded-lg text-[12px] font-medium transition-colors"
-            style={{ color: "var(--t-tx2)" }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--accent-glow)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
+          <button onClick={handleLater} className="h-8 rounded-lg px-3 text-[12px] font-medium text-ink-2 transition-colors hover:bg-surface-2">
             Later
           </button>
         )}
         <button
-          onClick={error ? openDownload : handleInstall}
-          disabled={downloading || installing}
-          className="h-8 px-4 rounded-lg text-[12px] font-semibold text-on-accent disabled:opacity-50 transition-all flex items-center gap-1.5"
+          onClick={error ? openDownload : () => installNow()}
+          disabled={installing}
+          className="flex h-8 items-center gap-1.5 rounded-lg px-4 text-[12px] font-semibold text-on-accent transition-all disabled:opacity-50"
           style={{ background: "var(--accent-600)" }}
         >
-          {installing ? <Check size={12} /> : downloading ? <span className="w-3 h-3 border-2 border-on-accent/40 border-t-on-accent rounded-full animate-spin" /> : null}
-          {error ? "Download update" : installing ? "Restarting…" : downloading ? "Downloading" : "Install Now"}
+          {error ? "Download update" : installing ? "Restarting…" : "Restart now"}
         </button>
       </div>
     </div>

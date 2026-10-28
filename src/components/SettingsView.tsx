@@ -108,7 +108,9 @@ import {
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import { checkNow, installNow, getUpdateState, friendlyError, useUpdateState } from "../lib/updater";
 import { toast } from "./Toast";
+import { authReasonWords, RECONNECT_EVENT } from "./ReconnectSheet";
 import { copyText, COPY_FAILED } from "../lib/clipboard";
 import { saveOrRevert, saveFailedMessage } from "../lib/saveOrRevert";
 import { useSubmit } from "../lib/useSubmit";
@@ -1420,7 +1422,7 @@ function SyncPill({ auth, connected }: { auth?: string; connected?: boolean }) {
   if (auth === "auth_lost")
     return (
       <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-danger-ink bg-danger-bg border border-danger-ink/20 px-2.5 h-7 rounded-full">
-        <AlertCircle size={13} /> Signed out, sign in again
+        <AlertCircle size={13} /> Sync needs your password
       </span>
     );
   if (auth === "ok") return <ConnectedPill ok />;
@@ -2798,7 +2800,11 @@ function SyncTab() {
             {net.auth === "auth_lost" && (
               <div className="rounded-xl border border-danger-ink/20 bg-danger-bg px-4 py-3 text-[12.5px] text-danger-ink flex items-start gap-2">
                 <AlertCircle size={14} className="shrink-0 mt-px" />
-                <span>This device is signed out, so nothing is syncing. Sign out and back in to reconnect, your unsynced changes are kept and upload once you do.</span>
+                <span className="flex-1">
+                  {authReasonWords(net.auth_reason)} Nothing is syncing until you reconnect. Your unsynced changes are kept and upload once you do.
+                </span>
+                <button onClick={() => window.dispatchEvent(new Event(RECONNECT_EVENT))}
+                  className="shrink-0 -mt-0.5 px-3 h-7 rounded-lg border border-danger-ink/30 text-[12px] font-medium hover:bg-danger-ink/10 whitespace-nowrap">Reconnect</button>
               </div>
             )}
             {net.invariants.length > 0 && (
@@ -3792,17 +3798,23 @@ function UpdateButton() {
     setChecking(true);
     setStatus(null);
     try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
+      // R-561: the shared updater, so there is progress and a Mac relaunches after the install.
+      const update = await checkNow(true);
       if (update) {
         setStatus(`Update available: ${update.version}`);
-        await update.downloadAndInstall();
+        await installNow();
+        const after = getUpdateState();
+        if (after.phase === "error" && after.error) setStatus(friendlyError(after.error));
       } else {
         setStatus("Up to date");
       }
     } catch (e: any) { setStatus(e.toString()); }
     finally { setChecking(false); }
   };
+  const upd = useUpdateState();
+  const shown = upd.phase === "downloading" ? `Downloading ${upd.progress}%`
+    : upd.phase === "installing" ? "Installing. Ecliptr reopens on its own when it is done."
+    : status;
 
   return (
     <div>
@@ -3817,7 +3829,7 @@ function UpdateButton() {
       >
         {checking ? "Checking…" : "Check for updates"}
       </button>
-      {status && <p className="text-[12px] text-muted mt-2">{status}</p>}
+      {shown && <p className="text-[12px] text-muted mt-2">{shown}</p>}
     </div>
   );
 }

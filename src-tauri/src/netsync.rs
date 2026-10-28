@@ -209,6 +209,7 @@ pub fn is_enabled() -> bool {
 fn note_sync_ok(key: &str) {
     state_set(key, &chrono::Utc::now().to_rfc3339());
     state_del("netsync_auth_lost");
+    state_del(AUTH_REASON_KEY);
 }
 
 /// The server rejected this device and a refresh couldn't save it: the user must
@@ -217,21 +218,70 @@ fn note_auth_lost() {
     state_set("netsync_auth_lost", "1");
 }
 
-/// Trade the stored token for a fresh one. The server accepts a recently-expired
-/// token, so a device that was merely closed for a while heals itself. Stores and
-/// returns the new token.
-pub(crate) async fn refresh_token(base: &str, token: &str) -> Result<String> {
+/// R-560: device_state key holding why the server refused this device's session (`expired`,
+/// `password_changed`, `account_off`, `signed_out`), read from the refresh route's 401 body. Cleared
+/// wherever `netsync_auth_lost` is.
+const AUTH_REASON_KEY: &str = "netsync_auth_reason";
+
+/// R-560: why a token refresh did not produce a token. Only `Refused` means the person must sign in
+/// again; `Transient` (no network, a timeout, 429, a 5xx) means try again next tick and read offline.
+pub(crate) enum RefreshFail {
+    Refused,
+    Transient(anyhow::Error),
+}
+
+impl std::fmt::Display for RefreshFail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefreshFail::Refused => write!(f, "refresh refused by the server"),
+            RefreshFail::Transient(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+/// R-560: only a 401 or 403 from the refresh route is the server saying no. Everything else is a
+/// blip that must not sign the device out.
+fn refresh_status_is_refusal(status: u16) -> bool {
+    status == 401 || status == 403
+}
+
+/// R-560: the `reason` field of a refresh refusal body, or None when the body has none.
+fn refusal_reason(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("reason")?
+        .as_str()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Trade the stored token for a fresh one. The server accepts a token that expired within the idle
+/// window, so a device that was merely closed for a while heals itself. Stores and returns the new
+/// token. On a refusal the server's reason is stored for the sign-in-again sheet.
+pub(crate) async fn refresh_token(base: &str, token: &str) -> std::result::Result<String, RefreshFail> {
     let resp = http()
         .post(format!("{}/api/auth/employee/refresh", base))
         .bearer_auth(token)
         .send()
         .await
-        .context("refresh request")?;
-    if !resp.status().is_success() {
-        anyhow::bail!("refresh failed: HTTP {}", resp.status());
+        .map_err(|e| RefreshFail::Transient(anyhow::Error::new(e).context("refresh request")))?;
+    let status = resp.status();
+    if refresh_status_is_refusal(status.as_u16()) {
+        let body = resp.text().await.unwrap_or_default();
+        match refusal_reason(&body) {
+            Some(r) => state_set(AUTH_REASON_KEY, &r),
+            None => state_del(AUTH_REASON_KEY),
+        }
+        return Err(RefreshFail::Refused);
     }
-    let body: LoginResp = resp.json().await.context("refresh decode")?;
-    let new_token = body.token.context("refresh returned no token")?;
+    if !status.is_success() {
+        return Err(RefreshFail::Transient(anyhow::anyhow!("refresh failed: HTTP {}", status)));
+    }
+    let body: LoginResp = resp.json().await.map_err(|e| RefreshFail::Transient(anyhow::Error::new(e).context("refresh decode")))?;
+    let new_token = body
+        .token
+        .context("refresh returned no token")
+        .map_err(RefreshFail::Transient)?;
     state_set("netsync_token", &new_token);
     tracing::info!("netsync: session token refreshed");
     Ok(new_token)
@@ -274,7 +324,12 @@ pub async fn server_request(method: &str, path: &str, body: Option<serde_json::V
                     token = t;
                     continue;
                 }
-                Err(e) => tracing::warn!("netsync request: token refresh failed: {}", e),
+                // R-560: a blip is not a sign-out. The caller reads it as no connection.
+                Err(RefreshFail::Transient(e)) => {
+                    tracing::warn!("netsync request: token refresh failed: {}", e);
+                    return Err(e.context("Could not reach the server."));
+                }
+                Err(RefreshFail::Refused) => tracing::warn!("netsync request: the server refused to refresh the session"),
             }
         }
         if status == 401 {
@@ -572,7 +627,12 @@ pub async fn push_pending() -> Result<usize> {
                         token = t;
                         continue;
                     }
-                    Err(e) => tracing::warn!("netsync push: token refresh failed: {}", e),
+                    // R-560: only a refusal signs the device out; a blip retries next tick.
+                    Err(RefreshFail::Transient(e)) => {
+                        tracing::warn!("netsync push: token refresh failed: {}", e);
+                        anyhow::bail!("token refresh failed, will retry");
+                    }
+                    Err(RefreshFail::Refused) => tracing::warn!("netsync push: the server refused to refresh the session"),
                 }
             }
             note_auth_lost();
@@ -772,7 +832,12 @@ pub async fn pull_apply() -> Result<usize> {
                         token = t;
                         continue;
                     }
-                    Err(e) => tracing::warn!("netsync pull: token refresh failed: {}", e),
+                    // R-560: only a refusal signs the device out; a blip retries next tick.
+                    Err(RefreshFail::Transient(e)) => {
+                        tracing::warn!("netsync pull: token refresh failed: {}", e);
+                        anyhow::bail!("token refresh failed, will retry");
+                    }
+                    Err(RefreshFail::Refused) => tracing::warn!("netsync pull: the server refused to refresh the session"),
                 }
             }
             note_auth_lost();
@@ -1027,6 +1092,54 @@ pub async fn probe_login(url: &str, email: &str, password: &str) -> Result<(Stri
     Ok((token, identity))
 }
 
+/// R-560: how a sign-in attempt against the server ended, read from the error text `probe_login` and
+/// `connect` produce. Only a 401 from the login route means the password was wrong.
+#[derive(Debug, PartialEq)]
+enum LoginOutcome {
+    BadPassword,
+    /// The password was right but the account is switched off (a 403 from the login route).
+    AccountOff,
+    /// The login call itself failed: no network, a timeout, a 429 or a 5xx.
+    Unreachable,
+    /// The login worked and a later step (the pull) did not.
+    SignedInThenFailed,
+}
+
+fn classify_login_error(msg: &str) -> LoginOutcome {
+    if msg.contains("login failed: HTTP 401") {
+        LoginOutcome::BadPassword
+    } else if msg.contains("login failed: HTTP 403") {
+        LoginOutcome::AccountOff
+    } else if msg.starts_with("login ") || msg.contains("did not return a token") {
+        LoginOutcome::Unreachable
+    } else {
+        LoginOutcome::SignedInThenFailed
+    }
+}
+
+/// R-560: whether this device is already bound to the server for this same account.
+pub fn is_bound_to(email: &str) -> bool {
+    state_get("netsync_email").map(|e| e.trim().eq_ignore_ascii_case(email.trim())).unwrap_or(false)
+}
+
+/// R-560: what the server says about a password a bound device just matched locally.
+pub enum ServerPasswordCheck {
+    Accepted,
+    Rejected,
+    /// No answer in time, or an answer that is not a verdict on the password. Carry on offline.
+    Unreachable,
+}
+
+/// R-560: ask the server whether `password` is still this account's password, without touching
+/// local state. Waits about 8 seconds; only a 401 is a rejection.
+pub async fn check_password_with_server(url: &str, email: &str, password: &str) -> ServerPasswordCheck {
+    match tokio::time::timeout(Duration::from_secs(8), probe_login(url, email, password)).await {
+        Ok(Ok(_)) => ServerPasswordCheck::Accepted,
+        Ok(Err(e)) if classify_login_error(&e.to_string()) == LoginOutcome::BadPassword => ServerPasswordCheck::Rejected,
+        _ => ServerPasswordCheck::Unreachable,
+    }
+}
+
 /// Log in to the server, store the connection, and bootstrap by pulling the full
 /// org history (cursor 0). Returns the account's identity (from the login body) so
 /// the caller can claim/verify the active store AND materialize the account
@@ -1039,6 +1152,7 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<ServerIde
     // The login just succeeded, so any earlier auth-lost verdict is stale — clear it
     // now rather than leaving a red "signed out" up until the first pull confirms.
     state_del("netsync_auth_lost");
+    state_del(AUTH_REASON_KEY);
     // Persist identity so diagnostics can show who/which org this device is bound to
     // without another round-trip.
     state_set("netsync_email", &identity.email);
@@ -1093,6 +1207,10 @@ pub fn status_json() -> serde_json::Value {
         "pending_push": pending,
         "pull_cursor": state_get("netsync_pull_cursor").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
         "auth": auth_state(),
+        // R-560: why the server refused this device (expired, password_changed, account_off,
+        // signed_out), "" when it has not or gave none. Additive.
+        "account_email": state_get("netsync_email").unwrap_or_default(),
+        "auth_reason": if auth_state() == "auth_lost" { state_get(AUTH_REASON_KEY).unwrap_or_default() } else { String::new() },
         "last_pull_at": state_get("netsync_last_pull_at").unwrap_or_default(),
         "last_push_at": state_get("netsync_last_push_at").unwrap_or_default(),
         // Last result of `run_invariant_checks` — stored rather than recomputed here,
@@ -1199,6 +1317,32 @@ fn run_invariant_checks() {
 #[tauri::command]
 pub async fn netsync_connect(url: String, email: String, password: String) -> Result<(), String> {
     connect(&url, &email, &password).await.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// R-560: sign this device back in to the server it is bound to, with the password typed in the
+/// sign-in-again sheet. Lifts the signed-out state, and on success stores a fresh hash of the
+/// password on this device's account so signing in offline matches the new password.
+#[tauri::command]
+pub async fn netsync_reconnect(password: String) -> Result<(), String> {
+    if password.is_empty() {
+        return Err("Enter your password.".into());
+    }
+    let (Some(url), Some(email)) = (state_get("netsync_url"), state_get("netsync_email")) else {
+        return Err("This device is not set up to sync.".into());
+    };
+    match connect(&url, &email, &password).await {
+        Ok(_) => {}
+        Err(e) => match classify_login_error(&e.to_string()) {
+            LoginOutcome::BadPassword => return Err("That password did not work.".into()),
+            LoginOutcome::AccountOff => return Err("This account is switched off. Ask the owner to turn it back on.".into()),
+            LoginOutcome::Unreachable => return Err("Could not reach the server. Check your connection and try again.".into()),
+            // The server took the password and the connection is stored; only the first pull
+            // failed, and the sync loop picks that up. The device is back in.
+            LoginOutcome::SignedInThenFailed => tracing::warn!("netsync reconnect: signed in, first pull failed: {}", e),
+        },
+    }
+    crate::employees::set_local_password(&email, &password);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2944,5 +3088,42 @@ mod r400_sync_tests {
         state_del("netsync_url");
         state_del("netsync_token");
         assert!(!logistics_only_device());
+    }
+}
+
+// R-560: a refresh only signs the device out on a refusal, and the reason is read from the body.
+#[cfg(test)]
+mod r560_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn only_401_and_403_are_refusals() {
+        assert!(refresh_status_is_refusal(401));
+        assert!(refresh_status_is_refusal(403));
+        for transient in [200u16, 408, 429, 500, 502, 503, 504] {
+            assert!(!refresh_status_is_refusal(transient), "{transient} must not sign the device out");
+        }
+    }
+
+    #[test]
+    fn the_reason_is_read_from_the_refusal_body() {
+        assert_eq!(refusal_reason(r#"{"error":"Session expired","reason":"expired"}"#).as_deref(), Some("expired"));
+        assert_eq!(refusal_reason(r#"{"error":"x","reason":"password_changed"}"#).as_deref(), Some("password_changed"));
+        assert_eq!(refusal_reason(r#"{"error":"x"}"#), None);
+        assert_eq!(refusal_reason(r#"{"reason":""}"#), None);
+        assert_eq!(refusal_reason("not json"), None);
+        assert_eq!(refusal_reason(""), None);
+    }
+
+    #[test]
+    fn a_login_error_is_read_for_what_it_says_about_the_password() {
+        assert_eq!(classify_login_error("login failed: HTTP 401 Unauthorized"), LoginOutcome::BadPassword);
+        assert_eq!(classify_login_error("login failed: HTTP 403 Forbidden"), LoginOutcome::AccountOff);
+        assert_eq!(classify_login_error("login failed: HTTP 429 Too Many Requests"), LoginOutcome::Unreachable);
+        assert_eq!(classify_login_error("login failed: HTTP 503 Service Unavailable"), LoginOutcome::Unreachable);
+        assert_eq!(classify_login_error("login request"), LoginOutcome::Unreachable);
+        assert_eq!(classify_login_error("server did not return a token"), LoginOutcome::Unreachable);
+        assert_eq!(classify_login_error("pull request"), LoginOutcome::SignedInThenFailed);
+        assert_eq!(classify_login_error("pull failed: HTTP 500"), LoginOutcome::SignedInThenFailed);
     }
 }

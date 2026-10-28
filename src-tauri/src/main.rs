@@ -663,6 +663,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Network sync (Phase 2)
             netsync::netsync_connect,
+            netsync::netsync_reconnect,
             netsync::netsync_status,
             // R-441 company documents
             company_docs::docs_list,

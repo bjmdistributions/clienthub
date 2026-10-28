@@ -91,6 +91,7 @@ import AutomationLogView from "./components/AutomationLogView";
 import OnboardingWizard from "./components/OnboardingWizard";
 import GettingStarted from "./components/GettingStarted";
 import AuthView from "./components/AuthView";
+import ReconnectSheet, { RECONNECT_EVENT } from "./components/ReconnectSheet";
 import LogisticsView from "./components/LogisticsView";
 import BolsView from "./components/BolsView";
 import { api, Me } from "./lib/api";
@@ -443,7 +444,9 @@ export default function App() {
   const [lastSync, setLastSync] = useState<string | null>(null);
   // R-511 DG-14: the footer's light is the server, not the local AI model (that status lives on the AI
   // settings card). `auth` is what the netsync loop last saw: ok, offline (unreachable) or auth_lost.
-  const [net, setNet] = useState<{ auth: "ok" | "auth_lost" | "offline"; pending_push: number; last_pull_at: string } | null>(null);
+  const [net, setNet] = useState<{ auth: "ok" | "auth_lost" | "offline"; pending_push: number; last_pull_at: string; auth_reason?: string; account_email?: string } | null>(null);
+  // R-560: "Not now" on the sign-in-again sheet hides it until the next launch; Settings can bring it back.
+  const [reconnectHidden, setReconnectHidden] = useState(false);
   const [syncFailed, setSyncFailed] = useState<string | null>(null);
   const [quickLogOpen, setQuickLogOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -684,13 +687,18 @@ export default function App() {
 
   const pollNet = () => {
     api.netsyncStatus()
-      .then((st) => setNet({ auth: st.auth, pending_push: st.pending_push, last_pull_at: st.last_pull_at }))
+      .then((st) => setNet({ auth: st.auth, pending_push: st.pending_push, last_pull_at: st.last_pull_at, auth_reason: st.auth_reason, account_email: st.account_email }))
       .catch(() => setNet(null));
   };
   useEffect(() => {
     pollNet();
     const id = setInterval(pollNet, 30000);
     return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
+    const open = () => setReconnectHidden(false);
+    window.addEventListener(RECONNECT_EVENT, open);
+    return () => window.removeEventListener(RECONNECT_EVENT, open);
   }, []);
 
   useEffect(() => {
@@ -1746,6 +1754,14 @@ export default function App() {
           lotIds={sharePanelIds}
           mediaBase={shareMediaBase}
           onClose={() => setSharePanelIds(null)}
+        />
+      )}
+      {net?.auth === "auth_lost" && !reconnectHidden && (
+        <ReconnectSheet
+          email={net.account_email || me.email}
+          reason={net.auth_reason}
+          onClose={() => setReconnectHidden(true)}
+          onDone={() => { setReconnectHidden(false); pollNet(); }}
         />
       )}
       <ToastHost />

@@ -4734,10 +4734,12 @@ export const api = {
   // Network sync (Phase 2 — central server push/pull)
   netsyncStatus: () =>
     invoke<{ connected: boolean; url: string; pending_push: number; pull_cursor: number;
-             auth: "ok" | "auth_lost" | "offline"; last_pull_at: string; last_push_at: string;
+             auth: "ok" | "auth_lost" | "offline"; auth_reason?: string; account_email?: string; last_pull_at: string; last_push_at: string;
              invariants: string[]; invariants_at: string }>("netsync_status"),
   netsyncConnect: (url: string, email: string, password: string) =>
     invoke<void>("netsync_connect", { url, email, password }),
+  // R-560: sign this device back in to the server it is bound to, with the account's password.
+  netsyncReconnect: (password: string) => invoke<void>("netsync_reconnect", { password }),
   netsyncDisconnect: () => invoke<void>("netsync_disconnect"),
   netsyncSyncNow: () => invoke<{ pushed: number; pulled: number }>("netsync_sync_now"),
   netsyncRepair: () => invoke<{ reapplied: number; pushed: number }>("netsync_repair"),

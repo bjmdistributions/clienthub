@@ -411,6 +411,17 @@ pub async fn login(email: String, password: String) -> Result<Me, String> {
     //    An account is only local to the ACTIVE store, so a successful local login
     //    means this account already belongs here — safe to proceed + claim.
     if let Ok(me) = employee_login(email.clone(), password.clone()) {
+        // R-560: a device already bound to the server for this account must not let an old local
+        // password in once the real one was changed elsewhere. Ask the server first: only its 401
+        // stops the sign-in; an answer that cannot be had (offline, slow, a 5xx) carries on as before.
+        if crate::netsync::is_bound_to(&email) {
+            if let crate::netsync::ServerPasswordCheck::Rejected =
+                crate::netsync::check_password_with_server(SERVER_URL, &email, &password).await
+            {
+                let _ = set_current_staff(None);
+                return Err("Your password was changed. Sign in with the new one.".into());
+            }
+        }
         // This account is local to the active store → it owns/shares this store.
         if let Some(org) = staff_org_id(&me.id) {
             crate::db::claim_active_store_org(&org);
@@ -533,6 +544,18 @@ fn materialize_account(ident: &crate::netsync::ServerIdentity, password: &str) {
     let _ = conn.execute(
         "UPDATE staff_accounts SET avatar=?1, title=?2, phone=?3 WHERE id=?4",
         rusqlite::params![ident.avatar, ident.title, ident.phone, ident.id],
+    );
+}
+
+/// R-560: store a fresh bcrypt hash of `password` on this device's account for `email`, so signing in
+/// offline matches the password the server just accepted. Touches only that row's hash; the hash
+/// is never replicated (PS-02), so this writes no sync event.
+pub fn set_local_password(email: &str, password: &str) {
+    let Ok(hash) = bcrypt::hash(password, bcrypt::DEFAULT_COST) else { return };
+    let Ok(conn) = pool().get() else { return };
+    let _ = conn.execute(
+        "UPDATE staff_accounts SET password_hash=?1 WHERE lower(email)=lower(?2)",
+        rusqlite::params![hash, email.trim()],
     );
 }
 
