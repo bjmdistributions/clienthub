@@ -2518,6 +2518,28 @@ export interface LotFeedSettings {
   key?: string;
 }
 
+// R-562: the Google calendar, as the server answers it (clienthub-api routes/calendar.rs).
+export interface CalendarPerson {
+  staff_id: string; name: string; email: string;
+  may_main: boolean; may_logistics: boolean;
+  main: boolean; logistics: boolean;
+  main_shared: boolean; logistics_shared: boolean;
+  is_account: boolean;
+}
+export interface CalendarState {
+  app_set: boolean;
+  client_id: string;
+  connected: boolean;
+  account_email: string;
+  connected_at: string;
+  last_sync_at: string;
+  last_error: string;
+  events: { main?: number; logistics?: number };
+  people: CalendarPerson[];
+  callback?: string;
+  url?: string;
+}
+
 export interface InboundLoad {
   id: string;
   source: string;
@@ -4682,6 +4704,8 @@ export const api = {
   // `server` is the base URL the inbound photos are served from.
   getLoadInbox: () => invoke<{ token: string; url: string | null; server: string | null }>("get_load_inbox"),
   // R-559: the Muse upload address (server side). `key` is only on the answer to "key", once.
+  googleCalendar: (action: "get" | "app" | "connect" | "share" | "sync" | "disconnect", body?: Record<string, unknown>) =>
+    invoke<CalendarState>("google_calendar", { action, body: body ?? null }),
   lotFeed: (action: "get" | "set" | "key" | "off", body?: { review?: boolean; expire_days?: number }) =>
     invoke<LotFeedSettings>("lot_feed", { action, body: body ?? null }),
   listInboundLoads: () => invoke<InboundLoad[]>("list_inbound_loads"),

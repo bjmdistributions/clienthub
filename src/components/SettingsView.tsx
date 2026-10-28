@@ -35,6 +35,7 @@ import {
   StorefrontConfig,
   FbStatus,
   FbPageLite,
+  CalendarState,
   NewsletterProductTemplate,
 } from "../lib/api";
 import StatusPill from "./StatusPill";
@@ -73,6 +74,7 @@ import {
   Receipt,
   ShoppingBag,
   Facebook,
+  CalendarDays,
   Globe,
   Split,
   Truck,
@@ -203,7 +205,7 @@ type SettingsTab =
   | "account" | "appearance" | "company"
   | "documents" | "storefront" | "clientfields" | "leads"
   | "email" | "whatsapp" | "automation"
-  | "sheets" | "shopify" | "facebook" | "billing" | "ai"
+  | "sheets" | "calendar" | "shopify" | "facebook" | "billing" | "ai"
   | "sync" | "backup" | "import" | "splits" | "team"
   | "feedback";
 
@@ -253,6 +255,7 @@ const SETTINGS_GROUPS: {
     group: "Connections",
     items: [
       { id: "sheets",   label: "Google Sheets", icon: Sheet,       desc: "Two-way sheet sync" },
+      { id: "calendar", label: "Google Calendar", icon: CalendarDays, desc: "Bills, trucks and invoices on a shared calendar" },
       { id: "shopify",  label: "Shopify",       icon: ShoppingBag, desc: "Sync new customers as leads" },
       { id: "facebook", label: "Facebook",      icon: Facebook,    desc: "Post inventory to a Facebook Page" },
       { id: "ai",       label: "AI",            icon: Bot,         desc: "Local model selection" },
@@ -367,6 +370,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "sheets", card: "Sync approvals back to the sheet", label: "Write-back to the sheet", kw: "writeback push clients approved lead" },
   { tab: "sheets", card: "Sync", label: "Sync the sheet now", kw: "pull manual sync auto sync" },
   { tab: "sheets", label: "Sheet sync history", kw: "log errors duplicates skipped new clients" },
+  { tab: "calendar", card: "Company calendar", label: "Google Calendar", kw: "calendar google bills due trucks pickups deliveries invoices carriers pay day share logistics" },
   { tab: "shopify", card: "Shopify customer sync", label: "Shopify customer sync", kw: "webhook url signing secret hmac new customers pending clients" },
   { tab: "facebook", card: "Facebook Page posting", label: "Facebook Page posting", kw: "meta app id app secret oauth redirect page connect post inventory" },
   { tab: "ai", card: "Local AI", label: "Local AI model", kw: "ollama llm offline model picker llama qwen" },
@@ -695,6 +699,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
               {tab === "import"       && <ImportTab />}
               {tab === "automation"   && <AutomationTab />}
               {tab === "sheets"       && <SheetsTab />}
+              {tab === "calendar"     && <CalendarTab />}
               {tab === "splits"       && <SplitsTab />}
               {tab === "backup"       && <BackupTab />}
               {tab === "team"         && <TeamTab />}
@@ -4063,6 +4068,181 @@ function FacebookTab() {
           <li>In <strong className="text-ink-2">App settings → Basic</strong>, copy the <strong className="text-ink-2">App ID</strong> and <strong className="text-ink-2">App secret</strong> into the fields above and save.</li>
           <li>Make sure you’re an admin of the app (you are, as its creator). While the app is in <strong className="text-ink-2">Development</strong> mode you can post to Pages you manage without Meta app review.</li>
           <li>Click <strong className="text-ink-2">Connect Facebook Page</strong>, approve in the Facebook window, and pick your Page.</li>
+        </ol>
+      </div>
+    </div>
+  );
+}
+
+// R-562: the company calendar in Google (clienthub-api routes/calendar.rs). The server writes the
+// dates; this screen connects the account, shares the calendars and shows when it last wrote.
+function CalendarTab() {
+  const [st, setSt] = useState<CalendarState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [clientId, setClientId] = useState("");
+  const [secret, setSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const load = () => api.googleCalendar("get").then((v) => { setSt(v); setError(null); return v; }).catch((e) => { setError(String(e)); return null; });
+  useEffect(() => { load(); }, []);
+
+  // After Connect, the sign-in happens in the browser; look again until the server has it.
+  useEffect(() => {
+    if (!waiting) return;
+    let tries = 0;
+    const t = setInterval(async () => {
+      tries += 1;
+      const v = await load();
+      if (v?.connected || tries > 60) { setWaiting(false); if (v?.connected) toast(`Connected to ${v.account_email}`); }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [waiting]);
+
+  const run = async (action: "app" | "connect" | "share" | "sync" | "disconnect", body?: Record<string, unknown>) => {
+    if (action === "disconnect" && !confirm("Disconnect Google? The calendars stay in Google as they are, and Ecliptr stops writing to them.")) return;
+    setBusy(true);
+    try {
+      const v = await api.googleCalendar(action, body);
+      if (action === "connect" && v.url) { await api.openExternal(v.url); setWaiting(true); }
+      else setSt(v);
+      if (action === "app") { setSecret(""); toast("Google app saved"); }
+      if (action === "sync") toast(v.last_error ? v.last_error : "Calendar updated", v.last_error ? "error" : "success");
+    } catch (e) { toast(String(e), "error"); }
+    setBusy(false);
+  };
+
+  const when = (iso: string) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "" : d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  };
+  const callback = st?.callback ?? "";
+  const copy = (text: string) => copyText(text).then((ok) => toast(ok ? "Copied" : COPY_FAILED, ok ? "success" : "error"));
+  const btn = "px-3 h-9 border border-line rounded-lg text-[12.5px] text-ink-2 bg-surface hover:bg-surface-2 transition-colors disabled:opacity-50";
+  const primary = "flex items-center gap-1.5 px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity";
+
+  return (
+    <div className="max-w-2xl space-y-5">
+      <div>
+        <SectionLabel>Company calendar</SectionLabel>
+        <p className="text-[13px] text-muted mt-1 leading-relaxed">
+          Ecliptr writes its dates into two calendars in your company Google account.{" "}<strong className="text-ink-2">Ecliptr</strong> has
+          bills due, carriers to pay, the logistics pay day, invoices due and every pickup and delivery.{" "}
+          <strong className="text-ink-2">Ecliptr Logistics</strong> has the pickups and deliveries only, with no money on it.
+          It updates every two minutes. Change a date in Ecliptr, not in Google: a change made in Google is written over the next time that item changes.
+        </p>
+      </div>
+
+      {error && <p className="text-[12.5px] text-danger-ink">{error}</p>}
+
+      {st && (
+        <div className="bg-surface border border-line rounded-xl p-4 space-y-3.5">
+          {st.connected ? (
+            <>
+              <p className="text-[13px] text-ink-2 leading-relaxed">
+                Connected to{" "}<strong className="text-ink">{st.account_email}</strong>.{" "}
+                {st.last_sync_at ? `Last updated ${when(st.last_sync_at)}: ${st.events.main ?? 0} on Ecliptr, ${st.events.logistics ?? 0} on Ecliptr Logistics.` : "Writing the first dates now."}
+              </p>
+              {st.last_error && <p className="text-[12.5px] text-danger-ink">{st.last_error}</p>}
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => run("sync")} disabled={busy} className={btn}>
+                  <span className="flex items-center gap-1.5"><RefreshCw size={13} /> {busy ? "Updating…" : "Update now"}</span>
+                </button>
+                <button onClick={() => run("connect")} disabled={busy || waiting} className={btn}>Connect again</button>
+                <button onClick={() => run("disconnect")} disabled={busy} className={`${btn} text-danger-ink`}>Disconnect</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-[12.5px] text-muted">
+                {st.last_error ? <span className="text-danger-ink">{st.last_error}</span>
+                  : st.app_set ? "Google app saved. Connect the company account."
+                  : "Not set up yet. Follow the steps below once, then connect."}
+              </div>
+              <div>
+                <div className="text-[12.5px] font-medium text-muted mb-1.5">Client ID</div>
+                <input value={clientId} onChange={(e) => setClientId(e.target.value)}
+                  placeholder={st.client_id || "Ends in .apps.googleusercontent.com"}
+                  className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
+              </div>
+              <div>
+                <div className="text-[12.5px] font-medium text-muted mb-1.5">Client secret</div>
+                <div className="flex items-center gap-2">
+                  <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)}
+                    placeholder={st.app_set ? "Saved. Paste to replace" : "From the same Google Cloud page"}
+                    className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
+                  <button onClick={() => run("app", { client_id: clientId.trim() || st.client_id, client_secret: secret.trim() })}
+                    disabled={busy || !secret.trim() || !(clientId.trim() || st.client_id)}
+                    className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
+                    Save app
+                  </button>
+                </div>
+              </div>
+              <div className="pt-1">
+                <button onClick={() => run("connect")} disabled={!st.app_set || busy || waiting} className={primary}>
+                  <CalendarDays size={14} /> {waiting ? "Waiting for Google…" : "Connect Google"}
+                </button>
+                <p className="text-[11.5px] text-muted mt-1.5">
+                  {waiting ? "Finish signing in in your browser. This updates on its own." : "Sign in with the company account. Your browser opens Google."}
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {st?.connected && (
+        <div className="bg-surface border border-line rounded-xl p-4">
+          <div className="text-[12px] font-semibold text-ink mb-1">Who sees them</div>
+          <p className="text-[12px] text-muted mb-3 leading-relaxed">
+            A tick shares that calendar with the person, read only, and Google emails them an invite. The Ecliptr calendar has the money, so it is for admins.
+            Ecliptr Logistics is for anyone Logistics shows names, addresses and phones to.
+          </p>
+          {st.people.length === 0 ? (
+            <p className="text-[12.5px] text-muted">Nobody on the team can see either calendar yet.</p>
+          ) : (
+            <div className="rounded-lg border border-line divide-y divide-line-2">
+              {st.people.map((p) => (
+                <div key={p.staff_id} className="flex items-center gap-3 px-3 py-2.5 text-[13px]">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-ink truncate">{p.name}</div>
+                    <div className="text-[11.5px] text-muted truncate">{p.is_account ? `${p.email}, the connected account: sees both` : p.email}</div>
+                  </div>
+                  {!p.is_account && (["main", "logistics"] as const).map((w) => {
+                    const may = w === "main" ? p.may_main : p.may_logistics;
+                    const on = w === "main" ? p.main : p.logistics;
+                    const live = w === "main" ? p.main_shared : p.logistics_shared;
+                    return (
+                      <label key={w} title={may ? (live ? "Shared" : on ? "Sharing on the next update" : "") : "Not allowed to see this one"}
+                        className={`flex items-center gap-1.5 text-[12.5px] whitespace-nowrap ${may ? "text-ink-2 cursor-pointer" : "text-muted opacity-50"}`}>
+                        <input type="checkbox" className="accent-accent" checked={on} disabled={!may || busy}
+                          onChange={(e) => run("share", { staff_id: p.staff_id, calendar: w, on: e.target.checked })} />
+                        {w === "main" ? "Ecliptr" : "Ecliptr Logistics"}
+                      </label>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="bg-surface border border-line rounded-xl p-4">
+        <div className="text-[12px] font-semibold text-ink mb-2.5">Set it up in Google Cloud (one time)</div>
+        <ol className="text-[12.5px] text-muted space-y-2 list-decimal pl-4 leading-relaxed marker:text-muted">
+          <li>Go to <strong className="text-ink-2">console.cloud.google.com</strong>, signed in with the company Workspace account, and pick the project you use for Ecliptr (or make one).</li>
+          <li>In <strong className="text-ink-2">APIs and services, Library</strong>, turn on the <strong className="text-ink-2">Google Calendar API</strong>.</li>
+          <li>In <strong className="text-ink-2">OAuth consent screen</strong>, choose <strong className="text-ink-2">Internal</strong>, so only your company's accounts can sign in and Google needs no review.</li>
+          <li>In <strong className="text-ink-2">Credentials</strong>, create an <strong className="text-ink-2">OAuth client ID</strong> of type <strong className="text-ink-2">Web application</strong>, and add this exact address under <strong className="text-ink-2">Authorised redirect URIs</strong>:
+            {callback && (
+              <div className="flex items-center gap-2 mt-1.5">
+                <input readOnly value={callback} className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2.5 text-[12px] text-ink" />
+                <button onClick={() => copy(callback)} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
+              </div>
+            )}
+          </li>
+          <li>Copy the <strong className="text-ink-2">client ID</strong> and <strong className="text-ink-2">client secret</strong> into the fields above, save, then press <strong className="text-ink-2">Connect Google</strong> and allow both calendar permissions.</li>
         </ol>
       </div>
     </div>

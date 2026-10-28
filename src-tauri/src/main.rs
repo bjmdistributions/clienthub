@@ -1042,6 +1042,7 @@ fn main() {
             lot_import::fetch_lot_import_files,
             get_load_inbox,
             lot_feed,
+            google_calendar,
             list_inbound_loads,
             approve_inbound_load,
             reject_inbound_load,
