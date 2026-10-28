@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// One breakdown row — used for both the by-category and by-brand groupings.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestGroup {
     pub name: String,
     pub items: usize,       // number of manifest LINE ROWS in this group
@@ -13,7 +13,7 @@ pub struct ManifestGroup {
 
 /// What the parser actually did. Surfaced in the UI on purpose: accepting every file
 /// format is worthless if a mis-detected price column is wrong in silence.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestDetection {
     /// "csv" | "tsv" | "xlsx" | "pdf".
     pub format: String,
@@ -37,11 +37,14 @@ pub struct ManifestDetection {
     pub code_col: Option<String>,
     #[serde(default)]
     pub condition_col: Option<String>,
+    /// R-564: the column read as the cost (a price for one unit, else for the line).
+    #[serde(default)]
+    pub cost_col: Option<String>,
     /// Honest caveats: PDF text layer read heuristically, what the reader noticed.
     pub note: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestAnalysis {
     /// Items + retail grouped by the manifest's own category column when present,
     /// otherwise by a generic keyword guess (never the user's saved categories).
@@ -87,10 +90,40 @@ pub struct ManifestAnalysis {
     /// None for a PDF.
     #[serde(default)]
     pub sheet_pricing: Option<crate::manifest_split::SheetPricing>,
+    /// R-564: every sheet of the file, classified, and which were read.
+    #[serde(default)]
+    pub pages: Vec<crate::manifest_split::PageInfo>,
+    /// Every section of the pages read (one per page when a page has no breaks).
+    #[serde(default)]
+    pub sections: Vec<crate::manifest_split::SectionInfo>,
+    /// Every column with what it was read as and three sample values.
+    #[serde(default)]
+    pub columns: Vec<crate::manifest_split::ColumnInfo>,
+    /// What a saved column map is remembered against.
+    #[serde(default)]
+    pub header_signature: String,
+    /// The columns need Jack's say before any figure is trusted.
+    #[serde(default)]
+    pub needs_map: bool,
+    /// Red and amber problems the reader found, each with what opens to fix it.
+    #[serde(default)]
+    pub checks: Vec<crate::manifest_split::Check>,
+    /// What the file says the load holds (a total row, a summary page or the file name).
+    #[serde(default)]
+    pub stated: Option<crate::manifest_split::Stated>,
+    /// The sheet carries a cost and no retail.
+    #[serde(default)]
+    pub cost_only: bool,
+    /// Lines rolled up by UPC or style and title. Retail and cost are extended totals.
+    #[serde(default)]
+    pub products: Vec<crate::manifest_split::Product>,
+    /// Groups of lines to place (or name) once, and the categories to choose from.
+    #[serde(default)]
+    pub review: crate::manifest_split::Review,
 }
 
 /// One product line as read (R-430). Retail and the sheet's price are extended (x units).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestLine {
     pub row: usize,
     pub title: String,
@@ -103,6 +136,18 @@ pub struct ManifestLine {
     pub guessed: bool,
     pub code: String,
     pub condition: String,
+    /// R-564: the page and section the line came from, how its category was placed (sheet,
+    /// rule, list or none) and where its brand came from (sheet, rule, known or none).
+    #[serde(default)]
+    pub page: String,
+    #[serde(default)]
+    pub section: String,
+    #[serde(default)]
+    pub placed: String,
+    #[serde(default)]
+    pub brand_from: String,
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 /// A manifest reduced to plain string cells, whatever it arrived as. CSV, TSV,
@@ -555,7 +600,9 @@ pub(crate) fn find_header_row(rows: &[Vec<String>]) -> Option<usize> {
         // below it), except a repeat of the same header further down a multi-page export.
         let better = match best {
             None => true,
-            Some((bi, b)) => score > b || (score == b && key(&rows[bi]) != key(row)),
+            // A repeat of the best header further down (a multi-page export, or one pallet
+            // after another on a page) never replaces the first.
+            Some((bi, b)) => key(&rows[bi]) != key(row) && score >= b,
         };
         if better {
             best = Some((i, score));
@@ -596,7 +643,7 @@ pub(crate) use crate::manifest_category::guess_category;
 /// are left out, as the server's copy (the phone's analyzer) leaves them out, so the same
 /// manifest suggests the same bid on both. Split out so the analysis itself stays pure and
 /// testable without a live database.
-fn avg_completed_margin() -> f64 {
+pub(crate) fn avg_completed_margin() -> f64 {
     if let Ok(conn) = crate::db::pool().get() {
         conn.query_row(
             "SELECT COALESCE(AVG(margin), 30.0) FROM invoices \
@@ -899,7 +946,7 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         // keyword guess. The user's saved categories are intentionally NOT consulted.
         let cat = if let Some(ci) = category_idx {
             let v = cell(ci);
-            if v.is_empty() { "Uncategorized".to_string() } else { v.to_string() }
+            if v.is_empty() { "Unplaced".to_string() } else { v.to_string() }
         } else {
             guess_category(&desc).to_string()
         };
@@ -915,6 +962,11 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
             guessed: category_idx.is_none(),
             code: String::new(),
             condition: String::new(),
+            page: String::new(),
+            section: String::new(),
+            placed: if category_idx.is_none() { "list".into() } else { "sheet".into() },
+            brand_from: String::new(),
+            picture: None,
         });
         *cat_names.entry(cat_key.clone()).or_default().entry(cat.clone()).or_insert(0) += 1;
         let entry = cat_data
@@ -1008,6 +1060,7 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         price_is_extended,
         code_col: None,
         condition_col: None,
+        cost_col: None,
         note,
     };
 
@@ -1016,6 +1069,9 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         overall_margin_pct, total_items, total_quantity, skipped_rows, detection,
         uncategorized_lines: 0, uncategorized_retail: 0.0, categories_guessed: 0, brands_from_titles: false,
         unpriced_lines: 0, skipped_note: None, lines, sheet_pricing: None,
+        pages: Vec::new(), sections: Vec::new(), columns: Vec::new(), header_signature: String::new(),
+        needs_map: false, checks: Vec::new(), stated: None, cost_only: false, products: Vec::new(),
+        review: Default::default(),
     })
 }
 
@@ -1030,7 +1086,7 @@ pub(crate) fn from_breakdown(b: crate::manifest_split::Breakdown, overall_margin
     let (mut uncategorized_lines, mut uncategorized_retail, mut unpriced_lines) = (0usize, 0.0f64, 0usize);
     let any_brand = b.lines.iter().any(|l| l.brand.is_some());
     for l in &b.lines {
-        let (ck, cn) = l.category.clone().unwrap_or_else(|| (String::new(), "Uncategorized".into()));
+        let (ck, cn) = l.category.clone().unwrap_or_else(|| (String::new(), "Unplaced".into()));
         if l.category.is_none() {
             uncategorized_lines += 1;
             uncategorized_retail += l.retail;
@@ -1063,11 +1119,16 @@ pub(crate) fn from_breakdown(b: crate::manifest_split::Breakdown, overall_margin
         qty: l.qty,
         retail: l.retail,
         sheet_price: l.sheet,
-        category: l.category.as_ref().map(|c| c.1.clone()).unwrap_or_else(|| "Uncategorized".into()),
+        category: l.category.as_ref().map(|c| c.1.clone()).unwrap_or_else(|| "Unplaced".into()),
         brand: l.brand.as_ref().map(|b| b.1.clone()),
         guessed: l.guessed,
         code: l.code.clone(),
         condition: l.condition.clone(),
+        page: l.page.clone(),
+        section: l.section.clone(),
+        placed: l.placed.clone(),
+        brand_from: l.brand_from.clone(),
+        picture: l.picture.clone(),
     }).collect();
     let categories_guessed = total_items - b.from_sheet - uncategorized_lines;
     let note = if b.notes.is_empty() { None } else { Some(b.notes.join(" ")) };
@@ -1092,6 +1153,7 @@ pub(crate) fn from_breakdown(b: crate::manifest_split::Breakdown, overall_margin
             price_is_extended: b.price_is_extended,
             code_col: b.code_col,
             condition_col: b.condition_col,
+            cost_col: b.cost_col,
             note,
         },
         uncategorized_lines,
@@ -1102,10 +1164,58 @@ pub(crate) fn from_breakdown(b: crate::manifest_split::Breakdown, overall_margin
         lines,
         sheet_pricing: Some(b.pricing),
         skipped_note: b.left_out,
+        pages: b.pages,
+        sections: b.sections,
+        columns: b.columns,
+        header_signature: b.header_signature,
+        needs_map: b.needs_map,
+        checks: b.checks,
+        stated: b.stated,
+        cost_only: b.cost_only,
+        products: b.products,
+        review: b.review,
     })
 }
 
 // ── PDF: the text layer, never a guess ─────────────────────────────────────
+
+/// A size heading: three or more sizes in a row (S M L, XS S M L XL) or four or more shoe
+/// or waist sizes in a row (6 7 8 9), with a "total" somewhere in the text.
+fn pdf_size_grid(text: &str) -> bool {
+    const LETTERS: &[&str] = &["xxs", "xs", "s", "m", "l", "xl", "xxl", "xxxl", "2xl", "3xl", "4xl", "os"];
+    let is_num_size = |t: &str| t.parse::<f64>().map_or(false, |v| ((1.0..=16.0).contains(&v) || (24.0..=54.0).contains(&v)) && (v * 2.0).fract() == 0.0);
+    let mut has_heading = false;
+    for line in text.lines() {
+        let toks: Vec<String> = line.split_whitespace().map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '.').to_lowercase()).collect();
+        let (mut letters, mut nums) = (0usize, 0usize);
+        let (mut best_l, mut best_n) = (0usize, 0usize);
+        for t in &toks {
+            if LETTERS.contains(&t.as_str()) { letters += 1 } else { letters = 0 }
+            if is_num_size(t) { nums += 1 } else { nums = 0 }
+            best_l = best_l.max(letters);
+            best_n = best_n.max(nums);
+        }
+        if best_l >= 3 || best_n >= 4 {
+            has_heading = true;
+            break;
+        }
+    }
+    has_heading && text.to_lowercase().split_whitespace().any(|w| w.trim_matches(|c: char| !c.is_alphabetic()) == "total")
+}
+
+/// Text that comes out in pieces ("C o lo r", "Leggin g"): more than a fifth of its lines
+/// hold two or more single letters standing alone.
+fn pdf_letter_spaced(text: &str) -> bool {
+    let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    if lines.len() < 5 {
+        return false;
+    }
+    let broken = lines
+        .iter()
+        .filter(|l| l.split_whitespace().filter(|t| t.chars().count() == 1 && t.chars().all(|c| c.is_alphabetic())).count() >= 2)
+        .count();
+    broken * 5 > lines.len()
+}
 
 async fn analyze_pdf(path: &str) -> Result<ManifestAnalysis> {
     let text = pdf_extract::extract_text(path).context("read the text out of that PDF")?;
@@ -1115,6 +1225,20 @@ async fn analyze_pdf(path: &str) -> Result<ManifestAnalysis> {
     if text.chars().filter(|c| c.is_alphanumeric()).count() < 40 {
         anyhow::bail!(
             "This PDF has no text layer. It's a scan or a photo of a manifest, so there              are no rows to read out of it. Send the spreadsheet or CSV version, or use              Paste a load with the image instead."
+        );
+    }
+
+    // R-564: a grid of sizes and text that comes out in pieces are refused, never read:
+    // the numbers beside a product are counts per size, not a quantity and a price, and
+    // split words give no description to put a category on.
+    if pdf_size_grid(&text) {
+        anyhow::bail!(
+            "This PDF is a grid of sizes (counts under S, M, L or size numbers across the page), so the numbers beside each product are counts per size, not a quantity and a price. Ask the supplier for the spreadsheet version."
+        );
+    }
+    if pdf_letter_spaced(&text) {
+        anyhow::bail!(
+            "The text in this PDF comes out with its letters split apart, so the product names can't be read reliably. Ask the supplier for the spreadsheet version."
         );
     }
 
@@ -1186,6 +1310,54 @@ GRAND TOTAL,,,9,,\"$4,554.50\"\n";
 
     fn analyze_csv(text: &str) -> ManifestAnalysis {
         analyze_grid_with_margin(grid_from_text(text).unwrap(), 30.0).unwrap()
+    }
+
+    /// R-564: a grid of sizes and text that comes out in pieces are refused, never read as a
+    /// quantity and a price.
+    #[test]
+    fn a_size_grid_or_split_letters_pdf_is_refused() {
+        let grid = "Item Name Color Size
+ITEM NUMBER S M L Qty
+Trail Legging Navy 0 249 515 764
+Trail Legging Black 158 960 711 1829
+Total 4566
+";
+        assert!(pdf_size_grid(grid));
+        let numeric = "Style Description 6 7 8 9 10 Total
+Runner Blue 2 4 4 2 1 13
+";
+        assert!(pdf_size_grid(numeric));
+        let split = "C o lo r
+Leggin g M ushro o m 19
+A irlift Sho rt B lack 2
+N a vy 1
+S p an dex 3
+Total 6
+";
+        assert!(pdf_letter_spaced(split));
+        let plain = "Cordless drill 4 99.00 396.00
+Laptop sleeve 3 12.50 37.50
+Gaming chair 2 189.00 378.00
+Total 811.50
+";
+        assert!(!pdf_size_grid(plain) && !pdf_letter_spaced(plain));
+        assert_eq!(pdf_rows(plain).len(), 3);
+    }
+
+    /// R-564: a line with no category reads "Unplaced" on every list the screen shows.
+    #[test]
+    fn a_line_with_no_category_reads_unplaced() {
+        let dir = std::env::temp_dir().join(format!("ecliptr-r564-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("u.csv");
+        std::fs::write(&p, "Description,Qty,Unit Retail,Cost
+Quuxel frame,2,5,1
+").unwrap();
+        let b = crate::manifest_split::breakdown_with(p.to_str().unwrap(), &Default::default()).unwrap();
+        let a = from_breakdown(b, 30.0).unwrap();
+        assert_eq!(a.lines[0].category, "Unplaced");
+        assert_eq!(a.categories[0].name, "Unplaced");
+        assert_eq!(a.detection.cost_col.as_deref(), Some("Cost"));
     }
 
     #[test]

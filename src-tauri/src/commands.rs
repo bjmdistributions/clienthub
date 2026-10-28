@@ -13605,10 +13605,21 @@ pub async fn list_portal_links(client_id: Option<String>) -> Result<Vec<PortalLi
 #[tauri::command]
 pub async fn analyze_manifest(
     path: String,
+    options: Option<crate::manifest_split::ReadOptions>,
 ) -> Result<crate::manifest::ManifestAnalysis, String> {
-    crate::manifest::analyze(&path)
-        .await
-        .map_err(|e| e.to_string())
+    // R-564: a PDF keeps its own reader. A workbook or a CSV is read with the pages, columns and
+    // rules the screen sends, off the async runtime because reading a big workbook is CPU work.
+    if crate::manifest::extension(&path) == "pdf" {
+        return crate::manifest::analyze(&path).await.map_err(|e| e.to_string());
+    }
+    let options = options.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::manifest_split::breakdown_with(&path, &options)
+            .and_then(|b| crate::manifest::from_breakdown(b, crate::manifest::avg_completed_margin()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 // R-379: split a manifest into several by brand or category. Every call works the plan

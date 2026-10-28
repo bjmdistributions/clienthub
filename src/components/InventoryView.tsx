@@ -271,6 +271,8 @@ export default function InventoryView() {
       // R-379: a split's own manifest file and photos, attached when the lot saves.
       manifest_file: d.manifest_file,
       photo_paths: d.photo_paths,
+      // R-564: the saved manifest this lot came from; linked back once the lot saves.
+      manifest_id: d.manifest_id,
     } as Partial<Lot>);
     const apply = (d: any) => {
       setEditing(null);
@@ -1586,6 +1588,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   });
   const [manifestPath, setManifestPath] = useState<string | null>(initial?.manifest_path ?? null);
   const [newManifestFile, setNewManifestFile] = useState<string | null>((!initial && (prefill as any)?.manifest_file) || null); // picked file for a not-yet-created lot (or a split's own file)
+  const savedManifestId: string | null = (!initial && (prefill as any)?.manifest_id) || null; // R-564
   const [saving, setSaving] = useState(false);
 
   // Structured extras (details_json). Public: pallets/msrp/sizeRun/moq + the volume
@@ -1919,6 +1922,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
           await api.updateLot(lot.id, { photos: rel });
         }
         if (newManifestFile) await api.attachLotManifest(lot.id, newManifestFile);
+        if (savedManifestId) await api.setManifestLinks(savedManifestId, lot.id, null).catch(() => {});
         if (sentWa || sentEmail) await api.updateLot(lot.id, { sentWhatsapp: sentWa, sentEmail: sentEmail });
       }
       // Persist every typed-in category so each is a reusable pick next time (idempotent —

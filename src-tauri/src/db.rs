@@ -2640,4 +2640,65 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_load_pallets ADD COLUMN per_layer INTEGER DEFAULT 0;
         "#,
     ),
+    (
+        121,
+        // R-564: a manifest read once, kept, and sent on. manifests holds one row per saved manifest, with
+        // its lines and its rolled up products in lines_json and products_json: a manifest is written once
+        // by one person, so one column each is one sync event, where a row per line would be thousands
+        // (9,000 lines is 9,000 events). manifest_rules are the rules Jack set (a word, a brand or a UPC
+        // prefix to a category) and manifest_column_maps remember how a supplier's header was read. The
+        // stored file is a relative path in file_ref under the sync media folder. Every column is nullable
+        // with a default so a partial create event cannot be swallowed. Synced (sync.rs ALLOWED_TABLES,
+        // netsync SNAPSHOT_TABLES) and mirrored in clienthub-api schema.sql, PUSHABLE and ORG_TABLES, which
+        // must be deployed first. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        CREATE TABLE IF NOT EXISTS manifests (
+            id TEXT PRIMARY KEY,
+            name TEXT DEFAULT '',
+            supplier TEXT DEFAULT '',
+            source_name TEXT DEFAULT '',
+            file_ref TEXT DEFAULT '',
+            pages_json TEXT DEFAULT '[]',
+            sections_json TEXT DEFAULT '[]',
+            column_map_json TEXT DEFAULT '{}',
+            options_json TEXT DEFAULT '{}',
+            totals_json TEXT DEFAULT '{}',
+            stated_json TEXT DEFAULT '{}',
+            ask REAL DEFAULT 0,
+            status TEXT DEFAULT 'saved',
+            lot_id TEXT DEFAULT '',
+            load_id TEXT DEFAULT '',
+            lines_json TEXT DEFAULT '[]',
+            products_json TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            archived INTEGER DEFAULT 0,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE TABLE IF NOT EXISTS manifest_rules (
+            id TEXT PRIMARY KEY,
+            kind TEXT DEFAULT '',
+            pattern TEXT DEFAULT '',
+            category TEXT DEFAULT '',
+            brand TEXT DEFAULT '',
+            source TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            archived INTEGER DEFAULT 0,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE TABLE IF NOT EXISTS manifest_column_maps (
+            id TEXT PRIMARY KEY,
+            signature TEXT DEFAULT '',
+            name TEXT DEFAULT '',
+            map_json TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            archived INTEGER DEFAULT 0,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_manifests_updated ON manifests(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_manifest_column_maps_sig ON manifest_column_maps(signature);
+        "#,
+    ),
 ];

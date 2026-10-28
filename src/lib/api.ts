@@ -2255,6 +2255,7 @@ export interface ManifestDetection {
   price_is_extended: boolean;      // price already includes qty, so it wasn't multiplied
   code_col?: string | null;        // R-430: UPC/SKU/model column
   condition_col?: string | null;   // R-430: condition/grade column
+  cost_col?: string | null;        // R-564: cost column, when the sheet has one
   note: string | null;             // caveats: what the reader noticed, qty defaulted to 1
 }
 
@@ -2270,7 +2271,15 @@ export interface ManifestLine {
   guessed: boolean;       // category read from the title, not the sheet
   code: string;
   condition: string;
+  // R-564: where the line sits and how its category and brand were settled.
+  page: string;
+  section: string;
+  placed: ManifestPlaced;
+  brand_from: "sheet" | "rule" | "known" | "none";
 }
+
+/** R-564: how a category was settled. sheet = the sheet's own column, rule = Jack's rule, list = the built-in word list (only a suggestion), none = not placed. */
+export type ManifestPlaced = "sheet" | "rule" | "list" | "none";
 
 /** How the sheet prices itself. pct = a % of retail, unit = a price per unit, line = per line. */
 export interface ManifestSheetPricing {
@@ -2300,6 +2309,97 @@ export interface ManifestAnalysis {
   skipped_note: string | null;
   lines: ManifestLine[];
   sheet_pricing: ManifestSheetPricing | null;   // null for a PDF
+  // R-564: the reader's extra fields.
+  pages: ManifestPageInfo[];
+  sections: ManifestSectionInfo[];
+  columns: ManifestColumnInfo[];
+  header_signature: string;
+  needs_map: boolean;
+  checks: ManifestCheck[];
+  stated: ManifestStated | null;
+  products: ManifestProduct[];
+  review: ManifestReview;
+  cost_only: boolean;
+}
+
+// ── Manifest analyzer, R-564 ────────────────────────────────────────────────
+// Mirrors src-tauri/src/manifest_split.rs (shared reader) and manifest_store.rs.
+
+/** roles: description, quantity, retail_unit, retail_ext, cost, sheet_price, category, brand, code, condition, photo. Values are 0-based sheet columns. */
+export interface ManifestColumnMap { header_row: number | null; roles: Record<string, number> }
+
+export type ManifestRuleKind = "word" | "phrase" | "upc_prefix" | "sheet_category" | "brand_word";
+export interface ManifestRule { id: string; kind: ManifestRuleKind; pattern: string; category: string | null; brand: string | null }
+/** A rule as the store keeps it. */
+export interface ManifestRuleRecord extends ManifestRule { source?: string | null; created_at?: string; updated_at?: string }
+
+export interface ManifestReadOptions {
+  pages: string[] | null;
+  sections_off: string[];
+  columns: ManifestColumnMap | null;
+  rules: ManifestRule[];
+  resolve_only: boolean;
+}
+
+export interface ManifestPageInfo {
+  name: string; rows: number;
+  kind: "lines" | "summary" | "pricing" | "totals" | "copy" | "empty";
+  read: boolean; header_row: number | null; same_header_as: string | null;
+}
+export interface ManifestStated { units: number | null; retail: number | null; source: string }
+export interface ManifestSectionInfo {
+  key: string; page: string; name: string; first_row: number; last_row: number;
+  lines: number; units: number; retail: number; read: boolean; stated: ManifestStated | null;
+}
+export interface ManifestColumnInfo { index: number; header: string; role: string | null; samples: string[] }
+export interface ManifestCheck {
+  severity: "red" | "amber"; code: string; text: string;
+  fix: "columns" | "lines" | "pages" | "none"; rows: number[];
+}
+export interface ManifestProduct {
+  key: string; title: string; code: string; brand: string | null; category: string; placed: ManifestPlaced;
+  qty: number; retail: number; cost: number | null; rows: number[]; lines: number; picture: string | null;
+}
+export interface ManifestReviewGroup {
+  key: string; kind: ManifestRuleKind; pattern: string; label: string;
+  lines: number; units: number; retail: number; suggested: string | null;
+}
+export interface ManifestReview {
+  groups: ManifestReviewGroup[]; brands: ManifestReviewGroup[];
+  /** The built-in category names (manifest_category::category_names). */
+  category_names?: string[];
+}
+
+/** One saved manifest as the list shows it. Lines and products live in `analysis` (get_manifest). */
+export interface SavedManifest {
+  id: string; name: string; supplier: string | null; source_name: string | null;
+  ask: number | null; status: string;
+  lot_id: string | null; load_id: string | null;
+  /** Totals read: { lines, units, retail }. The desktop store hands the object; the server also sends the text. */
+  totals?: { lines?: number; units?: number; retail?: number } | null;
+  totals_json?: string | null;
+  /** The options it was read with (ReadOptions): the object from the desktop store, the text from the server. */
+  options?: Partial<ManifestReadOptions> | null;
+  options_json?: string | null;
+  /** The column map it was read with, JSON text (ManifestColumnMap). */
+  column_map?: ManifestColumnMap | Record<string, never> | null;
+  /** Absolute path of the kept file, or null when it is gone from this computer. */
+  file_path: string | null;
+  created_at: string; updated_at: string; archived: boolean;
+}
+/** get_manifest: the row with its lines and products parsed. The reading itself is not kept whole. */
+export interface SavedManifestFull extends SavedManifest { lines: ManifestLine[]; products: ManifestProduct[] }
+/** save_manifest keeps exactly what it is given; nothing is read again. id set replaces a manifest already saved. */
+export interface SaveManifestRecord {
+  id: string | null; path: string; name: string; supplier: string | null; source_name: string | null;
+  ask: number | null; status: string;
+  pages: ManifestPageInfo[]; sections: ManifestSectionInfo[]; column_map: ManifestColumnMap | null;
+  options: ManifestReadOptions; totals: { lines: number; units: number; retail: number };
+  stated: ManifestStated | null; lines: ManifestLine[]; products: ManifestProduct[];
+}
+export interface ManifestColumnMapRecord {
+  id: string; signature: string; name: string;
+  map?: ManifestColumnMap; map_json?: string; created_at: string; updated_at?: string;
 }
 
 // ── Manifest split (R-379) ──────────────────────────────────────────────────
@@ -3880,6 +3980,9 @@ function dealFilesRequest<T>(method: string, path: string, body?: unknown): Prom
 }
 
 // ===== API =====
+/** What analyzeManifest reads with when nothing was chosen. */
+export const DEFAULT_READ_OPTIONS: ManifestReadOptions = { pages: null, sections_off: [], columns: null, rules: [], resolve_only: false };
+
 export const api = {
   // Clients
   listClients: () => invoke<Client[]>("list_clients"),
@@ -5287,8 +5390,28 @@ export const api = {
 
   // Manifest
   // forceAi re-reads a PDF through Claude when the text-layer heuristic got it wrong.
-  analyzeManifest: (path: string) =>
-    invoke<ManifestAnalysis>("analyze_manifest", { path }),
+  analyzeManifest: (path: string, options: ManifestReadOptions = DEFAULT_READ_OPTIONS) =>
+    invoke<ManifestAnalysis>("analyze_manifest", { path, options }),
+  // R-564: saved manifests, rules and remembered column maps.
+  saveManifest: (record: SaveManifestRecord) => invoke<SavedManifest>("save_manifest", { record }),
+  listManifests: () => invoke<SavedManifest[]>("list_manifests"),
+  listManifestsDeleted: () => invoke<SavedManifest[]>("list_manifests_deleted"),
+  getManifest: (id: string) => invoke<SavedManifestFull>("get_manifest", { id }),
+  updateManifest: (id: string, patch: { name?: string; ask?: number | null; archived?: boolean }) =>
+    invoke<SavedManifest>("update_manifest", { id, name: patch.name, ask: patch.ask, archived: patch.archived }),
+  deleteManifest: (id: string) => invoke<void>("delete_manifest", { id }),
+  restoreManifest: (id: string) => invoke<void>("restore_manifest", { id }),
+  listManifestRules: () => invoke<ManifestRuleRecord[]>("list_manifest_rules"),
+  saveManifestRules: (rules: ManifestRule[]) => invoke<ManifestRuleRecord[]>("save_manifest_rules", { rules }),
+  deleteManifestRule: (id: string) => invoke<void>("delete_manifest_rule", { id }),
+  findColumnMap: (signature: string) => invoke<ManifestColumnMapRecord | null>("find_column_map", { signature }),
+  saveColumnMap: (signature: string, name: string, map: ManifestColumnMap) =>
+    invoke<ManifestColumnMapRecord>("save_column_map", { signature, name, mapJson: map }),
+  /** One delivery per manifest; attaches to the buy when given. */
+  manifestToLoad: (manifestId: string, buyId: string | null) =>
+    invoke<{ id: string; name: string }>("manifest_to_load", { manifestId, buyId }),
+  setManifestLinks: (id: string, lotId: string | null, loadId: string | null) =>
+    invoke<void>("set_manifest_links", { id, lotId, loadId }),
   manifestSplitPlan: (path: string, answers: Record<string, string>, edits: SplitEdits) =>
     invoke<SplitPlan>("manifest_split_plan", { path, answers, edits }),
   manifestSplitLines: (path: string, answers: Record<string, string>, edits: SplitEdits, key: string) =>

@@ -32,6 +32,13 @@ use std::sync::OnceLock;
 /// Returned when nothing in the title says what it is.
 pub(crate) const UNCATEGORIZED: &str = "Uncategorized";
 
+/// The categories a line can be placed in: the app's own list (R-564), what a rule or a
+/// review pick chooses from.
+pub fn category_names() -> &'static [&'static str] {
+    static N: OnceLock<Vec<&'static str>> = OnceLock::new();
+    N.get_or_init(|| RULES.iter().map(|r| r.0).collect()).as_slice()
+}
+
 /// `(category, product phrases, context phrases)`. Phrases are lowercase words in the
 /// singular, separated by one space; "&" in a title reads as "and", hyphens and
 /// apostrophes fall away ("T-Shirt" is "t shirt", "Men's" is "mens"). A phrase must not
@@ -49,6 +56,7 @@ const RULES: &[(&str, &[&str], &[&str])] = &[
             "zapatos",
             "zapatillas",
             "cat footwear",
+            "pump", "oxford", "derby", "spike", "taekwondo shoe", "martial arts shoe",
         ],
         &["trainer"],
     ),
@@ -249,8 +257,10 @@ const RULES: &[(&str, &[&str], &[&str])] = &[
             "toy football",
             "coloring set",
             "art case",
+            "doll furniture", "marvel legends", "miniverse", "make it mini", "crystal growing kit",
+            "crystal growing", "dig kit", "gem dig", "excavation kit", "mining kit",
         ],
-        &["game", "games", "kids play", "pretend play", "toddler toy"],
+        &["game", "games", "kids play", "pretend play", "toddler toy", "national geographic", "peppa pig", "peppa"],
     ),
     (
         "Home & Kitchen",
@@ -259,7 +269,8 @@ const RULES: &[(&str, &[&str], &[&str])] = &[
             "wok", "stock pot", "pot", "bakeware", "baking sheet", "baking pan", "cake pan",
             "muffin pan", "cookie sheet", "mixing bowl", "bowl", "plate", "dinnerware",
             "dinner plate", "mug", "cup", "tumbler", "wine glass", "drinking glass", "glassware",
-            "water bottle", "travel mug", "coffee maker", "espresso machine", "blender", "air fryer",
+            "water bottle", "travel mug", "canteen", "cotton candy maker", "cotton candy machine", "candy maker",
+            "soap pump", "lotion pump", "pump dispenser", "pump bottle", "heat pump", "coffee maker", "espresso machine", "blender", "air fryer",
             "instant pot", "pressure cooker", "slow cooker", "crock pot", "rice cooker", "toaster",
             "toaster oven", "microwave", "kettle", "tea kettle", "electric kettle", "mixer",
             "stand mixer", "hand mixer", "food processor", "juicer", "waffle maker", "waffle iron",
@@ -382,6 +393,7 @@ const RULES: &[(&str, &[&str], &[&str])] = &[
     (
         "Tools & Hardware",
         &[
+            "sump pump", "water pump", "utility pump", "transfer pump", "well pump", "bilge pump",
             "tool", "tool set", "tool kit", "toolkit", "tool box", "toolbox", "tool bag",
             "tool belt", "multi tool", "multitool", "drill", "power drill", "cordless drill",
             "hammer drill", "impact driver", "impact wrench", "wrench", "torque wrench", "hammer",
@@ -530,14 +542,14 @@ const RULES: &[(&str, &[&str], &[&str])] = &[
             "movies",
             "music",
         ],
-        &["vinyl", "manga"],
+        &["vinyl", "manga", "roald dahl"],
     ),
     (
         "Sports & Outdoors",
         &[
             "basketball", "football", "soccer ball", "baseball", "softball", "volleyball",
             "tennis racket", "racket", "racquet", "tennis ball", "golf ball", "golf club",
-            "golf bag", "golf glove", "pickleball", "pickleball paddle", "paddle",
+            "golf bag", "golf glove", "bike pump", "bicycle pump", "ball pump", "pickleball", "pickleball paddle", "paddle",
             "yoga mat", "exercise mat", "dumbbell", "kettlebell", "barbell", "weight plate",
             "weight bench", "resistance band", "exercise bike", "stationary bike", "treadmill",
             "elliptical", "rowing machine", "jump rope", "pull up bar", "foam roller",
@@ -658,7 +670,7 @@ const RULES: &[(&str, &[&str], &[&str])] = &[
             "seat cover", "car seat cover", "floor mat", "car floor mat", "floor liner",
             "steering wheel cover", "car mount", "car phone mount", "car phone holder", "phone mount",
             "dash cam", "dashcam", "jump starter", "jumper cable", "tire inflator", "tire",
-            "tire pressure gauge", "wiper blade", "windshield wiper", "windshield", "motor oil",
+            "tire pressure gauge", "fuel pump", "air pump", "tire pump", "foot pump", "hand pump", "wiper blade", "windshield wiper", "windshield", "motor oil",
             "oil filter", "cabin air filter", "engine air filter", "brake pad", "brake rotor",
             "spark plug", "headlight", "tail light", "taillight", "car wax", "car wash", "car cover",
             "car vacuum", "car battery", "trailer hitch", "hitch", "tow strap", "tow rope",
@@ -753,6 +765,7 @@ const RULES: &[(&str, &[&str], &[&str])] = &[
     (
         "Patio & Garden",
         &[
+            "pool pump", "blackstone griddle", "outdoor griddle",
             "garden hose", "hose", "hose nozzle", "hose reel", "sprinkler", "lawn mower", "mower",
             "leaf blower", "blower", "snow blower", "hedge trimmer", "string trimmer",
             "weed eater", "weed wacker", "pressure washer", "power washer", "chainsaw", "planter",
@@ -876,7 +889,7 @@ const SHOE_MODELS: &[&str] = &[
     "nb 574", "nb 990", "m574", "rs x", "suede xl", "brooks ghost", "ghost 15", "ghost 16", "saucony endorphin",
     "endorphin speed", "endorphin pro", "retro 4", "jordan retro", "renew ride", "tanjun", "in season tr", "air trainer",
     "vaporfly", "free run", "curry 10", "curry 11", "curry 12", "precision 7", "team hustle", "zoom freak",
-    "sld", "flex sld", "samba", "gazelle",
+    "sld", "flex sld", "samba", "gazelle", "adi kick", "adikick",
     "stan smith", "ultraboost", "ultra boost", "nmd", "forum low", "forum high", "campus 00s", "yeezy",
     "adidas superstar", "superstar ii", "superstar og",
     "adilette", "cloudfoam", "grand court", "duramo", "adizero", "handball spezial", "ozweego",
@@ -895,14 +908,16 @@ const DOMINANT: &[&str] = &["lego", "funko", "funko pop", "hot wheels", "barbie"
 /// tools whatever else the title lists, a Graco line is baby gear.
 const BRAND_CATEGORIES: &[(&str, &[&str])] = &[
     ("Toys", &["fisher price", "vtech", "leapfrog", "melissa and doug", "little tikes", "playmobil",
-        "thomas and friends", "magic the gathering", "dungeons and dragons", "hasbro", "mattel"]),
+        "thomas and friends", "magic the gathering", "dungeons and dragons", "hasbro", "mattel",
+        "tonies", "toniebox", "our generation", "make it real"]),
     ("Automotive", &["atv", "utv", "armor all", "meguiars", "chemical guys", "rain x", "turtle wax", "weathertech", "little trees",
         "castrol", "valvoline", "pennzoil", "mobil 1", "prestone", "sea foam", "noco"]),
     ("Baby", &["graco", "chicco", "evenflo", "baby trend", "skip hop", "munchkin", "boppy", "pampers", "huggies",
         "luvs", "dr browns", "philips avent", "tommee tippee", "uppababy", "nuna", "britax", "summer infant"]),
     ("Tools & Hardware", &["dewalt", "milwaukee", "makita", "ryobi", "craftsman", "kobalt", "ridgid", "porter cable",
         "metabo hpt", "irwin", "klein tools"]),
-    ("Patio & Garden", &["kingsford", "miracle gro", "scotts", "blackstone", "traeger", "sunnydaze"]),
+    ("Patio & Garden", &["kingsford", "miracle gro", "scotts", "traeger", "sunnydaze"]),
+    ("Home & Kitchen", &["corkcicle"]),
     ("Grocery", &["gatorade", "coca cola", "pepsi", "kraft", "quaker", "poland spring", "doritos", "cheetos", "oreo",
         "ghirardelli", "hersheys", "frito lay"]),
 ];
@@ -1510,6 +1525,52 @@ mod tests {
             .collect();
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
+
+    /// R-564: the misses measured on real loads (shoes read as clothing or left unplaced,
+    /// toys and drinkware read as something else), each with the title it came from.
+    #[test]
+    fn the_measured_misses_of_r564_are_placed() {
+        check(&[
+            ("BCBGeneration Women's Cammie Dress Pump Black 8.5", "Shoes"),
+            ("BCBGeneration Women's Julianna Pump", "Shoes"),
+            ("Steve Madden Women's Pump Suede 7", "Shoes"),
+            ("Cole Haan Men's Wingtip Oxford Dress Shoe", "Shoes"),
+            ("Kenneth Cole Men's Derby Lace Up Brown 10", "Shoes"),
+            ("Dr Scholl's Women's Loafer", "Shoes"),
+            ("Clarks Men's Chelsea Boot 11", "Shoes"),
+            ("Nike Mercurial Vapor Cleat Youth 4", "Shoes"),
+            ("Hoka Rocket X Track Spike Unisex 9", "Shoes"),
+            ("Hoka Skyward X Spikes", "Shoes"),
+            ("Blackstone Men's Abram Slip On Black 9", "Shoes"),
+            ("adidas Taekwondo Shoes Kids", "Shoes"),
+            ("adidas Taekwondo Adi Kick 2 White", "Shoes"),
+            ("Oxford Cloth Button Down Shirt Blue", "Clothing"),
+            ("Betty Crocker Cotton Candy Maker Machine", "Home & Kitchen"),
+            ("DeLonghi Dedica Espresso Machine EC680", "Home & Kitchen"),
+            ("Corkcicle Canteen 25 oz Stainless", "Home & Kitchen"),
+            ("Corkcicle Tumbler 16 oz with Lid", "Home & Kitchen"),
+            ("Corkcicle Insulated Wine Cooler", "Home & Kitchen"),
+            ("Our Generation Doll Furniture Kitchen Set", "Toys"),
+            ("Our Generation Poseable 18 inch Doll Ava", "Toys"),
+            ("tonies Toniebox Starter Set Pink", "Toys"),
+            ("tonies Disney Frozen Character", "Toys"),
+            ("Marvel Legends Series Spider-Man 6 Inch Figure", "Toys"),
+            ("National Geographic Mega Crystal Growing Kit", "Toys"),
+            ("Peppa Pig Family Home Playset", "Toys"),
+            ("Peppa Pig Picnic Fun", "Toys"),
+            ("MGA Miniverse Make It Mini Diner", "Toys"),
+            ("Make It Real Fashion Design Sketchbook", "Toys"),
+            ("Roald Dahl The BFG Paperback Book", "Books & Media"),
+            ("Roald Dahl Matilda", "Books & Media"),
+            ("Wayne 1/3 HP Sump Pump", "Tools & Hardware"),
+            ("Portable Tire Pump 12V", "Automotive"),
+            ("Bike Pump with Gauge", "Sports & Outdoors"),
+            ("Marvel Avengers Graphic T-Shirt Kids", "Clothing"),
+            ("National Geographic Magazine Atlas Paperback", "Books & Media"),
+            ("Blackstone Griddle 36 inch Cooking Station", "Patio & Garden"),
+        ]);
+    }
+
 
     /// The words that fired inside other words under the old substring list.
     #[test]

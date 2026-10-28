@@ -23,6 +23,9 @@ use crate::db::pool;
 use crate::sync::{self, SyncEvent};
 
 const PUSH_BATCH: i64 = 200;
+/// R-564: the most event text one push carries (the server accepts 32 MB; JSON escaping and the
+/// envelope add to it). A single event bigger than this still goes on its own.
+const PUSH_BATCH_BYTES: usize = 12 * 1024 * 1024;
 const POLL_SECS: u64 = 20;
 
 /// What `auto_heal_if_behind` currently covers. Bump ONLY when the heal check
@@ -58,7 +61,10 @@ const POLL_SECS: u64 = 20;
 /// box) and `warehouse_load_pallets.layers`/`per_layer` (how its boxes stack), so a desktop that updates
 /// after boxes were set up on the phone shows their codes. `freight_bookings` stays in the refresh list
 /// for a device that skips generation 12.
-const HEAL_GENERATION: &str = "13";
+/// "14" adds `manifests`, `manifest_rules` and `manifest_column_maps` (R-564: saved manifests, the
+/// category rules Jack set and how each supplier's columns were read), so a desktop that updates after
+/// a manifest was saved or a rule set on the phone restores them from the server's snapshot.
+const HEAL_GENERATION: &str = "14";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -118,6 +124,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "logistics_payouts",
     // Bills and the bank payments linked to them (R-449): authored by the desktop and the phone.
     "bills", "bill_payments",
+    // Saved manifests, the rules set on them and the column maps (R-564).
+    "manifests", "manifest_rules", "manifest_column_maps",
 ];
 
 pub fn ensure_tables() -> Result<()> {
@@ -606,6 +614,24 @@ pub async fn push_pending() -> Result<usize> {
         if batch.is_empty() {
             break;
         }
+        // R-564: a saved manifest's event can run to several MB (its lines), and the server takes
+        // 32 MB a push. Cut the batch by bytes so a few of those queued together never make a push
+        // the server refuses whole (a 413 would retry every event in it, then dead-letter them).
+        // One event always goes, however big: the per-event caps live in manifest_store.rs.
+        let fetched = batch.len() as i64;
+        let batch: Vec<(String, String)> = {
+            let mut kept = Vec::with_capacity(batch.len());
+            let mut bytes = 0usize;
+            for e in batch {
+                if !kept.is_empty() && bytes + e.1.len() > PUSH_BATCH_BYTES {
+                    break;
+                }
+                bytes += e.1.len();
+                kept.push(e);
+            }
+            kept
+        };
+        let cut_short = (batch.len() as i64) < fetched;
         let events: Vec<serde_json::Value> = batch
             .iter()
             .filter_map(|(_, j)| serde_json::from_str(j).ok())
@@ -692,7 +718,7 @@ pub async fn push_pending() -> Result<usize> {
         // stop and let the next poll tick retry. Otherwise keep draining: the events
         // that stayed behind sit at the head and ride along with the next batch, so
         // one un-appliable event can't stall everything queued behind it.
-        if done.is_empty() || (batch.len() as i64) < PUSH_BATCH {
+        if done.is_empty() || (!cut_short && (batch.len() as i64) < PUSH_BATCH) {
             break;
         }
     }
@@ -1762,6 +1788,8 @@ async fn auto_heal_if_behind() {
         "warehouse_floors",
         // R-488: what a product or a delivery cost, and its orders (generation 10).
         "warehouse_buys", "warehouse_buy_orders",
+        // R-564: saved manifests, their rules and column maps (generation 14).
+        "manifests", "manifest_rules", "manifest_column_maps",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -2241,6 +2269,40 @@ pub async fn upload_delivery_picture(load_id: &str, rel: &str) -> Result<(), Str
     Ok(())
 }
 
+/// R-564: upload the file a saved manifest keeps (`media/manifests/<id>/<name>`) so the phone and every
+/// other device can read it again. The server takes it only for a manifest row it already has that names
+/// this file, so until the row has replicated it answers 404 and the queue asks again.
+pub async fn upload_manifest_file(manifest_id: &str, rel: &str) -> Result<(), String> {
+    let cfg = config().ok_or("not signed in")?;
+    let name = rel.rsplit('/').next().unwrap_or("");
+    if name.is_empty() || name.contains("..") || !rel.starts_with("media/manifests/") {
+        return Err("bad manifest path".into());
+    }
+    let local = crate::db::app_data_dir().join("sync").join(rel);
+    let bytes = std::fs::read(&local).map_err(|e| e.to_string())?;
+    // A file name can hold spaces, brackets and more: every byte outside the unreserved set is escaped.
+    let mut enc = String::new();
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            enc.push(b as char);
+        } else {
+            enc.push_str(&format!("%{b:02X}"));
+        }
+    }
+    let resp = http()
+        .post(format!("{}/api/manifests/{}/file/{}", cfg.url.trim_end_matches('/'), manifest_id, enc))
+        .bearer_auth(&cfg.token)
+        .header("content-type", "application/octet-stream")
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|_| "couldn't reach the server".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Upload a lot's manifest FILE to the server so the public storefront can serve it
 /// (the sync oplog only carries the manifest_path text, not the bytes). `rel` is the
 /// stored path "media/inventory/<lot>/manifest.<ext>".
@@ -2519,6 +2581,9 @@ pub async fn push_media_pending() {
             upload_inventory_manifest(&lot_id, &rel).await
         } else if kind == "delivery" {
             upload_delivery_picture(&lot_id, &rel).await
+        } else if kind == "manifestfile" {
+            // R-564: a saved manifest's kept file (`lot_id` holds the manifest id).
+            upload_manifest_file(&lot_id, &rel).await
         } else {
             upload_inventory_photo(&lot_id, &rel).await
         };
@@ -2527,13 +2592,13 @@ pub async fn push_media_pending() {
             Err(e) => {
                 // R-537: a delivery's pictures can be hundreds of files; a spell offline does not
                 // use up their tries (a picture the server refuses still does).
-                let next = if kind == "delivery" && e == "couldn't reach the server" { attempts } else { attempts + 1 };
+                let next = if (kind == "delivery" || kind == "manifestfile") && e == "couldn't reach the server" { attempts } else { attempts + 1 };
                 // A sheet artifact is refused until its row has replicated, so the first
                 // attempts can legitimately fail. `push_pending` runs earlier in the same
                 // tick, so that is usually one tick — but a slow or wedged push queue
                 // makes it longer, and giving up after four minutes would strand the only
                 // copy of a sheet on this device.
-                let ceiling = if is_lot_sheet || kind == "delivery" { 60 } else { MAX_MEDIA_RETRIES };
+                let ceiling = if is_lot_sheet || kind == "delivery" || kind == "manifestfile" { 60 } else { MAX_MEDIA_RETRIES };
                 if next >= ceiling {
                     tracing::error!("netsync: giving up on media upload {} after {} attempts: {}", rel, next, e);
                     media_dequeue(&rel);
@@ -3062,10 +3127,21 @@ mod r400_sync_tests {
     /// only through a restore, so generation 13 refreshes the two delivery tables that gained columns.
     #[test]
     fn r554_box_codes_force_one_more_restore_per_device() {
-        assert_eq!(HEAL_GENERATION, "13", "devices healed under generation 12 do not have the R-554 columns");
+        assert!(HEAL_GENERATION.parse::<u32>().unwrap() >= 13, "devices healed under generation 12 do not have the R-554 columns");
         for t in ["warehouse_cases", "warehouse_load_pallets"] {
             assert!(HEAL_REFRESH_TABLES.contains(&t), "{t} gained columns in R-554");
             assert!(SNAPSHOT_TABLES.contains(&t));
+        }
+    }
+
+    /// R-564: saved manifests, the rules and the column maps are org knowledge, so a desktop that
+    /// updates after a phone saved one restores them from the snapshot (generation 14).
+    #[test]
+    fn r564_manifest_tables_are_snapshotted() {
+        assert_eq!(HEAL_GENERATION, "14", "generation 14 adds the three R-564 tables to the count check");
+        for t in ["manifests", "manifest_rules", "manifest_column_maps"] {
+            assert!(SNAPSHOT_TABLES.contains(&t), "{t} is org knowledge and must restore");
+            assert!(crate::sync::is_synced_table(t), "{t} must be applied");
         }
     }
 

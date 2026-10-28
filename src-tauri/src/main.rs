@@ -29,6 +29,7 @@ mod lot_store;
 mod manifest;
 mod manifest_images;
 mod manifest_split;
+mod manifest_store;
 mod manifest_category;
 mod deal_label;
 mod deal_export;
@@ -1111,6 +1112,21 @@ fn main() {
             manifest_split_plan,
             manifest_split_lines,
             manifest_split_export,
+            // R-564: saved manifests, the rules set on them and the column maps.
+            manifest_store::save_manifest,
+            manifest_store::update_manifest,
+            manifest_store::delete_manifest,
+            manifest_store::restore_manifest,
+            manifest_store::list_manifests,
+            manifest_store::list_manifests_deleted,
+            manifest_store::get_manifest,
+            manifest_store::set_manifest_links,
+            manifest_store::manifest_to_load,
+            manifest_store::list_manifest_rules,
+            manifest_store::save_manifest_rules,
+            manifest_store::delete_manifest_rule,
+            manifest_store::find_column_map,
+            manifest_store::save_column_map,
             // Lot engine (R-200): a warehouse sheet becomes priced, pickable lots.
             lot_store::import_lot_sheet,
             lot_store::list_lot_sheets,
