@@ -1231,10 +1231,20 @@ fn fetch_latest_matching_blocking(
 /// a limit so a week of PDFs is not downloaded; Priority1 parsing passes u32::MAX because it
 /// needs the body.
 pub async fn search_inbox(inbox_id: &str, query: String, max: usize, whole_limit: u32) -> Result<Vec<ParsedEmail>> {
+    search_folder(inbox_id, &[SCAN_FOLDER], query, max, whole_limit).await
+}
+
+/// The Sent folder's usual names: Gmail and Google Workspace, then most other hosts.
+pub const SENT_FOLDERS: [&str; 5] = ["[Gmail]/Sent Mail", "Sent", "Sent Items", "Sent Messages", "INBOX.Sent"];
+
+/// `search_inbox` in the first of `folders` the mailbox has (R-563 reads the Sent folder this way).
+pub async fn search_folder(inbox_id: &str, folders: &'static [&'static str], query: String, max: usize, whole_limit: u32) -> Result<Vec<ParsedEmail>> {
     let (host, port, user, auth, label) = resolve_inbox_creds(inbox_id).await?;
     let res = tokio::task::spawn_blocking(move || -> Result<Vec<ParsedEmail>> {
         let mut session = imap_session(&host, port, &user, &auth)?;
-        session.select(SCAN_FOLDER).context("select inbox")?;
+        if !folders.iter().any(|f| session.select(f).is_ok()) {
+            anyhow::bail!("no {} folder", folders.first().copied().unwrap_or_default());
+        }
         let mut uids: Vec<u32> = session.uid_search(&query).context("search")?.into_iter().collect();
         uids.sort_unstable();
         let keep: Vec<String> = uids.iter().rev().take(max).map(|u| u.to_string()).collect();

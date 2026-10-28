@@ -191,11 +191,12 @@ async fn tick(next_scan: &mut Instant) -> u64 {
 }
 
 /// `FROM "a"`, or `OR FROM "a" OR FROM "b" FROM "c"` for several (IMAP's OR takes two keys).
-pub fn from_any(addrs: &[String]) -> String {
+/// An IMAP search for any of `addrs` in one header: `key` is FROM for replies, TO for what Jack sent.
+pub fn any_of(key: &str, addrs: &[String]) -> String {
     match addrs {
         [] => String::new(),
-        [one] => format!("FROM \"{}\"", one.replace('"', "")),
-        [first, rest @ ..] => format!("OR FROM \"{}\" {}", first.replace('"', ""), from_any(rest)),
+        [one] => format!("{key} \"{}\"", one.replace('"', "")),
+        [first, rest @ ..] => format!("OR {key} \"{}\" {}", first.replace('"', ""), any_of(key, rest)),
     }
 }
 
@@ -223,20 +224,40 @@ async fn scan_replies() -> Result<(), String> {
     let day = since.format("%d-%b-%Y").to_string();
     let mut replies = Vec::new();
     for chunk in emails.chunks(15) {
-        let query = format!("SINCE {day} {}", from_any(chunk));
+        let query = format!("SINCE {day} {}", any_of("FROM", chunk));
         let found = crate::email::search_inbox(&inbox.id, query, 50, 200_000).await.map_err(|e| e.to_string())?;
         for m in found {
             let Some(mid) = m.message_id.clone().filter(|x| !x.trim().is_empty()) else { continue };
             replies.push(json!({
                 "from": m.from, "message_id": mid, "subject": m.subject,
-                "text": m.body_text.chars().take(2000).collect::<String>(), "at": m.date.unwrap_or_default(),
+                "text": m.body_text.chars().take(20_000).collect::<String>(), "at": m.date.unwrap_or_default(),
             }));
         }
     }
-    if replies.is_empty() {
+    // R-563: what Jack sent them from his own mailbox, so a reply he answered there shows as answered.
+    // A mailbox without a Sent folder the scan can find just leaves replies to Mark answered.
+    let mut sent = Vec::new();
+    for chunk in emails.chunks(15) {
+        let query = format!("SINCE {day} {}", any_of("TO", chunk));
+        let found = match crate::email::search_folder(&inbox.id, &crate::email::SENT_FOLDERS, query, 50, 200_000).await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::info!("cold calls: sent folder: {e}");
+                break;
+            }
+        };
+        for m in found {
+            let Some(mid) = m.message_id.clone().filter(|x| !x.trim().is_empty()) else { continue };
+            sent.push(json!({
+                "to": m.to, "message_id": mid, "subject": m.subject,
+                "text": m.body_text.chars().take(20_000).collect::<String>(), "at": m.date.unwrap_or_default(),
+            }));
+        }
+    }
+    if replies.is_empty() && sent.is_empty() {
         return Ok(());
     }
-    crate::netsync::server_request("POST", "/api/outreach/pump/replies", Some(json!({ "replies": replies })))
+    crate::netsync::server_request("POST", "/api/outreach/pump/replies", Some(json!({ "replies": replies, "sent": sent })))
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -258,10 +279,11 @@ mod tests {
 
     #[test]
     fn the_reply_search() {
-        assert_eq!(from_any(&["a@x.co".into()]), "FROM \"a@x.co\"");
+        assert_eq!(any_of("FROM", &["a@x.co".into()]), "FROM \"a@x.co\"");
         assert_eq!(
-            from_any(&["a@x.co".into(), "b@y.co".into(), "c@z.co".into()]),
+            any_of("FROM", &["a@x.co".into(), "b@y.co".into(), "c@z.co".into()]),
             "OR FROM \"a@x.co\" OR FROM \"b@y.co\" FROM \"c@z.co\""
         );
+        assert_eq!(any_of("TO", &["a@x.co".into(), "b@y.co".into()]), "OR TO \"a@x.co\" TO \"b@y.co\"");
     }
 }

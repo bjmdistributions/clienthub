@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FileUp, Mail, Phone, Plus, Reply, Search, Settings2, X } from "lucide-react";
+import { Check, FileUp, Mail, Phone, Plus, Reply, Search, Settings2, X } from "lucide-react";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 import { can } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import {
-  KIND_LABEL, OUTCOMES, OUTCOME_LABEL, STATUSES, STATUS_LABEL, TOKENS, nextLine, outreach, sendable,
-  type DraftEmail, type Lead, type LeadDetail, type LeadList, type LeadStatus, type PumpState, type Skipped,
+  ANSWERED_HOW, KIND_LABEL, OUTCOMES, OUTCOME_LABEL, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, nextLine, outreach, sendable,
+  type DraftEmail, type Lead, type LeadDetail, type LeadList, type LeadStatus, type OutreachReply, type PumpState, type Skipped,
 } from "../lib/outreach";
 
 // R-546 Cold calls: warehouses and would-be suppliers being cold called and emailed, kept apart from
@@ -69,6 +69,7 @@ export default function ColdCallsView() {
   const [review, setReview] = useState<{ emails: DraftEmail[]; skipped: Skipped[] } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [imported, setImported] = useState<{ added: number; skipped: Skipped[] } | null>(null);
+  const [view, setView] = useState<"leads" | "replies">("leads");
   const fileRef = useRef<HTMLInputElement>(null);
   const me = useSessionMe();
   // Make supplier writes a supplier, the suppliers write bar (the server checks it too).
@@ -163,6 +164,17 @@ export default function ColdCallsView() {
             {data.queue.failed > 0 && <span className="text-danger-ink font-medium"> {data.queue.failed} failed to send: open the warehouse to try again.</span>}
           </p>
 
+          <div className="inline-flex p-0.5 mb-3 bg-surface-2 border border-line rounded-lg">
+            {([["leads", "Warehouses", 0], ["replies", "Replies", data.replies_waiting ?? 0]] as ["leads" | "replies", string, number][]).map(([k, lb, n]) => (
+              <button key={k} onClick={() => setView(k)}
+                className={`h-8 px-3.5 rounded-md text-[13px] inline-flex items-center gap-1.5 transition-colors ${view === k ? "bg-surface text-ink font-medium shadow-sm" : "text-ink-2 hover:text-ink"}`}>
+                {lb}
+                {n > 0 && <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-on-accent text-[11px] font-semibold tabular-nums inline-flex items-center justify-center">{n}</span>}
+              </button>
+            ))}
+          </div>
+
+          {view === "replies" ? <Replies onOpenLead={setOpenId} onChanged={load} /> : <>
           <div className="flex flex-wrap items-center gap-2 mb-3">
             <div className="relative w-64 max-w-full">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
@@ -205,6 +217,7 @@ export default function ColdCallsView() {
               })}
             </div>
           )}
+          </>}
         </>
       )}
 
@@ -233,6 +246,126 @@ export default function ColdCallsView() {
         </Overlay>
       )}
     </div>
+  );
+}
+
+const tagPill = (t: string) => {
+  const [lb, tone] = REPLY_TAG[t] ?? [t, "neutral" as const];
+  return <StatusPill key={t} tone={tone}>{lb}</StatusPill>;
+};
+
+/** R-563: every reply in one place. What they said at a glance, and the ones still waiting on you first. */
+function Replies({ onOpenLead, onChanged }: { onOpenLead: (leadId: string) => void; onChanged: () => void }) {
+  const [list, setList] = useState<OutreachReply[] | null>(null);
+  const [all, setAll] = useState(false);
+  const [open, setOpen] = useState<OutreachReply | null>(null);
+
+  const load = useCallback(async () => {
+    try { setList((await outreach.replies()).replies); } catch (e) { toast(msg(e), "error"); }
+  }, []);
+  useEffect(() => {
+    load();
+    const t = window.setInterval(load, 60_000);
+    return () => window.clearInterval(t);
+  }, [load]);
+
+  if (!list) return <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">Loading replies...</div>;
+  const waiting = list.filter((r) => !r.answered);
+  const shown = all ? list : waiting;
+  const answer = async (r: OutreachReply) => {
+    try { await outreach.markAnswered(r.id); toast("Marked answered"); setOpen(null); await load(); onChanged(); }
+    catch (e) { toast(msg(e), "error"); }
+  };
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        {([[false, "To answer", waiting.length], [true, "All replies", list.length]] as [boolean, string, number][]).map(([k, lb, n]) => (
+          <button key={lb} onClick={() => setAll(k)}
+            className={`h-8 px-3 rounded-full border text-[12.5px] whitespace-nowrap transition-colors ${all === k ? "bg-accent/10 border-accent/40 text-accent-hover font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+            {lb} <span className="tabular-nums text-muted">{n}</span>
+          </button>
+        ))}
+        <span className="text-[12px] text-muted">A reply counts as answered once you email them from your mailbox, log a call, or mark it.</span>
+      </div>
+      {shown.length === 0 ? (
+        <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">
+          {list.length === 0 ? "No replies yet. When a warehouse answers a cold email it shows here." : "You have answered every reply."}
+        </div>
+      ) : (
+        <div className="bg-surface border border-line rounded-2xl divide-y divide-line-2 overflow-hidden">
+          {shown.map((r) => (
+            <button key={r.id} onClick={() => setOpen(r)} className="w-full text-left flex items-start gap-4 px-4 py-3 hover:bg-surface-2 min-w-0">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-2 min-w-0">
+                  <span className="text-[14px] font-medium text-ink truncate">{r.company}</span>
+                  {r.contact_name && <span className="text-[12.5px] text-muted truncate">{r.contact_name}</span>}
+                  <span className="ml-auto text-[12px] text-muted whitespace-nowrap">{ago(r.at)}</span>
+                </div>
+                <div className={`text-[13.5px] mt-0.5 line-clamp-2 ${r.answered ? "text-ink-2" : "text-ink"}`}>
+                  {r.gist || <span className="text-muted">No new words in it. Open it to see the whole email.</span>}
+                </div>
+                {(r.tags.length > 0 || r.phone) && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5 whitespace-nowrap">
+                    {r.tags.slice(0, 2).map(tagPill)}
+                    {r.tags.length > 2 && <span className="text-[11.5px] text-muted">+{r.tags.length - 2}</span>}
+                    {r.phone && <span className="text-[12px] text-ink-2 inline-flex items-center gap-1"><Phone size={12} className="text-muted" />{r.phone}</span>}
+                  </div>
+                )}
+              </div>
+              <div className="flex-shrink-0 w-36 flex justify-end pt-0.5">
+                {r.answered
+                  ? <span className="text-[12px] text-muted inline-flex items-center gap-1"><Check size={13} />{ANSWERED_HOW[r.answered_how] ?? "Answered"}</span>
+                  : <StatusPill tone="warning" size="md">To answer</StatusPill>}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+      {open && <ReplyReader r={open} onClose={() => setOpen(null)} onAnswer={() => answer(open)} onOpenLead={() => { setOpen(null); onOpenLead(open.lead_id); }} />}
+    </>
+  );
+}
+
+function ReplyReader({ r, onClose, onAnswer, onOpenLead }: { r: OutreachReply; onClose: () => void; onAnswer: () => void; onOpenLead: () => void }) {
+  const [whole, setWhole] = useState(false);
+  const when = (iso: string) => new Date(iso).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const quoted = r.body.trim() !== r.new_text.trim();
+  return (
+    <Overlay title={r.company} wide onClose={onClose}
+      footer={<>
+        <button className={ghost} onClick={onOpenLead}>Open warehouse</button>
+        {!r.answered && <button className={solid} onClick={onAnswer}><Check size={14} /> Mark answered</button>}
+      </>}>
+      <div className="text-[12.5px] text-muted mb-3">
+        {[r.contact_name, r.email, when(r.at)].filter(Boolean).join(", ")}
+        <div className="text-ink-2 mt-0.5">{r.subject}</div>
+      </div>
+      {(r.tags.length > 0 || r.phone) && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          {r.tags.map(tagPill)}
+          {r.phone && <span className="text-[12.5px] text-ink-2 inline-flex items-center gap-1 select-text"><Phone size={12} className="text-muted" />{r.phone}</span>}
+        </div>
+      )}
+      <div className="text-[12px] text-muted mb-1">What they said</div>
+      <div className="text-[14px] text-ink leading-relaxed whitespace-pre-wrap select-text bg-surface-2 border border-line rounded-xl px-4 py-3">
+        {(whole ? r.body : r.new_text) || r.body || "The email had no text."}
+      </div>
+      {quoted && (
+        <button className="mt-2 text-[12.5px] text-accent-hover hover:underline" onClick={() => setWhole(!whole)}>
+          {whole ? "Show only what they wrote" : "Show the whole email"}
+        </button>
+      )}
+      <div className={`mt-4 text-[12.5px] ${r.answered ? "text-muted" : "text-warning-ink font-medium"}`}>
+        {r.answered ? `${ANSWERED_HOW[r.answered_how] ?? "Answered"} ${ago(r.answered_at)}.` : "You have not answered this yet."}
+      </div>
+      {r.yours && (
+        <div className="mt-4">
+          <div className="text-[12px] text-muted mb-1">Your email before this, {when(r.yours.at)}</div>
+          <div className="text-[12.5px] text-ink-2 whitespace-pre-wrap select-text line-clamp-[10] border-l-2 border-line pl-3">{r.yours.body}</div>
+        </div>
+      )}
+    </Overlay>
   );
 }
 
@@ -268,7 +401,9 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
     : e.kind === "email" ? (e.outcome === "bump" ? "Bump sent" : "Email sent")
     : e.kind === "reply" ? (e.outcome === "stop" ? "Replied: asked to stop" : "Replied")
     : e.kind === "status" ? `Status: ${STATUS_LABEL[e.outcome as LeadStatus] ?? e.outcome}`
-    : e.kind === "import" ? "Imported" : "Note";
+    : e.kind === "import" ? "Imported"
+    : e.kind === "answer" ? "You emailed them"
+    : e.kind === "answered" ? "Marked answered" : "Note";
   const site = l?.website ? (/^https?:\/\//i.test(l.website) ? l.website : `https://${l.website}`) : "";
 
   return (

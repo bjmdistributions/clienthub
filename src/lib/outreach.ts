@@ -71,6 +71,8 @@ export interface LeadList {
   counts: Partial<Record<LeadStatus, number>>;
   queue: { waiting: number; sent_today: number; failed: number };
   settings: OutreachSettings;
+  /** Replies not answered yet (R-563); absent from a server before deploy-276. */
+  replies_waiting?: number;
 }
 
 export interface LeadEvent { id: string; kind: string; outcome: string; subject: string; body: string; at: string; by: string }
@@ -79,6 +81,24 @@ export interface LeadDetail { lead: Lead; events: LeadEvent[]; queue: QueuedEmai
 
 export interface DraftEmail { lead_id: string; company: string; to: string; subject: string; body: string; reply_to: string; bump: boolean }
 export interface Skipped { lead_id?: string; row?: number; company: string; reason: string }
+
+/** R-563: one reply, with what they said at a glance (rules on the server, no AI) and whether it was answered. */
+export interface OutreachReply {
+  id: string; lead_id: string; company: string; contact_name: string; email: string; status: LeadStatus;
+  subject: string; at: string; body: string; new_text: string; gist: string; tags: string[]; phone: string;
+  answered: boolean; answered_how: string; answered_at: string;
+  yours: { subject: string; body: string; at: string } | null;
+}
+
+export const REPLY_TAG: Record<string, [string, "neutral" | "step" | "accent" | "warning" | "success" | "danger"]> = {
+  stop: ["Asked to stop", "danger"], away: ["Out of office", "neutral"], no: ["Not interested", "neutral"],
+  stock: ["Has stock", "success"], call: ["Wants a call", "accent"], details: ["Wants details", "step"],
+  elsewhere: ["Points to someone", "step"],
+};
+
+export const ANSWERED_HOW: Record<string, string> = {
+  answer: "You emailed them", call: "You called", email: "Email sent", answered: "Marked answered", stop: "Asked to stop",
+};
 
 export interface PumpState { on: boolean; login: string; inboxes: string[]; last_error: string; last_sent_at: string; watching: string }
 
@@ -107,6 +127,8 @@ export const outreach = {
   retry: (queueId: string) => call<{ ok: boolean }>("POST", `/api/outreach/queue/${id(queueId)}/retry`, {}),
   saveSettings: (s: Pick<OutreachSettings, "send_from" | "from_name" | "address_line" | "daily_cap">) =>
     call<OutreachSettings>("POST", "/api/outreach/settings", s),
+  replies: () => call<{ replies: OutreachReply[]; waiting: number }>("GET", "/api/outreach/replies"),
+  markAnswered: (replyId: string) => call<{ ok: boolean }>("POST", `/api/outreach/replies/${id(replyId)}/answered`, {}),
   pump: () => invoke<PumpState>("outreach_pump_get"),
   setPump: (on: boolean) => invoke<void>("outreach_pump_set", { on }),
 };
