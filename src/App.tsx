@@ -98,7 +98,7 @@ import { api, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
 import { forgetTime24, loadTime24 } from "./lib/time24";
-import { bellCountOf, bellTitle, canSeeTeamNotices } from "./lib/notices";
+import { bellCountOf, bellTitle, bellUrgentOf, canSeeTeamNotices } from "./lib/notices";
 import { confirmLeaveUnsaved } from "./lib/unsavedWork";
 import { tabSwitchAction, tabToShow } from "./lib/tabSwitch";
 import { useNotices } from "./lib/useNotices";
@@ -545,6 +545,10 @@ export default function App() {
   const bellShown = canSeeTeamNotices(me) || logisticsOnly;
   const bellCount = logisticsOnly ? notices.logisticsCount : apTotal;
   const bellTab: Tab = logisticsOnly ? "logistics" : "approvals";
+  // R-571: the count is red while something urgent waits (money in today, an overdue bill or carrier, the pay day,
+  // an urgent load), and a calm grey when everything on it can wait.
+  const bellUrgent = logisticsOnly ? notices.logisticsUrgent : bellUrgentOf(notices.team);
+  const bellBadge = bellUrgent ? "bg-[color:var(--rail-badge)]" : "bg-[color:var(--rail-badge-calm)]";
 
   useEffect(() => {
     api.getOrganizationName().then((n) => setOrgName((n || "").trim())).catch(() => {});
@@ -967,8 +971,8 @@ export default function App() {
         )}
         {item.id === "approvals" && apTotal > 0 && (
           navCollapsed
-            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-[color:var(--rail-badge)]" />
-            : <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center">
+            ? <span className={`absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full ${bellBadge}`} />
+            : <span className={`ml-auto min-w-[16px] h-4 px-1 rounded-full ${bellBadge} text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center`}>
                 {apTotal > 9 ? "9+" : apTotal}
               </span>
         )}
@@ -1015,7 +1019,7 @@ export default function App() {
     n > 0 ? (
       <span
         className={`absolute top-1 right-1.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold leading-[15px] text-center ${
-          id === "newsletter" ? "" : "bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)]"
+          id === "newsletter" ? "" : `${id === "approvals" ? bellBadge : "bg-[color:var(--rail-badge)]"} text-[color:var(--rail-ink)]`
         }`}
         style={id === "newsletter"
           ? { background: "var(--rail-hot-bg)", color: "var(--rail-hot)", border: "1px solid var(--rail-hot-line)" }
@@ -1182,7 +1186,7 @@ export default function App() {
           // until All screens started passing draftCount through it.
           <span
             className={`ml-auto min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold leading-4 text-center ${
-              item.id === "newsletter" ? "" : "bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)]"
+              item.id === "newsletter" ? "" : `${item.id === "approvals" ? bellBadge : "bg-[color:var(--rail-badge)]"} text-[color:var(--rail-ink)]`
             }`}
             style={item.id === "newsletter"
               ? { background: "var(--rail-hot-bg)", color: "var(--rail-hot)", border: "1px solid var(--rail-hot-line)" }
@@ -1291,7 +1295,7 @@ export default function App() {
           >
             <Bell size={13} strokeWidth={2} />
             {bellCount > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-[15px] text-center">
+              <span className={`absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full ${bellBadge} text-[color:var(--rail-ink)] text-[10px] font-bold leading-[15px] text-center`}>
                 {bellCount > 9 ? "9+" : bellCount}
               </span>
             )}
@@ -1479,7 +1483,7 @@ export default function App() {
                       {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
                     </div>}
                 {bellShown && bellCount > 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-[color:var(--rail-badge)]" style={{ border: "1px solid #101011" }} />
+                  <span className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full ${bellBadge}`} style={{ border: "1px solid #101011" }} />
                 )}
               </button>
               {/* The only way back out of the rail, and it sits in the same corner as the
@@ -1624,7 +1628,7 @@ export default function App() {
                       <Bell size={14} strokeWidth={1.7} />
                       <span>Notifications</span>
                       {bellCount > 0 && (
-                        <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center">
+                        <span className={`ml-auto min-w-[16px] h-4 px-1 rounded-full ${bellBadge} text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center`}>
                           {bellCount > 9 ? "9+" : bellCount}
                         </span>
                       )}

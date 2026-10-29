@@ -250,11 +250,12 @@ export function planTeamRaise(
     return Number.isFinite(t) && nowMs - t <= FIRST_RUN_WINDOW_MS;
   });
   const oldestFirst = (a: LeadNotification, b: LeadNotification) => (a.created_at || "").localeCompare(b.created_at || "");
-  eligible.sort(oldestFirst);
-  const needs = eligible.filter((n) => isNeedsYouKind(n.kind)).slice(-RAISE_CAP);
-  const room = RAISE_CAP - needs.length;
-  const news = room > 0 ? eligible.filter((n) => !isNeedsYouKind(n.kind)).slice(-room) : [];
-  return { raise: [...needs, ...news].sort(oldestFirst), seen: mergeSeen(seen, fresh.map((n) => n.id)) };
+  // R-571: the urgent ones take the cap's slots first (money in today, an overdue bill or carrier, the pay day), then
+  // the rest that need you, then the news; the newest of each.
+  const today = localDay(new Date(nowMs));
+  const rank = (n: LeadNotification) => (noticeTier(n, today) === "urgent" ? 0 : isNeedsYouKind(n.kind) ? 1 : 2);
+  const picked = [...eligible].sort((a, b) => rank(a) - rank(b) || oldestFirst(b, a)).slice(0, RAISE_CAP);
+  return { raise: picked.sort(oldestFirst), seen: mergeSeen(seen, fresh.map((n) => n.id)) };
 }
 
 // ─── the Logistics-only account's notices, worked out from its loads ──────
@@ -369,6 +370,8 @@ export interface NoticeRow {
   dueDay: string;
   /** When it was raised, or "" when the source keeps no time. */
   createdAt: string;
+  /** R-571: a bank row that is money coming in. */
+  moneyIn?: boolean;
 }
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -390,9 +393,12 @@ export function dueDayOf(n: Pick<LeadNotification, "kind" | "entity_id" | "due_d
 export function noticeRow(n: LeadNotification): NoticeRow | null {
   const kind: string = n.kind;
   if (!isTeamNoticeKind(kind) && !isLeadNoticeKind(kind)) return null;
-  // R-493: a bank row reads "New deposit" over its amount, the one figure it carries.
+  // R-493: a bank row's amount is the one figure it carries. R-571: it reads "Money in" or "Charge" by its direction;
+  // a notice from before the payload named one keeps its own title.
   if (kind === "bank_txn") {
-    return { key: `n:${n.id}`, ...ROW_INFO.bank_txn, kind, label: text(n.title) || ROW_INFO.bank_txn.label, subject: text(n.body), dueDay: "", createdAt: n.created_at || "" };
+    const dir = payloadOf(n).money_in;
+    const label = dir === true ? "Money in" : dir === false ? "Charge" : text(n.title) || ROW_INFO.bank_txn.label;
+    return { key: `n:${n.id}`, ...ROW_INFO.bank_txn, kind, label, subject: text(n.body), dueDay: "", createdAt: n.created_at || "", moneyIn: dir === true };
   }
   // R-496: a completed deal reads its invoice number under "Deal completed".
   if (kind === "deal_complete") {
@@ -493,17 +499,44 @@ export function whenWords(r: Pick<NoticeRow, "kind" | "dueDay" | "createdAt">, t
  *  row keeps the muted when. */
 export const whenWearsUrgency = (r: Pick<NoticeRow, "urgency">): boolean => r.urgency === "overdue";
 
+/** R-571: how hard a row asks for you, the phone push's three levels. Urgent: money came in today, or waiting costs
+ *  you (an overdue bill or carrier, the pay day). Quiet: for the record. Everything else is normal. The server's
+ *  push.rs (level_for_notification, bank_messages) and the phone's ntTier (www/app.js) hold the same rule: change
+ *  the three together. Only the day differs: a push is sent the moment the money moves, a row stays urgent that day. */
+export type Tier = "urgent" | "normal" | "quiet";
+const URGENT_KINDS: readonly string[] = ["bill_overdue", "carrier_overdue", "logistics_pay_due"];
+const QUIET_KINDS: readonly string[] = ["bill_paid", "logistics_bol", "supplier_profile", "unsubscribe"];
+export function tierOf(r: Pick<NoticeRow, "kind" | "createdAt" | "moneyIn">, today: string): Tier {
+  if (URGENT_KINDS.includes(r.kind)) return "urgent";
+  if (r.kind === "bank_txn" && r.moneyIn && createdDay(r.createdAt) === today) return "urgent";
+  return QUIET_KINDS.includes(r.kind) ? "quiet" : "normal";
+}
+type NoticeLike = { kind: string; status?: string; payload_json?: string | null; created_at?: string };
+const noticeTier = (n: NoticeLike, today: string): Tier =>
+  tierOf({ kind: n.kind as RowKind, createdAt: n.created_at || "", moneyIn: payloadOf({ payload_json: n.payload_json ?? null }).money_in === true }, today);
+
+/** R-571: the label's colour words for a money row: money in is green, a charge plain ink. null for every other row. */
+export const moneyTone = (r: Pick<NoticeRow, "kind" | "moneyIn" | "label">): "in" | "out" | null =>
+  r.kind !== "bank_txn" ? null : r.moneyIn ? "in" : r.label === "Charge" ? "out" : null;
+
 /** The number on the bell: only what needs you. Pending customers, deletions to decide, one item for all the
  *  listings to renew, the unread supplier leads, and the unread notices that ask something of you. A paid
- *  bill, a supplier's details and an unsubscribe are for your information and do not count. */
+ *  bill, a supplier's details and an unsubscribe are for your information and do not count. R-571: money that came
+ *  in today counts too, until it is cleared or the day ends; a charge does not. */
 export function bellCountOf(a: {
   pendingCustomers: number;
   requests: readonly { kind: string }[];
-  notices: readonly { kind: string; status?: string }[];
-}): number {
-  const waiting = a.notices.filter((n) => n.status !== "acknowledged" && (n.kind === "supply_lead" || isNeedsYouKind(n.kind))).length;
+  notices: readonly NoticeLike[];
+}, today: string = localDay()): number {
+  const waiting = a.notices.filter((n) => n.status !== "acknowledged"
+    && (n.kind === "supply_lead" || isNeedsYouKind(n.kind) || (n.kind === "bank_txn" && noticeTier(n, today) === "urgent"))).length;
   const deletions = a.requests.filter((r) => r.kind === "client_delete" || isFeedKind(r.kind)).length;
   return a.pendingCustomers + deletions + (a.requests.some(isRenewal) ? 1 : 0) + waiting;
+}
+
+/** R-571: the bell is red while anything urgent is waiting, and a calm grey when what waits can wait. */
+export function bellUrgentOf(notices: readonly NoticeLike[], today: string = localDay()): boolean {
+  return notices.some((n) => n.status !== "acknowledged" && noticeTier(n, today) === "urgent");
 }
 
 /** The bell's tooltip. */

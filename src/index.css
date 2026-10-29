@@ -36,6 +36,7 @@
   --rail-hot-bg: rgba(251,191,36,0.15);
   --rail-hot-line: rgba(251,191,36,0.25);
   --rail-badge: #DC2626;        /* an unread count */
+  --rail-badge-calm: #52525B;   /* R-571: a count where nothing is urgent, white on it 7.7:1 */
   --rail-ok: #34D399;           /* the server light: connected */
   --rail-bad: #F87171;          /* the server light: unreachable, or a failed sync */
   --color-primary:        #FF6520;
