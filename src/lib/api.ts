@@ -4297,8 +4297,9 @@ export const api = {
   /** R-552: the live buys a payment can be tied to (Financials), or the ones a deal's invoice took stock from. */
   warehouseBuyChoices: (dealFlowId?: string) => invoke<BuyChoice[]>("warehouse_buy_choices", { dealFlowId: dealFlowId ?? null }),
   unpayWarehouseBuy: (id: string, txnId: string) => invoke<BuyDetail>("unpay_warehouse_buy", { id, txnId }),
-  addWarehouseBuyOrder: (id: string, invoiceId: string, count: number, goodsTyped?: number | null) =>
-    invoke<string>("add_warehouse_buy_order", { id, invoiceId, count, goodsTyped: goodsTyped ?? null }),
+  /** R-574: `ownCost` true puts no cost on the deal; false puts it on unless the deal has a supplier cost typed by hand (`own_cost` in the reply says which). */
+  addWarehouseBuyOrder: (id: string, invoiceId: string, count: number, goodsTyped?: number | null, ownCost?: boolean) =>
+    invoke<{ order_id: string; own_cost: boolean }>("add_warehouse_buy_order", { id, invoiceId, count, goodsTyped: goodsTyped ?? null, ownCost: ownCost ?? null }),
   updateWarehouseBuyOrder: (id: string, orderId: string, patch: { goodsTyped?: number; clearTyped?: boolean; undone?: boolean }) =>
     invoke<BuyDetail>("update_warehouse_buy_order", { id, orderId, goodsTyped: patch.goodsTyped ?? null, clearTyped: patch.clearTyped ?? null, undone: patch.undone ?? null }),
   addMissingWarehouseBuyOrders: (id: string) => invoke<BuyDetail>("add_missing_warehouse_buy_orders", { id }),

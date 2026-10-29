@@ -13,6 +13,7 @@ import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import InvoiceCostSection from "./InvoiceCostSection";
 import { toast } from "./Toast";
+import { LinkDeliveryModal } from "./LinkDelivery";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { FromPicker, useSendFromOptions } from "./FromPicker";
@@ -1354,6 +1355,8 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
   const [dealFlow, setDealFlow] = useState<DealFlow | null>(null);
   // R-438: bumped when Link financials or the refund step changes this deal's money, so the other refreshes.
   const [moneyRev, setMoneyRev] = useState(0);
+  // R-574: the Link to a delivery card, open over the panel.
+  const [linking, setLinking] = useState(false);
   useEffect(() => {
     let alive = true;
     if (voided) { setDealFlow(null); return; }
@@ -1506,6 +1509,10 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                   <Trash2 size={13} /> Delete
                 </button>
               </div>
+              <button onClick={() => setLinking(true)} title="Take this invoice's pairs off a shoe delivery and put the landed cost on its deal"
+                className="w-full bg-surface border border-line hover:bg-surface-2 text-ink-2 h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                Link to a delivery
+              </button>
               <button onClick={() => onVoid(true)} title="Void this invoice: drops it from receivables; nothing is deleted"
                 className="w-full bg-surface border border-line hover:bg-warning-bg hover:border-warning text-muted hover:text-warning-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
                 <XCircle size={13} /> Mark deal fell through
@@ -1514,6 +1521,10 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           )}
         </div>
       </div>
+      {linking && <LinkDeliveryModal invoice={invoice} onClose={() => {
+        setLinking(false); setMoneyRev((n) => n + 1);
+        api.getDealFlowByInvoice(invoice.id).then(setDealFlow).catch(() => {});
+      }} />}
     </>
   );
 }

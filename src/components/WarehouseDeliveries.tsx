@@ -9,8 +9,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
-import { api, type ComingBuy, type Invoice } from "../lib/api";
-import { isNoiseItem, parseLineItems } from "../lib/itemSearch";
+import { api, type ComingBuy } from "../lib/api";
 import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, listingCount, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, unitWord, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PickPlan, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, WAREHOUSE_OPEN_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { standsOn, type DeliveryOpen, type FloorRequest } from "../lib/floor";
@@ -18,6 +17,7 @@ import BuyPanel from "./BuyPanel";
 import WarehouseReceive from "./WarehouseReceive";
 import { waitingUnits } from "../lib/receive";
 import ComingBuys from "./ComingBuys";
+import LinkDelivery from "./LinkDelivery";
 import { canSeePayments } from "../lib/dealPayments";
 import { openBuyInDealFlow } from "../lib/buyLoads";
 import { can, isAdmin } from "../lib/permissions";
@@ -1103,42 +1103,20 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
   const ready = bs.length > 0 && bs.every((b) => rateOf(b) > 0);
   const pastBoxes = Object.entries(pick).reduce((a, [lid, sizes]) => a + Object.entries(sizes).reduce((b, [z, n]) => b + Math.max(0, n - leftOf(lid, z)), 0), 0);
 
-  // R-565: an invoice made outside this tab is linked here, by its pair count or by the pick.
-  // Its pairs leave the delivery, and the delivery's buy writes its cost share on the invoice's deal.
+  // R-565: an invoice made outside this tab is linked here, by its pair count or by the pick (R-574: LinkDelivery).
   const [linking, setLinking] = useState(false);
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [linkId, setLinkId] = useState("");
-  const [linkPairs, setLinkPairs] = useState("");
-  const [linkBy, setLinkBy] = useState<"count" | "pick">("count");
-  const [linkBusy, setLinkBusy] = useState(false);
   const linked = new Set(d.outs.filter((o) => !o.undone && o.invoice_id).map((o) => o.invoice_id));
-  const linkable = invoices.filter((i) => !i.voided && !linked.has(i.id)).sort((a, b) => (b.issue_date || "").localeCompare(a.issue_date || ""));
-  const pairsOn = (i: Invoice) => parseLineItems(i.line_items_json).filter((it) => !isNoiseItem(it.description || "")).reduce((a, it) => a + Math.max(0, Math.round(Number(it.qty) || 0)), 0);
-  const openLink = async () => {
-    setLinking(true); setLinkId(""); setLinkPairs(""); setLinkBy(totalPairs > 0 ? "pick" : "count");
-    try { setInvoices(await api.listInvoices()); } catch (e) { toast(String(e), "error"); }
-  };
-  const linkCount = Math.max(0, Math.floor(Number(linkPairs.replace(/[,\s]/g, "")) || 0));
-  const linkReady = !!linkId && (linkBy === "pick" ? totalPairs > 0 : linkCount > 0);
-  const link = async () => {
-    const inv = linkable.find((i) => i.id === linkId);
-    if (!inv || !linkReady) return;
-    setLinkBusy(true);
-    try {
-      const takes: CaseLine[] = linkBy === "pick" ? Object.entries(pick).flatMap(([lid, sizes]) => Object.entries(sizes).filter(([, n]) => n > 0).map(([size, pairs]) => ({ line_id: lid, size, pairs }))) : [];
-      const pairs = linkBy === "pick" ? totalPairs : linkCount;
-      merge(await api.takeLoadPairs(loadId, { invoiceId: inv.id, reference: inv.number, note: "Linked", takes, over: true, pairs: linkBy === "count" ? linkCount : undefined }));
-      if (linkBy === "pick") setPick({});
-      setLinking(false);
-      const buy = await api.warehouseBuyFor({ loadId }).then((r) => r.buy).catch(() => null);
-      if (!buy) { toast(`${inv.number} linked: ${n0(pairs)} pairs off this delivery. No buy is recorded on this delivery, so no cost went on the deal. Record it on the Buy tab.`, "error"); return; }
-      // The buy's missing orders: a deal that already carries a cost typed by hand keeps it.
-      await api.addMissingWarehouseBuyOrders(buy.id)
-        .then(() => toast(`${inv.number} linked: ${n0(pairs)} pairs off this delivery, its cost from ${buy.name} written on the deal.`))
-        .catch((e: any) => toast(`${inv.number} linked, but its cost did not reach the deal (${e}). The Buy tab can add it.`, "error"));
-    } catch (e) { toast(String(e), "error"); }
-    finally { setLinkBusy(false); }
-  };
+  // R-574: who is buying, on every sold row.
+  const [buyerOf, setBuyerOf] = useState<Record<string, string>>({});
+  const outIds = d.outs.map((o) => o.invoice_id).join(",");
+  useEffect(() => {
+    if (!outIds) return;
+    Promise.all([api.listInvoices(), api.listClients()]).then(([is, cs]) => {
+      const names = Object.fromEntries(cs.map((c) => [c.id, c.name]));
+      setBuyerOf(Object.fromEntries(is.map((i) => [i.id, names[i.client_id] || ""])));
+    }).catch(() => {});
+  }, [outIds]);
+  const pickTakes = (): CaseLine[] => Object.entries(pick).flatMap(([lid, sizes]) => Object.entries(sizes).filter(([, n]) => n > 0).map(([size, pairs]) => ({ line_id: lid, size, pairs })));
 
   const send = () => {
     if (!ready) { toast("Give every line a price per pair.", "error"); return; }
@@ -1237,7 +1215,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
           {pastBoxes > 0 && <div className="text-[12px] text-muted tabular-nums">{n0(pastBoxes)} of the picked pairs are not in a box yet</div>}
         </div>
         <div className="flex gap-2">
-          <button onClick={() => { void openLink(); }} disabled={!!pending} className={WH_BTN_SECONDARY}>Link an invoice</button>
+          <button onClick={() => setLinking(true)} disabled={!!pending} className={WH_BTN_SECONDARY}>Link an invoice</button>
           {totalPairs > 0 && (sureClear
             ? <><button onClick={() => { setPick({}); setSureClear(false); }} className={WH_BTN_SECONDARY}>Clear the pick</button><button onClick={() => setSureClear(false)} className={WH_BTN_SECONDARY}>Keep it</button></>
             : <button onClick={() => setSureClear(true)} className={WH_BTN_SECONDARY}>Clear</button>)}
@@ -1245,32 +1223,8 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
           <button onClick={() => setTray(true)} disabled={!totalPairs || !live || !!pending} className={WH_BTN_PRIMARY} title={pending ? "Finish the saved invoice above first" : undefined}>Price it</button>
         </div>
       </div>
-      {linking && (
-        <div className={`${WH_CARD} p-4 mb-3`}>
-          <div className="text-[14px] font-semibold text-ink">Link an invoice to this delivery</div>
-          <p className="text-[12.5px] text-muted mt-0.5">For an invoice made outside this tab. Its pairs come off this delivery, even past what is in boxes, and the delivery's buy puts its cost on the invoice's deal. The invoice itself is not changed.</p>
-          <label className="block mt-3 text-[12px] text-muted max-w-[460px]">Invoice
-            <select value={linkId} onChange={(e) => { setLinkId(e.target.value); const i = linkable.find((x) => x.id === e.target.value); if (i) setLinkPairs(String(pairsOn(i) || "")); }} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`}>
-              <option value="">Choose an invoice</option>
-              {linkable.map((i) => <option key={i.id} value={i.id}>{i.number} · {i.issue_date} · {money(i.total)}</option>)}
-            </select>
-          </label>
-          <div className="flex flex-wrap gap-4 mt-3 text-[13px] text-ink-2">
-            <label className="flex items-center gap-2"><input type="radio" checked={linkBy === "count"} onChange={() => setLinkBy("count")} /> By the pair count</label>
-            <label className={`flex items-center gap-2 ${totalPairs ? "" : "text-faint"}`}><input type="radio" checked={linkBy === "pick"} disabled={!totalPairs} onChange={() => setLinkBy("pick")} /> The styles I picked ({n0(totalPairs)} pairs)</label>
-          </div>
-          {linkBy === "count" && (
-            <label className="block mt-2 text-[12px] text-muted w-[200px]">Pairs on the invoice
-              <input value={linkPairs} onChange={(e) => setLinkPairs(e.target.value)} inputMode="numeric" placeholder="0" style={WH_INPUT_BG} className={`${WH_INPUT} mt-1 tabular-nums`} />
-            </label>
-          )}
-          {linkBy === "count" && <p className="text-[12px] text-muted mt-1">No style is named, so the delivery's total goes down but no one style does.</p>}
-          <div className="flex gap-2 mt-3">
-            <button onClick={() => { void link(); }} disabled={!linkReady || linkBusy} className={WH_BTN_PRIMARY}>{linkBusy ? "Linking" : "Link it"}</button>
-            <button onClick={() => setLinking(false)} className={WH_BTN_SECONDARY}>Cancel</button>
-          </div>
-        </div>
-      )}
+      {linking && <LinkDelivery loadId={loadId} exclude={linked} pick={{ pairs: totalPairs, takes: pickTakes() }}
+        onLinked={(next, usedPick) => { merge(next); if (usedPick) setPick({}); setLinking(false); }} onCancel={() => setLinking(false)} />}
       {d.stock.not_boxed > 0 && <p className="text-[12.5px] text-muted mb-3">{n0(d.stock.not_boxed)} pairs are sold but not in a box yet. They come off as their cases are recorded.</p>}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <div className="relative w-[300px] max-w-full">
@@ -1344,6 +1298,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
             <div key={o.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-line last:border-b-0">
               <div className="min-w-0 flex-1">
                 <span className="text-[13px] font-medium text-ink">{o.reference || "Taken out"}</span>
+                {buyerOf[o.invoice_id] && <span className="text-[13px] text-ink-2"> · {buyerOf[o.invoice_id]}</span>}
                 <span className="text-[12px] text-muted tabular-nums"> · {n0(o.pairs)} pairs · {o.takes.length ? `${money(o.cost)} cost` : "styles not named"} · {new Date(o.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
               </div>
               {o.undone ? <StatusPill tone="neutral">Back on the delivery</StatusPill>

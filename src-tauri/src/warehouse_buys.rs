@@ -300,7 +300,10 @@ fn owned_allocs(c: &rusqlite::Connection, buy_id: &str) -> Vec<Alloc> {
 
 fn kind_of(a: &Alloc) -> Kind {
     match a.role.as_str() {
+        // R-574: the shipping in books as `supplier_payment` with its own note, since it is part of the
+        // landed cost on the order's one line. `fee` is how it booked before.
         "fee" => Kind::Ship,
+        "supplier_payment" if a.note.ends_with(", shipping in") => Kind::Ship,
         "supplier_payment" => Kind::Goods,
         _ => core::held_kind(&a.note),
     }
@@ -621,7 +624,7 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
             wants.push(Want { deal: d.clone(), txn_id: s.txn_id.clone(), role: "supplier_payment", amount: s.amount, note: core::goods_note(&b.name) });
         }
         for s in &p.ship_slices {
-            wants.push(Want { deal: d.clone(), txn_id: s.txn_id.clone(), role: "fee", amount: s.amount, note: core::ship_note(&b.name) });
+            wants.push(Want { deal: d.clone(), txn_id: s.txn_id.clone(), role: "supplier_payment", amount: s.amount, note: core::ship_note(&b.name) });
         }
     }
     for h in &plan.held {
@@ -668,12 +671,13 @@ fn wanted_lines(b: &BuyRow, p: &core::OrderPlan) -> Vec<SupplierPayment> {
         return v;
     }
     let supplier_id = if b.supplier_id.is_empty() { None } else { Some(b.supplier_id.clone()) };
-    if p.goods > core::CENT {
-        v.push(line(core::goods_line_id(&p.id), p.goods, p.count, p.goods_paid, &p.goods_paid_at, "supplier", (&b.supplier_name, supplier_id), core::goods_note(&b.name)));
-    }
-    // A shipping share a payment covers is counted by its `fee` booking, never by a line too.
-    if p.ship > core::CENT && !p.ship_paid {
-        v.push(line(core::ship_line_id(&p.id), p.ship, p.count, false, "", "other", ("Shipping in", None), core::ship_note(&b.name)));
+    // R-574 (Jack: "its fully landed"): one line, the goods and the shipping in together, so its price is the
+    // landed cost a unit and the buyer's own shipping is never touched. Both legs' bank rows book as
+    // `supplier_payment` on the deal, so the line and its links agree. Paid follows the supplier: the carrier
+    // is followed on its truck.
+    let landed = core::r2(p.goods + p.ship);
+    if landed > core::CENT {
+        v.push(line(core::goods_line_id(&p.id), landed, p.count, p.goods_paid, &p.goods_paid_at, "supplier", (&b.supplier_name, supplier_id), core::goods_note(&b.name)));
     }
     v
 }
@@ -1482,8 +1486,10 @@ pub(crate) fn booking_of_buy(alloc_id: &str) -> Option<(String, String)> {
 
 /// An invoice took stock from the buy: record the order and write its cost. Made by the invoice
 /// form right after the stock leaves; the same invoice twice is one order.
+/// R-574, a linked invoice sends `own_cost`: `true` puts no cost on its deal (he enters it himself), `false`
+/// puts it on unless the deal already carries a supplier cost typed by hand, which is kept. Absent: as before.
 #[tauri::command]
-pub async fn add_warehouse_buy_order(id: String, invoice_id: String, count: f64, goods_typed: Option<f64>) -> Result<String, String> {
+pub async fn add_warehouse_buy_order(id: String, invoice_id: String, count: f64, goods_typed: Option<f64>, own_cost: Option<bool>) -> Result<Value, String> {
     if !(count > 0.0) || !count.is_finite() {
         return Err("Nothing was taken for this order.".into());
     }
@@ -1496,9 +1502,14 @@ pub async fn add_warehouse_buy_order(id: String, invoice_id: String, count: f64,
             return Err("That invoice is no longer here.".into());
         }
     }
-    let oid = new_order(&id, &invoice_id, count, goods_typed.filter(|g| g.is_finite() && *g >= 0.0), false, "")?;
+    let own = match own_cost {
+        Some(true) => true,
+        Some(false) => has_own_cost(&*conn()?, &invoice_id),
+        None => false,
+    };
+    let oid = new_order(&id, &invoice_id, count, goods_typed.filter(|g| g.is_finite() && *g >= 0.0), own, "")?;
     apply(&id, None, None)?;
-    Ok(oid)
+    Ok(json!({ "order_id": oid, "own_cost": own }))
 }
 
 /// Type an order's cost (`goods_typed`), go back to the worked-out cost (`clear_typed`), or take
@@ -1638,10 +1649,11 @@ mod tests {
         .unwrap();
         assert_eq!(v["orders"].as_array().unwrap().len(), 2, "both earlier invoices came with the buy");
         assert_eq!(v["rollup"]["unit_cost"].as_f64().unwrap(), 1.5);
+        // R-574: one line each, landed: $1.25 + $0.25 of shipping in a pair.
         let a = goods_line("ia").unwrap();
-        assert_eq!((a.amount, a.paid), (5.0, false));
+        assert_eq!((a.amount, a.paid, a.quantity, a.unit_price), (6.0, false, Some(4.0), Some(1.5)));
         assert!(crate::commands::is_buy_line(&a));
-        assert_eq!(goods_line("ib").unwrap().amount, 7.5);
+        assert_eq!(goods_line("ib").unwrap().amount, 9.0);
 
         // The wire pays the goods: both orders covered in full.
         conn().unwrap().execute("INSERT INTO bank_txn (id,direction,amount,posted_at) VALUES ('w1','out',12.5,'2026-10-02')", []).unwrap();
@@ -1652,6 +1664,16 @@ mod tests {
         want.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert_eq!(bookings("w1"), want);
         assert!(goods_line("ia").unwrap().paid);
+
+        // R-574: the shipping in's row books as part of each landed line, never as a fee on top of it.
+        conn().unwrap().execute("INSERT INTO bank_txn (id,direction,amount,posted_at) VALUES ('s1','out',2.5,'2026-10-03')", []).unwrap();
+        let v = pay_warehouse_buy(v["buy"]["id"].as_str().unwrap().to_string(), Kind::Ship, Some("s1".into()), None, None, None).await.unwrap();
+        assert!(v["in_step"].as_bool().unwrap());
+        let mut want = vec![("supplier_payment".to_string(), da.clone(), 1.0), ("supplier_payment".to_string(), db_.clone(), 1.5)];
+        want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(bookings("s1"), want);
+        assert_eq!(goods_line("ia").unwrap().amount, 6.0);
+        assert_eq!(crate::commands::read_df(&da).unwrap().projected_cost, 6.0, "the shipping in is counted once");
 
         // B goes back on the delivery: its share is held on the wire and its line is gone.
         let out_b = crate::warehouse_loads::outs(&conn().unwrap(), &load).unwrap().into_iter().find(|o| o.invoice_id == "ib").unwrap();
@@ -1804,7 +1826,9 @@ mod tests {
         assert_eq!((v["unit_goods"].as_f64(), v["unit_ship"].as_f64(), v["unit_markup"].as_f64()), (Some(100.0), Some(175.0), Some(2.0)));
         assert_eq!((v["orders"][0]["ship"].as_f64(), v["orders"][0]["markup"].as_f64()), (Some(700.0), Some(8.0)));
         assert_eq!(v["rollup"]["unit_cost"].as_f64(), Some(277.0), "goods, shipping in and his markup, over the pairs");
-        assert_eq!(ship_line("r551a").map(|p| p.amount), Some(700.0));
+        // R-574: the shipping in rides on the one landed line (4 x $100 + $700), never a line of its own.
+        assert_eq!(ship_line("r551a").map(|p| p.amount), None);
+        assert_eq!(goods_line("r551a").map(|p| p.amount), Some(1100.0));
         let brief = warehouse_buy_for(None, Some(load.clone())).await.unwrap();
         assert_eq!((brief["buy"]["unit_ship"].as_f64(), brief["buy"]["unit_markup"].as_f64()), (Some(175.0), Some(2.0)));
 
@@ -1812,7 +1836,7 @@ mod tests {
         truck_set(&t1, "paid_amount=1700, paid_at='2026-10-20'");
         let v = apply_warehouse_buy(id.clone()).await.unwrap();
         assert_eq!((v["buy"]["ship_total"].as_f64(), v["unit_ship"].as_f64()), (Some(1700.0), Some(170.0)));
-        assert_eq!(ship_line("r551a").map(|p| p.amount), Some(680.0));
+        assert_eq!(goods_line("r551a").map(|p| p.amount), Some(1080.0));
 
         // Attaching again, or another buy to the same stock, or to nothing, is refused.
         assert_eq!(attach_warehouse_buy(id.clone(), None, Some(load.clone())).await.unwrap_err(), "This buy is already on its stock.");

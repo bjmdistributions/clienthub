@@ -12,6 +12,7 @@ import {
 import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, isShippingLine, owedToSupplier } from "../lib/format";
 import { legLine, openLegs, type LegKey } from "../lib/dealLegs";
 import { toast } from "./Toast";
+import { LinkDeliveryModal } from "./LinkDelivery";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import ResoldNote from "./ResoldNote";
@@ -1115,6 +1116,9 @@ function DealFlowCard({
   // When the deal's stage changes underneath us, keep the view on a sensible step.
   useEffect(() => { setSection(firstOpen()); /* eslint-disable-next-line */ }, [flow.stage, refundState]);
 
+  // R-574: the invoice being linked to a delivery, while its card is open.
+  const [linkInv, setLinkInv] = useState<Invoice | null>(null);
+
   // Fetch invoice status + line items for the header / breakdown.
   useEffect(() => {
     api.getInvoice(flow.invoice_id)
@@ -1150,6 +1154,7 @@ function DealFlowCard({
     <div ref={rootRef}
       className={`border border-line rounded-xl shadow-[0_1px_4px_rgba(0,0,0,0.05)] overflow-hidden ${zebra ? "bg-surface-2/40" : "bg-surface"}`}
     >
+      {linkInv && <LinkDeliveryModal invoice={linkInv} onClose={() => { setLinkInv(null); onReload(); }} />}
       {/* ── Collapsed header ── */}
       <button
         className="w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-surface-2/40 transition-colors"
@@ -1354,6 +1359,11 @@ function DealFlowCard({
                   }}
                   className="ml-auto text-[12.5px] font-medium px-3 h-8 rounded-lg border border-line text-ink-2 hover:bg-surface-2 transition-colors">
                   Open invoice
+                </button>
+                {/* R-574: link this deal's invoice to a shoe delivery, the same card as the delivery's Sell tab. */}
+                <button onClick={() => { api.getInvoice(flow.invoice_id).then(setLinkInv).catch((e) => toast(String(e), "error")); }}
+                  className="text-[12.5px] font-medium px-3 h-8 rounded-lg border border-line text-ink-2 hover:bg-surface-2 transition-colors">
+                  Link to a delivery
                 </button>
               </div>
               <table className="w-full text-[13px] mt-2">
