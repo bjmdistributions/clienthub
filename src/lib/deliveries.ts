@@ -146,6 +146,8 @@ export type LineLeft = { line_id: string; sizes: SizeLeft[]; received: number; o
 export type Stock = {
   lines: LineLeft[]; groups: { brand: string; group: string; styles: number; left: number }[];
   received: number; out: number; left: number; oversold: { line_id: string; size: string; over: number }[];
+  /** R-565: pairs sold by a count alone (no style named), and pairs sold that no box holds yet. */
+  unnamed: number; not_boxed: number;
 };
 /** An order that took pairs; `invoice_state` is "live", "voided", "removed", "gone" or "" (no invoice). */
 export type LoadOut = {

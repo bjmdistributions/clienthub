@@ -4251,9 +4251,10 @@ export const api = {
   updateWarehouseFloor: (id: string, patch: { name?: string; width?: number; depth?: number; shape?: FloorShape; archived?: boolean }) =>
     invoke<{ floor: Floor }>("update_warehouse_floor", { id, name: patch.name ?? null, width: patch.width ?? null, depth: patch.depth ?? null, shape: patch.shape ?? null, archived: patch.archived ?? null }),
   removeWarehouseCase: (loadId: string, caseId: string) => invoke<LoadDetail>("remove_warehouse_case", { loadId, caseId }),
-  /** R-519 phase 2: an invoice's pairs leave the delivery (one out per invoice, so a retry takes nothing twice). */
-  takeLoadPairs: (loadId: string, o: { invoiceId?: string; reference?: string; note?: string; takes: CaseLine[] }) =>
-    invoke<LoadDetail>("take_load_pairs", { loadId, invoiceId: o.invoiceId ?? null, reference: o.reference ?? null, note: o.note ?? null, takes: o.takes }),
+  /** R-519 phase 2: an invoice's pairs leave the delivery (one out per invoice, so a retry takes nothing twice).
+   *  R-565: `over` takes what no box holds yet too; `pairs` with no takes links an invoice by its pair count alone. */
+  takeLoadPairs: (loadId: string, o: { invoiceId?: string; reference?: string; note?: string; takes: CaseLine[]; over?: boolean; pairs?: number }) =>
+    invoke<LoadDetail>("take_load_pairs", { loadId, invoiceId: o.invoiceId ?? null, reference: o.reference ?? null, note: o.note ?? null, takes: o.takes, over: o.over ?? null, pairs: o.pairs ?? null }),
   undoLoadOut: (loadId: string, outId: string) => invoke<LoadDetail>("undo_load_out", { loadId, outId }),
   /** R-554: where to pick the pairs picked so far, box by box (case_core::allocate); writes nothing. */
   planLoadPick: (loadId: string, takes: CaseLine[]) => invoke<PickPlan>("plan_load_pick", { loadId, takes }),

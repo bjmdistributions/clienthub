@@ -1811,6 +1811,15 @@ pub struct Stock {
     pub out: i64,
     pub left: i64,
     pub oversold: Vec<Oversold>,
+    /// R-565: pairs sold by a count alone, no style named. In `out`, and off `left`.
+    pub unnamed: i64,
+    /// R-565: pairs sold that no box holds yet (cases not recorded): they come off as cases go in.
+    pub not_boxed: i64,
+}
+
+/// Pairs an order took without naming a style: an invoice linked by its pair count (R-565).
+pub fn unnamed_pairs(o: &Out) -> i64 {
+    (o.pairs - o.takes.iter().map(|t| t.pairs.max(0)).sum::<i64>()).max(0)
 }
 
 fn out_by_line(lines: &[LoadLine], outs: &[Out]) -> Vec<BTreeMap<String, i64>> {
@@ -1862,6 +1871,11 @@ pub fn stock(lines: &[LoadLine], cases: &[Case], outs: &[Out]) -> Stock {
         }
         s.lines.push(line);
     }
+    let in_boxes = s.left;
+    s.unnamed = outs.iter().filter(|o| !o.undone).map(unnamed_pairs).sum();
+    s.out += s.unnamed;
+    s.left = (in_boxes - s.unnamed).max(0);
+    s.not_boxed = s.oversold.iter().map(|o| o.over).sum::<i64>() + (s.unnamed - in_boxes).max(0);
     s
 }
 
@@ -1915,13 +1929,20 @@ fn asked_pairs(lines: &[LoadLine], asked: &[CaseLine]) -> Result<Vec<CaseLine>, 
 /// from a box named by the pick plan (R-554: `allocate`, so the pick list shown before the invoice
 /// is what the order records). Unknown styles or sizes are refused; nothing goes below zero. A box
 /// named in the request is not trusted: the plan is worked out again from what is left now.
-pub fn take(lines: &[LoadLine], cases: &[Case], records: &[PalletRecord], outs: &[Out], asked: &[Take]) -> Result<(Vec<Take>, Vec<TakeShort>), String> {
+/// With `over` (R-565, selling past what is boxed) what no box holds is taken too, naming no box,
+/// and nothing comes back short; `stock` counts those pairs as `not_boxed` until their cases go in.
+pub fn take(lines: &[LoadLine], cases: &[Case], records: &[PalletRecord], outs: &[Out], asked: &[Take], over: bool) -> Result<(Vec<Take>, Vec<TakeShort>), String> {
     let asked: Vec<CaseLine> = asked.iter().map(|t| CaseLine { line_id: t.line_id.clone(), size: t.size.clone(), pairs: t.pairs }).collect();
-    let plan = allocate(lines, cases, records, outs, &asked)?;
+    let mut plan = allocate(lines, cases, records, outs, &asked)?;
     let mut taken: Vec<Take> = Vec::new();
     for b in &plan.boxes {
         for t in &b.takes {
             taken.push(Take { line_id: t.line_id.clone(), size: t.size.clone(), pairs: t.pairs, case_id: b.case_id.clone() });
+        }
+    }
+    if over {
+        for s in plan.short.drain(..) {
+            taken.push(Take { line_id: s.line_id, size: s.size, pairs: s.asked - s.taken, case_id: String::new() });
         }
     }
     Ok((taken, plan.short))
@@ -2396,7 +2417,7 @@ mod tests {
         let lines = read_manifest(&sample()).lines;
         let a = lines[0].id.clone();
         let cases = vec![Case { id: "c1".into(), pallet: 1, number: 1, contents: vec![cl(&a, "S", 4), cl(&a, "M", 6)], ..Default::default() }];
-        let (taken, short) = take(&lines, &cases, &[], &[], &[tk(&a, "S", 3, ""), tk(&a, "M", 9, "")]).unwrap();
+        let (taken, short) = take(&lines, &cases, &[], &[], &[tk(&a, "S", 3, ""), tk(&a, "M", 9, "")], false).unwrap();
         assert_eq!(taken, vec![tk(&a, "S", 3, "c1"), tk(&a, "M", 6, "c1")]);
         assert_eq!(short, vec![TakeShort { line_id: a.clone(), size: "M".into(), asked: 9, taken: 6 }]);
         assert_eq!(takes_cost(&lines, &taken), 94.5);
@@ -2407,15 +2428,55 @@ mod tests {
         assert_eq!(s.groups[0], GroupLeft { brand: "Acme Hash".into(), group: "KIDS".into(), styles: 1, left: 1 });
         assert_eq!(s.groups.iter().map(|g| g.left).sum::<i64>(), s.left);
         // Nothing left in M: a second order gets none of it.
-        let (taken2, short2) = take(&lines, &cases, &[], &outs, &[tk(&a, "M", 1, "")]).unwrap();
+        let (taken2, short2) = take(&lines, &cases, &[], &outs, &[tk(&a, "M", 1, "")], false).unwrap();
         assert!(taken2.is_empty());
         assert_eq!(short2[0].taken, 0);
         outs[0].undone = true;
         assert_eq!(stock(&lines, &cases, &outs).left, 10);
         // What was received never moves.
         assert_eq!(tally(&lines, &cases).totals.received, 10);
-        assert!(take(&lines, &cases, &[], &[], &[tk(&a, "XXL", 1, "")]).is_err());
-        assert!(take(&lines, &cases, &[], &[], &[]).is_err());
+        assert!(take(&lines, &cases, &[], &[], &[tk(&a, "XXL", 1, "")], false).is_err());
+        assert!(take(&lines, &cases, &[], &[], &[], false).is_err());
+    }
+
+    /// R-565: selling past what is boxed. The rest is taken naming no box, counted as not boxed,
+    /// and comes off the boxes once its case is recorded.
+    #[test]
+    fn an_order_can_sell_past_the_boxes_and_the_case_recorded_later_covers_it() {
+        let lines = read_manifest(&sample()).lines;
+        let a = lines[0].id.clone();
+        let cases = vec![Case { id: "c1".into(), pallet: 1, number: 1, contents: vec![cl(&a, "M", 6)], ..Default::default() }];
+        let (taken, short) = take(&lines, &cases, &[], &[], &[tk(&a, "M", 9, ""), tk(&a, "S", 4, "")], true).unwrap();
+        assert!(short.is_empty());
+        assert_eq!(taken, vec![tk(&a, "M", 6, "c1"), tk(&a, "S", 4, ""), tk(&a, "M", 3, "")]);
+        let outs = vec![sold_t("o1", taken)];
+        let s = stock(&lines, &cases, &outs);
+        assert_eq!((s.received, s.out, s.left, s.not_boxed, s.unnamed), (6, 13, 0, 7, 0));
+        // The rest of the truck goes in: the sale is covered, nothing is oversold.
+        let mut later = cases.clone();
+        later.push(Case { id: "c2".into(), pallet: 2, number: 1, contents: vec![cl(&a, "M", 5), cl(&a, "S", 4)], ..Default::default() });
+        let s = stock(&lines, &later, &outs);
+        assert_eq!((s.received, s.out, s.left, s.not_boxed), (15, 13, 2, 0));
+        assert!(newly_oversold(&lines, &cases, &later, &outs).is_empty());
+    }
+
+    /// R-565: an invoice linked by its pair count alone names no style: it comes off the total.
+    #[test]
+    fn an_order_linked_by_a_pair_count_comes_off_the_total() {
+        let lines = read_manifest(&sample()).lines;
+        let a = lines[0].id.clone();
+        let cases = vec![Case { id: "c1".into(), pallet: 1, number: 1, contents: vec![cl(&a, "S", 4), cl(&a, "M", 6)], ..Default::default() }];
+        let count = Out { id: "o1".into(), pairs: 7, ..Default::default() };
+        assert_eq!(unnamed_pairs(&count), 7);
+        assert_eq!(unnamed_pairs(&sold("o2", vec![cl(&a, "S", 2)])), 0);
+        let mut outs = vec![count, sold("o2", vec![cl(&a, "S", 2)])];
+        let s = stock(&lines, &cases, &outs);
+        assert_eq!((s.received, s.out, s.left, s.unnamed, s.not_boxed), (10, 9, 1, 7, 0));
+        outs[0].pairs = 20;
+        let s = stock(&lines, &cases, &outs);
+        assert_eq!((s.out, s.left, s.not_boxed), (22, 0, 12));
+        outs[0].undone = true;
+        assert_eq!(stock(&lines, &cases, &outs).left, 8);
     }
 
     /// R-554: two lines, three pallets. Pallet 1 at A10: box 1 all K100 S, box 2 K100 S and M.
@@ -2472,7 +2533,7 @@ mod tests {
         let (lines, cases, records) = yard();
         let a = lines[0].id.clone();
         // An order taken now names its boxes; the box view and the delivery view agree.
-        let (taken, _) = take(&lines, &cases, &records, &[], &[tk(&a, "S", 7, "")]).unwrap();
+        let (taken, _) = take(&lines, &cases, &records, &[], &[tk(&a, "S", 7, "")], false).unwrap();
         assert!(taken.iter().all(|t| !t.case_id.is_empty()));
         // An older sale named no box: 4 of S charged to the lowest pallet's first box.
         let outs = vec![sold_t("new", taken), sold("old", vec![cl(&a, "S", 4)])];
@@ -2501,7 +2562,7 @@ mod tests {
     fn a_sold_orders_pick_list_is_rebuilt_from_the_boxes_it_named() {
         let (lines, cases, records) = yard();
         let (a, b) = (lines[0].id.clone(), lines[1].id.clone());
-        let (taken, _) = take(&lines, &cases, &records, &[], &[tk(&a, "S", 6, ""), tk(&b, "7", 2, "")]).unwrap();
+        let (taken, _) = take(&lines, &cases, &records, &[], &[tk(&a, "S", 6, ""), tk(&b, "7", 2, "")], false).unwrap();
         let o = sold_t("o", taken);
         let p = out_pick(&cases, &records, &o);
         assert_eq!(p.boxes.iter().map(|x| (x.case_id.as_str(), x.whole, x.pairs)).collect::<Vec<_>>(), vec![("p2b1", false, 2), ("p1b1", true, 6)]);

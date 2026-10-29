@@ -9,7 +9,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
-import { api, type ComingBuy } from "../lib/api";
+import { api, type ComingBuy, type Invoice } from "../lib/api";
+import { isNoiseItem, parseLineItems } from "../lib/itemSearch";
 import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PickPlan, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, WAREHOUSE_OPEN_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { standsOn, type DeliveryOpen, type FloorRequest } from "../lib/floor";
@@ -952,7 +953,7 @@ function PickListView({ plan, title, tickKey, loadId, lines, backLabel, onBack }
       {left.length > 0 && (
         <div className={`${WH_CARD} p-4 mb-4`}>
           <div className="text-[13.5px] font-semibold text-ink">Not on any box</div>
-          <p className="text-[12px] text-muted mt-0.5">These pairs were sold since, or never came in.</p>
+          <p className="text-[12px] text-muted mt-0.5">These pairs were sold since, are not in a box yet, or never came in.</p>
           {left.map((x) => <div key={`${x.line_id}/${x.size}`} className="text-[12.5px] text-muted mt-1"><span className="text-ink-2 font-medium">{name(x.line_id)}</span> size {x.size}: {n0(x.asked - x.taken)} of {n0(x.asked)} not found</div>)}
         </div>
       )}
@@ -1011,24 +1012,11 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
     } catch (e) { toast(String(e), "error"); }
   };
 
-  // A pick never asks for more than is left now (another device may have sold some).
-  useEffect(() => {
-    setPickRaw((p) => {
-      let changed = false;
-      const next: Pick = {};
-      for (const [lid, sizes] of Object.entries(p)) {
-        for (const [s, n] of Object.entries(sizes)) {
-          const v = Math.min(n, leftOf(lid, s));
-          if (v !== n) changed = true;
-          if (v > 0) (next[lid] ||= {})[s] = v;
-        }
-      }
-      return changed ? next : p;
-    });
-  }, [leftOf]);
-
+  // R-565: a pick may ask for more than the boxes hold (cases not recorded yet). What no box
+  // holds is sold all the same and shows as not in a box yet until its cases go in.
+  const [everyStyle, setEveryStyle] = useState(false);
   const setSize = (lid: string, size: string, n: number) => {
-    const v = Math.max(0, Math.min(leftOf(lid, size), Math.floor(n) || 0));
+    const v = Math.max(0, Math.min(1_000_000, Math.floor(n) || 0));
     const sizes = { ...(pick[lid] || {}) };
     if (v > 0) sizes[size] = v; else delete sizes[size];
     const next = { ...pick };
@@ -1046,8 +1034,8 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
   };
   const pickedOf = (lid: string) => Object.values(pick[lid] || {}).reduce((a, b) => a + b, 0);
   const matches = (l: LoadLine) => (!brand || l.brand === brand) && (!group || l.group === group) && lineMatches(l, q);
-  const shown = lines.filter((l) => ((left[l.id]?.left ?? 0) > 0 || pickedOf(l.id) > 0) && matches(l));
-  const withLeft = lines.filter((l) => (left[l.id]?.left ?? 0) > 0);
+  const shown = lines.filter((l) => (everyStyle || (left[l.id]?.left ?? 0) > 0 || pickedOf(l.id) > 0) && matches(l));
+  const withLeft = everyStyle ? lines : lines.filter((l) => (left[l.id]?.left ?? 0) > 0);
   const brands = [...new Set(withLeft.map((l) => l.brand).filter(Boolean))];
   const groups = [...new Set(withLeft.filter((l) => !brand || l.brand === brand).map((l) => l.group).filter(Boolean))];
   const bs = buckets(lines, pick);
@@ -1056,6 +1044,44 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
   const orderTotal = bs.reduce((a, b) => a + Math.round(b.pairs * rateOf(b) * 100) / 100, 0);
   const orderCost = bs.reduce((a, b) => a + b.cost, 0);
   const ready = bs.length > 0 && bs.every((b) => rateOf(b) > 0);
+  const pastBoxes = Object.entries(pick).reduce((a, [lid, sizes]) => a + Object.entries(sizes).reduce((b, [z, n]) => b + Math.max(0, n - leftOf(lid, z)), 0), 0);
+
+  // R-565: an invoice made outside this tab is linked here, by its pair count or by the pick.
+  // Its pairs leave the delivery, and the delivery's buy writes its cost share on the invoice's deal.
+  const [linking, setLinking] = useState(false);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [linkId, setLinkId] = useState("");
+  const [linkPairs, setLinkPairs] = useState("");
+  const [linkBy, setLinkBy] = useState<"count" | "pick">("count");
+  const [linkBusy, setLinkBusy] = useState(false);
+  const linked = new Set(d.outs.filter((o) => !o.undone && o.invoice_id).map((o) => o.invoice_id));
+  const linkable = invoices.filter((i) => !i.voided && !linked.has(i.id)).sort((a, b) => (b.issue_date || "").localeCompare(a.issue_date || ""));
+  const pairsOn = (i: Invoice) => parseLineItems(i.line_items_json).filter((it) => !isNoiseItem(it.description || "")).reduce((a, it) => a + Math.max(0, Math.round(Number(it.qty) || 0)), 0);
+  const openLink = async () => {
+    setLinking(true); setLinkId(""); setLinkPairs(""); setLinkBy(totalPairs > 0 ? "pick" : "count");
+    try { setInvoices(await api.listInvoices()); } catch (e) { toast(String(e), "error"); }
+  };
+  const linkCount = Math.max(0, Math.floor(Number(linkPairs.replace(/[,\s]/g, "")) || 0));
+  const linkReady = !!linkId && (linkBy === "pick" ? totalPairs > 0 : linkCount > 0);
+  const link = async () => {
+    const inv = linkable.find((i) => i.id === linkId);
+    if (!inv || !linkReady) return;
+    setLinkBusy(true);
+    try {
+      const takes: CaseLine[] = linkBy === "pick" ? Object.entries(pick).flatMap(([lid, sizes]) => Object.entries(sizes).filter(([, n]) => n > 0).map(([size, pairs]) => ({ line_id: lid, size, pairs }))) : [];
+      const pairs = linkBy === "pick" ? totalPairs : linkCount;
+      merge(await api.takeLoadPairs(loadId, { invoiceId: inv.id, reference: inv.number, note: "Linked", takes, over: true, pairs: linkBy === "count" ? linkCount : undefined }));
+      if (linkBy === "pick") setPick({});
+      setLinking(false);
+      const buy = await api.warehouseBuyFor({ loadId }).then((r) => r.buy).catch(() => null);
+      if (!buy) { toast(`${inv.number} linked: ${n0(pairs)} pairs off this delivery. No buy is recorded on this delivery, so no cost went on the deal. Record it on the Buy tab.`, "error"); return; }
+      // The buy's missing orders: a deal that already carries a cost typed by hand keeps it.
+      await api.addMissingWarehouseBuyOrders(buy.id)
+        .then(() => toast(`${inv.number} linked: ${n0(pairs)} pairs off this delivery, its cost from ${buy.name} written on the deal.`))
+        .catch((e: any) => toast(`${inv.number} linked, but its cost did not reach the deal (${e}). The Buy tab can add it.`, "error"));
+    } catch (e) { toast(String(e), "error"); }
+    finally { setLinkBusy(false); }
+  };
 
   const send = () => {
     if (!ready) { toast("Give every line a price per pair.", "error"); return; }
@@ -1069,7 +1095,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
   const finishPending = async () => {
     if (!pending) return;
     try {
-      merge(await api.takeLoadPairs(loadId, { invoiceId: pending.invoice_id, reference: pending.reference, note: "Invoiced", takes: pending.takes }));
+      merge(await api.takeLoadPairs(loadId, { invoiceId: pending.invoice_id, reference: pending.reference, note: "Invoiced", takes: pending.takes, over: true }));
       dropPending(pending.invoice_id);
       toast("Done: the pairs left the delivery");
     } catch (e) { toast(String(e), "error"); }
@@ -1150,9 +1176,11 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
       <div className={`${WH_CARD} p-3.5 mb-3 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-10`}>
         <div>
           <div className="text-[14px] text-ink tabular-nums"><span className="font-semibold">{n0(totalPairs)}</span> pairs picked <span className="text-muted text-[12.5px]">· {many(totalStyles, "style", "styles")}</span></div>
-          <div className="text-[12px] text-muted tabular-nums">{n0(d.stock.left)} of {n0(d.stock.received)} pairs left to sell</div>
+          <div className="text-[12px] text-muted tabular-nums">{n0(d.stock.left)} of {n0(d.stock.received)} pairs in boxes left to sell{d.stock.unnamed > 0 ? ` · ${n0(d.stock.unnamed)} sold with no style named` : ""}</div>
+          {pastBoxes > 0 && <div className="text-[12px] text-muted tabular-nums">{n0(pastBoxes)} of the picked pairs are not in a box yet</div>}
         </div>
         <div className="flex gap-2">
+          <button onClick={() => { void openLink(); }} disabled={!!pending} className={WH_BTN_SECONDARY}>Link an invoice</button>
           {totalPairs > 0 && (sureClear
             ? <><button onClick={() => { setPick({}); setSureClear(false); }} className={WH_BTN_SECONDARY}>Clear the pick</button><button onClick={() => setSureClear(false)} className={WH_BTN_SECONDARY}>Keep it</button></>
             : <button onClick={() => setSureClear(true)} className={WH_BTN_SECONDARY}>Clear</button>)}
@@ -1160,7 +1188,33 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
           <button onClick={() => setTray(true)} disabled={!totalPairs || !live || !!pending} className={WH_BTN_PRIMARY} title={pending ? "Finish the saved invoice above first" : undefined}>Price it</button>
         </div>
       </div>
-      {d.stock.oversold.length > 0 && <p className="text-[12.5px] text-warning-ink mb-3">{d.stock.oversold.length === 1 ? "1 size has" : `${d.stock.oversold.length} sizes have`} more pairs sold than received. Check those cases, or put back one of the orders.</p>}
+      {linking && (
+        <div className={`${WH_CARD} p-4 mb-3`}>
+          <div className="text-[14px] font-semibold text-ink">Link an invoice to this delivery</div>
+          <p className="text-[12.5px] text-muted mt-0.5">For an invoice made outside this tab. Its pairs come off this delivery, even past what is in boxes, and the delivery's buy puts its cost on the invoice's deal. The invoice itself is not changed.</p>
+          <label className="block mt-3 text-[12px] text-muted max-w-[460px]">Invoice
+            <select value={linkId} onChange={(e) => { setLinkId(e.target.value); const i = linkable.find((x) => x.id === e.target.value); if (i) setLinkPairs(String(pairsOn(i) || "")); }} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`}>
+              <option value="">Choose an invoice</option>
+              {linkable.map((i) => <option key={i.id} value={i.id}>{i.number} · {i.issue_date} · {money(i.total)}</option>)}
+            </select>
+          </label>
+          <div className="flex flex-wrap gap-4 mt-3 text-[13px] text-ink-2">
+            <label className="flex items-center gap-2"><input type="radio" checked={linkBy === "count"} onChange={() => setLinkBy("count")} /> By the pair count</label>
+            <label className={`flex items-center gap-2 ${totalPairs ? "" : "text-faint"}`}><input type="radio" checked={linkBy === "pick"} disabled={!totalPairs} onChange={() => setLinkBy("pick")} /> The styles I picked ({n0(totalPairs)} pairs)</label>
+          </div>
+          {linkBy === "count" && (
+            <label className="block mt-2 text-[12px] text-muted w-[200px]">Pairs on the invoice
+              <input value={linkPairs} onChange={(e) => setLinkPairs(e.target.value)} inputMode="numeric" placeholder="0" style={WH_INPUT_BG} className={`${WH_INPUT} mt-1 tabular-nums`} />
+            </label>
+          )}
+          {linkBy === "count" && <p className="text-[12px] text-muted mt-1">No style is named, so the delivery's total goes down but no one style does.</p>}
+          <div className="flex gap-2 mt-3">
+            <button onClick={() => { void link(); }} disabled={!linkReady || linkBusy} className={WH_BTN_PRIMARY}>{linkBusy ? "Linking" : "Link it"}</button>
+            <button onClick={() => setLinking(false)} className={WH_BTN_SECONDARY}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {d.stock.not_boxed > 0 && <p className="text-[12.5px] text-muted mb-3">{n0(d.stock.not_boxed)} pairs are sold but not in a box yet. They come off as their cases are recorded.</p>}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <div className="relative w-[300px] max-w-full">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
@@ -1170,6 +1224,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
           <option value="">Every brand</option>{brands.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>}
         {groups.length > 1 && <div className="w-44"><select value={group} onChange={(e) => setGroup(e.target.value)} style={WH_INPUT_BG} className={WH_INPUT} aria-label="Group">
           <option value="">Every group</option>{groups.map((g) => <option key={g} value={g}>{g}</option>)}</select></div>}
+        <span className="flex items-center gap-2 text-[12.5px] text-ink-2"><Switch on={everyStyle} onToggle={() => setEveryStyle(!everyStyle)} label="Show styles not in a box yet" /> Styles not in a box yet</span>
       </div>
       <div className={`${WH_CARD} overflow-hidden`}>
         {shown.map((l) => {
@@ -1201,13 +1256,14 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
                   <div className="mt-2">
                     <div className="flex flex-wrap items-start gap-2">
                       <Thumb l={l} size={120} zoom />
-                      {ll.sizes.filter((z) => z.left > 0 || (pick[l.id]?.[z.size] ?? 0) > 0).map((z) => (
+                      {ll.sizes.filter((z) => everyStyle || z.left > 0 || (pick[l.id]?.[z.size] ?? 0) > 0).map((z) => (
                         <label key={z.size} className="w-[76px] text-center">
                           <span className="block text-[12px] font-medium text-ink-2">{z.size}</span>
                           <input value={pick[l.id]?.[z.size] || ""} inputMode="numeric" placeholder="0" aria-label={`Pairs of size ${z.size}`} disabled={!live}
                             onChange={(e) => setSize(l.id, z.size, parseInt(e.target.value.replace(/\D/g, ""), 10) || 0)}
                             style={WH_INPUT_BG} className={`${WH_INPUT} text-center tabular-nums mt-0.5 px-1`} />
                           <span className="block text-[11px] text-muted mt-0.5 tabular-nums">{n0(z.left)} left</span>
+                          {(pick[l.id]?.[z.size] ?? 0) > z.left && <span className="block text-[11px] text-muted tabular-nums">{n0((pick[l.id]?.[z.size] ?? 0) - z.left)} not boxed</span>}
                         </label>
                       ))}
                     </div>
@@ -1221,7 +1277,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
             </div>
           );
         })}
-        {!shown.length && <div className="px-4 py-6 text-[13px] text-muted text-center">Nothing left here. Clear the filters, or this delivery is sold.</div>}
+        {!shown.length && <div className="px-4 py-6 text-[13px] text-muted text-center">Nothing left in boxes here. Clear the filters, or show the styles not in a box yet.</div>}
       </div>
 
       {d.outs.length > 0 && <>
@@ -1231,7 +1287,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
             <div key={o.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-line last:border-b-0">
               <div className="min-w-0 flex-1">
                 <span className="text-[13px] font-medium text-ink">{o.reference || "Taken out"}</span>
-                <span className="text-[12px] text-muted tabular-nums"> · {n0(o.pairs)} pairs · {money(o.cost)} cost · {new Date(o.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+                <span className="text-[12px] text-muted tabular-nums"> · {n0(o.pairs)} pairs · {o.takes.length ? `${money(o.cost)} cost` : "styles not named"} · {new Date(o.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
               </div>
               {o.undone ? <StatusPill tone="neutral">Back on the delivery</StatusPill>
                 : o.invoice_state === "voided" ? <StatusPill tone="warning">Invoice voided, pairs still out</StatusPill>
@@ -1239,7 +1295,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
               {live && !o.undone && (sureUndo === o.id
                 ? <><button onClick={() => undo(o)} className={WH_BTN_SECONDARY} title="The pairs count as on this delivery again. The invoice is not changed.">Put {n0(o.pairs)} pairs back</button><button onClick={() => setSureUndo(null)} className={WH_BTN_SECONDARY}>Keep them out</button></>
                 : <button onClick={() => setSureUndo(o.id)} className={WH_BTN_SECONDARY}>Put back</button>)}
-              {!o.undone && <button onClick={() => { void openPickList(o.id); }} className={WH_BTN_SECONDARY}>Pick list</button>}
+              {!o.undone && o.takes.length > 0 && <button onClick={() => { void openPickList(o.id); }} className={WH_BTN_SECONDARY}>Pick list</button>}
             </div>
           ))}
         </div>

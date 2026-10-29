@@ -814,7 +814,8 @@ pub async fn remove_warehouse_case(load_id: String, case_id: String) -> Result<L
 /// back in `short`. One out per invoice and delivery, so a retry returns the out already
 /// written instead of taking twice.
 #[tauri::command]
-pub async fn take_load_pairs(load_id: String, invoice_id: Option<String>, reference: Option<String>, note: Option<String>, takes: Vec<CaseLine>) -> Result<LoadDetail, String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn take_load_pairs(load_id: String, invoice_id: Option<String>, reference: Option<String>, note: Option<String>, takes: Vec<CaseLine>, over: Option<bool>, pairs: Option<i64>) -> Result<LoadDetail, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let invoice_id = invoice_id.unwrap_or_default().trim().to_string();
     let out_id = if invoice_id.is_empty() { uuid::Uuid::new_v4().to_string() } else { format!("out-{invoice_id}-{load_id}") };
@@ -829,17 +830,25 @@ pub async fn take_load_pairs(load_id: String, invoice_id: Option<String>, refere
         return Err("This delivery was removed. Bring it back first.".into());
     }
     let cs = cases(&conn, &load_id)?;
+    // R-565: an invoice linked by its pair count alone names no style.
+    let count = takes.is_empty() && pairs.unwrap_or(0) > 0;
+    if count && invoice_state(&conn, &invoice_id) != "live" {
+        return Err("Choose an invoice that is still live to link.".into());
+    }
+    if count && pairs.unwrap_or(0) > 1_000_000 {
+        return Err("That is more pairs than one order can take.".into());
+    }
     // R-554: each pair from the box the pick plan names (the plan the Sell tab showed).
     let asked: Vec<core::Take> = takes.into_iter().map(|t| core::Take { line_id: t.line_id, size: t.size, pairs: t.pairs, case_id: String::new() }).collect();
-    let (taken, short) = core::take(&l.lines, &cs, &pallet_records(&conn, &load_id)?, &os, &asked)?;
-    if !taken.is_empty() {
+    let (taken, short) = if count { (vec![], vec![]) } else { core::take(&l.lines, &cs, &pallet_records(&conn, &load_id)?, &os, &asked, over.unwrap_or(false))? };
+    if !taken.is_empty() || count {
         let t = now();
         let mut cols = Map::new();
         cols.insert("load_id".into(), json!(load_id));
         cols.insert("invoice_id".into(), json!(invoice_id));
         cols.insert("reference".into(), json!(reference.unwrap_or_default().trim()));
         cols.insert("note".into(), json!(note.unwrap_or_default().trim()));
-        cols.insert("pairs".into(), json!(taken.iter().map(|x| x.pairs).sum::<i64>()));
+        cols.insert("pairs".into(), json!(if count { pairs.unwrap_or(0) } else { taken.iter().map(|x| x.pairs).sum::<i64>() }));
         cols.insert("cost_total".into(), json!(core::takes_cost(&l.lines, &taken)));
         cols.insert("takes_json".into(), json_str(&taken));
         cols.insert("undone".into(), json!(0));
@@ -1104,13 +1113,13 @@ mod tests {
         let case_id = d.cases[0].id.clone();
         assert_eq!(d.stock.left, 5);
         let want = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 2 }, CaseLine { line_id: "a".into(), size: "8".into(), pairs: 5 }];
-        let d = take_load_pairs(id.clone(), Some("inv1".into()), Some("INV-1".into()), None, want.clone()).await.unwrap();
+        let d = take_load_pairs(id.clone(), Some("inv1".into()), Some("INV-1".into()), None, want.clone(), None, None).await.unwrap();
         assert_eq!(d.stock.left, 1);
         assert_eq!(d.short.as_ref().unwrap().len(), 1);
         assert_eq!(d.outs.len(), 1);
         assert_eq!((d.outs[0].out.pairs, d.outs[0].out.cost, d.outs[0].invoice_state), (4, 40.0, "gone"));
         // The same invoice again takes nothing more.
-        let d = take_load_pairs(id.clone(), Some("inv1".into()), Some("INV-1".into()), None, want).await.unwrap();
+        let d = take_load_pairs(id.clone(), Some("inv1".into()), Some("INV-1".into()), None, want, None, None).await.unwrap();
         assert_eq!((d.stock.left, d.outs.len()), (1, 1));
         // Cutting the case below what was sold is refused; so is removing it.
         let less = vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 1 }];

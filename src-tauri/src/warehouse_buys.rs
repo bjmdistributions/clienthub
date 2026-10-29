@@ -1626,8 +1626,8 @@ mod tests {
         save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 10 }], None, None, None, None).await.unwrap();
         invoice("ia", "A-1", 50.0);
         invoice("ib", "B-1", 90.0);
-        take_load_pairs(load.clone(), Some("ia".into()), Some("A-1".into()), None, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 4 }]).await.unwrap();
-        take_load_pairs(load.clone(), Some("ib".into()), Some("B-1".into()), None, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 6 }]).await.unwrap();
+        take_load_pairs(load.clone(), Some("ia".into()), Some("A-1".into()), None, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 4 }], None, None).await.unwrap();
+        take_load_pairs(load.clone(), Some("ib".into()), Some("B-1".into()), None, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 6 }], None, None).await.unwrap();
 
         // 10 pairs at $1.25 = $12.50, and $2.50 of shipping in, not paid yet.
         let v = create_warehouse_buy(BuyInput {
@@ -1797,7 +1797,7 @@ mod tests {
         // Ten pairs are sold before the buy has its stock: attaching the delivery brings that order in and takes the count.
         let load = delivery("Shoe delivery R551", 10).await;
         invoice("r551a", "R551-A", 900.0);
-        take_load_pairs(load.clone(), Some("r551a".into()), Some("R551-A".into()), None, pairs_of(4)).await.unwrap();
+        take_load_pairs(load.clone(), Some("r551a".into()), Some("R551-A".into()), None, pairs_of(4), None, None).await.unwrap();
         let v = attach_warehouse_buy(id.clone(), None, Some(load.clone())).await.unwrap();
         assert_eq!((v["buy"]["load_id"].as_str(), v["buy"]["units_bought"].as_f64(), v["buy"]["on_the_way"].as_bool()), (Some(load.as_str()), Some(10.0), Some(false)));
         assert_eq!(v["orders"].as_array().unwrap().len(), 1, "the order already sold from it came with it");
@@ -1848,8 +1848,8 @@ mod tests {
         let load = delivery("Shoe delivery R551 cut", 10).await;
         invoice("r551c1", "R551-C1", 500.0);
         invoice("r551c2", "R551-C2", 900.0);
-        take_load_pairs(load.clone(), Some("r551c1".into()), Some("R551-C1".into()), None, pairs_of(4)).await.unwrap();
-        take_load_pairs(load.clone(), Some("r551c2".into()), Some("R551-C2".into()), None, pairs_of(6)).await.unwrap();
+        take_load_pairs(load.clone(), Some("r551c1".into()), Some("R551-C1".into()), None, pairs_of(4), None, None).await.unwrap();
+        take_load_pairs(load.clone(), Some("r551c2".into()), Some("R551-C2".into()), None, pairs_of(6), None, None).await.unwrap();
         let mut input = on_the_way("Cut shoes", 100.0, 10.0);
         input.load_id = Some(load);
         let buy_id = id_of(&create_warehouse_buy(input).await.unwrap());

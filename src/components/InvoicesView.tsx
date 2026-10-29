@@ -861,7 +861,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
         const dl = prefill?.delivery;
         if (dl && dlTakes.length) {
           const number = await api.getInvoice(invId).then((v) => v?.number).catch(() => "");
-          await api.takeLoadPairs(dl.load_id, { invoiceId: invId, reference: number || "", note: "Invoiced", takes: dlTakes })
+          await api.takeLoadPairs(dl.load_id, { invoiceId: invId, reference: number || "", note: "Invoiced", takes: dlTakes, over: true })
             .then((d) => {
               const short = (d.short ?? []).reduce((a, x) => a + (x.asked - x.taken), 0);
               taken = Math.max(0, dlPairs - short);
