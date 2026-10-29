@@ -3983,6 +3983,17 @@ function dealFilesRequest<T>(method: string, path: string, body?: unknown): Prom
 /** What analyzeManifest reads with when nothing was chosen. */
 export const DEFAULT_READ_OPTIONS: ManifestReadOptions = { pages: null, sections_off: [], columns: null, rules: [], resolve_only: false };
 
+/** R-566: a mass edit. Absent = leave as is; expire_days 0 = stays up, n = off n days from today (a renewal). */
+export interface LotBulkEditFields {
+  expire_days?: number;
+  category?: string;
+  add_tags?: string[];
+  remove_tags?: string[];
+  location?: string;
+  condition?: string;
+  supplier?: string;
+}
+
 export const api = {
   // Clients
   listClients: () => invoke<Client[]>("list_clients"),
@@ -5282,6 +5293,8 @@ export const api = {
   createLot: (lot: { name: string; quantity: number; totalCost: number; askingPrice: number; description?: string; category?: string; photos?: string[]; notes?: string; supplier?: string; location?: string; priceType?: string; detailsJson?: string }) =>
     invoke<Lot>("create_lot", { ...lot }),
   updateLot: (id: string, fields: Record<string, any>) => invoke<void>("update_lot", { id, ...fields }),
+  // R-566: one edit across many lots (src-tauri/src/lot_bulk.rs). Returns how many changed.
+  bulkEditLots: (ids: string[], edit: LotBulkEditFields) => invoke<number>("bulk_edit_lots", { ids, edit }),
 
   // Lot locations (FOB)
   suggestCity: (prefix: string, limit?: number) =>

@@ -12168,6 +12168,45 @@ pub async fn update_lot(id: String, name: Option<String>, description: Option<St
     Ok(())
 }
 
+/// R-566: one mass edit across the selected lots (rules in `lot_bulk.rs`, shared with the server). Moves
+/// `updated_at` only when the edit sets the timer, so a tag or a category added to every lot renews none of them.
+/// Returns how many lots changed.
+#[tauri::command]
+pub async fn bulk_edit_lots(ids: Vec<String>, edit: crate::lot_bulk::BulkEdit) -> Result<usize, String> {
+    if edit.is_empty() { return Ok(0); }
+    let mut changed = 0;
+    for id in ids {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> = conn.query_row(
+            "SELECT category, details_json, location, supplier FROM inventory WHERE id = ?1", [&id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok();
+        // A lot deleted since it was selected is skipped: a synced write for a missing id lands as a blank lot.
+        let Some((category, details_json, location, supplier)) = row else { continue };
+        let c = edit.apply(&crate::lot_bulk::LotNow { category: category.as_deref(), details_json: details_json.as_deref(), location: location.as_deref(), supplier: supplier.as_deref() });
+        if c.is_empty() { continue; }
+        let mut sets: Vec<String> = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut cols = serde_json::Map::new();
+        if c.renews {
+            let now = chrono::Utc::now().to_rfc3339();
+            sets.push("updated_at = ?".into()); cols.insert("updated_at".into(), serde_json::json!(now)); params.push(Box::new(now));
+        }
+        if let Some(v) = c.category { sets.push("category = ?".into()); cols.insert("category".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+        if let Some(v) = c.details_json { sets.push("details_json = ?".into()); cols.insert("details_json".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+        if let Some(v) = c.location { sets.push("location = ?".into()); cols.insert("location".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+        if let Some(v) = c.supplier { sets.push("supplier = ?".into()); cols.insert("supplier".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+        let sql = format!("UPDATE inventory SET {} WHERE id = ?", sets.join(", "));
+        params.push(Box::new(id.clone()));
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(&sql, refs.as_slice()).map_err(|e| e.to_string())?;
+        crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
+        drop(conn);
+        if c.renews { settle_stale_listing_requests(&id); }
+        changed += 1;
+    }
+    Ok(changed)
+}
+
 #[tauri::command]
 pub async fn archive_lot(id: String) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

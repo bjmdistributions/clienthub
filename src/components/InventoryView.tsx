@@ -11,6 +11,7 @@ import { MAX_EXPIRE_DAYS, timeLeft } from "../lib/lotTimer";
 import LocationField from "./LocationField";
 import LocationCleanup from "./LocationCleanup";
 import LotImport from "./LotImport";
+import LotBulkEdit from "./LotBulkEdit";
 import type { LotDraft } from "../lib/lotImport";
 import { buildNewsletterBody, LotBlockInput } from "../lib/newsletter";
 import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook, MapPin, FileSpreadsheet, Clock } from "lucide-react";
@@ -369,6 +370,7 @@ export default function InventoryView() {
   // ── Multi-select / bulk actions ──
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkEditing, setBulkEditing] = useState(false);
   const toggleSelect = (id: string) => setSelected((prev) => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
@@ -490,13 +492,16 @@ export default function InventoryView() {
       .some((f) => (f || "").toLowerCase().includes(debounced));
   };
   // Lots with a "needs attention" flag (missing info or unsynced media) — powers the banner + filter.
-  const attentionCount = lots.filter((l) => l.status !== "archived" && lotWarnings(l, mediaIssues[l.id]).length > 0).length;
+  // R-567: sold lots are done too, and the count and "Show these" use this one test, so the banner
+  // never counts a lot the list then hides (a sold lot was counted but hidden under All).
+  const needsAttention = (l: Lot) => l.status !== "sold" && l.status !== "archived" && lotWarnings(l, mediaIssues[l.id]).length > 0;
+  const attentionCount = lots.filter(needsAttention).length;
   const filtered = lots
     .filter(l => {
       if (filter !== "all" && l.status !== filter) return false;
       if (filter === "all" && (l.status === "sold" || l.status === "archived") && !includeDone) return false;
       if (renewOnly && !isStale(l)) return false;
-      if (attentionOnly && lotWarnings(l, mediaIssues[l.id]).length === 0) return false;
+      if (attentionOnly && !needsAttention(l)) return false;
       if (categoryFilter !== "all" && !lotCategories(l.details_json, l.category).includes(categoryFilter)) return false;
       if (tagFilter !== "all" && !isTagged(lotTags(l.details_json), tagFilter)) return false;
       if (sentFilter === "email" && !l.sent_email) return false;
@@ -556,6 +561,11 @@ export default function InventoryView() {
                 className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors">
                 <FileSpreadsheet size={13} /> Import
               </button>
+              {/* R-566: out of the ... menu, so select all and mass edit are one click away. */}
+              <button onClick={() => setSelectMode(true)} title="Pick lots to edit, mark or send together"
+                className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors">
+                <CheckSquare size={13} /> Select
+              </button>
               <button onClick={startAdd} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
                 <Plus size={14} /> Add lot
               </button>
@@ -570,7 +580,6 @@ export default function InventoryView() {
                     <button onClick={() => { setOverflowOpen(false); resync(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><RefreshCw size={13} className="text-muted" /> Sync to devices</button>
                     <button onClick={() => { setOverflowOpen(false); syncPhotos(); }} disabled={photoSyncBusy} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors disabled:opacity-50"><Image size={13} className="text-muted" /> {photoSyncBusy ? "Syncing photos…" : "Sync photos now"}</button>
                     <button onClick={() => { setOverflowOpen(false); checkStaleLots(); }} disabled={staleBusy} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors disabled:opacity-50"><Trash2 size={13} className="text-muted" /> Clean up removed lots</button>
-                    <button onClick={() => { setOverflowOpen(false); setSelectMode(true); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><CheckSquare size={13} className="text-muted" /> Select</button>
                     <button onClick={() => { setOverflowOpen(false); handleExportInventory(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><FileDown size={13} className="text-muted" /> Export CSV</button>
                   </div>
                 )}
@@ -608,7 +617,9 @@ export default function InventoryView() {
         <div className="sticky top-0 z-20 mb-4 flex flex-wrap items-center gap-2 bg-surface border border-line rounded-xl px-4 py-2.5 shadow-sm">
           <span className="text-[13px] font-semibold text-ink-2 mr-1 tabular-nums">{selected.size} selected</span>
           <button onClick={() => setSelected(new Set(filtered.map((l) => l.id)))} className="text-[12px] text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-accent/10">Select all</button>
+          {selected.size > 0 && <button onClick={() => setSelected(new Set())} className="text-[12px] text-muted hover:text-ink-2 px-2 py-1 rounded hover:bg-surface-2">Clear</button>}
           <div className="flex-1" />
+          <button onClick={() => setBulkEditing(true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line-3 px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><Pencil size={12} /> Edit</button>
           <button onClick={() => bulkStatus("sold")} disabled={!selected.size} className="text-[12px] text-success-ink border border-success px-2.5 h-8 rounded-lg hover:bg-success-bg disabled:opacity-40 flex items-center gap-1"><DollarSign size={12} /> Sold</button>
           <button onClick={() => bulkStatus("archived")} disabled={!selected.size} className="text-[12px] text-danger-ink border border-danger px-2.5 h-8 rounded-lg hover:bg-danger-bg disabled:opacity-40 flex items-center gap-1"><Ban size={12} /> Unavailable</button>
           <button onClick={() => bulkSent("whatsapp", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><MessageCircle size={12} /> WA sent</button>
@@ -746,7 +757,7 @@ export default function InventoryView() {
 
       {/* Needs-attention banner — missing info or media that hasn't fully synced */}
       {attentionCount > 0 && (
-        <button type="button" onClick={() => setAttentionOnly((v) => !v)}
+        <button type="button" onClick={() => { if (!attentionOnly) clearFilters(); setAttentionOnly(!attentionOnly); }}
           className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border text-left transition-colors mb-3 ${attentionOnly ? "border-warning bg-warning-bg" : "border-warning/40 bg-warning-bg/50 hover:bg-warning-bg"}`}>
           <RefreshCw size={14} className="text-warning-ink flex-shrink-0" />
           <span className="text-[12.5px] text-ink-2 flex-1 min-w-0">
@@ -888,6 +899,12 @@ export default function InventoryView() {
       {fbLot && <FbPostModal lot={fbLot} photos={(() => { try { return JSON.parse(fbLot.photos_json || "[]") ?? []; } catch { return []; } })()} onClose={() => setFbLot(null)} />}
 
       {locFixOpen && <LocationCleanup onClose={() => setLocFixOpen(false)} onDone={load} />}
+
+      {bulkEditing && (
+        <LotBulkEdit lots={lots.filter((l) => selected.has(l.id))} categories={categoryOptions} conditions={CONDITIONS}
+          onClose={() => setBulkEditing(false)}
+          onSaved={() => { setBulkEditing(false); exitSelect(); load(); }} />
+      )}
 
       {linkModal && (() => {
         const lot = lots.find((l) => l.id === linkModal);

@@ -9,6 +9,8 @@ mod bank_learn;
 mod bank_import;
 mod bills;
 mod bills_core;
+// R-566 mass edit of lots (byte-identical in clienthub-api).
+mod lot_bulk;
 mod checkups;
 mod commands;
 // R-441 company documents (admin only; stored on the server, copied locally).
@@ -1026,6 +1028,7 @@ fn main() {
             list_inventory,
             create_lot,
             update_lot,
+            bulk_edit_lots,
             archive_lot,
             link_lot_to_deal,
             set_lot_status,
