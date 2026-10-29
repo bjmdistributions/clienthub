@@ -2121,6 +2121,12 @@ export interface LotDetails {
   qty_approx?: boolean | null;
   // R-559: comes off the site this many days after its last renewal (updated_at). Absent = stays up.
   expire_days?: number | null;
+  /** R-569: made from this delivery; the server keeps `quantity` at its live count. */
+  load_id?: string;
+  /** R-569: the storefront lists each brand with its pairs. */
+  show_brands?: boolean;
+  /** R-569: the count reached 0 and marked it sold; pairs coming back make it available. */
+  sold_by_count?: boolean;
   // Volume price breaks, ascending, per-unit prices. Absent on a lot that sells at one
   // price. See LotPriceTier for why the last row needs no upper bound.
   price_tiers?: LotPriceTier[] | null;

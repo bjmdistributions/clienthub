@@ -268,14 +268,19 @@ export default function InventoryView() {
       total_cost: d.total_cost ?? 0,
       asking_price: d.asking_price,
       price_type: d.price_type ?? "total",
-      details_json: d.manifest ? JSON.stringify({ manifest: d.manifest }) : undefined,
+      details_json: d.details ? JSON.stringify(d.details) : d.manifest ? JSON.stringify({ manifest: d.manifest }) : undefined,
       // R-379: a split's own manifest file and photos, attached when the lot saves.
       manifest_file: d.manifest_file,
       photo_paths: d.photo_paths,
       // R-564: the saved manifest this lot came from; linked back once the lot saves.
       manifest_id: d.manifest_id,
+      // R-569: a delivery's listing.
+      location: d.location,
+      description: d.description,
     } as Partial<Lot>);
     const apply = (d: any) => {
+      // R-569: Open listing on a delivery opens the lot already made from it.
+      if (d.open_id) { setOpenId(String(d.open_id)); return; }
       setEditing(null);
       // A manifest split sends one lot per split, stepped through like a pasted batch.
       if (Array.isArray(d.lots) && d.lots.length > 0) {
@@ -298,6 +303,11 @@ export default function InventoryView() {
     window.addEventListener("inventory-prefill-lot", onPrefill as EventListener);
     return () => window.removeEventListener("inventory-prefill-lot", onPrefill as EventListener);
   }, []);
+  const [openId, setOpenId] = useState<string | null>(null);
+  useEffect(() => {
+    const lot = openId ? lots.find((l) => l.id === openId) : undefined;
+    if (lot) { setOpenId(null); setEditing(lot); setShowForm(true); }
+  }, [openId, lots]);
   // Re-read inventory when a background sync lands so remote row edits AND freshly
   // downloaded photos appear live in the open view (previously they only showed after
   // reopening the tab). `inventory-media-updated` fires when the reconcile pulls image
@@ -1616,6 +1626,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     catch { return {}; }
   };
   const [details0] = useState<LotDetails>(seedDetails);
+  // R-569: a lot made from a delivery. Its quantity is the delivery's live count, kept by the server.
+  const fromDelivery = details0.load_id || "";
+  const [showBrands, setShowBrands] = useState(!!details0.show_brands);
   // The Selling price selector's four modes. "per_pallet" is an ENTRY mode, not a stored
   // price_type — it saves as "total" with the price multiplied out across the pallets,
   // the same trick qty_basis plays for quantity. So `ask` holds the quoted per-pallet
@@ -1916,7 +1929,12 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // Preserve a manifest summary seeded from the analyzer (or a prior save) — the save
       // rebuilds detailsObj from fields, so it would otherwise be dropped.
       if (details0.manifest) detailsObj.manifest = details0.manifest;
-      const hasDetails = !!pallets || !!msrp || !!moqOut || cleanTiers.length > 0 || qtyApprox || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || cleanTags.length > 0 || !!conditionClean || showPrev || perPalletPriced || expireDays > 0 || !!details0.expire_days;
+      if (fromDelivery) {
+        detailsObj.load_id = fromDelivery;
+        if (showBrands) detailsObj.show_brands = true;
+        if (details0.sold_by_count) detailsObj.sold_by_count = true;
+      }
+      const hasDetails = !!fromDelivery || !!pallets || !!msrp || !!moqOut || cleanTiers.length > 0 || qtyApprox || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || cleanTags.length > 0 || !!conditionClean || showPrev || perPalletPriced || expireDays > 0 || !!details0.expire_days;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       // Canonicalise on the way out. LocationField already emits the right shape,
       // but a PREFILLED lot (paste-a-load) can reach save without the field ever
@@ -2029,7 +2047,12 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 <label className="block text-[12.5px] font-medium text-ink-2 mb-1">
                   {variantTotal > 0 ? "Total quantity (units)" : qtyBasis === "per_pallet" ? "Units per pallet" : "Total quantity (units)"}
                 </label>
-                {variantTotal > 0 ? (
+                {fromDelivery ? (
+                  <div className={inp + " tabular-nums bg-surface-2 text-ink flex items-center justify-between"}>
+                    <span>{(qty || 0).toLocaleString()}</span>
+                    <span className="text-[10.5px] text-muted font-normal">follows the delivery</span>
+                  </div>
+                ) : variantTotal > 0 ? (
                   <div className={inp + " tabular-nums bg-surface-2 text-ink flex items-center justify-between"}>
                     <span>{variantTotal.toLocaleString()}</span>
                     <span className="text-[10.5px] text-muted font-normal">auto from variants</span>
@@ -2052,7 +2075,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
 
             {/* Suppliers quote either the whole load or a per-pallet count. Saying which
                 removes the guesswork — the total that will actually be stored is shown below. */}
-            {variantTotal === 0 && (
+            {variantTotal === 0 && !fromDelivery && (
               <div>
                 <label className="block text-[12.5px] font-medium text-ink-2 mb-1">That quantity is</label>
                 <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5">
@@ -2199,6 +2222,15 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 <span className="block text-[11px] text-muted mt-0.5">Shows a “Make an offer” form on your storefront so buyers can send you a price.</span>
               </span>
             </label>
+            {fromDelivery && (
+              <label className="flex items-start gap-2.5 cursor-pointer mt-1 rounded-lg border border-line bg-surface-2/50 px-3 py-2.5">
+                <input type="checkbox" className="accent-accent mt-0.5 flex-shrink-0" checked={showBrands} onChange={(e) => setShowBrands(e.target.checked)} />
+                <span className="min-w-0">
+                  <span className="text-[12.5px] font-medium text-ink">Show the brand breakdown</span>
+                  <span className="block text-[11px] text-muted mt-0.5">Your storefront lists each brand with its pairs left. Off, it shows the total only. The count goes down after every sale.</span>
+                </span>
+              </label>
+            )}
             <div className="rounded-lg border border-line bg-surface-2/50 px-3 py-2.5">
               <div className="text-[12.5px] font-medium text-ink">On the site</div>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-1.5 text-[12.5px] text-ink-2">

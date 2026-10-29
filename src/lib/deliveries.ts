@@ -160,6 +160,15 @@ export type Stock = {
   unnamed: number; not_boxed: number;
 };
 /** An order that took pairs; `invoice_state` is "live", "voided", "removed", "gone" or "" (no invoice). */
+/** R-569: a listing's count. On the truck = received, plus what the manifest still says is to come for each
+ *  style; less every live out. The server's delivery_listing::count is the one kept on the lot; this seeds the form. */
+export function listingCount(lines: LoadLine[], stock: Stock, outs: LoadOut[]): number {
+  const got = new Map(stock.lines.map((l) => [l.line_id, l.received]));
+  const truck = stock.received + lines.reduce((a, l) => a + Math.max(0, l.sizes.reduce((s, z) => s + Math.max(0, z.qty || 0), 0) - (got.get(l.id) ?? 0)), 0);
+  const sold = outs.filter((o) => !o.undone).reduce((a, o) => a + Math.max(o.pairs, o.takes.reduce((s, t) => s + Math.max(0, t.pairs), 0)), 0);
+  return Math.max(0, truck - sold);
+}
+
 export type LoadOut = {
   id: string; invoice_id: string; reference: string; note: string; takes: CaseLine[]; pairs: number; cost: number;
   undone: boolean; undone_at: string; created_at: string; updated_at: string; invoice_state: string;

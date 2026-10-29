@@ -11,7 +11,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api, type ComingBuy, type Invoice } from "../lib/api";
 import { isNoiseItem, parseLineItems } from "../lib/itemSearch";
-import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, unitWord, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PickPlan, type PicturesAdded, type WhCase } from "../lib/deliveries";
+import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, listingCount, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, unitWord, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PickPlan, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, WAREHOUSE_OPEN_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { standsOn, type DeliveryOpen, type FloorRequest } from "../lib/floor";
 import BuyPanel from "./BuyPanel";
@@ -473,6 +473,29 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
   const [sureRemove, setSureRemove] = useState(false);
   const setDraft = (x: Draft | null) => { setDraftRaw(x); setEditing(!!x); };
   const live = !L.archived;
+  // R-569: the storefront listing made from this delivery (one at most), whose count the server keeps.
+  const [listing, setListing] = useState<string | null>(null);
+  useEffect(() => {
+    api.listInventory().then((ls) => setListing(ls.find((l) => {
+      if (l.status === "archived") return false;
+      try { return JSON.parse(l.details_json || "{}")?.load_id === L.id; } catch { return false; }
+    })?.id ?? null)).catch(() => {});
+  }, [L.id]);
+  const toListing = () => {
+    const brands = [...new Set(lines.map((l) => l.brand.trim()).filter(Boolean))];
+    const detail = listing ? { open_id: listing } : {
+      name: L.name,
+      quantity: listingCount(lines, d.stock, d.outs),
+      total_cost: 0,
+      price_type: "per_unit",
+      description: brands.length ? `Brands: ${brands.join(", ")}` : undefined,
+      details: { load_id: L.id },
+      photo_paths: [...new Set(lines.map((l) => l.image || "").filter((p) => p.startsWith("media/")))].slice(0, 10),
+    };
+    sessionStorage.setItem("inventory_prefill_lot", JSON.stringify(detail));
+    window.dispatchEvent(new CustomEvent("inventory-prefill-lot", { detail }));
+    window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "inventory" }));
+  };
   const nextPallet = pallets.reduce((a, p) => Math.max(a, p.pallet), 0) + 1;
   // R-550: back to the floor plan with the pallet selected, and each pallet's line to it.
   const toFloor = (n: number) => { setBack(false); onFloor({ kind: "show", palletId: `pal-${L.id}-${n}` }); };
@@ -616,6 +639,7 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
           {live && <button onClick={() => { setDraft(null); setSaved(null); setReceiving(true); }} className={WH_BTN_PRIMARY} title="Scan each tag into its box, box after box">Receive</button>}
           <Seg size="md" value={tab} onChange={setTab} options={[{ key: "pallets", label: "Pallets" }, { key: "check", label: "Against the manifest" }, { key: "sell", label: "Sell" }, { key: "buy", label: "Buy" }]} />
           {renaming == null && <button onClick={() => setRenaming(L.name)} className={WH_BTN_SECONDARY}>Rename</button>}
+          {(live || listing) && <button onClick={toListing} className={WH_BTN_SECONDARY} title="A listing for your storefront and newsletters. Its count follows this delivery after every sale">{listing ? "Open listing" : "Make a listing"}</button>}
           {live && <button onClick={() => setAddingLine("")} className={WH_BTN_SECONDARY}>Add a style not on the manifest</button>}
           {live && <button onClick={addPictures} disabled={picBusy} className={WH_BTN_SECONDARY} title="Choose the manifest file: each picture goes on the style on its row">{picBusy ? "Adding pictures…" : "Add pictures from the sheet"}</button>}
           {L.archived ? <button onClick={() => update({ archived: false })} className={WH_BTN_SECONDARY}>Bring it back</button>
