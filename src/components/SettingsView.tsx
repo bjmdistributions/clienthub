@@ -4105,7 +4105,7 @@ function CalendarTab() {
       const v = await api.googleCalendar(action, body);
       if (action === "connect" && v.url) { await api.openExternal(v.url); setWaiting(true); }
       else setSt(v);
-      if (action === "app") { setSecret(""); toast("Google app saved"); }
+      if (action === "app") { setSecret(""); setClientId(""); toast("Google sign-in is on for Ecliptr"); }
       if (action === "sync") toast(v.last_error ? v.last_error : "Calendar updated", v.last_error ? "error" : "success");
     } catch (e) { toast(String(e), "error"); }
     setBusy(false);
@@ -4154,38 +4154,15 @@ function CalendarTab() {
             </>
           ) : (
             <>
-              <div className="text-[12.5px] text-muted">
-                {st.last_error ? <span className="text-danger-ink">{st.last_error}</span>
-                  : st.app_set ? "Google app saved. Connect the company account."
-                  : "Not set up yet. Follow the steps below once, then connect."}
-              </div>
-              <div>
-                <div className="text-[12.5px] font-medium text-muted mb-1.5">Client ID</div>
-                <input value={clientId} onChange={(e) => setClientId(e.target.value)}
-                  placeholder={st.client_id || "Ends in .apps.googleusercontent.com"}
-                  className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
-              </div>
-              <div>
-                <div className="text-[12.5px] font-medium text-muted mb-1.5">Client secret</div>
-                <div className="flex items-center gap-2">
-                  <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)}
-                    placeholder={st.app_set ? "Saved. Paste to replace" : "From the same Google Cloud page"}
-                    className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
-                  <button onClick={() => run("app", { client_id: clientId.trim() || st.client_id, client_secret: secret.trim() })}
-                    disabled={busy || !secret.trim() || !(clientId.trim() || st.client_id)}
-                    className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
-                    Save app
-                  </button>
-                </div>
-              </div>
-              <div className="pt-1">
-                <button onClick={() => run("connect")} disabled={!st.app_set || busy || waiting} className={primary}>
-                  <CalendarDays size={14} /> {waiting ? "Waiting for Google…" : "Connect Google"}
-                </button>
-                <p className="text-[11.5px] text-muted mt-1.5">
-                  {waiting ? "Finish signing in in your browser. This updates on its own." : "Sign in with the company account. Your browser opens Google."}
-                </p>
-              </div>
+              {st.last_error && <p className="text-[12.5px] text-danger-ink">{st.last_error}</p>}
+              <button onClick={() => run("connect")} disabled={!st.app_set || busy || waiting} className={primary}>
+                <CalendarDays size={14} /> {waiting ? "Waiting for Google…" : "Connect Google"}
+              </button>
+              <p className="text-[11.5px] text-muted">
+                {waiting ? "Finish signing in in your browser. This updates on its own."
+                  : st.app_set ? "Sign in with the company Google account and press Allow. That is all."
+                  : "Google sign-in is not switched on for Ecliptr yet."}
+              </p>
             </>
           )}
         </div>
@@ -4228,23 +4205,40 @@ function CalendarTab() {
         </div>
       )}
 
-      <div className="bg-surface border border-line rounded-xl p-4">
-        <div className="text-[12px] font-semibold text-ink mb-2.5">Set it up in Google Cloud (one time)</div>
-        <ol className="text-[12.5px] text-muted space-y-2 list-decimal pl-4 leading-relaxed marker:text-muted">
-          <li>Go to <strong className="text-ink-2">console.cloud.google.com</strong>, signed in with the company Workspace account, and pick the project you use for Ecliptr (or make one).</li>
-          <li>In <strong className="text-ink-2">APIs and services, Library</strong>, turn on the <strong className="text-ink-2">Google Calendar API</strong>.</li>
-          <li>In <strong className="text-ink-2">OAuth consent screen</strong>, choose <strong className="text-ink-2">Internal</strong>, so only your company's accounts can sign in and Google needs no review.</li>
-          <li>In <strong className="text-ink-2">Credentials</strong>, create an <strong className="text-ink-2">OAuth client ID</strong> of type <strong className="text-ink-2">Web application</strong>, and add this exact address under <strong className="text-ink-2">Authorised redirect URIs</strong>:
-            {callback && (
-              <div className="flex items-center gap-2 mt-1.5">
-                <input readOnly value={callback} className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2.5 text-[12px] text-ink" />
-                <button onClick={() => copy(callback)} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
-              </div>
-            )}
-          </li>
-          <li>Copy the <strong className="text-ink-2">client ID</strong> and <strong className="text-ink-2">client secret</strong> into the fields above, save, then press <strong className="text-ink-2">Connect Google</strong> and allow both calendar permissions.</li>
-        </ol>
-      </div>
+      {/* R-573: Ecliptr's one Google app. Only the platform owner sees this, once, before it is switched on;
+          every admin after that sees the Connect button alone. */}
+      {st?.owner && !st.app_set && (
+        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+          <div>
+            <div className="text-[12px] font-semibold text-ink">Switch on Google sign-in for Ecliptr</div>
+            <p className="text-[12px] text-muted mt-1 leading-relaxed">Only you see this, as Ecliptr's owner, and you do it once. After that every company on Ecliptr connects with the button above.</p>
+          </div>
+          <ol className="text-[12.5px] text-muted space-y-2 list-decimal pl-4 leading-relaxed marker:text-muted">
+            <li>At <strong className="text-ink-2">console.cloud.google.com</strong>, signed in with the company Workspace account, turn on the <strong className="text-ink-2">Google Calendar API</strong>.</li>
+            <li>In <strong className="text-ink-2">OAuth consent screen</strong>, choose <strong className="text-ink-2">Internal</strong>: no Google review is needed while only your company's accounts connect.</li>
+            <li>In <strong className="text-ink-2">Credentials</strong>, create an <strong className="text-ink-2">OAuth client ID</strong>, type <strong className="text-ink-2">Web application</strong>, with this redirect address:
+              {callback && (
+                <div className="flex items-center gap-2 mt-1.5">
+                  <input readOnly value={callback} className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2.5 text-[12px] text-ink" />
+                  <button onClick={() => copy(callback)} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
+                </div>
+              )}
+            </li>
+            <li>Paste its client ID and secret here.</li>
+          </ol>
+          <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Client ID"
+            className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
+          <div className="flex items-center gap-2">
+            <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="Client secret"
+              className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
+            <button onClick={() => run("app", { client_id: clientId.trim(), client_secret: secret.trim() })}
+              disabled={busy || !secret.trim() || !clientId.trim()}
+              className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
+              Switch it on
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

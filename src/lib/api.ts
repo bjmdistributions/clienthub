@@ -2629,6 +2629,7 @@ export interface CalendarPerson {
 }
 export interface CalendarState {
   app_set: boolean;
+  owner?: boolean;
   client_id: string;
   connected: boolean;
   account_email: string;

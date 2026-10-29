@@ -10771,8 +10771,8 @@ pub async fn lot_feed(action: String, body: Option<Value>) -> Result<Value, Stri
 }
 
 /// R-562: the Google calendar, kept on the server (clienthub-api routes/calendar.rs) and
-/// changed only by an admin. Connect sends this computer's server address, because the
-/// server cannot see its own public name; Google sends the browser back to it.
+/// changed only by an admin. R-573: one Google app for all of Ecliptr, so Connect needs nothing
+/// from this computer; the server names the one address Google sends the browser back to.
 #[tauri::command]
 pub async fn google_calendar(action: String, body: Option<Value>) -> Result<Value, String> {
     let (base, token) = inbox_server()?;
@@ -10781,7 +10781,7 @@ pub async fn google_calendar(action: String, body: Option<Value>) -> Result<Valu
     let req = match action.as_str() {
         "get" => http.get(format!("{base}/api/calendar")),
         "app" => http.post(format!("{base}/api/calendar/app")).json(&body),
-        "connect" => http.post(format!("{base}/api/calendar/connect")).json(&json!({ "origin": base })),
+        "connect" => http.post(format!("{base}/api/calendar/connect")).json(&json!({})),
         "share" => http.post(format!("{base}/api/calendar/share")).json(&body),
         "sync" => http.post(format!("{base}/api/calendar/sync")).json(&json!({})),
         "disconnect" => http.post(format!("{base}/api/calendar/disconnect")).json(&json!({})),
@@ -10789,12 +10789,9 @@ pub async fn google_calendar(action: String, body: Option<Value>) -> Result<Valu
     };
     let resp = req.bearer_auth(&token).send().await.map_err(|e| e.to_string())?;
     let status = resp.status();
-    let mut v: Value = resp.json().await.map_err(|_| format!("The server answered {status}. It may need updating."))?;
+    let v: Value = resp.json().await.map_err(|_| format!("The server answered {status}. It may need updating."))?;
     if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
         return Err(err.to_string());
-    }
-    if let Some(o) = v.as_object_mut() {
-        o.insert("callback".into(), json!(format!("{base}/api/calendar/callback")));
     }
     Ok(v)
 }
