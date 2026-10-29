@@ -415,13 +415,29 @@ pub async fn publish_bank_balance_and_health(bank: f64, card: f64, last_sync: Op
 
 /// R-493: the bank rows a Plaid sync just brought in (`{ id, amount, money_in }`), so the server raises a notice
 /// per row and a phone push. Best-effort: a lost report costs an alert, never a row.
+/// R-571: the server skips a row it does not hold yet, so a failed push used to lose the alert for good. The push and
+/// each report are tried three times, 5 seconds apart; the server keys each notice on its row, so a repeat never
+/// buzzes twice.
 pub async fn report_bank_activity(txns: Vec<serde_json::Value>) {
     let cfg = match config() { Some(c) => c, None => return };
     // R-518 (PS-26): the server now builds each alert from the stored row, so the rows go up first.
-    if let Err(e) = push_pending().await { tracing::warn!("bank activity: push before report failed: {}", e); }
+    for attempt in 1..=3 {
+        match push_pending().await {
+            Ok(_) => break,
+            Err(e) => {
+                tracing::warn!("bank activity: push before report failed (try {}): {}", attempt, e);
+                if attempt < 3 { tokio::time::sleep(std::time::Duration::from_secs(5)).await; }
+            }
+        }
+    }
     let url = format!("{}/api/bank/activity", cfg.url.trim_end_matches('/'));
     for chunk in txns.chunks(50) {
-        let _ = http().post(&url).bearer_auth(&cfg.token).json(&serde_json::json!({ "txns": chunk })).send().await;
+        for attempt in 1..=3 {
+            let sent = http().post(&url).bearer_auth(&cfg.token).json(&serde_json::json!({ "txns": chunk })).send().await;
+            if matches!(&sent, Ok(r) if r.status().is_success()) { break; }
+            tracing::warn!("bank activity: report failed (try {})", attempt);
+            if attempt < 3 { tokio::time::sleep(std::time::Duration::from_secs(5)).await; }
+        }
     }
 }
 
