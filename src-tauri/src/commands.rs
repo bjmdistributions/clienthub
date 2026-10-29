@@ -22005,6 +22005,10 @@ pub async fn plaid_sync() -> Result<Value, String> {
             let _ = conn.execute("UPDATE plaid_items SET cursor=?1 WHERE id=?2", rusqlite::params![cursor, item_pk]);
             if !has_more_now { break; }
         }
+        // R-571: this bank's alerts go now, not after every other bank has been paged and the balances re-read.
+        if !fresh_rows.is_empty() {
+            tokio::spawn(crate::netsync::report_bank_activity(std::mem::take(&mut fresh_rows)));
+        }
         // Refresh this item's stored balances so Free Cash reflects the CURRENT bank
         // balance instead of the snapshot from link day (which never updated, so the
         // headline silently drifted every day). Best-effort; a failure leaves the
@@ -22146,6 +22150,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
     }
     if imported > 0 || amended > 0 { crate::bank_backup::spawn_auto_backup(); } // mirror new activity to the safety-log sheet
     // R-493: the server raises one notice per new row and a phone push; this desktop's pop-up follows from the notice.
+    // R-571: each bank's rows already went as that bank finished; this sends any a bank left behind on an early exit.
     if !fresh_rows.is_empty() {
         tokio::spawn(crate::netsync::report_bank_activity(fresh_rows));
     }
