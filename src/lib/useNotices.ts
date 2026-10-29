@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, isUnavailable, type FreightBooking, type LeadNotification, type LogisticsCompletion, type Me } from "./api";
 import {
-  CHIMED_DEALS_KEY, canReadTeamNotices, canSeeTeamNotices, chimedHere, chimes, desktopNoticesOn, leadNoticesOf, logisticsBellCount, mergeSeen, planDerived, planDone, planTeamRaise, readSeen, seenKey, switchOf, switchOn, teamNoticesOf, writeSeen,
+  CHIMED_DEALS_KEY, canReadTeamNotices, canSeeTeamNotices, chimedHere, chimes, derivedKindsOf, desktopNoticesOn, leadNoticesOf, logisticsBellCount, mergeSeen, planDerived, planDone, planTeamRaise, readSeen, seenKey, switchOf, switchOn, teamNoticesOf, writeSeen,
 } from "./notices";
 import { pushApi } from "./billsApi";
 import { isAdmin, isLogisticsOnly } from "./permissions";
@@ -51,6 +51,8 @@ export interface NoticeState {
   failed: boolean;
   /** A Logistics-only account's count of loads to quote plus loads to book. 0 for everyone else. */
   logisticsCount: number;
+  /** R-571: a Logistics-only account has an urgent load waiting, so its bell is red. false for everyone else. */
+  logisticsUrgent: boolean;
   /** Read again now (after an acknowledge or an open). */
   refresh: () => void;
   /** Take a notice out of the list at once; the server has been told separately. */
@@ -68,6 +70,7 @@ export function useNotices(me: Me | null | undefined): NoticeState {
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const [logisticsCount, setLogisticsCount] = useState(0);
+  const [logisticsUrgent, setLogisticsUrgent] = useState(false);
   // undefined = not read from storage yet; null = read, nothing stored (a first run)
   const teamSeen = useRef<string[] | null | undefined>(undefined);
   const derivedSeen = useRef<string[] | null | undefined>(undefined);
@@ -104,6 +107,7 @@ export function useNotices(me: Me | null | undefined): NoticeState {
     let completed: LogisticsCompletion[];
     try { const r = await api.logistics.list(); bookings = r.bookings; completed = r.completed ?? []; } catch { return; }
     setLogisticsCount(logisticsBellCount(bookings));
+    setLogisticsUrgent(bookings.some((b) => derivedKindsOf(b).includes("urgent")));
     const key = seenKey("derived", userId);
     if (derivedSeen.current === undefined) derivedSeen.current = readSeen(store(), key);
     // R-538: the "Deal 100% complete" alerts are planned against the same seen list as it stood before this poll.
@@ -123,7 +127,7 @@ export function useNotices(me: Me | null | undefined): NoticeState {
 
   useEffect(() => {
     if (!teamOn) { setTeam([]); setLeads([]); setLoaded(false); setFailed(false); }
-    if (!logisticsOnly) setLogisticsCount(0);
+    if (!logisticsOnly) { setLogisticsCount(0); setLogisticsUrgent(false); }
     if (!teamOn && !logisticsOnly) return;
     refresh();
     const t = window.setInterval(refresh, POLL_MS);
@@ -145,5 +149,5 @@ export function useNotices(me: Me | null | undefined): NoticeState {
     setTeam((l) => l.filter((n) => n.id !== id));
     setLeads((l) => l.filter((n) => n.id !== id));
   }, []);
-  return { team, leads, loaded, failed, logisticsCount, refresh, drop };
+  return { team, leads, loaded, failed, logisticsCount, logisticsUrgent, refresh, drop };
 }

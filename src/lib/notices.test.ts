@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { LeadNotification } from "./api";
+import { localDay } from "./format";
 import {
   ADMIN_NOTICE_KINDS, ALERT_ONLY_NOTICE_KINDS, ALERT_NOTICE_KINDS, NEEDS_YOU_NOTICE_KINDS, DESKTOP_NOTIFY_KEY, FIRST_RUN_WINDOW_MS, BILL_OPEN_KEY, PAY_TRACKER_KEY, PAY_TRACKER_SUB, NOTICE_KIND_LABEL, TEAM_NOTICE_KINDS, RAISE_CAP, SEEN_CAP, canOpenTarget, canReadTeamNotices, canSeeTeamNotices, derivedKindsOf, desktopNoticesOn,
   logisticsBellCount, mergeSeen, noticeTarget, planDerived, planDone, planTeamRaise, readSeen, seenKey, teamNoticesOf, writeSeen,
-  GROUP_LABEL, GROUP_ORDER, bellCountOf, bellTitle, canSeeGroup, chimedHere, chimes, compareRows, customerRow, dueDayOf, groupRows, leadNoticesOf, noticeRow, requestRow, switchOf, switchOn, whenWearsUrgency, whenWords,
+  GROUP_LABEL, GROUP_ORDER, bellCountOf, bellTitle, bellUrgentOf, moneyTone, tierOf, canSeeGroup, chimedHere, chimes, compareRows, customerRow, dueDayOf, groupRows, leadNoticesOf, noticeRow, requestRow, switchOf, switchOn, whenWearsUrgency, whenWords,
   type NoticeLoad, type NoticeRow,
 } from "./notices";
 
@@ -638,6 +639,49 @@ describe("R-493: a new bank row", () => {
     expect(canOpenTarget({ to: "bank" }, { permissions: ["financials:view"] } as never)).toBe(true);
     expect(canOpenTarget({ to: "bank" }, { permissions: ["deal_flow:view"] } as never)).toBe(false);
     expect(canSeeGroup("bank", { permissions: ["deal_flow:view"] } as never)).toBe(false);
+  });
+});
+
+describe("R-571: three tiers, one meaning each", () => {
+  const day = localDay(new Date(NOW));
+  const bank = (id: string, moneyIn: boolean, at = hoursAgo(1)) =>
+    note(id, "bank_txn", { title: moneyIn ? "New deposit" : "New charge", body: "$4,200.00", created_at: at, payload_json: JSON.stringify({ money_in: moneyIn, rail: "" }) });
+  it("money in today, an overdue bill or carrier and the pay day are urgent; the record is quiet; the rest normal", () => {
+    const tier = (n: LeadNotification) => tierOf(noticeRow(n)!, day);
+    expect(["bill_overdue", "carrier_overdue", "logistics_pay_due"].map((k) => tier(note(k, k)))).toEqual(["urgent", "urgent", "urgent"]);
+    expect(["bill_paid", "logistics_bol", "supplier_profile"].map((k) => tier(note(k, k)))).toEqual(["quiet", "quiet", "quiet"]);
+    expect(["bill_due", "carrier_due", "logistics_quote", "deal_complete", "supply_lead"].map((k) => tier(note(k, k)))).toEqual(["normal", "normal", "normal", "normal", "normal"]);
+    expect(tier(bank("in", true))).toBe("urgent");
+    expect(tier(bank("old", true, hoursAgo(48)))).toBe("normal");
+    expect(tier(bank("out", false))).toBe("normal");
+    expect(tierOf(requestRow({ id: "u", kind: "unsubscribe", summary: "a@b.c unsubscribed from email", created_at: hoursAgo(1) })!, day)).toBe("quiet");
+    expect(tierOf(customerRow({ id: "c", name: "A" }), day)).toBe("normal");
+  });
+  it("a bank row reads Money in in green or Charge in ink, the amount its subject; an older notice keeps its title", () => {
+    const i = noticeRow(bank("in", true))!, o = noticeRow(bank("out", false))!;
+    expect([i.label, i.subject, moneyTone(i)]).toEqual(["Money in", "$4,200.00", "in"]);
+    expect([o.label, o.subject, moneyTone(o)]).toEqual(["Charge", "$4,200.00", "out"]);
+    const old = noticeRow(note("b0", "bank_txn", { title: "New deposit", body: "$1.00" }))!;
+    expect([old.label, moneyTone(old)]).toEqual(["New deposit", null]);
+    expect(moneyTone(noticeRow(note("x", "bill_due"))!)).toBeNull();
+  });
+  it("the bell counts money in today and goes red only while something urgent waits", () => {
+    const count = (notices: LeadNotification[]) => bellCountOf({ pendingCustomers: 0, requests: [], notices }, day);
+    expect(count([bank("in", true)])).toBe(1);
+    expect(count([bank("old", true, hoursAgo(48)), bank("out", false)])).toBe(0);
+    expect(count([bank("in", true, hoursAgo(1)), note("q", "bill_due")])).toBe(2);
+    expect(count([{ ...bank("in", true), status: "acknowledged" }])).toBe(0);
+    expect(bellUrgentOf([note("q", "bill_due"), note("s", "supply_lead")], day)).toBe(false);
+    expect(bellUrgentOf([note("q", "bill_due"), bank("in", true)], day)).toBe(true);
+    expect(bellUrgentOf([note("o", "carrier_overdue")], day)).toBe(true);
+    expect(bellUrgentOf([{ ...note("o", "carrier_overdue"), status: "acknowledged" }], day)).toBe(false);
+  });
+  it("an urgent alert takes a slot of the cap before anything that only needs you", () => {
+    const due = Array.from({ length: RAISE_CAP + 2 }, (_, i) => note(`d${i}`, "bill_due", { created_at: hoursAgo(1 + i / 10) }));
+    const ids = planTeamRaise([...due, bank("in", true, hoursAgo(5))], [], NOW).raise.map((n) => n.id);
+    expect(ids).toHaveLength(RAISE_CAP);
+    expect(ids).toContain("in");
+    expect(ids[0]).toBe("in");   // still raised oldest first
   });
 });
 

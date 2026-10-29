@@ -6,7 +6,7 @@ import { Inbox, X, Store, Reply } from "lucide-react";
 import StatusPill from "./StatusPill";
 import { openLoadInLogistics } from "./LogisticsPayCarriers";
 import {
-  BILL_OPEN_KEY, canOpenTarget, canSeeGroup, customerRow, groupRows, noticeRow, noticeTarget, requestRow, whenWearsUrgency, whenWords,
+  BILL_OPEN_KEY, canOpenTarget, canSeeGroup, compareRows, customerRow, groupRows, moneyTone, noticeRow, noticeTarget, requestRow, tierOf, whenWearsUrgency, whenWords,
   type NoticeGroup, type NoticeRow, type NoticeTarget, type Urgency,
 } from "../lib/notices";
 import type { NoticeState } from "../lib/useNotices";
@@ -97,6 +97,12 @@ function openTarget(t: NoticeTarget) {
 // (red overdue, amber needs you, grey for your information). A coloured dot ahead of a label is a
 // standing veto in the design rules, so the colour rides the words instead.
 const URGENCY_TEXT: Record<Urgency, string> = { overdue: "text-danger-ink", needs: "text-warning-ink", info: "text-muted" };
+// R-571: a money row's label is green for money in and plain ink for a charge; an urgent row sits on its colour's ground.
+const labelText = (r: NoticeRow): string => {
+  const m = moneyTone(r);
+  return m === "in" ? "text-success-ink" : m === "out" ? "text-ink" : URGENCY_TEXT[r.urgency];
+};
+const urgentGround = (r: NoticeRow): string => (moneyTone(r) === "in" ? "bg-success-bg" : r.urgency === "overdue" ? "bg-danger-bg" : "bg-warning-bg");
 const BTN_SOLID = "bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium";
 const BTN_LINE = "border border-line text-ink-2 hover:bg-surface-3 px-4 h-9 rounded-lg text-[13px] font-medium";
 // The buttons keep one width inside a group, so the "when" column lines up whichever buttons a row has.
@@ -217,7 +223,10 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
 
   // R-477: every source becomes the same kind of row, then the rows are grouped and put most urgent first.
   const noticesFailed = !!notices?.failed;
-  const groups = useMemo(() => {
+  const today = localDay();
+  // R-571: what is urgent (money in today, an overdue bill or carrier, the pay day) is lifted into one block above the
+  // groups, most pressing first; the groups hold the rest.
+  const { urgent, groups } = useMemo(() => {
     const rows: Item[] = [];
     if (notices && !notices.failed) {
       for (const n of [...notices.team, ...notices.leads]) { const r = noticeRow(n); if (r) rows.push({ ...r, n }); }
@@ -229,11 +238,11 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
       ...(customersFailed ? (["customers"] as const) : []),
       ...(requestsFailed ? (["requests"] as const) : []),
     ];
-    return groupRows(rows, failed);
-  }, [notices, noticesFailed, pending, items, customersFailed, requestsFailed, me]);
+    const isUrgent = (r: Item) => tierOf(r, today) === "urgent";
+    return { urgent: rows.filter(isUrgent).sort(compareRows), groups: groupRows(rows.filter((r) => !isUrgent(r)), failed) };
+  }, [notices, noticesFailed, pending, items, customersFailed, requestsFailed, me, today]);
   const retry = (g: NoticeGroup) => { if (g === "customers" || g === "requests") load(); else notices?.refresh(); };
   const ready = !loading && (!notices || notices.loaded);
-  const today = localDay();
 
   const buttons = (r: Item) => {
     const clear = (what: () => void) => (
@@ -270,6 +279,27 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
       {clear(() => clearNotice(n))}
     </>);
   };
+
+  const rowView = (r: Item, ground = "") => (
+    <div key={r.key} className={ground}>
+      <div className="px-4 py-3.5 flex flex-wrap items-center gap-x-3.5 gap-y-2">
+        <span className={`w-[116px] flex-shrink-0 text-[13.5px] font-medium ${labelText(r)}`}>{r.label}</span>
+        {/* The subject wraps to a second line before it is cut, so a load number at its end stays in view. */}
+        {r.a?.kind === "client_delete" ? (
+          <button onClick={() => setSelected(r.a!)} title="Review this request"
+            className="min-w-[120px] flex-1 text-left text-[14px] leading-snug text-ink hover:underline">
+            <span className="line-clamp-2 break-words">{r.subject}</span>
+          </button>
+        ) : (
+          <span className="min-w-[120px] flex-1 text-[14px] leading-snug text-ink line-clamp-2 break-words" title={r.subject}>{r.subject}</span>
+        )}
+        {/* An overdue row's when wears the label's colour, so "3 days overdue" is as plain as "Bill overdue". */}
+        <span className={`w-[108px] flex-shrink-0 text-[13px] ${whenWearsUrgency(r) ? URGENCY_TEXT[r.urgency] : "text-muted"}`}>{whenWords(r, today)}</span>
+        <div className={`flex items-center justify-end gap-2 flex-shrink-0 ml-auto ${BUTTONS_W[r.group]}`}>{buttons(r)}</div>
+      </div>
+      {r.n && opened === r.key && <LeadDetails n={r.n} />}
+    </div>
+  );
 
   return (
     <div className="p-6 max-w-3xl mx-auto">
@@ -324,13 +354,24 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
             })}
           </div>
         )
-      ) : !ready ? null : groups.length === 0 && staleListings.length === 0 ? (
+      ) : !ready ? null : urgent.length === 0 && groups.length === 0 && staleListings.length === 0 ? (
         <div className="bg-surface border border-line rounded-2xl py-14 flex flex-col items-center">
           <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3"><Inbox size={18} /></div>
           <div className="text-[14px] text-muted">Nothing waiting on you</div>
         </div>
       ) : (
         <div className="space-y-7">
+          {urgent.length > 0 && (
+            <section>
+              <div className="flex items-center gap-2 mb-2.5">
+                <h3 className="text-[15px] font-semibold text-ink">Urgent</h3>
+                <StatusPill tone="danger">{urgent.length}</StatusPill>
+              </div>
+              <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
+                {urgent.map((r) => rowView(r, urgentGround(r)))}
+              </div>
+            </section>
+          )}
           {groups.map((g) => (
             <section key={g.group}>
               <div className="flex items-center gap-2 mb-2.5">
@@ -343,26 +384,7 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
                     <span className="text-[14px] text-muted">Could not load {g.label.toLowerCase()}.</span>
                     <button onClick={() => retry(g.group)} className={BTN_LINE}>Try again</button>
                   </div>
-                ) : g.rows.map((r) => (
-                  <div key={r.key}>
-                    <div className="px-4 py-3.5 flex flex-wrap items-center gap-x-3.5 gap-y-2">
-                      <span className={`w-[116px] flex-shrink-0 text-[13.5px] font-medium ${URGENCY_TEXT[r.urgency]}`}>{r.label}</span>
-                      {/* The subject wraps to a second line before it is cut, so a load number at its end stays in view. */}
-                      {r.a?.kind === "client_delete" ? (
-                        <button onClick={() => setSelected(r.a!)} title="Review this request"
-                          className="min-w-[120px] flex-1 text-left text-[14px] leading-snug text-ink hover:underline">
-                          <span className="line-clamp-2 break-words">{r.subject}</span>
-                        </button>
-                      ) : (
-                        <span className="min-w-[120px] flex-1 text-[14px] leading-snug text-ink line-clamp-2 break-words" title={r.subject}>{r.subject}</span>
-                      )}
-                      {/* An overdue row's when wears the label's colour, so "3 days overdue" is as plain as "Bill overdue". */}
-                      <span className={`w-[108px] flex-shrink-0 text-[13px] ${whenWearsUrgency(r) ? URGENCY_TEXT[r.urgency] : "text-muted"}`}>{whenWords(r, today)}</span>
-                      <div className={`flex items-center justify-end gap-2 flex-shrink-0 ml-auto ${BUTTONS_W[r.group]}`}>{buttons(r)}</div>
-                    </div>
-                    {r.n && opened === r.key && <LeadDetails n={r.n} />}
-                  </div>
-                ))}
+                ) : g.rows.map((r) => rowView(r))}
               </div>
             </section>
           ))}
