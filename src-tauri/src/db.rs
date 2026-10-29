@@ -2701,4 +2701,35 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_manifest_column_maps_sig ON manifest_column_maps(signature);
         "#,
     ),
+    (
+        122,
+        // R-568: receiving by scanning. item_codes is the company's barcodes, each matched once to a brand,
+        // style, colour and size (how: sheet, list or matched), found by its code, so a barcode matched on one
+        // truck is known on every truck after. warehouse_cases.unmatched_json holds the units scanned into a
+        // box whose barcode is not matched yet, as {barcode: units}, and warehouse_loads.unit says whether a
+        // delivery counts pairs or units. Every column is nullable with a default so a partial create event
+        // cannot be swallowed. Synced (sync.rs ALLOWED_TABLES, netsync SNAPSHOT_TABLES, heal generation 15)
+        // and mirrored in clienthub-api schema.sql, its sync.rs ALTER list, PUSHABLE and ORG_TABLES, which
+        // must be deployed first. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        CREATE TABLE IF NOT EXISTS item_codes (
+            id TEXT PRIMARY KEY,
+            code TEXT NOT NULL DEFAULT '',
+            brand TEXT DEFAULT '',
+            style TEXT DEFAULT '',
+            color TEXT DEFAULT '',
+            color_name TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            size TEXT DEFAULT '',
+            how TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            archived INTEGER DEFAULT 0,
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_item_codes_code ON item_codes(code);
+        ALTER TABLE warehouse_cases ADD COLUMN unmatched_json TEXT DEFAULT '{}';
+        ALTER TABLE warehouse_loads ADD COLUMN unit TEXT DEFAULT '';
+        "#,
+    ),
 ];

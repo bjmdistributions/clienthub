@@ -5,6 +5,7 @@ import { bolPdfPath } from "./logisticsBols";
 import type { ImportResult, LayoutInput, Mapping, SheetRead, WarehouseInput, WarehouseItem, WarehouseLayout, WhChange, WhShort } from "./warehouse";
 import type { Capacity, FitRequest, FitResult, FitType, NewPallet, PalletLine, PalletSpec, WarehousePallet } from "./palletFit";
 import type { CaseLine, LoadDetail, LoadLine, LoadSummary, ManifestRead, NewLine, PickPlan, PicturesAdded } from "./deliveries";
+import type { ItemCode, Resolved } from "./receive";
 import type { Floor, FloorList, FloorShape, PalletSpot } from "./floor";
 import type { BuyTake } from "./buyPay";
 import type { DealLegs } from "./dealLegs";
@@ -4223,13 +4224,22 @@ export const api = {
   /** R-537: fetch the delivery's pictures this computer does not have yet: how many arrived, how many are still not on the server. */
   ensureDeliveryPictures: (loadId: string) => invoke<{ arrived: number; missing: number }>("ensure_delivery_pictures", { loadId }),
   getWarehouseLoad: (id: string) => invoke<LoadDetail>("get_warehouse_load", { id }),
-  createWarehouseLoad: (name: string, source: string, lines: LoadLine[]) => invoke<LoadDetail>("create_warehouse_load", { name, source, lines }),
-  updateWarehouseLoad: (id: string, patch: { name?: string; notes?: string; archived?: boolean }) =>
-    invoke<LoadDetail>("update_warehouse_load", { id, name: patch.name ?? null, notes: patch.notes ?? null, archived: patch.archived ?? null }),
+  /** R-568: `blank` makes a delivery received with no manifest (it may start with no lines); `unit` is "pairs" or "units". */
+  createWarehouseLoad: (name: string, source: string, lines: LoadLine[], o?: { blank?: boolean; unit?: "pairs" | "units" }) =>
+    invoke<LoadDetail>("create_warehouse_load", { name, source, lines, blank: o?.blank ?? null, unit: o?.unit ?? null }),
+  updateWarehouseLoad: (id: string, patch: { name?: string; notes?: string; archived?: boolean; unit?: "pairs" | "units" }) =>
+    invoke<LoadDetail>("update_warehouse_load", { id, name: patch.name ?? null, notes: patch.notes ?? null, archived: patch.archived ?? null, unit: patch.unit ?? null }),
   addWarehouseLoadLine: (id: string, line: NewLine) => invoke<LoadDetail>("add_warehouse_load_line", { id, line }),
-  /** A new case (with `copies` identical ones), or a change to one saved when caseId is given. Answers without the lines. */
-  saveWarehouseCase: (loadId: string, c: { caseId?: string | null; pallet: number; contents: CaseLine[]; notes?: string; copies?: number; kind?: "box" | "loose"; code?: string }) =>
-    invoke<LoadDetail>("save_warehouse_case", { loadId, caseId: c.caseId ?? null, pallet: c.pallet, contents: c.contents, notes: c.notes ?? null, copies: c.copies ?? null, kind: c.kind ?? null, code: c.code ?? null }),
+  /** A new case (with `copies` identical ones), or a change to one saved when caseId is given. Answers without the lines.
+   *  R-568: `unmatched` is the units scanned whose barcode is not matched yet; with `create`, caseId names a box this
+   *  computer chose (made when it is not there yet, so a save sent again lands once); `nextId` also makes the next box, empty. */
+  saveWarehouseCase: (loadId: string, c: { caseId?: string | null; pallet: number; contents: CaseLine[]; notes?: string; copies?: number; kind?: "box" | "loose"; code?: string; unmatched?: Record<string, number>; create?: boolean; nextId?: string }) =>
+    invoke<LoadDetail>("save_warehouse_case", { loadId, caseId: c.caseId ?? null, pallet: c.pallet, contents: c.contents, notes: c.notes ?? null, copies: c.copies ?? null, kind: c.kind ?? null, code: c.code ?? null, unmatched: c.unmatched ?? null, create: c.create ?? null, nextId: c.nextId ?? null }),
+  /** R-568: every barcode the company knows, as it lands on this delivery (its line and size, or none). */
+  getLoadCodes: (loadId: string) => invoke<{ codes: Resolved[] }>("get_load_codes", { loadId }),
+  /** R-568: match a barcode once: a line and size of this delivery, or `item` for one it does not list (added as a size or a line). Every unit of it waiting in any box moves there. */
+  matchLoadCode: (loadId: string, code: string, m: { lineId?: string; size?: string; item?: ItemCode }) =>
+    invoke<LoadDetail & { resolved: Resolved; boxes_moved: number }>("match_load_code", { loadId, code, lineId: m.lineId ?? null, size: m.size ?? null, item: m.item ?? null }),
   /** R-554: how a pallet's boxes stack (rows stacked up, boxes in each row) and its empty boxes made, each with its code, until it has `count`. */
   setPalletBoxes: (loadId: string, number: number, rows: number, perRow: number, count?: number) =>
     invoke<LoadDetail>("set_pallet_boxes", { loadId, number, rows, perRow, count: count ?? null }),

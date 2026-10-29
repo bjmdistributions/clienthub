@@ -632,7 +632,7 @@ pub async fn manifest_to_load(manifest_id: String, buy_id: Option<String>) -> Re
             let v = crate::warehouse_loads::create_load_with_pictures(name, source, lines, path.to_string_lossy().to_string()).await?;
             v["load"]["id"].as_str().unwrap_or("").to_string()
         }
-        None => crate::warehouse_loads::create_warehouse_load(name, source, lines).await?.load.id,
+        None => crate::warehouse_loads::create_warehouse_load(name, source, lines, None, None).await?.load.id,
     };
     if id.is_empty() {
         return Err("The delivery was made but could not be found again.".into());

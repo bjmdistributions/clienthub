@@ -1078,7 +1078,7 @@ function PalletPanel({ p, detail, standing, floorName, placing, row, onTurn, onT
         <div className="flex flex-wrap gap-2">
           <button onClick={() => onOpen({ ...here, kind: "box" })} className={WH_BTN_SECONDARY}><Plus size={14} /> Add a box</button>
           <button onClick={() => onOpen({ ...here, kind: "loose" })} className={WH_BTN_SECONDARY}>Add loose items</button>
-          {boxes.length > 0 && <button onClick={() => setRestack(true)} className={WH_BTN_SECONDARY}>How the boxes stack</button>}
+          {boxes.length > 0 && <button onClick={() => setRestack(true)} className={WH_BTN_SECONDARY}>Number more boxes</button>}
         </div>
       )}
       <div className="flex flex-wrap gap-2">
@@ -1092,37 +1092,28 @@ function PalletPanel({ p, detail, standing, floorName, placing, row, onTurn, onT
   );
 }
 
-/** R-554: how many boxes, as rows stacked up and boxes in each row. Every box made gets its code. */
-function BoxSetup({ p, have, label, busy, onSave, onCancel, onLoose }: {
+/** R-568: how many boxes go on the pallet, the count alone (Jack: "what if i have 27 boxes"). Every box
+ *  made gets its code to write on it. How they stack is never asked. */
+function BoxSetup({ have, label, busy, onSave, onCancel, onLoose }: {
   p: FloorPallet; have: number; label: string; busy: boolean;
   onSave: (rows: number, perRow: number, count: number) => void; onCancel?: () => void; onLoose: () => void;
 }) {
-  const [rows, setRows] = useState(p.layers ? String(p.layers) : "");
-  const [per, setPer] = useState(p.per_layer ? String(p.per_layer) : "");
-  const [count, setCount] = useState(p.layers && p.per_layer ? String(Math.max(have, p.layers * p.per_layer)) : "");
-  const [auto, setAuto] = useState(!(p.layers && p.per_layer));
-  const r = parseInt(rows, 10), n = parseInt(per, 10), c = parseInt(count, 10);
-  const total = c >= 1 ? c : r * n;
-  const say = !(r >= 1 && n >= 1) ? `Each box gets a code to write on it with a marker: ${label}-1, ${label}-2 and on.`
+  const [count, setCount] = useState(have ? String(have) : "");
+  const total = parseInt(count, 10);
+  const say = !(total >= 1) ? `Each box gets a code to write on it with a marker: ${label}-1, ${label}-2 and on.`
     : total <= have ? `${have} ${have === 1 ? "box is" : "boxes are"} on it already.`
     : have ? `Adds ${total - have} empty ${total - have === 1 ? "box" : "boxes"}, ${label}-${have + 1} to ${label}-${total}.`
     : `${total} empty ${total === 1 ? "box" : "boxes"}, coded ${label}-1 to ${label}-${total}. Write each code on its box.`;
-  const both = (nr: string, np: string) => { if (auto) { const a = parseInt(nr, 10), b = parseInt(np, 10); setCount(a >= 1 && b >= 1 ? String(a * b) : ""); } };
-  const num = (v: string) => v.replace(/\D/g, "");
   return (
     <div className="rounded-lg border border-line bg-surface-2 p-3 space-y-2.5">
       <div>
-        <div className="text-[14px] font-semibold text-ink">How are the boxes stacked?</div>
-        <p className="text-[12px] text-muted mt-0.5">Count the rows of boxes from the floor up, and the boxes in one row. Fewer in all when the top row is short.</p>
+        <div className="text-[14px] font-semibold text-ink">How many boxes go on this pallet?</div>
+        <p className="text-[12px] text-muted mt-0.5">Optional. Number the boxes ahead to write their codes on before filling them, or just receive them one by one.</p>
       </div>
-      <div className="grid grid-cols-3 gap-2">
-        <label className="text-[11.5px] text-muted">Rows high<input value={rows} inputMode="numeric" placeholder="4" onChange={(e) => { const v = num(e.target.value); setRows(v); both(v, per); }} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1 tabular-nums`} /></label>
-        <label className="text-[11.5px] text-muted">Boxes per row<input value={per} inputMode="numeric" placeholder="6" onChange={(e) => { const v = num(e.target.value); setPer(v); both(rows, v); }} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1 tabular-nums`} /></label>
-        <label className="text-[11.5px] text-muted">Boxes in all<input value={count} inputMode="numeric" placeholder="24" onChange={(e) => { const v = num(e.target.value); setCount(v); setAuto(!v); }} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1 tabular-nums`} /></label>
-      </div>
+      <label className="block text-[11.5px] text-muted max-w-[160px]">Boxes<input value={count} inputMode="numeric" placeholder="27" onChange={(e) => setCount(e.target.value.replace(/\D/g, "").slice(0, 3))} style={WH_INPUT_BG} className={`${WH_INPUT} mt-1 tabular-nums`} /></label>
       <p className="text-[12px] text-muted">{say}</p>
       <div className="flex flex-wrap items-center gap-2">
-        <button disabled={busy || !(r >= 1 && n >= 1)} onClick={() => onSave(r, n, total)} className={WH_BTN_PRIMARY}>{busy ? "Saving…" : have ? "Save" : "Make the boxes"}</button>
+        <button disabled={busy || !(total >= 1) || total <= have} onClick={() => onSave(0, 0, total)} className={WH_BTN_PRIMARY}>{busy ? "Saving…" : "Make the boxes"}</button>
         {onCancel && <button onClick={onCancel} className={WH_BTN_SECONDARY}>Cancel</button>}
         {!have && <button onClick={onLoose} className="text-[12.5px] text-muted hover:text-ink-2 ml-1">No boxes, only loose items</button>}
       </div>

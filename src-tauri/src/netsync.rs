@@ -64,15 +64,20 @@ const POLL_SECS: u64 = 20;
 /// "14" adds `manifests`, `manifest_rules` and `manifest_column_maps` (R-564: saved manifests, the
 /// category rules Jack set and how each supplier's columns were read), so a desktop that updates after
 /// a manifest was saved or a rule set on the phone restores them from the server's snapshot.
-const HEAL_GENERATION: &str = "14";
+/// "15" adds `item_codes` (R-568: the company's barcodes, each matched once) to the count check, and
+/// refreshes `warehouse_cases` and `warehouse_loads` for their new columns (`unmatched_json`, the units
+/// scanned into a box and not matched yet, and `unit`), so a desktop that updates after boxes were
+/// scanned on the phone shows what is waiting in them.
+const HEAL_GENERATION: &str = "15";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
 /// workspace. Generations "6" (R-459), "7" (R-464) and "12" (R-551): `freight_bookings`, which only flows server to device, so the
 /// server's copy is always the one to keep. Generation "13" (R-554) adds `warehouse_cases` and
-/// `warehouse_load_pallets`, whose new columns are written on the phone. Empty for a generation that
+/// `warehouse_load_pallets`, whose new columns are written on the phone. Generation "15" (R-568) adds
+/// `warehouse_loads` (its `unit`); `warehouse_cases` gained `unmatched_json`. Empty for a generation that
 /// only widens the tables.
-const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings", "warehouse_cases", "warehouse_load_pallets"];
+const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings", "warehouse_cases", "warehouse_load_pallets", "warehouse_loads"];
 
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
 /// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`
@@ -126,6 +131,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "bills", "bill_payments",
     // Saved manifests, the rules set on them and the column maps (R-564).
     "manifests", "manifest_rules", "manifest_column_maps",
+    // The company's barcodes (R-568).
+    "item_codes",
 ];
 
 pub fn ensure_tables() -> Result<()> {
@@ -1790,6 +1797,8 @@ async fn auto_heal_if_behind() {
         "warehouse_buys", "warehouse_buy_orders",
         // R-564: saved manifests, their rules and column maps (generation 14).
         "manifests", "manifest_rules", "manifest_column_maps",
+        // R-568: the company's barcodes (generation 15).
+        "item_codes",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -3138,10 +3147,23 @@ mod r400_sync_tests {
     /// updates after a phone saved one restores them from the snapshot (generation 14).
     #[test]
     fn r564_manifest_tables_are_snapshotted() {
-        assert_eq!(HEAL_GENERATION, "14", "generation 14 adds the three R-564 tables to the count check");
+        assert!(HEAL_GENERATION.parse::<u32>().unwrap() >= 14, "generation 14 adds the three R-564 tables to the count check");
         for t in ["manifests", "manifest_rules", "manifest_column_maps"] {
             assert!(SNAPSHOT_TABLES.contains(&t), "{t} is org knowledge and must restore");
             assert!(crate::sync::is_synced_table(t), "{t} must be applied");
+        }
+    }
+
+    /// R-568: the company's barcodes restore like the manifests, and the two delivery tables that gained
+    /// columns are refreshed so a box scanned on the phone shows what is waiting in it (generation 15).
+    #[test]
+    fn r568_barcodes_and_scanned_boxes_force_one_more_restore_per_device() {
+        assert_eq!(HEAL_GENERATION, "15", "generation 15 adds item_codes and the R-568 columns");
+        assert!(SNAPSHOT_TABLES.contains(&"item_codes"));
+        assert!(crate::sync::is_synced_table("item_codes"));
+        for t in ["warehouse_cases", "warehouse_loads"] {
+            assert!(HEAL_REFRESH_TABLES.contains(&t), "{t} gained a column in R-568");
+            assert!(SNAPSHOT_TABLES.contains(&t));
         }
     }
 

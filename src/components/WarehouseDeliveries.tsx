@@ -11,10 +11,12 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
 import { api, type ComingBuy, type Invoice } from "../lib/api";
 import { isNoiseItem, parseLineItems } from "../lib/itemSearch";
-import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PickPlan, type PicturesAdded, type WhCase } from "../lib/deliveries";
+import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, unitWord, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PickPlan, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, WAREHOUSE_OPEN_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { standsOn, type DeliveryOpen, type FloorRequest } from "../lib/floor";
 import BuyPanel from "./BuyPanel";
+import WarehouseReceive from "./WarehouseReceive";
+import { waitingUnits } from "../lib/receive";
 import ComingBuys from "./ComingBuys";
 import { canSeePayments } from "../lib/dealPayments";
 import { openBuyInDealFlow } from "../lib/buyLoads";
@@ -72,6 +74,16 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
   const [preview, setPreview] = useState<{ read: ManifestRead; fileName: string; path: string; n: number } | null>(null);
   const [showRemoved, setShowRemoved] = useState(false);
   const [editing, setEditing] = useState(false);
+  // R-568: a delivery with no manifest, received by scanning.
+  const [blank, setBlank] = useState<{ name: string; unit: "pairs" | "units" } | null>(null);
+  const [receiveFirst, setReceiveFirst] = useState(false);
+  const makeBlank = async () => {
+    if (!blank?.name.trim()) { toast("Give the delivery a name.", "error"); return; }
+    try {
+      const d = await api.createWarehouseLoad(blank.name, "", [], { blank: true, unit: blank.unit });
+      setBlank(null); setReceiveFirst(true); setDetail(d); loadList();
+    } catch (e) { toast(String(e), "error"); }
+  };
 
   const loadList = useCallback(() => {
     // R-551: the buys still on the way sit above the deliveries.
@@ -129,7 +141,7 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
       onAsStock={() => { const p = preview.path; setPreview(null); onAsStock(p); }} />;
   }
   if (detail) {
-    return <DeliveryScreen d={detail} merge={merge} setEditing={setEditing} start={start} onFloor={onFloor} openOnBuy={onBuyTab} onBack={() => { setDetail(null); setStart(null); setOnBuyTab(false); loadList(); }} />;
+    return <DeliveryScreen d={detail} merge={merge} setEditing={setEditing} start={start} onFloor={onFloor} openOnBuy={onBuyTab} receiveFirst={receiveFirst} onBack={() => { setDetail(null); setStart(null); setOnBuyTab(false); setReceiveFirst(false); loadList(); }} />;
   }
 
   const live = (list || []).filter((d) => !d.archived), gone = (list || []).filter((d) => d.archived);
@@ -150,8 +162,22 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <p className="text-[12.5px] text-muted max-w-[640px]">Import a delivery's manifest: every page is read, each style and colour with its cost, MSRP and the pairs expected in each size, whichever rows it takes on the sheet. Then add each box onto its pallet as the truck is unloaded.</p>
-        <button onClick={onImport} className={WH_BTN_PRIMARY} title="Or drop the file anywhere on this screen"><FileSpreadsheet size={14} /> Import a sheet</button>
+        <div className="flex gap-2">
+          <button onClick={() => setBlank({ name: "", unit: "pairs" })} className={WH_BTN_SECONDARY}>Receive without a manifest</button>
+          <button onClick={onImport} className={WH_BTN_PRIMARY} title="Or drop the file anywhere on this screen"><FileSpreadsheet size={14} /> Import a sheet</button>
+        </div>
       </div>
+      {blank && (
+        <div className={`${WH_CARD} p-4 mb-4 max-w-[640px]`}>
+          <div className="text-[15px] font-semibold text-ink">A delivery with no manifest</div>
+          <p className="text-[12.5px] text-muted mt-0.5">Scan every tag as it comes off the truck. Each new barcode is matched once to what it is, and known on every delivery after.</p>
+          <div className="flex flex-wrap items-end gap-3 mt-3">
+            <label className="text-[12px] text-muted flex-1 min-w-[220px]">Name<input autoFocus value={blank.name} onChange={(e) => setBlank({ ...blank, name: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") makeBlank(); }} placeholder="For example Toys truck, 29 Oct" style={WH_INPUT_BG} className={`${WH_INPUT} mt-1`} /></label>
+            <Seg size="md" value={blank.unit} onChange={(u) => setBlank({ ...blank, unit: u })} options={[{ key: "pairs", label: "Pairs" }, { key: "units", label: "Units" }]} />
+          </div>
+          <div className="flex gap-2 mt-3"><button onClick={makeBlank} className={WH_BTN_PRIMARY}>Start receiving</button><button onClick={() => setBlank(null)} className={WH_BTN_SECONDARY}>Cancel</button></div>
+        </div>
+      )}
       {coming.length > 0 && (
         <div className="mb-4">
           <ComingBuys items={coming} numbers={numbers} onOpen={(b) => openBuyInDealFlow(b.id)}
@@ -420,8 +446,10 @@ function useOnFloor(loadId: string): Record<number, string> {
   return placed;
 }
 
-function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBuy }: { d: LoadDetail; merge: (d: LoadDetail) => void; setEditing: (b: boolean) => void; onBack: () => void; start: DeliveryOpen | null; onFloor: (r: FloorRequest) => void; openOnBuy?: boolean }) {
+function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBuy, receiveFirst }: { d: LoadDetail; merge: (d: LoadDetail) => void; setEditing: (b: boolean) => void; onBack: () => void; start: DeliveryOpen | null; onFloor: (r: FloorRequest) => void; openOnBuy?: boolean; receiveFirst?: boolean }) {
   const L = d.load, T = d.tally.totals;
+  // R-568: Receive, the scanning screen.
+  const [receiving, setReceiving] = useState(!!receiveFirst);
   const lines = useMemo(() => L.lines ?? [], [L.lines]);
   const idx = useMemo(() => Object.fromEntries(lines.map((l) => [l.id, l])) as Record<string, LoadLine>, [lines]);
   const counts = useMemo(() => Object.fromEntries(d.tally.counts.map((c) => [c.line_id, c])) as Record<string, LineCount>, [d.tally.counts]);
@@ -557,6 +585,8 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
     try { merge(await api.removeWarehouseCase(L.id, draft.id)); setDraft(null); toast("Removed"); } catch (e) { toast(String(e), "error"); }
   };
 
+  if (receiving) return <WarehouseReceive d={d} merge={merge} startPallet={pallet} onClose={() => setReceiving(false)} />;
+
   const cs = pallet != null ? d.cases.filter((c) => c.pallet === pallet).sort((a, b) => (a.kind === "loose" ? 1 : 0) - (b.kind === "loose" ? 1 : 0) || a.number - b.number) : [];
   const ps = pallets.find((p) => p.pallet === pallet);
   const recentLocs = [...new Set([...pallets.map((p) => p.location).filter(Boolean), ...(d.recent_locations ?? [])])].filter((l) => l !== ps?.location).slice(0, 10);
@@ -576,12 +606,14 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
             </div>
           ) : <h2 className="text-[18px] font-semibold text-ink tracking-tight">{L.name}</h2>}
           <p className="text-[12px] text-muted mt-0.5 tabular-nums">
-            <span className="text-ink-2 font-medium">{n0(T.received)}</span> of {n0(T.expected)} pairs in · {many(T.cases, "box", "boxes")} on {many(pallets.length, "pallet", "pallets")}
+            <span className="text-ink-2 font-medium">{n0(T.received)}</span> of {n0(T.expected)} {unitWord(L)} in · {many(T.cases, "box", "boxes")} on {many(pallets.length, "pallet", "pallets")}
+            {(T.unmatched ?? 0) > 0 && <> · {n0(T.unmatched ?? 0)} waiting to be matched</>}
             {T.received > 0 && <> · {money(T.cost)} cost, {money(T.msrp)} MSRP in</>}
           </p>
           {L.archived && <p className="text-[12px] text-warning-ink mt-1">This delivery was removed. Bring it back to add cases.</p>}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {live && <button onClick={() => { setDraft(null); setSaved(null); setReceiving(true); }} className={WH_BTN_PRIMARY} title="Scan each tag into its box, box after box">Receive</button>}
           <Seg size="md" value={tab} onChange={setTab} options={[{ key: "pallets", label: "Pallets" }, { key: "check", label: "Against the manifest" }, { key: "sell", label: "Sell" }, { key: "buy", label: "Buy" }]} />
           {renaming == null && <button onClick={() => setRenaming(L.name)} className={WH_BTN_SECONDARY}>Rename</button>}
           {live && <button onClick={() => setAddingLine("")} className={WH_BTN_SECONDARY}>Add a style not on the manifest</button>}
@@ -657,7 +689,8 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
                 )}
                 {cs.map((c) => (
                   <button key={c.id} onClick={() => live && startCase(c)} disabled={!live} className={`${WH_CARD} w-full text-left p-3.5 hover:border-accent/30 transition-colors disabled:hover:border-line`}>
-                    <div className="flex justify-between items-baseline gap-3"><span className="text-[13px] font-semibold text-ink">{boxName(c)}</span>{c.contents.length ? <span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(c.contents.reduce((a, x) => a + x.pairs, 0))}</span> {c.contents.reduce((a, x) => a + x.pairs, 0) === 1 ? "pair" : "pairs"}</span> : <StatusPill tone="neutral">Empty</StatusPill>}</div>
+                    <div className="flex justify-between items-baseline gap-3"><span className="text-[13px] font-semibold text-ink">{boxName(c)}</span>{c.contents.length ? <span className="text-[12px] text-muted tabular-nums"><span className="text-ink font-medium">{n0(c.contents.reduce((a, x) => a + x.pairs, 0))}</span> {unitWord(L, c.contents.reduce((a, x) => a + x.pairs, 0))}</span> : !waitingUnits(c.unmatched) && <StatusPill tone="neutral">Empty</StatusPill>}</div>
+                    {waitingUnits(c.unmatched) > 0 && <div className="text-[12px] text-muted mt-1">{n0(waitingUnits(c.unmatched))} waiting to be matched</div>}
                     {byStyle(c.contents).map((g) => {
                       const l = idx[g.line_id];
                       return <div key={g.line_id} className="text-[12px] text-muted mt-1"><span className="text-ink-2 font-medium">{l ? lineTitle(l) : "A style no longer listed"}</span>{l?.description ? ` ${l.description}` : ""}: {g.sizes.map(([s, n]) => `${s} × ${n}`).join(" · ")}</div>;

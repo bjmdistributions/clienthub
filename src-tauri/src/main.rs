@@ -1424,6 +1424,8 @@ fn main() {
             warehouse_loads::start_load_pallet,
             warehouse_loads::save_load_pallet,
             warehouse_loads::set_pallet_boxes,
+            warehouse_loads::get_load_codes,
+            warehouse_loads::match_load_code,
             warehouse_floors::list_warehouse_floors,
             warehouse_floors::create_warehouse_floor,
             warehouse_floors::update_warehouse_floor,

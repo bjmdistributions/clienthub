@@ -1621,9 +1621,9 @@ mod tests {
     async fn a_buy_recorded_late_costs_the_orders_already_sold_and_put_back_returns_the_share() {
         let _db = crate::db::init_test_store();
         let line = LoadLine { id: "a".into(), brand: "Acme".into(), style: "K1".into(), cost: 10.0, sizes: vec![SizeQty { size: "7".into(), qty: 10 }], ..Default::default() };
-        let d = create_warehouse_load("Shoe truck".into(), "t.xlsx".into(), vec![line]).await.unwrap();
+        let d = create_warehouse_load("Shoe truck".into(), "t.xlsx".into(), vec![line], None, None).await.unwrap();
         let load = d.load.id.clone();
-        save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 10 }], None, None, None, None).await.unwrap();
+        save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 10 }], None, None, None, None, None, None, None).await.unwrap();
         invoice("ia", "A-1", 50.0);
         invoice("ib", "B-1", 90.0);
         take_load_pairs(load.clone(), Some("ia".into()), Some("A-1".into()), None, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs: 4 }], None, None).await.unwrap();
@@ -1724,9 +1724,9 @@ mod tests {
     async fn delivery(name: &str, pairs: i64) -> String {
         use crate::case_core::{CaseLine, LoadLine, SizeQty};
         let line = LoadLine { id: "a".into(), brand: "Acme".into(), style: "K1".into(), cost: 10.0, sizes: vec![SizeQty { size: "7".into(), qty: pairs }], ..Default::default() };
-        let d = create_warehouse_load(name.into(), "t.xlsx".into(), vec![line]).await.unwrap();
+        let d = create_warehouse_load(name.into(), "t.xlsx".into(), vec![line], None, None).await.unwrap();
         let load = d.load.id.clone();
-        save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs }], None, None, None, None).await.unwrap();
+        save_warehouse_case(load.clone(), None, 1, vec![CaseLine { line_id: "a".into(), size: "7".into(), pairs }], None, None, None, None, None, None, None).await.unwrap();
         load
     }
 

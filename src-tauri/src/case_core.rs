@@ -127,11 +127,20 @@ pub struct Case {
     /// changed by the app afterwards, so a moved box keeps it. "" on a box made before codes.
     #[serde(default)]
     pub code: String,
+    /// R-568: units scanned into it whose barcode is not matched to a style yet, by barcode. They
+    /// are not in `contents`, so received, stock and selling never count them until matched.
+    #[serde(default)]
+    pub unmatched: BTreeMap<String, i64>,
 }
 
 impl Case {
     pub fn is_loose(&self) -> bool {
         self.kind == "loose"
+    }
+
+    /// R-568: units waiting on a barcode match.
+    pub fn unmatched_units(&self) -> i64 {
+        self.unmatched.values().map(|n| (*n).max(0)).sum()
     }
 }
 
@@ -1327,6 +1336,15 @@ pub fn group_counts(lines: &[LoadLine]) -> Vec<GroupCount> {
 /// Lines as they will be stored: trimmed, a style each, sizes named once, ids unique. The cap keeps
 /// one delivery row (all its lines in one column) well inside a sync event.
 pub fn clean_lines(lines: Vec<LoadLine>) -> Result<Vec<LoadLine>, String> {
+    let out = clean_lines_or_none(lines)?;
+    if out.is_empty() {
+        return Err("There are no lines to save.".into());
+    }
+    Ok(out)
+}
+
+/// R-568: the same, for a delivery received with no manifest, which may start with no lines.
+pub fn clean_lines_or_none(lines: Vec<LoadLine>) -> Result<Vec<LoadLine>, String> {
     if lines.len() > MAX_LINES {
         return Err(format!("More than {MAX_LINES} lines on one delivery."));
     }
@@ -1368,9 +1386,6 @@ pub fn clean_lines(lines: Vec<LoadLine>) -> Result<Vec<LoadLine>, String> {
         *k += 1;
         l.id = if *k == 1 { base } else { format!("{base}-{k}") };
         out.push(l);
-    }
-    if out.is_empty() {
-        return Err("There are no lines to save.".into());
     }
     Ok(out)
 }
@@ -1428,6 +1443,232 @@ pub fn clean_filling(lines: &[LoadLine], contents: &[CaseLine]) -> Result<Vec<Ca
 /// (the one being moved).
 pub fn next_number(cases: &[Case], pallet: i64, skip_id: &str) -> i64 {
     cases.iter().filter(|c| c.pallet == pallet && c.id != skip_id && !c.is_loose()).map(|c| c.number).max().unwrap_or(0) + 1
+}
+
+// ---------------------------------------------------------------------------------------
+// Barcodes (R-568): a tag scanned is one unit; its barcode is matched to a style once
+// ---------------------------------------------------------------------------------------
+//
+// A company's barcodes live in `item_codes`, one row per barcode: what it is (brand, style, colour,
+// size), however it became known (a sheet's column, a barcode list, or matched by hand). It belongs
+// to the company, not to a delivery, so a barcode matched on one truck is known on every truck after.
+// A scan whose barcode is not known yet still counts: it waits in its box's `unmatched` until it is
+// matched, and one match moves every unit of that barcode, in every box, to its style and size.
+
+/// The longest barcode kept (a Code 128 can carry text; a UPC is 12 digits).
+pub const MAX_BARCODE: usize = 48;
+/// Barcodes one box can hold unmatched at once.
+pub const MAX_UNMATCHED: usize = 500;
+/// Characters a scan may hold: printable ASCII with no spaces.
+fn barcode_char(c: char) -> bool {
+    c.is_ascii_graphic()
+}
+
+/// A barcode as stored. Digits only, 12 to 14 long (UPC-A, EAN-13, GTIN-14) are written as 14 so one
+/// item's UPC and EAN agree. A 14-digit code that does not start with 0 names a carton of items, not
+/// an item, and is refused. Anything else (a Code 128 with letters, an EAN-8) is kept as scanned.
+pub fn clean_barcode(s: &str) -> Result<String, String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Err("That barcode is empty.".into());
+    }
+    if t.chars().count() > MAX_BARCODE || !t.chars().all(barcode_char) {
+        return Err("That is not a barcode Ecliptr can keep.".into());
+    }
+    if t.chars().all(|c| c.is_ascii_digit()) && (12..=14).contains(&t.len()) {
+        if t.len() == 14 && !t.starts_with('0') {
+            return Err("That is a carton's barcode, not an item's. Scan the tags inside.".into());
+        }
+        return Ok(format!("{t:0>14}"));
+    }
+    Ok(t.to_string())
+}
+
+/// A barcode as people read it: a stored 14-digit code without its leading zeros back to 12 or 13.
+pub fn show_barcode(code: &str) -> String {
+    if code.len() == 14 && code.chars().all(|c| c.is_ascii_digit()) {
+        let t = code.trim_start_matches('0');
+        return format!("{t:0>12}");
+    }
+    code.to_string()
+}
+
+/// Units waiting on a match, checked: real barcodes, merged, nothing at or below 0.
+pub fn clean_unmatched(m: &BTreeMap<String, i64>) -> Result<BTreeMap<String, i64>, String> {
+    let mut out: BTreeMap<String, i64> = BTreeMap::new();
+    for (code, n) in m {
+        if *n < 0 {
+            return Err("A barcode cannot hold fewer than 0.".into());
+        }
+        if *n == 0 {
+            continue;
+        }
+        *out.entry(clean_barcode(code)?).or_insert(0) += n;
+    }
+    if out.len() > MAX_UNMATCHED {
+        return Err(format!("More than {MAX_UNMATCHED} barcodes waiting in one box."));
+    }
+    Ok(out)
+}
+
+/// A box's contents and unmatched units together stay under the cap for one box.
+pub fn check_case_total(contents: &[CaseLine], unmatched: &BTreeMap<String, i64>) -> Result<(), String> {
+    let total = contents.iter().map(|c| c.pairs.max(0)).sum::<i64>() + unmatched.values().map(|n| (*n).max(0)).sum::<i64>();
+    if total > MAX_PAIRS_PER_CASE {
+        return Err(format!("More than {MAX_PAIRS_PER_CASE} in one box."));
+    }
+    Ok(())
+}
+
+/// One barcode, as the company knows it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ItemCode {
+    #[serde(default)]
+    pub id: String,
+    pub code: String,
+    #[serde(default)]
+    pub brand: String,
+    #[serde(default)]
+    pub style: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub color_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub size: String,
+    /// "sheet", "list" or "matched".
+    #[serde(default)]
+    pub how: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// The words of a colour or a style, in any order: "CHESTNUT WAXED" and "Waxed Chestnut" agree.
+fn word_set(s: &str) -> BTreeSet<String> {
+    norm(s).split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect()
+}
+
+/// A style code compared without case, spaces or punctuation: "MUM1913OA" = "mum 1913-oa".
+fn style_key(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+
+fn same_color(item: &ItemCode, l: &LoadLine) -> bool {
+    let codes = [item.color.trim(), item.color_name.trim()];
+    if codes.iter().all(|c| c.is_empty()) {
+        return l.color.trim().is_empty() && l.color_name.trim().is_empty();
+    }
+    codes.iter().filter(|c| !c.is_empty()).any(|c| {
+        (!l.color.trim().is_empty() && c.eq_ignore_ascii_case(l.color.trim()))
+            || [l.color.as_str(), l.color_name.as_str()].iter().any(|lc| !word_set(lc).is_empty() && word_set(lc) == word_set(c))
+    })
+}
+
+/// The size of `line` that `size` names: the same text, else the same number (11 = 11.0).
+pub fn line_size(line: &LoadLine, size: &str) -> Option<String> {
+    let s = one_line(size);
+    if let Some(z) = line.sizes.iter().find(|z| z.size.eq_ignore_ascii_case(&s)) {
+        return Some(z.size.clone());
+    }
+    let n = size_number(&s)?;
+    line.sizes.iter().find(|z| size_number(&z.size) == Some(n)).map(|z| z.size.clone())
+}
+
+/// The line and size of a delivery a barcode is: the same style and colour (colour by its code or
+/// by its words in any order), and that size on its scale. None when nothing, or more than one
+/// line, fits: a barcode is never put on a guess.
+pub fn find_line(lines: &[LoadLine], item: &ItemCode) -> Option<(String, String)> {
+    let key = style_key(&item.style);
+    if key.is_empty() {
+        return None;
+    }
+    let fits: Vec<&LoadLine> = lines.iter().filter(|l| style_key(&l.style) == key && same_color(item, l)).collect();
+    let with_size: Vec<(&LoadLine, String)> = fits.iter().filter_map(|l| line_size(l, &item.size).map(|z| (*l, z))).collect();
+    match with_size.as_slice() {
+        [(l, z)] => Some((l.id.clone(), z.clone())),
+        _ => None,
+    }
+}
+
+/// What a barcode is on one delivery, for the receiving screen: the line and size it lands on, or
+/// none (not known, or known and not on this delivery), with how to name it either way.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Resolved {
+    pub code: String,
+    /// "" when it does not land on a line of this delivery.
+    pub line_id: String,
+    pub size: String,
+    /// The item as the company knows it: brand, style, colour, size.
+    pub item: ItemCode,
+}
+
+/// Every barcode the company knows, as it lands on this delivery.
+pub fn resolve_codes(lines: &[LoadLine], codes: &[ItemCode]) -> Vec<Resolved> {
+    codes
+        .iter()
+        .map(|c| {
+            let (line_id, size) = find_line(lines, c).unwrap_or_default();
+            Resolved { code: c.code.clone(), line_id, size, item: c.clone() }
+        })
+        .collect()
+}
+
+/// The line and size an item lands on, adding it when the delivery does not have it: a new size on
+/// a line of the same style and colour, else a new line "Added by scan" (`new_id` names it). The
+/// lines are changed in place; the answer says which line and size, and whether anything changed.
+pub fn place_item(lines: &mut Vec<LoadLine>, item: &ItemCode, new_id: &str) -> Result<(String, String, bool), String> {
+    if style_key(&item.style).is_empty() {
+        return Err("Say the style or name.".into());
+    }
+    let size = one_line(&item.size);
+    if size.is_empty() {
+        return Err("Pick its size, or One size.".into());
+    }
+    if let Some((id, z)) = find_line(lines, item) {
+        return Ok((id, z, false));
+    }
+    let key = style_key(&item.style);
+    if let Some(l) = lines.iter_mut().find(|l| style_key(&l.style) == key && same_color(item, l)) {
+        l.sizes.push(SizeQty { size: size.clone(), qty: 0 });
+        return Ok((l.id.clone(), size, true));
+    }
+    if lines.len() >= MAX_LINES {
+        return Err(format!("More than {MAX_LINES} lines on one delivery."));
+    }
+    lines.push(LoadLine {
+        id: new_id.to_string(),
+        brand: one_line(&item.brand),
+        style: one_line(&item.style),
+        color: one_line(&item.color),
+        color_name: one_line(&item.color_name),
+        description: one_line(&item.description),
+        sizes: vec![SizeQty { size: size.clone(), qty: 0 }],
+        source: "Added by scan".into(),
+        ..Default::default()
+    });
+    Ok((new_id.to_string(), size, true))
+}
+
+/// The boxes a match changes: every unit of `code` waiting in a box moves into its contents as
+/// `line_id` and `size`. Boxes with none of it are left out. Matching twice changes nothing.
+pub fn match_cases(cases: &[Case], code: &str, line_id: &str, size: &str) -> Vec<Case> {
+    let mut out = Vec::new();
+    for c in cases {
+        let n = c.unmatched.get(code).copied().unwrap_or(0);
+        if n <= 0 {
+            continue;
+        }
+        let mut c = c.clone();
+        c.unmatched.remove(code);
+        match c.contents.iter_mut().find(|x| x.line_id == line_id && x.size == size) {
+            Some(x) => x.pairs += n,
+            None => c.contents.push(CaseLine { line_id: line_id.to_string(), size: size.to_string(), pairs: n }),
+        }
+        out.push(c);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1531,6 +1772,18 @@ pub fn check_box_setup(label: &str, rows: i64, per_row: i64, count: i64, have: u
     Ok(())
 }
 
+/// R-568: whether a pallet can have `count` boxes numbered ahead, by the count alone. Never fewer
+/// boxes than are on it.
+pub fn check_box_count(label: &str, count: i64, have: usize) -> Result<(), String> {
+    if !(1..=MAX_BOXES).contains(&count) {
+        return Err(format!("Say how many boxes, 1 to {MAX_BOXES}."));
+    }
+    if (count as usize) < have {
+        return Err(format!("{label} already has {have} boxes. Remove the extra boxes first."));
+    }
+    Ok(())
+}
+
 /// One pallet as the screens show it: its record (when there is one) and what is on it.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PalletView {
@@ -1546,6 +1799,8 @@ pub struct PalletView {
     /// Pairs on the pallet with no box.
     pub loose: i64,
     pub pairs: i64,
+    /// R-568: units scanned onto it whose barcode is not matched yet (not in `pairs`).
+    pub unmatched: i64,
     pub styles: usize,
     pub cost: f64,
     pub msrp: f64,
@@ -1574,6 +1829,7 @@ pub fn pallet_views(records: &[PalletRecord], sums: &[PalletSum]) -> Vec<PalletV
                 filled: s.map(|s| s.filled).unwrap_or(0),
                 loose: s.map(|s| s.loose).unwrap_or(0),
                 pairs: s.map(|s| s.pairs).unwrap_or(0),
+                unmatched: s.map(|s| s.unmatched).unwrap_or(0),
                 styles: s.map(|s| s.styles).unwrap_or(0),
                 cost: s.map(|s| s.cost).unwrap_or(0.0),
                 msrp: s.map(|s| s.msrp).unwrap_or(0.0),
@@ -1631,6 +1887,8 @@ pub struct PalletSum {
     pub pairs: i64,
     /// Pairs on the pallet with no box (R-535).
     pub loose: i64,
+    /// R-568: units scanned onto it whose barcode is not matched yet (not in `pairs`).
+    pub unmatched: i64,
     pub styles: usize,
     pub cost: f64,
     pub msrp: f64,
@@ -1649,6 +1907,8 @@ pub struct Totals {
     pub pallets: usize,
     pub cost: f64,
     pub msrp: f64,
+    /// R-568: units scanned whose barcode is not matched yet. Not in `received` until matched.
+    pub unmatched: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1664,10 +1924,11 @@ pub fn tally(lines: &[LoadLine], cases: &[Case]) -> Tally {
     let mut on: Vec<Vec<i64>> = vec![Vec::new(); lines.len()];
     let mut pallets: BTreeMap<i64, (PalletSum, Vec<usize>)> = BTreeMap::new();
     for c in cases {
-        let p = pallets.entry(c.pallet).or_insert((PalletSum { pallet: c.pallet, cases: 0, filled: 0, pairs: 0, loose: 0, styles: 0, cost: 0.0, msrp: 0.0 }, Vec::new()));
+        let p = pallets.entry(c.pallet).or_insert((PalletSum { pallet: c.pallet, cases: 0, filled: 0, pairs: 0, loose: 0, unmatched: 0, styles: 0, cost: 0.0, msrp: 0.0 }, Vec::new()));
+        p.0.unmatched += c.unmatched_units();
         if !c.is_loose() {
             p.0.cases += 1;
-            if c.contents.iter().any(|x| x.pairs > 0) {
+            if c.contents.iter().any(|x| x.pairs > 0) || c.unmatched_units() > 0 {
                 p.0.filled += 1;
             }
         }
@@ -1711,6 +1972,7 @@ pub fn tally(lines: &[LoadLine], cases: &[Case]) -> Tally {
         .collect();
     totals.expected = counts.iter().map(|c| c.expected).sum();
     totals.received = counts.iter().map(|c| c.received).sum();
+    totals.unmatched = cases.iter().map(Case::unmatched_units).sum();
     let pallets = pallets
         .into_values()
         .map(|(mut p, styles)| {
@@ -2700,6 +2962,136 @@ mod tests {
         assert!(check_box_setup("A3", 0, 6, 6, 0).is_err());
         assert!(check_box_setup("A3", 3, 0, 1, 0).is_err());
         assert!(check_box_setup("A3", 30, 40, 1200, 0).unwrap_err().contains("at most 300"));
+    }
+
+    /// R-568: the Lamo line his label belongs to, as his manifest reads it (Lamo Hash), and two
+    /// neighbours a guess could land on.
+    fn lamo() -> Vec<LoadLine> {
+        let line = |id: &str, style: &str, color: &str, name: &str, sizes: &str| LoadLine {
+            id: id.into(),
+            brand: "LA".into(),
+            style: style.into(),
+            color: color.into(),
+            color_name: name.into(),
+            description: "Harrison Moc".into(),
+            sizes: parse_sizes(sizes),
+            ..Default::default()
+        };
+        vec![
+            line("wcnt", "MUM1913OA", "WCNT", "Waxed Chestnut", "9, 10, 11, 12, 13"),
+            line("hky", "MUM1913OA", "HKY", "Hickory", "9, 10, 11, 12, 13"),
+            line("ecnt", "EM1913", "CNT", "Chestnut", "7, 8, 9, 10"),
+        ]
+    }
+
+    fn label(code: &str, style: &str, color: &str, size: &str) -> ItemCode {
+        ItemCode { code: code.into(), style: style.into(), color: color.into(), size: size.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn a_barcode_is_kept_one_way_so_its_upc_and_ean_agree() {
+        // His label's UPC, as a scanner sends it as UPC-A and as EAN-13.
+        assert_eq!(clean_barcode("883139385961").unwrap(), "00883139385961");
+        assert_eq!(clean_barcode(" 0883139385961\n").unwrap(), "00883139385961");
+        assert_eq!(clean_barcode("00883139385961").unwrap(), "00883139385961");
+        assert_eq!(show_barcode("00883139385961"), "883139385961");
+        // A carton's GTIN-14 names a case of items, never an item.
+        assert!(clean_barcode("10883139385968").unwrap_err().contains("carton"));
+        // A Code 128 with letters, and an EAN-8, are kept as scanned.
+        assert_eq!(clean_barcode("LAMO-11-WCNT").unwrap(), "LAMO-11-WCNT");
+        assert_eq!(clean_barcode("96385074").unwrap(), "96385074");
+        assert!(clean_barcode("").is_err());
+        assert!(clean_barcode("two words").is_err());
+        assert!(clean_barcode(&"9".repeat(60)).is_err());
+    }
+
+    #[test]
+    fn a_label_finds_its_line_by_style_colour_words_and_size_and_never_guesses() {
+        let lines = lamo();
+        // The label says MUM1913OA/CHESTNUT WAXED, size 11; the manifest says WCNT, Waxed Chestnut.
+        assert_eq!(find_line(&lines, &label("x", "MUM1913OA", "CHESTNUT WAXED", "11")), Some(("wcnt".into(), "11".into())));
+        assert_eq!(find_line(&lines, &label("x", "mum 1913-oa", "wcnt", "11.0")), Some(("wcnt".into(), "11".into())));
+        assert_eq!(find_line(&lines, &label("x", "MUM1913OA", "Hickory", "9")), Some(("hky".into(), "9".into())));
+        // A size the line does not carry, a colour it does not have, a style it does not have: none.
+        assert_eq!(find_line(&lines, &label("x", "MUM1913OA", "CHESTNUT WAXED", "14")), None);
+        assert_eq!(find_line(&lines, &label("x", "MUM1913OA", "Black", "11")), None);
+        assert_eq!(find_line(&lines, &label("x", "MUM1913", "CHESTNUT WAXED", "11")), None);
+        // No colour named, and the style has two colours: never a guess.
+        assert_eq!(find_line(&lines, &label("x", "MUM1913OA", "", "11")), None);
+        let r = resolve_codes(&lines, &[label("a", "MUM1913OA", "CHESTNUT WAXED", "11"), label("b", "ZZ1", "Red", "M")]);
+        assert_eq!((r[0].line_id.as_str(), r[0].size.as_str(), r[1].line_id.as_str()), ("wcnt", "11", ""));
+    }
+
+    #[test]
+    fn an_unknown_barcode_counts_in_its_box_and_one_match_moves_it_everywhere() {
+        let lines = lamo();
+        let code = clean_barcode("883139385961").unwrap();
+        let mut waiting = BTreeMap::new();
+        waiting.insert("883139385961".to_string(), 3);
+        waiting.insert("LAMO-X".to_string(), 0);
+        let w = clean_unmatched(&waiting).unwrap();
+        assert_eq!(w.get(&code), Some(&3));
+        assert_eq!(w.len(), 1);
+        let cases = vec![
+            Case { id: "b1".into(), pallet: 1, number: 1, contents: vec![cl("wcnt", "11", 2)], unmatched: w.clone(), ..Default::default() },
+            Case { id: "b2".into(), pallet: 1, number: 2, unmatched: w.clone(), ..Default::default() },
+            Case { id: "b3".into(), pallet: 2, number: 1, contents: vec![cl("hky", "9", 1)], ..Default::default() },
+        ];
+        // Waiting units are on the pallet and the delivery, never in received or stock.
+        let t = tally(&lines, &cases);
+        assert_eq!((t.totals.received, t.totals.unmatched, t.pallets[0].unmatched, t.pallets[0].filled), (3, 6, 6, 2));
+        assert_eq!(stock(&lines, &cases, &[]).left, 3);
+        // One match moves every unit of that barcode, in every box, and only those boxes.
+        let moved = match_cases(&cases, &code, "wcnt", "11");
+        assert_eq!(moved.len(), 2);
+        assert_eq!(moved[0].contents, vec![cl("wcnt", "11", 5)]);
+        assert_eq!(moved[1].contents, vec![cl("wcnt", "11", 3)]);
+        assert!(moved.iter().all(|c| c.unmatched.is_empty()));
+        let after: Vec<Case> = cases.iter().map(|c| moved.iter().find(|m| m.id == c.id).cloned().unwrap_or_else(|| c.clone())).collect();
+        let t = tally(&lines, &after);
+        assert_eq!((t.totals.received, t.totals.unmatched), (9, 0));
+        // Matching again changes nothing.
+        assert!(match_cases(&after, &code, "wcnt", "11").is_empty());
+        // A box holds at most the cap, matched and waiting together.
+        let mut big = BTreeMap::new();
+        big.insert(code.clone(), MAX_PAIRS_PER_CASE);
+        assert!(check_case_total(&[cl("wcnt", "11", 1)], &big).is_err());
+        assert!(check_case_total(&[], &big).is_ok());
+        assert!(clean_unmatched(&[("x".to_string(), -1)].into_iter().collect()).is_err());
+        // An old box with no waiting units reads as none.
+        let old: Case = serde_json::from_str(r#"{"id":"x","pallet":1,"number":1}"#).unwrap();
+        assert!(old.unmatched.is_empty());
+    }
+
+    #[test]
+    fn a_known_item_not_on_the_delivery_is_added_as_a_size_or_a_line() {
+        let mut lines = lamo();
+        // Already there: nothing changes.
+        assert_eq!(place_item(&mut lines, &label("x", "MUM1913OA", "Waxed Chestnut", "10"), "n1").unwrap(), ("wcnt".into(), "10".into(), false));
+        // A size the line lacks is added to it.
+        assert_eq!(place_item(&mut lines, &label("x", "MUM1913OA", "Waxed Chestnut", "14"), "n1").unwrap(), ("wcnt".into(), "14".into(), true));
+        assert!(lines[0].sizes.iter().any(|z| z.size == "14" && z.qty == 0));
+        // A style the delivery does not have is a new line, added by scan, expecting nothing.
+        let leo = ItemCode { brand: "Oomphies".into(), style: "Leo".into(), color_name: "Grey".into(), size: "4C".into(), ..Default::default() };
+        let (id, z, changed) = place_item(&mut lines, &leo, "n1").unwrap();
+        assert_eq!((id.as_str(), z.as_str(), changed), ("n1", "4C", true));
+        assert_eq!(lines.last().unwrap().source, "Added by scan");
+        assert_eq!(lines.last().unwrap().expected(), 0);
+        assert!(place_item(&mut lines, &label("x", "", "Red", "M"), "n2").is_err());
+        assert!(place_item(&mut lines, &label("x", "Q1", "Red", " "), "n2").is_err());
+        assert!(clean_lines(lines).is_ok());
+    }
+
+    #[test]
+    fn a_delivery_with_no_manifest_may_start_empty_and_a_pallet_takes_a_plain_box_count() {
+        assert!(clean_lines(vec![]).is_err());
+        assert_eq!(clean_lines_or_none(vec![]).unwrap(), vec![]);
+        // 27 boxes is 27 boxes: no rows, no boxes per row.
+        assert!(check_box_count("A3", 27, 0).is_ok());
+        assert!(check_box_count("A3", 1, 0).is_ok());
+        assert!(check_box_count("A3", 0, 0).is_err());
+        assert!(check_box_count("A3", MAX_BOXES + 1, 0).is_err());
+        assert!(check_box_count("A3", 5, 8).unwrap_err().contains("A3 already has 8 boxes"));
     }
 
     #[test]

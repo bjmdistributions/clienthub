@@ -20,16 +20,26 @@ export type PickPlan = { boxes: PickBox[]; short: TakeShort[]; unnamed: CaseLine
 /** A box, or (kind "loose", number 0) items on the pallet with no box (R-535). */
 export type WhCase = { id: string; pallet: number; number: number; contents: CaseLine[]; notes: string; created_at: string; updated_at: string; kind?: string;
   /** R-554: the code written on the carton in sharpie (A3-7); "" on a box made before codes. */
-  code?: string };
+  code?: string;
+  /** R-568: units scanned into it whose barcode is not matched yet, by barcode. */
+  unmatched?: Record<string, number> };
 /** A pallet as the screens show it: its record (where it stands, full or not) and what is on it (R-535). */
 export type PalletView = { pallet: number; location: string; closed: boolean; note: string; recorded: boolean; boxes: number; loose: number; pairs: number; styles: number; cost: number; msrp: number;
   /** R-554: boxes with at least one pair in them, and how the boxes stack (rows of per_layer; 0 when not said). */
-  filled?: number; layers?: number; per_layer?: number };
+  filled?: number; layers?: number; per_layer?: number;
+  /** R-568: units scanned onto it whose barcode is not matched yet (not in `pairs`). */
+  unmatched?: number };
 export type SizeCount = { size: string; expected: number; received: number };
 export type LineCount = { line_id: string; sizes: SizeCount[]; expected: number; received: number; pallets: number[] };
 export type PalletSum = { pallet: number; cases: number; pairs: number; styles: number; cost: number; msrp: number };
-export type LoadTotals = { lines: number; expected: number; received: number; short: number; over: number; cases: number; pallets: number; cost: number; msrp: number };
-export type LoadHead = { id: string; name: string; source: string; notes: string; archived: boolean; created_at: string; updated_at: string; lines?: LoadLine[] };
+export type LoadTotals = { lines: number; expected: number; received: number; short: number; over: number; cases: number; pallets: number; cost: number; msrp: number;
+  /** R-568: units scanned whose barcode is not matched yet. Not in `received` until matched. */
+  unmatched?: number };
+export type LoadHead = { id: string; name: string; source: string; notes: string; archived: boolean; created_at: string; updated_at: string; lines?: LoadLine[];
+  /** R-568: "units" when the delivery counts units, else pairs. */
+  unit?: string };
+/** R-568: what a delivery counts, said plainly: "pairs" or "units", "pair" or "unit". */
+export const unitWord = (h: { unit?: string } | undefined, n = 2) => (h?.unit === "units" ? (n === 1 ? "unit" : "units") : (n === 1 ? "pair" : "pairs"));
 export type LoadDetail = {
   load: LoadHead; cases: WhCase[]; tally: { counts: LineCount[]; pallets: PalletSum[]; totals: LoadTotals };
   outs: LoadOut[]; stock: Stock; short?: TakeShort[];
