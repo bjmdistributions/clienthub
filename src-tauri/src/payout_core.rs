@@ -618,8 +618,8 @@ fn plain_number(x: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// 200 -> "$200", 1250.5 -> "$1,250.50".
-fn dollars(x: f64) -> String {
+/// 200 -> "$200", 1250.5 -> "$1,250.50". Every screen and note writes money this way.
+pub fn dollars(x: f64) -> String {
     let c = cents(x.clamp(-MAX_MONEY, MAX_MONEY)).abs();
     let whole = (c / 100).to_string();
     let mut grouped = String::new();
