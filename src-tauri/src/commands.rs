@@ -5827,7 +5827,9 @@ pub async fn remove_supplier_payment(id: String, payment_id: String) -> Result<(
     if df.stage == "complete" { return Err("Cannot modify completed deal flow".into()); }
 
     let mut payments = df.supplier_payments.clone();
-    if payments.iter().any(|p| p.id == payment_id && is_buy_line(p)) { return Err(BUY_LINE_LOCKED.into()); }
+    // R-576: removing a buy's line puts the order's pairs back on its delivery, which takes the line off (Jack: "back on
+    // the shelf"). Anything else about the line is still changed on the buy.
+    if payments.iter().any(|p| p.id == payment_id && is_buy_line(p)) { return crate::warehouse_buys::remove_buy_line(&payment_id).await; }
     if let Some(line) = payments.iter().find(|p| p.id == payment_id && is_resold_line(p)).cloned() {
         // R-438: removing either half of a resold pair undoes the whole move (the phone in the
         // App Store has a Remove button on these lines and no Undo); a half on its own never goes.
@@ -6714,7 +6716,7 @@ pub(crate) fn is_buy_line(p: &SupplierPayment) -> bool {
 
 /// Shown verbatim on every surface (identical to the server's).
 pub(crate) const BUY_LINE_LOCKED: &str =
-    "This cost comes from a buy in the Warehouse. Change it on that product's or delivery's Buy tab.";
+    "This cost comes from a buy in the Warehouse. Change it on that product's Buy tab or that delivery's Cost and sales.";
 
 const RESOLD_LINE_LOCKED: &str =
     "This cost is one half of a resold move, so it cannot be changed on its own. Remove it to undo the whole move, or use Undo on the deal's refund step.";

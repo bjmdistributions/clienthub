@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { api, type BuyBrief, type Invoice } from "../lib/api";
 import { parseLineItems } from "../lib/itemSearch";
 import { isShippingLine } from "../lib/format";
+import { perUnit } from "../lib/buyLoads";
 import type { CaseLine, LoadDetail, LoadSummary } from "../lib/deliveries";
 import { toast } from "./Toast";
 import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0 } from "./warehouseUi";
@@ -107,12 +108,12 @@ export default function LinkDelivery({ loadId, invoice, exclude, pick, onLinked,
       const note = names ? `Linked: ${names}`.slice(0, 200) : "Linked";
       const d = await api.takeLoadPairs(lid, { invoiceId: inv.id, reference: inv.number, note, takes: by === "pick" && pick ? pick.takes : [], over: true, pairs: by === "count" ? count : undefined });
       onLinked(d, by === "pick");
-      if (!buy) { toast(`${inv.number} linked: ${n0(pairs)} pairs off this delivery. No buy is recorded on this delivery, so no cost went on the deal. Record it on the Buy tab.`, "error"); return; }
+      if (!buy) { toast(`${inv.number} linked: ${n0(pairs)} pairs off this delivery. No buy is recorded on this delivery, so no cost went on the deal. Record what you paid on its Cost and sales.`, "error"); return; }
       await api.addWarehouseBuyOrder(buy.id, inv.id, pairs, costOn ? typedGoods(buy, landed, pairs) : null, !costOn)
         .then((r) => toast(!costOn ? `${inv.number} linked: ${n0(pairs)} pairs off this delivery. No cost went on the deal.`
           : r.own_cost ? `${inv.number} linked: ${n0(pairs)} pairs off this delivery. Its deal already has a supplier cost you typed, so that was kept.`
           : `${inv.number} linked: ${n0(pairs)} pairs at ${money(landed)} landed, ${money(r2(pairs * landed))} on its deal.`))
-        .catch((e: any) => toast(`${inv.number} linked, but its cost did not reach the deal (${e}). The Buy tab can add it.`, "error"));
+        .catch((e: any) => toast(`${inv.number} linked, but its cost did not reach the deal (${e}). The delivery's Cost and sales can add it.`, "error"));
     } catch (e) { toast(String(e), "error"); }
     finally { setBusy(false); }
   };
@@ -177,12 +178,15 @@ export default function LinkDelivery({ loadId, invoice, exclude, pick, onLinked,
         )}
       </div>
       {by === "count" && <p className="text-[12px] text-muted mt-1">No style is named, so the delivery's total goes down but no one style does.</p>}
-      {lid && !buy && <p className="text-[12px] text-muted mt-1">No buy is recorded on this delivery, so there is no cost to put on. Record it on the delivery's Buy tab.</p>}
+      {lid && !buy && <p className="text-[12px] text-muted mt-1">No buy is recorded on this delivery, so there is no cost to put on. Record what you paid on the delivery's Cost and sales.</p>}
       {costOn && buy && (
         <p className="text-[12.5px] text-ink-2 mt-2 tabular-nums">
           {money(r2(buy.unit_goods))} a pair + {money(r2(buy.unit_ship))} shipping in = {money(landedOf(buy))} landed, from {buy.name}.
           {pairs > 0 && landed > 0 && <> On the deal: {n0(pairs)} pairs × {money(landed)} = <span className="font-semibold text-ink">{money(r2(pairs * landed))}</span>, one supplier line.</>}
         </p>
+      )}
+      {costOn && buy && buy.unit_markup > 0 && (
+        <p className="text-[12px] text-muted mt-1 tabular-nums">Logistics markup on the trucks, {perUnit(buy.unit_markup)} a pair, is not in this cost: it is his pay, taken off the deal's split.</p>
       )}
       <div className="flex gap-2 mt-3">
         <button onClick={() => { void link(); }} disabled={!ready || busy} className={WH_BTN_PRIMARY}>{busy ? "Linking" : "Link it"}</button>

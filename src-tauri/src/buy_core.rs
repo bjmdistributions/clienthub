@@ -325,6 +325,8 @@ pub struct OrderFigures {
     pub other_cost: f64,
     pub refunds: f64,
     pub made: f64,
+    /// R-576: his markup share on this order, shown on its own line, never in `cost` or `made`.
+    pub markup: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -334,13 +336,20 @@ pub struct Rollup {
     pub left: f64,
     pub goods_total: f64,
     pub ship_total: f64,
-    /// R-551: his markup on the trucks that brought it in.
+    /// R-551: his markup on the trucks that brought it in. R-576: never part of a cost; his pay, taken off the owner split.
     pub markup_total: f64,
-    /// (goods + shipping in + his markup on the trucks) / units bought.
+    /// (goods + shipping in) / units bought. R-576: his markup is never in it.
     pub unit_cost: f64,
+    /// R-576: what the load cost, goods + shipping in, to the cent.
+    pub load_cost: f64,
+    /// R-576: the part of `load_cost` no order has taken yet: the stock on hand carries exactly this, so the orders'
+    /// shares plus it always come to `load_cost`. Below 0 only when more was sold than bought.
+    pub cost_on_hand: f64,
+    /// R-576: his markup on the orders so far.
+    pub markup_sold: f64,
     pub goods_paid: f64,
     pub ship_paid: f64,
-    /// The orders' shares, his markup on the trucks included (or their own typed cost).
+    /// The orders' shares (or their own typed cost). R-576: his markup is not in it.
     pub cost_sold: f64,
     pub sales: f64,
     pub received: f64,
@@ -365,31 +374,37 @@ pub fn rollup(t: &Totals, p: &Plan, money: &[OrderMoney], left: f64) -> Rollup {
         goods_total: r2(t.goods),
         ship_total: r2(t.ship),
         markup_total: r2(t.markup),
-        unit_cost: if t.units > 0.0 { (t.goods + t.ship + t.markup) / t.units } else { 0.0 },
+        unit_cost: if t.units > 0.0 { (t.goods + t.ship) / t.units } else { 0.0 },
+        load_cost: r2(t.goods + t.ship),
         goods_paid: p.goods_paid,
         ship_paid: p.ship_paid,
         oversold: p.oversold,
         sold_out: t.units > 0.0 && p.sold >= t.units - 1e-9,
         ..Default::default()
     };
+    let mut taken = 0.0_f64;
     for o in &p.orders {
         let m = money.iter().find(|m| m.id == o.id).cloned().unwrap_or_default();
-        let cost = if o.own_cost { r2(m.own_cost) } else { r2(o.goods + o.ship + o.markup) };
+        taken += o.goods + o.ship;
+        r.markup_sold += o.markup;
+        let cost = if o.own_cost { r2(m.own_cost) } else { r2(o.goods + o.ship) };
         let made = r2(m.sales - cost - m.other_cost - m.refunds);
         r.cost_sold += cost;
         r.sales += m.sales;
         r.received += m.received;
         r.other_cost += m.other_cost;
         r.refunds += m.refunds;
-        r.orders.push(OrderFigures { id: o.id.clone(), cost, sales: r2(m.sales), received: r2(m.received), other_cost: r2(m.other_cost), refunds: r2(m.refunds), made });
+        r.orders.push(OrderFigures { id: o.id.clone(), cost, sales: r2(m.sales), received: r2(m.received), other_cost: r2(m.other_cost), refunds: r2(m.refunds), made, markup: o.markup });
     }
+    r.cost_on_hand = r2(r.load_cost - taken);
+    r.markup_sold = r2(r.markup_sold);
     r.cost_sold = r2(r.cost_sold);
     r.sales = r2(r.sales);
     r.received = r2(r.received);
     r.other_cost = r2(r.other_cost);
     r.refunds = r2(r.refunds);
     r.made_on_sold = r2(r.sales - r.cost_sold - r.other_cost - r.refunds);
-    r.made_so_far = r2(r.received - t.goods - t.ship - t.markup - r.other_cost - r.refunds);
+    r.made_so_far = r2(r.received - t.goods - t.ship - r.other_cost - r.refunds);
     r
 }
 
@@ -758,9 +773,11 @@ mod tests {
         let m = [OrderMoney { id: "a".into(), sales: 2_000.0, received: 2_000.0, ..Default::default() }];
         let r = rollup(&t, &p, &m, 109_000.0);
         assert_eq!(r.markup_total, 300.0);
-        assert_eq!(r.cost_sold, 1_282.73);
-        assert_eq!(r.made_on_sold, 717.27);
-        assert_eq!(r.made_so_far, r2(2_000.0 - 137_500.0 - 3_300.0 - 300.0));
+        // R-576: his markup is shown on its own, never in a cost or a Made figure.
+        assert_eq!((r.cost_sold, r.markup_sold, r.orders[0].markup), (1_280.0, 2.73, 2.73));
+        assert!((r.unit_cost - 1.28).abs() < 1e-9);
+        assert_eq!(r.made_on_sold, 720.0);
+        assert_eq!(r.made_so_far, r2(2_000.0 - 137_500.0 - 3_300.0));
     }
 
     #[test]
@@ -771,6 +788,26 @@ mod tests {
         let p = plan(&t, &[o("a", 1.0), b, o("c", 1.0)], &[]);
         let m: Vec<f64> = p.orders.iter().map(|x| x.markup).collect();
         assert_eq!(m, vec![3.33, 0.0, 3.34], "b keeps its own cost; c takes what is left after a and b's shares");
+    }
+
+    #[test]
+    fn every_cent_of_the_load_sits_on_an_order_or_on_hand() {
+        // R-576: whatever the counts, typed prices, own costs or rounding, the orders' shares plus what is on hand come to
+        // the load to the cent.
+        let t = Totals { units: 7.0, goods: 10.0, ship: 3.0, markup: 1.0 };
+        let mut typed = o("b", 2.0);
+        typed.goods_typed = Some(1.0);
+        let mut own = o("c", 1.0);
+        own.own_cost = true;
+        for orders in [vec![], vec![o("a", 1.0)], vec![o("a", 3.0), typed.clone()], vec![o("a", 1.0), typed, own, o("d", 3.0)], vec![o("a", 9.0)]] {
+            let p = plan(&t, &orders, &[]);
+            let r = rollup(&t, &p, &[], 0.0);
+            let shares = total(p.orders.iter().map(|x| x.goods + x.ship));
+            assert_eq!(r.load_cost, 13.0);
+            assert!((r2(shares + r.cost_on_hand) - r.load_cost).abs() < 1e-9, "{} orders", orders.len());
+        }
+        let sold_out = plan(&t, &[o("a", 3.0), o("b", 4.0)], &[]);
+        assert_eq!(rollup(&t, &sold_out, &[], 0.0).cost_on_hand, 0.0);
     }
 
     #[test]

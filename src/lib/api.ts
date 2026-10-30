@@ -3006,14 +3006,19 @@ export interface BuyRollup {
   bought: number; sold: number; left: number; goods_total: number; ship_total: number; unit_cost: number;
   goods_paid: number; ship_paid: number; cost_sold: number; sales: number; received: number; other_cost: number;
   refunds: number; made_on_sold: number; made_so_far: number; sold_out: boolean; oversold: boolean;
-  /** R-551: his markup on the trucks that brought it in, counted in the cost a unit. */
+  /** R-551: his markup on the trucks that brought it in. R-576: never in a cost or a Made figure, shown on its own. */
   markup_total: number;
+  /** R-576: goods + shipping in, to the cent; `cost_on_hand` is the part no order has taken (the orders' shares plus it
+   *  always come to `load_cost`); `markup_sold` is his markup on the orders so far. */
+  load_cost: number; cost_on_hand: number; markup_sold: number;
 }
 export interface BuyOrder {
   id: string; invoice_id: string; number: string; client: string; stage: string; voided: boolean; count: number;
   undone: boolean; own_cost: boolean; typed: boolean; deal_flow_id?: string | null; goods: number; ship: number; markup: number;
   goods_paid: boolean; ship_paid: boolean; past_bought: boolean; cost: number; sales: number; received: number;
   other_cost: number; refunds: number; made: number; created_at: string;
+  /** R-576: the buy's line as it stands on the deal now (0 when it is not there) and what the buy says it should be. */
+  on_deal: number; wanted: number;
 }
 export interface BuyPayment {
   txn_id: string; kind: BuyKind; amount: number; posted_at: string; name: string; cash: boolean; booked_here: number; booked_elsewhere: number;
@@ -3083,6 +3088,13 @@ export function resoldMoves(flow: { metadata?: string | null } | null | undefine
 /** R-438: a cost line written by a resold move; one half of a pair, never edited alone. */
 export const isResoldLine = (p: { notes?: string | null }) =>
   !!p.notes && (p.notes.startsWith("Resold: cost moved to ") || p.notes.startsWith("Resold from ") || p.notes.startsWith("Bought back from "));
+/** R-488: a cost line a buy in the Warehouse wrote (`buy_core::LINE_NOTE_PREFIX`). */
+export const isBuyLine = (p: { notes?: string | null }) => !!p.notes && p.notes.startsWith("Buy: ");
+/** R-576: what Remove asks before it takes a line off a deal. A buy's line goes by putting its pairs back on the delivery. */
+export const removeLineAsk = (p: { notes?: string | null; quantity?: number | null }) =>
+  isBuyLine(p)
+    ? `This cost is from the buy ${p.notes!.slice(5).replace(/, shipping in$/, "")}. Removing it puts ${p.quantity ? `its ${Math.round(p.quantity).toLocaleString("en-US")} pairs` : "its pairs"} back on the delivery and the cost back on the buy. Remove it?`
+    : "Remove this cost line?";
 /** R-438: open one deal in Deal Flow on one step, from anywhere (including Deal Flow itself). */
 export function openDealFlow(invoiceNumber: string, section: string = "supplier") {
   try {
@@ -4304,6 +4316,8 @@ export const api = {
     invoke<BuyDetail>("update_warehouse_buy_order", { id, orderId, goodsTyped: patch.goodsTyped ?? null, clearTyped: patch.clearTyped ?? null, undone: patch.undone ?? null }),
   addMissingWarehouseBuyOrders: (id: string) => invoke<BuyDetail>("add_missing_warehouse_buy_orders", { id }),
   applyWarehouseBuy: (id: string) => invoke<BuyDetail>("apply_warehouse_buy", { id }),
+  /** R-576: take a buy's line off its deal by putting the order's pairs back on the delivery. */
+  putBackBuyOrder: (id: string, orderId: string) => invoke<BuyDetail>("put_back_buy_order", { id, orderId }),
   warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
   warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
     invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),

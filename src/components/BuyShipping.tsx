@@ -96,7 +96,7 @@ export default function ShippingIn({ d, numbers, onChanged }: { d: BuyDetail; nu
             </div>
             {numbers && d.buy.markup_total > 0.005 && (
               <div className="flex items-baseline justify-between gap-3 text-[12.5px] text-muted">
-                <span>His markup on the trucks, counted in the cost</span>
+                <span>Logistics markup on the trucks: his pay off the split, not in your cost</span>
                 <span className="tabular-nums">{fmtAmount(d.buy.markup_total)}</span>
               </div>
             )}

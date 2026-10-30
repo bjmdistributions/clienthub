@@ -1421,6 +1421,7 @@ fn main() {
             warehouse_buys::update_warehouse_buy_order,
             warehouse_buys::add_missing_warehouse_buy_orders,
             warehouse_buys::apply_warehouse_buy,
+            warehouse_buys::put_back_buy_order,
             warehouse_loads::start_load_pallet,
             warehouse_loads::save_load_pallet,
             warehouse_loads::set_pallet_boxes,

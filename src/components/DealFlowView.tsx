@@ -6,7 +6,7 @@ import {
   Clock, Wallet, Send, CircleHelp, type LucideIcon,
 } from "lucide-react";
 import {
-  api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit, isResoldLine, allocateDealPayout, dealPayoutIncluded, dealPayoutRecipients,
+  api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit, isResoldLine, isBuyLine, removeLineAsk, allocateDealPayout, dealPayoutIncluded, dealPayoutRecipients,
   type FreightBooking, type FreightFile, type DealReconciliation,
 } from "../lib/api";
 import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, isShippingLine, owedToSupplier } from "../lib/format";
@@ -1824,6 +1824,8 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   };
 
   const removePayment = async (pid: string) => {
+    const line = (flow.supplier_payments || []).find((x) => x.id === pid);
+    if (line && isBuyLine(line) && !confirm(removeLineAsk(line))) return;
     try {
       await api.removeSupplierPayment(flow.id, pid);
       if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch {} }

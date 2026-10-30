@@ -15,7 +15,7 @@ const detail = (over: { buy?: Partial<BuyDetail["buy"]>; rollup?: Partial<BuyDet
   },
   rollup: {
     bought: 0, sold: 0, left: 0, goods_total: 1000, ship_total: 0, unit_cost: 0, goods_paid: 0, ship_paid: 0, cost_sold: 0, sales: 0, received: 0, other_cost: 0,
-    refunds: 0, made_on_sold: 0, made_so_far: 0, sold_out: false, oversold: false, markup_total: 0, ...over.rollup,
+    refunds: 0, made_on_sold: 0, made_so_far: 0, sold_out: false, oversold: false, markup_total: 0, load_cost: 1000, cost_on_hand: 1000, markup_sold: 0, ...over.rollup,
   },
   unit_goods: 0, unit_ship: 0, unit_markup: 0, trucks: over.trucks ?? [], truck_cost: { live: (over.trucks ?? []).length, priced: 0, paid: 0, carrier: 0, markup: 0, ...over.cost },
   orders: [], payments: [], missing: [], in_step: true,
@@ -103,9 +103,9 @@ describe("what a unit costs", () => {
     expect(perUnit(0)).toBe("$0.00");
   });
   it("words the cost line with its parts", () => {
-    expect(costEachLine({ goods: 1.25, ship: 0.03, markup: 0.0027 }, "pair")).toBe("Each pair costs $1.2827 with shipping in ($1.25 goods, $0.03 trucks, $0.0027 his markup)");
-    expect(costEachLine({ goods: 1.25, ship: 0, markup: 0 }, "unit")).toBe("Each unit costs $1.25");
-    expect(costEachLine({ goods: 1.25, ship: 0.0327, markup: 0 }, "unit")).toBe("Each unit costs $1.2827 with shipping in ($1.25 goods, $0.0327 trucks)");
+    expect(costEachLine({ goods: 1.25, ship: 0.03, markup: 0.0027 }, "pair")).toBe("Each pair costs $1.28 with shipping in ($1.25 goods, $0.03 trucks). Logistics markup on the trucks, $0.0027 a pair, is not in this cost: it is his pay, taken off the split.");
+    expect(costEachLine({ goods: 1.25, ship: 0, markup: 0 }, "unit")).toBe("Each unit costs $1.25.");
+    expect(costEachLine({ goods: 1.25, ship: 0.0327, markup: 0 }, "unit")).toBe("Each unit costs $1.2827 with shipping in ($1.25 goods, $0.0327 trucks).");
   });
 });
 
@@ -129,10 +129,12 @@ describe("the cost and profit on an invoice", () => {
     expect(none.margin).toBeNull();
     expect(invoiceCostLines(none, { count: 1000, unitShip: unit.unitShip, unitMarkup: 0, typed: false })[1]).toBe("1,000 cost you $1,282.73.");
   });
-  it("counts his markup in the cost each", () => {
+  it("never counts his markup in the cost, and names it apart (R-576)", () => {
     const c = invoiceCost({ unitGoods: 1.25, unitShip: 0.03, unitMarkup: 0.0027, count: 100, charging: 200 });
-    expect(c.cost).toBe(128.27);
-    expect(invoiceCostLines(c, { count: 100, unitShip: 0.03, unitMarkup: 0.0027, typed: false })[0]).toBe("$1.2827 each with shipping in ($1.25 + $0.03 + $0.0027)");
+    expect([c.cost, c.profit, c.markup]).toEqual([128, 72, 0.27]);
+    const [first, second] = invoiceCostLines(c, { count: 100, unitShip: 0.03, unitMarkup: 0.0027, typed: false });
+    expect(first).toBe("$1.28 each with shipping in ($1.25 + $0.03)");
+    expect(second).toBe("100 cost you $128.00. You are charging $200.00: profit $72.00 (36.0%). Logistics markup on these, $0.27, is not in the cost: it comes off the split.");
   });
   it("stands a typed goods share in for the worked-out one", () => {
     const c = invoiceCost({ ...unit, count: 1000, goodsTyped: 1500, charging: 2000 });

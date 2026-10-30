@@ -331,12 +331,14 @@ function BuyView({ d, unit, numbers, onEdit, onChanged, onReload, onRemoved, onA
         ))}
       </ol>
 
+      {numbers && !b.on_the_way && b.units_bought > 0 && <MoneyPicture d={d} unit={unit} />}
+
       {b.on_the_way ? (
         numbers && (
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <Tile label="You pay for the load" value={fmtAmount(b.goods_total)} sub={r.goods_paid > 0 ? `${fmtAmount(r.goods_paid)} paid` : "Not paid yet"} />
             <Tile label="Shipping in so far" value={fmtAmount(b.ship_total)} sub={d.truck_cost.live > 0 ? `${d.truck_cost.live} ${d.truck_cost.live === 1 ? "truck" : "trucks"}` : "No truck yet"} />
-            {b.markup_total > 0 && <Tile label="His markup on the trucks" value={fmtAmount(b.markup_total)} sub="Counted in the cost" />}
+            {b.markup_total > 0 && <Tile label="Logistics markup on the trucks" value={fmtAmount(b.markup_total)} sub="His pay, taken off the split. Not in your cost" />}
             <Tile label={`Cost a ${one(unit)}`} value={b.units_bought > 0 ? per(r.unit_cost) : "Not known yet"} sub={b.units_bought > 0 ? undefined : "The manifest fills in how many"} />
           </div>
         )
@@ -419,7 +421,7 @@ function BuyView({ d, unit, numbers, onEdit, onChanged, onReload, onRemoved, onA
                 </tr>
               </thead>
               <tbody>
-                {live.map((o) => <OrderRow key={o.id} o={o} d={d} numbers={numbers} busy={busy} run={run} />)}
+                {live.map((o) => <OrderRow key={o.id} o={o} d={d} unit={unit} numbers={numbers} busy={busy} run={run} />)}
               </tbody>
             </table>
           </div>
@@ -445,9 +447,15 @@ function Notice({ tone, children, action }: { tone: "warning"; children: ReactNo
   );
 }
 
-function OrderRow({ o, d, numbers, busy, run }: {
-  o: BuyOrder; d: BuyDetail; numbers: boolean; busy: string | null; run: (k: string, f: () => Promise<BuyDetail | void>) => Promise<void>;
+function OrderRow({ o, d, unit, numbers, busy, run }: {
+  o: BuyOrder; d: BuyDetail; unit: Unit; numbers: boolean; busy: string | null; run: (k: string, f: () => Promise<BuyDetail | void>) => Promise<void>;
 }) {
+  // R-576: the deal carries a different figure from the buy's (a line removed or changed by hand, or not written yet).
+  const off = !o.own_cost && Math.abs(o.on_deal - o.wanted) > 0.005;
+  const putBack = () => {
+    if (!confirm(`Put ${n0(o.count)} ${unit} back on the delivery? The cost comes off ${o.number || "this invoice"}'s deal and goes back to this buy. The invoice itself is not changed.`)) return;
+    void run(o.id, () => api.putBackBuyOrder(d.buy.id, o.id));
+  };
   const [typing, setTyping] = useState<number | null>(null);
   const status = o.own_cost
     ? <StatusPill tone="neutral" title="This deal had its supplier cost typed by hand before the buy was recorded, and keeps it">Own cost kept</StatusPill>
@@ -476,14 +484,64 @@ function OrderRow({ o, d, numbers, busy, run }: {
       )}
       {numbers && <td className="px-3 py-2.5 text-right tabular-nums">{fmtAmount(o.sales)}</td>}
       {numbers && <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${o.made >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(o.made)}</td>}
-      <td className="px-3 py-2.5">{status}</td>
+      <td className="px-3 py-2.5">
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">{status}
+          {numbers && off && <StatusPill tone="warning" title="Bring up to date (above) writes the buy's figure on the deal">Deal shows {fmtAmount(o.on_deal)}</StatusPill>}
+        </span>
+      </td>
       <td className="px-3 py-2.5 text-right whitespace-nowrap">
+        {d.buy.load_id && (
+          <button onClick={putBack} disabled={busy === o.id} className="text-[12px] text-muted hover:text-ink-2 mr-3">Put back</button>
+        )}
         {o.typed && numbers && (
           <button onClick={() => run(o.id, () => api.updateWarehouseBuyOrder(d.buy.id, o.id, { clearTyped: true }))} disabled={busy === o.id}
             className="text-[12px] text-muted hover:text-ink-2">Use the buy's cost</button>
         )}
       </td>
     </tr>
+  );
+}
+
+/** R-576: where every dollar of the load sits, to the cent: on each sold order's deal, or on the stock still here. His
+ *  logistics markup is named on its own line and is in none of the figures above it. */
+function MoneyPicture({ d, unit }: { d: BuyDetail; unit: Unit }) {
+  const r = d.rollup;
+  const live = d.orders.filter((o) => !o.undone);
+  const onDeals = live.filter((o) => !o.own_cost).reduce((a, o) => a + o.goods + o.ship, 0);
+  const kept = live.filter((o) => o.own_cost).reduce((a, o) => a + o.goods + o.ship, 0);
+  const dealsShow = live.filter((o) => !o.own_cost).reduce((a, o) => a + o.on_deal, 0);
+  const dealsOk = Math.abs(dealsShow - onDeals) < 0.005;
+  const pct = (x: number) => (r.load_cost > 0 ? `${Math.max(0, Math.min(100, (x / r.load_cost) * 100))}%` : "0%");
+  return (
+    <div className={`${WH_CARD} px-4 py-3`}>
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <div className="text-[13px] font-semibold text-ink">Where the money went</div>
+        <div className="text-[12.5px] text-ink-2 tabular-nums">
+          Cost a {one(unit)} <span className="font-semibold text-ink">{per(r.unit_cost)}</span> · the load {fmtAmount(r.load_cost)} ({fmtAmount(r.goods_total)} goods + {fmtAmount(r.ship_total)} trucks) over {n0(r.bought)} {unit}
+        </div>
+      </div>
+      <div className="flex h-2.5 rounded-full overflow-hidden bg-line mt-3" aria-hidden>
+        <div className="bg-success" style={{ width: pct(onDeals) }} />
+        <div className="bg-faint" style={{ width: pct(kept) }} />
+      </div>
+      <div className="grid sm:grid-cols-3 gap-x-4 gap-y-1 mt-3 text-[12.5px] tabular-nums">
+        <div className="flex justify-between gap-2"><span className="text-muted">On {live.length - live.filter((o) => o.own_cost).length} sold {live.length === 1 ? "deal" : "deals"} ({n0(r.sold)} {unit})</span><span className="text-ink">{fmtAmount(onDeals)}</span></div>
+        {kept > 0.005 && <div className="flex justify-between gap-2"><span className="text-muted">Sold on deals that keep their own cost</span><span className="text-ink">{fmtAmount(kept)}</span></div>}
+        <div className="flex justify-between gap-2"><span className="text-muted">Not sold yet ({n0(Math.max(0, r.bought - r.sold))} {unit})</span><span className="text-ink">{fmtAmount(r.cost_on_hand)}</span></div>
+      </div>
+      <p className={`text-[12.5px] mt-2 ${dealsOk && r.cost_on_hand > -0.005 ? "text-success-ink" : "text-danger-ink"}`}>
+        {!dealsOk
+          ? `The deals show ${fmtAmount(dealsShow)} from this buy, not ${fmtAmount(onDeals)}. Bring them up to date below.`
+          : r.cost_on_hand < -0.005
+            ? `The sold orders carry ${fmtAmount(-r.cost_on_hand)} more than the load cost: a price typed on an order, or more ${unit} sold than bought. Check the orders below.`
+            : `Accounted for to the cent: ${fmtAmount(onDeals + kept)} sold plus ${fmtAmount(r.cost_on_hand)} not sold yet is the load's ${fmtAmount(r.load_cost)}.`}
+      </p>
+      {r.markup_total > 0.005 && (
+        <p className="text-[12.5px] text-ink-2 mt-1">
+          Logistics markup on the trucks: {fmtAmount(r.markup_total)} ({per(d.unit_markup)} a {one(unit)}), {fmtAmount(r.markup_sold)} of it on the sold orders. It is his pay, taken off each deal's split, and is in none of the figures above.
+        </p>
+      )}
+    </div>
   );
 }
 

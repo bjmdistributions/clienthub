@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { X, Plus } from "lucide-react";
-import { api, DealFlow, Supplier, PayoutShare, isResoldLine } from "../lib/api";
+import { api, DealFlow, Supplier, PayoutShare, isResoldLine, removeLineAsk } from "../lib/api";
 import { fmtAmount, shippingEstimateOf } from "../lib/format";
 import { toast } from "./Toast";
 import CostProfitPanel from "./CostProfitPanel";
@@ -210,7 +210,7 @@ export default function InvoiceCostSection({
               <div className={`text-[13px] font-semibold tabular-nums ${p.kept || replaced(p) ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
               {!locked && !isResoldLine(p) && (
                 <button title="Remove this cost line" disabled={saving}
-                  onClick={() => { if (confirm("Remove this cost line?")) act(() => api.removeSupplierPayment(flow.id, p.id)); }}
+                  onClick={() => { if (confirm(removeLineAsk(p))) act(() => api.removeSupplierPayment(flow.id, p.id)); }}
                   className="text-faint hover:text-danger-ink transition-colors disabled:opacity-40"><X size={13} /></button>
               )}
             </div>
