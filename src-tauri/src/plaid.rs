@@ -192,13 +192,18 @@ pub async fn transactions_sync(access_token: &str, cursor: &str, env: &str) -> R
 /// a non-2xx (rate-limit, product not enabled) never fails the batch — the follow-up sync backfills either way.
 /// R-518: but it is no longer swallowed: `Some(reason)` when Plaid refused, so the screen stops saying "Refreshed".
 pub async fn transactions_refresh(access_token: &str, env: &str) -> Option<String> {
-    match post_raw_env("/transactions/refresh", json!({ "access_token": access_token }), env).await {
-        Ok((true, _)) => None,
-        Ok((false, v)) => Some(v.get("error_message").and_then(|m| m.as_str())
+    transactions_refresh_answer(access_token, env).await.unwrap_or_else(|e| Some(e.to_string()))
+}
+
+/// R-571: the same call, keeping apart Plaid saying no (`Ok(Some(reason))`) and Plaid not being reached at all (`Err`:
+/// no network, a timeout, no keys). The two-minute refresh rests a bank only on the first.
+pub async fn transactions_refresh_answer(access_token: &str, env: &str) -> Result<Option<String>> {
+    Ok(match post_raw_env("/transactions/refresh", json!({ "access_token": access_token }), env).await? {
+        (true, _) => None,
+        (false, v) => Some(v.get("error_message").and_then(|m| m.as_str())
             .or_else(|| v.get("error_code").and_then(|m| m.as_str()))
             .unwrap_or("Plaid refused the refresh").to_string()),
-        Err(e) => Some(e.to_string()),
-    }
+    })
 }
 
 /// R-493: point an item's webhook at this server's doorbell. Items linked before a server was connected carry no
