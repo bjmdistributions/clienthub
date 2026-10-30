@@ -66,6 +66,10 @@ mod warehouse_loads;
 // byte-identical on the server).
 mod buy_core;
 mod warehouse_buys;
+// R-577: who gets paid what from a deal, as lines that add up to the net. payout_core.rs is
+// byte-identical on the server. Nothing calls it until the payout ledger is built on it.
+#[allow(dead_code)]
+mod payout_core;
 mod books;
 mod customer_portal;
 mod template;
