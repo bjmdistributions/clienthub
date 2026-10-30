@@ -604,6 +604,34 @@ fn main() {
                 }
             });
 
+            // R-571: every two minutes, ask Plaid to check each bank now (Jack, 2026-10-30: "why cant they refresh happen
+            // every 2 mintues"). On its own Plaid checks a bank a few times a day; this is the same call as Financials,
+            // Refresh. Nothing is pulled here: a check that finds something rings the doorbell below, which pulls (and
+            // sends the phone its alert) within a minute. A bank Plaid refuses (a rate limit, refresh not on its plan) is
+            // left alone for 30 minutes and said in the log, so a refusal is never retried every two minutes; a call that
+            // never reached Plaid (no network, a timeout) is simply tried again at the next tick.
+            tauri::async_runtime::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+                let mut resting: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
+                // A PC that slept wakes to one check, not a burst of the ones it missed.
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    for (id, token, env) in commands::plaid_doorbell_items() {
+                        if resting.get(&id).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1800)) { continue; }
+                        match plaid::transactions_refresh_answer(&token, &env).await {
+                            Ok(None) => { resting.remove(&id); }
+                            Ok(Some(why)) => {
+                                tracing::warn!("plaid refresh: Plaid refused item {id} ({why}); trying it again in 30 minutes");
+                                resting.insert(id, std::time::Instant::now());
+                            }
+                            Err(e) => tracing::warn!("plaid refresh: Plaid not reached for item {id} ({e}); trying again in two minutes"),
+                        }
+                    }
+                }
+            });
+
             // R-493: the Plaid doorbell. Plaid rings the server the moment it has new transactions for an item (the
             // webhook each item names); once a minute this asks the server whether an item this desktop holds rang
             // since the last look, and syncs at once if one did. The 10-minute pull above is the backup for a missed
