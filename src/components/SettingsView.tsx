@@ -121,6 +121,7 @@ import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
 import NumberInput from "./NumberInput";
 import { LogisticsFreightSetting, LogisticsMayBookSetting, LogisticsNumberingSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel, LogisticsRateConSetting, LogisticsRoutesSetting } from "./LogisticsPay";
+import { PayoutsLedgerPanel, PayRulesPanel, ruleLabel } from "./PayoutLedger";
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
 import CrossDock from "./CrossDock";
@@ -385,7 +386,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   // No card: Google Contacts lives behind Import's own CSV/Contacts switch, so the
   // card is not on the page when the result is clicked.
   { tab: "import", label: "Import from Google Contacts", kw: "gmail contacts address book" },
-  { tab: "splits", card: "Sales reps", label: "Rep pay", kw: "commission profit percent gross percent fixed dollar pay type" },
+  { tab: "splits", card: "Pay rules", label: "Rep pay", kw: "commission profit percent gross percent fixed dollar pay type" },
   { tab: "splits", card: "Logistics", label: "Logistics freight details", kw: "we fill in pallets weight dimensions accessorials before sending to logistics freight" },
   { tab: "splits", card: "Logistics", label: "Road routes key for the freight map", kw: "openrouteservice route key routes api delivered loads road routes logistics map free" },
   { tab: "splits", card: "Logistics", label: "Load and BOL numbers", kw: "load number prefix next number bill of lading bol numbering reference" },
@@ -5375,7 +5376,7 @@ function SheetsTab() {
 
 function SplitsTab() {
   type ShareKind = "person" | "business" | "investment" | "other";
-  type Share = { name: string; pct: number; is_business: boolean; kind: ShareKind };
+  type Share = { id?: string; name: string; pct: number; is_business: boolean; kind: ShareKind };
   const KIND_LABEL: Record<ShareKind, string> = { person: "Person", business: "Business", investment: "Investment", other: "Other" };
   const NAME_PLACEHOLDER: Record<ShareKind, string> = { person: "Name", business: "Business", investment: "Investment fund", other: "Label" };
   const [shares, setShares] = useState<Share[]>([]);
@@ -5405,13 +5406,39 @@ function SplitsTab() {
   // whether what's on screen is actually stored.
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "error">("saved");
   const [saveErr, setSaveErr] = useState("");
+  // R-577: a save goes to the server, which books every deal on the old split first, so it waits
+  // for a pause in typing. The server answers each entry's id; it is kept on the row so a rename
+  // keeps that owner's ledger.
+  const latest = useRef<Share[]>([]);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const waiting = useRef(false);
+  // Leaving the tab with a save still waiting sends it now.
+  useEffect(() => () => {
+    window.clearTimeout(saveTimer.current);
+    if (waiting.current) api.savePayoutSplit(latest.current).catch((e: any) => toastError(`The profit split was not saved: ${String(e)}`));
+  }, []);
   const persist = (next: Share[]) => {
     setShares(next);
+    latest.current = next;
+    window.clearTimeout(saveTimer.current);
+    waiting.current = false;
     if (Math.abs(next.reduce((a, s) => a + (Number(s.pct) || 0), 0) - 100) < 0.01) {
       setSaveState("saving");
-      api.savePayoutSplit(next)
-        .then(() => { setSaveState("saved"); setSaveErr(""); })
-        .catch((e: any) => { setSaveState("error"); setSaveErr(String(e)); });
+      waiting.current = true;
+      saveTimer.current = window.setTimeout(() => {
+        waiting.current = false;
+        api.savePayoutSplit(next)
+          .then((saved) => {
+            if (latest.current !== next) return;
+            // Saved entries come back in order; blank people rows are not saved and keep no id.
+            let k = 0;
+            const withIds = next.map((s) => (s.name.trim() || s.is_business ? { ...s, id: saved[k++]?.id ?? s.id } : s));
+            latest.current = withIds;
+            setShares(withIds);
+            setSaveState("saved"); setSaveErr("");
+          })
+          .catch((e: any) => { if (latest.current === next) { setSaveState("error"); setSaveErr(String(e)); } });
+      }, 700);
     } else {
       setSaveState("unsaved");
     }
@@ -5431,9 +5458,6 @@ function SplitsTab() {
   // wrong row after indices shift.
   const removeShare = (i: number) => { setPctText({}); persist(shares.filter((_, idx) => idx !== i)); };
 
-  const PAY_TYPES: [string, string][] = [["profit_pct", "Profit %"], ["gross_pct", "Gross %"], ["fixed", "Fixed $"]];
-  const setRepType = async (id: string, payType: string) => { await api.updateStaff(id, { payType }); reloadStaff(); };
-  const setRepVal = async (id: string, commissionPct: number) => { await api.updateStaff(id, { commissionPct }); };
 
   // Live preview off an editable sample profit, using the first rep with a profit-% rule.
   const [sample, setSample] = useState(10000);
@@ -5445,28 +5469,8 @@ function SplitsTab() {
 
   return (
     <div className="max-w-2xl space-y-4">
-      <SettingCard icon={Users} title="Sales reps" purpose="Each person's cut when they're the deal's lead rep, taken first, off the top.">
-        {staff.length === 0 ? (
-          <div className="text-[12.5px] text-muted">No team members yet, invite people from the Team tab.</div>
-        ) : (
-          <div className="divide-y divide-line">
-            {staff.map((u) => (
-              <div key={u.id} className="grid grid-cols-[minmax(0,1fr)_220px_96px] items-center gap-3 py-2.5 first:pt-0 last:pb-0">
-                <div className="min-w-0">
-                  <div className="text-[13px] font-medium text-ink truncate">{u.display_name}</div>
-                  {u.role_name ? <div className="text-[11px] text-muted truncate">{u.role_name}</div> : null}
-                </div>
-                <Segmented value={(u as any).pay_type || "profit_pct"} onChange={(v) => setRepType(u.id, v)}
-                  options={PAY_TYPES.map(([v, l]) => ({ value: v, label: l }))} />
-                <div className="flex items-center gap-1.5">
-                  <input type="text" inputMode="decimal" defaultValue={u.commission_pct} onBlur={(e) => setRepVal(u.id, parseAmount(e.target.value))}
-                    className={`${inpSm} text-right tabular-nums`} />
-                  <span className="w-3 shrink-0 text-[12px] text-muted">{((u as any).pay_type || "profit_pct") === "fixed" ? "$" : "%"}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+      <SettingCard icon={Users} title="Pay rules" purpose="What each rep earns on a deal that is all theirs, taken off the top before the split. On a shared deal each rep gets their share of it. A change starts today: deals already done keep the rate they had.">
+        <PayRulesPanel onSaved={reloadStaff} />
       </SettingCard>
 
       <SettingCard icon={Truck} title="Logistics" purpose="Who fills in the pallets, weight, dimensions and accessorials before a deal is sent to the logistics person, how load and BOL numbers are made, what a rate confirmation prints, and the free route key for the delivered-freight map.">
@@ -5721,84 +5725,10 @@ function TeamTab() {
 }
 
 function PayoutsPanel() {
-  const monthStart = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10); };
-  const monthEnd = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 1).toISOString().slice(0, 10); };
-  const [start, setStart] = useState(monthStart());
-  const [end, setEnd] = useState(monthEnd());
-  const [data, setData] = useState<any>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const load = () => {
-    setErr(null);
-    api.listRepPayouts(start, end).then(setData).catch((e: any) => setErr(typeof e === "string" ? e : e?.message || "Failed to load"));
-  };
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const markPaid = (repId: string, owed: number) => {
-    setBusy(true);
-    api.markRepPayoutPaid(repId, start, end, owed).then(() => load()).catch((e: any) => setErr(typeof e === "string" ? e : e?.message || "Failed")).finally(() => setBusy(false));
-  };
-
-  const payouts: any[] = (data && data.payouts) || [];
   return (
     <div className="space-y-4">
-    <SettingCard icon={Receipt} title="Rep payouts" purpose="What each rep is owed for completed deals in the period.">
-      <div className="space-y-4">
-        {data && !data.enabled && (
-          <div className="text-[12.5px] text-muted">Rep payouts are off. Turn them on under <strong>People</strong> first.</div>
-        )}
-        <div className="flex items-end gap-2 flex-wrap">
-          <div>
-            <label className="block text-[12px] font-medium text-muted mb-1.5">From</label>
-            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className={`${inpSm} w-36`} />
-          </div>
-          <div>
-            <label className="block text-[12px] font-medium text-muted mb-1.5">To</label>
-            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className={`${inpSm} w-36`} />
-          </div>
-          <button onClick={load} className="h-9 px-3.5 border border-line rounded-lg text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 transition-colors">Show</button>
-        </div>
-        {payouts.length === 0 ? (
-          <div className="text-[12.5px] text-muted py-4 text-center">No rep payouts for completed deals in this period.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[13px]">
-              <thead>
-                <tr className="border-b border-line">
-                  <th className="text-left px-3 py-2 text-[12px] font-medium text-muted">Rep</th>
-                  <th className="text-left px-3 py-2 text-[12px] font-medium text-muted">Deals</th>
-                  <th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Owed</th>
-                  <th className="px-3 py-2" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
-                {payouts.map((p) => (
-                  <tr key={p.rep_id}>
-                    <td className="px-3 py-2.5 font-medium text-ink">{p.name}</td>
-                    <td className="px-3 py-2.5 text-muted">{p.deals}{p.refunded_deals > 0 ? ` · ${p.refunded_deals} refunded` : ""}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-medium text-ink">{fmtAmount(p.owed)}</td>
-                    <td className="px-3 py-2.5 text-right">
-                      <button disabled={busy} onClick={() => markPaid(p.rep_id, p.owed)}
-                        className="px-2.5 h-7 border border-line rounded-lg text-[11.5px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors">Mark paid</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              {payouts.length > 1 && (
-                <tfoot>
-                  <tr className="border-t border-line">
-                    <td colSpan={2} className="px-3 py-2.5 text-[12px] text-muted">Total owed</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-medium text-ink">{fmtAmount(payouts.reduce((a, p) => a + (Number(p.owed) || 0), 0))}</td>
-                    <td />
-                  </tr>
-                </tfoot>
-              )}
-            </table>
-          </div>
-        )}
-        {err && <div className="text-[12px] text-danger-ink flex items-center gap-1.5"><AlertCircle size={13} /> {err}</div>}
-      </div>
+    <SettingCard icon={Receipt} title="Payouts" purpose="What each rep, owner and the business earned from deals, what they were paid, and what is owed. Open a person to see their deals, record a payment or undo one.">
+      <PayoutsLedgerPanel />
     </SettingCard>
     <SettingCard icon={Truck} title="Logistics pay tracker" purpose="What the person doing logistics is owed, on which pay date, and for which loads.">
       <LogisticsPayTrackerPanel />
@@ -5938,9 +5868,7 @@ function PeoplePanel() {
     try { await api.updateStaff(id, { status }); flash(id, { t: "saved" }); load(); }
     catch (e: any) { flash(id, { t: "error", msg: errText(e) }); }
   };
-  const setComm = async (id: string, commissionPct: number) => { await api.updateStaff(id, { commissionPct }); };
   const setHide = async (id: string, hidePayCuts: boolean) => { await api.updateStaff(id, { hidePayCuts }); };
-  const setPayType = async (id: string, payType: string) => { await api.updateStaff(id, { payType }); load(); };
   const remove = async (id: string, name: string) => {
     if (!window.confirm(`Remove ${name} from the team? This permanently deletes their account and unassigns them from any deals. This can't be undone.`)) return;
     try { await api.deleteStaff(id); load(); } catch (e: any) { window.alert(typeof e === "string" ? e : (e?.message || "Failed to remove")); }
@@ -6055,16 +5983,9 @@ function PeoplePanel() {
               </td>
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <select defaultValue={(u as any).pay_type || "profit_pct"} onChange={(e) => setPayType(u.id, e.target.value)}
-                    className="border border-line px-1.5 h-8 rounded-lg text-[11.5px] bg-surface">
-                    <option value="profit_pct">% profit</option>
-                    <option value="gross_pct">% gross</option>
-                    <option value="fixed">fixed $</option>
-                  </select>
-                  <input type="text" inputMode="decimal" defaultValue={u.commission_pct} onBlur={(e) => setComm(u.id, parseAmount(e.target.value))}
-                    className="w-14 border border-line px-2 h-8 rounded-lg text-[12px]" />
-                  <span className="text-[11px] text-muted">{((u as any).pay_type === "fixed") ? "$" : "%"}</span>
-                  <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-1">
+                  {/* R-577: the rate is set in one place, Splits, Pay rules, where a change starts today. */}
+                  <span className="text-[12px] text-ink-2 whitespace-nowrap" title="Change it under Splits, Pay rules">{ruleLabel((u as any).pay_type, u.commission_pct)}</span>
+                  <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-1" title="Hide pay figures from this person. They are still paid.">
                     <input type="checkbox" defaultChecked={u.hide_pay_cuts} onChange={(e) => setHide(u.id, e.target.checked)} /> hide
                   </label>
                 </div>

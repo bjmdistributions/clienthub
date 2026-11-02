@@ -1,16 +1,35 @@
 import { useEffect, useState, useCallback } from "react";
 import { api } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { DealPayoutsBox } from "./PayoutLedger";
 
-// Payout panel for a completed deal flow. Reads the refund-aware breakdown from the
-// local engine (deal_flow_payout) and lets an admin assign the lead rep and see the
-// cut, the owner splits (after refunds), the refunded total, and what's still owed
-// back. All refund ACTIONS live in RefundWorkspace now; this panel is read-only over
-// the deal's stored figures — nothing here changes them.
-export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
+// Payout panel for a completed deal flow. R-577: who gets paid what comes from the server's
+// ledger (DealPayoutsBox: the reps and their shares, each line, any amount typed over); what is
+// still owed back to the buyer is read here. All refund ACTIONS live in RefundWorkspace.
+export default function RefundPanel({ dealFlowId, refreshKey }: { dealFlowId: string; refreshKey?: unknown }) {
+  const [owed, setOwed] = useState(0);
+  useEffect(() => {
+    api.dealFlowPayout(dealFlowId).then((p) => setOwed(Number(p?.owed_remaining) || 0)).catch(() => {});
+  }, [dealFlowId, refreshKey]);
+  return (
+    <div className="space-y-2">
+      <DealPayoutsBox dealFlowId={dealFlowId} refreshKey={refreshKey} fallback={<LocalPayoutPanel dealFlowId={dealFlowId} />} />
+      {/* Owed-back banner: the refund workspace below is where you clear it */}
+      {owed > 0 && (
+        <div className="flex items-center justify-between text-[12px] bg-danger-bg border border-danger rounded-lg px-3 py-2">
+          <span className="text-danger-ink font-medium">Owed back to customer</span>
+          <span className="tabular-nums font-bold text-danger-ink">{fmtAmount(owed)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The breakdown as this computer works it out (deal_flow_payout), for when the server cannot
+// answer: offline, or an account that is not an admin.
+function LocalPayoutPanel({ dealFlowId }: { dealFlowId: string }) {
   const [payout, setPayout] = useState<any>(null);
   const [reps, setReps] = useState<{ id: string; display_name: string }[]>([]);
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -27,19 +46,12 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
   if (!payout) return null;
 
   const refunded: number = payout.refunded || 0;
-  const owed: number = payout.owed_remaining || 0;
   const enabled: boolean = !!payout.rep_payouts_enabled;
   const splits: { name: string; amount: number }[] = payout.splits || [];
   const repCut: number = payout.rep_cut || 0;
   const unmatched: boolean = !!payout.rep_unmatched;
   const unmatchedName: string = payout.unmatched_rep_name || "";
 
-  const run = async (fn: () => Promise<void>) => {
-    setBusy(true); setErr(null);
-    try { await fn(); await load(); }
-    catch (e: any) { setErr(typeof e === "string" ? e : e?.message || "Something went wrong"); }
-    finally { setBusy(false); }
-  };
 
   return (
     <div className="bg-surface border border-line rounded-xl px-4 py-3 space-y-3">
@@ -59,15 +71,8 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
         <div className="flex items-center justify-between gap-3 text-[12px]">
           <span className="text-muted">Lead rep</span>
           <div className="flex items-center gap-2">
-            <select
-              value={payout.lead_rep_id || ""}
-              disabled={busy}
-              onChange={(e) => run(async () => { await api.setDealLeadRep(dealFlowId, e.target.value || null); })}
-              className="bg-surface-2 border border-line rounded-lg h-7 px-2 text-[12px] text-ink"
-            >
-              <option value="">(Unassigned)</option>
-              {reps.map((r) => <option key={r.id} value={r.id}>{r.display_name}</option>)}
-            </select>
+            {/* R-577: shown, never changed here; a deal's reps are set on its Payouts box. */}
+            <span className="text-ink">{payout.lead_rep_name || reps.find((r) => r.id === payout.lead_rep_id)?.display_name || "No rep"}</span>
             {payout.lead_rep_id && (
               <span className="tabular-nums font-semibold text-ink">
                 {fmtAmount(repCut)}
@@ -117,14 +122,6 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {/* Owed-back banner — the refund workspace below is where you clear it */}
-      {owed > 0 && (
-        <div className="flex items-center justify-between text-[12px] bg-danger-bg border border-danger rounded-lg px-3 py-2">
-          <span className="text-danger-ink font-medium">Owed back to customer</span>
-          <span className="tabular-nums font-bold text-danger-ink">{fmtAmount(owed)}</span>
         </div>
       )}
 

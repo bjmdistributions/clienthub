@@ -67,9 +67,11 @@ mod warehouse_loads;
 mod buy_core;
 mod warehouse_buys;
 // R-577: who gets paid what from a deal, as lines that add up to the net. payout_core.rs is
-// byte-identical on the server. Nothing calls it until the payout ledger is built on it.
+// byte-identical on the server, where the ledger runs; the desktop keeps its copy tested beside it.
+// payout_ledger.rs is the door to the server's ledger.
 #[allow(dead_code)]
 mod payout_core;
+mod payout_ledger;
 mod books;
 mod customer_portal;
 mod template;
@@ -1394,6 +1396,7 @@ fn main() {
             // Logistics (R-400)
             freight::logistics_request,
             outreach::outreach_request,
+            payout_ledger::payouts_request,
             outreach::outreach_pump_get,
             outreach::outreach_pump_set,
             freight::logistics_save_file,

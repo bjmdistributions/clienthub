@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
 import { fmtAmount, projectedCostOf, shippingEstimateOf } from "../lib/format";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
+import { DealPayoutsBox } from "./PayoutLedger";
 
 /**
  * Cost & Profit display for the invoice detail drawer (via InvoiceCostSection), reading
@@ -92,24 +93,29 @@ export default function CostProfitPanel({
         ))}
       </div>
 
-      {/* Profit split preview — config-driven; hidden until payouts are set up */}
-      {isComplete && profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending) && (
-        <div className="bg-surface border border-line rounded-xl px-4 py-3">
-          <div className="text-[12.5px] font-medium text-muted mb-2">
-            Profit split
-          </div>
-          <div className="flex flex-wrap gap-x-6 gap-y-2">
-            <LogisticsPayCell pay={logiPay} />
-            {alloc.map((item, i) => (
-              <div key={i}>
-                <div className="text-[11px] text-muted">{item.name}</div>
-                <div className="text-[13px] font-semibold text-success-ink tabular-nums">
-                  {fmtAmount(item.amount)}
-                </div>
+      {/* R-577: who gets paid what, from the server's ledger; where it cannot answer (offline, or
+          not an admin), the profit split as this computer works it out. */}
+      {isComplete && (
+        <DealPayoutsBox dealFlowId={flow.id} refreshKey={flow.updated_at} fallback={
+          (isComplete && profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending)) ? (
+            <div className="bg-surface border border-line rounded-xl px-4 py-3">
+              <div className="text-[12.5px] font-medium text-muted mb-2">
+                Profit split
               </div>
-            ))}
-          </div>
-        </div>
+              <div className="flex flex-wrap gap-x-6 gap-y-2">
+                <LogisticsPayCell pay={logiPay} />
+                {alloc.map((item, i) => (
+                  <div key={i}>
+                    <div className="text-[11px] text-muted">{item.name}</div>
+                    <div className="text-[13px] font-semibold text-success-ink tabular-nums">
+                      {fmtAmount(item.amount)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null
+        } />
       )}
     </div>
   );

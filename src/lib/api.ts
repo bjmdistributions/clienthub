@@ -992,6 +992,106 @@ export interface PayoutShare {
   is_business: boolean;
 }
 
+// ===== Commission ledger (R-577) =====
+// The ledger lives on the server: what each person earned from each deal (booked once, then only
+// differences, each saying why) and what they were paid. The desktop does no payout math here; it
+// shows what /api/payouts answers, through `payouts_request`.
+export type PayeeKind = "rep" | "logistics" | "owner" | "business";
+export type PayType = "profit_pct" | "gross_pct" | "fixed";
+/** One payee's line on a deal, as the server's engine works it out. `amount` is what they get;
+ *  `computed` is the rule's figure, shown beside a typed amount. */
+export interface PayoutLine {
+  kind: PayeeKind;
+  payee_id: string;
+  name: string;
+  /** The rule in words ("10% of profit"), null for an owner. */
+  rule: string | null;
+  applied: { pay_type: PayType; value: number } | null;
+  share_pct: number | null;
+  split_kind: string | null;
+  basis: number;
+  computed: number;
+  amount: number;
+  typed: boolean;
+  /** Logistics pay not settled yet (shown as pending, $0 for now). */
+  pending: boolean;
+}
+/** GET /api/payouts/deals/:id. `projected`: the deal does not count yet, so the lines are what
+ *  today's rules would pay. `booked`: what the ledger holds per payee. */
+export interface DealPayoutView {
+  deal_flow_id: string;
+  stage: string;
+  counted: boolean;
+  projected: boolean;
+  payout: { gross: number; net: number; pool: number; lines: PayoutLine[]; unallocated: number } | null;
+  booked: { kind: PayeeKind; payee_id: string; name: string; amount: number }[];
+  reps: { rep_id: string; name: string; share_pct: number }[];
+  reps_paid: boolean;
+  problem: string | null;
+}
+/** One person on the Payouts screen. `before_ledger`: what they earned before the ledger started
+ *  and was not paid in it, what Settle would count as paid. */
+export interface PayoutPerson {
+  kind: PayeeKind;
+  payee_id: string;
+  name: string;
+  earned: number;
+  paid: number;
+  balance: number;
+  deals: number;
+  before_ledger: number;
+}
+export interface PayoutPersonLine {
+  id: string;
+  deal_flow_id: string;
+  invoice_number: string;
+  client: string;
+  /** earned: booked when the deal completed; backfilled: a deal from before the ledger, worked out
+   *  afterwards; adjusted: a later change, `note` says why. */
+  reason: "earned" | "backfilled" | "adjusted";
+  note: string;
+  on_day: string;
+  amount: number;
+  kind: PayeeKind;
+  name: string;
+  rule: string | null;
+  share_pct: number | null;
+  basis: number | null;
+  computed: number | null;
+  typed: boolean;
+}
+export interface PayoutPayment {
+  id: string;
+  amount: number;
+  paid_on: string;
+  /** "settled" marks Settle everything before the ledger. */
+  method: string;
+  note: string;
+  undone: boolean;
+  recorded_by: string;
+  kind: PayeeKind;
+}
+export interface PayoutPersonDetail extends PayoutPerson {
+  lines: PayoutPersonLine[];
+  payments: PayoutPayment[];
+  problems?: { deal_flow_id?: string; error?: string }[];
+}
+export interface PayRulePerson {
+  staff_id: string;
+  name: string;
+  logistics_only: boolean;
+  hide_pay_figures: boolean;
+  rule_now: { pay_type: PayType; value: number; label: string } | null;
+  rules: { from_day: string; pay_type: PayType; value: number; label: string }[];
+}
+/** An owner split entry as saved. `id` is what the ledger knows the entry by; a rename keeps it. */
+export interface SplitShare { id?: string; name: string; pct: number; is_business: boolean; kind?: string }
+
+function payoutsRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return invoke<T>("payouts_request", { method, path, body: body ?? null });
+}
+const enc = encodeURIComponent;
+
 /** A recipient's cut across the brief periods (empty list when unconfigured). */
 export interface PayoutTotal {
   name: string;
@@ -4598,6 +4698,29 @@ export const api = {
   dealFlowPayout: (dealFlowId: string) => invoke<any>("deal_flow_payout", { dealFlowId }),
   listDealReps: () => invoke<{ id: string; display_name: string }[]>("list_deal_reps"),
   setDealLeadRep: (dealFlowId: string, leadRepId: string | null) => invoke<void>("set_deal_lead_rep", { dealFlowId, leadRepId }),
+  /** R-577: the commission ledger on the server (admin). */
+  payouts: {
+    people: () => payoutsRequest<{ people: PayoutPerson[]; problems: { deal_flow_id?: string; error?: string }[]; ledger_since: string | null }>("GET", "/api/payouts"),
+    person: (kind: PayeeKind, id: string) => payoutsRequest<PayoutPersonDetail>("GET", `/api/payouts/people/${enc(kind)}/${enc(id)}`),
+    deal: (dealFlowId: string) => payoutsRequest<DealPayoutView>("GET", `/api/payouts/deals/${enc(dealFlowId)}`),
+    /** Who the reps on a deal are and each one's share; shares add up to 100, none is allowed. */
+    setReps: (dealFlowId: string, reps: { rep_id: string; share_pct: number }[]) =>
+      payoutsRequest<{ ok: boolean; problem: string | null }>("PUT", `/api/payouts/deals/${enc(dealFlowId)}/reps`, { reps }),
+    /** Type any amount over one line of a deal; null clears it and the rule's figure applies again. */
+    setTyped: (dealFlowId: string, kind: PayeeKind, payeeId: string, amount: number | null) =>
+      payoutsRequest<{ ok: boolean; problem: string | null }>("PUT", `/api/payouts/deals/${enc(dealFlowId)}/typed`, { kind, payee_id: payeeId, amount }),
+    pay: (kind: PayeeKind, payeeId: string, amount: number, paidOn: string, method: string, note: string) =>
+      payoutsRequest<{ ok: boolean; id: string }>("POST", "/api/payouts/payments", { kind, payee_id: payeeId, amount, paid_on: paidOn, method, note }),
+    /** Undo a payment: it is kept, marked undone, and what it covered is owed again. */
+    undo: (paymentId: string) => payoutsRequest<{ ok: boolean }>("DELETE", `/api/payouts/payments/${enc(paymentId)}`),
+    restore: (paymentId: string) => payoutsRequest<{ ok: boolean }>("POST", `/api/payouts/payments/${enc(paymentId)}/restore`),
+    settleBefore: (kind: PayeeKind, payeeId: string) =>
+      payoutsRequest<{ ok: boolean; amount: number }>("POST", "/api/payouts/settle-before", { kind, payee_id: payeeId }),
+    rules: () => payoutsRequest<{ people: PayRulePerson[]; today: string }>("GET", "/api/payouts/rules"),
+    /** A person's rule from today on; deals already done keep the rule they had. */
+    saveRule: (staffId: string, payType: PayType, value: number) =>
+      payoutsRequest<{ ok: boolean }>("POST", "/api/payouts/rules", { staff_id: staffId, pay_type: payType, value }),
+  },
   addClientCredit: (clientId: string, amount: number, opts?: { kind?: string; note?: string; sourceDealFlowId?: string; appliedDealFlowId?: string }) =>
     invoke<string>("add_client_credit", { clientId, amount, ...(opts || {}) }),
   getClientCredit: (clientId: string) => invoke<any>("get_client_credit", { clientId }),
@@ -4606,8 +4729,15 @@ export const api = {
     invoke<string>("mark_rep_payout_paid", { repId, periodStart, periodEnd, amount }),
   getRepPayoutSettings: () => invoke<any>("get_rep_payout_settings"),
   getShopifyConfig: () => invoke<any>("get_shopify_config"),
-  getPayoutSplit: () => invoke<{ name: string; pct: number; is_business: boolean; kind?: string }[]>("get_payout_split"),
-  savePayoutSplit: (shares: { name: string; pct: number; is_business: boolean; kind?: string }[]) => invoke<void>("save_payout_split", { shares }),
+  getPayoutSplit: () => invoke<SplitShare[]>("get_payout_split"),
+  /** R-577: the split is saved on the server first (it books every deal on the old split, then
+   *  stamps each entry's id), then here as the server answered it. Refused when the server cannot be
+   *  reached: a split changes pay, and only the server can book what came before it. */
+  savePayoutSplit: async (shares: SplitShare[]): Promise<SplitShare[]> => {
+    const r = await payoutsRequest<{ shares: SplitShare[] }>("PUT", "/api/payouts/split", { shares });
+    await invoke<void>("save_payout_split", { shares: r.shares });
+    return r.shares;
+  },
   setShopifySecret: (secret: string) => invoke<void>("set_shopify_secret", { secret }),
   createIntakeSource: (name: string) => invoke<any>("create_intake_source", { name }),
   listIntakeSources: () => invoke<any[]>("list_intake_sources"),

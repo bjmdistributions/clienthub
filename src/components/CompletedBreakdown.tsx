@@ -328,7 +328,7 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
       )}
 
       {/* Payout, lead rep & refunds (refund-aware owner split) */}
-      <RefundPanel dealFlowId={flow.id} />
+      <RefundPanel dealFlowId={flow.id} refreshKey={flow.updated_at} />
 
       {/* Pair real bank transactions to the deal's money legs → actual profit */}
       <ReconciliationPanel flow={flow} reloadKey={moneyRev} onChange={() => { setMoneyRev((n) => n + 1); onReload(); }} />

@@ -8726,7 +8726,15 @@ pub async fn get_payout_split() -> Result<Vec<Value>, String> {
     let raw: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='profit_split_json'", [], |r| r.get(0)).ok();
     let Some(j) = raw.filter(|s| !s.trim().is_empty()) else { return Ok(Vec::new()); };
     let arr: Vec<Value> = serde_json::from_str(&j).unwrap_or_default();
-    Ok(arr.iter().filter_map(|e| {
+    // R-577: an entry saved before ids were written gets the id the payout ledger knows it by (its
+    // name made into an id, as payout_core reads it), so the first rename keeps that owner's ledger.
+    let mut ledger_ids = crate::payout_core::owners_from_split_json(&arr).into_iter().map(|o| o.payee_id);
+    let ids: Vec<Option<String>> = arr.iter().map(|e| {
+        let kept = !e.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().is_empty()
+            || e.get("is_business").and_then(|x| x.as_bool()).unwrap_or(false);
+        if kept { ledger_ids.next() } else { None }
+    }).collect();
+    Ok(arr.iter().zip(ids).filter_map(|(e, ledger_id)| {
         let name = e.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let pct = e.get("pct").and_then(|x| x.as_f64()).unwrap_or(0.0);
         let is_business = e.get("is_business").and_then(|x| x.as_bool()).unwrap_or(false);
@@ -8734,7 +8742,10 @@ pub async fn get_payout_split() -> Result<Vec<Value>, String> {
         let name = if is_business && name.is_empty() { "Business".to_string() } else { name };
         let kind = e.get("kind").and_then(|x| x.as_str()).map(|s| s.to_string())
             .unwrap_or_else(|| if is_business { "business".into() } else { "person".into() });
-        Some(json!({ "name": name, "pct": pct, "is_business": is_business, "kind": kind }))
+        let mut out = json!({ "name": name, "pct": pct, "is_business": is_business, "kind": kind });
+        // R-577: the id the payout ledger knows the entry by, so a rename keeps its ledger.
+        if let Some(id) = ledger_id { out["id"] = json!(id); }
+        Some(out)
     }).collect())
 }
 

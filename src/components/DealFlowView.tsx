@@ -18,6 +18,7 @@ import RefundWorkspace from "./RefundWorkspace";
 import ResoldNote from "./ResoldNote";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import StatusPill from "./StatusPill";
+import { DealPayoutsBox } from "./PayoutLedger";
 import { FreightChip, FreightPanel, UnlinkedShipments, useShipmentChanges, useDeliveredDeals } from "./FreightTracking";
 import DealShipping, { MoveToLogistics } from "./DealShipping";
 import StepBar from "./StepBar";
@@ -2584,21 +2585,25 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         </div>
       )}
 
-      {/* Profit split (completed + profitable) */}
-      {(split.length > 0 || logiPay.amount > 0.005 || logiPay.pending) && (
-        <div className="rounded-lg border border-line bg-surface px-4 py-3">
-          <div className="text-[12px] font-medium text-muted mb-2">Profit split</div>
-          <div className="flex flex-wrap gap-x-6 gap-y-2">
-            <LogisticsPayCell pay={logiPay} />
-            {split.map((it, i) => (
-              <div key={i}>
-                <div className="text-[11px] text-muted">{it.name}</div>
-                <div className="text-[13px] font-semibold text-success-ink tabular-nums">{fmtAmount(it.amount)}</div>
-              </div>
-            ))}
+      {/* R-577: who gets paid what, from the server's ledger: the reps on the deal, a projection
+          before it completes, and any line typed over. Where the server cannot answer (offline, or
+          not an admin) the profit split as this computer works it out. */}
+      <DealPayoutsBox dealFlowId={flow.id} refreshKey={`${flow.updated_at}|${flow.stage}|${refundTotal}`} fallback={
+        (split.length > 0 || logiPay.amount > 0.005 || logiPay.pending) ? (
+          <div className="rounded-lg border border-line bg-surface px-4 py-3">
+            <div className="text-[12px] font-medium text-muted mb-2">Profit split</div>
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+              <LogisticsPayCell pay={logiPay} />
+              {split.map((it, i) => (
+                <div key={i}>
+                  <div className="text-[11px] text-muted">{it.name}</div>
+                  <div className="text-[13px] font-semibold text-success-ink tabular-nums">{fmtAmount(it.amount)}</div>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        ) : null
+      } />
 
       {/* ── Complete action area ── */}
       {canComplete && shipHold === "idle" && (

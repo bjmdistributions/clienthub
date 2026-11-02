@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
+import { DealPayoutsBox } from "./PayoutLedger";
 import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 import {
@@ -342,24 +343,29 @@ function DealBreakdown({
         </div>
       )}
 
-      {/* Profit split — config-driven; hidden until payouts are set up */}
-      {flow.net_profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending) && (
-        <div className="bg-surface border border-line rounded-xl px-4 py-3">
-          <p className="text-[12.5px] font-medium text-muted mb-3">
-            Profit split
-          </p>
-          <div className="flex flex-wrap gap-4 text-center">
-            <LogisticsPayCell pay={logiPay} big />
-            {alloc.map((item, i) => (
-              <div key={i} className="flex-1 min-w-[90px]">
-                <div className="text-[12px] text-muted truncate">{item.name}</div>
-                <div className="text-[18px] font-bold text-success-ink tabular-nums mt-0.5">
-                  {fmtAmount(item.amount)}
-                </div>
+      {/* R-577: who gets paid what, from the server's ledger; where it cannot answer (offline, or
+          not an admin), the profit split as this computer works it out. */}
+      {flow.stage === "complete" && (
+        <DealPayoutsBox dealFlowId={flow.id} refreshKey={flow.updated_at} fallback={
+          (flow.net_profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending)) ? (
+            <div className="bg-surface border border-line rounded-xl px-4 py-3">
+              <p className="text-[12.5px] font-medium text-muted mb-3">
+                Profit split
+              </p>
+              <div className="flex flex-wrap gap-4 text-center">
+                <LogisticsPayCell pay={logiPay} big />
+                {alloc.map((item, i) => (
+                  <div key={i} className="flex-1 min-w-[90px]">
+                    <div className="text-[12px] text-muted truncate">{item.name}</div>
+                    <div className="text-[18px] font-bold text-success-ink tabular-nums mt-0.5">
+                      {fmtAmount(item.amount)}
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
+          ) : null
+        } />
       )}
 
       {/* Backlog date editor */}
