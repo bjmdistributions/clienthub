@@ -9,7 +9,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, FileSpreadsheet, Plus, Search, X } from "lucide-react";
-import { api, type ComingBuy } from "../lib/api";
+import { api, type BuyBrief, type ComingBuy } from "../lib/api";
 import { bucketLine, bucketName, buckets, byStyle, defaultTabs, groupsOf, layoutText, lineDesc, lineMatches, lineQty, linesOfTabs, lineStatus, listingCount, offText, lineTitle, rowsText, palletMeta, palletNames, pctRate, pendingTakeKey, pickKey, sizesText, tabKind, unitWord, type Bucket, type PalletView, type CaseLine, type LineCount, type LineLeft, type LoadDetail, type LoadLine, type LoadOut, type LoadSummary, type ManifestRead, type Pick, type PickPlan, type PicturesAdded, type WhCase } from "../lib/deliveries";
 import { INVOICE_PREFILL_KEY, WAREHOUSE_OPEN_KEY, type InvoicePrefill } from "../lib/warehouse";
 import { standsOn, type DeliveryOpen, type FloorRequest } from "../lib/floor";
@@ -19,7 +19,7 @@ import { waitingUnits } from "../lib/receive";
 import ComingBuys from "./ComingBuys";
 import LinkDelivery from "./LinkDelivery";
 import { canSeePayments } from "../lib/dealPayments";
-import { openBuyInDealFlow } from "../lib/buyLoads";
+import { openBuyInDealFlow, perUnit } from "../lib/buyLoads";
 import { can, isAdmin } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import { toast } from "./Toast";
@@ -428,6 +428,40 @@ function ManifestPreview({ read, fileName, path, forBuyName, onCancel, onSaved, 
 
 // ---- One delivery: its pallets, and against the manifest -------------------------------
 
+/** R-576: the delivery's buy, for the one cost a pair every tab shows. Read again after a sync and whenever `again` changes. */
+function useBuyBrief(loadId: string, again: string): BuyBrief | null | undefined {
+  const [b, setB] = useState<BuyBrief | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    let un: (() => void) | undefined;
+    const read = () => api.warehouseBuyFor({ loadId }).then((r) => { if (alive) setB(r.buy); }).catch(() => { if (alive) setB(null); });
+    void read();
+    listen("netsync-applied", () => { void read(); }).then((u) => { if (alive) un = u; else u(); }).catch(() => {});
+    return () => { alive = false; un?.(); };
+  }, [loadId, again]);
+  return b;
+}
+
+/** R-576: the cost a pair (goods + trucks, never the logistics markup), on every tab of a delivery, and the way to record
+ *  what was paid when nothing is. Jack: "the fact i have to click my sheet and hit the buy tab to even configure this". */
+function CostStrip({ buy, onOpen }: { buy: BuyBrief | null; onOpen: () => void }) {
+  return (
+    <div className={`${WH_CARD} px-4 py-2.5 mb-4 flex items-center justify-between gap-3 flex-wrap`}>
+      {buy ? (
+        <p className="text-[13px] text-ink-2 tabular-nums min-w-0">
+          Cost a pair <span className="font-semibold text-ink">{perUnit(buy.unit_goods + buy.unit_ship)}</span>
+          {buy.unit_ship > 0 && <> ({perUnit(buy.unit_goods)} goods + {perUnit(buy.unit_ship)} trucks)</>}
+          {" "}· {n0(buy.sold)} of {n0(buy.units_bought)} pairs sold
+          {buy.unit_markup > 0 && <span className="text-muted"> · Logistics markup {perUnit(buy.unit_markup)} a pair, not in your cost</span>}
+        </p>
+      ) : (
+        <p className="text-[13px] text-warning-ink min-w-0">What you paid for this delivery is not recorded, so no cost goes on the deals of what you sell from it.</p>
+      )}
+      <button onClick={onOpen} className={buy ? WH_BTN_SECONDARY : WH_BTN_PRIMARY}>{buy ? "Cost and sales" : "Record what you paid"}</button>
+    </div>
+  );
+}
+
 /** R-550: which of a delivery's pallets stand on a live building (pallet number to building id). */
 function useOnFloor(loadId: string): Record<number, string> {
   const [placed, setPlaced] = useState<Record<number, string>>({});
@@ -456,6 +490,8 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
   const [tab, setTab] = useState<"pallets" | "check" | "sell" | "buy">("pallets");
   // R-551: a buy was just attached to this delivery (Add the manifest): show it.
   useEffect(() => { if (openOnBuy) setTab("buy"); }, [openOnBuy]);
+  const numbers = canSeePayments(useSessionMe());
+  const buy = useBuyBrief(L.id, `${tab}|${d.outs.length}|${d.outs.filter((o) => o.undone).length}`);
   const pallets: PalletView[] = d.pallets ?? [];
   const [pallet, setPallet] = useState<number | null>(() => start?.pallet ?? (d.pallets ?? [])[0]?.pallet ?? null);
   // R-550: opened from the floor plan on one pallet, straight into the box editor, and back there after.
@@ -631,13 +667,14 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
           <p className="text-[12px] text-muted mt-0.5 tabular-nums">
             <span className="text-ink-2 font-medium">{n0(T.received)}</span> of {n0(T.expected)} {unitWord(L)} in · {many(T.cases, "box", "boxes")} on {many(pallets.length, "pallet", "pallets")}
             {(T.unmatched ?? 0) > 0 && <> · {n0(T.unmatched ?? 0)} waiting to be matched</>}
-            {T.received > 0 && <> · {money(T.cost)} cost, {money(T.msrp)} MSRP in</>}
+            {T.received > 0 && !buy && <> · {money(T.cost)} manifest cost, {money(T.msrp)} MSRP in</>}
+            {T.received > 0 && buy && <> · {money(T.msrp)} MSRP in</>}
           </p>
           {L.archived && <p className="text-[12px] text-warning-ink mt-1">This delivery was removed. Bring it back to add cases.</p>}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {live && <button onClick={() => { setDraft(null); setSaved(null); setReceiving(true); }} className={WH_BTN_PRIMARY} title="Scan each tag into its box, box after box">Receive</button>}
-          <Seg size="md" value={tab} onChange={setTab} options={[{ key: "pallets", label: "Pallets" }, { key: "check", label: "Against the manifest" }, { key: "sell", label: "Sell" }, { key: "buy", label: "Buy" }]} />
+          <Seg size="md" value={tab} onChange={setTab} options={[{ key: "pallets", label: "Pallets" }, { key: "check", label: "Against the manifest" }, { key: "sell", label: "Sell" }, { key: "buy", label: "Cost and sales" }]} />
           {renaming == null && <button onClick={() => setRenaming(L.name)} className={WH_BTN_SECONDARY}>Rename</button>}
           {(live || listing) && <button onClick={toListing} className={WH_BTN_SECONDARY} title="A listing for your storefront and newsletters. Its count follows this delivery after every sale">{listing ? "Open listing" : "Make a listing"}</button>}
           {live && <button onClick={() => setAddingLine("")} className={WH_BTN_SECONDARY}>Add a style not on the manifest</button>}
@@ -662,7 +699,9 @@ function DeliveryScreen({ d, merge, setEditing, onBack, start, onFloor, openOnBu
         } catch (e) { toast(String(e), "error"); }
       }} />}
 
-      {tab === "buy" ? <BuyPanel loadId={L.id} stockName={L.name} unit="pairs" defaultUnits={T.expected} /> : tab === "check" ? <CheckView lines={lines} counts={counts} totals={T} pallets={pallets} /> : tab === "sell" ? <SellView d={d} lines={lines} merge={merge} live={live} /> : (
+      {numbers && buy !== undefined && tab !== "buy" && <CostStrip buy={buy} onOpen={() => setTab("buy")} />}
+
+      {tab === "buy" ? <BuyPanel loadId={L.id} stockName={L.name} unit="pairs" defaultUnits={T.expected} /> : tab === "check" ? <CheckView lines={lines} counts={counts} totals={T} pallets={pallets} /> : tab === "sell" ? <SellView d={d} lines={lines} merge={merge} live={live} buy={buy ?? null} /> : (
         <div className="grid gap-4 grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)]">
           <div className="space-y-2">
             {live && <button onClick={startPallet} disabled={palletBusy} className={`${WH_BTN_SECONDARY} w-full justify-center`}><Plus size={14} /> Start pallet {nextPallet}</button>}
@@ -1030,7 +1069,7 @@ function readJson<T>(key: string, fallback: T): T {
   try { const v = JSON.parse(localStorage.getItem(key) || "null"); return v ?? fallback; } catch { return fallback; }
 }
 
-function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[]; merge: (d: LoadDetail) => void; live: boolean }) {
+function SellView({ d, lines, merge, live, buy }: { d: LoadDetail; lines: LoadLine[]; merge: (d: LoadDetail) => void; live: boolean; buy: BuyBrief | null }) {
   const loadId = d.load.id;
   const left = useMemo(() => Object.fromEntries(d.stock.lines.map((l) => [l.line_id, l])) as Record<string, LineLeft>, [d.stock.lines]);
   const leftOf = useCallback((lid: string, size: string) => left[lid]?.sizes.find((z) => z.size === size)?.left ?? 0, [left]);
@@ -1099,7 +1138,11 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
   const totalPairs = bs.reduce((a, b) => a + b.pairs, 0), totalStyles = bs.reduce((a, b) => a + b.styles, 0);
   const rateOf = (b: Bucket) => { const v = Number(String(rates[b.key] ?? "").replace(/[$,\s]/g, "")); return v > 0 ? Math.round(v * 100) / 100 : 0; };
   const orderTotal = bs.reduce((a, b) => a + Math.round(b.pairs * rateOf(b) * 100) / 100, 0);
-  const orderCost = bs.reduce((a, b) => a + b.cost, 0);
+  // R-576: with a buy, the pairs cost what the buy says a pair costs (goods + trucks), the figure their deal gets; the
+  // manifest's cost column only stands in while no buy is recorded.
+  const pairCost = buy ? buy.unit_goods + buy.unit_ship : null;
+  const costOf = (b: Bucket) => (pairCost != null ? Math.round(b.pairs * pairCost * 100) / 100 : b.cost);
+  const orderCost = bs.reduce((a, b) => a + costOf(b), 0);
   const ready = bs.length > 0 && bs.every((b) => rateOf(b) > 0);
   const pastBoxes = Object.entries(pick).reduce((a, [lid, sizes]) => a + Object.entries(sizes).reduce((b, [z, n]) => b + Math.max(0, n - leftOf(lid, z)), 0), 0);
 
@@ -1162,7 +1205,7 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
             <div key={b.key} className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-line last:border-b-0">
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-semibold text-ink">{bucketName(b)}</div>
-                <div className="text-[12px] text-muted tabular-nums">{n0(b.pairs)} pairs, {many(b.styles, "style", "styles")} · cost {money(b.cost)} · MSRP {money(b.msrp)}</div>
+                <div className="text-[12px] text-muted tabular-nums">{n0(b.pairs)} pairs, {many(b.styles, "style", "styles")} · cost {money(costOf(b))} · MSRP {money(b.msrp)}</div>
               </div>
               <label className="text-[12px] text-muted">Price a pair
                 <input value={rates[b.key] ?? ""} inputMode="decimal" placeholder="0.00" style={WH_INPUT_BG} className={`${WH_INPUT} w-28 mt-1 tabular-nums`}
@@ -1174,9 +1217,9 @@ function SellView({ d, lines, merge, live }: { d: LoadDetail; lines: LoadLine[];
         </div>
         <div className={`${WH_CARD} p-4 mt-3`}>
           <div className="flex justify-between text-[13.5px]"><span className="text-ink-2">Order total</span><span className="font-semibold text-ink tabular-nums">{money(orderTotal)}</span></div>
-          <div className="flex justify-between text-[12.5px] text-muted mt-1"><span>What the pairs cost</span><span className="tabular-nums">{money(orderCost)}</span></div>
+          <div className="flex justify-between text-[12.5px] text-muted mt-1"><span>{pairCost != null ? `What the pairs cost, ${perUnit(pairCost)} a pair from the buy` : "What the pairs cost on the manifest"}</span><span className="tabular-nums">{money(orderCost)}</span></div>
           {orderTotal > 0 && orderTotal < orderCost && <p className="text-[12.5px] text-warning-ink mt-1">This order is {money(Math.round((orderCost - orderTotal) * 100) / 100)} below what the pairs cost.</p>}
-          <p className="text-[12px] text-muted mt-2">The cost is shown so you can enter it in Deal Flow. Pairs leave this delivery only when the invoice is created.</p>
+          <p className="text-[12px] text-muted mt-2">{pairCost != null ? "The invoice puts this cost on its deal, at the same price a pair." : "No buy is recorded on this delivery, so no cost goes on the deal. Record what you paid on Cost and sales."} Pairs leave this delivery only when the invoice is created.</p>
           <div className="flex gap-2 mt-3">
             <button onClick={send} disabled={!ready} className={WH_BTN_PRIMARY}>Send to invoice</button>
             <button onClick={() => setTray(false)} className={WH_BTN_SECONDARY}>Back to picking</button>

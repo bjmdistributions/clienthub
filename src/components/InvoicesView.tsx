@@ -704,7 +704,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
   const builtCount = !initial && prefill?.built ? (prefill.lines || []).reduce((a, l) => a + Math.max(0, Math.round(l.qty || 0)), 0) : 0;
   const buyCount = buyLoad ? dlPairs : whUnits > 0 ? whUnits : builtCount;
   const buyGoods = buyCost ?? (buy ? Math.round(buyCount * buy.unit_goods * 100) / 100 : 0);
-  // R-551: the cost each (goods, shipping in and his markup), what the order costs, and the profit against what the lines charge
+  // R-551: the cost each (goods and shipping in; R-576: never his markup), what the order costs, and the profit against what the lines charge
   // (shipping lines left out: that truck's cost is not known yet), live as the lines change. Never on the PDF.
   const buyMath = buy ? invoiceCost({ unitGoods: buy.unit_goods, unitShip: buy.unit_ship, unitMarkup: buy.unit_markup ?? 0, count: buyCount, goodsTyped: buyCost, charging: chargingOf(items) }) : null;
   const buyLines = buy && buyMath ? invoiceCostLines(buyMath, { count: buyCount, unitShip: buy.unit_ship, unitMarkup: buy.unit_markup ?? 0, typed: buyCost !== null }) : null;

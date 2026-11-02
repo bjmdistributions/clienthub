@@ -6,7 +6,7 @@ import {
   Clock, Wallet, Send, CircleHelp, type LucideIcon,
 } from "lucide-react";
 import {
-  api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit, isResoldLine, allocateDealPayout, dealPayoutIncluded, dealPayoutRecipients,
+  api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit, isResoldLine, isBuyLine, removeLineAsk, allocateDealPayout, dealPayoutIncluded, dealPayoutRecipients,
   type FreightBooking, type FreightFile, type DealReconciliation,
 } from "../lib/api";
 import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount, projectedCostOf, shippingEstimateOf, isShippingLine, owedToSupplier } from "../lib/format";
@@ -14,6 +14,7 @@ import { legLine, openLegs, type LegKey } from "../lib/dealLegs";
 import { toast } from "./Toast";
 import { LinkDeliveryModal } from "./LinkDelivery";
 import ReconciliationPanel from "./ReconciliationPanel";
+import OpenLegReasons from "./OpenLegReasons";
 import RefundWorkspace from "./RefundWorkspace";
 import ResoldNote from "./ResoldNote";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -1442,7 +1443,7 @@ function DealFlowCard({
               {section === "supplier" && <SectionSupplier flow={flow} onReload={onReload} onAdvance={() => advance("supplier")} locked={locked} />}
               {section === "link"     && <SectionLink     flow={flow} onReload={onReload} onAdvance={() => advance("link")} />}
               {section === "shipping" && <DealShipping flow={flow} onReload={onReload} locked={locked} dealPaid={pay.buyerIn} onAdvance={() => advance("shipping")} />}
-              {section === "profit"   && <SectionProfit   flow={flow} onAdvance={() => advance("profit")} />}
+              {section === "profit"   && <SectionProfit   flow={flow} onReload={onReload} onAdvance={() => advance("profit")} />}
               {section === "complete" && <PanelComplete   flow={flow} onReload={onReload} />}
               {section === "refund"   && <SectionRefund   flow={flow} onReload={onReload} />}
             </div>
@@ -1825,6 +1826,8 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   };
 
   const removePayment = async (pid: string) => {
+    const line = (flow.supplier_payments || []).find((x) => x.id === pid);
+    if (line && isBuyLine(line) && !confirm(removeLineAsk(line))) return;
     try {
       await api.removeSupplierPayment(flow.id, pid);
       if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch {} }
@@ -2186,7 +2189,7 @@ function DealNotes({ flow, onReload }: { flow: DealFlow; onReload: () => void })
 }
 
 // ─── Section 4: Profit from financials ────────────────────────────────────
-function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => void }) {
+function SectionProfit({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: () => void; onAdvance: () => void }) {
   const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
   useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id, flow.updated_at]);
 
@@ -2226,11 +2229,12 @@ function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => v
       {open.length > 0 && legs && (
         <div className="rounded-lg border border-danger/30 bg-danger-bg px-3 py-2.5 text-[12.5px] space-y-1">
           <div className="text-[12px] font-semibold text-danger-ink">{open.length === 1 ? "A payment is not linked yet" : `${open.length} payments are not linked yet`}</div>
-          {open.map((k) => (
+          {open.filter((k) => k === "shipping" && flow.shipping_mode).map((k) => (
             <div key={k} className={legs[k].state === "missing" ? "text-danger-ink" : "text-warning-ink"}>{legLine(k, legs[k])}</div>
           ))}
           {open.some((k) => !(k === "shipping" && flow.shipping_mode)) && (
-            <div className="text-[11.5px] text-ink-2 pt-0.5">Link it in Link financials, add it by hand there if it was cash, or mark it No payment recorded with a note.</div>
+            <OpenLegReasons flow={flow} legs={legs} keys={open.filter((k) => !(k === "shipping" && flow.shipping_mode))}
+              onSaved={() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); onReload(); }} />
           )}
           {/* A Logistics carrier has its own question on completion (Mark done, or why no carrier is paid). */}
           {flow.shipping_mode && open.includes("shipping") && (
@@ -2494,11 +2498,9 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           <Row label="Shipping" value={fmtAmount(recShip)} clr="text-ink-2" />
         </div>
         {open.length > 0 && recon?.legs && (
-          <div className="mt-2.5 rounded-lg border border-danger/30 bg-danger-bg px-3 py-2 text-[12px] space-y-0.5">
-            {open.map((k: LegKey) => (
-              <div key={k} className={recon.legs![k].state === "missing" ? "text-danger-ink" : "text-warning-ink"}>{legLine(k, recon.legs![k])}</div>
-            ))}
-            <div className="text-[11.5px] text-ink-2 pt-0.5">Link it in Link financials, add it by hand there if it was cash, or mark it No payment recorded with a note.</div>
+          <div className="mt-2.5 rounded-lg border border-danger/30 bg-danger-bg px-3 py-2.5 text-[12px]">
+            <OpenLegReasons flow={flow} legs={recon.legs} keys={open}
+              onSaved={() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); onReload(); }} />
           </div>
         )}
         {!isComplete && carrierDue && !waiveCarrier && (
@@ -2691,12 +2693,12 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
             </span>
           </button>
           <button onClick={handleCompleteClick} disabled={saving || open.length > 0 || !moneyLinked || gateBlocks || carrierBlocks || (holdMode && held)}
-            title={open.length > 0 ? "Link or mark every payment first"
+            title={open.length > 0 ? "Link the rest, or save a reason for each short payment above"
               : gateBlocks ? `Held until ${dayLabel(gate!.date)}, override above with a reason`
               : !moneyLinked ? "Confirm all money is linked first"
               : carrierBlocks ? "Say why no carrier is paid first" : undefined}
             className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[14px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-            {open.length > 0 ? "Complete deal: link or mark every payment first"
+            {open.length > 0 ? "Complete deal: link the rest or save a reason above"
               : gateBlocks ? `Complete deal: held until ${dayLabel(gate!.date)}`
               : !moneyLinked ? "Complete deal: confirm money linked above"
               : holdMode ? (held ? "Marked done: waiting for the carrier payment" : "Mark done: completes when the carrier is paid")

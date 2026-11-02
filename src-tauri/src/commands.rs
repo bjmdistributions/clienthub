@@ -1727,6 +1727,26 @@ fn pnl_rollup(cat_dir_amt: &[(String, String, f64)]) -> PnlRollup {
     PnlRollup { lines, group_totals, net_income, transfers_net, tax_passthrough_net, uncategorized_net }
 }
 
+/// R-579: (net income, estimated tax paid) for `year`, both over counted rows. Net income is
+/// `pnl_rollup`'s, the figure the year P&L export prints; estimated tax paid is the Owner
+/// estimated tax category, out less in. The tax set-aside on Free cash is built on these.
+pub(crate) fn year_tax_base(conn: &rusqlite::Connection, year: i32) -> (f64, f64) {
+    let lo = format!("{year}-01-01");
+    let hi = format!("{}-01-01", year + 1);
+    let rows: Vec<(String, String, f64)> = conn
+        .prepare(&format!(
+            "SELECT COALESCE(category,''), direction, SUM(amount) FROM bank_txn \
+             WHERE posted_at >= ?1 AND posted_at < ?2 AND {} GROUP BY COALESCE(category,''), direction",
+            crate::bank_flags::counted("bank_txn")))
+        .and_then(|mut st| st.query_map([&lo, &hi], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    let net = pnl_rollup(&rows).net_income;
+    let paid = rows.iter().filter(|(c, _, _)| c == "estimated_tax")
+        .map(|(_, d, a)| if d == "out" { *a } else { -*a }).sum::<f64>();
+    (net, paid)
+}
+
 /// `posted_at` is a bank-supplied calendar date, not a UTC instant (same treatment
 /// as `deal_flows.completed_at` in `central_month_window`), so the year window is a
 /// plain half-open date range — no `date('now')`, no tz shift needed.
@@ -5827,7 +5847,9 @@ pub async fn remove_supplier_payment(id: String, payment_id: String) -> Result<(
     if df.stage == "complete" { return Err("Cannot modify completed deal flow".into()); }
 
     let mut payments = df.supplier_payments.clone();
-    if payments.iter().any(|p| p.id == payment_id && is_buy_line(p)) { return Err(BUY_LINE_LOCKED.into()); }
+    // R-576: removing a buy's line puts the order's pairs back on its delivery, which takes the line off (Jack: "back on
+    // the shelf"). Anything else about the line is still changed on the buy.
+    if payments.iter().any(|p| p.id == payment_id && is_buy_line(p)) { return crate::warehouse_buys::remove_buy_line(&payment_id).await; }
     if let Some(line) = payments.iter().find(|p| p.id == payment_id && is_resold_line(p)).cloned() {
         // R-438: removing either half of a resold pair undoes the whole move (the phone in the
         // App Store has a Remove button on these lines and no Undo); a half on its own never goes.
@@ -6714,7 +6736,7 @@ pub(crate) fn is_buy_line(p: &SupplierPayment) -> bool {
 
 /// Shown verbatim on every surface (identical to the server's).
 pub(crate) const BUY_LINE_LOCKED: &str =
-    "This cost comes from a buy in the Warehouse. Change it on that product's or delivery's Buy tab.";
+    "This cost comes from a buy in the Warehouse. Change it on that product's Buy tab or that delivery's Cost and sales.";
 
 const RESOLD_LINE_LOCKED: &str =
     "This cost is one half of a resold move, so it cannot be changed on its own. Remove it to undo the whole move, or use Undo on the deal's refund step.";
@@ -18239,10 +18261,34 @@ pub async fn list_retracted() -> Result<Vec<Value>, String> {
     }).collect())
 }
 
-/// R-497: remove a row the bank cancelled — retracted, and no posted copy arrived inside the
-/// pairing window. Its deal links go with it: the money never moved. A refund, loan, purchase,
-/// expense or bill payment tied to it refuses, since a person has to move those. Backed up
-/// first (allocations inline), deleted through the oplog.
+/// R-579: a person says a posted row is NOT the retracted row's copy. Written on both rows
+/// (`raw_json.nt`, kept through sync) so the pair is never offered or carried again, on any device.
+#[tauri::command]
+pub async fn mark_takeover_not_same(retracted_id: String, posted_id: String) -> Result<Value, String> {
+    let now = Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    for (a, b) in [(&retracted_id, &posted_id), (&posted_id, &retracted_id)] {
+        let raw: String = conn.query_row("SELECT COALESCE(raw_json,'') FROM bank_txn WHERE id=?1", [a], |r| r.get(0))
+            .map_err(|_| "That transaction is no longer in the ledger.".to_string())?;
+        let rj = crate::bank_dedup::with_not_same(&raw, b);
+        let mut c = Map::new();
+        c.insert("raw_json".into(), Value::String(rj.clone()));
+        c.insert("updated_at".into(), Value::String(now.clone()));
+        sync::record_upsert("bank_txn", a, c).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE bank_txn SET raw_json=?1, updated_at=?2 WHERE id=?3", rusqlite::params![rj, now, a]).map_err(|e| e.to_string())?;
+    }
+    drop(conn);
+    crate::netsync::push_now();
+    Ok(json!({ "marked": true }))
+}
+
+/// R-497: remove a row the bank retracted. Its deal links go with it: the money never moved under
+/// this row. A refund, loan, purchase, expense or bill payment tied to it refuses, since a person
+/// has to move those. Backed up first (allocations inline), deleted through the oplog.
+///
+/// R-579: offered on every retracted row, not only after ten days with no match. Jack: "i cant
+/// even remove some stuff". The rule still only knows a row is withdrawn; whether the bank
+/// cancelled it or posted it under another name is his call, made on the row in front of him.
 #[tauri::command]
 pub async fn remove_cancelled_txn(id: String) -> Result<Value, String> {
     if !crate::employees::session_is_privileged() {
@@ -18252,12 +18298,10 @@ pub async fn remove_cancelled_txn(id: String) -> Result<Value, String> {
     let mut touched: std::collections::HashSet<String> = std::collections::HashSet::new();
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let rows = load_dedup_rows(&conn)?;
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let offered = crate::bank_dedup::retracted_rows(&rows, &account_alias_map(), &today)
-            .iter().any(|r| r.id == id && r.cancelled);
-        if !offered {
-            return Err("Nothing was changed: your bank has not cancelled that one (it may have a posted copy now).".into());
+        let raw: String = conn.query_row("SELECT COALESCE(raw_json,'') FROM bank_txn WHERE id=?1", [&id], |r| r.get(0))
+            .map_err(|_| "Nothing was changed: that transaction is no longer in the ledger.".to_string())?;
+        if !crate::bank_dedup::pending_and_retracted(&raw).1 {
+            return Err("Nothing was changed: your bank has not withdrawn that one. Remove it from the Ledger instead.".into());
         }
         let blocked: i64 = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=?1) \
@@ -20962,56 +21006,90 @@ pub async fn dedupe_bank_txns(dry_run: bool, aggressive: bool) -> Result<Value, 
 /// everything it refuses lands in a read-only "needs your review" list — so a duplicate the
 /// user can SEE had no way to be removed. This is that missing exit.
 ///
-/// Safety mirrors the dedupe path exactly:
+/// Safety mirrors the dedupe path:
 ///   * admin only,
-///   * a row linked to a deal / loan / refund is NEVER deleted (it would silently change
-///     recorded profit) — it's skipped and reported back,
-///   * every removed row is copied to `bank_txn_deleted_backup` first,
+///   * a row tied to a refund, loan, cash purchase, expense or bill payment is NEVER deleted
+///     here (a person moves those first); it is skipped and reported back,
+///   * every removed row is copied to `bank_txn_deleted_backup` first, allocations inline,
 ///   * the delete goes through the oplog so it propagates instead of resurrecting.
+///
+/// R-579: a row booked with only a category removes; it used to be refused as "booked". A row
+/// tied to a deal is reported back under `needs_unlink` with the deals named, and removes with
+/// its links (the deals re-synced) when the caller confirms with `unlink`.
 #[tauri::command]
-pub async fn delete_bank_txns(ids: Vec<String>) -> Result<Value, String> {
+pub async fn delete_bank_txns(ids: Vec<String>, unlink: Option<bool>) -> Result<Value, String> {
     if !crate::employees::session_is_privileged() {
         return Err("Only an admin can delete transactions.".into());
     }
     if ids.is_empty() {
-        return Ok(json!({ "deleted": 0, "skipped_booked": 0 }));
+        return Ok(json!({ "deleted": 0, "skipped_booked": 0, "needs_unlink": [] }));
     }
+    let unlink = unlink.unwrap_or(false);
 
     let now = chrono::Utc::now().to_rfc3339();
     let mut deleted = 0usize;
     let mut skipped_booked = 0usize;
+    let mut needs_unlink: Vec<Value> = Vec::new();
+    let mut touched: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for id in &ids {
-        {
-            let conn = pool().get().map_err(|e| e.to_string())?;
-            // Booked money is never removed behind the user's back.
-            if bank_txn_is_referenced(&conn, id) {
-                skipped_booked += 1;
-                continue;
-            }
-            let row_json: Option<String> = conn.query_row(
-                "SELECT json_object('id',id,'org_id',org_id,'account_id',account_id,'posted_at',posted_at,'amount',amount,\
-                    'direction',direction,'description',description,'memo_raw',memo_raw,'category',category,\
-                    'counterparty_name',counterparty_name,'source_format',source_format,'reviewed',reviewed,\
-                    'imported_at',imported_at,'created_at',created_at,'updated_at',updated_at) FROM bank_txn WHERE id=?1",
-                [id], |r| r.get(0)).ok();
-            if row_json.is_none() { continue; } // already gone
-            if let Some(rj) = row_json {
-                let _ = conn.execute(
-                    "INSERT OR REPLACE INTO bank_txn_deleted_backup (id, row_json, survivor_id, reason, deleted_at) VALUES (?1,?2,?3,?4,?5)",
-                    rusqlite::params![id, rj, "", "manual", now]);
-            }
-        }
-        let _ = sync::record_delete("bank_txn", id);
         let conn = pool().get().map_err(|e| e.to_string())?;
+        if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [id], |_| Ok(())).is_err() { continue; } // already gone
+        // A refund, loan, purchase, expense or bill payment is its own record: a person moves it first.
+        let blocked: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=?1) \
+                 OR EXISTS(SELECT 1 FROM loan WHERE bank_txn_id=?1) \
+                 OR EXISTS(SELECT 1 FROM bank_txn WHERE id=?1 AND COALESCE(counterparty_type,'')='loan') \
+                 OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=?1) \
+                 OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=?1) \
+                 OR EXISTS(SELECT 1 FROM bill_payments WHERE bank_txn_id=?1)",
+            [id], |r| r.get(0)).unwrap_or(1);
+        if blocked != 0 { skipped_booked += 1; continue; }
+        // Deal links: named back for a confirm, or removed with the row.
+        let allocs: Vec<(String, String, String)> = conn
+            .prepare("SELECT a.id, a.deal_flow_id, \
+                             COALESCE(NULLIF(i.number,''), 'a deal') || CASE WHEN COALESCE(c.name,'')<>'' THEN ' for ' || c.name ELSE '' END \
+                        FROM bank_allocation a \
+                        LEFT JOIN deal_flows df ON df.id=a.deal_flow_id \
+                        LEFT JOIN invoices i ON i.id=df.invoice_id \
+                        LEFT JOIN clients c ON c.id=i.client_id \
+                       WHERE a.bank_txn_id=?1")
+            .and_then(|mut st| st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map(|it| it.filter_map(|x| x.ok()).collect()))
+            .map_err(|e| e.to_string())?;
+        if !allocs.is_empty() && !unlink {
+            let (desc, amount, date): (String, f64, String) = conn.query_row(
+                "SELECT COALESCE(description,''), COALESCE(amount,0), substr(COALESCE(posted_at,''),1,10) FROM bank_txn WHERE id=?1",
+                [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap_or_default();
+            let mut deals: Vec<String> = allocs.iter().map(|a| a.2.clone()).collect();
+            deals.dedup();
+            needs_unlink.push(json!({ "id": id, "description": desc, "amount": amount, "date": date, "deals": deals }));
+            continue;
+        }
+        let rj: String = conn.query_row(BANK_TXN_BACKUP_SQL, [id], |r| r.get(0))
+            .map_err(|e| format!("Nothing was changed: could not back the row up ({e})"))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO bank_txn_deleted_backup (id, row_json, survivor_id, reason, deleted_at) VALUES (?1,?2,'','manual',?3)",
+            rusqlite::params![id, rj, now])
+            .map_err(|e| format!("Nothing was changed: could not back the row up ({e})"))?;
+        for (aid, deal, _) in &allocs {
+            // Invariant 4: oplog first, so the link does not come back on the next pull.
+            sync::record_delete("bank_allocation", aid).map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM bank_allocation WHERE id=?1", [aid]).map_err(|e| e.to_string())?;
+            touched.insert(deal.clone());
+        }
+        sync::record_delete("bank_txn", id).map_err(|e| e.to_string())?;
         if conn.execute("DELETE FROM bank_txn WHERE id=?1", [id]).unwrap_or(0) > 0 { deleted += 1; }
     }
 
+    for d in &touched { let _ = resync_completed_deal(d); }
     if deleted > 0 { crate::netsync::push_now(); }
 
     Ok(json!({
         "deleted": deleted,
         "skipped_booked": skipped_booked,
+        "needs_unlink": needs_unlink,
+        "deals": touched.len(),
         "backup_table": "bank_txn_deleted_backup",
     }))
 }
@@ -21850,7 +21928,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         conn.query_row("SELECT COALESCE(raw_json,'') FROM bank_txn WHERE id=?1", [&id], |r| r.get::<_, String>(0)),
                     ) {
                         if let Ok(Value::Object(old)) = serde_json::from_str::<Value>(&old) {
-                            for k in ["rtr", "acct0", "ab", "abc", "abx", "nd"] {
+                            for k in ["rtr", "acct0", "ab", "abc", "abx", "nd", "nt"] {
                                 if let Some(v) = old.get(k) { fresh.insert(k.into(), v.clone()); }
                             }
                             rawj = Value::Object(fresh).to_string();
@@ -22398,15 +22476,16 @@ fn publish_balance_and_health() {
     let reserve = {
         let (_, _, _, parked, linked) = plaid_balances_split(&conn);
         let key = reserve_account_key(&conn);
-        let label = if key.is_empty() { String::new() } else {
-            plaid_reserve_candidates(&conn).iter()
-                .find(|a| a.get("key").and_then(|v| v.as_str()) == Some(key.as_str()))
-                .map(|a| format!("{} · {}",
-                    a.get("institution").and_then(|v| v.as_str()).unwrap_or(""),
-                    a.get("name").and_then(|v| v.as_str()).unwrap_or("Account")))
-                .unwrap_or_default()
-        };
-        json!({ "designated": !key.is_empty(), "linked": linked, "parked": (parked * 100.0).round() / 100.0, "label": label })
+        let cands = if key.is_empty() { Vec::new() } else { plaid_reserve_candidates(&conn) };
+        let chosen = cands.iter().find(|a| a.get("key").and_then(|v| v.as_str()) == Some(key.as_str()));
+        let label = chosen.map(|a| format!("{} · {}",
+                a.get("institution").and_then(|v| v.as_str()).unwrap_or(""),
+                a.get("name").and_then(|v| v.as_str()).unwrap_or("Account")))
+            .unwrap_or_default();
+        // R-579: the last four too, so the server can find the account's rows in the mirror for the
+        // phone's "moved in per the ledger" line. Not a secret: it is on every row's label already.
+        let mask = chosen.and_then(|a| a.get("mask").and_then(|v| v.as_str())).unwrap_or("").to_string();
+        json!({ "designated": !key.is_empty(), "linked": linked, "parked": (parked * 100.0).round() / 100.0, "label": label, "mask": mask })
     };
     drop(conn);
     tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks, reserve).await; });
@@ -22856,10 +22935,46 @@ pub async fn financials_overview() -> Result<Value, String> {
                  ORDER BY df2.completed_at DESC, df2.id DESC LIMIT 1))",
         np = DF_EFF_PROFIT_SQL),
         [], |r| r.get::<_, f64>(0)).unwrap_or(0.0).max(0.0);
-    let tax_reserve = (year_profit * tax_sweep_pct).max(0.0);
+    // R-579 (Jack's call, 2026-11-02): tax is owed on net income, not on deal profit. The base is
+    // the Tax report's own figure for this year (`pnl_rollup` over counted rows, what the year P&L
+    // export prints), and the estimated tax already paid comes off what should sit in savings.
+    let (tax_base, tax_paid) = year_tax_base(&conn, chrono::Datelike::year(&chrono::Local::now()));
+    let tax_reserve = (tax_base.max(0.0) * tax_sweep_pct).max(0.0);
+    let tax_should_have = (tax_reserve - tax_paid).max(0.0);
     // 30% of what we've actually netted this year — the target to park in a separate
     // refunds account. Link that account later and reconcile against this number.
     let refund_reserve = (year_profit * refund_reserve_pct).max(0.0);
+    // R-579: the savings account against the ledger. Its rows carry the label "NAME ··MASK" (or
+    // an alias of it), so they are found by the mask. Net this year is every counted row on it,
+    // in less out; the drift is the per-account check Free cash already runs (what the bank's
+    // balance implies the account opened with, against the baseline recorded for it), here for
+    // this one account, so "the ledger and the bank disagree" is said beside the target.
+    let reserve_mask = reserve_candidates.iter()
+        .find(|a| a.get("key").and_then(|v| v.as_str()) == Some(reserve_key.as_str()))
+        .and_then(|a| a.get("mask").and_then(|v| v.as_str())).unwrap_or("").to_string();
+    let (reserve_ledger_year, reserve_drift): (f64, Option<f64>) = if reserve_mask.is_empty() || !reserve_linked {
+        (0.0, None)
+    } else {
+        let sep = "\u{00b7}\u{00b7}";
+        let on_mask = format!("instr(account_id,'{sep}')>0 AND substr(account_id, instr(account_id,'{sep}')+2)=?1");
+        let counted = crate::bank_flags::counted("bank_txn");
+        let net = |since: &str| -> f64 {
+            conn.query_row(
+                &format!("SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) FROM bank_txn \
+                          WHERE {on_mask} AND posted_at >= '{since}' AND {counted}"),
+                [&reserve_mask], |r| r.get(0)).unwrap_or(0.0)
+        };
+        let year = net(&format!("{}-01-01", chrono::Datelike::year(&chrono::Local::now())));
+        let all = net("");
+        let baselines: Value = conn
+            .query_row("SELECT value FROM settings WHERE key='recon_baselines'", [], |r| r.get::<_, String>(0))
+            .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
+        let baseline = baselines.as_object().and_then(|m| m.iter()
+            .find(|(k, _)| k.ends_with(&format!("{sep}{reserve_mask}")))
+            .and_then(|(_, v)| v.as_f64()));
+        let drift = baseline.map(|b| ((reserve_parked - all) - b) * 100.0).map(|d| d.round() / 100.0);
+        (year, drift)
+    };
 
     // Loans still owed, for open loans.
     //
@@ -22901,7 +23016,9 @@ pub async fn financials_overview() -> Result<Value, String> {
     // Only the SHORTFALL, what still has to be moved, comes off the secondary line.
     // With no account designated `reserve_parked` is 0, the shortfall is the whole
     // target, and this is the old arithmetic to the cent.
-    let reserve_target = tax_reserve + refund_reserve;
+    // R-579: the tax part of the target is what should be in savings NOW, after the estimated tax
+    // already paid out of it.
+    let reserve_target = tax_should_have + refund_reserve;
     let reserve_shortfall = (reserve_target - reserve_parked).max(0.0);
     // What would be left if the reserve target were fully parked elsewhere — shown as
     // a secondary line, never as the headline figure.
@@ -22958,6 +23075,14 @@ pub async fn financials_overview() -> Result<Value, String> {
         "supplier_payables": round2(supplier_payables),
         "refund_liability": round2(refund_liability),
         "tax_reserve": round2(tax_reserve),
+        // R-579: the tax figure and its check.
+        "tax_base": round2(tax_base),
+        "tax_sweep_pct": tax_sweep_pct,
+        "tax_paid": round2(tax_paid),
+        "tax_should_have": round2(tax_should_have),
+        "reserve_ledger_year": round2(reserve_ledger_year),
+        "reserve_mask": reserve_mask,
+        "reserve_drift": reserve_drift,
         "refund_reserve": round2(refund_reserve),
         "refund_reserve_base": round2(year_profit),
         "refund_reserve_pct": refund_reserve_pct,
@@ -26910,7 +27035,20 @@ pub struct ReconAccount {
 /// change (a cleanup, a re-pull, a first run).
 #[tauri::command]
 pub async fn reconcile_accounts(rebaseline: Option<bool>) -> Result<Vec<ReconAccount>, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (out, next) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        reconcile_accounts_inner(&conn, rebaseline.unwrap_or(false))?
+    };
+    if let Some(next) = next {
+        write_setting("recon_baselines", &Value::Object(next).to_string())?;
+    }
+    Ok(out)
+}
+
+/// The check itself, read-only apart from the baselines it hands back for the caller to write
+/// (`None` when there is nothing to reconcile against). R-579: Check books reads it too, without
+/// writing baselines.
+fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Result<(Vec<ReconAccount>, Option<serde_json::Map<String, Value>>), String> {
     let aliases = account_alias_map();
     // Live balances, keyed by the SAME label the importer writes onto bank_txn rows,
     // through the same alias map — otherwise a renamed/re-masked account compares its
@@ -26937,7 +27075,7 @@ pub async fn reconcile_accounts(rebaseline: Option<bool>) -> Result<Vec<ReconAcc
         }
     }
     if bank.is_empty() {
-        return Ok(Vec::new()); // nothing to reconcile against
+        return Ok((Vec::new(), None)); // nothing to reconcile against
     }
 
     let stored: Value = conn
@@ -26963,16 +27101,159 @@ pub async fn reconcile_accounts(rebaseline: Option<bool>) -> Result<Vec<ReconAcc
         let drift = match baseline { Some(b) => r2(implied - b), None => 0.0 };
         // Keep the ORIGINAL baseline unless asked to re-accept, or there wasn't one —
         // otherwise every check silently forgives the drift it just found.
-        let keep = if rebaseline.unwrap_or(false) { implied } else { baseline.unwrap_or(implied) };
+        let keep = if rebaseline { implied } else { baseline.unwrap_or(implied) };
         next.insert(label.clone(), json!(keep));
         out.push(ReconAccount {
             account: label, bank_balance: r2(bal), ledger_net: r2(net),
             implied_opening: implied, baseline, drift, txn_count: count,
         });
     }
-    drop(conn);
-    write_setting("recon_baselines", &Value::Object(next).to_string())?;
     out.sort_by(|a, b| b.drift.abs().partial_cmp(&a.drift.abs()).unwrap_or(std::cmp::Ordering::Equal));
+    Ok((out, Some(next)))
+}
+
+/// R-579: one period of one account on Check books.
+#[derive(serde::Serialize, Clone)]
+pub struct CheckPeriod {
+    pub start: String,
+    pub end: String,
+    /// The statement covering the period, when one is imported: beginning, ending, net, rows, imported_at, file_name.
+    pub statement: Option<Value>,
+    /// In less out over the counted rows in the period.
+    pub ledger_net: f64,
+    pub ledger_rows: i64,
+    /// Statement net less ledger net. `None` with no statement.
+    pub difference: Option<f64>,
+    /// Near-duplicate pairs and exact copies the clean-up would remove, dated in the period.
+    pub duplicates: i64,
+    /// Rows the bank withdrew, still held under Retracted by bank.
+    pub withdrawn: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct CheckAccount {
+    pub account: String,
+    pub mask: String,
+    /// Today's bank balance against what the ledger implies (`reconcile_accounts`), when the bank is linked.
+    pub recon: Option<ReconAccount>,
+    pub periods: Vec<CheckPeriod>,
+}
+
+/// R-579, Jack: "I need to ensure every single bank statement has been posted and no duplicates are
+/// shown anywhere." One row per account per period since its first row. A period is an imported
+/// statement's (its net, ending less beginning, held against the ledger's counted rows) or, with no
+/// statement covering the month, the calendar month, marked as having none. Duplicates are the
+/// near-duplicate pairs and the exact copies the clean-up would remove, by the extra row's date.
+/// Read-only: nothing here changes a row or a baseline.
+#[tauri::command]
+pub async fn check_books() -> Result<Vec<CheckAccount>, String> {
+    use std::collections::{BTreeMap, HashMap, HashSet};
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let aliases = account_alias_map();
+    let acct_of = |a: &str| aliases.get(a).cloned().unwrap_or_else(|| a.to_string());
+    let rows = load_dedup_rows(&conn)?;
+    let by_id: HashMap<&str, &crate::bank_dedup::TxnRow> = rows.iter().map(|r| (r.id.as_str(), r)).collect();
+
+    // Accounts: alias-normalised labels, and labels sharing a mask folded into the one with most rows.
+    let mut label_rows: HashMap<String, usize> = HashMap::new();
+    for r in &rows { *label_rows.entry(acct_of(&r.account)).or_default() += 1; }
+    let stmts: Vec<(String, String, String, f64, f64, i64, String, String)> = conn
+        .prepare("SELECT COALESCE(account_id,''), period_start, period_end, beginning, ending, COALESCE(row_count,0), \
+                         COALESCE(imported_at,''), COALESCE(file_name,'') FROM bank_statement ORDER BY period_start")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect()))
+        .map_err(|e| e.to_string())?;
+    for s in &stmts { label_rows.entry(acct_of(&s.0)).or_default(); }
+    let mut canon: HashMap<String, String> = HashMap::new(); // label -> account name
+    {
+        let mut by_mask: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+        for (l, n) in &label_rows {
+            let m = crate::bank_dedup::label_mask(l).to_string();
+            if m.is_empty() { canon.insert(l.clone(), l.clone()); } else { by_mask.entry(m).or_default().push((*n, l.clone())); }
+        }
+        for (_, mut v) in by_mask {
+            v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            let name = v[0].1.clone();
+            for (_, l) in v { canon.insert(l, name.clone()); }
+        }
+    }
+    let name_of = |a: &str| canon.get(&acct_of(a)).cloned().unwrap_or_else(|| acct_of(a));
+
+    let (recon, _) = reconcile_accounts_inner(&conn, false)?;
+    let recon_by: HashMap<String, ReconAccount> = recon.into_iter().map(|r| (canon.get(&r.account).cloned().unwrap_or_else(|| r.account.clone()), r)).collect();
+
+    // Duplicates, by the extra row's id.
+    let mut dup_ids: HashSet<String> = HashSet::new();
+    for d in crate::bank_near_dup::near_duplicates(&near_dup_rows(&conn)?) { dup_ids.insert(d.extra_id); }
+    for g in crate::bank_dedup::plan(&rows, &aliases, false).groups { for r in g.removals { dup_ids.insert(r.id); } }
+
+    let today = chrono::Local::now().date_naive();
+    let month_of = |d: &str| d.get(..7).unwrap_or("").to_string();
+    let last_day = |ym: &str| -> String {
+        let (y, m) = (ym.get(..4).and_then(|s| s.parse::<i32>().ok()).unwrap_or(2000), ym.get(5..7).and_then(|s| s.parse::<u32>().ok()).unwrap_or(1));
+        let next = if m == 12 { chrono::NaiveDate::from_ymd_opt(y + 1, 1, 1) } else { chrono::NaiveDate::from_ymd_opt(y, m + 1, 1) };
+        next.and_then(|d| d.pred_opt()).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| format!("{ym}-28"))
+    };
+
+    let mut accounts: BTreeMap<String, Vec<&crate::bank_dedup::TxnRow>> = BTreeMap::new();
+    for r in &rows { if r.date.len() >= 7 { accounts.entry(name_of(&r.account)).or_default().push(r); } }
+    for s in &stmts { accounts.entry(name_of(&s.0)).or_default(); }
+
+    let mut out = Vec::new();
+    for (name, arows) in accounts {
+        let my_stmts: Vec<&(String, String, String, f64, f64, i64, String, String)> = stmts.iter().filter(|s| name_of(&s.0) == name).collect();
+        let first_month = arows.iter().map(|r| month_of(&r.date)).chain(my_stmts.iter().map(|s| month_of(&s.1)))
+            .filter(|m| m.len() == 7).min();
+        let Some(first_month) = first_month else { continue };
+        // Every month from the first to this one; a month a statement covers (its 15th inside the
+        // statement's period) takes the statement's period instead.
+        let mut periods: Vec<CheckPeriod> = Vec::new();
+        let mut used: HashSet<String> = HashSet::new();
+        let (mut y, mut m) = (first_month[..4].parse::<i32>().unwrap_or(2000), first_month[5..7].parse::<u32>().unwrap_or(1));
+        let this_month = today.format("%Y-%m").to_string();
+        loop {
+            let ym = format!("{y:04}-{m:02}");
+            if ym > this_month { break; }
+            let mid = format!("{ym}-15");
+            let covering = my_stmts.iter().find(|s| s.1.as_str() <= mid.as_str() && s.2.as_str() >= mid.as_str());
+            let (start, end, statement) = match covering {
+                Some(s) => {
+                    let key = format!("{}|{}", s.1, s.2);
+                    if !used.insert(key) { if m == 12 { y += 1; m = 1; } else { m += 1; } continue; }
+                    (s.1.clone(), s.2.clone(), Some(json!({
+                        "beginning": s.3, "ending": s.4, "net": ((s.4 - s.3) * 100.0).round() / 100.0,
+                        "rows": s.5, "imported_at": s.6, "file_name": s.7,
+                    })))
+                }
+                None => (format!("{ym}-01"), last_day(&ym), None),
+            };
+            let in_period = |d: &str| { let d = d.get(..10).unwrap_or(""); d >= start.as_str() && d <= end.as_str() };
+            let mut net = 0.0; let mut count = 0i64; let mut withdrawn = 0i64; let mut dups = 0i64;
+            for r in &arows {
+                if !in_period(&r.date) { continue; }
+                let (_, retracted) = crate::bank_dedup::pending_and_retracted(&r.raw_json);
+                if retracted { withdrawn += 1; continue; }
+                count += 1;
+                net += if r.dir == "in" { r.amount } else { -r.amount };
+                if dup_ids.contains(&r.id) { dups += 1; }
+            }
+            let net = (net * 100.0).round() / 100.0;
+            let difference = statement.as_ref().and_then(|s| s.get("net").and_then(|v| v.as_f64())).map(|sn| ((sn - net) * 100.0).round() / 100.0);
+            periods.push(CheckPeriod { start, end, statement, ledger_net: net, ledger_rows: count, difference, duplicates: dups, withdrawn });
+            if m == 12 { y += 1; m = 1; } else { m += 1; }
+        }
+        periods.reverse();
+        let _ = &by_id;
+        out.push(CheckAccount {
+            mask: crate::bank_dedup::label_mask(&name).to_string(),
+            recon: recon_by.get(&name).map(|r| ReconAccount {
+                account: r.account.clone(), bank_balance: r.bank_balance, ledger_net: r.ledger_net,
+                implied_opening: r.implied_opening, baseline: r.baseline, drift: r.drift, txn_count: r.txn_count,
+            }),
+            account: name,
+            periods,
+        });
+    }
     Ok(out)
 }
 

@@ -49,6 +49,14 @@ export default function RetractedRows({ rows, onChanged, onShow }: {
   };
 
   const remove = async (r: RetractedRow) => {
+    // R-579: offered on every retracted row. The rule cannot tell a cancelled charge from one the bank
+    // posted under another name; the person looking at the row can.
+    const ok = window.confirm(
+      `Remove ${fmtAmount(r.amount)} "${r.description}" from ${r.date}?\n\n` +
+        (r.booked ? "Its booking and any deal links go with it. " : "") +
+        "A copy is saved first. If the bank posted this money again, book the posted copy in To book."
+    );
+    if (!ok) return;
     setBusy(r.id);
     try {
       const res = await api.removeCancelledTxn(r.id);
@@ -56,6 +64,18 @@ export default function RetractedRows({ rows, onChanged, onShow }: {
       onChanged();
     } catch (e: any) {
       toast(typeof e === "string" ? e : e?.message || "Could not remove it", "error");
+    } finally { setBusy(null); }
+  };
+
+  // R-579: "some transactions are legit completely different and they should not be swapped."
+  const notSame = async (r: RetractedRow, m: RetractedMatch) => {
+    setBusy(r.id);
+    try {
+      await api.markTakeoverNotSame(r.id, m.id);
+      toast("Noted. That pair will not be offered or swapped again.");
+      onChanged();
+    } catch (e: any) {
+      toast(typeof e === "string" ? e : e?.message || "Could not save that", "error");
     } finally { setBusy(null); }
   };
 
@@ -87,7 +107,9 @@ export default function RetractedRows({ rows, onChanged, onShow }: {
                 </span>
                 <span className="text-[11px] text-muted">
                   {r.matches.length
-                    ? r.matches.some((m) => m.automatic) ? "Your bank posted it again. It swaps on the next bank sync." : "Your bank posted it again."
+                    ? r.matches.some((m) => m.automatic)
+                      ? "Same name, same amount: it swaps on the next bank sync unless you say it is not the same."
+                      : "A posted row looks like it. Check the name and date before you swap."
                     : r.cancelled
                       // R-518: the code knows only that nothing matched (amount within 30%, same account, a shared
                       // memo word, within 10 days), not that the bank cancelled the charge.
@@ -105,23 +127,29 @@ export default function RetractedRows({ rows, onChanged, onShow }: {
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 {r.matches.map((m) => (
-                  <button key={m.id} onClick={() => swap(r, m)} disabled={busy !== null}
-                    className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
-                    {r.matches.length === 1 ? "Swap: move the booking to the posted copy" : `Swap onto the ${m.date.slice(5)} copy`}
-                  </button>
+                  <span key={m.id} className="inline-flex items-center gap-1.5">
+                    <button onClick={() => swap(r, m)} disabled={busy !== null}
+                      className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+                      {r.matches.length === 1 ? "Swap: move the booking to the posted copy" : `Swap onto the ${m.date.slice(5)} copy`}
+                    </button>
+                    <button onClick={() => notSame(r, m)} disabled={busy !== null}
+                      title="Keep both. This pair is never offered or swapped again."
+                      className="h-8 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface disabled:opacity-40 transition-colors">
+                      {r.matches.length === 1 ? "Not the same" : `Not the ${m.date.slice(5)} one`}
+                    </button>
+                  </span>
                 ))}
-                {r.cancelled && (
-                  <button onClick={() => remove(r)} disabled={busy !== null}
-                    className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
-                    Remove it
-                  </button>
-                )}
+                <button onClick={() => remove(r)} disabled={busy !== null}
+                  className={`h-8 px-3 rounded-lg text-[12px] font-medium disabled:opacity-40 transition-colors ${
+                    r.matches.length ? "border border-line text-ink-2 hover:bg-surface" : "bg-accent hover:bg-accent-hover text-on-accent"}`}>
+                  Remove it
+                </button>
               </div>
             </div>
           ))}
           <div className="text-[11px] text-muted">
-            Swap moves the booking and deal links onto the posted copy and removes the retracted row. Remove takes the row and its deal links off the books.
-            Both write a backup first. A row tied to a refund, loan, expense or bill is never removed: move that link first.
+            Swap moves the booking and deal links onto the posted copy and removes the retracted row. Not the same keeps both and stops that pair being offered.
+            Remove takes the row and its deal links off the books. Every removal writes a backup first. A row tied to a refund, loan, expense or bill is never removed: move that link first.
           </div>
         </div>
       )}

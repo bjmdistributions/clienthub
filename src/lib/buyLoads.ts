@@ -1,6 +1,7 @@
 // R-551: a buy started in Deal Flow before its stock is here, and brought in on logistics trucks. Everything here takes
 // values and returns values so the rules are tested without a screen: how a buy's truck is named, where its steps stand,
-// what a unit costs with the shipping in and his markup, and the cost and profit on an invoice made from its stock.
+// what a unit costs with the shipping in, and the cost and profit on an invoice made from its stock. R-576: his logistics
+// markup is never in a cost; it is named on its own line wherever it applies.
 // buy_core.rs works the shares out; this only words them.
 
 import type { BuyDetail, FreightStatus, TruckRow } from "./api";
@@ -127,15 +128,13 @@ export function buySteps(d: BuyDetail, numbers: boolean): BuyStep[] {
 export const perUnit = (n: number): string =>
   Math.abs(n) < 10 && Math.abs(n) > 0 ? `$${n.toFixed(4).replace(/(\.\d\d\d*?)0+$/, "$1")}` : fmtAmount(n);
 
-/** "Each costs $1.2827 with shipping in ($1.25 goods, $0.03 trucks, $0.0027 his markup)". */
+/** "Each pair costs $1.28 with shipping in ($1.25 goods, $0.03 trucks)", then his markup in a sentence of its own (R-576:
+ *  Jack, "logistics markup should never be included into my final cost. it needs to always be clear when and where a markup is"). */
 export function costEachLine(unit: { goods: number; ship: number; markup: number }, one: string): string {
-  const each = unit.goods + unit.ship + unit.markup;
-  const parts = [
-    `${perUnit(unit.goods)} goods`,
-    ...(unit.ship > 0 ? [`${perUnit(unit.ship)} trucks`] : []),
-    ...(unit.markup > 0 ? [`${perUnit(unit.markup)} his markup`] : []),
-  ];
-  return `Each ${one} costs ${perUnit(each)}${unit.ship > 0 ? " with shipping in" : ""}${parts.length > 1 ? ` (${parts.join(", ")})` : ""}`;
+  const each = unit.goods + unit.ship;
+  const parts = [`${perUnit(unit.goods)} goods`, ...(unit.ship > 0 ? [`${perUnit(unit.ship)} trucks`] : [])];
+  return `Each ${one} costs ${perUnit(each)}${unit.ship > 0 ? " with shipping in" : ""}${parts.length > 1 ? ` (${parts.join(", ")})` : ""}.`
+    + (unit.markup > 0 ? ` Logistics markup on the trucks, ${perUnit(unit.markup)} a ${one}, is not in this cost: it is his pay, taken off the split.` : "");
 }
 
 // ─── the cost and profit on an invoice made from a buy's stock ────────────
@@ -148,7 +147,7 @@ export function chargingOf(items: { description?: string | null; amount?: number
 }
 
 export interface InvoiceCost {
-  /** Cost each: goods, shipping in and his markup. */
+  /** Cost each: goods and shipping in. R-576: never his markup. */
   each: number;
   /** The goods share of one (the typed one when the share was typed). */
   eachGoods: number;
@@ -157,20 +156,24 @@ export interface InvoiceCost {
   profit: number;
   /** Profit over what is charged, as a percent to one decimal. null while nothing is charged. */
   margin: number | null;
+  /** R-576: his logistics markup on the count, shown apart and never in `cost` or `profit`. */
+  markup: number;
 }
 
-/** The cost of `count` units and the profit against what the invoice charges. The units come from `unit_goods`, `unit_ship` and
- *  `unit_markup` unrounded, so 1,000 units cost what 1,000 of the buy cost, not 1,000 of a rounded price. A typed goods share
- *  stands in for the worked-out goods. Shipping charged to the buyer is left out of `charging`: that truck's cost is not known. */
+/** The cost of `count` units and the profit against what the invoice charges. The units come from `unit_goods` and `unit_ship`
+ *  unrounded, so 1,000 units cost what 1,000 of the buy cost, not 1,000 of a rounded price. A typed goods share stands in for the
+ *  worked-out goods. Shipping charged to the buyer is left out of `charging`: that truck's cost is not known. His markup
+ *  (`unit_markup`) is only reported, as `markup`. */
 export function invoiceCost(o: { unitGoods: number; unitShip: number; unitMarkup: number; count: number; goodsTyped?: number | null; charging: number }): InvoiceCost {
   const count = Math.max(0, o.count);
   const goods = o.goodsTyped != null ? o.goodsTyped : count * o.unitGoods;
-  const total = goods + count * o.unitShip + count * o.unitMarkup;
+  const total = goods + count * o.unitShip;
   const cost = r2(total);
   const charging = r2(o.charging);
   const profit = r2(charging - cost);
   return {
-    each: count > 0 ? total / count : o.unitGoods + o.unitShip + o.unitMarkup,
+    markup: r2(count * o.unitMarkup),
+    each: count > 0 ? total / count : o.unitGoods + o.unitShip,
     eachGoods: count > 0 ? goods / count : o.unitGoods,
     cost, charging, profit,
     margin: charging > 0.005 ? Math.round((profit / charging) * 1000) / 10 : null,
@@ -179,10 +182,10 @@ export function invoiceCost(o: { unitGoods: number; unitShip: number; unitMarkup
 
 /** The two sentences under an invoice's lines. The second leaves its profit out until something is charged. */
 export function invoiceCostLines(c: InvoiceCost, o: { count: number; unitShip: number; unitMarkup: number; typed: boolean }): [string, string] {
-  const parts = [perUnit(c.eachGoods), ...(o.unitShip > 0 ? [perUnit(o.unitShip)] : []), ...(o.unitMarkup > 0 ? [perUnit(o.unitMarkup)] : [])];
+  const parts = [perUnit(c.eachGoods), ...(o.unitShip > 0 ? [perUnit(o.unitShip)] : [])];
   const first = `${perUnit(c.each)} each${o.unitShip > 0 ? " with shipping in" : ""}${parts.length > 1 ? ` (${parts.join(" + ")})` : ""}${o.typed ? ", with the cost you typed" : ""}`;
   const second = `${n0(o.count)} cost you ${fmtAmount(c.cost)}.${c.charging > 0.005
     ? ` You are charging ${fmtAmount(c.charging)}: profit ${fmtAmount(c.profit)}${c.margin != null ? ` (${c.margin.toFixed(1)}%)` : ""}`
-    : ""}`;
+    : ""}${c.markup > 0.005 ? `${c.charging > 0.005 ? "." : ""} Logistics markup on these, ${fmtAmount(c.markup)}, is not in the cost: it comes off the split.` : ""}`;
   return [first, second];
 }

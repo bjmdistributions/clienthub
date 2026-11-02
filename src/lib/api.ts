@@ -2843,11 +2843,20 @@ export interface BankRow {
   check_num: string;
   balance: number;
 }
+/** R-579: what a statement says about itself; `ending - beginning` is its net. */
+export interface StatementInfo {
+  period_start: string;
+  period_end: string;
+  beginning: number;
+  ending: number;
+}
 export interface BankPreview {
   format: "ofx" | "csv";
   total: number;
   has_fitid: boolean;
   sample: BankRow[];
+  statement?: StatementInfo | null;
+  rows_net?: number;
 }
 export interface BankImportSummary {
   imported: number;
@@ -2857,6 +2866,24 @@ export interface BankImportSummary {
   errors: string[];
   format: "ofx" | "csv";
   has_fitid: boolean;
+  statement?: StatementInfo | null;
+}
+/** R-579: one period of one account on Check books. */
+export interface CheckPeriod {
+  start: string;
+  end: string;
+  statement: { beginning: number; ending: number; net: number; rows: number; imported_at: string; file_name: string } | null;
+  ledger_net: number;
+  ledger_rows: number;
+  difference: number | null;
+  duplicates: number;
+  withdrawn: number;
+}
+export interface CheckAccount {
+  account: string;
+  mask: string;
+  recon: ReconAccount | null;
+  periods: CheckPeriod[];
 }
 export interface BankTxn {
   id: string;
@@ -3109,14 +3136,19 @@ export interface BuyRollup {
   bought: number; sold: number; left: number; goods_total: number; ship_total: number; unit_cost: number;
   goods_paid: number; ship_paid: number; cost_sold: number; sales: number; received: number; other_cost: number;
   refunds: number; made_on_sold: number; made_so_far: number; sold_out: boolean; oversold: boolean;
-  /** R-551: his markup on the trucks that brought it in, counted in the cost a unit. */
+  /** R-551: his markup on the trucks that brought it in. R-576: never in a cost or a Made figure, shown on its own. */
   markup_total: number;
+  /** R-576: goods + shipping in, to the cent; `cost_on_hand` is the part no order has taken (the orders' shares plus it
+   *  always come to `load_cost`); `markup_sold` is his markup on the orders so far. */
+  load_cost: number; cost_on_hand: number; markup_sold: number;
 }
 export interface BuyOrder {
   id: string; invoice_id: string; number: string; client: string; stage: string; voided: boolean; count: number;
   undone: boolean; own_cost: boolean; typed: boolean; deal_flow_id?: string | null; goods: number; ship: number; markup: number;
   goods_paid: boolean; ship_paid: boolean; past_bought: boolean; cost: number; sales: number; received: number;
   other_cost: number; refunds: number; made: number; created_at: string;
+  /** R-576: the buy's line as it stands on the deal now (0 when it is not there) and what the buy says it should be. */
+  on_deal: number; wanted: number;
 }
 export interface BuyPayment {
   txn_id: string; kind: BuyKind; amount: number; posted_at: string; name: string; cash: boolean; booked_here: number; booked_elsewhere: number;
@@ -3186,6 +3218,13 @@ export function resoldMoves(flow: { metadata?: string | null } | null | undefine
 /** R-438: a cost line written by a resold move; one half of a pair, never edited alone. */
 export const isResoldLine = (p: { notes?: string | null }) =>
   !!p.notes && (p.notes.startsWith("Resold: cost moved to ") || p.notes.startsWith("Resold from ") || p.notes.startsWith("Bought back from "));
+/** R-488: a cost line a buy in the Warehouse wrote (`buy_core::LINE_NOTE_PREFIX`). */
+export const isBuyLine = (p: { notes?: string | null }) => !!p.notes && p.notes.startsWith("Buy: ");
+/** R-576: what Remove asks before it takes a line off a deal. A buy's line goes by putting its pairs back on the delivery. */
+export const removeLineAsk = (p: { notes?: string | null; quantity?: number | null }) =>
+  isBuyLine(p)
+    ? `This cost is from the buy ${p.notes!.slice(5).replace(/, shipping in$/, "")}. Removing it puts ${p.quantity ? `its ${Math.round(p.quantity).toLocaleString("en-US")} pairs` : "its pairs"} back on the delivery and the cost back on the buy. Remove it?`
+    : "Remove this cost line?";
 /** R-438: open one deal in Deal Flow on one step, from anywhere (including Deal Flow itself). */
 export function openDealFlow(invoiceNumber: string, section: string = "supplier") {
   try {
@@ -4407,6 +4446,8 @@ export const api = {
     invoke<BuyDetail>("update_warehouse_buy_order", { id, orderId, goodsTyped: patch.goodsTyped ?? null, clearTyped: patch.clearTyped ?? null, undone: patch.undone ?? null }),
   addMissingWarehouseBuyOrders: (id: string) => invoke<BuyDetail>("add_missing_warehouse_buy_orders", { id }),
   applyWarehouseBuy: (id: string) => invoke<BuyDetail>("apply_warehouse_buy", { id }),
+  /** R-576: take a buy's line off its deal by putting the order's pairs back on the delivery. */
+  putBackBuyOrder: (id: string, orderId: string) => invoke<BuyDetail>("put_back_buy_order", { id, orderId }),
   warehouseImportPreview: (rows: string[][], mapping: Mapping) => invoke<ImportResult>("warehouse_import_preview", { rows, mapping }),
   warehouseImport: (rows: string[][], mapping: Mapping, opts: { targetId?: string; name?: string; sectionLabel?: string; add?: boolean }) =>
     invoke<WarehouseItem>("warehouse_import", { rows, mapping, targetId: opts.targetId ?? null, name: opts.name ?? null, sectionLabel: opts.sectionLabel ?? null, add: !!opts.add }),
@@ -4482,6 +4523,8 @@ export const api = {
   /// Does the ledger still tie out to the bank? Pass `rebaseline` to accept the
   /// current figures as correct after a deliberate change (cleanup, re-pull).
   reconcileAccounts: (rebaseline = false) => invoke<ReconAccount[]>("reconcile_accounts", { rebaseline }),
+  // R-579: every account, period by period: statement posted, statement net against ledger net, duplicates, withdrawn.
+  checkBooks: () => invoke<CheckAccount[]>("check_books"),
   convergeIntegrityItem: (kind: IntegrityItem["kind"], id: string) =>
     invoke<string[]>("converge_integrity_item", { kind, id }),
 
@@ -5167,6 +5210,9 @@ export const api = {
   allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string, allowSplit?: boolean) =>
     invoke<string>("allocate_bank_txn", { bankTxnId, dealFlowId, amount, role, note, allowSplit }),
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
+  // R-579: a person says a posted row is not the retracted row's copy; the pair is never offered again.
+  markTakeoverNotSame: (retractedId: string, postedId: string) =>
+    invoke<{ marked: boolean }>("mark_takeover_not_same", { retractedId, postedId }),
   clearBankTxns: (scope: "statements" | "plaid" | "all", force = false) =>
     invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
   listBankTxnsByIds: (ids: string[]) => invoke<BankTxn[]>("list_bank_txns_by_ids", { ids }),
@@ -5186,8 +5232,12 @@ export const api = {
   dedupeBankTxns: (dryRun: boolean, aggressive = false) =>
     invoke<DedupeResult>("dedupe_bank_txns", { dryRun, aggressive }),
   /** Delete hand-picked bank transactions. Booked rows are skipped, not silently removed. */
-  deleteBankTxns: (ids: string[]) =>
-    invoke<{ deleted: number; skipped_booked: number }>("delete_bank_txns", { ids }),
+  // R-579: `unlink` confirms removing rows tied to a deal with their links; without it those come back under
+  // `needs_unlink` with the deals named.
+  deleteBankTxns: (ids: string[], unlink = false) =>
+    invoke<{ deleted: number; skipped_booked: number; deals?: number;
+             needs_unlink?: { id: string; description: string; amount: number; date: string; deals: string[] }[] }>(
+      "delete_bank_txns", { ids, unlink }),
   getBankBackupSettings: () =>
     invoke<{ sheet_url: string; enabled: boolean; last_at: string; last_total: string }>("get_bank_backup_settings"),
   setBankBackupSettings: (sheetUrl: string, enabled: boolean) =>

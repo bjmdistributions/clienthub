@@ -34,12 +34,28 @@ pub struct ParsedRow {
     pub balance: f64,
 }
 
+/// R-579: what the statement says about itself: its period and its beginning and ending balance.
+/// `ending - beginning` is the statement's net, the figure Check books holds the ledger to for that
+/// period. Read off a Chase PDF's summary, an OFX file's `LEDGERBAL` and `DTSTART`/`DTEND`, or a
+/// Chase CSV's balance column. `None` when the file does not carry it (another bank's PDF).
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+pub struct StatementInfo {
+    pub period_start: String, // YYYY-MM-DD
+    pub period_end: String,   // YYYY-MM-DD
+    pub beginning: f64,
+    pub ending: f64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct BankPreview {
     pub format: String, // "ofx" | "csv"
     pub total: usize,
     pub has_fitid: bool, // true when a reliable dedupe key is present (OFX)
     pub sample: Vec<ParsedRow>,
+    /// R-579: the statement's period and balances, when the file carries them.
+    pub statement: Option<StatementInfo>,
+    /// R-579: the parsed rows' net (in less out), to hold against `statement`.
+    pub rows_net: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,6 +67,74 @@ pub struct BankImportSummary {
     pub errors: Vec<String>,
     pub format: String,
     pub has_fitid: bool,
+    /// R-579: the statement record written (period and balances), when the file carried them.
+    pub statement: Option<StatementInfo>,
+}
+
+fn money(s: &str) -> Option<f64> {
+    s.replace(['$', ',', ' '], "").trim().parse().ok()
+}
+
+/// "June 01, 2026" or "June 1, 2026" to `2026-06-01`.
+fn long_date(s: &str) -> String {
+    chrono::NaiveDate::parse_from_str(s.trim(), "%B %d, %Y")
+        .map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
+}
+
+/// R-579: a Chase statement's period and balances off its text. The period is "June 01, 2026
+/// through June 30, 2026" or "06/01/26 - 06/30/26"; the balances are the summary's Beginning
+/// Balance and Ending Balance lines. Pure, so it is tested on text.
+pub fn pdf_statement_info(text: &str) -> Option<StatementInfo> {
+    let long = regex::Regex::new(r"([A-Z][a-z]+ \d{1,2}, \d{4})\s+through\s+([A-Z][a-z]+ \d{1,2}, \d{4})").unwrap();
+    let short = regex::Regex::new(r"(\d{1,2}/\d{1,2}/\d{2,4})\s*(?:-|through|to)\s*(\d{1,2}/\d{1,2}/\d{2,4})").unwrap();
+    let (period_start, period_end) = if let Some(c) = long.captures(text) {
+        (long_date(&c[1]), long_date(&c[2]))
+    } else if let Some(c) = short.captures(text) {
+        (csv_date(&c[1]), csv_date(&c[2]))
+    } else {
+        return None;
+    };
+    if period_start.is_empty() || period_end.is_empty() { return None; }
+    let bal = |label: &str| -> Option<f64> {
+        regex::Regex::new(&format!(r"(?i){label}\s*(-?\s*\$?\s*-?[\d,]+\.\d{{2}})")).unwrap()
+            .captures(text).and_then(|c| money(&c[1]))
+    };
+    let beginning = bal("Beginning Balance")?;
+    let ending = bal("Ending Balance")?;
+    Some(StatementInfo { period_start, period_end, beginning, ending })
+}
+
+/// R-579: an OFX file's `DTSTART`/`DTEND` and `LEDGERBAL`; the beginning is the ending less the rows.
+fn ofx_statement_info(text: &str, rows: &[ParsedRow]) -> Option<StatementInfo> {
+    let period_start = ofx_date(&ofx_tag(text, "DTSTART"));
+    let period_end = ofx_date(&ofx_tag(text, "DTEND"));
+    let ledger = text.find("<LEDGERBAL>").map(|p| &text[p..])?;
+    let ending: f64 = ofx_tag(ledger, "BALAMT").replace(',', "").parse().ok()?;
+    if period_start.is_empty() || period_end.is_empty() { return None; }
+    let net: f64 = rows.iter().map(|r| if r.direction == "in" { r.amount } else { -r.amount }).sum();
+    Some(StatementInfo { period_start, period_end, beginning: ((ending - net) * 100.0).round() / 100.0, ending })
+}
+
+/// R-579: a Chase CSV's balance column. The ending is the latest row's balance; the beginning is the
+/// earliest row's balance before that row. Needs every row to carry a balance.
+fn csv_statement_info(rows: &[ParsedRow]) -> Option<StatementInfo> {
+    if rows.is_empty() || rows.iter().any(|r| r.balance == 0.0 || r.posted_at.len() < 10) { return None; }
+    let mut sorted: Vec<&ParsedRow> = rows.iter().collect();
+    // Chase lists newest first: stable sort by date keeps the file's order within a day, so the
+    // first row of the earliest day (its last in file order) is the day's earliest.
+    sorted.sort_by(|a, b| a.posted_at.cmp(&b.posted_at));
+    let first = sorted.iter().filter(|r| r.posted_at == sorted[0].posted_at).last()?;
+    let last = sorted.iter().filter(|r| r.posted_at == sorted[sorted.len() - 1].posted_at).next()?;
+    let signed = if first.direction == "in" { first.amount } else { -first.amount };
+    Some(StatementInfo {
+        period_start: first.posted_at.clone(), period_end: last.posted_at.clone(),
+        beginning: ((first.balance - signed) * 100.0).round() / 100.0, ending: last.balance,
+    })
+}
+
+fn rows_net(rows: &[ParsedRow]) -> f64 {
+    let n: f64 = rows.iter().map(|r| if r.direction == "in" { r.amount } else { -r.amount }).sum();
+    (n * 100.0).round() / 100.0
 }
 
 /// Detect OFX vs CSV by content sniff (OFX headers / <OFX> tag), else CSV.
@@ -306,21 +390,26 @@ fn parse_statement_text(text: &str) -> Vec<ParsedRow> {
     rows
 }
 
-fn parse_chase_pdf(path: &str) -> Result<Vec<ParsedRow>> {
+fn parse_chase_pdf(path: &str) -> Result<(Vec<ParsedRow>, Option<StatementInfo>)> {
     let text = pdf_extract::extract_text(path).context("extract PDF text")?;
-    Ok(parse_statement_text(&text))
+    Ok((parse_statement_text(&text), pdf_statement_info(&text)))
 }
 
-/// Route a file to the right parser by extension/content. Returns (format, rows).
-fn detect_and_parse(path: &str) -> Result<(String, Vec<ParsedRow>)> {
+/// Route a file to the right parser by extension/content. Returns (format, rows, statement).
+fn detect_and_parse(path: &str) -> Result<(String, Vec<ParsedRow>, Option<StatementInfo>)> {
     if path.to_lowercase().ends_with(".pdf") {
-        return Ok(("pdf".to_string(), parse_chase_pdf(path)?));
+        let (rows, info) = parse_chase_pdf(path)?;
+        return Ok(("pdf".to_string(), rows, info));
     }
     let text = read_text(path)?;
     if is_ofx(&text) {
-        Ok(("ofx".to_string(), parse_ofx(&text)))
+        let rows = parse_ofx(&text);
+        let info = ofx_statement_info(&text, &rows);
+        Ok(("ofx".to_string(), rows, info))
     } else {
-        Ok(("csv".to_string(), parse_csv(path)?))
+        let rows = parse_csv(path)?;
+        let info = csv_statement_info(&rows);
+        Ok(("csv".to_string(), rows, info))
     }
 }
 
@@ -417,12 +506,14 @@ fn classify(row: &mut ParsedRow, txn_type: &str) {
 // ── Public API: preview + import ────────────────────────────────────────────
 
 pub fn preview(path: &str) -> Result<BankPreview> {
-    let (format, rows) = detect_and_parse(path)?;
+    let (format, rows, statement) = detect_and_parse(path)?;
     let has_fitid = rows.iter().any(|r| !r.fitid.is_empty());
     Ok(BankPreview {
         format,
         total: rows.len(),
         has_fitid,
+        rows_net: rows_net(&rows),
+        statement,
         sample: rows.into_iter().take(8).collect(),
     })
 }
@@ -470,8 +561,48 @@ pub fn statement_text(path: &str) -> Result<String> {
 }
 
 pub fn import(path: &str, account_id: &str) -> Result<BankImportSummary> {
-    let (format, rows) = detect_and_parse(path)?;
-    persist_rows(&rows, account_id, &format)
+    let (format, rows, statement) = detect_and_parse(path)?;
+    let mut summary = persist_rows(&rows, account_id, &format)?;
+    if let Some(info) = &statement {
+        let file_name = std::path::Path::new(path).file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        persist_statement(account_id, info, rows.len(), &file_name, &format)?;
+        summary.statement = statement;
+    }
+    Ok(summary)
+}
+
+/// R-579: the statement itself, one synced `bank_statement` row per account and period, so Check
+/// books can say which months have a statement posted and hold the ledger to its net. The id is
+/// deterministic (account and period end), so re-importing a statement updates its record.
+pub fn persist_statement(account_id: &str, info: &StatementInfo, row_count: usize, file_name: &str, format: &str) -> Result<()> {
+    let id = format!("bs_{:016x}", fnv1a(&format!("{}|{}", account_id, info.period_end)));
+    let now = chrono::Utc::now().to_rfc3339();
+    let conn = crate::db::pool().get().context("db pool")?;
+    let created: String = conn
+        .query_row("SELECT COALESCE(created_at,'') FROM bank_statement WHERE id=?1", [&id], |r| r.get(0))
+        .ok().filter(|s: &String| !s.is_empty()).unwrap_or_else(|| now.clone());
+    let mut cols = serde_json::Map::new();
+    let s = |v: &str| serde_json::Value::String(v.to_string());
+    cols.insert("account_id".into(), s(account_id));
+    cols.insert("period_start".into(), s(&info.period_start));
+    cols.insert("period_end".into(), s(&info.period_end));
+    cols.insert("beginning".into(), serde_json::json!(info.beginning));
+    cols.insert("ending".into(), serde_json::json!(info.ending));
+    cols.insert("row_count".into(), serde_json::json!(row_count as i64));
+    cols.insert("file_name".into(), s(file_name));
+    cols.insert("format".into(), s(format));
+    cols.insert("imported_at".into(), s(&now));
+    cols.insert("created_at".into(), s(&created));
+    cols.insert("updated_at".into(), s(&now));
+    crate::sync::record_upsert("bank_statement", &id, cols).map_err(|e| anyhow::anyhow!("sync record failed: {e}"))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO bank_statement \
+           (id, account_id, period_start, period_end, beginning, ending, row_count, file_name, format, imported_at, created_at, updated_at) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?10)",
+        rusqlite::params![id, account_id, info.period_start, info.period_end, info.beginning, info.ending,
+            row_count as i64, file_name, format, now, created],
+    ).context("insert bank_statement")?;
+    Ok(())
 }
 
 /// Dedupe (deterministic id) + insert parsed rows into the bank_txn ledger. Shared
@@ -483,7 +614,7 @@ pub fn persist_rows(rows: &[ParsedRow], account_id: &str, format: &str) -> Resul
 
     let mut summary = BankImportSummary {
         imported: 0, skipped: 0, from_feed: 0, errors: Vec::new(),
-        format: format.to_string(), has_fitid,
+        format: format.to_string(), has_fitid, statement: None,
     };
 
     let mut seen: std::collections::HashMap<String, usize> = Default::default();
@@ -612,6 +743,11 @@ mod tests {
     }
 
     const SAMPLE_PDF_TEXT: &str = "June 01, 2026 through June 30, 2026\n\
+CHECKING SUMMARY\n\
+Beginning Balance $62,575.00\n\
+Deposits and Additions 50,000.00\n\
+Electronic Withdrawals -12,575.00\n\
+Ending Balance $100,000.00\n\
 DEPOSITS AND ADDITIONS\n\
 DATE DESCRIPTION AMOUNT\n\
 06/03 Book Transfer Credit B/O: Gotokam LLC Orlando FL 32820-1811 US Trn: 1234Es 50,000.00\n\
@@ -623,6 +759,34 @@ DATE DESCRIPTION AMOUNT\n\
 06/01 Zelle Payment To Mom 55555 $35.00\n\
 DAILY ENDING BALANCE\n\
 06/03 100,000.00\n";
+
+    /// R-579: the statement's own period and balances, and its net equals its rows.
+    #[test]
+    fn a_chase_statement_says_its_period_and_balances() {
+        let info = pdf_statement_info(SAMPLE_PDF_TEXT).expect("period and balances");
+        assert_eq!(info.period_start, "2026-06-01");
+        assert_eq!(info.period_end, "2026-06-30");
+        assert_eq!(info.beginning, 62575.0);
+        assert_eq!(info.ending, 100000.0);
+        let rows = parse_statement_text(SAMPLE_PDF_TEXT);
+        assert_eq!(rows_net(&rows), 37425.0);
+        assert!(((info.ending - info.beginning) - rows_net(&rows)).abs() < 0.005, "statement net equals its rows");
+        // The short period form and a negative balance.
+        let short = "Statement Period: 06/01/26 - 06/30/26\nBeginning Balance -$1,200.50\nEnding Balance $300.00\n";
+        let i = pdf_statement_info(short).unwrap();
+        assert_eq!((i.period_start.as_str(), i.period_end.as_str()), ("2026-06-01", "2026-06-30"));
+        assert_eq!(i.beginning, -1200.5);
+        // Another bank's text with no summary: no record, rows still import.
+        assert!(pdf_statement_info("Some other bank\n06/03 Coffee 4.50\n").is_none());
+        // OFX: ledger balance and the period, beginning derived from the rows.
+        let ofx = format!("{}", SAMPLE_OFX).replace("<BANKTRANLIST>", "<BANKTRANLIST><DTSTART>20240601<DTEND>20240630")
+            .replace("</STMTTRNRS>", "<LEDGERBAL><BALAMT>20000.00<DTASOF>20240630</LEDGERBAL></STMTTRNRS>");
+        let rows = parse_ofx(&ofx);
+        let i = ofx_statement_info(&ofx, &rows).unwrap();
+        assert_eq!((i.period_start.as_str(), i.period_end.as_str()), ("2024-06-01", "2024-06-30"));
+        assert_eq!(i.ending, 20000.0);
+        assert_eq!(i.beginning, 7500.0, "20000 less (15000 in, 2500 out)");
+    }
 
     #[test]
     fn parses_pdf_sections_and_wrapped_wires() {
@@ -654,7 +818,7 @@ DAILY ENDING BALANCE\n\
     #[ignore]
     fn validates_against_real_chase_pdf() {
         let path = r"C:\Users\Jack\Downloads\20260630-statements-3655- (1).pdf";
-        let rows = parse_chase_pdf(path).expect("parse pdf");
+        let (rows, _) = parse_chase_pdf(path).expect("parse pdf");
         let names = rows.iter().map(|r| r.counterparty_name.to_uppercase()).collect::<Vec<_>>().join("|");
         for expect in ["GOTOKAM", "LAST STOCK", "NJH"] {
             assert!(names.contains(expect), "missing counterparty {}", expect);

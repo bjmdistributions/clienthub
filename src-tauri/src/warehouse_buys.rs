@@ -922,6 +922,13 @@ fn detail(c: &rusqlite::Connection, id: &str) -> Result<Value, String> {
                 .unwrap_or_default();
             let p = w.plan.orders.iter().find(|p| p.id == o.id);
             let f = roll.orders.iter().find(|f| f.id == o.id);
+            // R-576: the buy's line as it stands on the deal, beside what the buy says it should be.
+            let (on_deal, wanted) = deal
+                .and_then(|d| w.lines.get(d))
+                .map(|(want, now_lines, oid)| {
+                    (core::total(now_lines.iter().filter(|x| is_ours(x, oid)).map(|x| x.amount)), core::total(want.iter().map(|x| x.amount)))
+                })
+                .unwrap_or((0.0, 0.0));
             json!({
                 "id": o.id, "invoice_id": o.invoice_id, "number": number, "client": client, "stage": stage, "voided": voided,
                 "count": o.count, "undone": o.undone, "own_cost": o.own_cost, "typed": o.goods_typed.is_some(), "deal_flow_id": deal,
@@ -931,7 +938,7 @@ fn detail(c: &rusqlite::Connection, id: &str) -> Result<Value, String> {
                 "cost": f.map(|f| f.cost).unwrap_or(0.0), "sales": f.map(|f| f.sales).unwrap_or(0.0),
                 "received": f.map(|f| f.received).unwrap_or(0.0), "other_cost": f.map(|f| f.other_cost).unwrap_or(0.0),
                 "refunds": f.map(|f| f.refunds).unwrap_or(0.0), "made": f.map(|f| f.made).unwrap_or(0.0),
-                "created_at": o.created_at,
+                "created_at": o.created_at, "on_deal": on_deal, "wanted": wanted,
             })
         })
         .collect();
@@ -1562,6 +1569,41 @@ pub async fn apply_warehouse_buy(id: String) -> Result<Value, String> {
     detail(&*conn()?, &id)
 }
 
+/// R-576: take a buy's line off its order's deal. Jack: the pairs go back on the shelf, so this is Put back on every live
+/// out the invoice has on the buy's delivery (its pairs on the delivery again, its share back to the buy). A product's
+/// stock is put back on its History, which this does not guess at.
+#[tauri::command]
+pub async fn put_back_buy_order(id: String, order_id: String) -> Result<Value, String> {
+    let (b, o) = {
+        let c = conn()?;
+        let b = buy(&c, &id)?;
+        let o = orders(&c, &id).into_iter().find(|o| o.id == order_id && !o.undone).ok_or("That order is no longer on this buy.")?;
+        (b, o)
+    };
+    if b.load_id.is_empty() {
+        return Err("This came off a product. Put it back on the product's History in the Warehouse, and its cost comes off the deal.".into());
+    }
+    let outs: Vec<String> = {
+        let c = crate::db::pool().get().map_err(|e| e.to_string())?;
+        crate::warehouse_loads::outs(&c, &b.load_id)?.into_iter().filter(|x| !x.undone && x.invoice_id == o.invoice_id).map(|x| x.id).collect()
+    };
+    for out in &outs {
+        crate::warehouse_loads::undo_load_out(b.load_id.clone(), out.clone()).await?;
+    }
+    // An order with no out of its own (recorded on the buy by hand) still comes off, so its line goes.
+    stock_put_back("", &b.load_id, &o.invoice_id);
+    detail(&*conn()?, &id)
+}
+
+/// R-576: Remove on a buy's line in Deal Flow: the line's id names its order, and the order is put back.
+pub(crate) async fn remove_buy_line(payment_id: &str) -> Result<(), String> {
+    let order_id = payment_id.strip_prefix("buyg-").or_else(|| payment_id.strip_prefix("buys-")).ok_or(crate::commands::BUY_LINE_LOCKED)?;
+    let buy_id: String = conn()?
+        .query_row("SELECT buy_id FROM warehouse_buy_orders WHERE id=?1", [order_id], |r| r.get(0))
+        .map_err(|_| crate::commands::BUY_LINE_LOCKED.to_string())?;
+    put_back_buy_order(buy_id, order_id.to_string()).await.map(|_| ())
+}
+
 /// Stock went back from an order (Put back on a product's History or a delivery's sold list): the
 /// order comes off the buy and its share goes back. Logged, never failing the put back itself.
 pub(crate) fn stock_put_back(item_id: &str, load_id: &str, invoice_id: &str) {
@@ -1680,13 +1722,24 @@ mod tests {
         undo_load_out(load.clone(), out_b.id).await.unwrap();
         assert!(goods_line("ib").is_none());
         let buy_id = v["buy"]["id"].as_str().unwrap().to_string();
-        let mut want = vec![("adjustment".to_string(), buy_id.clone(), 7.5), ("supplier_payment".to_string(), da, 5.0)];
+        let mut want = vec![("adjustment".to_string(), buy_id.clone(), 7.5), ("supplier_payment".to_string(), da.clone(), 5.0)];
         want.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert_eq!(bookings("w1"), want);
-        let v = get_warehouse_buy(buy_id).await.unwrap();
+        let v = get_warehouse_buy(buy_id.clone()).await.unwrap();
         assert!(v["in_step"].as_bool().unwrap());
         assert_eq!(v["rollup"]["sold"].as_f64().unwrap(), 4.0);
         assert_eq!(v["rollup"]["left"].as_f64().unwrap(), 6.0);
+        assert_eq!((v["rollup"]["load_cost"].as_f64(), v["rollup"]["cost_on_hand"].as_f64()), (Some(15.0), Some(9.0)), "A's $6 on its deal, $9 on hand");
+
+        // R-576: Remove on A's line in Deal Flow puts A's pairs back on the delivery, and the line is gone for good.
+        let a_line = goods_line("ia").unwrap();
+        crate::commands::remove_supplier_payment(da.clone(), a_line.id).await.unwrap();
+        assert!(goods_line("ia").is_none());
+        assert!(crate::warehouse_loads::outs(&conn().unwrap(), &load).unwrap().iter().all(|o| o.undone), "both outs are put back");
+        let v = apply_warehouse_buy(buy_id.clone()).await.unwrap();
+        assert!(goods_line("ia").is_none(), "bringing the buy up to date never writes it back");
+        assert_eq!((v["rollup"]["sold"].as_f64(), v["rollup"]["cost_on_hand"].as_f64()), (Some(0.0), Some(15.0)));
+        assert_eq!(put_back_buy_order(buy_id, "bo-ia-x".into()).await.unwrap_err(), "That order is no longer on this buy.");
     }
 
     // ── R-551: a buy started before its stock is here, brought in on trucks ─────────────────
@@ -1825,7 +1878,9 @@ mod tests {
         assert_eq!(v["orders"].as_array().unwrap().len(), 1, "the order already sold from it came with it");
         assert_eq!((v["unit_goods"].as_f64(), v["unit_ship"].as_f64(), v["unit_markup"].as_f64()), (Some(100.0), Some(175.0), Some(2.0)));
         assert_eq!((v["orders"][0]["ship"].as_f64(), v["orders"][0]["markup"].as_f64()), (Some(700.0), Some(8.0)));
-        assert_eq!(v["rollup"]["unit_cost"].as_f64(), Some(277.0), "goods, shipping in and his markup, over the pairs");
+        // R-576: his markup is never in the cost a pair; it is shown on its own.
+        assert_eq!((v["rollup"]["unit_cost"].as_f64(), v["rollup"]["markup_sold"].as_f64()), (Some(275.0), Some(8.0)), "goods and shipping in, over the pairs");
+        assert_eq!((v["orders"][0]["on_deal"].as_f64(), v["orders"][0]["wanted"].as_f64()), (Some(1100.0), Some(1100.0)), "the deal carries what the buy says");
         // R-574: the shipping in rides on the one landed line (4 x $100 + $700), never a line of its own.
         assert_eq!(ship_line("r551a").map(|p| p.amount), None);
         assert_eq!(goods_line("r551a").map(|p| p.amount), Some(1100.0));

@@ -126,6 +126,11 @@ pub struct Takeover {
 /// deal allocation, a refund, a loan) moves those ties onto the posted copy, so an unrelated
 /// round-amount wire or Zelle on the same account that week took a deal's payment silently. A
 /// linked row is automatic only when the two memos also name the same merchant or person.
+///
+/// R-579: every row. Jack: "some transactions are legit completely different and they should not
+/// be swapped. they have different names and dates." A same-amount pair whose memos share no
+/// merchant word is a chip for a person, never automatic. A pair a person marked "not the same"
+/// (`raw_json.nt` on either row, see `not_same_of`) is not offered at all.
 pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec<Takeover> {
     let acct_of = |a: &str| aliases.get(a).cloned().unwrap_or_else(|| a.to_string());
     let metas: Vec<Meta> = rows.iter().map(|r| meta(&r.raw_json)).collect();
@@ -143,9 +148,11 @@ pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec
         let fr = &rows[f];
         let f_acct = acct_of(&fr.account);
         let f_words = merchant_words(&fr.desc);
+        let f_not = not_same_of(&fr.raw_json);
         for &t in &tos {
             let tr = &rows[t];
             if t == f || tr.dir != fr.dir || fr.amount <= 0.0 { continue; }
+            if f_not.iter().any(|x| x == &tr.id) || not_same_of(&tr.raw_json).iter().any(|x| x == &fr.id) { continue; }
             let same_label = acct_of(&tr.account) == f_acct;
             let same_mask = !label_mask(&tr.account).is_empty() && label_mask(&tr.account) == label_mask(&fr.account);
             if !same_label && !same_mask { continue; }
@@ -159,8 +166,7 @@ pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec
                 continue;
             }
             let words_agree = !f_words.is_disjoint(&merchant_words(&tr.desc));
-            let exact = (same_label || same_mask) && metas[f].retracted && same_amount && gap <= 7
-                && (!fr.linked || words_agree);
+            let exact = (same_label || same_mask) && metas[f].retracted && same_amount && gap <= 7 && words_agree;
             by_from.entry(f).or_default().push((t, exact));
             by_to.entry(t).or_default().push((f, exact));
         }
@@ -227,6 +233,25 @@ pub fn retracted_rows(rows: &[TxnRow], aliases: &HashMap<String, String>, today:
         let cancelled = matches.is_empty() && signed_day_gap(today, &r.date).is_some_and(|g| g > 10);
         Retracted { id: r.id.clone(), matches, cancelled }
     }).collect()
+}
+
+/// R-579: the ids a person said are NOT this row's posted copy (`raw_json.nt`), so the pair is
+/// never offered or carried again. Kept through sync like `nd` (`bank_flags::merge_sticky_flags`).
+pub fn not_same_of(raw_json: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(raw_json).ok()
+        .and_then(|v| v.get("nt").and_then(|n| n.as_array()).cloned())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// `raw_json` with `other` added to its `nt` list.
+pub fn with_not_same(raw_json: &str, other: &str) -> String {
+    let mut o = serde_json::from_str::<Value>(raw_json).ok()
+        .and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    let mut list: Vec<Value> = o.get("nt").and_then(|n| n.as_array()).cloned().unwrap_or_default();
+    if !list.iter().any(|x| x.as_str() == Some(other)) { list.push(Value::String(other.to_string())); }
+    o.insert("nt".into(), Value::Array(list));
+    Value::Object(o).to_string()
 }
 
 /// The words in a memo that can name a merchant: letters only, four or more, minus the words
@@ -1150,12 +1175,38 @@ mod tests {
         assert_eq!(p.len(), 1);
         assert!(p[0].automatic, "the same payer re-sent: the deal's payment follows it");
 
-        // A row with only a category keeps the old rule: the bank already said it does not exist.
+        // R-579: a row with only a category follows the same rule. "they have different names and
+        // dates": a different payer's wire is offered, never carried.
         let cat_only = vec![
             raw(booked(row("ret2", chk, "2026-10-01", 5000.0, "in", "WIRE FROM HARBOR GOODS LLC", "", "2026-10-01T00:00:00Z"), "sales"), "pa_1", false, true),
             v[1].clone(),
         ];
-        assert!(takeover_pairs(&cat_only, &HashMap::new())[0].automatic);
+        let p = takeover_pairs(&cat_only, &HashMap::new());
+        assert_eq!(p.len(), 1);
+        assert!(!p[0].automatic, "a category-only row never swaps onto a different name on amount alone");
+    }
+
+    #[test]
+    fn a_pair_marked_not_the_same_is_never_offered_again() {
+        let chk = "BUSINESS CHECKING \u{00b7}\u{00b7}1111";
+        let ret = raw(booked(row("ret", chk, "2026-10-01", 5000.0, "in", "WIRE FROM HARBOR GOODS LLC", "", "2026-10-01T00:00:00Z"), "sales"), "pa_1", false, true);
+        let other = raw(row("other", chk, "2026-10-03", 5000.0, "in", "WIRE FROM CEDAR TRADING CO", "", "2026-10-03T00:00:00Z"), "pa_1", false, false);
+        assert_eq!(takeover_pairs(&[ret.clone(), other.clone()], &HashMap::new()).len(), 1, "offered as a chip before the answer");
+        // Marked on the retracted row.
+        let marked = TxnRow { raw_json: with_not_same(&ret.raw_json, "other"), ..ret.clone() };
+        assert!(takeover_pairs(&[marked.clone(), other.clone()], &HashMap::new()).is_empty());
+        assert_eq!(not_same_of(&marked.raw_json), vec!["other".to_string()]);
+        // Marked on the posted row only (the other device answered): same answer.
+        let marked_to = TxnRow { raw_json: with_not_same(&other.raw_json, "ret"), ..other.clone() };
+        assert!(takeover_pairs(&[ret.clone(), marked_to], &HashMap::new()).is_empty());
+        // Marking twice adds nothing; the rtr stamp survives.
+        let twice = with_not_same(&marked.raw_json, "other");
+        assert_eq!(not_same_of(&twice).len(), 1);
+        assert!(meta(&twice).retracted);
+        // With the pair gone the retracted row has no match, so Remove is its only exit (offered always, R-579).
+        let r = retracted_rows(&[marked, other], &HashMap::new(), "2026-10-05");
+        assert_eq!(r.len(), 1);
+        assert!(r[0].matches.is_empty() && !r[0].cancelled);
     }
 
     #[test]
