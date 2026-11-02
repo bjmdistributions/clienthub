@@ -1096,6 +1096,9 @@ const enc = encodeURIComponent;
 export interface PayoutTotal {
   name: string;
   is_business: boolean;
+  /** R-577, from the ledger: owner | business | reps (every rep together) | logistics. */
+  kind?: string;
+  payee_id?: string;
   this_week: number;
   this_month: number;
   all_time: number;
@@ -4717,6 +4720,11 @@ export const api = {
     settleBefore: (kind: PayeeKind, payeeId: string) =>
       payoutsRequest<{ ok: boolean; amount: number }>("POST", "/api/payouts/settle-before", { kind, payee_id: payeeId }),
     rules: () => payoutsRequest<{ people: PayRulePerson[]; today: string }>("GET", "/api/payouts/rules"),
+    /** The Brief's "Where the profit went" from the ledger, and what the caller earned this week
+     *  (null when their figures are hidden). Upper bounds exclusive, YYYY-MM-DD. */
+    brief: (weekFrom: string, weekTo: string, monthFrom: string, monthTo: string) =>
+      payoutsRequest<{ payout_totals: PayoutTotal[]; mine_this_week: number | null }>("GET",
+        `/api/payouts/brief?week_from=${enc(weekFrom)}&week_to=${enc(weekTo)}&month_from=${enc(monthFrom)}&month_to=${enc(monthTo)}`),
     /** A person's rule from today on; deals already done keep the rule they had. */
     saveRule: (staffId: string, payType: PayType, value: number) =>
       payoutsRequest<{ ok: boolean }>("POST", "/api/payouts/rules", { staff_id: staffId, pay_type: payType, value }),

@@ -18,6 +18,8 @@ import {
 // that reads at ~3:1 on one theme and ~2:1 on the other. The identity is now the
 // 2.5px top rule and the tint; the name and the figure are theme tokens.
 const BIZ_COLOR = { accent: "var(--accent-400)", accentBg: "var(--accent-tint)", accentBorder: "var(--accent-glow)" };
+// R-577: the reps together and logistics pay come off before the owners split; they wear grey.
+const OFF_TOP_COLOR = { accent: "rgb(var(--c-faint))", accentBg: "rgb(var(--c-surface-2))", accentBorder: "rgb(var(--c-line-3))" };
 const RECIP_COLORS = [
   { accent: "#34D399", accentBg: "rgba(16,185,129,0.08)", accentBorder: "rgba(16,185,129,0.2)" },
   { accent: "#60A5FA", accentBg: "rgba(59,130,246,0.08)", accentBorder: "rgba(59,130,246,0.2)" },
@@ -109,6 +111,19 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
       // rather than leaning on the org-shared cadence, which follows the emailed brief.
       const b = await api.generateWeeklyBrief(null, repName, 7);
       setBrief(b);
+      // R-577: "Where the profit went" and a rep's earnings come from the server's commission
+      // ledger (this computer holds none of it), so they agree with every deal's Payouts. When the
+      // server cannot answer, the figures worked out here stay.
+      const next = (d: string, months = 0) => { const x = parseLocalDay(d); return localDay(new Date(x.getFullYear(), x.getMonth() + months, x.getDate() + (months ? 0 : 1))); };
+      const monthFrom = `${localDay().slice(0, 7)}-01`;
+      api.payouts.brief(b.week_start, next(b.week_end), monthFrom, next(monthFrom, 1))
+        .then((r) => setBrief((cur) => cur === b ? {
+          ...b,
+          // A rep's brief covers their own deals: the business-wide rows are not theirs to see.
+          payout_totals: repName ? b.payout_totals : r.payout_totals,
+          rep_earnings_this_week: repName ? (r.mine_this_week ?? 0) : b.rep_earnings_this_week,
+        } : cur))
+        .catch(() => {});
     } catch (e: any) { toast(String(e), "error"); }
     if (showOrg) {
       api.listDealFlows().then(setFlows).catch(() => {});
@@ -423,7 +438,7 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
             <div className="px-5 py-3.5 border-b border-line-2 flex items-center justify-between gap-3 flex-wrap">
               <div className="min-w-0">
                 <h3 className="text-[13px] font-semibold text-ink tracking-tight">Where the profit went</h3>
-                <p className="text-[11px] text-muted mt-0.5">Each recipient's cut, {shortDate(brief.week_start)} – {shortDate(brief.week_end)}</p>
+                <p className="text-[11px] text-muted mt-0.5">Who earned what from deals, {shortDate(brief.week_start)} – {shortDate(brief.week_end)}</p>
               </div>
               <div className="flex items-baseline gap-2 min-w-0">
                 <span className="text-[11px] text-muted">Net profit</span>
@@ -440,7 +455,7 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
                     {(() => {
                       let nb = 0;
                       return brief.payout_totals.map((r, i) => {
-                        const c = r.is_business ? BIZ_COLOR : RECIP_COLORS[(nb++) % RECIP_COLORS.length];
+                        const c = r.kind === "reps" || r.kind === "logistics" ? OFF_TOP_COLOR : r.is_business ? BIZ_COLOR : RECIP_COLORS[(nb++) % RECIP_COLORS.length];
                         return (
                           <SplitBox key={i}
                             accent={c.accent} accentBg={c.accentBg} accentBorder={c.accentBorder}
@@ -454,7 +469,7 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
                   {brief.net_profit_this_month !== 0 && (
                     <div className="flex items-center justify-between gap-3 flex-wrap text-[12px] text-muted pt-3 border-t border-line-2">
                       <span className="min-w-0">
-                        {parseLocalDay(brief.week_start).toLocaleString("en-US", { month: "long" })} so far:{" "}
+                        {parseLocalDay(localDay()).toLocaleString("en-US", { month: "long" })} so far:{" "}
                         <span className="font-semibold text-ink-2 tabular-nums">{fmtAmount(brief.net_profit_this_month)}</span> profit
                       </span>
                       <span className="min-w-0 text-right">
