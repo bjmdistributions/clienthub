@@ -279,17 +279,35 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
             <div key={b.id} className="mt-2 rounded-lg border border-line-2 px-3 py-2 space-y-2">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <span className="min-w-0 text-[12px] text-ink-2 leading-snug">
-                  The goods cost comes from the buy <span className="font-medium text-ink">{b.name}</span>, so its supplier is paid there:{" "}
+                  The cost comes from the buy <span className="font-medium text-ink">{b.name}</span>, so it is paid there. Goods:{" "}
                   <span className="tabular-nums">{b.goods_total > 0.005 ? `${fmtAmount(b.goods_paid)} of ${fmtAmount(b.goods_total)} paid` : "no price yet"}</span>.
+                  {/* R-578: the line on this deal is landed (goods + shipping in, R-574), so the shipping in is half the answer. */}
+                  {b.ship_total > 0.005 && (
+                    <> Shipping in: <span className="tabular-nums">{fmtAmount(b.ship_paid)} of {fmtAmount(b.ship_total)} paid</span>.
+                      {b.ship_paid < b.ship_total - 0.5 && (b.trucks > 0
+                        ? " This deal's share links here once the carrier is paid in Pay carriers."
+                        : " This deal's share links here once the shipping in is paid on the buy.")}
+                    </>
+                  )}
                 </span>
-                {paying !== b.id && (
-                  <button onClick={() => setPaying(b.id)} className="flex-shrink-0 h-7 px-2.5 rounded-md border border-line text-[12px] font-medium text-ink-2 hover:border-line-3 inline-flex items-center gap-1">
-                    <Plus size={12} /> Link a payment to the buy
-                  </button>
+                {paying !== b.id && paying !== `${b.id}:ship` && (
+                  <div className="flex-shrink-0 flex items-center gap-2">
+                    <button onClick={() => setPaying(b.id)} className="h-7 px-2.5 rounded-md border border-line text-[12px] font-medium text-ink-2 hover:border-line-3 inline-flex items-center gap-1">
+                      <Plus size={12} /> Link a payment to the buy
+                    </button>
+                    {b.trucks === 0 && b.ship_total > 0.005 && b.ship_paid < b.ship_total - 0.5 && (
+                      <button onClick={() => setPaying(`${b.id}:ship`)} className="h-7 px-2.5 rounded-md border border-line text-[12px] font-medium text-ink-2 hover:border-line-3 inline-flex items-center gap-1">
+                        <Plus size={12} /> Link the shipping in
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
-              {paying === b.id && (
-                <PayPicker kind="goods" buy={{ id: b.id, supplier: b.supplier_name, total: b.goods_total, paid: b.goods_paid }}
+              {(paying === b.id || paying === `${b.id}:ship`) && (
+                <PayPicker kind={paying === b.id ? "goods" : "ship"}
+                  buy={paying === b.id
+                    ? { id: b.id, supplier: b.supplier_name, total: b.goods_total, paid: b.goods_paid }
+                    : { id: b.id, supplier: b.supplier_name, total: b.ship_total, paid: b.ship_paid }}
                   onDone={() => { setPaying(null); loadBuys(); void load(); onChange?.(); }} onCancel={() => setPaying(null)} />
               )}
             </div>
@@ -581,6 +599,13 @@ function LegBlock({
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          {/* R-578: the reason for a short or missing payment is a button beside the others, not grey text under the leg. */}
+          {mark && (state === "missing" || state === "part") && !marking && (
+            <button onClick={() => { setMarking(true); setNote(""); }} disabled={busy}
+              className="h-7 px-2.5 rounded-md border border-line text-[12px] font-medium text-ink-2 hover:border-line-3 disabled:opacity-50">
+              {state === "part" ? "Short: save a reason" : "No payment: save a reason"}
+            </button>
+          )}
           {!noPair && <ManualButton active={manualOpen} onOpen={onOpenManual} onClose={onCloseManual} />}
           {!noPair && <PairButton active={open} label={paired ? "Pair another" : pairLabel} onOpen={() => onOpen(leg)} onClose={onClose} />}
         </div>
@@ -592,12 +617,6 @@ function LegBlock({
           <span className="min-w-0">No payment recorded{mark.view.note ? `: ${mark.view.note}` : ""}. Only what is linked counts.</span>
           <button onClick={mark.onUnmark} disabled={busy} className="flex-shrink-0 hover:text-ink-2 hover:underline">Take the mark off</button>
         </div>
-      )}
-      {mark && (state === "missing" || state === "part") && !marking && (
-        <button onClick={() => { setMarking(true); setNote(""); }} disabled={busy}
-          className="mt-1.5 text-[11.5px] text-muted hover:text-ink-2 hover:underline">
-          {state === "part" ? "No more payment to record" : "No payment recorded"}
-        </button>
       )}
       {mark && marking && (
         <div className="mt-2 flex items-center gap-2 flex-wrap">
