@@ -61,8 +61,9 @@ pub fn withdrawn_copy_booked_to(conn: &rusqlite::Connection, txn_id: &str, deal_
 /// R-518 (F11): `raw_json` is one blob that several writers replace whole under per-column last-writer-wins, so a
 /// phone answering "two real payments" (`nd`) could erase the withdrawn mark (`rtr`) a desktop had just stamped, and
 /// the row would be counted beside its posted copy again. These keys are only ever added while a row lives (`rtr` and
-/// `acct0` are set once, `nd` only grows), so a blob arriving by sync keeps them from the stored one. `None` when
-/// nothing needs keeping or either side is not a JSON object.
+/// `acct0` are set once, `nd` and `nt` only grow), so a blob arriving by sync keeps them from the stored one. `None`
+/// when nothing needs keeping or either side is not a JSON object. `nt` (R-579) is the take-over pairs a person
+/// marked "not the same".
 pub fn merge_sticky_flags(stored: &str, incoming: &str) -> Option<String> {
     let old = serde_json::from_str::<serde_json::Value>(stored).ok()?;
     let mut new = serde_json::from_str::<serde_json::Value>(incoming).ok()?;
@@ -76,15 +77,21 @@ pub fn merge_sticky_flags(stored: &str, incoming: &str) -> Option<String> {
             }
         }
     }
-    if let Some(prev) = old.get("nd").and_then(|v| v.as_array()) {
-        let mut list: Vec<serde_json::Value> = obj.get("nd").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        for id in prev {
-            if !list.contains(id) {
-                list.push(id.clone());
+    for k in ["nd", "nt"] {
+        if let Some(prev) = old.get(k).and_then(|v| v.as_array()) {
+            let mut list: Vec<serde_json::Value> = obj.get(k).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let mut grew = false;
+            for id in prev {
+                if !list.contains(id) {
+                    list.push(id.clone());
+                    grew = true;
+                }
+            }
+            if grew {
+                obj.insert(k.to_string(), serde_json::Value::Array(list));
                 changed = true;
             }
         }
-        if changed { obj.insert("nd".to_string(), serde_json::Value::Array(list)); }
     }
     changed.then(|| new.to_string())
 }

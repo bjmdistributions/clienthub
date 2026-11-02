@@ -5,7 +5,7 @@ import {
   Eye, EyeOff, Maximize2,
 } from "lucide-react";
 import {
-  api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
+  api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, CheckAccount, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
   Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, ShippingSplit, BankPersonCandidate, ReconciliationMissingDeal,
   TakeoverSuggestion, TieOutRow, RetractedRow, PlaidHealth,
 } from "../lib/api";
@@ -887,13 +887,25 @@ export default function FinancialsView() {
   // history; Cash holds Free cash + Loans; Setup is every once-in-a-while tool.
   // The chosen surface survives leaving and re-entering the page — losing your
   // place on every visit was one of the audit's standing complaints.
-  const [tab, setTabRaw] = useState<"tobook" | "tieout" | "ledger" | "cash" | "setup" | "report">(() => {
+  const [tab, setTabRaw] = useState<"tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report">(() => {
     const t = localStorage.getItem("fin_tab");
-    return t === "tieout" || t === "ledger" || t === "cash" || t === "setup" || t === "report" ? t : "tobook";
+    return t === "tieout" || t === "ledger" || t === "cash" || t === "check" || t === "setup" || t === "report" ? t : "tobook";
   });
-  const setTab = (v: "tobook" | "tieout" | "ledger" | "cash" | "setup" | "report") => {
+  const setTab = (v: "tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report") => {
     setTabRaw(v);
     localStorage.setItem("fin_tab", v);
+  };
+  // R-579: Check books. Loaded when the tab opens and after any change on the screen.
+  const [checkBooks, setCheckBooks] = useState<CheckAccount[] | null>(null);
+  const [checkBooksError, setCheckBooksError] = useState("");
+  const loadCheckBooks = () => {
+    api.checkBooks().then((r) => { setCheckBooks(r); setCheckBooksError(""); })
+      .catch((e: any) => setCheckBooksError(errText(e)));
+  };
+  useEffect(() => { if (tab === "check") loadCheckBooks(); }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Open the Ledger on one account and period.
+  const openLedgerOn = (account: string, start: string, end: string) => {
+    setAcctFilter(account); setFromDate(start); setToDate(end); setQueue("all"); setStatusFilter("all"); setTab("ledger");
   };
   // R-188: which tax year the P&L report shows. Defaults to the current Central
   // calendar year, same "today" helper the rest of this screen uses (R-159).
@@ -2225,24 +2237,40 @@ export default function FinancialsView() {
     runBulk((t) => api.tagBankTxnToLoan(t.id, loan.id));
 
   // Delete hand-picked transactions — the escape hatch for duplicates the automatic
-  // cleanup refuses to touch. Anything booked to a deal/loan/refund is skipped by the
-  // backend (removing it would silently change recorded profit) and reported back.
+  // cleanup refuses to touch. R-579: a row booked with only a category removes; a row tied
+  // to a deal names its deals and removes with its links once confirmed; a refund, loan,
+  // expense or bill link is kept and reported back.
   const bulkDelete = async () => {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
     const ok = window.confirm(
       `Delete ${ids.length} transaction${ids.length === 1 ? "" : "s"}?\n\n` +
-        `Anything linked to a deal, loan or refund is kept. Those are skipped and reported.\n` +
+        `A row tied to a refund, loan, expense or bill is kept. Those are skipped and reported.\n` +
         `This can't be undone from here, though a copy of everything removed is saved locally.`
     );
     if (!ok) return;
     setBulkActionBusy(true);
     try {
       const r = await api.deleteBankTxns(ids);
+      let deleted = r.deleted;
+      const pending = r.needs_unlink ?? [];
+      if (pending.length > 0) {
+        const lines = pending.slice(0, 8).map((p) =>
+          `${p.date} · ${fmtAmount(p.amount)} "${p.description}" linked to ${p.deals.join(", ")}`);
+        const more = pending.length > 8 ? `\n... and ${pending.length - 8} more` : "";
+        const okLinks = window.confirm(
+          `${pending.length} of these ${pending.length === 1 ? "is" : "are"} linked to a deal:\n\n${lines.join("\n")}${more}\n\n` +
+            `Remove ${pending.length === 1 ? "it" : "them"} with ${pending.length === 1 ? "its" : "their"} deal links? The deals are updated.`
+        );
+        if (okLinks) {
+          const r2 = await api.deleteBankTxns(pending.map((p) => p.id), true);
+          deleted += r2.deleted;
+        }
+      }
       clearSelection();
       await refreshAll(true);
-      const extra = r.skipped_booked > 0 ? ` · ${r.skipped_booked} kept (linked to a deal)` : "";
-      toast(`Deleted ${r.deleted} transaction${r.deleted === 1 ? "" : "s"}${extra}`, "success");
+      const extra = r.skipped_booked > 0 ? ` · ${r.skipped_booked} kept (tied to a refund, loan, expense or bill)` : "";
+      toast(`Deleted ${deleted} transaction${deleted === 1 ? "" : "s"}${extra}`, deleted > 0 ? "success" : "error");
     } catch (e) {
       toast(errText(e), "error");
     } finally {
@@ -2392,6 +2420,9 @@ export default function FinancialsView() {
     // R-497: the retracted rows and their posted copies, whatever the queue or tax year.
     const retractedView = statusFilter === "retracted";
     if (retractedView && !retractedIds.has(t.id)) return false;
+    // R-579: a row the bank withdrew is listed only under Retracted by bank (the filter and the panel).
+    // Everywhere else it read as the same payment twice beside its posted copy.
+    if (!retractedView && t.retracted) return false;
     if (!bypass && !retractedView) {
       if (queue === "todo" && t.reviewed) return false;
       if (queue === "booked" && !t.reviewed) return false;
@@ -3561,6 +3592,7 @@ export default function FinancialsView() {
           ["tieout", "Tie out"],
           ["ledger", "Ledger"],
           ["cash", "Cash"],
+          ["check", "Check books"],
           ["report", "Tax report"],
           ["setup", "Setup"],
         ] as const).map(([v, label]) => (
@@ -3605,7 +3637,9 @@ export default function FinancialsView() {
               </button>
             ))}
           </div>
-          {cashTab === "freecash" ? <FreeCashView /> : <LoansView />}
+          {cashTab === "freecash"
+            ? <FreeCashView onCheckBooks={() => setTab("check")} />
+            : <LoansView />}
         </div>
       )}
 
@@ -4577,6 +4611,15 @@ export default function FinancialsView() {
             <div className="text-[13px] text-ink">
               Detected <span className="font-semibold">{preview.format.toUpperCase()}</span> ·{" "}
               <span className="tabular-nums font-semibold">{preview.total}</span> transaction{preview.total !== 1 ? "s" : ""}
+              {/* R-579: the statement's own period and balances, and whether its rows add up to them. */}
+              {preview.statement && (
+                <span className="text-muted">
+                  {" "}· Statement {preview.statement.period_start} to {preview.statement.period_end}, {fmtAmount(preview.statement.beginning)} to {fmtAmount(preview.statement.ending)}
+                  {Math.abs((preview.statement.ending - preview.statement.beginning) - (preview.rows_net ?? 0)) < 0.005
+                    ? <span className="text-success-ink"> · rows add up</span>
+                    : <span className="text-danger-ink"> · rows are off by {fmtAmount((preview.statement.ending - preview.statement.beginning) - (preview.rows_net ?? 0))}</span>}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -5303,6 +5346,101 @@ export default function FinancialsView() {
               </div>
             ))}
             {toBookVisible.truncated && <MoreRows onVisible={showMoreRows} remaining={toBookVisible.remaining} />}
+          </div>
+        )
+      )}
+
+      {/* R-579: Check books. One row per account per period: the statement posted for it, the
+          statement's net against the ledger's, possible duplicates and withdrawn rows. A period is
+          green when its statement is in, the difference is zero and nothing is flagged. */}
+      {tab === "check" && (
+        checkBooksError ? (
+          <div className="border border-danger-line bg-danger-bg/40 rounded-xl p-4 text-[12.5px] text-ink-2">
+            Could not check the books: {checkBooksError}
+            <button onClick={loadCheckBooks} className="ml-2 font-medium text-accent hover:text-accent-hover">Try again</button>
+          </div>
+        ) : checkBooks === null ? skeletonRows
+        : checkBooks.length === 0 ? (
+          <div className="text-center py-20">
+            <p className="text-[14px] font-semibold text-ink-2">No bank rows yet.</p>
+            <p className="text-[12px] text-muted mt-1">Connect a bank or import a statement under Setup.</p>
+          </div>
+        ) : (
+          <div className="space-y-5">
+            <p className="text-[12px] text-muted">
+              A month is proven when its statement is imported and the statement's net (ending less beginning) equals the ledger's rows for the period.
+              A difference means a row is missing (negative) or doubled (positive) in your records. Possible duplicates and withdrawn rows are resolved under To book.
+            </p>
+            {checkBooks.map((a) => {
+              const clean = a.periods.every((p) => p.statement && Math.abs(p.difference ?? 0) < 0.005 && p.duplicates === 0 && p.withdrawn === 0);
+              return (
+                <div key={a.account} className="bg-surface border border-line rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 bg-surface-2/60 border-b border-line flex items-baseline justify-between gap-3 flex-wrap">
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-semibold text-ink truncate">{a.account}</div>
+                      {a.recon ? (
+                        <div className="text-[11.5px] text-muted">
+                          Bank balance {fmtAmount(a.recon.bank_balance)} · ledger net {fmtAmount(a.recon.ledger_net)} over {a.recon.txn_count} rows
+                          {a.recon.baseline != null && Math.abs(a.recon.drift) > 0.005
+                            ? <span className="text-danger-ink"> · off by {fmtAmount(a.recon.drift)} since last checked</span>
+                            : a.recon.baseline != null ? <span className="text-success-ink"> · agrees with the bank</span> : null}
+                        </div>
+                      ) : (
+                        <div className="text-[11.5px] text-muted">Not a connected bank account: only its statements can prove it.</div>
+                      )}
+                    </div>
+                    <StatusPill tone={clean ? "success" : "warning"}>{clean ? "Every month proven" : `${a.periods.filter((p) => !(p.statement && Math.abs(p.difference ?? 0) < 0.005 && p.duplicates === 0 && p.withdrawn === 0)).length} to look at`}</StatusPill>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[12px]">
+                      <thead>
+                        <tr className="text-left text-muted border-b border-line-2">
+                          <th className="font-medium px-3 py-2 whitespace-nowrap">Period</th>
+                          <th className="font-medium px-3 py-2 whitespace-nowrap">Statement</th>
+                          <th className="font-medium px-3 py-2 text-right whitespace-nowrap">Statement net</th>
+                          <th className="font-medium px-3 py-2 text-right whitespace-nowrap">Ledger net</th>
+                          <th className="font-medium px-3 py-2 text-right whitespace-nowrap">Difference</th>
+                          <th className="font-medium px-3 py-2 whitespace-nowrap">Flags</th>
+                          <th className="px-3 py-2" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-line-2">
+                        {a.periods.map((p) => {
+                          const ok = !!p.statement && Math.abs(p.difference ?? 0) < 0.005 && p.duplicates === 0 && p.withdrawn === 0;
+                          const label = p.start.slice(0, 7) === p.end.slice(0, 7) && p.start.endsWith("-01")
+                            ? monthHeading(p.start.slice(0, 7)) : `${p.start} to ${p.end}`;
+                          return (
+                            <tr key={p.start + p.end} className={ok ? "" : "bg-warning-bg/40"}>
+                              <td className="px-3 py-2 whitespace-nowrap text-ink">{label}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                {p.statement
+                                  ? <span className="text-ink-2" title={p.statement.file_name}>Posted · {p.statement.rows} rows</span>
+                                  : <button onClick={() => { setAccountId(a.account); setTab("setup"); }} className="font-medium text-accent hover:text-accent-hover">No statement · Import</button>}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-ink-2 whitespace-nowrap">{p.statement ? fmtAmount(p.statement.net) : "–"}</td>
+                              <td className="px-3 py-2 text-right tabular-nums text-ink-2 whitespace-nowrap">{fmtAmount(p.ledger_net)} <span className="text-faint">· {p.ledger_rows}</span></td>
+                              <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap font-medium ${p.difference == null ? "text-faint" : Math.abs(p.difference) < 0.005 ? "text-success-ink" : "text-danger-ink"}`}>
+                                {p.difference == null ? "–" : Math.abs(p.difference) < 0.005 ? "0.00" : `${p.difference > 0 ? "+" : ""}${fmtAmount(p.difference)}`}
+                              </td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                <span className="inline-flex items-center gap-1 flex-nowrap">
+                                  {p.duplicates > 0 && <StatusPill tone="warning">{p.duplicates} possible duplicate{p.duplicates === 1 ? "" : "s"}</StatusPill>}
+                                  {p.withdrawn > 0 && <StatusPill tone="warning">{p.withdrawn} withdrawn</StatusPill>}
+                                  {ok && <StatusPill tone="success">Proven</StatusPill>}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-right whitespace-nowrap">
+                                <button onClick={() => openLedgerOn(a.account, p.start, p.end)} className="text-[11.5px] font-medium text-accent hover:text-accent-hover">Open ledger</button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )
       )}

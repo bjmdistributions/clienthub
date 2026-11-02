@@ -2740,11 +2740,20 @@ export interface BankRow {
   check_num: string;
   balance: number;
 }
+/** R-579: what a statement says about itself; `ending - beginning` is its net. */
+export interface StatementInfo {
+  period_start: string;
+  period_end: string;
+  beginning: number;
+  ending: number;
+}
 export interface BankPreview {
   format: "ofx" | "csv";
   total: number;
   has_fitid: boolean;
   sample: BankRow[];
+  statement?: StatementInfo | null;
+  rows_net?: number;
 }
 export interface BankImportSummary {
   imported: number;
@@ -2754,6 +2763,24 @@ export interface BankImportSummary {
   errors: string[];
   format: "ofx" | "csv";
   has_fitid: boolean;
+  statement?: StatementInfo | null;
+}
+/** R-579: one period of one account on Check books. */
+export interface CheckPeriod {
+  start: string;
+  end: string;
+  statement: { beginning: number; ending: number; net: number; rows: number; imported_at: string; file_name: string } | null;
+  ledger_net: number;
+  ledger_rows: number;
+  difference: number | null;
+  duplicates: number;
+  withdrawn: number;
+}
+export interface CheckAccount {
+  account: string;
+  mask: string;
+  recon: ReconAccount | null;
+  periods: CheckPeriod[];
 }
 export interface BankTxn {
   id: string;
@@ -4393,6 +4420,8 @@ export const api = {
   /// Does the ledger still tie out to the bank? Pass `rebaseline` to accept the
   /// current figures as correct after a deliberate change (cleanup, re-pull).
   reconcileAccounts: (rebaseline = false) => invoke<ReconAccount[]>("reconcile_accounts", { rebaseline }),
+  // R-579: every account, period by period: statement posted, statement net against ledger net, duplicates, withdrawn.
+  checkBooks: () => invoke<CheckAccount[]>("check_books"),
   convergeIntegrityItem: (kind: IntegrityItem["kind"], id: string) =>
     invoke<string[]>("converge_integrity_item", { kind, id }),
 
@@ -5043,6 +5072,9 @@ export const api = {
   allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string, allowSplit?: boolean) =>
     invoke<string>("allocate_bank_txn", { bankTxnId, dealFlowId, amount, role, note, allowSplit }),
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
+  // R-579: a person says a posted row is not the retracted row's copy; the pair is never offered again.
+  markTakeoverNotSame: (retractedId: string, postedId: string) =>
+    invoke<{ marked: boolean }>("mark_takeover_not_same", { retractedId, postedId }),
   clearBankTxns: (scope: "statements" | "plaid" | "all", force = false) =>
     invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
   listBankTxnsByIds: (ids: string[]) => invoke<BankTxn[]>("list_bank_txns_by_ids", { ids }),
@@ -5062,8 +5094,12 @@ export const api = {
   dedupeBankTxns: (dryRun: boolean, aggressive = false) =>
     invoke<DedupeResult>("dedupe_bank_txns", { dryRun, aggressive }),
   /** Delete hand-picked bank transactions. Booked rows are skipped, not silently removed. */
-  deleteBankTxns: (ids: string[]) =>
-    invoke<{ deleted: number; skipped_booked: number }>("delete_bank_txns", { ids }),
+  // R-579: `unlink` confirms removing rows tied to a deal with their links; without it those come back under
+  // `needs_unlink` with the deals named.
+  deleteBankTxns: (ids: string[], unlink = false) =>
+    invoke<{ deleted: number; skipped_booked: number; deals?: number;
+             needs_unlink?: { id: string; description: string; amount: number; date: string; deals: string[] }[] }>(
+      "delete_bank_txns", { ids, unlink }),
   getBankBackupSettings: () =>
     invoke<{ sheet_url: string; enabled: boolean; last_at: string; last_total: string }>("get_bank_backup_settings"),
   setBankBackupSettings: (sheetUrl: string, enabled: boolean) =>

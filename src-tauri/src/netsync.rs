@@ -68,7 +68,7 @@ const POLL_SECS: u64 = 20;
 /// refreshes `warehouse_cases` and `warehouse_loads` for their new columns (`unmatched_json`, the units
 /// scanned into a box and not matched yet, and `unit`), so a desktop that updates after boxes were
 /// scanned on the phone shows what is waiting in them.
-const HEAL_GENERATION: &str = "15";
+const HEAL_GENERATION: &str = "16";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -133,6 +133,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "manifests", "manifest_rules", "manifest_column_maps",
     // The company's barcodes (R-568).
     "item_codes",
+    // Imported bank statements, their period and balances (R-579).
+    "bank_statement",
 ];
 
 pub fn ensure_tables() -> Result<()> {
@@ -1815,6 +1817,8 @@ async fn auto_heal_if_behind() {
         "manifests", "manifest_rules", "manifest_column_maps",
         // R-568: the company's barcodes (generation 15).
         "item_codes",
+        // R-579: imported bank statements (generation 16).
+        "bank_statement",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -3174,9 +3178,12 @@ mod r400_sync_tests {
     /// columns are refreshed so a box scanned on the phone shows what is waiting in it (generation 15).
     #[test]
     fn r568_barcodes_and_scanned_boxes_force_one_more_restore_per_device() {
-        assert_eq!(HEAL_GENERATION, "15", "generation 15 adds item_codes and the R-568 columns");
+        // R-579: generation 16 adds bank_statement.
+        assert_eq!(HEAL_GENERATION, "16", "generation 16 adds bank_statement (R-579) after item_codes (R-568)");
         assert!(SNAPSHOT_TABLES.contains(&"item_codes"));
         assert!(crate::sync::is_synced_table("item_codes"));
+        assert!(SNAPSHOT_TABLES.contains(&"bank_statement"));
+        assert!(crate::sync::is_synced_table("bank_statement"));
         for t in ["warehouse_cases", "warehouse_loads"] {
             assert!(HEAL_REFRESH_TABLES.contains(&t), "{t} gained a column in R-568");
             assert!(SNAPSHOT_TABLES.contains(&t));

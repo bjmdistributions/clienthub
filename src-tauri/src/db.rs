@@ -2732,4 +2732,32 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_loads ADD COLUMN unit TEXT DEFAULT '';
         "#,
     ),
+    (
+        123,
+        // R-579: one row per imported bank statement (its account, period, beginning and ending balance),
+        // so Check books can say which months have a statement posted and hold the ledger's net for the
+        // period to the statement's. Written by bank_import::persist_statement with a deterministic id
+        // (account and period end), so re-importing updates the record. Every column nullable with a
+        // default so a partial create event cannot be swallowed. Synced (sync.rs ALLOWED_TABLES, netsync
+        // SNAPSHOT_TABLES, heal generation 16) and mirrored in clienthub-api schema.sql, its sync.rs ALTER
+        // list, PUSHABLE and ORG_TABLES, which must be deployed first.
+        r#"
+        CREATE TABLE IF NOT EXISTS bank_statement (
+            id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL DEFAULT '',
+            period_start TEXT NOT NULL DEFAULT '',
+            period_end TEXT NOT NULL DEFAULT '',
+            beginning REAL NOT NULL DEFAULT 0,
+            ending REAL NOT NULL DEFAULT 0,
+            row_count INTEGER DEFAULT 0,
+            file_name TEXT DEFAULT '',
+            format TEXT DEFAULT '',
+            imported_at TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_bank_statement_account ON bank_statement(account_id, period_end);
+        "#,
+    ),
 ];

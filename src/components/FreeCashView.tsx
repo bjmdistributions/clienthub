@@ -33,6 +33,14 @@ type OverviewWithReserve = FinancialsOverview & {
   reserve_target?: number;
   reserve_shortfall?: number;
   reserve_accounts?: ReserveAccountOption[];
+  // R-579: the tax set-aside and its check against the savings account.
+  tax_base?: number;
+  tax_sweep_pct?: number;
+  tax_paid?: number;
+  tax_should_have?: number;
+  reserve_ledger_year?: number;
+  reserve_mask?: string;
+  reserve_drift?: number | null;
 };
 
 const acctLabel = (a: ReserveAccountOption) =>
@@ -93,7 +101,8 @@ function NumField({
   );
 }
 
-export default function FreeCashView() {
+// R-579: `onCheckBooks` opens Check books on one account (its last four digits).
+export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: string) => void } = {}) {
   const [ov, setOv] = useState<OverviewWithReserve | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
@@ -397,11 +406,10 @@ export default function FreeCashView() {
               <div className="min-w-0">
                 <h3 className="text-[13px] font-semibold text-ink tracking-tight">Set aside</h3>
                 <p className="text-[11px] text-muted mt-0.5">
+                  Tax on this year's net income from the ledger, less the estimated tax you have paid. Refunds on {fmtAmount(ov.refund_reserve_base ?? 0)} of deal profit this year.{" "}
                   {reserveLinked
-                    ? <>A target based on {fmtAmount(ov.refund_reserve_base ?? 0)} of profit this year. {ov.reserve_account_label} holds
-                        the money, and its balance is already out of the number above</>
-                    : <>A target based on {fmtAmount(ov.refund_reserve_base ?? 0)} of profit this year. For the record only,
-                        not taken out of the number above</>}
+                    ? <>{ov.reserve_account_label} holds the money, and its balance is already out of the number above.</>
+                    : <>For the record only, not taken out of the number above.</>}
                 </p>
                 {reserveDesignated && !reserveLinked && (
                   <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-danger-line bg-danger-bg/40 px-3 py-2.5">
@@ -413,21 +421,42 @@ export default function FreeCashView() {
                   </div>
                 )}
                 <div className="mt-3 border-t border-line-2 divide-y divide-line-2">
+                  {/* R-579: the tax figure, line by line, so the number can be checked by hand. */}
                   <div className="flex items-center gap-3 py-2.5 min-w-0">
-                    <span className="min-w-0 flex-1 text-[13px] text-ink-2">Tax</span>
+                    <span className="min-w-0 flex-1 text-[13px] text-ink-2">Net income this year, from the ledger</span>
+                    <span className={`text-[13px] tabular-nums w-28 text-right flex-shrink-0 ${(ov.tax_base ?? 0) < 0 ? "text-danger-ink" : "text-ink-2"}`}>{fmtAmount(ov.tax_base ?? 0)}</span>
+                  </div>
+                  <div className="flex items-center gap-3 py-2.5 min-w-0">
+                    <span className="min-w-0 flex-1 text-[13px] text-ink-2">
+                      Tax at {Math.round((ov.tax_sweep_pct ?? 0.3) * 100)}%
+                    </span>
                     <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(ov.tax_reserve)}</span>
+                  </div>
+                  {(ov.tax_paid ?? 0) > 0.005 && (
+                    <div className="flex items-center gap-3 py-2.5 min-w-0">
+                      <span className="min-w-0 flex-1 text-[13px] text-ink-2">Estimated tax already paid this year</span>
+                      <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">-{fmtAmount(ov.tax_paid ?? 0)}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-3 py-2.5 min-w-0">
+                    <span className="min-w-0 flex-1 text-[13px] font-medium text-ink">Should be in savings now for tax</span>
+                    <span className="text-[13px] tabular-nums font-medium text-ink w-28 text-right flex-shrink-0">{fmtAmount(ov.tax_should_have ?? ov.tax_reserve)}</span>
                   </div>
                   <div className="flex items-center gap-3 py-2.5 min-w-0">
                     <span className="min-w-0 flex-1 text-[13px] text-ink-2">
                       Refunds
-                      <span className="text-muted"> · {Math.round((ov.refund_reserve_pct ?? 0.3) * 100)}%</span>
+                      <span className="text-muted"> · {Math.round((ov.refund_reserve_pct ?? 0.3) * 100)}% of deal profit</span>
                     </span>
                     <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(ov.refund_reserve)}</span>
                   </div>
                   {reserveLinked && (
                     <>
                       <div className="flex items-center gap-3 py-2.5 min-w-0">
-                        <span className="min-w-0 flex-1 text-[13px] font-medium text-ink">Parked in {ov.reserve_account_label}</span>
+                        <span className="min-w-0 flex-1 text-[13px] text-ink-2">Moved in per the ledger this year, net</span>
+                        <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(ov.reserve_ledger_year ?? 0)}</span>
+                      </div>
+                      <div className="flex items-center gap-3 py-2.5 min-w-0">
+                        <span className="min-w-0 flex-1 text-[13px] font-medium text-ink">At the bank in {ov.reserve_account_label}</span>
                         <span className="text-[13px] tabular-nums text-ink w-28 text-right flex-shrink-0">{fmtAmount(reserveParked)}</span>
                       </div>
                       <div className="flex items-center gap-3 py-2.5 min-w-0">
@@ -436,6 +465,20 @@ export default function FreeCashView() {
                         </span>
                         <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(reserveShortfall)}</span>
                       </div>
+                      {ov.reserve_drift != null && Math.abs(ov.reserve_drift) > 0.005 && (
+                        <div className="flex items-start gap-2 py-2.5 min-w-0">
+                          <AlertTriangle size={14} className="text-danger-ink flex-shrink-0 mt-0.5" />
+                          <span className="min-w-0 flex-1 text-[12px] text-ink-2">
+                            The ledger and the bank disagree by {fmtAmount(Math.abs(ov.reserve_drift))} on this account since it was last checked.
+                            A transfer is missing or doubled in your records.
+                            {onCheckBooks && ov.reserve_mask && (
+                              <button onClick={() => onCheckBooks(ov.reserve_mask!)} className="ml-1.5 font-medium text-accent hover:text-accent-hover">
+                                Check books
+                              </button>
+                            )}
+                          </span>
+                        </div>
+                      )}
                     </>
                   )}
                   <div className="flex items-center gap-3 py-2.5 min-w-0">
@@ -554,8 +597,8 @@ export default function FreeCashView() {
                 onChange={setFloorStr}
               />
               <NumField
-                label="Tax sweep"
-                hint="Share of this year's completed-deal profit set aside for taxes."
+                label="Tax rate set aside"
+                hint="Share of this year's net income, from the ledger, set aside for taxes. Estimated tax you have paid comes off the figure."
                 suffix="%"
                 value={taxStr}
                 onChange={setTaxStr}
