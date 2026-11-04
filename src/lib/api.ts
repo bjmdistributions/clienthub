@@ -213,6 +213,43 @@ export interface ScheduledSendProgress {
   status: string;
 }
 
+// R-586/R-587: a bank transaction that is not in the ledger exactly as the bank states it.
+export type BankDeclinedReason = "copy" | "held_reference" | "change_unknown" | "statement_feed_twin" | "missing" | "differs" | "not_at_bank";
+export type BankDeclinedAction = "import" | "copy" | "use_bank" | "keep" | "remove" | "reopen";
+export interface BankDeclined {
+  id: string;
+  txn_id: string;
+  source: "plaid" | "statement";
+  reason: BankDeclinedReason;
+  account_id: string;
+  posted_at: string;
+  amount: number;
+  direction: "in" | "out";
+  description: string;
+  matched: string[];
+  bank: {
+    posted_at?: string; amount?: number; direction?: string; description?: string; removed_before?: boolean;
+    fields?: ("date" | "amount" | "direction" | "memo")[];
+    ledger?: { posted_at: string; amount: number; direction: string; description: string };
+  };
+  status: "open" | "imported" | "copy" | "fixed" | "kept" | "removed";
+  resolved_by: string;
+  resolved_at: string;
+  created_at: string;
+}
+export interface BankCheckAccount { account: string; posted: number; exact: number; not_exact: number; from_statement: number }
+export interface BankCheck {
+  checked_at: string;
+  accounts: BankCheckAccount[];
+  missing: number;
+  differs: number;
+  not_at_bank: number;
+  new_rows: number;
+  closed: number;
+  errors: { institution: string; error: string }[];
+}
+export interface BankDeclinedList { rows: BankDeclined[]; check: BankCheck | null }
+
 export interface Me {
   id: string;
   email: string;
@@ -5216,6 +5253,11 @@ export const api = {
   plaidHealth: () => invoke<PlaidHealth>("plaid_health"),
   plaidHealthDismiss: () => invoke<void>("plaid_health_dismiss"),
   listOverbookedTxns: () => invoke<OverbookedTxn[]>("list_overbooked_txns"),
+  // R-586/R-587: bank transactions not in the ledger as the bank states them, and Check against bank.
+  listBankDeclined: () => invoke<BankDeclinedList>("list_bank_declined"),
+  resolveBankDeclined: (id: string, action: BankDeclinedAction, by?: string) =>
+    invoke<{ ok: boolean; status?: string; delete?: { needs_unlink?: { id: string; deals: string[] }[]; skipped_booked?: number } }>("resolve_bank_declined", { id, action, by }),
+  checkAgainstBank: () => invoke<BankCheck>("check_against_bank"),
   autostartGet: () => invoke<boolean>("autostart_get"),
   autostartSet: (on: boolean) => invoke<boolean>("autostart_set", { on }),
   trimTxnBookings: (id: string) => invoke<{ trimmed: number }>("trim_txn_bookings", { id }),

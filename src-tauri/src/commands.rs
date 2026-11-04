@@ -21152,6 +21152,29 @@ fn plaid_copies(
     (delivered, copies)
 }
 
+/// R-586: a bank-feed transaction for the Not imported list, carrying exactly the columns `plaid_sync`'s insert
+/// writes, so Import stores the row the bank sent.
+#[allow(clippy::too_many_arguments)]
+fn plaid_decline(id: &str, label: &str, date: &str, amount: f64, direction: &str, desc: &str, cat: &str, cp: &str,
+                 rawj: &str, reason: &str, matched: Vec<String>) -> crate::bank_declined::Decline {
+    let s = |v: &str| Value::String(v.to_string());
+    let mut cols = Map::new();
+    cols.insert("account_id".into(), s(label));
+    cols.insert("posted_at".into(), s(date));
+    cols.insert("amount".into(), json!(amount));
+    cols.insert("direction".into(), s(direction));
+    cols.insert("description".into(), s(desc));
+    cols.insert("memo_raw".into(), s(desc));
+    cols.insert("category".into(), s(cat));
+    cols.insert("counterparty_name".into(), s(cp));
+    cols.insert("source_format".into(), s("plaid"));
+    cols.insert("raw_json".into(), s(rawj));
+    crate::bank_declined::Decline {
+        txn_id: id.to_string(), source: "plaid".into(), reason: reason.into(), account: label.into(), date: date.into(),
+        amount, direction: direction.into(), description: desc.into(), matched, bank: cols,
+    }
+}
+
 fn plaid_txn_id(transaction_id: &str) -> String {
     let clean: String = transaction_id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     format!("btpl_{}", clean)
@@ -21493,6 +21516,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
         )
     }
 
+    // R-586: how many transactions this pass kept on the Not imported list instead of storing.
+    let mut declined: usize = 0;
+
     for (item_pk, access, mut cursor, accounts_json, item_env, institution) in items {
         let live_labels: std::collections::HashSet<String> = item_labels.iter()
             .filter(|(pk, inst, _)| *pk == item_pk || *inst != institution)
@@ -21769,6 +21795,16 @@ pub async fn plaid_sync() -> Result<Value, String> {
                             "matched": copies.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
                             "matched_under": renamed_from,
                         }));
+                        // R-586: the cursor moves past it, so it is kept on the Not imported list until someone answers
+                        // it. A row that cannot be kept stops this bank's pass, so the page replays rather than losing it.
+                        let d = plaid_decline(&id, &label, &date, amount, direction, &desc, &cat, &cp, &rawj,
+                                              crate::bank_declined::COPY, copies.iter().map(|c| c.id.clone()).collect());
+                        if let Err(e) = crate::bank_declined::record(&conn, &d, &now) {
+                            status = "error";
+                            error_msg = format!("save failed: {e}");
+                            break;
+                        }
+                        declined += 1;
                         continue;
                     }
                     // R-002/BL-22. `canonical_bank_txn_id` wired as a live dedup key — but as
@@ -21788,6 +21824,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         .flat_map(|acct| canonical_id_booked_collisions(&conn, acct, direction, &desc, &id))
                         .collect();
                     if !booked_collisions.is_empty() {
+                        // R-586: held, never dropped. Import brings it in under its own id.
+                        let d = plaid_decline(&id, &label, &date, amount, direction, &desc, &cat, &cp, &rawj,
+                                              crate::bank_declined::HELD_REFERENCE, booked_collisions.clone());
                         held_reference_collision.push(json!({
                             "date": date,
                             "amount": amount,
@@ -21796,6 +21835,12 @@ pub async fn plaid_sync() -> Result<Value, String> {
                             "description": desc,
                             "existing": booked_collisions,
                         }));
+                        if let Err(e) = crate::bank_declined::record(&conn, &d, &now) {
+                            status = "error";
+                            error_msg = format!("save failed: {e}");
+                            break;
+                        }
+                        declined += 1;
                         continue;
                     }
                     // R-019-E. The content fingerprint above is the only duplicate signal
@@ -21924,7 +21969,34 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     ).ok();
                     // The bank is describing a transaction we do not hold at all — the
                     // clearest possible statement that something was never loaded.
-                    let Some((old_amount, reviewed)) = existing else { amend_unknown += 1; continue };
+                    let Some((old_amount, reviewed)) = existing else {
+                        amend_unknown += 1;
+                        // R-586: the bank describing a transaction the ledger never held is kept on the Not imported
+                        // list with what the bank says, for Import, instead of being counted and dropped.
+                        let amt = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let direction = if amt > 0.0 { "out" } else { "in" };
+                        let raw_label = label_of(t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""));
+                        let label = aliases.get(&raw_label).cloned().unwrap_or(raw_label);
+                        let merchant = t.get("merchant_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let raw_name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let desc = if raw_name.is_empty() { merchant.clone() } else { raw_name };
+                        let cp = if merchant.is_empty() { desc.clone() } else { merchant.clone() };
+                        let pfc = t.get("personal_finance_category").and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or("");
+                        let date = t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let dt = t.get("datetime").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+                            .or_else(|| t.get("authorized_datetime").and_then(|v| v.as_str())).unwrap_or("").to_string();
+                        let pacct = t.get("account_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let rawj = rawj_for(t, &dt, &pacct, tid, &merchant);
+                        let d = plaid_decline(&id, &label, &date, amt.abs(), direction, &desc, &plaid_category(pfc, direction), &cp,
+                                              &rawj, crate::bank_declined::CHANGE_UNKNOWN, Vec::new());
+                        if let Err(e) = crate::bank_declined::record(&conn, &d, &now) {
+                            status = "error";
+                            error_msg = format!("save failed: {e}");
+                            break;
+                        }
+                        declined += 1;
+                        continue
+                    };
 
                     let amt = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let direction = if amt > 0.0 { "out" } else { "in" };
@@ -22273,6 +22345,8 @@ pub async fn plaid_sync() -> Result<Value, String> {
             [id], |r| r.get::<_, String>(0)).unwrap_or_else(|_| id.clone())).collect(),
         Err(_) => retracted_kept.clone(),
     };
+    // R-587: Check against bank once a day. It waits for this pull's gate, so it starts the moment this pull ends.
+    tokio::spawn(check_against_bank_if_due());
     record_plaid_pass(&results, &[
         ("over_allocated", &amended_over_allocated),
         ("settle_refused", &settle_refused),
@@ -22305,6 +22379,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         "page_capped": page_capped,                   // banks stopped at the page cap with history left
         "possible_duplicates": possible_duplicates,   // same payment reference, imported anyway
         "held_reference_collision": held_reference_collision, // same reference as a BOOKED row — held, not imported
+        "declined": declined,                         // R-586: kept on the Not imported list
         "preparing": preparing, "results": results,
     }))
 }
@@ -22338,6 +22413,370 @@ mod payment_rail_tests {
 }
 
 /// R-493: the gate `plaid_sync` holds for its whole pass.
+// ---------------------------------------------------------------------------------------------------------
+// R-586/R-587: Not imported, and Check against bank
+// ---------------------------------------------------------------------------------------------------------
+
+/// The Not imported list (open rows, then the last answered ones) and the last Check against bank.
+#[tauri::command]
+pub async fn list_bank_declined() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let rows = crate::bank_declined::list(&conn)?;
+    let check: Value = conn.query_row("SELECT value FROM settings WHERE key='bank_check'", [], |r| r.get::<_, String>(0))
+        .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
+    Ok(json!({ "rows": rows, "check": check }))
+}
+
+/// Answers one row. `action`:
+/// - `import`: writes the bank's row into the ledger under its own id (a row already there is just marked);
+/// - `copy`: it is already on the books;
+/// - `use_bank`: a row that differs takes the bank's date, amount, direction and memo (refused when the new
+///   amount is below what is booked against it, or the direction would flip on linked money);
+/// - `keep`: the ledger's values stay (asked again only if the bank changes the row);
+/// - `remove`: a row the bank no longer lists is removed through `delete_bank_txns` (backed up, links refused);
+/// - `reopen`: undoes any answer.
+#[tauri::command]
+pub async fn resolve_bank_declined(id: String, action: String, by: Option<String>) -> Result<Value, String> {
+    if !crate::employees::session_can_book_bank() {
+        return Err("You need Financials edit to answer this.".into());
+    }
+    resolve_bank_declined_inner(id, action, by.unwrap_or_default()).await
+}
+
+async fn resolve_bank_declined_inner(id: String, action: String, by: String) -> Result<Value, String> {
+    let now = Utc::now().to_rfc3339();
+    let (txn_id, reason, matched, bank): (String, String, Vec<String>, Map<String, Value>) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let (t, r, m, b): (String, String, String, String) = conn.query_row(
+            "SELECT txn_id, reason, COALESCE(matched_json,'[]'), COALESCE(bank_json,'{}') FROM bank_declined WHERE id=?1",
+            [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).map_err(|_| "That row is no longer on the list.".to_string())?;
+        (t, r, serde_json::from_str(&m).unwrap_or_default(), serde_json::from_str(&b).unwrap_or_default())
+    };
+    let status = match action.as_str() {
+        "import" => {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let held = conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&txn_id], |_| Ok(())).is_ok();
+            if !held {
+                let g = |k: &str| bank.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let amount = bank.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                if g("account_id").is_empty() || g("posted_at").is_empty() || g("direction").is_empty() {
+                    return Err("The bank's details for this row are incomplete, so it cannot be imported.".into());
+                }
+                let mut cols = bank.clone();
+                cols.remove("fields");
+                cols.remove("ledger");
+                for k in ["imported_at", "created_at", "updated_at"] { cols.insert(k.into(), json!(now)); }
+                sync::record_upsert("bank_txn", &txn_id, cols.clone()).map_err(|e| format!("save failed: {e}"))?;
+                // Every column NOT NULL in bank_txn gets a value: a NULL makes INSERT OR IGNORE skip the row in silence.
+                let col = |k: &str| cols.get(k).cloned().unwrap_or(Value::Null);
+                let text = |k: &str| col(k).as_str().unwrap_or("").to_string();
+                conn.execute(
+                    "INSERT OR IGNORE INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, category, \
+                       counterparty_name, source_format, raw_json, rail, fitid, wire_ref, check_num, balance, imported_at, created_at, updated_at) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17,?17)",
+                    rusqlite::params![txn_id, g("account_id"), g("posted_at"), amount, g("direction"), text("description"),
+                        text("memo_raw"), text("category"), text("counterparty_name"), text("source_format"), text("raw_json"),
+                        text("rail"), text("fitid"), text("wire_ref"), text("check_num"), col("balance").as_f64().unwrap_or(0.0), now],
+                ).map_err(|e| format!("save failed: {e}"))?;
+                if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&txn_id], |_| Ok(())).is_err() {
+                    return Err("The row could not be written to the ledger. Nothing was marked as imported.".into());
+                }
+            }
+            "imported"
+        }
+        "copy" => "copy",
+        "keep" => "kept",
+        "reopen" => "open",
+        "use_bank" => {
+            if reason != crate::bank_declined::DIFFERS { return Err("Only a row that differs from the bank can take its figures.".into()); }
+            let ledger_id = matched.first().cloned().unwrap_or_default();
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let (old_dir,): (String,) = conn.query_row("SELECT direction FROM bank_txn WHERE id=?1", [&ledger_id], |r| Ok((r.get(0)?,)))
+                .map_err(|_| "That ledger row is no longer on the books.".to_string())?;
+            let g = |k: &str| bank.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let amount = bank.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let allocated: f64 = conn.query_row("SELECT COALESCE(SUM(amount),0) FROM bank_allocation WHERE bank_txn_id=?1",
+                [&ledger_id], |r| r.get(0)).unwrap_or(0.0);
+            if allocated > amount + 0.005 {
+                return Err(format!("{} is booked against this row and the bank says {}. Take some of the booking off first.",
+                    fmt_money(allocated), fmt_money(amount)));
+            }
+            if g("direction") != old_dir && bank_txn_is_linked(&conn, &ledger_id) {
+                return Err("The bank has this money going the other way, and it is linked. Unlink it first.".into());
+            }
+            let mut cols = Map::new();
+            for k in ["posted_at", "direction", "description", "memo_raw"] { cols.insert(k.into(), json!(g(k))); }
+            cols.insert("amount".into(), json!(amount));
+            cols.insert("updated_at".into(), json!(now));
+            sync::record_upsert("bank_txn", &ledger_id, cols).map_err(|e| format!("save failed: {e}"))?;
+            conn.execute(
+                "UPDATE bank_txn SET posted_at=?1, amount=?2, direction=?3, description=?4, memo_raw=?5, updated_at=?6 WHERE id=?7",
+                rusqlite::params![g("posted_at"), amount, g("direction"), g("description"), g("memo_raw"), now, ledger_id],
+            ).map_err(|e| format!("save failed: {e}"))?;
+            "fixed"
+        }
+        "remove" => {
+            if reason != crate::bank_declined::NOT_AT_BANK { return Err("Only a row your bank no longer shows can be removed here.".into()); }
+            let res = delete_bank_txns(matched.clone(), Some(false)).await?;
+            if res.get("deleted").and_then(|v| v.as_u64()).unwrap_or(0) == 0 {
+                return Ok(json!({ "ok": false, "delete": res }));
+            }
+            "removed"
+        }
+        other => return Err(format!("Unknown answer: {other}")),
+    };
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    crate::bank_declined::set_status(&conn, &id, status, &by, &now)?;
+    Ok(json!({ "ok": true, "status": status }))
+}
+
+/// Every posted transaction each connected bank holds, from a fresh bookmark (the saved cursor is not read or
+/// moved). One account is read through one connection only: the newest that serves it, as Free cash counts a
+/// balance once. Returns the transactions and, per bank, any error.
+async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>)
+    -> Result<(Vec<crate::bank_declined::BankTxn>, Vec<Value>, std::collections::HashSet<String>), String>
+{
+    let items: Vec<(String, String, String, String)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut st = conn.prepare("SELECT access_token, accounts_json, env, institution FROM plaid_items ORDER BY created_at DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    let mut seen_keys: std::collections::HashSet<String> = Default::default();
+    let mut live: std::collections::HashSet<String> = Default::default();
+    for (access, accounts_json, env, institution) in items {
+        let accts: Vec<Value> = serde_json::from_str(&accounts_json).unwrap_or_default();
+        // Plaid account id -> ledger label, for the accounts no newer connection already covers.
+        let mut wanted: std::collections::HashMap<String, String> = Default::default();
+        let mut item_keys: Vec<String> = Vec::new();
+        for a in &accts {
+            let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if kind != "credit" && kind != "depository" { continue; }
+            let key = plaid_account_key(a);
+            if !seen_keys.insert(key.clone()) { continue; }
+            item_keys.push(key);
+            let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
+            let raw = if mask.is_empty() { name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", name, mask) };
+            live.insert(raw.clone());
+            let label = aliases.get(&raw).cloned().unwrap_or(raw);
+            if let Some(aid) = a.get("account_id").and_then(|v| v.as_str()) { wanted.insert(aid.to_string(), label); }
+        }
+        if wanted.is_empty() { continue; }
+        let mut cursor = String::new();
+        let mut got: Vec<crate::bank_declined::BankTxn> = Vec::new();
+        let (mut pages, mut restarts, mut waits) = (0, 0, 0);
+        let failed: Option<String> = loop {
+            let page = match crate::plaid::transactions_sync(&access, &cursor, &env).await {
+                Ok(crate::plaid::SyncOutcome::Page(p)) => p,
+                Ok(crate::plaid::SyncOutcome::NotReady) => {
+                    waits += 1;
+                    if waits > 10 { break Some("the bank is still preparing its history".into()); }
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                    continue;
+                }
+                Err(e) => {
+                    let (msg, code) = split_plaid_code(&e.to_string());
+                    if code == "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" && restarts < 2 {
+                        restarts += 1;
+                        cursor.clear();
+                        got.clear();
+                        continue;
+                    }
+                    break Some(msg);
+                }
+            };
+            pages += 1;
+            for t in page.get("added").and_then(|v| v.as_array()).into_iter().flatten() {
+                if t.get("pending").and_then(|v| v.as_bool()).unwrap_or(false) { continue; }
+                let aid = t.get("account_id").and_then(|v| v.as_str()).unwrap_or("");
+                let Some(label) = wanted.get(aid) else { continue };
+                let tid = t.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
+                if tid.is_empty() { continue; }
+                let id = plaid_txn_id(tid);
+                let amt = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let direction = if amt > 0.0 { "out" } else { "in" };
+                let merchant = t.get("merchant_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let raw_name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let desc = if raw_name.is_empty() { merchant.clone() } else { raw_name };
+                let cp = if merchant.is_empty() { desc.clone() } else { merchant.clone() };
+                let pfc = t.get("personal_finance_category").and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or("");
+                let date = t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let dt = t.get("datetime").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+                    .or_else(|| t.get("authorized_datetime").and_then(|v| v.as_str())).unwrap_or("").to_string();
+                let rawj = json!({ "dt": dt, "pa": aid, "tid": tid, "pnd": false, "merchant": merchant }).to_string();
+                let d = plaid_decline(&id, label, &date, amt.abs(), direction, &desc, &plaid_category(pfc, direction), &cp,
+                                      &rawj, crate::bank_declined::MISSING, Vec::new());
+                got.push(crate::bank_declined::BankTxn {
+                    id, account: label.clone(), date, amount: amt.abs(), direction: direction.into(), memo: desc, cols: d.bank,
+                });
+            }
+            cursor = page.get("next_cursor").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if !page.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false) { break None; }
+            if pages >= 200 { break Some("the bank's history is longer than one check can read".into()); }
+        };
+        match failed {
+            // A bank that could not be read is reported and left out: its accounts are not judged on half a history.
+            Some(e) => {
+                for k in &item_keys { seen_keys.remove(k); }
+                errors.push(json!({ "institution": institution, "error": e }));
+            }
+            None => out.extend(got),
+        }
+    }
+    Ok((out, errors, live))
+}
+
+/// R-587: holds the bank's whole posted history against the ledger, both ways, and puts every difference on the
+/// Not imported list: a posted transaction with no ledger row, a ledger row whose date, amount, direction or memo
+/// is not the bank's, and a bank-feed row the bank no longer lists. Writes nothing to the ledger itself.
+#[tauri::command]
+pub async fn check_against_bank() -> Result<Value, String> {
+    let _gate = plaid_gate().lock().await;
+    if crate::netsync::is_enabled() {
+        if let Err(e) = crate::netsync::pull_apply().await {
+            tracing::warn!("check against bank: pull first failed, checking this device's copy: {}", e);
+        }
+    }
+    let aliases = account_alias_map();
+    let (bank, errors, live) = bank_posted_history(&aliases).await?;
+    if bank.is_empty() && !errors.is_empty() {
+        let why: Vec<String> = errors.iter().map(|e| format!("{}: {}",
+            e.get("institution").and_then(|v| v.as_str()).unwrap_or("bank"),
+            e.get("error").and_then(|v| v.as_str()).unwrap_or(""))).collect();
+        return Err(format!("Could not read your bank's history: {}", why.join("; ")));
+    }
+    let now = Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let bank_labels: std::collections::BTreeSet<String> = bank.iter().map(|b| b.account.clone()).collect();
+    let ledger: Vec<crate::bank_declined::LedgerTxn> = {
+        let sql = format!(
+            "SELECT b.id, COALESCE(b.account_id,''), COALESCE(b.posted_at,''), COALESCE(b.amount,0), COALESCE(b.direction,''), \
+                    COALESCE(NULLIF(b.memo_raw,''), b.description, ''), COALESCE(b.source_format,''), {}, {} FROM bank_txn b",
+            crate::bank_flags::pending("b"), crate::bank_flags::retracted("b"));
+        let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| Ok(crate::bank_declined::LedgerTxn {
+            id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, direction: r.get(4)?, memo: r.get(5)?,
+            source: r.get(6)?, pending: r.get::<_, i64>(7)? != 0, retracted: r.get::<_, i64>(8)? != 0,
+        })).map_err(|e| e.to_string())?;
+        let mut v: Vec<_> = rows.filter_map(|r| r.ok()).collect();
+        // Fold each ledger label onto the bank's label for the same account (a rename, an alias).
+        let mut fold: std::collections::HashMap<String, String> = Default::default();
+        for l in v.iter_mut() {
+            let to = fold.entry(l.account.clone()).or_insert_with(|| bank_labels.iter()
+                .find(|bl| crate::bank_dedup::same_account(&l.account, bl, &live, &aliases)).cloned()
+                .unwrap_or_else(|| l.account.clone())).clone();
+            l.account = to;
+        }
+        v
+    };
+    let held: std::collections::HashSet<&str> = ledger.iter().map(|l| l.id.as_str()).collect();
+    let removed: std::collections::HashSet<String> = bank.iter()
+        .filter(|b| !held.contains(b.id.as_str()) && sync::is_tombstoned("bank_txn", &b.id))
+        .map(|b| b.id.clone()).collect();
+    let (findings, tallies) = crate::bank_declined::compare(&bank, &ledger, &removed);
+
+    use crate::bank_declined::{Decline, Finding};
+    let mut found: std::collections::HashSet<String> = Default::default();
+    let (mut missing, mut differs, mut not_at_bank, mut new_rows) = (0usize, 0usize, 0usize, 0usize);
+    for f in &findings {
+        let d = match f {
+            Finding::Missing { bank: bi, removed_before } => {
+                missing += 1;
+                let b = &bank[*bi];
+                let mut cols = b.cols.clone();
+                if *removed_before { cols.insert("removed_before".into(), json!(true)); }
+                Decline { txn_id: b.id.clone(), source: "plaid".into(), reason: crate::bank_declined::MISSING.into(),
+                          account: b.account.clone(), date: b.date.clone(), amount: b.amount, direction: b.direction.clone(),
+                          description: b.memo.clone(), matched: Vec::new(), bank: cols }
+            }
+            Finding::Differs { bank: bi, ledger: li, fields } => {
+                differs += 1;
+                let (b, l) = (&bank[*bi], &ledger[*li]);
+                let mut cols = Map::new();
+                for k in ["posted_at", "amount", "direction", "description", "memo_raw", "account_id"] {
+                    if let Some(v) = b.cols.get(k) { cols.insert(k.into(), v.clone()); }
+                }
+                cols.insert("fields".into(), json!(fields));
+                cols.insert("ledger".into(), json!({ "posted_at": l.date, "amount": l.amount, "direction": l.direction, "description": l.memo }));
+                Decline { txn_id: l.id.clone(), source: "plaid".into(), reason: crate::bank_declined::DIFFERS.into(),
+                          account: b.account.clone(), date: b.date.clone(), amount: b.amount, direction: b.direction.clone(),
+                          description: b.memo.clone(), matched: vec![l.id.clone()], bank: cols }
+            }
+            Finding::NotAtBank { ledger: li } => {
+                not_at_bank += 1;
+                let l = &ledger[*li];
+                Decline { txn_id: l.id.clone(), source: "plaid".into(), reason: crate::bank_declined::NOT_AT_BANK.into(),
+                          account: l.account.clone(), date: l.date.clone(), amount: l.amount, direction: l.direction.clone(),
+                          description: l.memo.clone(), matched: vec![l.id.clone()], bank: Map::new() }
+            }
+        };
+        found.insert(crate::bank_declined::row_id(&d.reason, &d.txn_id));
+        if crate::bank_declined::record(&conn, &d, &now)? { new_rows += 1; }
+    }
+    // An open row on a checked account that the check no longer finds was put right some other way: it is closed,
+    // named as the check's doing, so the list holds only what is still true.
+    let open_rows: Vec<(String, String, String, String)> = conn
+        .prepare("SELECT id, txn_id, reason, COALESCE(account_id,'') FROM bank_declined WHERE status='open' AND source='plaid'")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    let checked: std::collections::HashSet<&str> = tallies.iter().map(|t| t.account.as_str()).collect();
+    let bank_ids: std::collections::HashSet<&str> = bank.iter().map(|b| b.id.as_str()).collect();
+    let mut closed = 0usize;
+    for (id, txn_id, reason, account) in open_rows {
+        if found.contains(&id) { continue; }
+        let folded = ledger.iter().find(|l| l.id == txn_id).map(|l| l.account.clone()).unwrap_or(account);
+        if !checked.contains(folded.as_str()) { continue; }
+        let status = match reason.as_str() {
+            crate::bank_declined::DIFFERS => "fixed",
+            crate::bank_declined::NOT_AT_BANK => if held.contains(txn_id.as_str()) { "kept" } else { "removed" },
+            // A declined transaction the bank serves and the ledger now holds, by its own id or as a copy.
+            _ if !bank_ids.contains(txn_id.as_str()) => continue,
+            _ => if held.contains(txn_id.as_str()) { "imported" } else { "copy" },
+        };
+        crate::bank_declined::set_status(&conn, &id, status, "Check against bank", &now)?;
+        closed += 1;
+    }
+    let accounts: Vec<Value> = tallies.iter().map(|t| json!({
+        "account": t.account, "posted": t.posted, "exact": t.exact, "not_exact": t.not_exact, "from_statement": t.from_statement,
+    })).collect();
+    let summary = json!({
+        "checked_at": now, "accounts": accounts, "missing": missing, "differs": differs, "not_at_bank": not_at_bank,
+        "new_rows": new_rows, "closed": closed, "errors": errors,
+    });
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('bank_check', ?1)", [summary.to_string()])
+        .map_err(|e| e.to_string())?;
+    tracing::info!("check against bank: {} posted, {} missing, {} differ, {} not at the bank, {} closed",
+        bank.len(), missing, differs, not_at_bank, closed);
+    drop(conn);
+    publish_balance_and_health();
+    Ok(summary)
+}
+
+/// R-587: once a day on its own, after a pull. A run that could read no bank is tried again an hour later, not on
+/// every pull, so a broken bank login does not re-read the whole history every ten minutes.
+async fn check_against_bank_if_due() {
+    let older_than = |key: &str, hours: i64| pool().get().ok()
+        .and_then(|c| c.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0)).ok())
+        .map(|s| serde_json::from_str::<Value>(&s).ok()
+            .and_then(|v| v.get("checked_at").and_then(|x| x.as_str()).map(str::to_string))
+            .unwrap_or(s))
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .map_or(true, |t| Utc::now().signed_duration_since(t) > chrono::Duration::hours(hours));
+    if !older_than("bank_check", 24) || !older_than("bank_check_tried", 1) { return; }
+    if let Ok(c) = pool().get() {
+        let _ = c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('bank_check_tried', ?1)", [Utc::now().to_rfc3339()]);
+    }
+    if let Err(e) = check_against_bank().await {
+        tracing::warn!("check against bank failed: {}", e);
+    }
+}
+
 fn plaid_gate() -> &'static tokio::sync::Mutex<()> {
     static GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     GATE.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -22506,8 +22945,11 @@ fn publish_balance_and_health() {
         let mask = chosen.and_then(|a| a.get("mask").and_then(|v| v.as_str())).unwrap_or("").to_string();
         json!({ "designated": !key.is_empty(), "linked": linked, "parked": (parked * 100.0).round() / 100.0, "label": label, "mask": mask })
     };
+    // R-587: the last Check against bank, so the phone shows it and pushes a difference.
+    let bank_check: Value = conn.query_row("SELECT value FROM settings WHERE key='bank_check'", [], |r| r.get::<_, String>(0))
+        .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
     drop(conn);
-    tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks, reserve).await; });
+    tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks, reserve, bank_check).await; });
 }
 
 /// R-518: pull when the window comes to the front and this device has not pulled for five minutes, so a PC that
@@ -28059,6 +28501,76 @@ mod txn_rule_retag_tests {
         assert!(!imported_in_pass("2026-09-09T23:59:59.999999999+00:00", Some(since)));
         assert!(!imported_in_pass("", Some(since)), "no import stamp is not this pass");
         assert!(!imported_in_pass("2026-09-10T15:04:06+00:00", None), "a manual Apply has no pass");
+    }
+}
+
+#[cfg(test)]
+mod r586_declined_tests {
+    use super::*;
+    use crate::db::pool;
+
+    // R-586: Import writes the row the bank sent, under its own id, and only once; It is a copy writes nothing.
+    #[test]
+    fn a_declined_transaction_imports_exactly_the_banks_row() {
+        let _db = crate::db::init_test_store();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let d = plaid_decline("btpl_r586imp", "R586 Checking \u{00b7}\u{00b7}5555", "2026-11-03", 1234.56, "in",
+                              "ZELLE FROM R586 BUYER", "receipt", "R586 Buyer", r#"{"pa":"acct1","pnd":false}"#,
+                              crate::bank_declined::COPY, vec!["btpl_r586other".into()]);
+        {
+            let c = pool().get().unwrap();
+            crate::bank_declined::record(&c, &d, "2026-11-04T10:00:00Z").unwrap();
+        }
+        let r = rt.block_on(resolve_bank_declined_inner("bd_btpl_r586imp".into(), "import".into(), "Tester".into())).unwrap();
+        assert_eq!(r["status"], "imported");
+        let c = pool().get().unwrap();
+        let (acct, date, amt, dir, desc, src): (String, String, f64, String, String, String) = c.query_row(
+            "SELECT account_id, posted_at, amount, direction, description, source_format FROM bank_txn WHERE id='btpl_r586imp'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap();
+        assert_eq!((acct.as_str(), date.as_str(), amt, dir.as_str(), desc.as_str(), src.as_str()),
+                   ("R586 Checking \u{00b7}\u{00b7}5555", "2026-11-03", 1234.56, "in", "ZELLE FROM R586 BUYER", "plaid"));
+        let (st, by): (String, String) = c.query_row("SELECT status, resolved_by FROM bank_declined WHERE id='bd_btpl_r586imp'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((st.as_str(), by.as_str()), ("imported", "Tester"));
+        drop(c);
+        // A second Import finds the row and adds nothing.
+        rt.block_on(resolve_bank_declined_inner("bd_btpl_r586imp".into(), "import".into(), "Tester".into())).unwrap();
+        let c = pool().get().unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM bank_txn WHERE id='btpl_r586imp'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        c.execute("DELETE FROM bank_txn WHERE id='btpl_r586imp'", []).unwrap();
+    }
+
+    // R-587: Use the bank's figures writes the bank's date, amount and memo, and refuses an amount below what is booked.
+    #[test]
+    fn use_the_banks_figures_matches_the_row_and_never_strands_a_booking() {
+        let _db = crate::db::init_test_store();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let c = pool().get().unwrap();
+        c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, source_format) \
+                   VALUES ('btpl_r586diff','R586 Checking','2026-11-01',500,'out','WIRE TO ACME','WIRE TO ACME','plaid')", []).unwrap();
+        let mut bank = Map::new();
+        for (k, v) in [("posted_at", json!("2026-11-02")), ("amount", json!(450.0)), ("direction", json!("out")),
+                       ("description", json!("WIRE TO ACME TRN: 12345678")), ("memo_raw", json!("WIRE TO ACME TRN: 12345678"))] {
+            bank.insert(k.into(), v);
+        }
+        let d = crate::bank_declined::Decline { txn_id: "btpl_r586diff".into(), source: "plaid".into(),
+            reason: crate::bank_declined::DIFFERS.into(), matched: vec!["btpl_r586diff".into()], bank, ..Default::default() };
+        crate::bank_declined::record(&c, &d, "2026-11-04T10:00:00Z").unwrap();
+        c.execute("INSERT INTO bank_allocation (id, org_id, bank_txn_id, deal_flow_id, amount, role, created_at, updated_at) \
+                   VALUES ('alloc_r586','org_default','btpl_r586diff','df_r586',480,'supplier','x','x')", []).unwrap();
+        drop(c);
+        let r = rt.block_on(resolve_bank_declined_inner("bd_d_btpl_r586diff".into(), "use_bank".into(), "Tester".into()));
+        assert!(r.is_err(), "a 450 row cannot hold a 480 booking");
+        let c = pool().get().unwrap();
+        c.execute("DELETE FROM bank_allocation WHERE id='alloc_r586'", []).unwrap();
+        drop(c);
+        rt.block_on(resolve_bank_declined_inner("bd_d_btpl_r586diff".into(), "use_bank".into(), "Tester".into())).unwrap();
+        let c = pool().get().unwrap();
+        let (date, amt, memo): (String, f64, String) = c.query_row(
+            "SELECT posted_at, amount, memo_raw FROM bank_txn WHERE id='btpl_r586diff'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((date.as_str(), amt, memo.as_str()), ("2026-11-02", 450.0, "WIRE TO ACME TRN: 12345678"));
+        c.execute("DELETE FROM bank_txn WHERE id='btpl_r586diff'", []).unwrap();
     }
 }
 

@@ -10,6 +10,7 @@ import {
   TakeoverSuggestion, TieOutRow, RetractedRow, PlaidHealth,
 } from "../lib/api";
 import StatusPill from "./StatusPill";
+import BankDeclinedCard from "./BankDeclinedCard";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -907,6 +908,11 @@ export default function FinancialsView() {
   // Open the Ledger on one account and period.
   const openLedgerOn = (account: string, start: string, end: string) => {
     setAcctFilter(account); setFromDate(start); setToDate(end); setQueue("all"); setStatusFilter("all"); setTab("ledger");
+  };
+  // R-586: one ledger row, opened and found by its amount. No account filter: the row may sit under the account's older name.
+  const openLedgerRow = (id: string, amount: number) => {
+    setAcctFilter("all"); setFromDate(""); setToDate(""); setQueue("all"); setStatusFilter("all"); setTab("ledger");
+    setSearch(amount.toFixed(2)); setOpenId(id);
   };
   // R-188: which tax year the P&L report shows. Defaults to the current Central
   // calendar year, same "today" helper the rest of this screen uses (R-159).
@@ -3719,6 +3725,11 @@ export default function FinancialsView() {
         // Renders nothing when no bank needs anything; over-booked rows (R-518 F7) can come from a statement too.
         <BankHealthStrip version={healthVersion} onSynced={() => { refreshAll(false).catch(() => {}); loadPlaid(); }} />
       )}
+      {tab === "tobook" && (
+        // R-586: what the bank sent that is not in the ledger as the bank shows it. Renders nothing when empty.
+        <BankDeclinedCard version={healthVersion} mode="tobook" onChanged={() => { refreshAll(false).catch(() => {}); }}
+          onOpenRow={openLedgerRow} onCheckBooks={() => setTab("check")} />
+      )}
 
       {tab === "tobook" && (
         <div className="min-w-0 flex items-center justify-between gap-3 flex-wrap">
@@ -5322,6 +5333,9 @@ export default function FinancialsView() {
           </div>
         ) : (
           <div className="space-y-6 max-w-[1120px]">
+            {/* R-587: every posted transaction held to the bank's own history, row by row. */}
+            <BankDeclinedCard version={healthVersion} mode="check" onChanged={() => { refreshAll(false).catch(() => {}); loadCheckBooks(); }}
+              onOpenRow={openLedgerRow} />
             <p className="text-[13px] text-muted max-w-[780px] leading-relaxed">
               A month is proven when its statement is imported and the statement's net (ending less beginning) equals the ledger's rows for the period.
               A difference means a row is missing (negative) or doubled (positive) in your records. Possible duplicates and withdrawn rows are resolved under To book.
