@@ -49,7 +49,27 @@ export interface Lead {
   due?: boolean;
   queued?: number;
   emails_sent?: number;
+  // R-581, worked out on the server (absent from a server before it):
+  /** The list it came in on: its import's name. */
+  list?: string;
+  /** The phone written plainly, "(201) 360-6143", and its ten digits ("" when it is not a US number). */
+  phone_shown?: string;
+  phone_digits?: string;
+  emailed?: boolean;
+  first_email_at?: string;
+  replied?: boolean;
+  /** Called or emailed and never heard back. */
+  no_reply?: boolean;
+  texted?: { at: string; by: string } | null;
+  said?: Said | null;
 }
+
+/** R-581: one thing they said or we heard: a reply's gist and tags, a call's outcome and note, or a note. */
+export interface Said { kind: "reply" | "call" | "note"; outcome: string; text: string; tags: string[]; at: string; by: string }
+
+export interface LeadListName { name: string; total: number; emailed: number; replied: number; texted: number; suppliers: number }
+export interface MapPin { id: string; lat: number; lng: number; place: "street" | "city" }
+export interface MapAnswer { pins: MapPin[]; pending: number; unplaced: number; problem: "" | "no_key" | "key_refused" }
 
 export interface OutreachSettings {
   send_from: string;
@@ -73,11 +93,13 @@ export interface LeadList {
   settings: OutreachSettings;
   /** Replies not answered yet (R-563); absent from a server before deploy-276. */
   replies_waiting?: number;
+  /** R-581: each list, in the order they came in. */
+  lists?: LeadListName[];
 }
 
 export interface LeadEvent { id: string; kind: string; outcome: string; subject: string; body: string; at: string; by: string }
 export interface QueuedEmail { id: string; subject: string; body: string; status: string; error: string; bump: boolean; created_at: string; sent_at: string }
-export interface LeadDetail { lead: Lead; events: LeadEvent[]; queue: QueuedEmail[] }
+export interface LeadDetail { lead: Lead; events: LeadEvent[]; queue: QueuedEmail[]; said?: Said[] }
 
 export interface DraftEmail { lead_id: string; company: string; to: string; subject: string; body: string; reply_to: string; bump: boolean }
 export interface Skipped { lead_id?: string; row?: number; company: string; reason: string }
@@ -116,8 +138,8 @@ export const outreach = {
     call<{ status: LeadStatus; next_touch: string }>("POST", `/api/outreach/leads/${id(leadId)}/call`, { outcome, note, next_touch }),
   note: (leadId: string, text: string) => call<{ ok: boolean }>("POST", `/api/outreach/leads/${id(leadId)}/note`, { text }),
   makeSupplier: (leadId: string) => call<{ supplier_id: string }>("POST", `/api/outreach/leads/${id(leadId)}/supplier`, {}),
-  importSheet: (name: string, data: string) =>
-    call<{ added: number; skipped: Skipped[]; tab: string }>("POST", "/api/outreach/import", { name, data }),
+  importSheet: (name: string, data: string, source = "") =>
+    call<{ added: number; skipped: Skipped[]; tab: string }>("POST", "/api/outreach/import", { name, data, source }),
   preview: (lead_ids: string[], subject: string, body: string) =>
     call<{ emails: DraftEmail[]; skipped: Skipped[] }>("POST", "/api/outreach/preview", { lead_ids, subject, body }),
   bumps: (body: string) => call<{ emails: DraftEmail[]; skipped: Skipped[] }>("POST", "/api/outreach/bumps", { body }),
@@ -129,6 +151,9 @@ export const outreach = {
     call<OutreachSettings>("POST", "/api/outreach/settings", s),
   replies: () => call<{ replies: OutreachReply[]; waiting: number }>("GET", "/api/outreach/replies"),
   markAnswered: (replyId: string) => call<{ ok: boolean }>("POST", `/api/outreach/replies/${id(replyId)}/answered`, {}),
+  texted: (leadId: string, texted: boolean) => call<{ texted: boolean }>("POST", `/api/outreach/leads/${id(leadId)}/texted`, { texted }),
+  renameList: (from: string, to: string) => call<{ renamed: number }>("POST", "/api/outreach/lists/rename", { from, to }),
+  map: () => call<MapAnswer>("GET", "/api/outreach/map"),
   pump: () => invoke<PumpState>("outreach_pump_get"),
   setPump: (on: boolean) => invoke<void>("outreach_pump_set", { on }),
 };
@@ -144,4 +169,64 @@ export function dayLabel(ymd: string): string {
   const [y, m, d] = ymd.split("-").map(Number);
   if (!y || !m || !d) return ymd;
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+// ── R-581: lists, filters, the map's colours, what they said ──
+
+/** Where a warehouse stands on the map and in the legend, furthest first. */
+export type Stage = "stop" | "supplier" | "replied" | "emailed" | "not_emailed";
+export const STAGES: [Stage, string, string][] = [
+  ["not_emailed", "Not emailed", "--c-muted"], ["emailed", "Emailed, no reply", "--c-step-now"], ["replied", "Replied", "--c-accent"],
+  ["supplier", "Supplier", "--c-success"], ["stop", "Do not contact", "--c-danger"],
+];
+export function stageOf(l: Lead): Stage {
+  if (l.status === "do_not_contact") return "stop";
+  if (l.status === "supplier") return "supplier";
+  if (l.replied) return "replied";
+  return l.emailed ? "emailed" : "not_emailed";
+}
+
+/** The chips over the warehouses. `due` and `all` as before; the rest read what the server worked out. */
+export const REACH: [string, string][] = [
+  ["due", "Due today"], ["all", "All"], ["not_emailed", "Not emailed"], ["emailed", "Emailed"], ["replied", "Replied"],
+  ["no_reply", "No reply yet"], ["texted", "Texted"],
+];
+export function inReach(l: Lead, f: string): boolean {
+  switch (f) {
+    case "due": return !!l.due;
+    case "not_emailed": return !l.emailed;
+    case "emailed": return !!l.emailed;
+    case "replied": return !!l.replied;
+    case "no_reply": return !!l.no_reply;
+    case "texted": return !!l.texted;
+    default: return true;
+  }
+}
+
+/** The line under a warehouse saying what they said, or what the last call or note was. "" with nothing. */
+export function saidLine(s: Said | null | undefined): string {
+  if (!s) return "";
+  if (s.kind === "reply") return s.text ? `They said: ${s.text}` : "They replied";
+  if (s.kind === "call") return `Call: ${OUTCOME_LABEL[s.outcome] ?? s.outcome}${s.text ? `. ${s.text}` : ""}`;
+  return `Note: ${s.text}`;
+}
+
+/** "Emailed Oct 20", "Emailed" (set by hand, no email on record), or "Not emailed". */
+export function emailedLine(l: Lead): string {
+  if (!l.emailed) return "Not emailed";
+  const t = l.first_email_at ? new Date(l.first_email_at) : null;
+  return t && !isNaN(t.getTime()) ? `Emailed ${t.toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "Emailed";
+}
+
+/** Pins of one city sit on one point: spread them in a small ring so each can be clicked. */
+export function spread(pins: MapPin[]): MapPin[] {
+  const seen = new Map<string, number>();
+  return pins.map((p) => {
+    const k = `${p.lat.toFixed(4)},${p.lng.toFixed(4)}`;
+    const n = seen.get(k) ?? 0;
+    seen.set(k, n + 1);
+    if (n === 0) return p;
+    const a = n * 2.4, r = 0.012 * Math.sqrt(n);
+    return { ...p, lat: p.lat + r * Math.sin(a), lng: p.lng + r * Math.cos(a) };
+  });
 }

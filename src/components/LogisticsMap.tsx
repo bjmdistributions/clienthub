@@ -25,7 +25,7 @@ import { mix, recolor, type Rgb, type StyleJson } from "../lib/freightMapStyle";
 type MapLibre = typeof import("maplibre-gl");
 let libPromise: Promise<MapLibre> | null = null;
 
-function loadMapLibre(): Promise<MapLibre> {
+export function loadMapLibre(): Promise<MapLibre> {
   if (libPromise) return libPromise;
   const p = Promise.all([
     import("maplibre-gl"),
@@ -45,7 +45,7 @@ function loadMapLibre(): Promise<MapLibre> {
 const STYLE_URL = { light: "https://tiles.openfreemap.org/styles/positron", dark: "https://tiles.openfreemap.org/styles/dark" } as const;
 const styles = new Map<"light" | "dark", Promise<StyleJson>>();
 
-function loadStyle(dark: boolean): Promise<StyleJson> {
+export function loadStyle(dark: boolean): Promise<StyleJson> {
   const k = dark ? "dark" : "light";
   let p = styles.get(k);
   if (!p) {
@@ -63,15 +63,15 @@ function loadStyle(dark: boolean): Promise<StyleJson> {
 // ── Colours, read from the theme ─────────────────────────────────────────
 
 /** A token such as --c-step-now ("0 122 255") as red, green and blue. */
-function cssRgb(name: string): Rgb {
+export function cssRgb(name: string): Rgb {
   const parts = getComputedStyle(document.documentElement).getPropertyValue(name).trim().split(/\s+/).map(Number);
   return parts.length === 3 && parts.every((n) => Number.isFinite(n)) ? (parts.map((n) => Math.max(0, Math.min(255, Math.round(n)))) as Rgb) : [0, 0, 0];
 }
-const hex = (c: Rgb) => `#${c.map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+export const hex = (c: Rgb) => `#${c.map((n) => n.toString(16).padStart(2, "0")).join("")}`;
 
 const isDark = () => document.documentElement.classList.contains("dark");
 
-function readColors() {
+export function readColors() {
   const dark = isDark();
   const route = cssRgb("--c-step-now"), ink = cssRgb("--c-ink");
   // The land is the page's own surface colour; on the dark map it is lifted a little so it never reads as black.
@@ -82,7 +82,7 @@ function readColors() {
 type Colors = ReturnType<typeof readColors>;
 
 /** What changes the map's look: the dark switch, and Mono (which moves the surface tokens). */
-const themeKey = () => `${isDark() ? "dark" : "light"}|${document.documentElement.classList.contains("matte") ? "mono" : "color"}`;
+export const themeKey = () => `${isDark() ? "dark" : "light"}|${document.documentElement.classList.contains("matte") ? "mono" : "color"}`;
 
 // ── Drawing state ────────────────────────────────────────────────────────
 
@@ -109,7 +109,7 @@ interface View {
 }
 
 /** Jump to the Logistics card in Settings, where the route key is kept. */
-function openLogisticsSettings() {
+export function openLogisticsSettings() {
   try { localStorage.setItem("clienthub_settings_tab", "splits"); } catch { /* storage blocked: Settings just opens */ }
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "settings" }));
 }
@@ -148,7 +148,7 @@ class MapCatch extends Component<{ children: ReactNode }, { failed: boolean }> {
 /** fitBounds with more padding than the box has room for (a narrow window) gives MapLibre a NaN camera and it throws. The
  *  padding shrinks to a quarter of the box, a box too small to fit anything is skipped, and a throw leaves the camera as it
  *  is. Returns whether the fit happened, so a skipped fit is tried again on the next redraw. */
-function safeFit(map: MapLibreMap, bounds: [[number, number], [number, number]], padding: number, maxZoom?: number): boolean {
+export function safeFit(map: MapLibreMap, bounds: [[number, number], [number, number]], padding: number, maxZoom?: number): boolean {
   const el = map.getContainer();
   const room = Math.min(el.clientWidth, el.clientHeight);
   if (!(room >= 40)) return false;

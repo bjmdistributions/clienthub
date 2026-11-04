@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, FileUp, Mail, Phone, Plus, Reply, Search, Settings2, X } from "lucide-react";
+import { Check, Copy, FileUp, Mail, Pencil, Phone, Plus, Reply, Search, Settings2, X } from "lucide-react";
 import StatusPill from "./StatusPill";
+import ColdCallsMap from "./ColdCallsMap";
+import { copyText, COPY_FAILED } from "../lib/clipboard";
 import { toast } from "./Toast";
 import { can } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import {
-  ANSWERED_HOW, KIND_LABEL, OUTCOMES, OUTCOME_LABEL, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, nextLine, outreach, sendable,
-  type DraftEmail, type Lead, type LeadDetail, type LeadList, type LeadStatus, type OutreachReply, type PumpState, type Skipped,
+  ANSWERED_HOW, KIND_LABEL, OUTCOMES, OUTCOME_LABEL, REACH, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, emailedLine, inReach, nextLine,
+  outreach, saidLine, sendable, type DraftEmail, type LeadListName, type Lead, type LeadDetail, type LeadList, type LeadStatus, type OutreachReply, type PumpState, type Skipped,
 } from "../lib/outreach";
 
 // R-546 Cold calls: warehouses and would-be suppliers being cold called and emailed, kept apart from
@@ -69,7 +71,12 @@ export default function ColdCallsView() {
   const [review, setReview] = useState<{ emails: DraftEmail[]; skipped: Skipped[] } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [imported, setImported] = useState<{ added: number; skipped: Skipped[] } | null>(null);
-  const [view, setView] = useState<"leads" | "replies">("leads");
+  const [view, setView] = useState<"leads" | "map" | "text" | "replies">("leads");
+  // R-581: the list picked at the top ("" is every list) and a status on top of the chips ("" is any). The list is kept per computer.
+  const [list, setListState] = useState<string>(() => { try { return localStorage.getItem(LIST_KEY) ?? ""; } catch { return ""; } });
+  const setList = (n: string) => { setListState(n); try { localStorage.setItem(LIST_KEY, n); } catch { /* blocked: kept until reload */ } };
+  const [status, setStatus] = useState<string>("");
+  const [renaming, setRenaming] = useState<LeadListName | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const me = useSessionMe();
   // Make supplier writes a supplier, the suppliers write bar (the server checks it too).
@@ -85,16 +92,23 @@ export default function ColdCallsView() {
     return () => window.clearInterval(t);
   }, [load]);
 
-  const leads = useMemo(() => data?.leads ?? [], [data]);
+  const lists = useMemo(() => data?.lists ?? [], [data]);
+  const everyLead = useMemo(() => data?.leads ?? [], [data]);
+  // A list that is gone (renamed on another device) falls back to every list.
+  const pickedList = lists.some((x) => x.name === list) ? list : "";
+  const leads = useMemo(() => everyLead.filter((l) => !pickedList || l.list === pickedList), [everyLead, pickedList]);
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return leads.filter((l) => (filter === "all" || (filter === "due" ? l.due : l.status === filter))
-      && (!q || `${l.company} ${l.city} ${l.state} ${l.email} ${l.contact_name}`.toLowerCase().includes(q)));
-  }, [leads, filter, query]);
-  const chips: [string, string, number][] = [
-    ["due", "Due today", data?.due ?? 0], ["all", "All", leads.length],
-    ...STATUSES.filter((s) => data?.counts?.[s]).map((s) => [s, STATUS_LABEL[s], data?.counts?.[s] ?? 0] as [string, string, number]),
-  ];
+    return leads.filter((l) => inReach(l, filter) && (!status || l.status === status)
+      && (!q || `${l.company} ${l.city} ${l.state} ${l.email} ${l.contact_name} ${l.phone}`.toLowerCase().includes(q)));
+  }, [leads, filter, status, query]);
+  const chips: [string, string, number][] = REACH.map(([k, lb]) => [k, lb, leads.filter((l) => inReach(l, k)).length]);
+  const statusCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const l of leads) c[l.status] = (c[l.status] ?? 0) + 1;
+    return c;
+  }, [leads]);
+  const toText = leads.filter((l) => l.no_reply && l.phone && !l.texted).length;
 
   const emailShown = () => {
     if (!data?.settings.address_line) { toast("Add your business address in Cold calls settings first. Every cold email has to carry it.", "error"); setSettingsOpen(true); return; }
@@ -151,6 +165,16 @@ export default function ColdCallsView() {
 
       {data && (
         <>
+          {lists.length > 0 && (
+            <div className="flex gap-2.5 mb-4 overflow-x-auto pb-1">
+              <ListCard name="All lists" n={{ name: "", total: everyLead.length, emailed: everyLead.filter((l) => l.emailed).length,
+                replied: everyLead.filter((l) => l.replied).length, texted: everyLead.filter((l) => l.texted).length, suppliers: 0 }}
+                on={!pickedList} onPick={() => setList("")} />
+              {lists.map((x) => (
+                <ListCard key={x.name} name={x.name} n={x} on={pickedList === x.name} onPick={() => setList(x.name)} onRename={() => setRenaming(x)} />
+              ))}
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-3 mb-2">
             {([["Due today", data.due], ["Waiting to send", data.queue.waiting], ["Sent today", data.queue.sent_today]] as [string, number][]).map(([l, v]) => (
               <div key={l} className="bg-surface border border-line rounded-2xl px-4 py-3">
@@ -165,7 +189,7 @@ export default function ColdCallsView() {
           </p>
 
           <div className="inline-flex p-0.5 mb-3 bg-surface-2 border border-line rounded-lg">
-            {([["leads", "Warehouses", 0], ["replies", "Replies", data.replies_waiting ?? 0]] as ["leads" | "replies", string, number][]).map(([k, lb, n]) => (
+            {([["leads", "Warehouses", 0], ["map", "Map", 0], ["text", "To text", toText], ["replies", "Replies", data.replies_waiting ?? 0]] as ["leads" | "map" | "text" | "replies", string, number][]).map(([k, lb, n]) => (
               <button key={k} onClick={() => setView(k)}
                 className={`h-8 px-3.5 rounded-md text-[13px] inline-flex items-center gap-1.5 transition-colors ${view === k ? "bg-surface text-ink font-medium shadow-sm" : "text-ink-2 hover:text-ink"}`}>
                 {lb}
@@ -174,7 +198,9 @@ export default function ColdCallsView() {
             ))}
           </div>
 
-          {view === "replies" ? <Replies onOpenLead={setOpenId} onChanged={load} /> : <>
+          {view === "replies" ? <Replies onOpenLead={setOpenId} onChanged={load} />
+          : view === "map" ? <ColdCallsMap leads={leads} onOpen={setOpenId} />
+          : view === "text" ? <TextList leads={leads} onOpen={setOpenId} onChanged={load} /> : <>
           <div className="flex flex-wrap items-center gap-2 mb-3">
             <div className="relative w-64 max-w-full">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
@@ -186,32 +212,41 @@ export default function ColdCallsView() {
                 {l} <span className="tabular-nums text-muted">{n}</span>
               </button>
             ))}
+            <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status" className="h-8 bg-surface border border-line rounded-lg px-2.5 text-[12.5px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/30">
+              <option value="">Any status</option>
+              {STATUSES.filter((x) => statusCounts[x]).map((x) => <option key={x} value={x}>{STATUS_LABEL[x]} ({statusCounts[x]})</option>)}
+            </select>
           </div>
 
           {leads.length === 0 ? (
             <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">No warehouses yet. Import a sheet or add one.</div>
           ) : shown.length === 0 ? (
-            <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">{filter === "due" && !query ? "Nothing is due today." : "No warehouses match."}</div>
+            <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">{filter === "due" && !query && !status ? "Nothing is due today." : "No warehouses match."}</div>
           ) : (
             <div className="bg-surface border border-line rounded-2xl divide-y divide-line-2 overflow-hidden">
               {shown.map((l) => {
                 const place = [l.city, l.state].filter(Boolean).join(", ");
                 const next = nextLine(l.next_touch, data.today);
+                const said = saidLine(l.said);
                 return (
-                  <button key={l.id} onClick={() => setOpenId(l.id)} className="w-full text-left flex items-center gap-4 px-4 py-3 hover:bg-surface-2 min-w-0">
+                  <button key={l.id} onClick={() => setOpenId(l.id)} className="w-full text-left flex items-start gap-4 px-4 py-3 hover:bg-surface-2 min-w-0">
                     <div className="min-w-0 flex-1">
                       <div className="text-[14px] font-medium text-ink truncate">{l.company}</div>
                       <div className="text-[12.5px] text-muted truncate">
                         {[place, KIND_LABEL[l.kind] ?? ""].filter(Boolean).join(" · ") || "No place yet"}
-                        {/* The 216px sidebar takes a step off every breakpoint: below xl the next touch rides this line. */}
-                        {next && <span className={`xl:hidden ${l.due ? "text-accent-hover font-medium" : ""}`}> · {next}</span>}
+                        {/* The 216px sidebar takes a step off every breakpoint: below xl the emailed line rides here. */}
+                        <span className="xl:hidden"> · {emailedLine(l)}</span>
+                        {next && <span className={l.due ? "text-accent-hover font-medium" : ""}> · {next}</span>}
+                        {l.queued ? <span> · {l.queued} to send</span> : null}
                       </div>
+                      {said && <div className={`text-[13px] mt-1 line-clamp-1 ${l.said?.kind === "reply" ? "text-ink" : "text-ink-2"}`}>{said}</div>}
                     </div>
-                    <div className="hidden 2xl:block w-56 min-w-0 text-[12.5px] text-ink-2 truncate">{l.email || l.phone || ""}</div>
-                    <div className={`hidden xl:block w-48 min-w-0 truncate text-[12.5px] ${l.due ? "text-accent-hover font-medium" : "text-muted"}`}>
-                      {next}{l.queued ? <span className="text-muted font-normal"> · {l.queued} to send</span> : null}
+                    <div className="w-[150px] flex-shrink-0 pt-0.5">
+                      <div className={`text-[14px] tabular-nums truncate ${l.phone ? "text-ink" : "text-muted"}`}>{l.phone_shown || l.phone || "No phone"}</div>
+                      {l.texted && <div className="text-[12px] text-success-ink truncate">Texted {agoDay(l.texted.at)}</div>}
                     </div>
-                    <div className="flex-shrink-0 flex justify-end"><Pill s={l.status} /></div>
+                    <div className={`hidden xl:block w-[110px] flex-shrink-0 pt-0.5 text-[12.5px] ${l.emailed ? "text-ink-2" : "text-muted"}`}>{emailedLine(l)}</div>
+                    <div className="flex-shrink-0 flex justify-end pt-0.5"><Pill s={l.status} /></div>
                   </button>
                 );
               })}
@@ -231,6 +266,7 @@ export default function ColdCallsView() {
           onNext={(r) => { setCompose(null); setReview(r); load(); }} />
       )}
       {review && <Review emails={review.emails} skipped={review.skipped} onClose={() => setReview(null)} onQueued={() => { setReview(null); setOpenId(null); load(); }} />}
+      {renaming && <RenameList n={renaming} onClose={() => setRenaming(null)} onSaved={(to) => { setRenaming(null); setList(to); load(); }} />}
       {settingsOpen && data && <SettingsOverlay settings={data.settings} onClose={() => setSettingsOpen(false)} onSaved={() => { setSettingsOpen(false); load(); }} />}
       {imported && (
         <Overlay title={imported.added === 1 ? "Added 1 warehouse" : `Added ${imported.added} warehouses`} onClose={() => setImported(null)}
@@ -246,6 +282,135 @@ export default function ColdCallsView() {
         </Overlay>
       )}
     </div>
+  );
+}
+
+const LIST_KEY = "ecliptr_coldcalls_list";
+
+/** "Oct 20", or "today". */
+function agoDay(iso: string): string {
+  const t = new Date(iso);
+  if (isNaN(t.getTime())) return "";
+  return t.toDateString() === new Date().toDateString() ? "today" : t.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/** R-581: one imported list at the top: its name, how many, and how far it got. */
+function ListCard({ name, n, on, onPick, onRename }: { name: string; n: LeadListName; on: boolean; onPick: () => void; onRename?: () => void }) {
+  const pct = (k: number) => (n.total ? Math.round((k / n.total) * 100) : 0);
+  return (
+    <div className={`relative flex-shrink-0 w-[220px] rounded-2xl border px-3.5 py-3 transition-colors ${on ? "border-accent ring-1 ring-accent/25 bg-surface" : "border-line bg-surface hover:bg-surface-2"}`}>
+      <button onClick={onPick} className="absolute inset-0 rounded-2xl" aria-label={`Show ${name}`} />
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-[13.5px] font-medium text-ink truncate pr-1" title={name}>{name}</div>
+        {onRename && (
+          <button onClick={onRename} className="relative p-1 -m-1 rounded text-muted hover:text-ink hover:bg-surface-2" aria-label={`Rename ${name}`}><Pencil size={12} /></button>
+        )}
+      </div>
+      <div className="text-[12px] text-muted tabular-nums">{n.total === 1 ? "1 warehouse" : `${n.total} warehouses`}</div>
+      <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden flex">
+        <div className="bg-accent" style={{ width: `${pct(n.replied)}%` }} />
+        <div className="bg-step-now" style={{ width: `${Math.max(0, pct(n.emailed) - pct(n.replied))}%` }} />
+      </div>
+      <div className="mt-1.5 text-[12px] text-ink-2 tabular-nums truncate">
+        {n.emailed} emailed, {n.replied} replied{n.texted ? `, ${n.texted} texted` : ""}
+      </div>
+    </div>
+  );
+}
+
+function RenameList({ n, onClose, onSaved }: { n: LeadListName; onClose: () => void; onSaved: (to: string) => void }) {
+  const [to, setTo] = useState(n.name);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (!to.trim() || to.trim() === n.name) return;
+    setBusy(true);
+    try { await outreach.renameList(n.name, to.trim()); toast("List renamed"); onSaved(to.trim()); }
+    catch (e) { toast(msg(e), "error"); setBusy(false); }
+  };
+  return (
+    <Overlay title="Rename this list" onClose={onClose}
+      footer={<><button className={ghost} onClick={onClose}>Cancel</button><button className={solid} disabled={busy || !to.trim() || to.trim() === n.name} onClick={save}>Rename</button></>}>
+      <label className={label}>Name</label>
+      <input autoFocus value={to} onChange={(e) => setTo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save(); }} className={field} />
+      <p className="text-[12px] text-muted mt-2">Every warehouse in it stays in it. Using another list's name puts the two together.</p>
+    </Overlay>
+  );
+}
+
+/** A phone number big enough to read off the screen, with Copy. */
+function BigPhone({ l }: { l: Lead }) {
+  const shown = l.phone_shown || l.phone;
+  if (!shown) return <span className="text-[13px] text-muted">No phone</span>;
+  const copy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const ok = await copyText(shown);
+    toast(ok ? "Number copied" : COPY_FAILED, ok ? undefined : "error");
+  };
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="text-[18px] font-medium text-ink tabular-nums select-text whitespace-nowrap">{shown}</span>
+      <button onClick={copy} className="p-1.5 rounded-lg text-muted hover:text-ink hover:bg-surface-2" aria-label="Copy the number"><Copy size={14} /></button>
+    </span>
+  );
+}
+
+/** R-581: everyone reached by email or a call who never came back, with the number big, to text. Anyone on the team marks one
+ * texted; the mark says who and when and moves nothing else. */
+function TextList({ leads, onOpen, onChanged }: { leads: Lead[]; onOpen: (id: string) => void; onChanged: () => void }) {
+  const [which, setWhich] = useState<"not" | "done" | "all">("not");
+  const [busy, setBusy] = useState("");
+  const pool = leads.filter((l) => l.no_reply);
+  const withPhone = pool.filter((l) => l.phone);
+  const shown = withPhone.filter((l) => which === "all" || (which === "done" ? !!l.texted : !l.texted));
+  const mark = async (l: Lead, on: boolean) => {
+    setBusy(l.id);
+    try { await outreach.texted(l.id, on); toast(on ? `${l.company} marked texted` : "Mark taken back"); onChanged(); }
+    catch (e) { toast(msg(e), "error"); }
+    setBusy("");
+  };
+  const chips: ["not" | "done" | "all", string, number][] = [
+    ["not", "Not texted", withPhone.filter((l) => !l.texted).length], ["done", "Texted", withPhone.filter((l) => l.texted).length], ["all", "All", withPhone.length],
+  ];
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        {chips.map(([k, lb, n]) => (
+          <button key={k} onClick={() => setWhich(k)}
+            className={`h-8 px-3 rounded-full border text-[12.5px] whitespace-nowrap transition-colors ${which === k ? "bg-accent/10 border-accent/40 text-accent-hover font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+            {lb} <span className="tabular-nums text-muted">{n}</span>
+          </button>
+        ))}
+        <span className="text-[12px] text-muted">Called or emailed, and never heard back.{pool.length > withPhone.length ? ` ${pool.length - withPhone.length} more have no phone number.` : ""}</span>
+      </div>
+      {shown.length === 0 ? (
+        <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">
+          {withPhone.length === 0 ? "No one is waiting on a text. Everyone you called or emailed has answered, or has no number." : which === "not" ? "Every number here has been texted." : "None texted yet."}
+        </div>
+      ) : (
+        <div className="bg-surface border border-line rounded-2xl divide-y divide-line-2 overflow-hidden">
+          {shown.map((l) => (
+            <div key={l.id} className="flex items-center gap-4 px-4 py-3 min-w-0">
+              <button onClick={() => onOpen(l.id)} className="min-w-0 flex-1 text-left">
+                <div className="text-[14px] font-medium text-ink truncate">{l.company}</div>
+                <div className="text-[12.5px] text-muted truncate">{[[l.city, l.state].filter(Boolean).join(", "), emailedLine(l), l.contact_name].filter(Boolean).join(" · ")}</div>
+                {l.said && <div className="text-[12.5px] text-ink-2 truncate mt-0.5">{saidLine(l.said)}</div>}
+              </button>
+              <div className="flex-shrink-0"><BigPhone l={l} /></div>
+              <div className="w-[150px] flex-shrink-0 flex justify-end">
+                {l.texted ? (
+                  <div className="text-right">
+                    <div className="text-[12.5px] text-success-ink inline-flex items-center gap-1"><Check size={13} />Texted {agoDay(l.texted.at)}</div>
+                    <div className="text-[11.5px] text-muted">{l.texted.by || "The team"}, <button className="underline hover:text-ink" disabled={busy === l.id} onClick={() => mark(l, false)}>undo</button></div>
+                  </div>
+                ) : (
+                  <button className={solid} disabled={busy === l.id} onClick={() => mark(l, true)}>Mark texted</button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -403,7 +568,9 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
     : e.kind === "status" ? `Status: ${STATUS_LABEL[e.outcome as LeadStatus] ?? e.outcome}`
     : e.kind === "import" ? "Imported"
     : e.kind === "answer" ? "You emailed them"
-    : e.kind === "answered" ? "Marked answered" : "Note";
+    : e.kind === "answered" ? "Marked answered"
+    : e.kind === "text" ? "Texted"
+    : e.kind === "untext" ? "Texted mark taken back" : "Note";
   const site = l?.website ? (/^https?:\/\//i.test(l.website) ? l.website : `https://${l.website}`) : "";
 
   return (
@@ -420,10 +587,18 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
           <div className="flex-1 overflow-auto px-5 py-4 space-y-5">
             <section>
               <div className="text-[13px] text-ink-2 space-y-1.5">
-                {l.phone && <div className="flex items-center gap-2"><Phone size={13} className="text-muted" /><span className="select-text">{l.phone}</span></div>}
+                {l.phone && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <BigPhone l={l} />
+                    {l.texted
+                      ? <span className="text-[12.5px] text-success-ink">Texted {agoDay(l.texted.at)}{l.texted.by ? ` by ${l.texted.by}` : ""}, <button className="underline" disabled={busy} onClick={() => act(() => outreach.texted(l.id, false), "Mark taken back")}>undo</button></span>
+                      : <button className={ghost + " h-8"} disabled={busy} onClick={() => act(() => outreach.texted(l.id, true), "Marked texted")}>Mark texted</button>}
+                  </div>
+                )}
                 {l.email && <div className="flex items-center gap-2"><Mail size={13} className="text-muted" /><span className="select-text">{l.email}</span></div>}
                 {site && <div><a href={site} target="_blank" rel="noreferrer" className="text-accent-hover hover:underline">{l.website}</a></div>}
                 <div className="text-muted">{[[l.city, l.state].filter(Boolean).join(", "), KIND_LABEL[l.kind] ?? "", l.source].filter(Boolean).join(" · ")}</div>
+                <div className="text-muted">{emailedLine(l)}</div>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 {sendable(l.status) && l.email && <button className={ghost} onClick={() => onEmail(l.id)}><Mail size={14} /> Email</button>}
@@ -432,6 +607,25 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
                   <button className={ghost} disabled={busy} onClick={() => act(() => outreach.makeSupplier(l.id), `${l.company} is now in Suppliers`)}>Make supplier</button>
                 )}
               </div>
+            </section>
+
+            {/* R-581: what they said, always first: every reply's gist and every call, newest first. */}
+            <section>
+              <div className="text-[13px] font-medium text-ink mb-2">What they said</div>
+              {!d.said?.length ? <div className="text-[12.5px] text-muted">Nothing yet. Replies and calls show here.</div> : (
+                <div className="space-y-2">
+                  {d.said.map((x, i) => (
+                    <div key={i} className={`rounded-xl border px-3 py-2.5 ${x.kind === "reply" ? "border-accent/30 bg-accent/5" : "border-line"}`}>
+                      <div className="flex items-baseline justify-between gap-3 text-[12px] text-muted">
+                        <span className="font-medium text-ink-2">{x.kind === "reply" ? "Their reply" : x.kind === "call" ? `Call: ${OUTCOME_LABEL[x.outcome] ?? x.outcome}` : "Note"}</span>
+                        <span className="whitespace-nowrap">{ago(x.at)}{x.by ? ` · ${x.by}` : ""}</span>
+                      </div>
+                      {x.text && <div className="text-[13.5px] text-ink mt-0.5 select-text">{x.text}</div>}
+                      {x.tags.length > 0 && <div className="mt-1.5 flex flex-wrap gap-1.5">{x.tags.map(tagPill)}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             <section className="bg-surface-2 border border-line rounded-xl p-3">
