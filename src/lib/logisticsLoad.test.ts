@@ -628,6 +628,10 @@ describe("R-470: a load is paid only when its bank payment is linked", () => {
     expect(paidView({ paid_state: "paid", paid_amount: 100, paid_note: "  " }, today).note).toBe("Linked to the bank");
   });
 
+  it("says a load with no deal was paid as recorded by the team, not linked to the bank (R-588)", () => {
+    expect(paidView({ paid_state: "paid", paid_amount: 1700, standalone: true, paid_note: "ref 77" }, today).note).toBe("Recorded by your team · Reference ref 77");
+  });
+
   it("warns amber on a payment that is marked but not linked", () => {
     expect(paidView({ paid_state: "marked", paid_amount: 850 }, today)).toMatchObject({
       state: "marked", tone: "warning", text: "Marked paid $850.00, not linked to the bank", zero: false,

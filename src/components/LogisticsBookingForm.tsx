@@ -949,7 +949,7 @@ export default function LogisticsBookingForm({
   const reloadLoad = async () => {
     try { takeServerCopy(await api.logistics.get(booking.id)); } catch (e) { toast(String(e), "error"); }
   };
-  const payFor: PayTarget = { bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost, linked: paidStateOf(booking) === "part" ? booking.paid_amount : null, buy: !!booking.buy };
+  const payFor: PayTarget = { standalone: !!booking.standalone, bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost, linked: paidStateOf(booking) === "part" ? booking.paid_amount : null, buy: !!booking.buy };
 
   // ── the gate (R-464) ────────────────────────────────────────────────────
   const gate = bookGate(factsOf(booking, {}, known));

@@ -4,7 +4,7 @@ import { ChevronRight, FileText, Search } from "lucide-react";
 import { api, type CarrierPayResponse, type CarrierPayRow, type PaidState } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import {
-  OPEN_LOAD_KEY, UNDO_PAID_PATCH, carrierPayCandidates, encodeOpenLoad, linkAmountCheck, linkAmountStart, linkRateStart, payActions, payDue, payMethodLabel,
+  OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, carrierPayCandidates, encodeOpenLoad, linkAmountCheck, linkAmountStart, linkRateStart, payActions, payDue, payMethodLabel,
   toPaySummary, type BankCandidate,
 } from "../lib/logisticsCarriers";
 import { fmtDayLabel, paidStateOf, paidView, type LoadStep, type PaidFacts, type PaidView } from "../lib/logisticsLoad";
@@ -64,6 +64,8 @@ export interface PayTarget {
   bookingId: string; label: string; rate: number | null; linked?: number | null;
   /** R-551: a truck that brings a buy in: its payment is the buy's shipping in, not a line on a deal. */
   buy?: boolean;
+  /** R-588: a load with no deal and no buy: there is no bank row to link, so the team marks it paid. */
+  standalone?: boolean;
 }
 
 /** The bank rows that look like this payment (money out, with money left on it, around the pay day). Picking one
@@ -174,6 +176,7 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
  *  `onChanged` runs after any of them changes the load, so the screen reads it again. */
 export function usePaidControls(onChanged: () => void) {
   const [target, setTarget] = useState<PayTarget | null>(null);
+  const [recording, setRecording] = useState<PayTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const run = async (what: () => Promise<unknown>, done: string) => {
     setBusy(true);
@@ -183,8 +186,10 @@ export function usePaidControls(onChanged: () => void) {
   };
   return {
     busy,
-    open: target !== null,
+    open: target !== null || recording !== null,
     link: (t: PayTarget) => setTarget(t),
+    /** R-588: Mark paid on a load with no deal. */
+    record: (t: PayTarget) => setRecording(t),
     unlink: async (t: PayTarget) => {
       if (!confirm("Unlink this bank payment? The load goes back to To pay.")) return;
       await run(() => api.logistics.carrierPay.unlink(t.bookingId), "Bank payment unlinked");
@@ -194,8 +199,57 @@ export function usePaidControls(onChanged: () => void) {
       if (!confirm(`Undo the payment on ${t.label}? The load goes back to To pay.`)) return;
       await run(() => api.logistics.update(t.bookingId, UNDO_PAID_PATCH), "Payment undone");
     },
-    sheet: target ? <LinkBankSheet target={target} onClose={() => setTarget(null)} onDone={() => { setTarget(null); onChanged(); }} /> : null,
+    sheet: target ? <LinkBankSheet target={target} onClose={() => setTarget(null)} onDone={() => { setTarget(null); onChanged(); }} />
+      : recording ? <RecordPaidSheet target={recording} onClose={() => setRecording(null)} onDone={() => { setRecording(null); onChanged(); }} /> : null,
   };
+}
+
+/** R-588: what the carrier was paid on a load with no deal, the day, how and a reference, kept on the load by the server. */
+function RecordPaidSheet({ target, onClose, onDone }: { target: PayTarget; onClose: () => void; onDone: () => void }) {
+  const [amount, setAmount] = useState(target.rate != null ? String(target.rate) : "");
+  const [day, setDay] = useState(localDay());
+  const [method, setMethod] = useState("");
+  const [ref, setRef] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const go = async () => {
+    const n = Number(amount.replace(/[$,\s]/g, ""));
+    if (!(n > 0)) { setErr("Enter what the carrier was paid."); return; }
+    if (!day) { setErr("Add the day the carrier was paid."); return; }
+    setBusy(true); setErr("");
+    try { await api.logistics.update(target.bookingId, { paid_amount: n, paid_at: day, paid_method: method, paid_note: ref.trim() }); toast("Marked paid"); onDone(); }
+    catch (e) { setErr(String(e)); setBusy(false); }
+  };
+  return (
+    <LogisticsModal title="Mark paid" sub={target.label} onClose={onClose}
+      footer={<>
+        <button onClick={onClose} disabled={busy} className={modalGhost}>Cancel</button>
+        <button onClick={go} disabled={busy} className={modalPrimary}>{busy ? "Saving..." : "Mark paid"}</button>
+      </>}>
+      <div className="space-y-3">
+        <div className="min-w-0">
+          <label className="block text-[12px] font-medium text-muted mb-1">Paid to the carrier</label>
+          <NumberInput className={inp} value={amount} placeholder="0.00" autoFocus onValue={(_n, raw) => setAmount(raw)} />
+        </div>
+        <div className="min-w-0">
+          <label className="block text-[12px] font-medium text-muted mb-1">Day paid</label>
+          <input type="date" className={inp} value={day} onChange={(e) => setDay(e.target.value)} />
+        </div>
+        <div className="min-w-0">
+          <label className="block text-[12px] font-medium text-muted mb-1">How</label>
+          <select className={inp} value={method} onChange={(e) => setMethod(e.target.value)}>
+            <option value="">Not set</option>
+            {PAY_METHODS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+          </select>
+        </div>
+        <div className="min-w-0">
+          <label className="block text-[12px] font-medium text-muted mb-1">Reference</label>
+          <input className={inp} value={ref} placeholder="Like a check number" onChange={(e) => setRef(e.target.value)} />
+        </div>
+        {err && <div className="text-[12px] text-danger-ink" role="alert">{err}</div>}
+      </div>
+    </LogisticsModal>
+  );
 }
 
 const ghostBtn = "px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap";
@@ -223,6 +277,12 @@ export function PaidSummary({ b, today, className = "" }: { b: PaidFacts; today:
 export function PaidButtons({ state, bankLinked, amount, canLink, canChange, target, controls }: {
   state: PaidState; bankLinked?: string | null; amount?: number | null; canLink: boolean; canChange: boolean; target: PayTarget; controls: ReturnType<typeof usePaidControls>;
 }) {
+  // R-588: a load with no deal is marked paid by the team (no bank row to link), and undone the same way.
+  if (target.standalone) {
+    if (state === "unpaid" && canLink) return <div className="flex items-center gap-1.5 flex-wrap"><button type="button" onClick={() => controls.record(target)} disabled={controls.busy} className={primaryBtn}>Mark paid</button></div>;
+    if (state !== "unpaid" && state !== "hidden" && canChange) return <div className="flex items-center gap-1.5 flex-wrap"><button type="button" onClick={() => controls.undo(target)} disabled={controls.busy} className={ghostBtn}>Undo</button></div>;
+    return null;
+  }
   const show = payActions(state, bankLinked, amount, canLink, canChange);
   const linkBtn = show.link && (
     <button type="button" onClick={() => controls.link(target)} disabled={controls.busy} className={primaryBtn}>Link bank payment</button>
@@ -308,7 +368,7 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
   const today = localDay();
   const targetOf = (r: CarrierPayRow): PayTarget => ({
     bookingId: r.booking_id, label: `${r.carrier || "Carrier"}, ${r.load_number}`, rate: r.rate, linked: paidStateOf(r) === "part" ? r.paid_amount : null,
-    buy: !!r.buy_id,
+    buy: !!r.buy_id, standalone: !!r.standalone,
   });
   const sum = useMemo(() => toPaySummary(data?.to_pay ?? [], today), [data, today]);
 
