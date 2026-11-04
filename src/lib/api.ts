@@ -1382,6 +1382,33 @@ export interface ReleaseLetterInput {
   output_path: string;
 }
 
+// ---- Purchase order (R-585) ----
+export interface PurchaseOrderLine {
+  style: string;
+  sku: string;
+  size: string;
+  condition: string;
+  qty: number;
+  unit_price: number;
+}
+
+export interface PurchaseOrderInput {
+  po_number: string;
+  po_date: string;
+  buyer_name: string;
+  buyer_company: string;
+  buyer_contact: string;
+  seller_name: string;
+  seller_company: string;
+  seller_contact: string;
+  items: PurchaseOrderLine[];
+  /** The terms and contingencies, editable; the form prefills the protection clauses. */
+  terms: string;
+  buyer_sign_name: string;
+  seller_sign_name: string;
+  output_path: string;
+}
+
 // ---- Client statement / receipt (R-190) ----
 // One PDF covering many deals for one client. Deliberately carries no cost, margin
 // or supplier field — it is handed to the customer.
@@ -4253,6 +4280,9 @@ export const api = {
   // Release letter — one-page closeout authorization PDF on our invoice branding.
   generateReleaseLetter: (input: ReleaseLetterInput) =>
     invoke<string>("generate_release_letter", { input }),
+  // Purchase order (R-585) — a letterhead PO PDF downloaded straight to Downloads.
+  generatePurchaseOrder: (input: PurchaseOrderInput) =>
+    invoke<string>("generate_purchase_order", { input }),
   // Client statement / receipt (R-190) — many deals, one client, one PDF.
   clientStatementData: (clientId: string) =>
     invoke<StatementData>("client_statement_data", { clientId }),

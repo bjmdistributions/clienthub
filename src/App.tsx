@@ -39,6 +39,7 @@ import {
   CopyPlus,
   FileCheck2,
   Receipt,
+  ShoppingCart,
   Boxes,
   PackageCheck,
   Warehouse as WarehouseIcon,
@@ -77,6 +78,7 @@ import DataSafetyView from "./components/DataSafetyView";
 import ArchiveView from "./components/ArchiveView";
 import SheetCopyView from "./components/SheetCopyView";
 import ReleaseLetterView from "./components/ReleaseLetterView";
+import PurchaseOrderView from "./components/PurchaseOrderView";
 import ClientStatementView from "./components/ClientStatementView";
 import FinancialsView from "./components/FinancialsView";
 import { ApprovalsView } from "./components/ApprovalsView";
@@ -146,7 +148,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "coldcalls" | "inventory" | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "coldcalls" | "inventory" | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "purchaseorder" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety" | "settings";
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -859,6 +861,7 @@ export default function App() {
     { id: "quotes", label: "Quote", icon: FileSignature, children: [
       { id: "releaseletter", label: "Release letter", icon: FileCheck2 },
       { id: "clientreceipt", label: "Client receipt", icon: Receipt },
+      { id: "purchaseorder", label: "Purchase order", icon: ShoppingCart },
     ] },
     { id: "financials", label: "Financials", icon: Landmark, children: [
       { id: "bills", label: "Bills", icon: CalendarClock },
@@ -1226,6 +1229,7 @@ export default function App() {
             {t === "payables"   && <PayablesView />}
             {t === "quotes"     && <QuotesView onNavigate={(to) => setTab(to, true)} />}
             {t === "releaseletter" && <ReleaseLetterView />}
+            {t === "purchaseorder" && <PurchaseOrderView />}
             {t === "clientreceipt" && <ClientStatementView />}
             {t === "dealflow"   && <DealFlowView />}
             {t === "logistics"  && <LogisticsView me={me} />}
