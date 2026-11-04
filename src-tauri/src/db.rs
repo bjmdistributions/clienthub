@@ -2760,4 +2760,35 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_bank_statement_account ON bank_statement(account_id, period_end);
         "#,
     ),
+    (
+        124,
+        // R-586/R-587: every transaction the bank offered that did not become a ledger row as the bank
+        // states it (declined by a pull, matched away by a statement import, or found by Check against
+        // bank), kept until a person answers it. `txn_id` is the bank_txn id the row gets on Import;
+        // `bank_json` is what the bank says (the columns Import writes). Never deleted. Synced (sync.rs
+        // ALLOWED_TABLES, netsync SNAPSHOT_TABLES, heal generation 17) and mirrored in clienthub-api, which
+        // must be deployed first.
+        r#"
+        CREATE TABLE IF NOT EXISTS bank_declined (
+            id TEXT PRIMARY KEY,
+            txn_id TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            account_id TEXT DEFAULT '',
+            posted_at TEXT DEFAULT '',
+            amount REAL DEFAULT 0,
+            direction TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            matched_json TEXT DEFAULT '[]',
+            bank_json TEXT DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'open',
+            resolved_by TEXT DEFAULT '',
+            resolved_at TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_bank_declined_status ON bank_declined(status, posted_at);
+        "#,
+    ),
 ];

@@ -68,7 +68,7 @@ const POLL_SECS: u64 = 20;
 /// refreshes `warehouse_cases` and `warehouse_loads` for their new columns (`unmatched_json`, the units
 /// scanned into a box and not matched yet, and `unit`), so a desktop that updates after boxes were
 /// scanned on the phone shows what is waiting in them.
-const HEAL_GENERATION: &str = "16";
+const HEAL_GENERATION: &str = "17";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -135,6 +135,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "item_codes",
     // Imported bank statements, their period and balances (R-579).
     "bank_statement",
+    // Bank transactions not in the ledger as the bank states them, until answered (R-586).
+    "bank_declined",
 ];
 
 pub fn ensure_tables() -> Result<()> {
@@ -411,13 +413,13 @@ pub async fn publish_bank_balance(bank: f64, card: f64) {
 /// body, so a server that predates the health keys stores the balance as before and ignores the rest.
 /// R-529: with the reserve account ({designated, linked, parked, label}) for the phone's Free cash; a server older than
 /// deploy-249 ignores the key.
-pub async fn publish_bank_balance_and_health(bank: f64, card: f64, last_sync: Option<String>, banks: Vec<serde_json::Value>, reserve: serde_json::Value) {
+pub async fn publish_bank_balance_and_health(bank: f64, card: f64, last_sync: Option<String>, banks: Vec<serde_json::Value>, reserve: serde_json::Value, bank_check: serde_json::Value) {
     let cfg = match config() { Some(c) => c, None => return };
     let url = format!("{}/api/bank-balance", cfg.url.trim_end_matches('/'));
     let _ = http()
         .post(&url)
         .bearer_auth(&cfg.token)
-        .json(&serde_json::json!({ "bank_balance": bank, "card_balance": card, "pulled_at": last_sync, "banks": banks, "reserve": reserve }))
+        .json(&serde_json::json!({ "bank_balance": bank, "card_balance": card, "pulled_at": last_sync, "banks": banks, "reserve": reserve, "bank_check": bank_check }))
         .send()
         .await;
 }
@@ -1819,6 +1821,8 @@ async fn auto_heal_if_behind() {
         "item_codes",
         // R-579: imported bank statements (generation 16).
         "bank_statement",
+        // R-586: bank transactions not in the ledger as the bank states them (generation 17).
+        "bank_declined",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -3174,12 +3178,20 @@ mod r400_sync_tests {
         }
     }
 
+    /// R-586: the Not imported list restores and applies like the bank rows it stands for (generation 17).
+    #[test]
+    fn r586_the_not_imported_list_syncs() {
+        assert_eq!(HEAL_GENERATION, "17", "generation 17 adds bank_declined (R-586) after bank_statement (R-579)");
+        assert!(SNAPSHOT_TABLES.contains(&"bank_declined"));
+        assert!(crate::sync::is_synced_table("bank_declined"));
+    }
+
     /// R-568: the company's barcodes restore like the manifests, and the two delivery tables that gained
     /// columns are refreshed so a box scanned on the phone shows what is waiting in it (generation 15).
     #[test]
     fn r568_barcodes_and_scanned_boxes_force_one_more_restore_per_device() {
         // R-579: generation 16 adds bank_statement.
-        assert_eq!(HEAL_GENERATION, "16", "generation 16 adds bank_statement (R-579) after item_codes (R-568)");
+        assert!(HEAL_GENERATION.parse::<u32>().unwrap() >= 16, "generation 16 adds bank_statement (R-579) after item_codes (R-568)");
         assert!(SNAPSHOT_TABLES.contains(&"item_codes"));
         assert!(crate::sync::is_synced_table("item_codes"));
         assert!(SNAPSHOT_TABLES.contains(&"bank_statement"));

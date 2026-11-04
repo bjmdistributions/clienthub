@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod bank_declined;
 mod bank_dedup;
 mod bank_flags;
 mod carrier_paid;
@@ -1289,6 +1290,9 @@ fn main() {
             remove_cancelled_txn,
             mark_takeover_not_same,
             check_books,
+            list_bank_declined,
+            resolve_bank_declined,
+            check_against_bank,
             list_near_duplicates,
             resolve_near_duplicate,
             delete_bank_txns,

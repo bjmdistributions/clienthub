@@ -650,13 +650,6 @@ pub fn persist_rows(rows: &[ParsedRow], account_id: &str, format: &str) -> Resul
             })
             .ok()
             .and_then(|ids| ids.into_iter().find(|i| !used_feed.contains(i)));
-        if let Some(t) = feed_twin {
-            used_feed.insert(t);
-            summary.skipped += 1;
-            summary.from_feed += 1;
-            continue;
-        }
-
         let mut cols = serde_json::Map::new();
         let s = |v: &str| serde_json::Value::String(v.to_string());
         cols.insert("account_id".into(), s(account_id));
@@ -673,6 +666,27 @@ pub fn persist_rows(rows: &[ParsedRow], account_id: &str, format: &str) -> Resul
         cols.insert("check_num".into(), s(&row.check_num));
         cols.insert("balance".into(), serde_json::json!(row.balance));
         cols.insert("source_format".into(), s(&summary.format));
+
+        // R-586: a statement row taken for the feed's copy is kept on the Not imported list with the feed row it was
+        // matched to, so a real second payment of the same amount is one click from the ledger. If it cannot be kept,
+        // it is imported: a visible duplicate can be removed, a dropped payment cannot.
+        if let Some(t) = feed_twin {
+            let d = crate::bank_declined::Decline {
+                txn_id: id.clone(), source: "statement".into(), reason: crate::bank_declined::STATEMENT_FEED_TWIN.into(),
+                account: account_id.to_string(), date: row.posted_at.clone(), amount: row.amount,
+                direction: row.direction.clone(), description: row.description.clone(), matched: vec![t.clone()],
+                bank: cols.clone(),
+            };
+            match crate::bank_declined::record(&conn, &d, &now) {
+                Ok(_) => {
+                    used_feed.insert(t);
+                    summary.skipped += 1;
+                    summary.from_feed += 1;
+                    continue;
+                }
+                Err(e) => tracing::warn!("statement import: could not keep {} on the Not imported list, importing it: {}", id, e),
+            }
+        }
         cols.insert("imported_at".into(), s(&now));
         cols.insert("created_at".into(), s(&now));
         cols.insert("updated_at".into(), s(&now));
@@ -882,6 +896,11 @@ mod r518_feed_twin_tests {
         let s = persist_rows(&[row("2026-10-03", 250.0, "ACME SUPPLY CO"), row("2026-10-03", 250.0, "ACME SUPPLY CO"), row("2026-10-03", 99.0, "OTHER")], acct, "csv").unwrap();
         assert_eq!((s.imported, s.from_feed), (2, 1));
         let c = pool().get().unwrap();
+        // R-586: the skipped row is kept on the Not imported list with the feed row it was matched to.
+        let (reason, matched, status): (String, String, String) = c.query_row(
+            "SELECT reason, matched_json, status FROM bank_declined WHERE account_id=?1", [acct],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((reason.as_str(), matched.as_str(), status.as_str()), ("statement_feed_twin", r#"["r518_feed"]"#, "open"));
         c.execute("DELETE FROM bank_txn WHERE account_id='R518 Checking \u{00b7}\u{00b7}4242'", []).unwrap();
     }
 }
