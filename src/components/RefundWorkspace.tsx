@@ -1,8 +1,6 @@
+import { ArrowDownLeft, ArrowUpRight, ChevronRight, Link2, Plus, Search, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import {
-  ChevronRight, Plus, X, Trash2, Search, Link2,
-  CheckCircle2, AlertTriangle, ArrowDownLeft, ArrowUpRight,
-} from "lucide-react";
+
 import { api, DealAllocation, DealFlow, DealReceipt, DealShortage, RefundRow, UnallocatedTxn, ResoldMove, resoldMoves, isResoldLine, openDealFlow } from "../lib/api";
 import { fmtAmount, parseLocalDay, parseAmount, localDay } from "../lib/format";
 import { toast } from "./Toast";
@@ -62,15 +60,15 @@ function TxnPicker({ txns, onPick, onClose }: {
     return (
       <div className="border border-line rounded-lg bg-surface-2 mt-2 p-3 space-y-2">
         <div className="flex items-center gap-2 text-[12.5px]">
-          <span className="flex-1 min-w-0 truncate text-ink">{picked.counterparty_name || picked.description || "–"}</span>
+          <span className="flex-1 min-w-0 truncate text-ink">{picked.counterparty_name || picked.description || "-"}</span>
           <span className={`tabular-nums font-medium ${picked.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(max)}</span>
         </div>
         <div className="flex items-center gap-2">
           <input autoFocus value={amt} onChange={(e) => setAmt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") confirm(); }}
             placeholder={max.toFixed(2)}
             className="bg-surface border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums" />
-          <span className="text-[11px] text-muted">of {fmtAmount(max)} available</span>
-          <button onClick={confirm} className="ml-auto h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors">Link</button>
+          <span className="text-[12px] text-muted">of {fmtAmount(max)} available</span>
+          <button onClick={confirm} className="ui-btn ui-btn-ink">Link</button>
           <button onClick={() => setPicked(null)} className="text-muted hover:text-ink-2"><X size={14} /></button>
         </div>
         <div className="text-[10.5px] text-muted">Enter a smaller amount to apply only part of this transaction; the rest stays available.</div>
@@ -84,7 +82,7 @@ function TxnPicker({ txns, onPick, onClose }: {
         <Search size={13} className="text-muted flex-shrink-0" />
         <input
           autoFocus value={q} onChange={(e) => setQ(e.target.value)}
-          placeholder="Search payee or exact amount…"
+          placeholder="Search payee or exact amount..."
           className="flex-1 bg-transparent text-[12.5px] text-ink placeholder:text-muted focus:outline-none"
         />
         <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={14} /></button>
@@ -99,10 +97,10 @@ function TxnPicker({ txns, onPick, onClose }: {
         ) : filtered.map((t) => (
           <button
             key={t.id} onClick={() => { setPicked(t); setAmt(""); }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-3 border-b border-line-2 last:border-0 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-3 border-b border-line-2 last:border-0 transition-colors duration-150"
           >
-            <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(t.posted_at)}</span>
-            <span className="flex-1 min-w-0 truncate text-[12.5px] text-ink">{t.counterparty_name || t.description || "–"}</span>
+            <span className="text-muted tabular-nums text-[12px] w-11 flex-shrink-0">{fmtDate(t.posted_at)}</span>
+            <span className="flex-1 min-w-0 truncate text-[12.5px] text-ink">{t.counterparty_name || t.description || "-"}</span>
             <span className={`tabular-nums text-[12.5px] font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
               {fmtAmount(t.unallocated)}
             </span>
@@ -394,36 +392,36 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
   });
 
   return (
-    <div className="bg-surface border border-line rounded-xl overflow-hidden">
+    <div className="overflow-hidden">
       {/* Header — always visible, toggles the workspace + shows the balance */}
       <button
         onClick={() => { if (!primary) setOpenOverride(!open); }}
-        className={`w-full px-4 py-2.5 flex items-center justify-between gap-2 transition-colors ${primary ? "cursor-default" : "hover:bg-surface-2"}`}
+        className={`w-full px-4 py-2.5 flex items-center justify-between gap-2 transition-colors duration-150 ${primary ? "cursor-default" : "hover:bg-surface-2"}`}
       >
-        <span className={`flex items-center gap-1.5 font-semibold text-ink-2 ${primary ? "text-[14px]" : "text-[13px]"}`}>
+        <span className={`flex items-center gap-1.5 font-medium text-ink-2 ${primary ? "text-[14px]" : "text-[13px]"}`}>
           {!primary && <ChevronRight size={14} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} />}
           Refund
         </span>
         {closed ? (
-          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
-            <CheckCircle2 size={13} /> Refund closed
+          <span className="flex items-center gap-1.5 text-[12px] font-medium text-success-ink">
+            Refund closed
           </span>
         ) : remaining > 0.01 ? (
-          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-danger-ink">
-            <AlertTriangle size={12} /> {fmtAmount(remaining)} still to send back
+          <span className="flex items-center gap-1.5 text-[12px] font-medium text-danger-ink">
+            {fmtAmount(remaining)} still to send back
           </span>
         ) : unexplained ? (
-          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-warning-ink">
-            <AlertTriangle size={12} /> Supplier cost still here
+          <span className="flex items-center gap-1.5 text-[12px] font-medium text-warning-ink">
+            Supplier cost still here
           </span>
         ) : settled ? (
-          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
-            <CheckCircle2 size={13} /> Settled, ready to close
+          <span className="flex items-center gap-1.5 text-[12px] font-medium text-success-ink">
+            Settled, ready to close
           </span>
         ) : boughtBack.length > 0 ? (
-          <span className="text-[11px] text-muted">Bought back and resold</span>
+          <span className="text-[12px] text-muted">Bought back and resold</span>
         ) : (
-          <span className="text-[11px] text-muted">Start a refund</span>
+          <span className="text-[12px] text-muted">Start a refund</span>
         )}
       </button>
 
@@ -432,12 +430,11 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
           {/* R-438: a closed refund is read-only; Reopen refund is the only way back in. */}
           {closed && (
             <div className="flex items-center justify-between gap-2 rounded-lg bg-success-bg border border-success/40 px-3 py-2">
-              <span className="flex items-center gap-1.5 text-[12px] font-semibold text-success-ink min-w-0">
-                <CheckCircle2 size={13} className="flex-shrink-0" />
-                <span className="truncate">Refund closed{closedAt && !isNaN(new Date(closedAt).getTime()) ? ` ${fmtDate(localDay(new Date(closedAt)))}` : ""}. Nothing here can change until it is reopened.</span>
+              <span className="flex items-center gap-1.5 text-[12px] font-medium text-success-ink min-w-0">
+                                <span className="truncate">Refund closed{closedAt && !isNaN(new Date(closedAt).getTime()) ? ` ${fmtDate(localDay(new Date(closedAt)))}` : ""}. Nothing here can change until it is reopened.</span>
               </span>
               <button onClick={() => setClosed(false)} disabled={busy}
-                className="text-[11.5px] font-medium text-accent hover:text-accent-hover flex-shrink-0">
+                className="text-[12px] font-medium text-accent hover:text-ink flex-shrink-0">
                 Reopen refund
               </button>
             </div>
@@ -446,8 +443,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
           {lossQuestion && !closed && (unexplained ? (
             <div className="rounded-lg border border-warning/40 bg-warning-bg px-3 py-2.5 space-y-2">
               <div className="flex items-start gap-1.5 text-[12px] text-ink">
-                <AlertTriangle size={13} className="text-warning-ink flex-shrink-0 mt-0.5" />
-                <span>
+                                <span>
                   The buyer has their money back, but the {fmtAmount(costStillHere)} paid to the supplier is still on this deal,
                   so it reads as a loss of that much. What happened to that money?
                 </span>
@@ -455,15 +451,15 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
               {!locked && (
                 <div className="flex flex-wrap gap-2 pl-5">
                   <button onClick={answerSupplier} disabled={busy}
-                    className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+                    className="ui-btn ui-btn-ink">
                     The supplier refunded me
                   </button>
                   <button onClick={answerResold} disabled={busy}
-                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 transition-colors">
+                    className="ui-btn ui-btn-sm">
                     I resold the goods
                   </button>
                   <button onClick={() => answerLoss(true)} disabled={busy}
-                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 transition-colors">
+                    className="ui-btn ui-btn-sm">
                     It's a real loss
                   </button>
                 </div>
@@ -474,49 +470,49 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-between gap-2 text-[11.5px] text-muted">
+            <div className="flex items-center justify-between gap-2 text-[12px] text-muted">
               <span>You recorded the {fmtAmount(costStillHere)} paid to the supplier as a real loss.</span>
-              {!locked && <button onClick={() => answerLoss(false)} disabled={busy} className="text-accent hover:text-accent-hover flex-shrink-0">Take it back</button>}
+              {!locked && <button onClick={() => answerLoss(false)} disabled={busy} className="text-accent hover:text-ink flex-shrink-0">Take it back</button>}
             </div>
           ))}
           {/* 1 · Money received */}
           <section>
             <div className="flex items-center justify-between mb-2">
               <span className="text-[12.5px] font-medium text-ink-2">Money received</span>
-              <span className="tabular-nums text-[13px] font-semibold text-success-ink">{fmtAmount(totalReceived)}</span>
+              <span className="tabular-nums text-[13px] font-medium text-success-ink">{fmtAmount(totalReceived)}</span>
             </div>
             <div className="space-y-0.5">
               {receivedLinked.map((a) => (
                 <div key={a.id} className="flex items-center gap-2 text-[12px] py-1">
                   <ArrowDownLeft size={13} className="text-success-ink flex-shrink-0" />
-                  <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
+                  <span className="text-muted tabular-nums text-[12px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
                   <span className="flex-1 min-w-0 truncate text-ink" title={a.counterparty_name || a.description}>
                     {a.counterparty_name || a.description || "Payment"}
                   </span>
                   <span className="tabular-nums text-ink">{fmtAmount(a.amount)}</span>
                   {!locked && <button onClick={() => run(async () => { await api.removeBankAllocation(a.id); })} disabled={busy}
-                    title="Unlink" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>}
+                    title="Unlink" className="text-faint hover:text-danger-ink transition-colors duration-150"><X size={13} /></button>}
                 </div>
               ))}
               {receipts.map((r) => (
                 <div key={r.id} className="flex items-center gap-2 text-[12px] py-1">
                   <span className="w-[13px] flex-shrink-0" />
-                  <span className="text-muted text-[11px] w-11 flex-shrink-0">custom</span>
+                  <span className="text-muted text-[12px] w-11 flex-shrink-0">custom</span>
                   <span className="flex-1 min-w-0 truncate text-ink">{r.label || "Received (manual)"}</span>
                   <span className="tabular-nums text-ink">{fmtAmount(r.amount)}</span>
                   {!locked && <button onClick={() => run(async () => { await api.deleteDealReceipt(r.id); })} disabled={busy}
-                    title="Remove" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>}
+                    title="Remove" className="text-faint hover:text-danger-ink transition-colors duration-150"><X size={13} /></button>}
                 </div>
               ))}
               {receivedLinked.length === 0 && receipts.length === 0 && (
-                <div className="text-[11.5px] text-muted py-1">No payments recorded yet.</div>
+                <div className="text-[12px] text-muted py-1">No payments recorded yet.</div>
               )}
             </div>
             {!locked && <div className="flex items-center gap-4 mt-2">
               <button onClick={() => { setPickReceived((v) => !v); setShowCustomRecv(false); }}
-                className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover"><Link2 size={12} /> Link a payment</button>
+                className="flex items-center gap-1 text-[12px] text-accent hover:text-ink"><Link2 size={12} /> Link a payment</button>
               <button onClick={() => { setShowCustomRecv((v) => !v); setPickReceived(false); }}
-                className="flex items-center gap-1 text-[11.5px] text-muted hover:text-ink-2"><Plus size={12} /> Add custom line</button>
+                className="flex items-center gap-1 text-[12px] text-muted hover:text-ink-2"><Plus size={12} /> Add custom line</button>
             </div>}
             {!locked && pickReceived && <TxnPicker txns={unalloc.money_in} onPick={linkReceived} onClose={() => setPickReceived(false)} />}
             {!locked && showCustomRecv && (
@@ -526,7 +522,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                 <input value={customRecvLabel} onChange={(e) => setCustomRecvLabel(e.target.value)} placeholder="Label (e.g. cash, Zelle)"
                   className="bg-surface-2 border border-line rounded-lg h-8 px-2 flex-1 min-w-0 text-[12px] text-ink" />
                 <button onClick={addCustomReceived} disabled={busy}
-                  className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors">Add</button>
+                  className="ui-btn ui-btn-ink">Add</button>
               </div>
             )}
           </section>
@@ -539,7 +535,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[12.5px] font-medium text-ink-2">Short shipment</span>
                 {shortSaved !== null && shortSaved > 0 && (
-                  <span className="text-[11px] font-semibold text-warning-ink">Partial refund · {shortage.kept_units} of {invoiceUnits} kept</span>
+                  <span className="text-[12px] font-medium text-warning-ink">Partial refund · {shortage.kept_units} of {invoiceUnits} kept</span>
                 )}
               </div>
               {!locked ? (
@@ -550,17 +546,17 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                     placeholder="0" inputMode="numeric"
                     className={`bg-surface-2 border rounded-lg h-8 px-2 w-20 text-[12px] text-ink tabular-nums text-right ${shortValid ? "border-line" : "border-danger"}`}
                   />
-                  <span className="text-[11.5px] text-muted">units short of the {invoiceUnits} invoiced</span>
+                  <span className="text-[12px] text-muted">units short of the {invoiceUnits} invoiced</span>
                   {shortDirty && (
                     <button onClick={saveShortage} disabled={busy || !shortValid}
-                      className="ml-auto h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">Save</button>
+                      className="ui-btn ui-btn-ink">Save</button>
                   )}
                 </div>
               ) : (
                 <div className="text-[12px] text-ink">{shortSaved ?? 0} units short of the {invoiceUnits} invoiced</div>
               )}
               {shortNum > 0 && (
-                <div className="mt-2 space-y-1 text-[11.5px] text-muted">
+                <div className="mt-2 space-y-1 text-[12px] text-muted">
                   <div>
                     Buyer is owed <span className="text-ink tabular-nums font-medium">{fmtAmount(buyerFromUnits)}</span>
                     {": "}{shortNum} × {fmtAmount(shortage.buyer_rate)} from the invoice
@@ -600,8 +596,8 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
               <section className="rounded-lg border border-line bg-surface-2 p-3">
                 <div className="grid grid-cols-[1fr_auto_auto] gap-x-4 gap-y-1 text-[12px]">
                   <span className="text-muted" />
-                  <span className="text-[10.5px] font-semibold text-muted text-right">If the supplier pays</span>
-                  <span className="text-[10.5px] font-semibold text-muted text-right">Actually banked</span>
+                  <span className="text-[10.5px] font-medium text-muted text-right">If the supplier pays</span>
+                  <span className="text-[10.5px] font-medium text-muted text-right">Actually banked</span>
                   <span className="text-ink-2">Units sold</span>
                   <span className="tabular-nums text-right text-ink">{shortage.expected.units}</span>
                   <span className="tabular-nums text-right text-ink">{shortage.actual.units}</span>
@@ -612,15 +608,14 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                   <span className="tabular-nums text-right text-ink">{fmtAmount(shortage.expected.cost)}</span>
                   <span className="tabular-nums text-right text-ink">{fmtAmount(shortage.actual.cost)}</span>
                   <span className="text-ink-2 font-medium">Profit</span>
-                  <span className="tabular-nums text-right font-semibold text-ink">{fmtAmount(shortage.expected.profit)}</span>
-                  <span className={`tabular-nums text-right font-semibold ${shortage.actual.profit < shortage.expected.profit - 0.005 ? "text-warning-ink" : "text-ink"}`}>
+                  <span className="tabular-nums text-right font-medium text-ink">{fmtAmount(shortage.expected.profit)}</span>
+                  <span className={`tabular-nums text-right font-medium ${shortage.actual.profit < shortage.expected.profit - 0.005 ? "text-warning-ink" : "text-ink"}`}>
                     {fmtAmount(shortage.actual.profit)}
                   </span>
                 </div>
                 {shortage.supplier_gap > 0.005 && (
-                  <div className="mt-2 flex items-start gap-1.5 text-[11px] text-warning-ink">
-                    <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
-                    <span>
+                  <div className="mt-2 flex items-start gap-1.5 text-[12px] text-warning-ink">
+                                        <span>
                       Until the supplier's money lands the units are gone but the cost isn't. Profit on
                       the {shortage.kept_units} kept units is {fmtAmount(shortage.actual.profit)}, not {fmtAmount(shortage.expected.profit)}.
                     </span>
@@ -642,12 +637,12 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[12.5px] font-medium text-ink-2">Supplier recovery</span>
                 {supplierGap > 0.005 ? (
-                  <span className="flex items-center gap-1.5 text-[11px] font-semibold text-warning-ink">
-                    <AlertTriangle size={12} /> {fmtAmount(supplierGap)} still to come
+                  <span className="flex items-center gap-1.5 text-[12px] font-medium text-warning-ink">
+                    {fmtAmount(supplierGap)} still to come
                   </span>
                 ) : supplierExpected > 0.005 ? (
-                  <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
-                    <CheckCircle2 size={13} /> Recovered in full
+                  <span className="flex items-center gap-1.5 text-[12px] font-medium text-success-ink">
+                    Recovered in full
                   </span>
                 ) : null}
               </div>
@@ -657,15 +652,15 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
               <div className="grid grid-cols-3 gap-x-4 text-[12px] rounded-lg border border-line bg-surface-2 px-3 py-2">
                 <div>
                   <div className="text-[10.5px] text-muted">Supplier owes us</div>
-                  <div className="tabular-nums font-semibold text-ink">{fmtAmount(supplierExpected)}</div>
+                  <div className="tabular-nums font-medium text-ink">{fmtAmount(supplierExpected)}</div>
                 </div>
                 <div>
                   <div className="text-[10.5px] text-muted">Arrived in the bank</div>
-                  <div className="tabular-nums font-semibold text-success-ink">{fmtAmount(supplierArrived)}</div>
+                  <div className="tabular-nums font-medium text-success-ink">{fmtAmount(supplierArrived)}</div>
                 </div>
                 <div>
                   <div className="text-[10.5px] text-muted">Still to come</div>
-                  <div className={`tabular-nums font-semibold ${supplierGap > 0.005 ? "text-warning-ink" : "text-ink"}`}>{fmtAmount(supplierGap)}</div>
+                  <div className={`tabular-nums font-medium ${supplierGap > 0.005 ? "text-warning-ink" : "text-ink"}`}>{fmtAmount(supplierGap)}</div>
                 </div>
               </div>
               )}
@@ -673,18 +668,18 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                 {supplierBack.map((a) => (
                   <div key={a.id} className="flex items-center gap-2 text-[12px] py-0.5">
                     <ArrowDownLeft size={13} className="text-success-ink flex-shrink-0" />
-                    <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
+                    <span className="text-muted tabular-nums text-[12px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
                     <span className="flex-1 min-w-0 truncate text-ink">{a.counterparty_name || a.description || "Supplier returned"}</span>
                     <span className="tabular-nums text-ink">{fmtAmount(a.amount)}</span>
                     {!locked && <button onClick={() => run(async () => { await api.removeBankAllocation(a.id); })} disabled={busy}
-                      title="Unlink" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>}
+                      title="Unlink" className="text-faint hover:text-danger-ink transition-colors duration-150"><X size={13} /></button>}
                   </div>
                 ))}
-                {supplierBack.length === 0 && <div className="text-[11.5px] text-muted">Nothing back from the supplier yet.</div>}
+                {supplierBack.length === 0 && <div className="text-[12px] text-muted">Nothing back from the supplier yet.</div>}
               </div>
               {!locked && (
                 <button onClick={() => setPickSupplierBack((v) => !v)}
-                  className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><Link2 size={12} /> Link the supplier's money back</button>
+                  className="flex items-center gap-1 text-[12px] text-accent hover:text-ink mt-2"><Link2 size={12} /> Link the supplier's money back</button>
               )}
               {!locked && pickSupplierBack && <TxnPicker txns={unalloc.money_in} onPick={linkSupplierBack} onClose={() => setPickSupplierBack(false)} />}
               <div className="text-[10.5px] text-muted mt-2">
@@ -699,7 +694,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
           <section className="flex items-center gap-2">
             <span className="text-[12.5px] font-medium text-ink-2 flex-1">Refund owed</span>
             {locked ? (
-              <span className="tabular-nums text-[13px] font-semibold text-ink">{fmtAmount(refundOwed)}</span>
+              <span className="tabular-nums text-[13px] font-medium text-ink">{fmtAmount(refundOwed)}</span>
             ) : (<>
               <input
                 type="text" inputMode="decimal" key={refundOwed} defaultValue={refundOwed || ""}
@@ -708,7 +703,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                 className="bg-surface-2 border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums text-right"
               />
               <button onClick={() => run(async () => { await api.setRefundOwed(dealFlowId, totalReceived); })} disabled={busy || totalReceived <= 0}
-                className="text-[11px] text-muted hover:text-ink-2 px-2 h-8 border border-line rounded-lg whitespace-nowrap disabled:opacity-40 transition-colors">
+                className="text-[12px] text-muted hover:text-ink-2 px-2 h-8 border border-line rounded-lg whitespace-nowrap disabled:opacity-40 transition-colors duration-150">
                 Full ({fmtAmount(totalReceived)})
               </button>
             </>)}
@@ -720,7 +715,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
           <section>
             <div className="flex items-center justify-between mb-2">
               <span className="text-[12.5px] font-medium text-ink-2">Refund payments</span>
-              <span className="tabular-nums text-[13px] font-semibold text-danger-ink">
+              <span className="tabular-nums text-[13px] font-medium text-danger-ink">
                 {totalRefunded > 0 ? `−${fmtAmount(totalRefunded)}` : fmtAmount(0)}
               </span>
             </div>
@@ -748,16 +743,16 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                     title={r.origin === "allocation"
                       ? "Unlink this bank refund from the deal"
                       : "Remove refund"}
-                    className="text-faint hover:text-danger-ink transition-colors"><Trash2 size={12} /></button>}
+                    className="text-faint hover:text-danger-ink transition-colors duration-150"><Trash2 size={12} /></button>}
                 </div>
               ))}
-              {refunds.length === 0 && <div className="text-[11.5px] text-muted py-1">No refunds recorded yet.</div>}
+              {refunds.length === 0 && <div className="text-[12px] text-muted py-1">No refunds recorded yet.</div>}
             </div>
             {!locked && <div className="flex items-center gap-4 mt-2">
               <button onClick={() => { setPickRefund((v) => !v); setShowManualRefund(false); }}
-                className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover"><Link2 size={12} /> Link a refund payment</button>
+                className="flex items-center gap-1 text-[12px] text-accent hover:text-ink"><Link2 size={12} /> Link a refund payment</button>
               <button onClick={() => { setShowManualRefund((v) => !v); setPickRefund(false); }}
-                className="flex items-center gap-1 text-[11.5px] text-muted hover:text-ink-2"><Plus size={12} /> Add custom amount</button>
+                className="flex items-center gap-1 text-[12px] text-muted hover:text-ink-2"><Plus size={12} /> Add custom amount</button>
             </div>}
             {!locked && pickRefund && <TxnPicker txns={unalloc.money_out} onPick={linkRefund} onClose={() => setPickRefund(false)} />}
             {!locked && showManualRefund && (
@@ -787,7 +782,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
               <span className={`text-[12px] font-medium ${remaining > 0.01 ? "text-danger-ink" : "text-success-ink"}`}>
                 {remaining > 0.01 ? "Still owed to customer" : "Fully refunded"}
               </span>
-              <span className={`tabular-nums font-bold ${remaining > 0.01 ? "text-danger-ink" : "text-success-ink"}`}>
+              <span className={`tabular-nums font-medium ${remaining > 0.01 ? "text-danger-ink" : "text-success-ink"}`}>
                 {fmtAmount(remaining)}
               </span>
             </div>
@@ -799,7 +794,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
             <section id={`rf-resold-${dealFlowId}`}>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[12.5px] font-medium text-ink-2">Resold to another buyer</span>
-                {refundScope > 0.005 && <span className="text-[11px] text-muted tabular-nums">Goods cost on this deal {fmtAmount(goodsLeft)}</span>}
+                {refundScope > 0.005 && <span className="text-[12px] text-muted tabular-nums">Goods cost on this deal {fmtAmount(goodsLeft)}</span>}
               </div>
               {liveResoldTo.map((m) => (
                 <div key={m.at} className="flex items-center gap-2 text-[12px] py-1">
@@ -808,14 +803,14 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                   <span className="flex-1 min-w-0 text-ink">
                     {fmtAmount(m.amount)} of refunds to {m.buyer || "the buyer"} became the supplier cost of{" "}
                     <button onClick={() => m.invoice_number && openDealFlow(m.invoice_number, "supplier")}
-                      className="text-accent hover:text-accent-hover underline underline-offset-2">{m.invoice_number || "the other deal"}</button>
+                      className="text-accent hover:text-ink underline underline-offset-2">{m.invoice_number || "the other deal"}</button>
                     {(m.moved_bank || 0) > 0.005 ? `, with ${fmtAmount(m.moved_bank || 0)} of bank payments` : ""}. This deal's sale stands.
                   </span>
                   ) : (
                   <span className="flex-1 min-w-0 text-ink">
                     {fmtAmount(m.amount)} of cost moved to{" "}
                     <button onClick={() => m.invoice_number && openDealFlow(m.invoice_number, "supplier")}
-                      className="text-accent hover:text-accent-hover underline underline-offset-2">{m.invoice_number || "the other deal"}</button>
+                      className="text-accent hover:text-ink underline underline-offset-2">{m.invoice_number || "the other deal"}</button>
                     {m.moved_bank == null ? ", with the supplier payment linked to it"
                       : m.moved_bank > 0.005 ? `, with ${fmtAmount(m.moved_bank)} of the supplier's bank payment`
                       : ". No bank payment was linked to move"}
@@ -823,7 +818,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                   )}
                   {!locked && (
                     <button onClick={() => undoResold(m)} disabled={busy}
-                      className="text-[11px] text-muted hover:text-ink-2 flex-shrink-0">Undo</button>
+                      className="text-[12px] text-muted hover:text-ink-2 flex-shrink-0">Undo</button>
                   )}
                 </div>
               ))}
@@ -833,7 +828,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                   <span className="flex-1 min-w-0 text-ink">
                     {fmtAmount(m.amount)} of cost {m.kind === "refunds" ? `is the buy-back from ${m.buyer || "the buyer"} on` : "came from"}{" "}
                     <button onClick={() => m.invoice_number && openDealFlow(m.invoice_number, "refund")}
-                      className="text-accent hover:text-accent-hover underline underline-offset-2">{m.invoice_number || "the refunded deal"}</button>
+                      className="text-accent hover:text-ink underline underline-offset-2">{m.invoice_number || "the refunded deal"}</button>
                     {m.kind === "refunds" ? ", the refunds paid there. Undo it from that deal's refund step." : ", a refunded load sold again here. Undo it from that deal's refund step."}
                   </span>
                 </div>
@@ -847,7 +842,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
               )}
               {refundScope > 0.005 && !locked && !resell && canCost && (
                 <button onClick={openResell}
-                  className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><ArrowUpRight size={12} /> Resold on a new deal</button>
+                  className="flex items-center gap-1 text-[12px] text-accent hover:text-ink mt-2"><ArrowUpRight size={12} /> Resold on a new deal</button>
               )}
               {resell && !locked && (
                 <div className="space-y-2 mt-2 bg-surface-2 rounded-lg p-2.5">
@@ -867,23 +862,22 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                           <span className="tabular-nums text-muted flex-shrink-0">{fmtAmount((d.gross_revenue || 0) > 0 ? d.gross_revenue : (d.invoice_total || 0))}</span>
                         </button>
                       ))}
-                      {resellMatches.length === 0 && <div className="text-[11.5px] text-muted px-2 py-1">No deal matches.</div>}
+                      {resellMatches.length === 0 && <div className="text-[12px] text-muted px-2 py-1">No deal matches.</div>}
                     </div>
                   )}
                   {resellTo && (
                     <div className="flex items-center gap-2 text-[12px] rounded-md bg-surface border border-line px-2 py-1.5">
-                      <CheckCircle2 size={13} className="text-success-ink flex-shrink-0" />
-                      <span className="flex-1 min-w-0 truncate text-ink">{resellTo.invoice_number || "No number"} · {resellTo.client_name || resellTo.name || ""}</span>
+                                            <span className="flex-1 min-w-0 truncate text-ink">{resellTo.invoice_number || "No number"} · {resellTo.client_name || resellTo.name || ""}</span>
                       <button onClick={() => setResellTo(null)} title="Pick another" className="text-faint hover:text-ink-2"><X size={13} /></button>
                     </div>
                   )}
                   <div className="flex items-center gap-2 pt-1">
-                    <span className="text-[11.5px] text-muted flex-1">Cost of what was resold</span>
+                    <span className="text-[12px] text-muted flex-1">Cost of what was resold</span>
                     <input value={resellAmt} onChange={(e) => setResellAmt(e.target.value)} inputMode="decimal" placeholder="0.00"
                       className="bg-surface border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums text-right" />
                   </div>
                   {supplierLinks.length > 0 && (<>
-                    <div className="text-[11.5px] font-medium text-ink-2 pt-1">Which supplier payment paid for these goods?</div>
+                    <div className="text-[12px] font-medium text-ink-2 pt-1">Which supplier payment paid for these goods?</div>
                     <div className="text-[10.5px] text-muted">
                       {bankPart > 0.005
                         ? `${fmtAmount(bankPart)} of this cost was paid from the bank. Tick the payment that paid for these goods; it moves to the new deal with the cost.`
@@ -894,7 +888,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                         <label key={a.id} className="flex items-center gap-2 text-[12px] py-1 cursor-pointer">
                           <input type="checkbox" checked={tickedLinks.includes(a.id)} className="accent-[rgb(var(--c-accent))]"
                             onChange={(e) => setResellLinks((v) => e.target.checked ? [...v, a.id] : v.filter((x) => x !== a.id))} />
-                          <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
+                          <span className="text-muted tabular-nums text-[12px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
                           <span className="flex-1 min-w-0 truncate text-ink" title={a.counterparty_name || a.description}>{a.counterparty_name || a.description || "Supplier payment"}</span>
                           <span className="tabular-nums text-ink">{fmtAmount(a.amount)}</span>
                         </label>
@@ -903,7 +897,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
                   </>)}
                   <div className="flex items-center gap-2">
                     <button onClick={moveResold} disabled={busy || !resellTo || !(resellNum > 0) || overGoods || !linksOk}
-                      className="flex-1 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+                      className="ui-btn ui-btn-ink">
                       {overGoods ? `At most ${fmtAmount(goodsLeft)} can move` : !linksOk ? "Tick the supplier payment" : resellTo && resellNum > 0 ? `Move ${fmtAmount(resellNum)} to ${resellTo.invoice_number || "this deal"}` : "Move the cost"}
                     </button>
                     <button onClick={() => setResell(false)} className="h-8 px-3 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2">Cancel</button>
@@ -918,10 +912,10 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
             <div className="border-t border-line-2" />
             <section className="flex items-center gap-3 flex-wrap">
               <button onClick={() => setClosed(true)} disabled={busy || remaining > 0.01 || unexplained}
-                className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
-                <CheckCircle2 size={13} /> Close refund
+                className="ui-btn ui-btn-ink">
+                Close refund
               </button>
-              <span className="text-[11.5px] text-muted flex-1 min-w-[200px]">
+              <span className="text-[12px] text-muted flex-1 min-w-[200px]">
                 {remaining > 0.01
                   ? `${fmtAmount(remaining)} is still to send back. Record the refund payment, or lower the refund owed, and then close it.`
                   : unexplained
@@ -931,7 +925,7 @@ Undo it anyway? Whatever this move added that still exists is taken back. Nothin
             </section>
           </>)}
 
-          {err && <div className="text-[11.5px] text-danger-ink">{err}</div>}
+          {err && <div className="text-[12px] text-danger-ink">{err}</div>}
         </div>
       )}
     </div>

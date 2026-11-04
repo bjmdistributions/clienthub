@@ -14,10 +14,11 @@ import type { ManifestRead } from "../lib/deliveries";
 import { ADD_MANIFEST_KEY } from "../lib/buyLoads";
 import type { DeliveryOpen, FloorRequest } from "../lib/floor";
 import { toast } from "./Toast";
+import { PageActions, Tabs } from "./ui";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import WarehouseImport from "./WarehouseImport";
-import ProductScreen, { CountsGrid, Seg } from "./WarehouseProduct";
+import ProductScreen, { CountsGrid } from "./WarehouseProduct";
 import WarehouseFloor from "./WarehouseFloor";
 import WarehouseOrders from "./WarehouseOrders";
 import WarehouseDeliveries from "./WarehouseDeliveries";
@@ -184,9 +185,9 @@ export default function WarehouseView() {
   }, [openSheet]);
 
   const overlay = dragging && (
-    <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center bg-accent/10 backdrop-blur-[2px]">
-      <div className={`${WH_CARD} px-8 py-6 text-center shadow-[0_8px_24px_rgba(0,0,0,0.12)]`}>
-        <FileSpreadsheet size={22} className="text-accent mx-auto mb-2" />
+    <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center bg-surface/60 backdrop-blur-[2px]">
+      <div className={`${WH_CARD} bg-surface px-8 py-6 text-center shadow-lg`}>
+        <FileSpreadsheet size={22} className="text-ink-2 mx-auto mb-2" />
         <div className="text-[14px] font-semibold text-ink">Drop the sheet to import it</div>
         <div className="text-[12px] text-muted mt-0.5">Excel or CSV. A delivery's manifest opens page by page; for any other sheet you choose what each column is.</div>
       </div>
@@ -273,24 +274,22 @@ export default function WarehouseView() {
     <div>
       {overlay}
       {pasteDialog}
-      <div className="flex flex-wrap justify-between items-start gap-3 mb-5">
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Warehouse</h2>
-          <p className="text-[12px] text-muted mt-0.5">
-            <span className="text-ink-2 font-medium tabular-nums">{live.length}</span> {live.length === 1 ? "product" : "products"}
-            <span className="text-faint"> · </span>
-            <span className="text-ink-2 font-medium tabular-nums">{n0(all.boxes)}</span> boxes
-            <span className="text-faint"> · </span>
-            <span className="text-ink-2 font-medium tabular-nums">{n0(all.units)}</span> units on the shelf
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Seg size="md" value={view} onChange={pickView} options={[{ key: "products", label: "Products" }, { key: "map", label: "Map" }, { key: "pallets", label: "Pallets" }, { key: "deliveries", label: "Deliveries" }]} />
-          {view === "products" && <>
-            {importButtons}
-            <button onClick={() => setEditing("new")} className={WH_BTN_PRIMARY}><Plus size={14} /> Add product</button>
-          </>}
-        </div>
+      <PageActions>
+        {view === "products" && <>
+          {importButtons}
+          <button onClick={() => setEditing("new")} className={WH_BTN_PRIMARY}><Plus size={14} /> Add product</button>
+        </>}
+      </PageActions>
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 mb-6">
+        <Tabs label="Warehouse" value={view} onChange={(v) => pickView(v as typeof view)}
+          tabs={[{ id: "products", label: "Products" }, { id: "map", label: "Map" }, { id: "pallets", label: "Pallets" }, { id: "deliveries", label: "Deliveries" }]} />
+        <p className="text-[13px] text-muted">
+          <span className="text-ink-2 tabular-nums">{live.length}</span> {live.length === 1 ? "product" : "products"}
+          <span className="text-faint"> · </span>
+          <span className="text-ink-2 tabular-nums">{n0(all.boxes)}</span> boxes
+          <span className="text-faint"> · </span>
+          <span className="text-ink-2 tabular-nums">{n0(all.units)}</span> units on the shelf
+        </p>
       </div>
 
       {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onDropUsed={() => setDropped(null)} onImport={pickSheet} onAsStock={asStock} onImportEnded={importEnded} open={deliveryReq} onOpenUsed={deliveryUsed} onFloor={showOnFloor}
@@ -342,12 +341,12 @@ function PasteDialog({ onClose, onRows }: { onClose: () => void; onRows: (rows: 
   const [text, setText] = useState("");
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
-      <div className={`${WH_CARD} w-[560px] max-w-[calc(100vw-32px)] p-5 shadow-[0_8px_24px_rgba(0,0,0,0.12)]`} onClick={(e) => e.stopPropagation()}>
+      <div className={`${WH_CARD} bg-surface w-[560px] max-w-[calc(100vw-32px)] p-5 shadow-lg`} onClick={(e) => e.stopPropagation()}>
         <div className="text-[14px] font-semibold text-ink">Paste rows</div>
         <p className="text-[12px] text-muted mt-0.5 mb-3">Copy the cells out of your spreadsheet, headings included, and paste them here.</p>
         <textarea value={text} onChange={(e) => setText(e.target.value)} rows={9} autoFocus style={WH_INPUT_BG}
           placeholder={"Team\tBox size\tBoxes\tPer box\nYankees\tBig Box\t13\t72"}
-          className="w-full border border-line px-3 py-2 rounded-lg text-[12.5px] font-mono text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
+          className="w-full border border-line px-3 py-2 rounded-lg text-[12.5px] font-mono text-ink placeholder:text-faint focus:outline-none focus:border-ink" />
         <div className="flex justify-end gap-2 mt-3">
           <button onClick={onClose} className={WH_BTN_SECONDARY}>Cancel</button>
           <button onClick={() => { const rows = rowsFromText(text); if (rows.length) onRows(rows); }} disabled={!text.trim()} className={WH_BTN_PRIMARY}>Next: pick the columns</button>

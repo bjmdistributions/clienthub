@@ -11,7 +11,7 @@ import { toast } from "./Toast";
 // what is filled in is written; the rules are in src-tauri/src/lot_bulk.rs, shared with
 // the server, so the phone's mass edit does exactly the same thing.
 
-const inp = "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+const inp = "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:border-ink transition-colors";
 const splitTags = (s: string) => dedupeTags(s.split(","));
 
 export default function LotBulkEdit({ lots, categories, conditions, onClose, onSaved }: {

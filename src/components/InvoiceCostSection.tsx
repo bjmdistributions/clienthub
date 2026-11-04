@@ -1,11 +1,13 @@
+import { Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { X, Plus } from "lucide-react";
+
 import { api, DealFlow, Supplier, PayoutShare, isResoldLine, removeLineAsk } from "../lib/api";
 import { fmtAmount, shippingEstimateOf } from "../lib/format";
 import { toast } from "./Toast";
 import CostProfitPanel from "./CostProfitPanel";
 import ResoldNote from "./ResoldNote";
 import StatusPill from "./StatusPill";
+import Switch from "./Switch";
 
 /**
  * Cost & profit on an invoice — read and written through the DEAL, never stored on the
@@ -140,32 +142,32 @@ export default function InvoiceCostSection({
       <div className="flex items-center justify-between gap-3">
         <div>
           <div className="text-[12.5px] font-medium text-muted">Cost &amp; profit</div>
-          <div className="text-[11px] text-muted mt-0.5">Recorded on the deal. The same lines show under Deal Flow.</div>
+          <div className="text-[12px] text-muted mt-0.5">Recorded on the deal. The same lines show under Deal Flow.</div>
           {/* R-315: the two figures side by side, so a glance never confuses a cost
               Jack pays himself with money actually owed to the supplier. */}
           {payments.length > 0 && (
             <div className="flex items-center gap-5 mt-2">
               <div>
-                <div className="text-[11px] text-muted">Owed to supplier</div>
-                <div className="text-[15px] font-semibold text-ink tabular-nums">{fmtAmount(flow.supplier_owed)}</div>
+                <div className="text-[12px] text-muted">Owed to supplier</div>
+                <div className="text-[15px] font-medium text-ink tabular-nums">{fmtAmount(flow.supplier_owed)}</div>
               </div>
               {flow.own_costs_total > 0.005 && (
                 <div>
-                  <div className="text-[11px] text-muted">Your own costs</div>
+                  <div className="text-[12px] text-muted">Your own costs</div>
                   <div className="text-[13px] font-medium text-ink-2 tabular-nums">{fmtAmount(flow.own_costs_unpaid)}</div>
                 </div>
               )}
             </div>
           )}
           {(shippingCharged ?? 0) > 0 && (
-            <div className="text-[11px] text-muted mt-2 max-w-[320px]">
+            <div className="text-[12px] text-muted mt-2 max-w-[320px]">
               Shipping charged to the customer: {fmtAmount(shippingCharged!)}. A shipping cost you pay yourself goes in as Freight and counts as the deal's shipping, not as money owed to the supplier.
             </div>
           )}
         </div>
         {isComplete && (
           <button onClick={() => setUnlocked((v) => !v)}
-            className="text-[11.5px] text-muted hover:text-ink-2 border border-line rounded-lg px-2.5 py-1 transition-colors">
+            className="text-[12px] text-muted hover:text-ink-2 border border-line rounded-lg px-2.5 py-1 transition-colors duration-150">
             {locked ? "Edit" : "Done editing"}
           </button>
         )}
@@ -185,7 +187,7 @@ export default function InvoiceCostSection({
                   )}
                 </div>
                 {p.quantity != null && p.unit_price != null && (
-                  <div className="text-[11px] text-muted tabular-nums">{p.quantity} × {fmtAmount(p.unit_price)}</div>
+                  <div className="text-[12px] text-muted tabular-nums">{p.quantity} × {fmtAmount(p.unit_price)}</div>
                 )}
                 {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
                 {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept: didn't pay, not counted as a cost</div>}
@@ -207,22 +209,22 @@ export default function InvoiceCostSection({
                   </div>
                 )}
               </div>
-              <div className={`text-[13px] font-semibold tabular-nums ${p.kept || replaced(p) ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
+              <div className={`text-[13px] font-medium tabular-nums ${p.kept || replaced(p) ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
               {!locked && !isResoldLine(p) && (
                 <button title="Remove this cost line" disabled={saving}
                   onClick={() => { if (confirm(removeLineAsk(p))) act(() => api.removeSupplierPayment(flow.id, p.id)); }}
-                  className="text-faint hover:text-danger-ink transition-colors disabled:opacity-40"><X size={13} /></button>
+                  className="text-faint hover:text-danger-ink transition-colors duration-150 disabled:opacity-40"><X size={13} /></button>
               )}
             </div>
           ))}
-          <div className="flex justify-end gap-2 text-[11px] text-muted pr-1">
+          <div className="flex justify-end gap-2 text-[12px] text-muted pr-1">
             <span>Total cost</span>
-            <span className="font-semibold text-ink tabular-nums w-24 text-right">{fmtAmount(totalCost)}</span>
+            <span className="font-medium text-ink tabular-nums w-24 text-right">{fmtAmount(totalCost)}</span>
           </div>
           {flow.shipping_mode && (
-            <div className="flex justify-end gap-2 text-[11px] text-muted pr-1">
+            <div className="flex justify-end gap-2 text-[12px] text-muted pr-1">
               <span>Shipping</span>
-              <span className="font-semibold text-ink tabular-nums w-24 text-right">{fmtAmount(isComplete ? (flow.shipping_cost ?? 0) : shippingEstimateOf(flow))}</span>
+              <span className="font-medium text-ink tabular-nums w-24 text-right">{fmtAmount(isComplete ? (flow.shipping_cost ?? 0) : shippingEstimateOf(flow))}</span>
             </div>
           )}
         </div>
@@ -234,7 +236,7 @@ export default function InvoiceCostSection({
 
       {!locked && !adding && (
         <button onClick={() => setAdding(true)}
-          className="w-full flex items-center justify-center gap-1.5 border border-dashed border-line-3 hover:border-accent/40 hover:bg-accent/5 text-ink-2 h-9 rounded-lg text-[12.5px] font-medium transition-colors">
+          className="w-full flex items-center justify-center gap-1.5 border border-dashed border-line-3 hover:border-line-3 hover:bg-surface-2 text-ink-2 h-9 rounded-lg text-[12.5px] font-medium transition-colors duration-150">
           <Plus size={13} /> Add cost
         </button>
       )}
@@ -255,7 +257,7 @@ export default function InvoiceCostSection({
                   <div className="absolute z-20 left-0 right-0 mt-1 bg-surface border border-line rounded-lg shadow-lg max-h-44 overflow-auto">
                     {suppHits.map((s) => (
                       <button key={s.id} onClick={() => { setSelSupp(s); setSuppName(s.name); setSuppHits([]); }}
-                        className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 transition-colors">
+                        className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 transition-colors duration-150">
                         {s.name}
                       </button>
                     ))}
@@ -270,22 +272,18 @@ export default function InvoiceCostSection({
           ) : (
             <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-3">
-                <label className="text-[11px] font-medium text-muted">Paid to</label>
+                <label className="text-[12px] font-medium text-muted">Paid to</label>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11.5px] text-muted">Billed by the supplier</span>
+                  <span className="text-[12px] text-muted">Billed by the supplier</span>
                   {/* Same track/knob math as the Settings clause switch — see the note
                       on the invoice return-policy switch above this file's siblings;
                       `left-0` + an explicit translate is load-bearing, not decorative. */}
-                  <button type="button" onClick={() => setSupplierBilled((v) => !v)} role="switch" aria-checked={supplierBilled}
-                    aria-label="Billed by the supplier"
-                    className={`w-11 h-6 rounded-full relative transition-colors ring-1 ${supplierBilled ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
-                    <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${supplierBilled ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
-                  </button>
+                  <Switch on={supplierBilled} onToggle={() => setSupplierBilled((v) => !v)} label="Billed by the supplier" />
                 </div>
               </div>
               <input className={inp} placeholder="Who this went to (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
               {!supplierBilled && (
-                <div className="text-[11px] text-muted">Not billed by the supplier. This is your own cost.</div>
+                <div className="text-[12px] text-muted">Not billed by the supplier. This is your own cost.</div>
               )}
             </div>
           )}
@@ -294,11 +292,11 @@ export default function InvoiceCostSection({
 
           <div className="flex gap-2">
             <button onClick={add} disabled={saving}
-              className="flex-1 bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-              {saving ? "Saving…" : "Add cost"}
+              className="ui-btn ui-btn-ink">
+              {saving ? "Saving..." : "Add cost"}
             </button>
             <button onClick={() => { resetForm(); setAdding(false); }}
-              className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] hover:bg-surface-2 transition-colors">Cancel</button>
+              className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] hover:bg-surface-2 transition-colors duration-150">Cancel</button>
           </div>
         </div>
       )}

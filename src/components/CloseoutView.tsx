@@ -1,45 +1,53 @@
-import { useEffect, useState } from "react";
+import { ChevronRight, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { api, DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
 import { DealPayoutsBox } from "./PayoutLedger";
-import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay } from "../lib/format";
+import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, isShippingLine } from "../lib/format";
+import { unitFigures, unitGap, type UnitLine } from "../lib/dealUnits";
 import { toast } from "./Toast";
-import {
-  CheckCircle2, RefreshCw, ChevronDown, RotateCcw, Trash2,
-  TrendingUp, DollarSign, Package,
-} from "lucide-react";
+import StatusPill from "./StatusPill";
+import { Button, Kpi, PageActions } from "./ui";
+
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 function pct(n: number, d: number) { return d > 0 ? (n / d) * 100 : 0; }
 
+// The margin chip: green from 30%, amber from 15%, red below. Colour only by meaning.
 function MarginBadge({ margin }: { margin: number }) {
-  const cls =
-    margin >= 30 ? "bg-success-bg text-success-ink" :
-    margin >= 15 ? "bg-warning-bg text-warning-ink" :
-    margin >= 0  ? "bg-danger-bg text-danger-ink" :
-                   "bg-danger-bg text-danger-ink";
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold ${cls}`}>
+    <StatusPill tone={margin >= 30 ? "success" : margin >= 15 ? "warning" : "danger"}>
       {margin.toFixed(1)}%
-    </span>
+    </StatusPill>
   );
+}
+
+function parseLines(json: string | null | undefined): UnitLine[] {
+  try { const v = JSON.parse(json || "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
 }
 
 // ─── Main view ────────────────────────────────────────────────────────────────
 export default function CloseoutView() {
   const [flows,   setFlows]   = useState<DealFlow[]>([]);
   const [recipients, setRecipients] = useState<PayoutShare[]>([]);
+  const [lines, setLines] = useState<Record<string, UnitLine[]>>({});
+  // R-402: the category and brand each completed deal carries.
+  const [labels, setLabels] = useState<Record<string, { category: string; brand: string }>>({});
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [f, sp] = await Promise.all([api.listDealFlows(), api.getPayoutSplit()]);
+      const [f, sp, inv] = await Promise.all([api.listDealFlows(), api.getPayoutSplit(), api.listInvoices().catch(() => [])]);
       setFlows(f.filter((fl) => fl.stage === "complete"));
       setRecipients(sp);
+      setLines(Object.fromEntries(inv.map((i) => [i.id, parseLines(i.line_items_json)])));
     } catch (e) { console.error(e); }
     setLoading(false);
+    api.listDealLabels().then((r) => {
+      setLabels(Object.fromEntries(r.deals.map((d) => [d.id, { category: d.category_from ? d.category : "", brand: d.brand_from ? d.brand : "" }])));
+    }).catch(() => { /* the table reads fine without labels */ });
   };
   useEffect(() => { load(); }, []);
 
@@ -49,175 +57,145 @@ export default function CloseoutView() {
   const totalProfit  = flows.reduce((s, f) => s + f.net_profit, 0);
   const avgMargin    = pct(totalProfit, totalRevenue);
 
-  if (loading) return (
-    <div className="flex items-center justify-center py-32">
-      <RefreshCw size={15} className="text-faint animate-spin" />
+  // Cost and charged per unit for every row, worked out once per load.
+  const perUnit = useMemo(
+    () => Object.fromEntries(flows.map((f) => [f.id, unitFigures(lines[f.invoice_id] ?? [], f)])),
+    [flows, lines],
+  );
+
+  // Kept on screen while it reloads: only the very first load shows the skeleton.
+  if (loading && flows.length === 0) return (
+    <div>
+      <div className="h-5 w-44 bg-surface-2 rounded animate-pulse mb-2" />
+      <div className="h-3 w-28 bg-surface-2 rounded animate-pulse mb-4" />
+      <div className="hsep" />
+      <div className="grid grid-cols-4 gap-4 p-4">
+        {[0, 1, 2, 3].map((i) => <div key={i} className="space-y-2"><div className="h-3 w-20 bg-surface-2 rounded animate-pulse" /><div className="h-6 w-28 bg-surface-2 rounded animate-pulse" /></div>)}
+      </div>
+      <div className="hsep" />
+      {[0, 1, 2, 3].map((i) => <div key={i} className="h-14 border-t border-line first:border-t-0 flex items-center"><div className="h-3.5 w-1/3 bg-surface-2 rounded animate-pulse" /></div>)}
     </div>
   );
 
   return (
-    <div className="space-y-6">
+    <div>
+      <PageActions>
+        <Button onClick={load} icon={<RefreshCw size={14} className={loading ? "animate-spin" : ""} />}>Refresh</Button>
+      </PageActions>
 
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Completed deals</h2>
-          <p className="text-[12px] text-muted mt-0.5">
-            {flows.length} deal{flows.length !== 1 ? "s" : ""} closed
-          </p>
-        </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
-                     px-2.5 py-1.5 rounded-lg hover:bg-surface-3 transition-colors"
-        >
-          <RefreshCw size={13} /> Refresh
-        </button>
+      <div className="mb-3 ml-1">
+        <div className="text-[16px] font-medium text-ink">Completed deals</div>
+        <div className="ui-note mt-0.5">{flows.length} deal{flows.length !== 1 ? "s" : ""} closed</div>
       </div>
 
-      {/* ── Analytics cards ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-        {[
-          {
-            label: "Total Revenue",
-            value: fmtAmount(totalRevenue),
-            icon: DollarSign,
-            color: "text-ink",
-            bg:    "bg-accent/10",
-            ic:    "text-accent",
-          },
-          {
-            label: "Total Cost",
-            value: fmtAmount(totalCost),
-            icon: Package,
-            color: "text-ink",
-            bg:    "bg-warning-bg",
-            ic:    "text-warning-ink",
-          },
-          {
-            label: "Net Profit",
-            value: fmtAmount(totalProfit),
-            icon: TrendingUp,
-            color: totalProfit >= 0 ? "text-success-ink" : "text-danger-ink",
-            bg:    totalProfit >= 0 ? "bg-success-bg" : "bg-danger-bg",
-            ic:    totalProfit >= 0 ? "text-success-ink" : "text-danger-ink",
-          },
-          {
-            label: "Avg Margin",
-            value: `${avgMargin.toFixed(1)}%`,
-            icon: CheckCircle2,
-            color: avgMargin >= 20 ? "text-success-ink" : avgMargin >= 10 ? "text-warning-ink" : "text-danger-ink",
-            bg:    avgMargin >= 20 ? "bg-success-bg" : avgMargin >= 10 ? "bg-warning-bg" : "bg-danger-bg",
-            ic:    avgMargin >= 20 ? "text-success-ink" : avgMargin >= 10 ? "text-warning-ink" : "text-danger-ink",
-          },
-        ].map((card) => {
-          const Icon = card.icon;
-          return (
-            <div key={card.label} className="bg-surface border border-line rounded-xl p-4">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-[12.5px] font-medium text-muted">
-                  {card.label}
-                </p>
-                <div className={`w-7 h-7 rounded-lg ${card.bg} flex items-center justify-center`}>
-                  <Icon size={13} className={card.ic} />
-                </div>
-              </div>
-              <p className={`text-[22px] font-bold tabular-nums leading-none ${card.color}`}>
-                {card.value}
-              </p>
-            </div>
-          );
-        })}
+      {/* ── Key figures ─────────────────────────────────────────────────── */}
+      <div className="hsep" />
+      <div className="grid grid-cols-2 lg:grid-cols-[1fr_1px_1fr_1px_1fr_1px_1fr] py-1.5">
+        <Kpi label="Total revenue" value={totalRevenue} format={fmtAmount} />
+        <div className="vsep hidden lg:block mt-4" />
+        <Kpi label="Total cost" value={totalCost} format={fmtAmount} />
+        <div className="vsep hidden lg:block mt-4" />
+        <Kpi label="Net profit" value={totalProfit} format={(n) => (n < 0 ? "−" : "") + fmtAmount(Math.abs(n))} className={totalProfit >= 0 ? "[&_.ui-fig]:text-success-ink" : "[&_.ui-fig]:text-danger-ink"} />
+        <div className="vsep hidden lg:block mt-4" />
+        <Kpi label="Average margin" value={avgMargin} format={(n) => `${n.toFixed(1)}%`} className={avgMargin >= 20 ? "[&_.ui-fig]:text-success-ink" : avgMargin >= 10 ? "[&_.ui-fig]:text-warning-ink" : "[&_.ui-fig]:text-danger-ink"} />
       </div>
+      <div className="hsep" />
 
       {/* ── Deals table ─────────────────────────────────────────────────── */}
       {flows.length === 0 ? (
         <div className="text-center py-24">
-          <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
-            <CheckCircle2 size={18} className="text-faint" />
-          </div>
-          <p className="text-[15px] font-semibold text-ink-2 mb-1">No completed deals yet</p>
+          <p className="text-[15px] font-medium text-ink-2 mb-1">No completed deals yet</p>
           <p className="text-[13px] text-muted">
             Deals appear here once you mark them complete in Deal Flow
           </p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {flows.map((flow) => {
-            const margin = pct(flow.net_profit, flow.gross_revenue);
-            const isExp  = expanded === flow.id;
-            const sup    = primarySupplierLabel(flow.supplier_payments);
-            return (
-              <div
-                key={flow.id}
-                className="bg-surface border border-line rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow"
-              >
-                {/* Summary row */}
-                <button
-                  onClick={() => setExpanded(isExp ? null : flow.id)}
-                  className="w-full px-5 py-4 text-left hover:bg-surface-2/50 transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-4">
-                    {/* Left: client + invoice info */}
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[14px] font-semibold text-ink truncate">
-                        {flow.client_name || "–"}
-                      </div>
-                      <div className="text-[11px] text-muted mt-0.5 flex items-center gap-2 flex-wrap">
-                        <span className="font-mono bg-surface-3 px-1.5 py-0.5 rounded text-ink-2">
-                          {flow.invoice_number}
-                        </span>
-                        {flow.completed_at && (
-                          <span>
-                            Completed {parseLocalDay(flow.completed_at).toLocaleDateString("en-US", {
-                              month: "short", day: "numeric", year: "numeric",
-                            })}
-                          </span>
+        <div className="overflow-x-auto mt-2">
+          <table className="ui-table ui-table-click [&_td]:px-2 [&_th]:px-2" aria-label="Completed deals">
+            <thead>
+              <tr>
+                <th>Deal</th>
+                <th>What it is</th>
+                <th className="r" title="What you paid the supplier for the goods, per unit">Cost per unit</th>
+                <th className="r" title="What the customer was billed for the goods, per unit">Charged per unit</th>
+                <th className="r">Revenue</th>
+                <th className="r hidden xl:table-cell">Cost</th>
+                <th className="r">Profit</th>
+                <th className="r">Margin</th>
+                <th aria-hidden="true" className="w-8" />
+              </tr>
+            </thead>
+            <tbody>
+              {flows.map((flow) => {
+                const margin = pct(flow.net_profit, flow.gross_revenue);
+                const isExp  = expanded === flow.id;
+                const sup    = primarySupplierLabel(flow.supplier_payments);
+                const u      = perUnit[flow.id];
+                const label  = labels[flow.id];
+                const goods  = (lines[flow.invoice_id] ?? []).filter((l) => !isShippingLine(l.description));
+                const toggle = () => setExpanded(isExp ? null : flow.id);
+                return (
+                  <Fragment key={flow.id}>
+                    <tr aria-selected={isExp} onClick={toggle} tabIndex={0} role="button" aria-expanded={isExp}
+                      onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(); } }}>
+                      <td className="min-w-[160px]">
+                        <div className="text-[14px] font-medium text-ink truncate">{flow.client_name || "None"}</div>
+                        <div className="ui-note mt-0.5 flex items-center gap-x-2 gap-y-0.5 flex-wrap">
+                          <span className="tabular-nums">{flow.invoice_number}</span>
+                          {flow.completed_at && (
+                            <span>
+                              {parseLocalDay(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                            </span>
+                          )}
+                          {sup && <span className="min-w-0 truncate">{sup}</span>}
+                        </div>
+                      </td>
+                      <td className="min-w-[140px] max-w-[220px]">
+                        {(label?.category || label?.brand) && (
+                          <div className="flex items-center gap-1.5 whitespace-nowrap mb-1">
+                            {label.category && <StatusPill tone="neutral" title="Category">{label.category}</StatusPill>}
+                            {label.brand && <StatusPill tone="neutral" title="Brand">{label.brand}</StatusPill>}
+                          </div>
                         )}
-                        {sup && <span className="min-w-0 truncate">→ {sup}</span>}
-                      </div>
-                    </div>
-
-                    {/* Right: financial summary */}
-                    <div className="flex items-center gap-6 flex-shrink-0">
-                      <div className="text-right hidden sm:block">
-                        <div className="text-[12px] font-medium text-muted">Revenue</div>
-                        <div className="text-[13px] font-semibold text-ink tabular-nums">
-                          {fmtAmount(flow.gross_revenue)}
+                        <div className="text-[13px] text-ink-2 truncate">
+                          {goods.length > 0
+                            ? goods.map((l) => ((l.qty ?? 0) > 1 ? `${l.qty}× ${l.description}` : l.description)).join(" · ")
+                            : <span className="text-faint">No line items</span>}
                         </div>
-                      </div>
-                      <div className="text-right hidden sm:block">
-                        <div className="text-[12px] font-medium text-muted">Cost</div>
-                        <div className="text-[13px] text-muted tabular-nums">
-                          {fmtAmount(flow.total_cost)}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-[12px] font-medium text-muted">Profit</div>
-                        <div className={`text-[14px] font-bold tabular-nums ${
-                          flow.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"
-                        }`}>
-                          {fmtAmount(flow.net_profit)}
-                        </div>
-                      </div>
-                      <MarginBadge margin={margin} />
-                      <ChevronDown
-                        size={14}
-                        className={`text-faint transition-transform duration-200 flex-shrink-0 ${isExp ? "rotate-180" : ""}`}
-                      />
-                    </div>
-                  </div>
-                </button>
-
-                {/* Expanded breakdown */}
-                {isExp && (
-                  <div className="border-t border-line bg-surface-2/50 px-5 py-5">
-                    <DealBreakdown flow={flow} recipients={recipients} onReload={load} />
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                      </td>
+                      <td className="r">
+                        {u.costPerUnit !== null ? fmtAmount(u.costPerUnit) : <span className="text-[12px] text-faint font-normal whitespace-normal">{unitGap(u, "cost")}</span>}
+                      </td>
+                      <td className="r">
+                        {u.chargedPerUnit !== null ? fmtAmount(u.chargedPerUnit) : <span className="text-[12px] text-faint font-normal whitespace-normal">{unitGap(u, "charged")}</span>}
+                      </td>
+                      <td className="r font-medium">{fmtAmount(flow.gross_revenue)}</td>
+                      <td className="r text-muted hidden xl:table-cell">{fmtAmount(flow.total_cost)}</td>
+                      <td className={`r font-medium ${flow.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(flow.net_profit)}</td>
+                      <td className="r"><MarginBadge margin={margin} /></td>
+                      <td className="w-8">
+                        <ChevronRight size={16} className={`text-muted transition-transform duration-200 ${isExp ? "rotate-90" : ""}`} />
+                      </td>
+                    </tr>
+                    {isExp && (
+                      <tr className="!cursor-default">
+                        <td colSpan={9} className="!p-0 !bg-surface-2">
+                          <div className="px-5 py-5 df-in">
+                            <DealBreakdown flow={flow} recipients={recipients} onReload={load} />
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+          <style>{`
+            @keyframes dfIn { 0% { opacity: 0; transform: translateY(6px); } 100% { opacity: 1; transform: translateY(0); } }
+            .df-in { animation: dfIn .18s cubic-bezier(.23,1,.32,1) both; }
+            @media (prefers-reduced-motion: reduce) { .df-in { animation: none !important; } }
+          `}</style>
         </div>
       )}
     </div>
@@ -268,12 +246,12 @@ function DealBreakdown({
   };
 
   return (
-    <div className="space-y-4">
-      {/* P&L grid */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+    <div className="space-y-5">
+      {/* Profit and loss */}
+      <div className="grid grid-cols-2 lg:grid-cols-[1fr_1px_1fr_1px_1fr_1px_1fr] gap-x-4 gap-y-3">
         {[
           { label: "Revenue",                                      value: fmtAmount(flow.gross_revenue), clr: "text-ink"   },
-          { label: "Total Cost",                                   value: fmtAmount(flow.total_cost),    clr: "text-ink"   },
+          { label: "Total cost",                                   value: fmtAmount(flow.total_cost),    clr: "text-ink"   },
           {
             label: flow.net_profit >= 0 ? "Profit" : "Loss",
             value: fmtAmount(flow.net_profit),
@@ -284,135 +262,118 @@ function DealBreakdown({
             value: `${margin.toFixed(1)}%`,
             clr:   margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink",
           },
-        ].map((item) => (
-          <div key={item.label} className="bg-surface border border-line rounded-xl px-4 py-3">
-            <div className="text-[12px] font-medium text-muted mb-1">{item.label}</div>
-            <div className={`text-[18px] font-bold tabular-nums ${item.clr}`}>{item.value}</div>
-          </div>
+        ].map((item, i) => (
+          <Fragment key={item.label}>
+            {i > 0 && <div className="vsep hidden lg:block" />}
+            <div>
+              <div className="ui-label mb-1">{item.label}</div>
+              <div className={`text-[20px] font-medium tabular-nums tracking-tight ${item.clr}`}>{item.value}</div>
+            </div>
+          </Fragment>
         ))}
       </div>
 
       {/* Supplier payments */}
       {payments.length > 0 && (
-        <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-line-2">
-            <p className="text-[12.5px] font-medium text-muted">
-              Supplier payments
-            </p>
-          </div>
-          <div className="divide-y divide-line-2">
-            {payments.map((p) => (
-              <div key={p.id} className="flex items-center gap-3 px-4 py-3">
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] text-ink font-medium">{p.supplier_name}</div>
-                  {p.quantity != null && p.unit_price != null && (
-                    <div className="text-[11px] text-muted tabular-nums">
-                      {p.quantity} × {fmtAmount(p.unit_price)}
-                    </div>
-                  )}
-                  {flow.shipping_mode && p.category === "freight" && (
-                    <div className="text-[10.5px] text-muted">Replaced by the logistics booking, not counted</div>
-                  )}
+        <>
+          <div className="hsep" />
+          <div>
+            <p className="text-[14px] font-medium text-ink mb-1">Supplier payments</p>
+            <div>
+              {payments.map((p) => (
+                <div key={p.id} className="flex items-center gap-3 py-2.5 border-t border-line first:border-t-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] text-ink font-medium">{p.supplier_name}</div>
+                    {p.quantity != null && p.unit_price != null && (
+                      <div className="text-[12px] text-muted tabular-nums">
+                        {p.quantity} × {fmtAmount(p.unit_price)}
+                      </div>
+                    )}
+                    {flow.shipping_mode && p.category === "freight" && (
+                      <div className="text-[12px] text-muted">Replaced by the logistics booking, not counted</div>
+                    )}
+                  </div>
+                  <div className={`text-[13px] font-medium tabular-nums ${flow.shipping_mode && p.category === "freight" ? "text-muted line-through" : "text-ink"}`}>
+                    {fmtAmount(p.amount)}
+                  </div>
                 </div>
-                <div className={`text-[13px] font-semibold tabular-nums ${flow.shipping_mode && p.category === "freight" ? "text-muted line-through" : "text-ink"}`}>
-                  {fmtAmount(p.amount)}
-                </div>
+              ))}
+              <div className="flex justify-between items-center py-2 border-t border-line">
+                <span className="text-[12px] text-muted">Total supplier cost</span>
+                <span className="text-[13px] font-medium text-ink tabular-nums">
+                  {/* With a recorded shipping leg, the goods are what the record holds less that leg, so the rows add up */}
+                  {fmtAmount(flow.shipping_cost != null ? flow.total_cost - flow.shipping_cost : flow.total_supplier_cost)}
+                </span>
               </div>
-            ))}
-            <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
-              <span className="text-[11px] text-muted font-medium">Total supplier cost</span>
-              <span className="text-[12px] font-bold text-ink tabular-nums">
-                {/* With a recorded shipping leg, the goods are what the record holds less that leg, so the rows add up */}
-                {fmtAmount(flow.shipping_cost != null ? flow.total_cost - flow.shipping_cost : flow.total_supplier_cost)}
-              </span>
-            </div>
-            {/* R-400: shipping is its own leg of the recorded cost */}
-            <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
-              <span className="text-[11px] text-muted font-medium">Shipping</span>
-              <span className="text-[12px] font-bold text-ink tabular-nums">
-                {fmtAmount(flow.shipping_cost ?? 0)}
-              </span>
-            </div>
-            <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
-              <span className="text-[11px] text-muted font-medium">Total cost recorded</span>
-              <span className="text-[12px] font-bold text-ink tabular-nums">
-                {fmtAmount(flow.total_cost)}
-              </span>
+              {/* R-400: shipping is its own leg of the recorded cost */}
+              <div className="flex justify-between items-center py-2">
+                <span className="text-[12px] text-muted">Shipping</span>
+                <span className="text-[13px] font-medium text-ink tabular-nums">
+                  {fmtAmount(flow.shipping_cost ?? 0)}
+                </span>
+              </div>
+              <div className="flex justify-between items-center py-2">
+                <span className="text-[12px] text-muted">Total cost recorded</span>
+                <span className="text-[13px] font-medium text-ink tabular-nums">
+                  {fmtAmount(flow.total_cost)}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* R-577: who gets paid what, from the server's ledger; where it cannot answer (offline, or
           not an admin), the profit split as this computer works it out. */}
       {flow.stage === "complete" && (
-        <DealPayoutsBox dealFlowId={flow.id} refreshKey={flow.updated_at} fallback={
-          (flow.net_profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending)) ? (
-            <div className="bg-surface border border-line rounded-xl px-4 py-3">
-              <p className="text-[12.5px] font-medium text-muted mb-3">
-                Profit split
-              </p>
-              <div className="flex flex-wrap gap-4 text-center">
-                <LogisticsPayCell pay={logiPay} big />
-                {alloc.map((item, i) => (
-                  <div key={i} className="flex-1 min-w-[90px]">
-                    <div className="text-[12px] text-muted truncate">{item.name}</div>
-                    <div className="text-[18px] font-bold text-success-ink tabular-nums mt-0.5">
-                      {fmtAmount(item.amount)}
+        <>
+          <div className="hsep" />
+          <DealPayoutsBox dealFlowId={flow.id} refreshKey={flow.updated_at} fallback={
+            (flow.net_profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending)) ? (
+              <div>
+                <p className="text-[14px] font-medium text-ink mb-3">Profit split</p>
+                <div className="flex flex-wrap gap-6">
+                  <LogisticsPayCell pay={logiPay} big />
+                  {alloc.map((item, i) => (
+                    <div key={i} className="flex-1 min-w-[90px]">
+                      <div className="text-[12px] text-muted truncate">{item.name}</div>
+                      <div className="text-[18px] font-medium text-success-ink tabular-nums mt-0.5">
+                        {fmtAmount(item.amount)}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null
-        } />
+            ) : null
+          } />
+        </>
       )}
 
       {/* Backlog date editor */}
-      <div className="bg-surface border border-line rounded-xl px-4 py-3">
-        <p className="text-[12.5px] font-medium text-muted mb-2">
-          Completed date
-        </p>
-        <div className="flex items-center gap-2">
+      <div className="hsep" />
+      <div>
+        <p className="text-[14px] font-medium text-ink mb-2">Completed date</p>
+        <div className="flex items-center gap-2 max-w-sm">
           <input
             type="date"
             value={editDate}
             onChange={(e) => setEditDate(e.target.value)}
-            className="flex-1 border border-line px-2.5 h-8 rounded-lg text-[12px] bg-surface
-                       focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+            className="flex-1 border border-line-3 px-2.5 h-8 rounded-lg text-[12px] bg-transparent focus:outline-none focus:border-ink transition-colors duration-150"
           />
-          <button
-            onClick={handleSaveDate}
-            disabled={dateSaving || editDate === initialDate}
-            className="px-3 h-8 bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium
-                       rounded-lg disabled:opacity-40 transition-colors whitespace-nowrap"
-          >
-            {dateSaving ? "Saving…" : "Save Date"}
-          </button>
+          <Button variant="ink" size="sm" onClick={handleSaveDate} disabled={dateSaving || editDate === initialDate}>
+            {dateSaving ? "Saving..." : "Save date"}
+          </Button>
         </div>
-        <p className="text-[10px] text-muted mt-1.5">
-          Change to backlog a sale into the correct month/week for analytics.
+        <p className="ui-note mt-1.5">
+          Change to backlog a sale into the correct month or week for analytics.
         </p>
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-3 pt-1">
-        <button
-          onClick={handleReopen}
-          disabled={saving}
-          className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
-                     px-3 h-8 border border-line rounded-lg hover:bg-surface-2 transition-colors"
-        >
-          <RotateCcw size={12} /> Reopen deal
-        </button>
-        <button
-          onClick={handleDelete}
-          disabled={saving}
-          className="flex items-center gap-1.5 text-[12px] text-danger-ink hover:text-danger-ink
-                     px-3 h-8 border border-danger rounded-lg hover:bg-danger-bg transition-colors ml-auto"
-        >
-          <Trash2 size={12} /> Delete
-        </button>
+      <div className="hsep" />
+      <div className="flex items-center gap-3">
+        <Button size="sm" onClick={handleReopen} disabled={saving} icon={<RotateCcw size={14} />}>Reopen deal</Button>
+        <Button size="sm" variant="danger" onClick={handleDelete} disabled={saving} icon={<Trash2 size={14} />} className="ml-auto">Delete</Button>
       </div>
     </div>
   );

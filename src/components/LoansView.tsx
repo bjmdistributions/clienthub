@@ -1,19 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, Save, Trash2, X, Pencil, CheckCircle2, Landmark, ChevronRight, Loader2, RotateCcw, RefreshCw, AlertTriangle } from "lucide-react";
 import { api, Loan, LoanLedger } from "../lib/api";
 import { fmtAmount, localDay, parseAmount } from "../lib/format";
 import { toast } from "./Toast";
+import StatusPill from "./StatusPill";
+import { Button, Kpi, PageActions } from "./ui";
 
 const today = () => localDay();
 
 // received_at is a "YYYY-MM-DD" date string; anchor it to local midnight so it
 // doesn't slip a day in negative timezones.
 const fmtDate = (s: string) => {
-  if (!s) return "–";
+  if (!s) return "No date";
   const d = new Date(s.length <= 10 ? s + "T00:00:00" : s);
   return isNaN(d.getTime())
-    ? "–"
+    ? "No date"
     : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
@@ -186,67 +188,50 @@ export default function LoansView() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6 max-w-[1120px]">
 
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight truncate">Loans</h2>
-          <p className="text-[12px] text-muted mt-0.5">
-            Money you received and owe back. It sits in your bank but reduces your free cash until it's paid off.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button
-            onClick={() => refresh()}
-            disabled={refreshing}
-            title="Refresh"
-            className="w-9 h-9 flex items-center justify-center rounded-lg border border-line text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-          </button>
-          <button
-            onClick={openCreate}
-            className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
-          >
-            <Plus size={14} /> Add loan
-          </button>
-        </div>
-      </div>
+      <PageActions>
+        <Button
+          onClick={() => refresh()}
+          disabled={refreshing}
+          title="Refresh"
+          icon={<RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />}
+        >
+          Refresh
+        </Button>
+        <Button variant="ink" onClick={openCreate} icon={<Plus size={14} />}>Add loan</Button>
+      </PageActions>
+      <p className="text-[13px] text-muted -mb-2">
+        Money you received and owe back. It sits in your bank but reduces your free cash until it is paid off.
+      </p>
 
       {loadError && (
-        <div className="flex items-start gap-2 rounded-lg border border-danger-line bg-danger-bg/40 px-3.5 py-3">
+        <div className="flex items-start gap-2 border-y border-line py-3">
           <AlertTriangle size={15} className="text-danger-ink flex-shrink-0 mt-0.5" />
           <div className="min-w-0">
             <div className="text-[12.5px] font-medium text-ink-2">Could not load your loans</div>
             <div className="text-[12px] text-muted mt-0.5 break-words">{loadError}</div>
             <div className="text-[11.5px] text-faint mt-0.5">Nothing has changed. This is a read that failed.</div>
-            <button onClick={() => refresh()} className="mt-1.5 text-[12px] font-medium text-accent hover:text-accent-hover">
+            <button onClick={() => refresh()} className="mt-1.5 text-[12px] font-medium text-ink hover:opacity-70">
               Try again
             </button>
           </div>
         </div>
       )}
 
-      {/* Total outstanding tile */}
-      <div className="bg-surface-2 border border-line rounded-xl px-5 py-4 max-w-sm">
-        <div className="text-[11.5px] font-medium text-muted">Total outstanding</div>
-        <div className="text-[24px] font-bold text-ink tabular-nums mt-0.5">{fmtAmount(totalOutstanding)}</div>
-        <div className="text-[11px] text-muted mt-0.5">
-          across {openCount} open loan{openCount !== 1 ? "s" : ""}
-        </div>
-      </div>
+      <Kpi label="Total outstanding" value={totalOutstanding} format={fmtAmount} caption={`across ${openCount} open loan${openCount !== 1 ? "s" : ""}`} className="!px-0" />
 
       {/* Add / edit form */}
       {showForm && (
-        <div className="bg-surface border border-line rounded-xl p-5 space-y-4">
+        <div className="border-y border-line py-5 space-y-4 dash-load">
           <div className="flex items-center justify-between">
-            <h3 className="text-[14px] font-semibold text-ink">
+            <h3 className="text-[14px] font-medium text-ink">
               {editingId ? "Edit loan" : "Add loan"}
             </h3>
             <button
               onClick={closeForm}
-              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-3 text-muted hover:text-ink-2 transition-colors"
+              className="ui-ib"
+              aria-label="Close the form"
             >
               <X size={16} />
             </button>
@@ -307,13 +292,13 @@ export default function LoansView() {
             <button
               onClick={saveForm}
               disabled={saving || !fName.trim()}
-              className="flex items-center justify-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              className="ui-btn ui-btn-ink disabled:opacity-50"
             >
               <Save size={14} /> {saving ? "Saving…" : editingId ? "Save changes" : "Add loan"}
             </button>
             <button
               onClick={closeForm}
-              className="h-9 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
+              className="ui-btn"
             >
               Cancel
             </button>
@@ -328,17 +313,17 @@ export default function LoansView() {
         </div>
       ) : loans.length === 0 && loadError ? null : loans.length === 0 ? (
         <div className="text-center py-20">
-          <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+          <div className="flex items-center justify-center mx-auto mb-3 text-faint">
             <Landmark size={18} className="text-faint" />
           </div>
-          <p className="text-[14px] font-semibold text-ink-2">No loans yet</p>
+          <p className="text-[14px] font-medium text-ink-2">No loans yet</p>
           <p className="text-[12px] text-muted mt-1">Record money the business borrowed to track what you owe back</p>
-          <button onClick={openCreate} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
+          <button onClick={openCreate} className="mt-3 text-[12px] font-medium text-ink hover:opacity-70">
             + Add loan
           </button>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div>
           {loans.map((l) => {
             const paid = l.status === "paid";
             const led = ledgers[l.id];
@@ -347,47 +332,44 @@ export default function LoansView() {
             return (
               <div
                 key={l.id}
-                className={`bg-surface border border-line rounded-xl p-4 min-w-0 transition-opacity ${paid ? "opacity-60" : ""}`}
+                className={`border-t border-line py-5 min-w-0 transition-opacity duration-200 ${paid ? "opacity-60" : ""}`}
               >
                 {/* Top: name / lender + status */}
                 <div className="flex items-start justify-between gap-3 mb-3">
                   <div className="min-w-0">
-                    <div className="text-[13px] font-semibold text-ink truncate">{l.name}</div>
-                    <div className="text-[11px] text-muted mt-0.5 truncate">
-                      {l.lender || "–"} · received {fmtDate(l.received_at)}
+                    <div className="text-[15px] font-medium text-ink truncate">{l.name}</div>
+                    <div className="ui-note mt-0.5 truncate">
+                      {l.lender || "No lender"} · received {fmtDate(l.received_at)}
                     </div>
                   </div>
-                  <span
-                    className={`flex-shrink-0 text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                      paid ? "bg-success-bg text-success-ink" : "bg-warning-bg text-warning-ink"
-                    }`}
-                  >
-                    {paid ? "Paid off" : "Open"}
-                  </span>
+                  <StatusPill tone={paid ? "success" : "warning"}>{paid ? "Paid off" : "Open"}</StatusPill>
                 </div>
 
                 {/* Money row */}
-                <div className="grid grid-cols-3 gap-2 mb-3">
+                <div className="grid grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_1px_minmax(0,1fr)] mb-3 max-w-[720px]">
                   {[
                     { label: "Principal",   value: fmtAmount(l.principal),   cls: "text-ink" },
                     { label: "Set aside",   value: fmtAmount(l.set_aside),   cls: "text-ink-2" },
                     { label: "Outstanding", value: fmtAmount(l.outstanding), cls: paid ? "text-success-ink" : "text-ink" },
-                  ].map((m) => (
-                    <div key={m.label} className="bg-surface-2 border border-line rounded-lg px-3 py-2 min-w-0">
-                      <div className="text-[10.5px] font-medium text-muted truncate">{m.label}</div>
-                      <div className={`text-[13px] font-bold mt-0.5 tabular-nums truncate ${m.cls}`}>{m.value}</div>
-                    </div>
+                  ].map((m, i) => (
+                    <Fragment key={m.label}>
+                      {i > 0 && <div className="vsep" />}
+                      <div className={`min-w-0 py-1 ${i === 0 ? "pr-5" : i === 2 ? "pl-5" : "px-5"}`}>
+                        <div className="ui-label truncate">{m.label}</div>
+                        <div className={`text-[18px] font-medium mt-0.5 tabular-nums truncate ${m.cls}`}>{m.value}</div>
+                      </div>
+                    </Fragment>
                   ))}
                 </div>
 
-                {l.note && <div className="text-[11.5px] text-muted mb-3 whitespace-pre-wrap">{l.note}</div>}
+                {l.note && <div className="ui-note mb-3 whitespace-pre-wrap">{l.note}</div>}
 
                 {/* Feed activity — transactions tagged to this loan */}
                 {led && led.entries.length > 0 && (
-                  <div className="border-t border-line-2 pt-3 mb-3">
+                  <div className="mb-3">
                     <button
                       onClick={() => toggleExpand(l.id)}
-                      className="flex items-center gap-1.5 text-[11.5px] text-muted hover:text-ink-2 transition-colors"
+                      className="flex items-center gap-1.5 text-[13px] text-muted hover:text-ink transition-colors"
                     >
                       <ChevronRight
                         size={12}
@@ -397,16 +379,16 @@ export default function LoansView() {
                       <span className="tabular-nums">{fmtAmount(led.repaid_total)}</span> repaid via feed
                     </button>
                     {feedOpen && (
-                      <div className="mt-2 border border-line-2 rounded-lg overflow-x-auto">
-                        <table className="w-full text-[12px]">
+                      <div className="mt-2 overflow-x-auto dash-load">
+                        <table className="ui-table ui-table-sm">
                           <thead>
-                            <tr className="text-left text-muted border-b border-line-2">
+                            <tr>
                               <th className="font-medium px-3 py-2 whitespace-nowrap">Date</th>
                               <th className="font-medium px-3 py-2">Description</th>
                               <th className="font-medium px-3 py-2 text-right whitespace-nowrap">Amount</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-line-2">
+                          <tbody>
                             {led.entries.map((e, i) => (
                               <tr key={i}>
                                 <td className="px-3 py-2 tabular-nums text-muted whitespace-nowrap">{(e.posted_at || "").slice(0, 10)}</td>
@@ -425,8 +407,8 @@ export default function LoansView() {
 
                 {/* Set-aside inline editor */}
                 {asideId === l.id ? (
-                  <div className="flex items-center gap-2 flex-wrap border-t border-line-2 pt-3">
-                    <span className="text-[11px] text-muted">Set aside toward repayment</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="ui-note">Set aside toward repayment</span>
                     <div className="relative">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                       <input
@@ -442,24 +424,24 @@ export default function LoansView() {
                     </div>
                     <button
                       onClick={() => saveAside(l)}
-                      className="flex items-center gap-1.5 h-9 px-3 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[12px] font-medium transition-colors"
+                      className="ui-btn ui-btn-ink"
                     >
                       <Save size={13} /> Save
                     </button>
                     <button
                       onClick={() => setAsideId(null)}
-                      className="h-9 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
+                      className="ui-btn"
                     >
                       Cancel
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 flex-wrap border-t border-line-2 pt-3">
+                  <div className="flex items-center gap-2 flex-wrap">
                     {!paid && (
                       <>
                         <button
                           onClick={() => startAside(l)}
-                          className="h-9 px-3 border border-line text-ink-2 hover:bg-surface-2 rounded-lg text-[12px] font-medium transition-colors"
+                          className="ui-btn"
                         >
                           Set aside
                         </button>
@@ -467,7 +449,7 @@ export default function LoansView() {
                           <button
                             onClick={() => applyToSetAside(l)}
                             disabled={applyingId === l.id}
-                            className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 hover:bg-surface-2 rounded-lg text-[12px] font-medium disabled:opacity-50 transition-colors"
+                            className="ui-btn disabled:opacity-50"
                           >
                             {applyingId === l.id ? <Loader2 size={13} className="animate-spin" /> : null}
                             Apply {fmtAmount(led!.repaid_total)} repaid to set aside
@@ -475,29 +457,29 @@ export default function LoansView() {
                         )}
                         <button
                           onClick={() => markPaid(l)}
-                          className="flex items-center gap-1.5 h-9 px-3 border border-line text-success-ink hover:bg-success-bg rounded-lg text-[12px] font-medium transition-colors"
+                          className="ui-btn"
                         >
-                          <CheckCircle2 size={13} /> Mark paid off
+                          <CheckCircle2 size={14} /> Mark paid off
                         </button>
                       </>
                     )}
                     {paid && (
                       <button
                         onClick={() => reopenLoan(l)}
-                        className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 hover:bg-surface-2 rounded-lg text-[12px] font-medium transition-colors"
+                        className="ui-btn"
                       >
                         <RotateCcw size={13} /> Reopen
                       </button>
                     )}
                     <button
                       onClick={() => openEdit(l)}
-                      className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
+                      className="ui-btn"
                     >
                       <Pencil size={13} /> Edit
                     </button>
                     <button
                       onClick={() => removeLoan(l)}
-                      className="flex items-center gap-1.5 h-9 px-3 border border-danger text-danger-ink hover:bg-danger-bg rounded-lg text-[12px] transition-colors"
+                      className="ui-btn ui-btn-danger"
                     >
                       <Trash2 size={13} />
                     </button>
@@ -515,7 +497,7 @@ export default function LoansView() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="block text-[11px] text-muted mb-1">{label}</span>
+      <span className="block text-[12px] font-medium text-muted mb-1">{label}</span>
       {children}
     </label>
   );

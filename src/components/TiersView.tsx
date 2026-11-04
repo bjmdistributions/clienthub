@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api, BuyerTier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { RefreshCw, Layers, ArrowLeftRight, ArrowUp, ArrowDown } from "lucide-react";
+import { RefreshCw, Layers, ArrowLeftRight, ArrowUp, ArrowDown, Search } from "lucide-react";
+import { Button, PageActions } from "./ui";
+import StatusPill from "./StatusPill";
 import TierBadge from "./TierBadge";
 import ReliabilityBadge from "./ReliabilityBadge";
 import ClientDetailView from "./ClientDetailView";
@@ -9,10 +11,10 @@ import ClientDetailView from "./ClientDetailView";
 const SPEND_RANGES = [
   { label: "All",           min: 0,     max: Infinity },
   { label: "$0",            min: 0,     max: 0 },
-  { label: "$1 – $999",     min: 1,     max: 999 },
-  { label: "$1k – $4.9k",   min: 1000,  max: 4999 },
-  { label: "$5k – $9.9k",   min: 5000,  max: 9999 },
-  { label: "$10k – $49.9k", min: 10000, max: 49999 },
+  { label: "$1 to $999",     min: 1,     max: 999 },
+  { label: "$1k to $4.9k",   min: 1000,  max: 4999 },
+  { label: "$5k to $9.9k",   min: 5000,  max: 9999 },
+  { label: "$10k to $49.9k", min: 10000, max: 49999 },
   { label: "$50k+",         min: 50000, max: Infinity },
 ];
 
@@ -22,9 +24,9 @@ const PROFIT_RANGES = [
   { label: "Any profit",     min: -Infinity, max: Infinity },
   { label: "At a loss",      min: -Infinity, max: -0.01 },
   { label: "None",           min: 0,         max: 0 },
-  { label: "$1 – $999",      min: 1,         max: 999 },
-  { label: "$1k – $4.9k",    min: 1000,      max: 4999 },
-  { label: "$5k – $24.9k",   min: 5000,      max: 24999 },
+  { label: "$1 to $999",      min: 1,         max: 999 },
+  { label: "$1k to $4.9k",    min: 1000,      max: 4999 },
+  { label: "$5k to $24.9k",   min: 5000,      max: 24999 },
   { label: "$25k+",          min: 25000,     max: Infinity },
 ];
 
@@ -63,7 +65,7 @@ const LAST_ACTIVE_OPTIONS = [
 const MARGIN_OPTIONS = [
   { key: "any",     label: "Any margin" },
   { key: "under10", label: "Under 10%" },
-  { key: "10-25",   label: "10 – 25%" },
+  { key: "10-25",   label: "10 to 25%" },
   { key: "25plus",  label: "25%+" },
 ];
 
@@ -165,7 +167,7 @@ function tierMoney(
 // gets a deliberate one-off exception at 380ms ease-out — every other transition
 // on this screen (hover, the swap icon, colour) stays at 130ms.
 const ODOMETER_ROLL_MS = 380;
-const EM_DASH = "–";
+const EM_DASH = "-";
 
 function reducedMotion(): boolean {
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -235,7 +237,7 @@ function Odometer({ value, roll, rowDelayMs }: { value: string; roll: boolean; r
 }
 
 const selectCls =
-  "border border-line h-8 px-2.5 rounded-lg text-[12px] text-ink-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "border border-line-3 h-8 px-2.5 rounded-lg text-[13px] text-ink-2 bg-transparent focus:outline-none focus:border-ink transition-colors duration-150";
 
 export default function TiersView() {
   const [tiers, setTiers]     = useState<BuyerTier[]>([]);
@@ -333,47 +335,40 @@ export default function TiersView() {
 
   return (
     <div>
-      {/* Header */}
-      <div className="flex items-start justify-between mb-1">
-        <div>
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Client tiers</h2>
-          <p className="text-[12px] text-muted mt-0.5">
-            Ranked by actual purchasing history.
-          </p>
-        </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-3 transition-colors mt-0.5"
-        >
-          <RefreshCw size={13} className={loading ? "animate-spin" : ""} /> Refresh
-        </button>
-      </div>
+      <PageActions>
+        <Button icon={<RefreshCw size={14} className={loading ? "animate-spin" : ""} />} onClick={load}>Refresh</Button>
+      </PageActions>
+      <p className="text-[14px] text-muted mb-4">Ranked by actual purchasing history.</p>
 
       {/* Search + sort */}
-      <div className="flex items-center gap-2 mt-4 flex-wrap">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search clients"
-          className="h-8 px-3 rounded-lg text-[12px] text-ink bg-surface border border-line placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors w-48"
-        />
-        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className={selectCls}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <label className="ui-search">
+          <Search size={14} className="flex-shrink-0" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search clients"
+            aria-label="Search clients"
+          />
+        </label>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className={selectCls} aria-label="Sort by">
           {SORT_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.key === "default" ? "Sort: default" : `Sort: ${o.label}`}</option>)}
         </select>
         {sortBy !== "default" && (
           <button
             onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
             title={sortDir === "asc" ? "Ascending" : "Descending"}
-            className={`${selectCls} px-2 text-ink-2 hover:text-ink`}
+            aria-label={sortDir === "asc" ? "Ascending" : "Descending"}
+            className="ui-ib"
           >
-            {sortDir === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />}
+            {sortDir === "asc" ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
           </button>
         )}
       </div>
 
       {/* Tier summary cards — desktop tier control (multi-select) */}
-      <div className="grid grid-cols-3 xl:grid-cols-6 gap-3 my-5">
+      <div className="grid grid-cols-3 2xl:grid-cols-6 gap-2 my-5">
         {TIER_ORDER.map((t) => {
           const count = tierCount(t);
           const active = selectedTiers.includes(t);
@@ -381,33 +376,30 @@ export default function TiersView() {
             <button
               key={t}
               onClick={() => toggleTier(t)}
-              className={`bg-surface border rounded-xl p-3.5 text-left transition-shadow hover:shadow-[0_4px_12px_rgba(0,0,0,0.07)] ${
-                active ? "ring-2 ring-accent/50 border-accent/20" : "border-line"
-              }`}
+              aria-pressed={active}
+              className={`rounded-xl p-3.5 text-left transition-colors duration-150 ${active ? "bg-surface-3" : "hover:bg-surface-2"}`}
             >
               <div className="mb-2.5">
                 <TierBadge tier={t} size="sm" />
               </div>
-              <div className="text-[22px] font-bold text-ink tabular-nums leading-none">{count}</div>
-              <div className="text-[10px] text-muted mt-1">clients</div>
+              <div className="ui-fig">{count}</div>
+              <div className="ui-note mt-0.5">clients</div>
             </button>
           );
         })}
       </div>
-
+      <div className="hsep mb-4" />
 
       {/* Filters — range/enum selects */}
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <button
           onClick={() => setSelectedTiers([])}
-          className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
-            selectedTiers.length === 0 ? "bg-accent text-on-accent" : "bg-surface border border-line text-ink-2 hover:border-line-3"
-          }`}
+          className={`ui-opt ${selectedTiers.length === 0 ? "on" : ""}`}
         >
           All tiers
         </button>
 
-        <div className="h-4 w-px bg-surface-3 mx-1" />
+        <div className="vsep mx-1 h-4 self-center" />
 
         <select value={paidRange} onChange={(e) => setPaidRange(Number(e.target.value))} className={selectCls}>
           {SPEND_RANGES.map((r, i) => (
@@ -449,53 +441,53 @@ export default function TiersView() {
         </select>
 
         {anyFilter && (
-          <button onClick={clearFilters} className="text-[12px] text-muted hover:text-ink-2 px-2 h-8 rounded-lg hover:bg-surface-3 transition-colors">
+          <button onClick={clearFilters} className="ui-link muted">
             Clear
           </button>
         )}
       </div>
 
       {/* Result count */}
-      <div className="text-[12px] text-muted mb-3">
+      <div className="ui-note mb-3">
         Showing {sorted.length} of {tiers.length} clients
       </div>
 
       {/* Table */}
-      <div className="bg-surface border border-line rounded-xl overflow-x-auto">
-        <table className="w-full min-w-[1000px] text-sm">
+      <div className="overflow-x-auto">
+        <table className="ui-table ui-table-click min-w-[1000px]">
           <thead>
-            <tr className="border-b border-line-2">
-              <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Client</th>
-              <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Tier</th>
-              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Actually paid</th>
-              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Profit</th>
-              <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Invoices</th>
-              <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Quotes</th>
-              <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Reliability</th>
-              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Avg margin</th>
-              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">
+            <tr>
+              <th className="text-left">Client</th>
+              <th className="text-center">Tier</th>
+              <th className="text-right">Actually paid</th>
+              <th className="text-right">Profit</th>
+              <th className="text-center">Invoices</th>
+              <th className="text-center">Quotes</th>
+              <th className="text-left">Reliability</th>
+              <th className="text-right">Avg margin</th>
+              <th className="text-right">
                 <button
                   onClick={toggleMoney}
                   title={moneyMode === "revenue" ? "Switch to profit" : "Switch to revenue"}
-                  className="group inline-flex items-center gap-1 justify-end w-full cursor-pointer hover:text-ink-2 transition-colors"
+                  className="group inline-flex items-center gap-1 justify-end w-full cursor-pointer hover:text-ink-2 transition-colors duration-150"
                 >
                   {moneyHeaderLabel}
                   <ArrowLeftRight
-                    size={11}
+                    size={12}
                     className="text-faint group-hover:text-ink-2 transition-transform duration-[130ms] ease-out"
                     style={{ transform: moneyMode === "profit" ? "rotate(180deg)" : "rotate(0deg)" }}
                   />
                 </button>
               </th>
-              <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">
+              <th className="text-left">
                 <button
                   onClick={togglePeriod}
                   title={periodMode === "deal" ? "Switch to monthly view" : "Switch to per-deal view"}
-                  className="group inline-flex items-center gap-1 cursor-pointer hover:text-ink-2 transition-colors"
+                  className="group inline-flex items-center gap-1 cursor-pointer hover:text-ink-2 transition-colors duration-150"
                 >
                   Frequency
                   <ArrowLeftRight
-                    size={11}
+                    size={12}
                     className="text-faint group-hover:text-ink-2 transition-transform duration-[130ms] ease-out"
                     style={{ transform: periodMode === "month" ? "rotate(180deg)" : "rotate(0deg)" }}
                   />
@@ -508,7 +500,7 @@ export default function TiersView() {
               const moneyValue = tierMoney(t, moneyMode, periodMode);
               const dpm = dealsPerMonth(t.purchase_cadence_days);
               const stagger = Math.min(i * 14, 220);
-              const moneyStr = moneyValue == null ? EM_DASH : `${moneyValue < 0 ? "−" : ""}${fmtAmount(Math.abs(moneyValue))}`;
+              const moneyStr = moneyValue == null ? EM_DASH : `${moneyValue < 0 ? "-" : ""}${fmtAmount(Math.abs(moneyValue))}`;
               const freqStr = periodMode === "month"
                 ? (dpm != null ? `${dpm.toFixed(1)} deals / mo` : EM_DASH)
                 : (t.purchase_cadence_days != null ? `Every ${Math.round(t.purchase_cadence_days)} days` : EM_DASH);
@@ -516,45 +508,41 @@ export default function TiersView() {
               <tr
                 key={t.client_id}
                 onClick={() => setDetailId(t.client_id)}
-                className="border-b border-line-2 last:border-0 hover:bg-surface-2/60 transition-colors cursor-pointer"
+                
               >
-                <td className="px-5 py-3 text-[13px] font-medium text-ink">{t.client_name}</td>
-                <td className="px-5 py-3 text-center">
+                <td className="text-[13px] font-medium text-ink">{t.client_name}</td>
+                <td className="text-center">
                   <TierBadge tier={t.tier} />
                 </td>
-                <td className="px-5 py-3 text-right text-[13px] font-semibold text-ink tabular-nums">
-                  {t.actual_paid > 0 ? fmtAmount(t.actual_paid) : "–"}
+                <td className="text-right text-[13px] font-medium text-ink tabular-nums">
+                  {t.actual_paid > 0 ? fmtAmount(t.actual_paid) : "-"}
                 </td>
-                <td className={`px-5 py-3 text-right text-[13px] font-semibold tabular-nums ${
+                <td className={`text-right text-[13px] font-medium tabular-nums ${
                   t.total_profit < 0 ? "text-danger-ink" : "text-ink"
                 }`}>
-                  {t.total_profit !== 0 ? <>{t.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(t.total_profit))}</> : "–"}
+                  {t.total_profit !== 0 ? <>{t.total_profit < 0 ? "-" : ""}{fmtAmount(Math.abs(t.total_profit))}</> : "-"}
                 </td>
-                <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{t.invoices_sent}</td>
-                <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{t.quotes_sent || "–"}</td>
-                <td className="px-5 py-3">
+                <td className="text-center text-[13px] text-ink-2 tabular-nums">{t.invoices_sent}</td>
+                <td className="text-center text-[13px] text-ink-2 tabular-nums">{t.quotes_sent || "-"}</td>
+                <td>
                   <ReliabilityBadge reliability={t.reliability} pct={t.reliability_pct} quotesSent={t.quotes_sent} quotesWon={t.quotes_won} />
                 </td>
-                <td className="px-5 py-3 text-right">
+                <td className="text-right">
                   {t.avg_commission_pct > 0 ? (
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tabular-nums ${
-                      t.avg_commission_pct >= 25 ? "bg-success-bg text-success-ink"
-                      : t.avg_commission_pct >= 10 ? "bg-warning-bg text-warning-ink"
-                      : "bg-danger-bg text-danger-ink"
-                    }`}>
+                    <StatusPill tone={t.avg_commission_pct >= 25 ? "success" : t.avg_commission_pct >= 10 ? "warning" : "danger"}>
                       {t.avg_commission_pct.toFixed(1)}%
-                    </span>
+                    </StatusPill>
                   ) : (
-                    <span className="text-[12px] text-faint">–</span>
+                    <span className="text-[12px] text-faint">-</span>
                   )}
                 </td>
-                <td className="px-5 py-3 text-right text-[13px] tabular-nums">
+                <td className="text-right text-[13px] tabular-nums">
                   <span className={moneyValue != null && moneyValue < 0 ? "text-danger-ink" : "text-ink-2"}>
                     <Odometer value={moneyStr} roll={isRollRender} rowDelayMs={stagger} />
                   </span>
                 </td>
                 <td
-                  className="px-5 py-3 text-[12px] text-muted"
+                  className="text-[13px] text-muted"
                   title={`Measured from ${t.deals_landed} completed deal${t.deals_landed === 1 ? "" : "s"}`}
                 >
                   <Odometer value={freqStr} roll={isRollRender} rowDelayMs={stagger} />
@@ -564,9 +552,9 @@ export default function TiersView() {
             })}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-5 py-16 text-center">
-                  <Layers size={24} className="text-faint mx-auto mb-2" />
-                  <p className="text-[13px] text-muted">No clients match these filters</p>
+                <td colSpan={10} className="py-16 text-center">
+                  <Layers size={18} className="text-faint mx-auto mb-2" />
+                  <p className="text-[14px] text-muted">No clients match these filters</p>
                 </td>
               </tr>
             )}

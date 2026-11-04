@@ -21,13 +21,13 @@ const REASON: Record<string, string> = {
 
 function Side({ label, row }: { label: string; row: NearDupRow }) {
   return (
-    <div className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 py-2">
-      <div className="text-[10.5px] text-muted">{label}</div>
-      <div className="text-[12px] text-ink truncate" title={row.description}>{row.description || "No description"}</div>
-      <div className="text-[11px] text-muted tabular-nums">
+    <div className="min-w-0 flex-1 rounded-[10px] bg-surface-2 ring-1 ring-line px-3 py-2.5">
+      <div className="ui-note">{label}</div>
+      <div className="text-[13px] text-ink truncate" title={row.description}>{row.description || "No description"}</div>
+      <div className="ui-note tabular-nums">
         {row.date}{row.pending ? " · pending at the bank" : ""}{row.source && row.source !== "plaid" ? ` · from a ${row.source} import` : ""}
       </div>
-      <div className="text-[11px] mt-0.5 text-ink-2">
+      <div className="text-[12px] mt-0.5 text-ink-2">
         {row.links.length ? row.links.join(", ") : row.booked ? `Booked as ${row.category || "reviewed"}` : "Not booked or linked"}
       </div>
     </div>
@@ -60,27 +60,27 @@ export default function NearDuplicates({ reloadKey, onChanged }: { reloadKey: un
 
   if (pairs.length === 0) return null;
   return (
-    <div className="rounded-xl border border-warning/40 bg-warning-bg">
-      <button onClick={() => setOpen((v) => !v)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left">
-        <AlertTriangle size={14} className="text-warning-ink flex-shrink-0" />
-        <span className="flex-1 min-w-0 text-[12.5px] font-medium text-ink">
+    <div className="border-t border-line">
+      <button onClick={() => setOpen((v) => !v)} aria-expanded={open} className="w-full flex items-center gap-2.5 py-3 text-left">
+        <AlertTriangle size={16} className="text-warning-ink flex-shrink-0" />
+        <span className="flex-1 min-w-0 text-[14px] text-ink">
           {pairs.length === 1 ? "1 payment looks like it is on the books twice." : `${pairs.length} payments look like they are on the books twice.`}
-          <span className="text-muted font-normal"> Review before it throws the numbers off.</span>
+          <span className="text-muted"> Review before it throws the numbers off.</span>
         </span>
-        <ChevronDown size={14} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown size={16} className={`text-muted transition-transform duration-[180ms] ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
-        <div className="px-4 pb-4 space-y-3">
+        <div className="pb-4 space-y-3 dash-load">
           {pairs.map((p) => {
             const key = p.extra.id + p.keep.id;
             return (
-              <div key={key} className="rounded-lg border border-line bg-surface-2 p-3 space-y-2">
+              <div key={key} className="rounded-[10px] bg-surface-2 ring-1 ring-line p-3.5 space-y-2.5">
                 <div className="flex items-baseline justify-between gap-2 flex-wrap">
-                  <span className="text-[13px] font-semibold text-ink tabular-nums">
+                  <span className="text-[14px] font-medium text-ink tabular-nums">
                     {fmtAmount(p.keep.amount)} {p.keep.direction === "in" ? "in" : "out"}
-                    <span className="text-[11.5px] font-normal text-muted"> on {p.keep.account}{p.gap_days ? `, ${p.gap_days} day${p.gap_days === 1 ? "" : "s"} apart` : ", same day"}</span>
+                    <span className="text-[13px] font-normal text-muted"> on {p.keep.account}{p.gap_days ? `, ${p.gap_days} day${p.gap_days === 1 ? "" : "s"} apart` : ", same day"}</span>
                   </span>
-                  <span className="text-[11px] text-muted">{REASON[p.reason] || ""}</span>
+                  <span className="ui-note">{REASON[p.reason] || ""}</span>
                 </div>
                 <div className="flex gap-2 flex-col sm:flex-row">
                   <Side label="Stays" row={p.keep} />
@@ -88,22 +88,22 @@ export default function NearDuplicates({ reloadKey, onChanged }: { reloadKey: un
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <button onClick={() => resolve(key, p.keep, p.extra, true)} disabled={busy !== null}
-                    className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+                    className="ui-btn ui-btn-sm ui-btn-ink">
                     Same payment: remove the extra
                   </button>
                   <button onClick={() => resolve(key, p.extra, p.keep, true)} disabled={busy !== null}
-                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface disabled:opacity-40 transition-colors">
+                    className="ui-btn ui-btn-sm">
                     Keep the other copy instead
                   </button>
                   <button onClick={() => resolve(key, p.keep, p.extra, false)} disabled={busy !== null}
-                    className="h-8 px-3 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2 hover:bg-surface disabled:opacity-40 transition-colors">
+                    className="ui-btn ui-btn-sm">
                     Two real payments
                   </button>
                 </div>
               </div>
             );
           })}
-          <div className="text-[10.5px] text-muted">
+          <div className="ui-note leading-relaxed">
             Removing a copy writes a backup first and moves its booking, deal links and bill payment onto the copy that stays.
             A copy tied to a refund, loan or expense is never removed: move that link first.
           </div>

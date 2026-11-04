@@ -160,7 +160,7 @@ export default function WarehouseImport({ read, fileName, items, defaultTargetId
                           <div className="flex items-center gap-1.5 mt-1.5">
                             <NumberInput integer value={sc.per_box || ""} placeholder="0" style={WH_INPUT_BG}
                               onValue={(n) => setM({ ...m, size_cols: m.size_cols.map((x) => (x.col === c ? { ...x, per_box: n } : x)) })}
-                              className="w-16 border border-line px-2 h-7 rounded-md text-right tabular-nums text-[12.5px] focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                              className="w-16 border border-line px-2 h-7 rounded-md text-right tabular-nums text-[12.5px] focus:outline-none focus:border-ink" />
                             <span className="text-[11.5px] text-muted">per box</span>
                           </div>
                         )}

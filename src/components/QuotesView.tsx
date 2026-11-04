@@ -1,7 +1,9 @@
+import { ArrowRightCircle, Ban, Check, Edit2, FileDown, Plus, Search, Send, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, Quote, Client, LineItem } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
-import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check, Edit2, Ban, Search } from "lucide-react";
+
+import { Button, PageActions, Tabs } from "./ui";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
@@ -14,19 +16,19 @@ type Filter = typeof STATUSES[number];
 
 const statusStyle = (s: string): string => {
   switch (s) {
-    case "accepted": return "bg-success-bg text-success-ink";
-    case "sent":     return "bg-info-bg text-info-ink";
-    case "declined": return "bg-danger-bg text-danger-ink";
-    case "expired":  return "bg-warning-bg text-warning-ink";
+    case "accepted": return "bg-surface-3 text-success-ink";
+    case "sent":     return "bg-surface-3 text-muted";
+    case "declined": return "bg-surface-3 text-danger-ink";
+    case "expired":  return "bg-surface-3 text-warning-ink";
     default:         return "bg-surface-3 text-ink-2";
   }
 };
 
 const statusLabel = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 
-const inp = "border border-line bg-surface text-ink placeholder-muted px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+const inp = "border border-line-3 bg-transparent text-ink placeholder-muted px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:border-ink transition-colors duration-150";
 // Narrow variant (no w-full) for the line-item editor columns.
-const inpNarrow = "border border-line bg-surface text-ink placeholder-muted px-2 h-10 rounded-lg text-[14px] text-right focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+const inpNarrow = "border border-line-3 bg-transparent text-ink placeholder-muted px-2 h-10 rounded-lg text-[14px] text-right focus:outline-none focus:border-ink transition-colors duration-150";
 
 // A sent quote whose valid-until date has passed reads as "expired".
 const displayStatus = (q: Quote): string =>
@@ -49,7 +51,7 @@ export default function QuotesView({ onNavigate }: Props) {
   const load = async () => { setQuotes(await api.listQuotes()); };
   useEffect(() => { load(); api.listClients().then(setClients).catch(() => {}); }, []);
 
-  const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? "–";
+  const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? "-";
   const clientEmail = (id: string) => clients.find((c) => c.id === id)?.email ?? "";
   // The most recent inbound email captured from this client — the conversation a quote
   // can reply into. Returns its subject (may be "") when a thread exists, else null.
@@ -128,42 +130,32 @@ export default function QuotesView({ onNavigate }: Props) {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-5">
-        <div>
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Quotes</h2>
-          <p className="text-[12px] text-muted mt-0.5">{counts.all} quotes · estimates for reaching out to customers</p>
-        </div>
-        <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
-          <Plus size={14} /> New quote
-        </button>
-      </div>
-
-      <div className="flex gap-3 mb-4 items-center flex-wrap">
-        <div className="flex gap-1.5 flex-wrap">
-          {STATUSES.map((s) => (
-            <button key={s} onClick={() => setFilter(s)}
-              className={`px-3 h-8 rounded-lg text-[12px] font-medium capitalize transition-colors ${filter === s ? "bg-accent/10 text-accent-hover" : "text-muted hover:bg-surface-2"}`}>
-              {s} <span className="text-muted">{counts[s] ?? 0}</span>
-            </button>
-          ))}
-        </div>
-        <div className="relative ml-auto">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+      <PageActions>
+        <label className="ui-search">
+          <Search size={14} />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search customer or quote #"
-            className="border border-line bg-surface text-ink placeholder-muted pl-8 pr-3 h-8 rounded-lg text-[13px] w-60 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+            aria-label="Search quotes"
           />
-        </div>
+        </label>
+        <Button variant="ink" onClick={() => { setEditing(null); setShowForm(true); }} icon={<Plus size={14} />}>New quote</Button>
+      </PageActions>
+
+      <p className="m-0 mb-3.5 ml-1 text-[14px] text-muted">{counts.all} quotes · estimates for reaching out to customers</p>
+
+      <div className="mb-4">
+        <Tabs label="Quote status" value={filter} onChange={(id) => setFilter(id as Filter)}
+          tabs={STATUSES.map((s) => ({ id: s, label: statusLabel(s), count: counts[s] ?? 0, countTone: "calm" as const }))} />
       </div>
 
-      <div className="bg-surface border border-line-2 rounded-xl overflow-x-auto">
-        <table className="w-full min-w-[640px]">
+      <div className="overflow-x-auto">
+        <table className="ui-table ui-table-click min-w-[640px]">
           <thead>
-            <tr className="border-b border-line">
+            <tr>
               {["Quote #", "Client", "Issued", "Valid until", "Total", "Status", ""].map((h, i) => (
-                <th key={h} className={`text-left px-4 py-2.5 text-[12px] font-medium text-muted ${i >= 4 ? "text-right" : ""} ${i === 2 ? "hidden md:table-cell" : ""}`}>{h}</th>
+                <th key={h || "actions"} className={`${i >= 4 ? "r" : ""} ${i === 2 ? "hidden md:table-cell" : ""}`}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -171,51 +163,50 @@ export default function QuotesView({ onNavigate }: Props) {
             {filtered.map((q) => {
               const ds = displayStatus(q);
               return (
-                <tr key={q.id} onClick={() => setDetailId(q.id)} className="border-b border-line-2 hover:bg-surface-2/50 transition-colors cursor-pointer">
-                  <td className="px-4 py-3 font-mono text-[12px] text-ink-2">{q.number}</td>
-                  <td className="px-4 py-3 text-[13px] font-medium text-ink">{clientName(q.client_id)}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted tabular-nums hidden md:table-cell">{q.issue_date.slice(0, 10)}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{q.valid_until.slice(0, 10)}</td>
-                  <td className="px-4 py-3 text-right text-[13px] font-bold text-ink tabular-nums">{fmtAmount(q.total)}</td>
-                  <td className="px-4 py-3 text-right">
+                <tr key={q.id} onClick={() => setDetailId(q.id)}>
+                  <td className="text-[13px] text-muted tabular-nums">{q.number}</td>
+                  <td className="font-medium text-ink">{clientName(q.client_id)}</td>
+                  <td className="text-[13px] text-muted tabular-nums hidden md:table-cell">{q.issue_date.slice(0, 10)}</td>
+                  <td className="text-[13px] text-muted tabular-nums">{q.valid_until.slice(0, 10)}</td>
+                  <td className="r font-medium text-ink">{fmtAmount(q.total)}</td>
+                  <td className="text-right">
                     <StatusPill className={statusStyle(ds)}>{statusLabel(ds)}</StatusPill>
                   </td>
-                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                    {/* One segmented pill per row — consistent hit targets, quiet by default. */}
-                    <div className="inline-flex items-center rounded-lg border border-line-2 bg-surface-2/50 overflow-hidden divide-x divide-line-2">
-                      <button disabled={busy === q.id} onClick={() => handlePdf(q.id)} title="Save PDF"
-                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors disabled:opacity-50"><FileDown size={13} /></button>
-                      <button disabled={busy === q.id} onClick={() => handleSend(q.id)} title="Email quote"
-                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-accent hover:bg-accent/10 transition-colors disabled:opacity-50"><Send size={13} /></button>
+                  <td className="text-right" onClick={(e) => e.stopPropagation()}>
+                    {/* Quiet icon buttons: save, email, convert, edit, decline, delete. */}
+                    <div className="inline-flex items-center gap-0.5">
+                      <button disabled={busy === q.id} onClick={() => handlePdf(q.id)} title="Save PDF" aria-label="Save PDF"
+                        className="ui-ib disabled:opacity-50"><FileDown size={16} /></button>
+                      <button disabled={busy === q.id} onClick={() => handleSend(q.id)} title="Email quote" aria-label="Email quote"
+                        className="ui-ib disabled:opacity-50"><Send size={16} /></button>
                       {q.status !== "accepted" && (
-                        <button disabled={busy === q.id} onClick={() => convert(q)} title="Convert to invoice"
-                          className="flex items-center justify-center w-8 h-7 text-faint hover:text-success-ink hover:bg-success-bg transition-colors disabled:opacity-50"><ArrowRightCircle size={13} /></button>
+                        <button disabled={busy === q.id} onClick={() => convert(q)} title="Convert to invoice" aria-label="Convert to invoice"
+                          className="ui-ib hover:!text-success-ink disabled:opacity-50"><ArrowRightCircle size={16} /></button>
                       )}
                       {q.converted_invoice_id && (
-                        <span title="Converted to an invoice" className="flex items-center justify-center w-8 h-7 text-success-ink"><Check size={13} /></span>
+                        <span title="Converted to an invoice" className="inline-grid place-items-center w-7 h-7 text-success-ink"><Check size={16} /></span>
                       )}
-                      <button onClick={() => { setEditing(q); setShowForm(true); }} title="Edit"
-                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors"><Edit2 size={13} /></button>
+                      <button onClick={() => { setEditing(q); setShowForm(true); }} title="Edit" aria-label="Edit"
+                        className="ui-ib"><Edit2 size={16} /></button>
                       {ds === "sent" && (
-                        <button onClick={() => setStatus(q.id, "declined")} title="Mark declined"
-                          className="flex items-center justify-center w-8 h-7 text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"><Ban size={13} /></button>
+                        <button onClick={() => setStatus(q.id, "declined")} title="Mark declined" aria-label="Mark declined"
+                          className="ui-ib hover:!text-danger-ink"><Ban size={16} /></button>
                       )}
-                      <button onClick={() => del(q.id)} title="Delete"
-                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
+                      <button onClick={() => del(q.id)} title="Delete" aria-label="Delete"
+                        className="ui-ib hover:!text-danger-ink"><Trash2 size={16} /></button>
                     </div>
                   </td>
                 </tr>
               );
             })}
             {filtered.length === 0 && (
-              <tr><td colSpan={7} className="text-center py-14">
-                <FileText size={24} className="mx-auto mb-2 text-faint" />
+              <tr><td colSpan={7} className="text-center !py-14">
                 {term || filter !== "all" ? (
-                  <p className="text-[13px] text-muted">No quotes match{term ? ` “${search.trim()}”` : ""}.</p>
+                  <p className="text-[13px] text-muted">No quotes match{term ? ` "${search.trim()}"` : ""}.</p>
                 ) : (
                   <>
                     <p className="text-[13px] text-muted">No quotes yet</p>
-                    <button onClick={() => { setEditing(null); setShowForm(true); }} className="mt-2 text-[12px] font-medium text-accent">Create your first quote →</button>
+                    <button onClick={() => { setEditing(null); setShowForm(true); }} className="ui-link mt-2">Create your first quote</button>
                   </>
                 )}
               </td></tr>
@@ -256,34 +247,35 @@ export default function QuotesView({ onNavigate }: Props) {
         const email = clientEmail(q.client_id);
         const thread = clientThread(q.client_id);
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setSendModal(null)}>
-            <div className="bg-surface border border-line rounded-2xl w-full max-w-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
-              <div className="px-5 py-4 border-b border-line flex items-center justify-between">
-                <div className="text-[15px] font-semibold text-ink">Email quote {q.number}</div>
-                <button onClick={() => setSendModal(null)} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2"><X size={16} /></button>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 animate-fade-in" onClick={() => setSendModal(null)}>
+            <div className="bg-surface ring-1 ring-line-3 rounded-2xl w-full max-w-sm shadow-2xl animate-fade-up" onClick={(e) => e.stopPropagation()}>
+              <div className="px-5 py-4 flex items-center justify-between">
+                <div className="text-[16px] font-medium text-ink">Email quote {q.number}</div>
+                <button onClick={() => setSendModal(null)} aria-label="Close" className="ui-ib"><X size={16} /></button>
               </div>
-              <div className="px-5 py-4 flex flex-col gap-3">
+              <div className="px-5 pb-4 flex flex-col gap-3">
                 <div className="text-[13px] text-ink-2">
                   To <span className="font-medium text-ink">{clientName(q.client_id)}</span>
                   {email ? <span className="text-muted"> · {email}</span> : <span className="text-danger-ink"> · no email on file</span>}
                 </div>
                 {thread ? (
-                  <label className="flex items-start gap-2.5 rounded-lg border border-line bg-surface-2 px-3 py-2.5 cursor-pointer">
-                    <input type="checkbox" checked={sendModal.thread} onChange={(e) => setSendModal({ quote: q, thread: e.target.checked })} className="accent-accent mt-0.5" />
+                  <label className="flex items-start gap-2.5 rounded-lg border border-line-3 px-3 py-2.5 cursor-pointer">
+                    <input type="checkbox" checked={sendModal.thread} onChange={(e) => setSendModal({ quote: q, thread: e.target.checked })} className="accent-ink mt-0.5" />
                     <span className="text-[12.5px] text-ink-2">
                       <span className="font-medium text-ink">Reply into their email thread</span>
-                      <span className="block text-[11px] text-muted mt-0.5">{thread.subject ? `Threads under “${thread.subject}”` : "Lands in your last conversation with them"}</span>
+                      <span className="block text-[12px] text-muted mt-0.5">{thread.subject ? `Threads under "${thread.subject}"` : "Lands in your last conversation with them"}</span>
                     </span>
                   </label>
                 ) : (
-                  <div className="text-[11.5px] text-muted rounded-lg border border-line bg-surface-2 px-3 py-2.5">No prior email from this customer to reply to. This sends as a new email.</div>
+                  <div className="text-[12px] text-muted rounded-lg border border-line-3 px-3 py-2.5">No prior email from this customer to reply to. This sends as a new email.</div>
                 )}
                 <FromPicker options={fromOptions} value={sendFrom} onChange={setSendFrom} />
               </div>
-              <div className="px-5 py-4 border-t border-line flex justify-end gap-2">
-                <button onClick={() => setSendModal(null)} className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
-                <button onClick={confirmSend} disabled={!email || busy === q.id} className="px-5 h-9 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[13px] font-medium disabled:opacity-50">
-                  {busy === q.id ? "Sending…" : "Send quote"}
+              <div className="hsep" />
+              <div className="px-5 py-4 flex justify-end gap-2">
+                <button onClick={() => setSendModal(null)} className="ui-btn">Cancel</button>
+                <button onClick={confirmSend} disabled={!email || busy === q.id} className="ui-btn ui-btn-ink">
+                  {busy === q.id ? "Sending..." : "Send quote"}
                 </button>
               </div>
             </div>
@@ -304,8 +296,8 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
       <div className="fixed inset-0 bg-black/20 backdrop-blur-[2px] z-40" onClick={onClose} />
       <div className="fixed inset-y-0 right-0 w-[480px] max-w-[95vw] bg-surface shadow-[0_0_50px_rgba(0,0,0,0.12)] h-full overflow-auto z-50 animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 bg-surface/95 backdrop-blur-sm border-b border-line px-6 py-4 flex items-center justify-between z-10">
-          <h3 className="text-[14px] font-semibold text-ink font-mono">{quote.number}</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
+          <h3 className="text-[14px] font-medium text-ink font-mono">{quote.number}</h3>
+          <button onClick={onClose} aria-label="Close" className="ui-ib"><X size={16} /></button>
         </div>
 
         <div className="px-6 py-5 space-y-5">
@@ -356,7 +348,7 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
           <div className="border-t border-line pt-4 space-y-1.5 text-[13px]">
             <div className="flex justify-between text-ink-2"><span>Subtotal</span><span className="tabular-nums">{fmtAmount(quote.subtotal)}</span></div>
             <div className="flex justify-between text-ink-2"><span>Tax</span><span className="tabular-nums">{fmtAmount(quote.tax)}</span></div>
-            <div className="flex justify-between text-[15px] font-bold text-ink pt-1"><span>Total</span><span className="tabular-nums">{fmtAmount(quote.total)}</span></div>
+            <div className="flex justify-between text-[15px] font-medium text-ink pt-1"><span>Total</span><span className="tabular-nums">{fmtAmount(quote.total)}</span></div>
           </div>
 
           {quote.notes && (
@@ -367,16 +359,16 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
           )}
 
           <div className="border-t border-line pt-4 flex flex-wrap gap-2">
-            <button onClick={onEdit} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
-            <button onClick={onPdf} className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><FileDown size={13} /> PDF</button>
-            <button onClick={onSend} className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Send size={13} /> Email</button>
+            <button onClick={onEdit} className="ui-btn ui-btn-ink">Edit</button>
+            <button onClick={onPdf} className="ui-btn"><FileDown size={14} /> PDF</button>
+            <button onClick={onSend} className="ui-btn"><Send size={14} /> Email</button>
             {quote.status !== "accepted" && (
-              <button onClick={onConvert} className="flex items-center gap-1.5 border border-success text-success-ink px-3 h-9 rounded-lg text-[12px] hover:bg-success-bg"><ArrowRightCircle size={13} /> Convert to invoice</button>
+              <button onClick={onConvert} className="ui-btn text-success-ink"><ArrowRightCircle size={14} /> Convert to invoice</button>
             )}
             {displayStatus === "sent" && (
-              <button onClick={onDecline} className="border border-danger text-danger-ink px-3 h-9 rounded-lg text-[12px] hover:bg-danger-bg">Mark declined</button>
+              <button onClick={onDecline} className="ui-btn ui-btn-danger">Mark declined</button>
             )}
-            <button onClick={onDelete} className="flex items-center gap-1.5 border border-line text-muted hover:text-danger-ink hover:border-danger px-3 h-9 rounded-lg text-[12px]"><Trash2 size={13} /> Delete</button>
+            <button onClick={onDelete} className="ui-btn ui-btn-danger"><Trash2 size={14} /> Delete</button>
           </div>
         </div>
       </div>
@@ -426,19 +418,20 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[7vh] bg-black/30 backdrop-blur-[3px] overflow-y-auto" onClick={onClose}>
-      <div className="bg-surface rounded-2xl shadow-xl w-[620px] max-w-[94vw] mb-10" onClick={(e) => e.stopPropagation()}>
-        <div className="flex justify-between items-center p-5 border-b border-line">
-          <h3 className="text-[15px] font-semibold text-ink">{initial ? `Edit quote ${initial.number}` : "New quote"}</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={18} /></button>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[7vh] bg-black/40 overflow-y-auto animate-fade-in" onClick={onClose}>
+      <div className="bg-surface ring-1 ring-line-3 rounded-2xl shadow-2xl w-[620px] max-w-[94vw] mb-10 animate-fade-up" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center p-5">
+          <h3 className="text-[16px] font-medium text-ink m-0">{initial ? `Edit quote ${initial.number}` : "New quote"}</h3>
+          <button onClick={onClose} aria-label="Close" className="ui-ib"><X size={16} /></button>
         </div>
+        <div className="hsep" />
 
         <div className="p-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[12.5px] font-medium text-muted mb-1">Client *</label>
               <select className={inp} value={clientId} onChange={(e) => setClientId(e.target.value)}>
-                <option value="">Select a client…</option>
+                <option value="">Select a client...</option>
                 {clients.map((c) => <option key={c.id} value={c.id}>{c.name}{c.company ? ` · ${c.company}` : ""}</option>)}
               </select>
             </div>
@@ -458,11 +451,11 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
                   <NumberInput className={`${inpNarrow} w-16`} placeholder="Qty" value={it.qty || ""} onValue={(n) => setItem(i, "qty", n)} />
                   <NumberInput className={`${inpNarrow} w-24`} placeholder="Rate" value={it.rate || ""} onValue={(n) => setItem(i, "rate", n)} />
                   <span className="w-24 text-right text-[13px] font-medium text-ink-2 tabular-nums flex-shrink-0">{fmtAmount(it.amount)}</span>
-                  <button onClick={() => setItems(items.filter((_, idx) => idx !== i))} className="text-faint hover:text-danger-ink p-1 flex-shrink-0"><X size={14} /></button>
+                  <button onClick={() => setItems(items.filter((_, idx) => idx !== i))} aria-label="Remove item" className="ui-ib hover:!text-danger-ink flex-shrink-0"><X size={16} /></button>
                 </div>
               ))}
             </div>
-            <button onClick={() => setItems([...items, blankItem()])} className="mt-2 text-[12px] text-accent hover:text-accent-hover flex items-center gap-1"><Plus size={12} /> Add item</button>
+            <button onClick={() => setItems([...items, blankItem()])} className="ui-btn ui-btn-sm mt-2"><Plus size={14} /> Add item</button>
           </div>
 
           <div className="grid grid-cols-2 gap-3 items-end">
@@ -473,7 +466,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
             <div className="text-right text-[12px] text-muted space-y-0.5 pb-1">
               <div>Subtotal <span className="font-medium text-ink tabular-nums ml-2">{fmtAmount(subtotal)}</span></div>
               <div>Tax <span className="font-medium text-ink tabular-nums ml-2">{fmtAmount(tax)}</span></div>
-              <div className="text-[14px] text-ink font-bold">Total <span className="tabular-nums ml-2">{fmtAmount(total)}</span></div>
+              <div className="text-[14px] text-ink font-medium">Total <span className="tabular-nums ml-2">{fmtAmount(total)}</span></div>
             </div>
           </div>
 
@@ -483,10 +476,11 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 p-5 border-t border-line">
-          <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
-          <button onClick={submit} disabled={!canSave || saving} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
-            {saving ? "Saving…" : initial ? "Save" : "Create quote"}
+        <div className="hsep" />
+        <div className="flex justify-end gap-2 p-5">
+          <button onClick={onClose} className="ui-btn">Cancel</button>
+          <button onClick={submit} disabled={!canSave || saving} className="ui-btn ui-btn-ink">
+            {saving ? "Saving..." : initial ? "Save" : "Create quote"}
           </button>
         </div>
       </div>

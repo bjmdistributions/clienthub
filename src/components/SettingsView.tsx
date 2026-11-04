@@ -39,6 +39,8 @@ import {
   NewsletterProductTemplate,
 } from "../lib/api";
 import StatusPill from "./StatusPill";
+import Switch from "./Switch";
+import { PageHeader, Button, Section, Row, Tabs } from "./ui";
 import { buildNewsletterBody } from "../lib/newsletter";
 import { fmtAmount, parseAmount, parseCount } from "../lib/format";
 import { canViewLogistics, isAdmin, isLogisticsOnly } from "../lib/permissions";
@@ -101,11 +103,14 @@ import {
   ExternalLink,
   Share2,
   MessageSquarePlus,
-  MinusCircle,
+  Minus,
   Search,
   Smartphone,
   Bell,
   Clock,
+  User as UserIcon,
+  Plug,
+  ChevronLeft,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -199,8 +204,8 @@ function useAutosave(value: unknown, save: () => Promise<void>, ready: boolean) 
   }, []);
 }
 
-const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
-const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+const inp = "border border-line-3 bg-transparent px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:border-ink transition-colors";
+const inpSm = "border border-line-3 bg-transparent px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:border-ink transition-colors";
 
 type SettingsTab =
   | "account" | "appearance" | "company"
@@ -230,26 +235,26 @@ const SETTINGS_GROUPS: {
   {
     group: "You & your business",
     items: [
-      { id: "account",    label: "My account",  icon: Users,     desc: "Your name, photo & contact info" },
-      { id: "appearance", label: "Appearance",  icon: Palette,   desc: "Theme, accent colour & sidebar" },
-      { id: "company",    label: "Company",     icon: Building2, desc: "Business details, logo & share footer" },
+      { id: "account",    label: "My account",  icon: Users,     desc: "Your name, photo and contact info" },
+      { id: "appearance", label: "Appearance",  icon: Palette,   desc: "Theme, accent colour and sidebar" },
+      { id: "company",    label: "Company",     icon: Building2, desc: "Business details, logo and share footer" },
     ],
   },
   {
     group: "Sales & clients",
     items: [
-      { id: "documents",    label: "Invoices & quotes",   icon: Receipt,           desc: "Branding, numbering, payment methods & line items" },
+      { id: "documents",    label: "Invoices and quotes", icon: Receipt,           desc: "Branding, numbering, payment methods and line items" },
       { id: "storefront",   label: "Storefront",          icon: Globe,             desc: "Your public inventory catalogue" },
-      { id: "clientfields", label: "Categories & fields", icon: Tag,               desc: "Categories and the extra fields on a client" },
+      { id: "clientfields", label: "Categories and fields", icon: Tag,             desc: "Categories and the extra fields on a client" },
       { id: "leads",        label: "Lead capture",        icon: SlidersHorizontal, desc: "Forms and websites that create leads" },
     ],
   },
   {
     group: "Messaging",
     items: [
-      { id: "email",      label: "Email",      icon: Mail,          desc: "Sending, inboxes, policy clauses & newsletter format" },
+      { id: "email",      label: "Email",      icon: Mail,          desc: "Sending, inboxes, policy clauses and newsletter format" },
       { id: "whatsapp",   label: "WhatsApp",   icon: MessageCircle, desc: "Inventory share message" },
-      { id: "automation", label: "Automation", icon: Zap,           desc: "Signup detection & follow-ups" },
+      { id: "automation", label: "Automation", icon: Zap,           desc: "Signup detection and follow-ups" },
     ],
   },
   {
@@ -265,11 +270,11 @@ const SETTINGS_GROUPS: {
   {
     group: "Data & team",
     items: [
-      { id: "sync",   label: "Sync",   icon: RefreshCw, desc: "Cloud sync, updates & encryption" },
-      { id: "backup", label: "Backup", icon: Database,  desc: "Local backups & restore" },
-      { id: "import", label: "Import", icon: Download,  desc: "CSV & Google Contacts" },
-      { id: "splits", label: "Splits", icon: Split,     desc: "Rep pay & profit-split partners" },
-      { id: "team",   label: "Team",   icon: Users,     desc: "People, roles, approvals, invites & payouts" },
+      { id: "sync",   label: "Sync",   icon: RefreshCw, desc: "Cloud sync, updates and encryption" },
+      { id: "backup", label: "Backup", icon: Database,  desc: "Local backups and restore" },
+      { id: "import", label: "Import", icon: Download,  desc: "CSV and Google Contacts" },
+      { id: "splits", label: "Pay rules and splits", icon: Split, desc: "Rep pay, logistics pay and profit-split partners" },
+      { id: "team",   label: "Team",   icon: Users,     desc: "People, roles, approvals, invites and payouts" },
     ],
   },
   {
@@ -453,6 +458,28 @@ const setCardOpen = (slug: string, open: boolean) => {
   } catch { /* private mode: folding just will not stick */ }
 };
 
+// ── The six sections (R-583) ────────────────────────────────────────────────
+// The mockup's left list. Every old section id still exists as a deeper page, one click in, and
+// SETTINGS_INDEX / LEGACY_TABS / the stored tab still name them, so nothing becomes unreachable.
+// `inline` is the page that IS the section's own pane (no extra click); the rest are rows that open.
+type SectionId = "account" | "appearance" | "company" | "team" | "connections" | "data";
+
+const SECTIONS: {
+  id: SectionId; label: string; sub: string; icon: any;
+  inline: SettingsTab | null; pages: SettingsTab[]; adminOnly: boolean;
+}[] = [
+  { id: "account",     label: "Account",          sub: "You, and what Ecliptr tells you about.",                         icon: UserIcon,  inline: "account",    pages: ["account", "feedback"], adminOnly: false },
+  { id: "appearance",  label: "Appearance",       sub: "Changes apply on this computer.",                                icon: Palette,   inline: "appearance", pages: ["appearance"], adminOnly: false },
+  { id: "company",     label: "Company",          sub: "What your clients see on invoices, quotes and your storefront.", icon: Building2, inline: "company",    pages: ["company", "documents", "storefront", "clientfields"], adminOnly: true },
+  { id: "team",        label: "Team and pay",     sub: "Who can see what, and how each person is paid.",                 icon: Users,     inline: null,         pages: ["team", "splits"], adminOnly: true },
+  { id: "connections", label: "Connections",      sub: "One click each. Ecliptr handles the rest.",                      icon: Plug,      inline: null,         pages: ["email", "calendar", "sheets", "shopify", "facebook", "whatsapp", "leads", "automation", "ai"], adminOnly: true },
+  { id: "data",        label: "Data and backup",  sub: "Sync, backups and bringing your own data in.",                   icon: Database,  inline: null,         pages: ["sync", "backup", "import"], adminOnly: true },
+];
+
+const sectionOf = (t: SettingsTab) => SECTIONS.find((s) => s.pages.includes(t));
+const SEC_KEY = "clienthub_settings_sec";
+const TAB_KEY = "clienthub_settings_tab";
+
 export default function SettingsView({ me }: { me: Me | null | undefined }) {
   // Everyone can open Settings, but only admins see org-sensitive sections;
   // viewers/sales get Appearance (per-device) + their own Account.
@@ -466,27 +493,58 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
         .map((g) => ({ ...g, items: g.items.filter((i) => NON_ADMIN_SECTIONS.includes(i.id)) }))
         .filter((g) => g.items.length > 0);
   const allowed = groups.flatMap((g) => g.items).map((i) => i.id);
+  const sections = SECTIONS.filter((s) => admin || !s.adminOnly);
 
-  const [tab, setTab] = useState<SettingsTab>(() => {
+  // What is showing: a section's own pane (page null), or one of its deeper pages.
+  type View = { sec: SectionId; page: SettingsTab | null };
+  const viewFor = (t: SettingsTab): View | null => {
+    const s = sectionOf(t);
+    return s ? { sec: s.id, page: t === s.inline ? null : t } : null;
+  };
+  const [view, setView] = useState<View>(() => {
     // Invoice/Quote/Payments/Templates became one "documents" section, Categories
     // and Custom fields became "clientfields", the two form screens became
-    // "leads" — a saved or deep-linked old id still has to land somewhere (R-308).
-    const s = localStorage.getItem("clienthub_settings_tab") || "";
-    return (LEGACY_TABS[s] ?? (s as SettingsTab)) || "appearance";
+    // "leads", and R-583 folded everything into six sections. A saved or deep-linked
+    // old id still has to land somewhere (R-308).
+    let s = "";
+    try { s = localStorage.getItem(TAB_KEY) || ""; } catch { /* storage blocked */ }
+    const t = (LEGACY_TABS[s] ?? s) as SettingsTab;
+    const fromTab = t ? viewFor(t) : null;
+    if (fromTab) return fromTab;
+    let sec = "";
+    try { sec = localStorage.getItem(SEC_KEY) || ""; } catch { /* storage blocked */ }
+    if (SECTIONS.some((x) => x.id === sec)) return { sec: sec as SectionId, page: null };
+    return { sec: "appearance", page: null };
   });
   // Which side of Invoices & quotes you were last on. Before R-308 these were two
   // rail rows, so coming back to the one you were editing has to keep working.
   const [docKind, setDocKindState] = useState<DocKind>(() => {
-    if (localStorage.getItem("clienthub_settings_tab") === "quote") return "quote";
+    if (localStorage.getItem(TAB_KEY) === "quote") return "quote";
     return localStorage.getItem("clienthub_settings_doc") === "quote" ? "quote" : "invoice";
   });
   const setDocKind = (k: DocKind) => {
     setDocKindState(k);
     try { localStorage.setItem("clienthub_settings_doc", k); } catch { /* private mode */ }
   };
+  const remember = (v: View) => {
+    const s = SECTIONS.find((x) => x.id === v.sec);
+    try {
+      localStorage.setItem(SEC_KEY, v.sec);
+      const t = v.page ?? s?.inline ?? "";
+      if (t) localStorage.setItem(TAB_KEY, t); else localStorage.removeItem(TAB_KEY);
+    } catch { /* storage blocked: the section just will not be remembered */ }
+  };
+  // Open a page by its old id (a search result, a row, a deep link).
   const select = (t: SettingsTab) => {
-    setTab(t);
-    localStorage.setItem("clienthub_settings_tab", t);
+    const v = viewFor(t);
+    if (!v) return;
+    setView(v);
+    remember(v);
+  };
+  const openSection = (id: SectionId) => {
+    const v: View = { sec: id, page: null };
+    setView(v);
+    remember(v);
   };
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
@@ -507,7 +565,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
     setQ("");
   };
 
-  // The usual find shortcut puts the cursor in the search box — the whole point of
+  // The usual find shortcut puts the cursor in the search box: the whole point of
   // R-308 is that you type what you want instead of hunting for it. NOT "/": that is
   // the app-wide shortcut cheat-sheet (`App.tsx`), and two window listeners would
   // both fire, focusing the box and opening the modal over it.
@@ -535,23 +593,24 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [admin]);
 
-  // A non-admin whose stored tab is now gated falls back to Appearance.
+  // A non-admin whose stored view is now gated falls back to Appearance.
   useEffect(() => {
-    if (!admin && !NON_ADMIN_SECTIONS.includes(tab)) setTab("appearance");
+    const shown = SECTIONS.find((s) => s.id === view.sec);
+    const gated = !admin && (!shown || shown.adminOnly || (view.page !== null && !NON_ADMIN_SECTIONS.includes(view.page)));
+    if (gated) setView({ sec: "appearance", page: null });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [admin, tab]);
+  }, [admin, view]);
 
-  // Clear the auto-save pill when switching sections so a prior section's
-  // "Saving…"/"Couldn't save" can't linger on a section that doesn't autosave
+  // Clear the auto-save pill when switching pages so a prior page's
+  // "Saving…"/"Couldn't save" can't linger on a page that doesn't autosave
   // (e.g. Team), where it would look like the current action is stuck.
-  useEffect(() => { setSaveState("idle"); }, [tab]);
+  useEffect(() => { setSaveState("idle"); }, [view.sec, view.page]);
 
   // The whole Settings page (nav + content) scrolls together inside an ancestor
-  // scroll container. If the nav is scrolled down to reach a low item and the
-  // opened section is short, its content renders above the fold. Reset the
-  // nearest scrollable ancestor to the top on every tab change so the freshly
-  // opened section is always in view — except when a search result is taking us
-  // to a specific card, which scrolls itself.
+  // scroll container. If the opened page is short, its content renders above the
+  // fold. Reset the nearest scrollable ancestor to the top on every page change so
+  // the freshly opened page is always in view, except when a search result is
+  // taking us to a specific card, which scrolls itself.
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (jumpCard) return;
@@ -565,157 +624,299 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
       el = el.parentElement;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [view.sec, view.page]);
 
-  const active = groups.flatMap((g) => g.items).find((i) => i.id === tab);
+  const sec = SECTIONS.find((s) => s.id === view.sec) ?? SECTIONS[1];
+  const pageInfo = view.page ? groups.flatMap((g) => g.items).find((i) => i.id === view.page) : undefined;
   const searching = q.trim().length > 0;
+  const tab: SettingsTab | null = view.page ?? sec.inline;
+
+  // Idle says nothing: a pill claiming "All changes saved" the moment you arrive is noise at
+  // best, and it is what made R-307's false error look like a real one.
+  const savePill = saveState !== "idle" && (
+    <StatusPill tone={saveState === "error" ? "danger" : saveState === "saved" ? "success" : "neutral"}>
+      {saveState === "saving" ? "Saving…" : saveState === "error" ? "Couldn’t save" : "Saved"}
+    </StatusPill>
+  );
 
   return (
    <SaveStatusCtx.Provider value={setSaveState}>
    <JumpCtx.Provider value={{ card: jumpCard, done: () => setJumpCard(null) }}>
-    <div ref={rootRef} className="flex gap-5 lg:gap-8 max-w-[1100px]">
-      {/* Left rail */}
-      <aside className="w-[200px] lg:w-[232px] shrink-0">
-        <div className="mb-3 px-1">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Settings</h2>
-        </div>
-        <div className="relative mb-4">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-          <input ref={box} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search settings"
-            aria-label="Search settings"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") { setQ(""); e.currentTarget.blur(); }
-              if (e.key === "Enter" && results[0]) { openResult(results[0]); e.currentTarget.blur(); }
-            }}
-            className="w-full border border-line bg-surface pl-8 pr-7 h-9 rounded-lg text-[13px] text-ink placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" />
-          {searching && (
-            <button onClick={() => { setQ(""); box.current?.focus(); }} title="Clear"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-ink transition-colors">
-              <X size={13} />
-            </button>
+    <div ref={rootRef}>
+      <PageHeader
+        title="Settings"
+        actions={
+          <label className="ui-search">
+            <Search size={14} />
+            <input ref={box} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search settings"
+              aria-label="Search settings"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") { setQ(""); e.currentTarget.blur(); }
+                if (e.key === "Enter" && results[0]) { openResult(results[0]); e.currentTarget.blur(); }
+              }} />
+            {searching && (
+              <button type="button" onClick={() => { setQ(""); box.current?.focus(); }} title="Clear" aria-label="Clear search"
+                className="text-muted hover:text-ink transition-colors">
+                <X size={13} />
+              </button>
+            )}
+          </label>
+        }
+      />
+      <div className="flex gap-10 items-start">
+        {/* The six sections */}
+        <nav aria-label="Settings sections" className="w-[200px] shrink-0 space-y-0.5 sticky top-0">
+          {sections.map((s) => {
+            const Icon = s.icon;
+            const isActive = s.id === view.sec && !searching;
+            return (
+              <button key={s.id} type="button" aria-current={isActive ? "page" : undefined}
+                onClick={() => { setQ(""); setJumpCard(null); openSection(s.id); }}
+                className={`w-full flex items-center gap-2.5 px-3 h-9 rounded-lg text-[14px] font-medium text-left transition-colors duration-150 ${
+                  isActive ? "bg-surface-3 text-ink" : "text-muted hover:bg-surface-2 hover:text-ink"}`}>
+                <Icon size={16} />
+                <span className="truncate">{s.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* The pane */}
+        <div className="flex-1 min-w-0 max-w-[760px]">
+          {searching ? (
+            <div>
+              <div className="mb-3 flex items-baseline justify-between gap-4">
+                <h2 className="m-0 text-[16px] font-medium text-ink">
+                  {results.length} {results.length === 1 ? "setting matches" : "settings match"} “{q.trim()}”
+                </h2>
+                <button type="button" onClick={() => setQ("")} className="ui-link muted">Clear</button>
+              </div>
+              {results.length === 0 ? (
+                <p className="text-[13px] text-muted">
+                  Nothing matches that. Try the name of the setting itself: “footer”, “tax”, “passphrase”, “payout”.
+                </p>
+              ) : (
+                <div>
+                  {results.map((r, i) => {
+                    const home = sectionOf(r.row.tab);
+                    return (
+                      <Row key={`${r.row.tab}-${r.row.label}-${i}`} onClick={() => openResult(r)}
+                        title={r.row.label}
+                        sub={[
+                          home?.label,
+                          r.section.label !== home?.label ? r.section.label : null,
+                          r.row.kind ? (r.row.kind === "quote" ? "Quote" : "Invoice") : null,
+                          r.row.card && r.row.card !== r.row.label ? r.row.card : null,
+                        ].filter(Boolean).join(" · ")}>
+                        <ChevronRight size={16} className="text-muted" />
+                      </Row>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div key={`${view.sec}/${view.page ?? ""}`} className="page-enter">
+              <div className="mb-2 flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  {view.page && (
+                    <button type="button" onClick={() => openSection(sec.id)} className="ui-link muted mb-1.5">
+                      <ChevronLeft size={14} /> {sec.label}
+                    </button>
+                  )}
+                  <h2 className="m-0 text-[18px] font-medium text-ink">{view.page ? (pageInfo?.label ?? sec.label) : sec.label}</h2>
+                  <p className="m-0 mt-0.5 text-[13px] text-muted">{view.page ? pageInfo?.desc : sec.sub}</p>
+                </div>
+                <div className="flex-shrink-0 pt-1">{savePill}</div>
+              </div>
+              <div className="hsep mb-5" />
+              {tab === "account" && (
+                <>
+                  <AccountTab />
+                  {allowed.includes("feedback") && (
+                    <Section title="Help" className="mt-2">
+                      <Row title="Send feedback" sub="Requests and bug reports go straight to the team." onClick={() => select("feedback")}>
+                        <Button size="sm" onClick={() => select("feedback")}>Open</Button>
+                      </Row>
+                    </Section>
+                  )}
+                </>
+              )}
+              {tab === "appearance" && <AppearanceTab showTimes={canViewLogistics(me)} />}
+              {tab === "company" && (
+                <>
+                  <CompanyTab />
+                  <Section title="How clients see you" className="mt-2">
+                    <Row title="Invoices and quotes" sub="Branding, numbering, payment methods and saved line items." onClick={() => select("documents")}>
+                      <Button size="sm" onClick={() => select("documents")}>Edit</Button>
+                    </Row>
+                    <Row title="Storefront" sub="Your public inventory catalogue." onClick={() => select("storefront")}>
+                      <Button size="sm" onClick={() => select("storefront")}>Edit</Button>
+                    </Row>
+                    <Row title="Categories and fields" sub="Categories, and the extra fields on a client." onClick={() => select("clientfields")}>
+                      <Button size="sm" onClick={() => select("clientfields")}>Edit</Button>
+                    </Row>
+                  </Section>
+                </>
+              )}
+              {view.sec === "team" && !view.page && <TeamHub go={select} />}
+              {view.sec === "connections" && !view.page && <ConnectionsHub go={select} />}
+              {view.sec === "data" && !view.page && <DataHub go={select} />}
+              {view.page === "email"        && <EmailTab />}
+              {view.page === "whatsapp"     && <WhatsAppTab />}
+              {view.page === "documents"    && <DocumentsTab kind={docKind} onKind={setDocKind} />}
+              {view.page === "storefront"   && <StorefrontTab />}
+              {view.page === "clientfields" && <ClientFieldsTab />}
+              {view.page === "leads"        && <LeadCaptureTab />}
+              {view.page === "ai"           && <AiTab />}
+              {view.page === "sync"         && <SyncTab />}
+              {view.page === "import"       && <ImportTab />}
+              {view.page === "automation"   && <AutomationTab />}
+              {view.page === "sheets"       && <SheetsTab />}
+              {view.page === "calendar"     && <CalendarTab />}
+              {view.page === "splits"       && <SplitsTab />}
+              {view.page === "backup"       && <BackupTab />}
+              {view.page === "team"         && <TeamTab />}
+              {view.page === "shopify"      && <ShopifyTab />}
+              {view.page === "facebook"     && <FacebookTab />}
+              {view.page === "feedback"     && <FeedbackPanel me={me} />}
+            </div>
           )}
         </div>
-        <nav className="space-y-5">
-          {groups.map((g) => (
-            <div key={g.group}>
-              <div className="px-3 mb-1.5 text-[12.5px] font-medium text-muted">
-                {g.group}
-              </div>
-              <div className="space-y-0.5">
-                {g.items.map((it) => {
-                  const Icon = it.icon;
-                  const isActive = tab === it.id && !searching;
-                  return (
-                    <button
-                      key={it.id}
-                      onClick={() => { setQ(""); setJumpCard(null); select(it.id); }}
-                      className={`w-full flex items-center gap-2.5 px-3 h-9 rounded-lg text-[13px] transition-colors ${
-                        isActive
-                          ? "accent-active font-medium"
-                          : "text-ink-2 hover:bg-surface-2 hover:text-ink"
-                      }`}
-                    >
-                      <Icon size={15} className={isActive ? "accent-active-ic" : "text-muted"} />
-                      <span className="truncate">{it.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </nav>
-      </aside>
-
-      {/* Content */}
-      <div className="flex-1 min-w-0">
-        {searching ? (
-          <div className="max-w-[680px]">
-            <div className="mb-4 flex items-baseline justify-between gap-4">
-              <h3 className="text-[16px] font-semibold text-ink tracking-tight">
-                {results.length} {results.length === 1 ? "setting matches" : "settings match"} “{q.trim()}”
-              </h3>
-              <button onClick={() => setQ("")} className="text-[12px] text-muted hover:text-ink transition-colors">Clear</button>
-            </div>
-            {results.length === 0 ? (
-              <p className="text-[13px] text-muted">
-                Nothing matches that. Try the name of the setting itself: “footer”, “tax”, “passphrase”, “payout”.
-              </p>
-            ) : (
-              <div className="space-y-1.5">
-                {results.map((r, i) => {
-                  const Icon = r.section.icon;
-                  return (
-                    <button key={`${r.row.tab}-${r.row.label}-${i}`} onClick={() => openResult(r)}
-                      className="w-full text-left bg-surface border border-line hover:border-accent rounded-xl px-4 py-3 flex items-center gap-3 transition-colors">
-                      <span className="w-8 h-8 rounded-lg bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0"><Icon size={15} /></span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-[13.5px] font-medium text-ink truncate">{r.row.label}</span>
-                        <span className="block text-[11.5px] text-muted truncate">
-                          {r.section.label}
-                          {r.row.kind ? ` · ${r.row.kind === "quote" ? "Quote" : "Invoice"}` : ""}
-                          {r.row.card ? ` · ${r.row.card}` : ""}
-                        </span>
-                      </span>
-                      <ChevronRight size={15} className="text-muted flex-shrink-0" />
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        ) : (
-          <>
-            {active && (
-              <div className="mb-5 flex items-start justify-between gap-4">
-                <div>
-                  <h3 className="text-[16px] font-semibold text-ink tracking-tight">{active.label}</h3>
-                  <p className="text-[12px] text-muted mt-0.5">{active.desc}</p>
-                </div>
-                {/* Idle says nothing: a pill claiming "All changes saved" the moment
-                    you arrive is noise at best, and it is what made R-307's false
-                    error look like a real one. */}
-                {saveState !== "idle" && (
-                  <div className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 h-7 rounded-full flex-shrink-0 border ${
-                    saveState === "saving" ? "bg-accent/10 text-accent-hover border-accent/20"
-                    : saveState === "error" ? "bg-danger-bg text-danger-ink border-danger-ink/20"
-                    : "bg-success-bg text-success-ink border-success-ink/20"}`}>
-                    {saveState === "saving" ? "Saving…"
-                     : saveState === "error" ? <><AlertCircle size={12} /> Couldn’t save</>
-                     : <><Check size={12} /> Saved</>}
-                  </div>
-                )}
-              </div>
-            )}
-            <div key={tab} className="page-enter">
-              {tab === "account"      && <AccountTab />}
-              {tab === "appearance"   && <AppearanceTab showTimes={canViewLogistics(me)} />}
-              {tab === "email"        && <EmailTab />}
-              {tab === "whatsapp"     && <WhatsAppTab />}
-              {tab === "company"      && <CompanyTab />}
-              {tab === "documents"    && <DocumentsTab kind={docKind} onKind={setDocKind} />}
-              {tab === "storefront"   && <StorefrontTab />}
-              {tab === "clientfields" && <ClientFieldsTab />}
-              {tab === "leads"        && <LeadCaptureTab />}
-              {tab === "ai"           && <AiTab />}
-              {tab === "sync"         && <SyncTab />}
-              {tab === "import"       && <ImportTab />}
-              {tab === "automation"   && <AutomationTab />}
-              {tab === "sheets"       && <SheetsTab />}
-              {tab === "calendar"     && <CalendarTab />}
-              {tab === "splits"       && <SplitsTab />}
-              {tab === "backup"       && <BackupTab />}
-              {tab === "team"         && <TeamTab />}
-              {tab === "billing"      && <BillingTab />}
-              {tab === "shopify"      && <ShopifyTab />}
-              {tab === "facebook"     && <FacebookTab />}
-              {tab === "feedback"     && <FeedbackPanel me={me} />}
-            </div>
-          </>
-        )}
       </div>
     </div>
    </JumpCtx.Provider>
    </SaveStatusCtx.Provider>
+  );
+}
+
+// ── Section hubs (R-583) ────────────────────────────────────────────────────
+// Team and pay, Connections and Data have no single form to show, so their pane is a list of rows. Each
+// row opens the page that used to be its own rail entry.
+
+function TeamHub({ go }: { go: (t: SettingsTab) => void }) {
+  return (
+    <Section>
+      <Row title="People, roles and approvals" sub="Who is on the team, what each role can see, client approvals, invites and rep payouts." onClick={() => go("team")}>
+        <Button size="sm" onClick={() => go("team")}>Open</Button>
+      </Row>
+      <Row title="Pay rules, logistics and profit split" sub="Rep pay, how loads are numbered and paid, sending loads without a deal, and the owners' shares." onClick={() => go("splits")}>
+        <Button size="sm" onClick={() => go("splits")}>Open</Button>
+      </Row>
+    </Section>
+  );
+}
+
+function DataHub({ go }: { go: (t: SettingsTab) => void }) {
+  const [last, setLast] = useState<string | null | undefined>(undefined);
+  useEffect(() => { api.getBackupStatus().then((s) => setLast(s?.last_backup ?? null)).catch(() => setLast(undefined)); }, []);
+  const lastText = last ? (() => {
+    const d = new Date(last);
+    return Number.isNaN(d.getTime()) ? "" : `Last backup ${d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}. `;
+  })() : "";
+  return (
+    <Section>
+      <Row title="Sync and updates" sub="Cloud sync between your devices, repair, app updates and encryption." onClick={() => go("sync")}>
+        <Button size="sm" onClick={() => go("sync")}>Open</Button>
+      </Row>
+      <Row title="Backup" sub={`${lastText}Local backups and restore.`} onClick={() => go("backup")}>
+        <Button size="sm" onClick={() => go("backup")}>Open</Button>
+      </Row>
+      <Row title="Import" sub="Bring in clients from a spreadsheet or Google Contacts." onClick={() => go("import")}>
+        <Button size="sm" onClick={() => go("import")}>Import a file</Button>
+      </Row>
+    </Section>
+  );
+}
+
+/** Where each connection stands, and a Connect button that does the one thing it can: Google Calendar signs in
+ *  straight from here; the others open their page, where the one-time setup lives. Statuses load in
+ *  parallel and a failed one just reads as not connected. */
+function ConnectionsHub({ go }: { go: (t: SettingsTab) => void }) {
+  const [google, setGoogle] = useState<{ connected: boolean; email: string; scopes: string } | null>(null);
+  const [mail, setMail] = useState<EmailSettings | null>(null);
+  const [cal, setCal] = useState<CalendarState | null>(null);
+  const [shop, setShop] = useState<any>(null);
+  const [fb, setFb] = useState<FbStatus | null>(null);
+  const [wa, setWa] = useState<WhatsappSettings | null>(null);
+  const [waiting, setWaiting] = useState(false);
+  const loadCal = () => api.googleCalendar("get").then((v) => { setCal(v); return v; }).catch(() => null);
+  useEffect(() => {
+    api.googleEmailStatus().then(setGoogle).catch(() => {});
+    api.getEmailSettings().then(setMail).catch(() => {});
+    loadCal();
+    api.getShopifyConfig().then(setShop).catch(() => {});
+    api.fbStatus().then(setFb).catch(() => {});
+    api.getWhatsappSettings().then(setWa).catch(() => {});
+  }, []);
+  // After Connect the sign-in happens in the browser; look again until the server has it.
+  useEffect(() => {
+    if (!waiting) return;
+    let tries = 0;
+    const t = setInterval(async () => {
+      tries += 1;
+      const v = await loadCal();
+      if (v?.connected || tries > 60) { setWaiting(false); if (v?.connected) toast(`Connected to ${v.account_email}`); }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [waiting]);
+  const connectCalendar = async () => {
+    if (!cal?.app_set) { go("calendar"); return; }
+    try {
+      const v = await api.googleCalendar("connect");
+      if (v.url) { await api.openExternal(v.url); setWaiting(true); }
+    } catch (e) { toast(String(e), "error"); }
+  };
+
+  const mailOn = !!google?.connected || !!mail?.user;
+  const sheetsOn = !!google?.connected && (google.scopes ?? "").includes("spreadsheets");
+  type Conn = { page: SettingsTab; title: string; on: boolean; onSub: string; offSub: string; connect?: () => void; busy?: boolean };
+  const conns: Conn[] = [
+    { page: "email", title: "Email", on: mailOn,
+      onSub: `${google?.connected ? google.email : mail?.user || "Connected"}. Sending and reading mail.`,
+      offSub: "Send invoices and quotes from your own address, and read the replies." },
+    { page: "calendar", title: "Google Calendar", on: !!cal?.connected, busy: waiting, connect: connectCalendar,
+      onSub: `${cal?.account_email || "Connected"}. Bills, trucks and invoices on a shared calendar.`,
+      offSub: waiting ? "Finish signing in in your browser. This updates on its own." : "Put bills, trucks and invoices on a shared calendar." },
+    { page: "sheets", title: "Google Sheets", on: sheetsOn,
+      onSub: "Two-way sheet sync and write-back.", offSub: "Sync clients and lead intake with a Google Sheet." },
+    { page: "shopify", title: "Shopify", on: !!shop?.configured,
+      onSub: "New customers arrive as pending clients.", offSub: "Bring your store customers in as leads." },
+    { page: "facebook", title: "Facebook", on: !!fb?.connected,
+      onSub: `Posting to ${fb?.page_name || "your Page"}.`, offSub: "Post inventory lots to a Facebook Page." },
+    { page: "whatsapp", title: "WhatsApp", on: !!wa?.phone,
+      onSub: "Inventory share message is set.", offSub: "Share lots to buyer groups in one tap." },
+  ];
+  return (
+    <>
+      <Section title="Accounts">
+        {conns.map((c) => (
+          <Row key={c.page} title={c.title} sub={c.on ? c.onSub : c.offSub} onClick={() => go(c.page)}>
+            {c.on ? (
+              <>
+                <StatusPill tone="success">Connected</StatusPill>
+                <Button size="sm" onClick={() => go(c.page)}>Manage</Button>
+              </>
+            ) : (
+              <Button size="sm" variant="ink" disabled={c.busy} onClick={c.connect ?? (() => go(c.page))}>
+                {c.busy ? "Waiting for Google…" : "Connect"}
+              </Button>
+            )}
+          </Row>
+        ))}
+      </Section>
+      <Section title="Capture and automation" className="mt-2">
+        <Row title="Lead capture" sub="Forms and websites that create leads." onClick={() => go("leads")}>
+          <Button size="sm" onClick={() => go("leads")}>Open</Button>
+        </Row>
+        <Row title="Automation" sub="Turn signup emails into clients, and follow up on a schedule." onClick={() => go("automation")}>
+          <Button size="sm" onClick={() => go("automation")}>Open</Button>
+        </Row>
+        <Row title="Local AI" sub="Choose the model that runs on this computer." onClick={() => go("ai")}>
+          <Button size="sm" onClick={() => go("ai")}>Open</Button>
+        </Row>
+      </Section>
+    </>
   );
 }
 
@@ -725,15 +926,8 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
 function DocumentsTab({ kind, onKind }: { kind: DocKind; onKind: (k: DocKind) => void }) {
   return (
     <div className="space-y-6">
-      <div className="inline-flex rounded-lg border border-line bg-surface p-0.5">
-        {(["invoice", "quote"] as DocKind[]).map((k) => (
-          <button key={k} onClick={() => onKind(k)}
-            className={`px-4 h-8 rounded-[7px] text-[13px] font-medium transition-colors ${
-              kind === k ? "accent-active" : "text-ink-2 hover:text-ink"}`}>
-            {k === "invoice" ? "Invoices" : "Quotes"}
-          </button>
-        ))}
-      </div>
+      <Tabs label="Document" value={kind} onChange={(k) => onKind(k as DocKind)}
+        tabs={[{ id: "invoice", label: "Invoices" }, { id: "quote", label: "Quotes" }]} />
       <DocBrandingTab key={kind} kind={kind} />
       {kind === "invoice" && <PaymentsTab />}
       <TemplatesTab />
@@ -825,51 +1019,42 @@ function AccountTab() {
     }
   };
   return (
-    <div className="space-y-4 max-w-xl">
-      <div className="bg-surface border border-line rounded-xl p-6">
-      <div className="flex items-center gap-4 mb-6">
+    <div>
+      <div className="flex items-center gap-4 pb-5">
         <div onClick={tapPhoto} className="select-none">
         {form.avatar
-          ? <img src={form.avatar} alt="" className="w-20 h-20 rounded-full object-cover border border-line" />
-          : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-on-accent" style={{ background: "var(--accent-600)" }}>{initial}</div>}
+          ? <img src={form.avatar} alt="" className="w-16 h-16 rounded-full object-cover" />
+          : <div className="w-16 h-16 rounded-full flex items-center justify-center text-[20px] font-bold text-on-accent" style={{ background: "var(--accent-600)" }}>{initial}</div>}
         </div>
-        <div>
-          <label className="bg-surface-2 border border-line hover:bg-surface-3 text-ink-2 px-3 h-8 rounded-lg text-[12px] font-medium inline-flex items-center cursor-pointer">
+        <div className="flex items-center gap-2">
+          <label className="ui-btn ui-btn-sm cursor-pointer">
             Upload photo<input type="file" accept="image/*" className="hidden" onChange={pick} />
           </label>
-          {form.avatar && <button onClick={() => setForm((p) => ({ ...p, avatar: "" }))} className="ml-2 text-[12px] text-muted hover:text-danger-ink">Remove</button>}
+          {form.avatar && <button onClick={() => setForm((p) => ({ ...p, avatar: "" }))} className="ui-btn ui-btn-sm ui-btn-danger">Remove</button>}
         </div>
       </div>
-      <div className="space-y-3">
-        <div><label className="block text-[12px] font-medium text-muted mb-1">Name</label><input className={inpSm} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></div>
-        <div><label className="block text-[12px] font-medium text-muted mb-1">Title</label><input className={inpSm} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Sales Manager" /></div>
-        <div><label className="block text-[12px] font-medium text-muted mb-1">Phone</label><input className={inpSm} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
-        <div><label className="block text-[12px] font-medium text-muted mb-1">Email</label><input className={inpSm + " opacity-60"} value={me.email} disabled /><p className="text-[10px] text-muted mt-1">Contact an admin to change your email.</p></div>
-        <div><label className="block text-[12px] font-medium text-muted mb-1">Role</label><input className={inpSm + " opacity-60"} value={me.role_name} disabled /></div>
-      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-3 pb-5">
+        <div><label className="block text-[12px] text-muted mb-1">Name</label><input className={inpSm} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></div>
+        <div><label className="block text-[12px] text-muted mb-1">Title</label><input className={inpSm} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Sales Manager" /></div>
+        <div><label className="block text-[12px] text-muted mb-1">Phone</label><input className={inpSm} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+        <div><label className="block text-[12px] text-muted mb-1">Role</label><input className={inpSm + " opacity-60"} value={me.role_name} disabled /></div>
+        <div className="xl:col-span-2"><label className="block text-[12px] text-muted mb-1">Email</label><input className={inpSm + " opacity-60"} value={me.email} disabled /><p className="text-[12px] text-muted mt-1">Contact an admin to change your email.</p></div>
       </div>
       <MyPlanCard />
       <DesktopNotificationsCard />
       <PhoneNotificationsCard />
-      <button onClick={() => window.dispatchEvent(new CustomEvent("replay-tour"))} className="text-[12px] text-muted hover:text-ink transition-colors">Replay the getting-started tour</button>
+      <div className="hsep" />
+      <Row title="Getting-started tour" sub="Walk through the main screens again.">
+        <Button size="sm" onClick={() => window.dispatchEvent(new CustomEvent("replay-tour"))}>Replay the getting-started tour</Button>
+      </Row>
 
       {mayPlay && shown && (
-        <div className="bg-surface border border-line rounded-xl px-4 py-3 flex items-center justify-between">
-          <div>
-            <div className="text-[13px] font-medium text-ink">Cross-dock</div>
-            <div className="text-[11px] text-muted mt-0.5">Play money, this device only. Nothing here touches the books.</div>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => { setShown(false); setTaps([]); try { localStorage.removeItem(CROSSDOCK_KEY); } catch { /* private window */ } }}
-              className="text-[12px] text-muted hover:text-ink transition-colors"
-            >Hide</button>
-            <button
-              onClick={() => setPlaying(true)}
-              className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors"
-            >Open</button>
-          </div>
-        </div>
+        <Row title="Cross-dock" sub="Play money, this device only. Nothing here touches the books.">
+          <Button size="sm" variant="soft"
+            onClick={() => { setShown(false); setTaps([]); try { localStorage.removeItem(CROSSDOCK_KEY); } catch { /* private window */ } }}
+          >Hide</Button>
+          <Button size="sm" variant="ink" onClick={() => setPlaying(true)}>Open</Button>
+        </Row>
       )}
       {playing && <CrossDock accountId={me.id} accountName={form.display_name || me.display_name} onClose={() => setPlaying(false)} />}
     </div>
@@ -883,33 +1068,36 @@ function MyPlanCard() {
   if (err || !plan) return null; // local-first: hide when not signed into the server / offline
   const planLabel = String(plan.plan || "free");
   const pretty = planLabel.charAt(0).toUpperCase() + planLabel.slice(1);
-  const Row = ({ label, used, limit }: { label: string; used: number; limit: number | null }) => {
+  const Meter = ({ label, used, limit }: { label: string; used: number; limit: number | null }) => {
     const pct = limit && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
     return (
       <div>
-        <div className="flex items-center justify-between text-[12px] mb-1">
+        <div className="flex items-center justify-between text-[13px] mb-1">
           <span className="text-ink-2">{label}</span>
           <span className="text-muted tabular-nums">{used}{limit != null ? ` / ${limit}` : " · unlimited"}</span>
         </div>
         {limit != null && (
-          <div className="h-1.5 w-full bg-surface-3 rounded-full overflow-hidden">
-            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: pct >= 100 ? "rgb(var(--c-danger))" : "var(--accent-500)" }} />
+          <div className="h-1 w-full bg-surface-3 rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: pct >= 100 ? "rgb(var(--c-danger))" : "var(--accent-500)" }} />
           </div>
         )}
       </div>
     );
   };
   return (
-    <div className="bg-surface border border-line rounded-xl p-6">
-      <div className="flex items-center justify-between mb-4">
-        <SectionLabel>My plan</SectionLabel>
-        <StatusPill tone="accent">{pretty}</StatusPill>
+    <div>
+      <div className="hsep" />
+      <div className="py-5">
+        <div className="flex items-center justify-between mb-3">
+          <SectionLabel>My plan</SectionLabel>
+          <StatusPill tone="accent">{pretty}</StatusPill>
+        </div>
+        <div className="space-y-3">
+          <Meter label="Team members" used={plan.members ?? 0} limit={plan.member_limit ?? null} />
+          <Meter label="Clients" used={plan.clients ?? 0} limit={plan.client_limit ?? null} />
+        </div>
+        {planLabel === "free" && <p className="text-[12px] text-muted mt-3 mb-0">Paid plans with higher limits are coming soon.</p>}
       </div>
-      <div className="space-y-3">
-        <Row label="Team members" used={plan.members ?? 0} limit={plan.member_limit ?? null} />
-        <Row label="Clients" used={plan.clients ?? 0} limit={plan.client_limit ?? null} />
-      </div>
-      {planLabel === "free" && <p className="text-[12px] text-muted mt-4">Paid plans with higher limits are coming soon.</p>}
     </div>
   );
 }
@@ -926,13 +1114,9 @@ function DesktopNotificationsCard() {
   };
   return (
     <SettingCard icon={Bell} title="Desktop notifications" purpose="Show a system notification on this computer for what needs you." collapsible={false}>
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-[13px] font-medium text-ink">Desktop notifications</div>
-          <div className="text-[11.5px] text-muted mt-0.5">Pop-ups on this computer for what you switched on under Notifications. The bell still counts what needs you when this is off.</div>
-        </div>
+      <Row title="Show pop-ups" sub="Pop-ups on this computer for what you switched on under Notifications. The bell still counts what needs you when this is off.">
         <ClauseSwitch on={on} onClick={flip} label="Desktop notifications" />
-      </div>
+      </Row>
     </SettingCard>
   );
 }
@@ -970,20 +1154,16 @@ function PhoneNotificationsCard() {
   };
   return (
     <SettingCard icon={Smartphone} title="Notifications" purpose="Choose what Ecliptr tells you about, on your iPhone and in this computer's pop-ups." collapsible={false}>
-      <div className="divide-y divide-line-2">
+      <div>
         {rows.map((row) => (
-          <div key={row.key} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
-            <div className="min-w-0">
-              <div className="text-[13px] font-medium text-ink">{row.label}</div>
-              <div className="text-[11.5px] text-muted mt-0.5">{row.hint}</div>
-            </div>
+          <Row key={row.key} title={row.label} sub={row.hint}>
             <span className={busy === row.key ? "opacity-60 pointer-events-none" : ""}>
               <ClauseSwitch on={!!r.prefs[row.key]} onClick={() => flip(row.key)} label={row.label} />
             </span>
-          </div>
+          </Row>
         ))}
       </div>
-      <p className="text-[11.5px] text-muted mt-4">
+      <p className="text-[12px] text-muted mt-3 mb-0">
         {!r.configured
           ? "Your server is not set up to send phone notifications yet."
           : r.devices.length === 0
@@ -1030,8 +1210,10 @@ function AppearanceTab({ showTimes }: { showTimes: boolean }) {
     window.dispatchEvent(new CustomEvent("matte-change", { detail: on }));
   };
 
+  // Mono is the default accent (the ink). A colour picked here replaces it, in Mono too, and "orange" is stored as
+  // no accent at all, so with Mono on that first choice is the ink itself.
   const ACCENTS = [
-    { id: "orange",  label: "Ecliptr orange", swatch: "#FF6520" },
+    { id: "orange",  label: matte ? "Mono ink" : "Ecliptr orange", swatch: matte ? "rgb(var(--c-ink))" : "#FF6520" },
     { id: "eclipse", label: "Indigo",   swatch: "#4F46E5" },
     { id: "blue",    label: "Blue",     swatch: "#2563EB" },
     { id: "emerald", label: "Emerald",  swatch: "#059669" },
@@ -1042,144 +1224,59 @@ function AppearanceTab({ showTimes }: { showTimes: boolean }) {
   ];
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
-      <SectionLabel>Accent colour</SectionLabel>
-      <p className="text-[12px] text-muted mb-3 mt-0.5">
-        {matte
-          ? "Mono is on. Accent colors are disabled while the interface is monochrome. Turn Mono off to choose an accent."
-          : "Sets the accent used across the sidebar, highlights and controls. Data colors (revenue, profit, charts) stay fixed for clarity."}
-      </p>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
-        {ACCENTS.map((a) => {
-          const isActive = accent === a.id && !matte;
-          return (
-            <button
-              key={a.id}
-              onClick={() => { if (!matte) setAccent(a.id); }}
-              disabled={matte}
-              title={matte ? "Mono is on. Accent colors don't apply." : a.label}
-              className={`relative flex flex-col items-center gap-2 py-4 rounded-xl border transition-all ${
-                matte
-                  ? "border-line opacity-40 cursor-not-allowed"
-                  : isActive ? "border-transparent ring-2 ring-offset-1" : "border-line hover:border-line-3"
-              }`}
-              style={isActive ? ({ ["--tw-ring-color" as any]: a.swatch } as any) : undefined}
-            >
-              <span
-                className="relative w-9 h-9 rounded-full shadow-inner flex items-center justify-center"
-                style={{ background: a.swatch }}
-              >
-                {isActive && <Check size={16} className="text-white" />}
-                {matte && (
-                  <span className="absolute inset-0 flex items-center justify-center" aria-hidden>
-                    <span className="block w-[150%] h-[2px] rotate-45 rounded-full bg-white" />
-                  </span>
-                )}
-              </span>
-              <span className={`text-[12px] font-medium text-ink-2 ${matte ? "line-through" : ""}`}>{a.label}</span>
-            </button>
-          );
-        })}
-      </div>
+    <div>
+      <Section>
+        <Row title={<SectionLabel>Theme</SectionLabel>} sub="Light or dark. Add Mono for the stripped-back black and white look.">
+          <div role="radiogroup" aria-label="Theme" className="flex gap-2">
+            {([
+              { isDark: false, label: "Light", icon: Sun },
+              { isDark: true,  label: "Dark",  icon: Moon },
+            ] as { isDark: boolean; label: string; icon: typeof Sun }[]).map((opt) => {
+              const Icon = opt.icon;
+              return (
+                <button key={opt.label} type="button" role="radio" aria-checked={dark === opt.isDark}
+                  onClick={() => setBase(opt.isDark)}
+                  className={`ui-opt inline-flex items-center gap-1.5 ${dark === opt.isDark ? "on" : ""}`}>
+                  <Icon size={14} /> {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </Row>
+        <Row title="Mono" sub="Buttons and highlights stay black and white. Green, red and teal still mark money, late and shipping.">
+          <Switch on={matte} onToggle={() => setMono(!matte)} label="Mono" />
+        </Row>
+        <Row title={<SectionLabel>Accent colour</SectionLabel>}
+          sub={matte
+            ? "Mono keeps buttons black and white. Pick a colour to replace it; choosing the first swatch goes back to Mono."
+            : "Sets the accent used across the sidebar, highlights and controls. Data colors (revenue, profit, charts) stay fixed for clarity."}>
+          <div className="flex flex-wrap justify-end gap-2.5" role="radiogroup" aria-label="Accent colour">
+            {ACCENTS.map((a) => {
+              const isActive = accent === a.id;
+              return (
+                <button key={a.id} type="button" role="radio" aria-checked={isActive} aria-label={a.label} title={a.label}
+                  onClick={() => setAccent(a.id)}
+                  className={`w-6 h-6 rounded-full transition-shadow duration-150 ${isActive ? "ring-2 ring-ink ring-offset-2 ring-offset-surface" : "ring-1 ring-line-3 hover:ring-2"}`}
+                  style={{ background: a.swatch }} />
+              );
+            })}
+          </div>
+        </Row>
+      </Section>
 
-      <SectionLabel>Theme</SectionLabel>
-      <p className="text-[12px] text-muted mb-3 mt-0.5">Pick a base, then add Mono for a stripped-back monochrome look.</p>
-      <div className="flex gap-3 mb-5">
-        {([
-          { isDark: false, label: "Light", icon: Sun },
-          { isDark: true,  label: "Dark",  icon: Moon },
-        ] as { isDark: boolean; label: string; icon: typeof Sun }[]).map((opt) => {
-          const Icon = opt.icon;
-          const isActive = dark === opt.isDark;
-          return (
-            <button
-              key={opt.label}
-              onClick={() => setBase(opt.isDark)}
-              className={`flex-1 flex items-center justify-center gap-2 h-12 rounded-xl border text-[13px] font-medium transition-colors ${
-                isActive
-                  ? "accent-active accent-active-bd"
-                  : "border-line text-muted hover:border-line-3"
-              }`}
-            >
-              <Icon size={15} /> {opt.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Mono — orthogonal to light/dark. Strips accent + goes grayscale. */}
-      <button
-        onClick={() => setMono(!matte)}
-        role="switch"
-        aria-checked={matte}
-        className={`w-full flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors ${
-          matte ? "accent-active accent-active-bd" : "border-line hover:border-line-3"
-        }`}
-      >
-        <span className={`flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg ${matte ? "bg-ink text-surface" : "bg-surface-2 text-muted"}`}>
-          <Contrast size={16} />
-        </span>
-        <span className="flex-1 min-w-0">
-          <span className={`block text-[13px] font-semibold ${matte ? "text-ink" : "text-ink-2"}`}>Mono</span>
-          <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
-            Monochrome, strips accent color; pure black in dark, clean white/black in light.
-          </span>
-        </span>
-        <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${matte ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${matte ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
-        </span>
-      </button>
-
-      <div className="mt-7"><SectionLabel>Sidebar</SectionLabel></div>
-      <p className="text-[12px] text-muted mb-3 mt-0.5">
-        Cmd/Ctrl + B collapses the sidebar to the rail at any time. This decides whether a narrow window does it for you.
-      </p>
-      <button
-        onClick={() => setNavAuto(!navAuto)}
-        role="switch"
-        aria-checked={navAuto}
-        className={`w-full flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors ${
-          navAuto ? "accent-active accent-active-bd" : "border-line hover:border-line-3"
-        }`}
-      >
-        <span className={`flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg ${navAuto ? "bg-ink text-surface" : "bg-surface-2 text-muted"}`}>
-          <PanelLeftClose size={16} />
-        </span>
-        <span className="flex-1 min-w-0">
-          <span className={`block text-[13px] font-semibold ${navAuto ? "text-ink" : "text-ink-2"}`}>Collapse on narrow windows</span>
-          <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
-            Below 1240px the sidebar becomes the rail on its own, and hands the width back to the screen. Turn this off to keep it exactly where you left it.
-          </span>
-        </span>
-        <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${navAuto ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${navAuto ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
-        </span>
-      </button>
-
-      {showTimes && (<>
-      <div className="mt-7"><SectionLabel>Times</SectionLabel></div>
-      <button
-        onClick={() => setTime24(!time24)}
-        role="switch"
-        aria-checked={time24}
-        className={`mt-3 w-full flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors ${
-          time24 ? "accent-active accent-active-bd" : "border-line hover:border-line-3"
-        }`}
-      >
-        <span className={`flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg ${time24 ? "bg-ink text-surface" : "bg-surface-2 text-muted"}`}>
-          <Clock size={16} />
-        </span>
-        <span className="flex-1 min-w-0">
-          <span className={`block text-[13px] font-semibold ${time24 ? "text-ink" : "text-ink-2"}`}>Type times in 24-hour time</span>
-          <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
-            On a load, type 1430 and it shows as 2:30 pm. Kept on your account, so it follows you to every device.
-          </span>
-        </span>
-        <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${time24 ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${time24 ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
-        </span>
-      </button>
-      </>)}
+      <div className="hsep" />
+      <Section>
+        <Row title={<SectionLabel>Sidebar</SectionLabel>}
+          sub="Collapse on narrow windows. Below 1240px the sidebar becomes the rail on its own and hands the width back to the screen. Cmd/Ctrl + B collapses it at any time.">
+          <Switch on={navAuto} onToggle={() => setNavAuto(!navAuto)} label="Collapse on narrow windows" />
+        </Row>
+        {showTimes && (
+          <Row title={<SectionLabel>Times</SectionLabel>}
+            sub="Type times in 24-hour time. On a load, type 1430 and it shows as 2:30 pm. Kept on your account, so it follows you to every device.">
+            <Switch on={time24} onToggle={() => setTime24(!time24)} label="Type times in 24-hour time" />
+          </Row>
+        )}
+      </Section>
     </div>
   );
 }
@@ -1273,20 +1370,20 @@ function WhatsAppTab() {
 
   const VarHint = ({ field, vars }: { field: "template" | "lot_format"; vars: string[] }) => (
     <div className="flex flex-wrap items-center gap-1.5 mt-2">
-      <span className="text-[11px] text-muted">Tap to insert:</span>
+      <span className="text-[12px] text-muted">Tap to insert:</span>
       {vars.map((v) => (
         <button key={v} type="button" onClick={() => insertVar(field, v)}
-          className="font-mono text-[11px] text-ink-2 bg-surface-2 border border-line-2 hover:border-accent hover:text-accent px-1.5 py-0.5 rounded transition-colors">
+          className="font-mono text-[12px] text-ink-2 bg-surface-2 border border-line-2 hover:border-accent hover:text-accent px-1.5 py-0.5 rounded transition-colors">
           {v}
         </button>
       ))}
     </div>
   );
 
-  const ta = "border border-line px-3 py-2.5 rounded-lg text-[13px] w-full font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-y";
+  const ta = "border border-line px-3 py-2.5 rounded-lg text-[13px] w-full font-mono leading-relaxed focus:outline-none focus:border-ink transition-colors resize-y";
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
+    <div className="border-t border-line pt-4 max-w-2xl">
       <p className="text-[12px] text-muted mb-5">
         Customize the message used when you share inventory to WhatsApp. The business name is pulled from your Company settings.
       </p>
@@ -1322,7 +1419,7 @@ function WhatsAppTab() {
             <div className="text-[13px] leading-relaxed whitespace-pre-wrap break-words" style={{ color: "var(--t-tx1)" }}>
               {loaded ? waFormat(preview) : <span style={{ color: "var(--t-tx4)" }}>Loading…</span>}
             </div>
-            <div className="flex items-center justify-end gap-1 mt-1.5 text-[10px]" style={{ color: "var(--t-tx4)" }}>
+            <div className="flex items-center justify-end gap-1 mt-1.5 text-[12px]" style={{ color: "var(--t-tx4)" }}>
               <span>12:34 PM</span>
               <CheckCheck size={13} />
             </div>
@@ -1341,7 +1438,7 @@ function StatusDot({ state }: { state: TestState }) {
   if (state.status === "testing") return <RefreshCw size={12} className="text-muted animate-spin" />;
   if (state.status === "ok") return <span title="Connected"><Check size={12} className="text-success-ink" /></span>;
   if (state.status === "fail") return <span title="Failed"><AlertCircle size={12} className="text-danger-ink" /></span>;
-  return <span title="Untested"><MinusCircle size={12} className="text-faint" /></span>;
+  return <span title="Untested"><Minus size={12} className="text-faint" /></span>;
 }
 
 function TestResultLine({ state }: { state: TestState }) {
@@ -1353,8 +1450,9 @@ function TestResultLine({ state }: { state: TestState }) {
 
 // ── Calm settings-card scaffolding (shared, reused by the de-clutter pass) ──
 // One clear card per thing: icon + title + one-line plain purpose, then body.
-function SettingCard({ icon: Icon, title, purpose, aside, collapsible = true, children }: {
-  icon: typeof Mail; title: string; purpose: string; aside?: React.ReactNode;
+function SettingCard({ title, purpose, aside, collapsible = true, children }: {
+  /** Kept so every caller still compiles; a plain section has no icon (R-583). */
+  icon?: typeof Mail; title: string; purpose: string; aside?: React.ReactNode;
   /** R-238 folded every card shut by default; R-308 is Jack saying that made Settings
    *  "overly collapsed" — two clicks to reach one field. Cards now open, and whatever
    *  you fold stays folded (per card, per device). Pass `collapsible={false}` for a
@@ -1381,35 +1479,35 @@ function SettingCard({ icon: Icon, title, purpose, aside, collapsible = true, ch
   }, [hit]);
 
   const shown = !collapsible || open;
-  // The status pill stays in the header while collapsed — the whole point is to see
+  // The status pill stays in the header while collapsed: the whole point is to see
   // at a glance whether this is set up without expanding it.
   const titled = (
-    <>
-      <span className="w-9 h-9 rounded-xl bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0 mt-0.5"><Icon size={17} /></span>
-      <span className="min-w-0">
-        <span className="text-[15px] font-semibold text-ink flex items-center gap-1.5">
-          {title}
-          {collapsible && <ChevronDown size={14} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />}
-        </span>
-        <span className="block text-[12.5px] text-muted mt-0.5">{purpose}</span>
+    <span className="min-w-0">
+      <span className="text-[14px] font-medium text-ink flex items-center gap-1.5">
+        {title}
+        {collapsible && <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`} />}
       </span>
-    </>
+      <span className="block text-[13px] text-muted mt-0.5">{purpose}</span>
+    </span>
   );
   // `aside` sits OUTSIDE the toggle: several cards pass a button there (Payment
   // methods passes Add), and a button inside a button is invalid DOM.
   const head = (
-    <div className={`flex items-start justify-between gap-3 ${shown ? "mb-5" : ""}`}>
+    <div className={`flex items-start justify-between gap-3 ${shown ? "mb-4" : ""}`}>
       {collapsible
         ? <button type="button" onClick={toggle} aria-expanded={open} className="flex items-start gap-3 text-left flex-1 min-w-0">{titled}</button>
         : <div className="flex items-start gap-3 flex-1 min-w-0">{titled}</div>}
       {aside && <div className="flex-shrink-0">{aside}</div>}
     </div>
   );
+  // R-583: a section, not a box. The fading hairline above it (none above the first) does the dividing.
   return (
-    <div ref={box} data-setting-card={slug}
-      className={`bg-surface border rounded-2xl p-6 transition-colors ${hit ? "border-accent ring-2 ring-accent/30" : "border-line"}`}>
-      {head}
-      {shown && children}
+    <div ref={box} data-setting-card={slug} className="group">
+      <div className="hsep group-first:hidden" />
+      <div className={`py-5 transition-colors duration-300 ${hit ? "bg-surface-2 rounded-lg px-3 -mx-3" : ""}`}>
+        {head}
+        {shown && children}
+      </div>
     </div>
   );
 }
@@ -1417,8 +1515,8 @@ function SettingCard({ icon: Icon, title, purpose, aside, collapsible = true, ch
 // Connected / not-connected pill (calm, reused).
 function ConnectedPill({ ok, onLabel = "Connected", offLabel = "Not set up" }: { ok: boolean; onLabel?: string; offLabel?: string }) {
   return ok
-    ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-success-ink bg-success-bg border border-success-ink/20 px-2.5 h-7 rounded-full"><Check size={13} /> {onLabel}</span>
-    : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted bg-surface-2 border border-line px-2.5 h-7 rounded-full"><X size={13} /> {offLabel}</span>;
+    ? <StatusPill tone="success">{onLabel}</StatusPill>
+    : <StatusPill tone="neutral">{offLabel}</StatusPill>;
 }
 
 // Cloud-sync health. Deliberately not ConnectedPill: having a token stored is not
@@ -1426,12 +1524,7 @@ function ConnectedPill({ ok, onLabel = "Connected", offLabel = "Not set up" }: {
 // a device can sit on a green pill for days syncing nothing. Green only when the
 // server confirmed a pull/push recently; red when it rejected us.
 function SyncPill({ auth, connected }: { auth?: string; connected?: boolean }) {
-  if (auth === "auth_lost")
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-danger-ink bg-danger-bg border border-danger-ink/20 px-2.5 h-7 rounded-full">
-        <AlertCircle size={13} /> Sync needs your password
-      </span>
-    );
+  if (auth === "auth_lost") return <StatusPill tone="danger">Sync needs your password</StatusPill>;
   if (auth === "ok") return <ConnectedPill ok />;
   return <ConnectedPill ok={false} offLabel={connected ? "Not syncing" : "Not set up"} />;
 }
@@ -1537,11 +1630,9 @@ function InboxRow({ ib }: { ib: EmailInbox }) {
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="text-[13px] font-medium text-ink truncate">{ib.label}</span>
-              <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0 ${ib.scope === "me" ? "bg-surface-2 text-muted" : "bg-accent/12 text-accent"}`}>
-                {ib.scope === "me" ? "Personal" : "Shared"}
-              </span>
+              <StatusPill tone={ib.scope === "me" ? "neutral" : "accent"}>{ib.scope === "me" ? "Personal" : "Shared"}</StatusPill>
             </div>
-            <div className="text-[11px] text-muted truncate">
+            <div className="text-[12px] text-muted truncate">
               {ib.user}
               {google && <span className="text-accent"> · Signed in with Google</span>}
               {!google && claimsGoogle && <span className="text-warning-ink"> · Needs Google sign-in on this device</span>}
@@ -1705,9 +1796,7 @@ function SendingCard() {
           inherits it automatically; an admin can opt this device onto its own. */}
       <div className="mb-4 rounded-xl border border-line bg-surface-2/40 p-3.5">
         <div className="flex items-center gap-2 mb-1.5">
-          <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${useOrg ? "bg-accent/12 text-accent" : "bg-surface-2 text-muted"}`}>
-            {useOrg ? "Shared team inbox" : "My own inbox"}
-          </span>
+          <StatusPill tone={useOrg ? "accent" : "neutral"}>{useOrg ? "Shared team inbox" : "My own inbox"}</StatusPill>
           {admin && (
             <label className="ml-auto flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
               <input type="checkbox" checked={!useOrg} onChange={(e) => setUseOrg(!e.target.checked)} className="accent-accent" />
@@ -1715,7 +1804,7 @@ function SendingCard() {
             </label>
           )}
         </div>
-        <p className="text-[11.5px] text-muted">
+        <p className="text-[12px] text-muted">
           {useOrg
             ? "Set up once, every admin inherits this send account and monitored inboxes automatically."
             : "This device sends from your own account instead of the shared team one. Other admins are unaffected."}
@@ -1740,9 +1829,9 @@ function SendingCard() {
         ) : (
           <div className="rounded-xl border border-line bg-surface-2/40 p-4">
             <div className="flex items-center gap-2 mb-1"><Cloud size={15} className="text-accent" /><span className="text-[13px] font-semibold text-ink">Connect Google</span>
-              {gStatus?.connected && <span className="ml-auto text-[11.5px] font-medium text-success-ink inline-flex items-center gap-1"><Check size={12} /> {gStatus.email || "connected"}</span>}
+              {gStatus?.connected && <span className="ml-auto text-[12px] font-medium text-success-ink inline-flex items-center gap-1"><Check size={12} /> {gStatus.email || "connected"}</span>}
             </div>
-            <p className="text-[11.5px] text-muted mb-3">Connect Gmail without storing your password.</p>
+            <p className="text-[12px] text-muted mb-3">Connect Gmail without storing your password.</p>
             <SecretInput label="Google Client ID"     value={oauthClientId}     onChange={setOauthClientId}     showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
             <SecretInput label="Google Client Secret" value={oauthClientSecret} onChange={setOauthClientSecret} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
             <div className="flex items-center gap-2 flex-wrap">
@@ -1765,7 +1854,7 @@ function SendingCard() {
               onChange={(e) => setSettings({ ...settings, from_invoices: e.target.value })} />
           </Field>
         </div>
-        <p className="text-[11px] text-muted -mt-1">
+        <p className="text-[12px] text-muted -mt-1">
           Leave either blank to send as {settings.user || "the account above"}. Quotes, newsletters and replies use the first;
           only invoices use the second. Gmail rewrites the From back to the login unless the address is verified under
           Send mail as (or is an alias) on that account. There is no error when it does.
@@ -1776,7 +1865,7 @@ function SendingCard() {
             <Field label="SMTP host"><input className={inpSm} value={settings.smtp_host} onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })} /></Field>
             <Field label="SMTP port"><NumberInput integer className={inpSm} value={settings.smtp_port} onValue={(n) => setSettings({ ...settings, smtp_port: n || 587 })} /></Field>
           </div>
-          <p className="text-[11px] text-muted mt-1">Credentials are stored in your OS keychain, never written to disk or synced.</p>
+          <p className="text-[12px] text-muted mt-1">Credentials are stored in your OS keychain, never written to disk or synced.</p>
         </Advanced>
       </div>
 
@@ -1806,7 +1895,7 @@ function SendingCard() {
       {admin && useOrg && staff.length > 0 && (
         <div className="mt-5 pt-4 border-t border-line">
           <Advanced label="Transfer shared inbox to another admin">
-          <p className="text-[11.5px] text-muted mb-2.5">Hands the send + monitored inboxes to a different email admin. Credentials move with it, no re-typing.</p>
+          <p className="text-[12px] text-muted mb-2.5">Hands the send + monitored inboxes to a different email admin. Credentials move with it, no re-typing.</p>
           <div className="flex items-center gap-2 flex-wrap">
             <select className={inpSm} value={transferTo} onChange={(e) => setTransferTo(e.target.value)}>
               <option value="">Choose an admin…</option>
@@ -1894,7 +1983,7 @@ function InboxCard() {
             <input type="checkbox" checked={form.readFromNow} onChange={(e) => setForm({ ...form, readFromNow: e.target.checked })} className="accent-accent mt-0.5" />
             <span className="text-[12px] text-ink-2">
               Read mail from now on
-              <span className="block text-[11px] text-muted">Leave this on. Turning it off imports the whole mailbox and dates every old message as contact today.</span>
+              <span className="block text-[12px] text-muted">Leave this on. Turning it off imports the whole mailbox and dates every old message as contact today.</span>
             </span>
           </label>
           <Advanced label="Advanced (mail server)">
@@ -1928,32 +2017,27 @@ function CapturedCustomerCard({ c }: { c: CapturedCustomer }) {
   return (
     <div className="rounded-xl border border-line bg-surface-2/40 overflow-hidden">
       <div className="flex items-center gap-3 p-3.5 border-b border-line-2">
-        <span className="w-10 h-10 rounded-full bg-accent/10 text-accent-hover flex items-center justify-center text-[14px] font-bold flex-shrink-0">{initials}</span>
+        <span className="w-10 h-10 rounded-full bg-surface-3 text-ink flex items-center justify-center text-[14px] font-bold flex-shrink-0">{initials}</span>
         <div className="min-w-0">
           <div className="text-[14px] font-semibold text-ink truncate">{displayName}</div>
-          <div className="text-[11.5px] text-muted truncate">{[c.title, c.company].filter(Boolean).join(" · ") || "–"}</div>
+          <div className="text-[12px] text-muted truncate">{[c.title, c.company].filter(Boolean).join(" · ") || "None"}</div>
         </div>
       </div>
       <div className="px-3.5 py-2 divide-y divide-line-2">
         {rows.map(([label, val]) => (
           <div key={label} className="flex items-center justify-between gap-3 py-1.5">
-            <span className="text-[11px] text-muted">{label}</span>
-            <span className={`text-[12.5px] tabular-nums truncate ${val ? "text-ink-2" : "text-faint"}`}>{val || "–"}</span>
+            <span className="text-[12px] text-muted">{label}</span>
+            <span className={`text-[12.5px] tabular-nums truncate ${val ? "text-ink-2" : "text-faint"}`}>{val || "None"}</span>
           </div>
         ))}
       </div>
       {c.categories.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-3.5 pb-3.5 pt-1">
           {c.categories.slice(0, 3).map((cat) => (
-            <span key={cat} className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0">{cat}</span>
+            <StatusPill key={cat} tone="accent">{cat}</StatusPill>
           ))}
           {c.categories.length > 3 && (
-            <span
-              className="text-[11px] font-medium text-muted bg-surface-2 border border-line px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0"
-              title={c.categories.slice(3).join(", ")}
-            >
-              +{c.categories.length - 3}
-            </span>
+            <StatusPill tone="neutral" title={c.categories.slice(3).join(", ")}>+{c.categories.length - 3}</StatusPill>
           )}
         </div>
       )}
@@ -2048,10 +2132,7 @@ function CaptureCard() {
   return (
     <SettingCard icon={Wand2} title="Capture form submissions" purpose="Shopify contact-form emails become customers automatically."
       aside={
-        <button onClick={toggle} role="switch" aria-checked={on}
-          className={`w-11 h-6 rounded-full relative transition-colors ${on ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${on ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
-        </button>
+        <Switch on={on} onToggle={toggle} label="Capture form submissions" />
       }>
       <div className="space-y-3">
         <Field label="Watch which inbox">
@@ -2080,7 +2161,7 @@ function CaptureCard() {
         {previewErr && <div className="text-[12px] text-muted flex items-center gap-1.5"><AlertCircle size={13} className="text-danger-ink" /> {previewErr}</div>}
         {preview?.found && preview.customer && (
           <div>
-            <div className="text-[11px] text-muted mb-2">Preview: what Ecliptr would create</div>
+            <div className="text-[12px] text-muted mb-2">Preview: what Ecliptr would create</div>
             <CapturedCustomerCard c={preview.customer} />
           </div>
         )}
@@ -2117,12 +2198,7 @@ function EmailTab() {
 // and translate-x-[22px] threw it clean off the right edge — ON rendered as a solid
 // accent blob with no knob at all.
 function ClauseSwitch({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) {
-  return (
-    <button type="button" onClick={onClick} role="switch" aria-checked={on} aria-label={label}
-      className={`w-11 h-6 rounded-full relative flex-shrink-0 transition-colors ring-1 ${on ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
-      <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${on ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
-    </button>
-  );
+  return <Switch on={on} onToggle={onClick} label={label} />;
 }
 
 // Wording saved with the switch off renders nowhere — by design, so a half-configured
@@ -2132,7 +2208,7 @@ function ClauseSwitch({ on, onClick, label }: { on: boolean; onClick: () => void
 function OffWithText({ on, text }: { on: boolean; text: string }) {
   if (on || !text.trim()) return null;
   return (
-    <p className="text-[11.5px] text-warning-ink bg-warning-bg border border-warning/30 rounded-lg px-2.5 py-1.5 mt-1.5">
+    <p className="text-[12px] text-warning-ink bg-warning-bg border border-warning/30 rounded-lg px-2.5 py-1.5 mt-1.5">
       Saved, but the switch is off. This wording is not on any invoice, quote or email.
     </p>
   );
@@ -2164,7 +2240,7 @@ function PolicyClauseCard() {
   const ta = "w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink resize-y focus:outline-none focus:border-accent";
   const Switch = ClauseSwitch;
   return (
-    <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
+    <div className="border-t border-line pt-4 space-y-4">
       <div>
         <SectionLabel>Policy clauses</SectionLabel>
         <p className="text-[13px] text-muted mt-1 leading-relaxed">
@@ -2177,7 +2253,7 @@ function PolicyClauseCard() {
           <span className="text-[12.5px] font-medium text-muted">24-hour notice</span>
           <Switch on={c.notice_24h_enabled} label="Include the 24-hour notice"
             onClick={() => setC({ ...c, notice_24h_enabled: !c.notice_24h_enabled })} />
-          <span className="text-[11.5px] text-muted">Invoices and quotes</span>
+          <span className="text-[12px] text-muted">Invoices and quotes</span>
         </div>
         <textarea value={c.notice_24h_text} onChange={(e) => setC({ ...c, notice_24h_text: e.target.value })}
           rows={3} className={ta} placeholder="Your 24-hour notification wording" />
@@ -2188,7 +2264,7 @@ function PolicyClauseCard() {
           <span className="text-[12.5px] font-medium text-muted">Return policy</span>
           <Switch on={c.return_policy_enabled} label="Prefill the return policy on new invoices"
             onClick={() => setC({ ...c, return_policy_enabled: !c.return_policy_enabled })} />
-          <span className="text-[11.5px] text-muted">Default for new invoices, editable per deal</span>
+          <span className="text-[12px] text-muted">Default for new invoices, editable per deal</span>
         </div>
         <textarea value={c.return_policy_text} onChange={(e) => setC({ ...c, return_policy_text: e.target.value })}
           rows={3} className={ta} placeholder="Your return policy wording" />
@@ -2220,7 +2296,7 @@ function NewsletterTemplateCard() {
     { title: "Assorted apparel pallet", units: 40, pricePerUnit: "", price: "$1,200 for the lot", link: "https://ecliptr.app/i/abc123?lot=lot_002" },
   ]).replace(/\{first_name\}/g, "Alex");
   return (
-    <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
+    <div className="border-t border-line pt-4 space-y-4">
       <div>
         <SectionLabel>Inventory newsletter</SectionLabel>
         <p className="text-[13px] text-muted mt-1 leading-relaxed">
@@ -2265,7 +2341,7 @@ function WhatsAppFooterField() {
           {saved ? "Saved" : "Save"}
         </button>
       </div>
-      <p className="text-[10px] text-muted mt-1">Appended to every WhatsApp share message.</p>
+      <p className="text-[12px] text-muted mt-1">Appended to every WhatsApp share message.</p>
       <WhatsAppDescriptionField />
     </div>
   );
@@ -2282,7 +2358,7 @@ function WhatsAppDescriptionField() {
       <textarea className={inp + " h-20 resize-none"} value={desc} onChange={e => setDesc(e.target.value)}
         placeholder="A description that preloads into your WhatsApp share message. Include key details about your inventory, business, or terms." />
       <div className="flex justify-between items-center mt-1.5">
-        <p className="text-[10px] text-muted">Appears at the top of every WhatsApp share message before the lot listing.</p>
+        <p className="text-[12px] text-muted">Appears at the top of every WhatsApp share message before the lot listing.</p>
         <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium flex-shrink-0">
           {saved ? "Saved" : "Save"}
         </button>
@@ -2331,7 +2407,7 @@ function CompanyTab() {
         <div className="flex items-center gap-4">
           {info.logo_path ? (
             <div className="relative group">
-              <div className="h-20 w-32 border border-line rounded-xl bg-[repeating-conic-gradient(#f3f4f6_0%_25%,#ffffff_0%_50%)] bg-[length:14px_14px] flex items-center justify-center overflow-hidden p-2">
+              <div className="h-20 w-32 border border-line rounded-xl bg-surface-2 flex items-center justify-center overflow-hidden p-2">
                 <img
                   key={info.logo_path}
                   src={`${convertFileSrc(info.logo_path)}?t=${logoVersion}`}
@@ -2343,16 +2419,16 @@ function CompanyTab() {
               </div>
               <button
                 onClick={() => { setInfo({ ...info, logo_path: null }); setLogoError(false); }}
-                className="absolute -top-2 -right-2 bg-danger text-white rounded-full p-1 shadow-sm hover:bg-danger transition-colors"
+                className="absolute top-1 right-1 ui-ib"
                 title="Remove logo"
               >
-                <X size={11} />
+                <X size={14} />
               </button>
             </div>
           ) : (
             <div className="h-20 w-32 border border-dashed border-line rounded-xl bg-surface-2 flex flex-col items-center justify-center gap-1 text-faint">
               <Image size={22} />
-              <span className="text-[10px] text-muted">No logo</span>
+              <span className="text-[12px] text-muted">No logo</span>
             </div>
           )}
           <div className="space-y-1.5">
@@ -2363,12 +2439,12 @@ function CompanyTab() {
               <Upload size={13} /> {info.logo_path ? "Change logo" : "Choose logo"}
             </button>
             {info.logo_path && !logoError && (
-              <p className="text-[11px] text-success-ink flex items-center gap-1"><Check size={11} /> Logo selected</p>
+              <p className="text-[12px] text-success-ink flex items-center gap-1"><Check size={11} /> Logo selected</p>
             )}
             {logoError && (
-              <p className="text-[11px] text-danger-ink flex items-center gap-1"><AlertCircle size={11} /> Couldn't load image</p>
+              <p className="text-[12px] text-danger-ink flex items-center gap-1"><AlertCircle size={11} /> Couldn't load image</p>
             )}
-            {!info.logo_path && <p className="text-[11px] text-muted">PNG or JPG · shown on invoices</p>}
+            {!info.logo_path && <p className="text-[12px] text-muted">PNG or JPG · shown on invoices</p>}
           </div>
         </div>
         {info.logo_path && (
@@ -2380,7 +2456,7 @@ function CompanyTab() {
               onChange={(e) => setInfo({ ...info, show_company_name: e.target.checked })}
             />
             Also show company name text on invoices
-            <span className="text-[11px] text-muted">(turn off if your logo already includes the name)</span>
+            <span className="text-[12px] text-muted">(turn off if your logo already includes the name)</span>
           </label>
         )}
       </Field>
@@ -2390,7 +2466,7 @@ function CompanyTab() {
       </Field>
       <Field label="Organization name (app header)">
         <input className={inp} value={orgName} placeholder={info.name || "Your organization"} onChange={(e) => setOrgName(e.target.value)} />
-        <p className="text-[11px] text-muted mt-1">Shown next to the logo in the app, web, and mobile. Leave blank to use your company name.</p>
+        <p className="text-[12px] text-muted mt-1">Shown next to the logo in the app, web, and mobile. Leave blank to use your company name.</p>
       </Field>
       <Field label="Address">
         <input className={inp} value={info.address} onChange={(e) => setInfo({ ...info, address: e.target.value })} />
@@ -2434,13 +2510,13 @@ function Segmented<T extends string>({ value, onChange, options }: {
   value: T; onChange: (v: T) => void; options: { value: T; label: string; icon?: typeof AlignLeft }[];
 }) {
   return (
-    <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-full">
+    <div className="flex items-center gap-1.5 w-full" role="group">
       {options.map((o) => {
         const Icon = o.icon;
         return (
-          <button key={o.value} onClick={() => onChange(o.value)}
-            className={`flex-1 inline-flex items-center justify-center gap-1.5 h-8 rounded-md text-[12.5px] font-medium transition-colors ${value === o.value ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-            {Icon && <Icon size={13} />} {o.label}
+          <button key={o.value} type="button" onClick={() => onChange(o.value)} aria-pressed={value === o.value}
+            className={`ui-opt flex-1 inline-flex items-center justify-center gap-1.5 ${value === o.value ? "on" : ""}`}>
+            {Icon && <Icon size={14} />} {o.label}
           </button>
         );
       })}
@@ -2514,20 +2590,20 @@ function DocBrandingTab({ kind }: { kind: "invoice" | "quote" }) {
           <div className="flex items-center gap-4">
             {info.logo_path ? (
               <div className="relative group">
-                <div className="h-20 w-32 border border-line rounded-xl bg-[repeating-conic-gradient(#f3f4f6_0%_25%,#ffffff_0%_50%)] bg-[length:14px_14px] flex items-center justify-center overflow-hidden p-2">
+                <div className="h-20 w-32 border border-line rounded-xl bg-surface-2 flex items-center justify-center overflow-hidden p-2">
                   <img key={info.logo_path} src={`${convertFileSrc(info.logo_path)}?t=${logoVersion}`} alt="Logo preview"
                     className="max-h-full max-w-full object-contain"
                     onLoad={() => setLogoError(false)} onError={() => setLogoError(true)} />
                 </div>
                 <button onClick={() => { setInfo({ ...info, logo_path: null }); setLogoError(false); }}
-                  className="absolute -top-2 -right-2 bg-danger text-white rounded-full p-1 shadow-sm transition-colors" title="Remove logo">
-                  <X size={11} />
+                  className="absolute top-1 right-1 ui-ib" title="Remove logo">
+                  <X size={14} />
                 </button>
               </div>
             ) : (
               <div className="h-20 w-32 border border-dashed border-line rounded-xl bg-surface-2 flex flex-col items-center justify-center gap-1 text-faint">
                 <Image size={22} />
-                <span className="text-[10px] text-muted">No logo</span>
+                <span className="text-[12px] text-muted">No logo</span>
               </div>
             )}
             <div className="space-y-1.5">
@@ -2535,8 +2611,8 @@ function DocBrandingTab({ kind }: { kind: "invoice" | "quote" }) {
                 className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-3.5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors">
                 <Upload size={13} /> {info.logo_path ? "Change logo" : "Choose logo"}
               </button>
-              {logoError && <p className="text-[11px] text-danger-ink flex items-center gap-1"><AlertCircle size={11} /> Couldn't load image</p>}
-              {!info.logo_path && <p className="text-[11px] text-muted">PNG or JPG</p>}
+              {logoError && <p className="text-[12px] text-danger-ink flex items-center gap-1"><AlertCircle size={11} /> Couldn't load image</p>}
+              {!info.logo_path && <p className="text-[12px] text-muted">PNG or JPG</p>}
             </div>
           </div>
 
@@ -2544,7 +2620,7 @@ function DocBrandingTab({ kind }: { kind: "invoice" | "quote" }) {
             <input type="checkbox" className="accent-accent" checked={tpl.show_company_name}
               onChange={(e) => setT({ show_company_name: e.target.checked })} />
             Show company name on {noun}s
-            <span className="text-[11px] text-muted">(off if your logo has it)</span>
+            <span className="text-[12px] text-muted">(off if your logo has it)</span>
           </label>
 
           <div className="mt-4 space-y-3">
@@ -2576,7 +2652,7 @@ function DocBrandingTab({ kind }: { kind: "invoice" | "quote" }) {
             <div className="flex items-center gap-1.5 flex-wrap">
               {ACCENT_PRESETS.map((c) => (
                 <button key={c} onClick={() => setT({ accent_color: c })} title={c}
-                  className={`w-6 h-6 rounded-full border transition-transform hover:scale-110 ${tpl.accent_color.toLowerCase() === c.toLowerCase() ? "border-ink ring-2 ring-accent/30" : "border-line"}`}
+                  className={`w-6 h-6 rounded-full border transition-transform hover:scale-110 ${tpl.accent_color.toLowerCase() === c.toLowerCase() ? "border-ink ring-2 ring-ink ring-offset-2 ring-offset-surface" : "border-line"}`}
                   style={{ background: c }} />
               ))}
             </div>
@@ -2598,7 +2674,7 @@ function DocBrandingTab({ kind }: { kind: "invoice" | "quote" }) {
               onChange={(e) => setT({ title_label: e.target.value })} />
           </Field>
           <Field label="Footer note">
-            <textarea rows={2} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+            <textarea rows={2} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:border-ink transition-colors"
               value={tpl.footer_note} placeholder="Payment terms, thank-you note…"
               onChange={(e) => setT({ footer_note: e.target.value })} />
           </Field>
@@ -2615,7 +2691,7 @@ function DocBrandingTab({ kind }: { kind: "invoice" | "quote" }) {
           </button>
         </div>
         <InvoicePreview info={info} tpl={tpl} logoVersion={logoVersion} kind={kind} />
-        <p className="text-[11px] text-muted mt-2 text-center">A close approximation. The PDF is the ground truth.</p>
+        <p className="text-[12px] text-muted mt-2 text-center">A close approximation. The PDF is the ground truth.</p>
       </div>
     </div>
   );
@@ -2915,11 +2991,11 @@ function SyncTab() {
                       </div>
                       <div className="flex items-center justify-between gap-3 py-1.5">
                         <span className="text-muted">Signed in as</span>
-                        <span className="text-ink-2 truncate">{diag.connected ? (diag.email || "–") : "not connected"}</span>
+                        <span className="text-ink-2 truncate">{diag.connected ? (diag.email || "None") : "not connected"}</span>
                       </div>
                       <div className="flex items-center justify-between gap-3 py-1.5">
                         <span className="text-muted">Workspace</span>
-                        <span className="text-ink-2 truncate">{diag.org || "–"}</span>
+                        <span className="text-ink-2 truncate">{diag.org || "None"}</span>
                       </div>
                       <div className="flex items-center justify-between gap-3 py-1.5">
                         <span className="text-muted">Pull position</span>
@@ -2947,7 +3023,7 @@ function SyncTab() {
                                 <tr key={t} className={behind ? "text-danger-ink" : ""}>
                                   <td className="px-3 py-1.5">{t}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{local}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{server === null ? "–" : server}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{server === null ? "n/a" : server}</td>
                                 </tr>
                               );
                             })}
@@ -3027,7 +3103,7 @@ function SyncTab() {
       <SettingCard icon={Lock} title="Encryption" purpose="Protect synced data with a passphrase only your devices know."
         aside={encrypted !== null ? <ConnectedPill ok={encrypted} onLabel="Encrypted" offLabel="Not encrypted" /> : undefined}>
         {encrypted === null ? (
-          <div className="h-9 w-48 bg-surface-2 rounded-lg animate-pulse" />
+          <div className="h-9 w-48 bg-surface-2 rounded-lg" />
         ) : encrypted ? (
           <p className="text-[12.5px] text-muted">Sync events are encrypted at rest on every device.</p>
         ) : (
@@ -3075,7 +3151,7 @@ function SyncTab() {
           <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
             <span className="text-muted">Last applied</span>
             <span className="text-ink tabular-nums">
-              {status?.last_applied ? new Date(status.last_applied).toLocaleString() : "–"}
+              {status?.last_applied ? new Date(status.last_applied).toLocaleString() : "None"}
             </span>
           </div>
         </div>
@@ -3090,7 +3166,7 @@ function SyncTab() {
           <p className="text-[12px] text-muted mt-3 mb-2">
             Ecliptr keeps an append-only event log with Hybrid Logical Clocks. Every write produces a JSON event in:
           </p>
-          <code className="block bg-surface-2 border border-line px-4 py-3 rounded-xl text-[11px] font-mono text-muted">
+          <code className="block bg-surface-2 border border-line px-4 py-3 rounded-xl text-[12px] font-mono text-muted">
             ~/Library/Application Support/com.bjmdistributions.clienthub/sync/ (macOS)<br />
             %APPDATA%\com.bjmdistributions.clienthub\sync\ (Windows)
           </code>
@@ -3109,14 +3185,8 @@ function ImportTab() {
   return (
     <div className="max-w-3xl">
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit">
-          {([["csv", "From CSV"], ["contacts", "From Google Contacts"]] as const).map(([t, label]) => (
-            <button key={t} onClick={() => setSubTab(t)}
-              className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors ${subTab === t ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+        <Tabs label="Import from" value={subTab} onChange={(t) => setSubTab(t as "csv" | "contacts")}
+          tabs={[{ id: "csv", label: "From CSV" }, { id: "contacts", label: "From Google Contacts" }]} />
         <GuideLink section="import" />
       </div>
       {subTab === "csv" ? <CsvImportSection /> : <GoogleContactsSection />}
@@ -3213,7 +3283,7 @@ function CsvImportSection() {
               <div key={f.key} className="grid grid-cols-3 gap-2 items-center">
                 <label className="text-[13px] text-ink-2">{f.label}</label>
                 <select
-                  className="col-span-2 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+                  className="col-span-2 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:border-ink transition-colors"
                   value={mapping[f.key] ?? ""}
                   onChange={(e) => setMapping({ ...mapping, [f.key]: e.target.value })}
                 >
@@ -3232,7 +3302,7 @@ function CsvImportSection() {
                   <div key={f.value} className="grid grid-cols-3 gap-2 items-center">
                     <label className="text-[13px] text-ink-2">{f.label}</label>
                     <select
-                      className="col-span-2 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+                      className="col-span-2 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:border-ink transition-colors"
                       value={mapping[f.value] ?? ""}
                       onChange={(e) => setMapping({ ...mapping, [f.value]: e.target.value })}
                     >
@@ -3309,7 +3379,7 @@ function CsvImportSection() {
           {summary.errors.length > 0 && (
             <details className="mt-2">
               <summary className="cursor-pointer text-[12px] text-danger-ink">{summary.errors.length} errors</summary>
-              <ul className="text-[11px] mt-1 space-y-0.5 text-ink-2">
+              <ul className="text-[12px] mt-1 space-y-0.5 text-ink-2">
                 {summary.errors.map((e, i) => (<li key={i}>{e}</li>))}
               </ul>
             </details>
@@ -3408,7 +3478,7 @@ function GoogleContactsSection() {
             <>
               <div className="flex items-center gap-3 mb-3">
                 <input placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)}
-                  className="border border-line h-9 px-3 rounded-lg text-[13px] w-[200px] focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                  className="border border-line h-9 px-3 rounded-lg text-[13px] w-[200px] focus:outline-none focus:border-ink" />
                 <button onClick={toggleAll} className="text-[12px] text-accent hover:text-accent-hover font-medium">
                   {selected.size === filtered.length ? "Deselect all" : "Select all"}
                 </button>
@@ -3435,10 +3505,10 @@ function GoogleContactsSection() {
                           if (ns.has(c.resource_name)) ns.delete(c.resource_name); else ns.add(c.resource_name);
                           setSelected(ns);
                         }} /></td>
-                        <td className="px-3 py-2 text-[13px] text-ink">{c.name || "–"}</td>
-                        <td className="px-3 py-2 text-[12px] text-muted">{c.email || "–"}</td>
-                        <td className="px-3 py-2 text-[12px] text-muted">{c.organization || "–"}</td>
-                        <td className="px-3 py-2 text-[12px] text-muted">{c.phone || "–"}</td>
+                        <td className="px-3 py-2 text-[13px] text-ink">{c.name || "None"}</td>
+                        <td className="px-3 py-2 text-[12px] text-muted">{c.email || "None"}</td>
+                        <td className="px-3 py-2 text-[12px] text-muted">{c.organization || "None"}</td>
+                        <td className="px-3 py-2 text-[12px] text-muted">{c.phone || "None"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -3457,7 +3527,7 @@ function GoogleContactsSection() {
           {result && (
             <div className={`mt-4 px-4 py-3 rounded-xl text-[13px] ${result.errors.length > 0 ? "bg-warning-bg text-warning-ink" : "bg-success-bg text-success-ink"}`}>
               {result.imported} imported, {result.skipped} skipped (duplicates){result.errors.length > 0 && `, ${result.errors.length} errors`}
-              {result.errors.slice(0, 3).map((e, i) => <div key={i} className="text-[11px] mt-1 opacity-70">{e}</div>)}
+              {result.errors.slice(0, 3).map((e, i) => <div key={i} className="text-[12px] mt-1 opacity-70">{e}</div>)}
             </div>
           )}
         </>
@@ -3617,7 +3687,7 @@ function AutomationTab() {
       {/* Fastest path — the direct lead form (no email setup needed). */}
       <div className="border rounded-xl p-3.5 mb-5" style={{ borderColor: "rgb(var(--c-accent) / 0.3)", background: "rgb(var(--c-accent) / 0.06)" }}>
         <div className="text-[12.5px] font-semibold text-ink mb-1">Fastest setup: your lead form link</div>
-        <p className="text-[11.5px] text-muted mb-2.5">Share or embed this link (add <code className="font-mono">?rep=Name</code> to attribute a rep). Every submission creates a client instantly, no email setup needed.</p>
+        <p className="text-[12px] text-muted mb-2.5">Share or embed this link (add <code className="font-mono">?rep=Name</code> to attribute a rep). Every submission creates a client instantly, no email setup needed.</p>
         <div className="flex items-center gap-2">
           <code className="flex-1 text-[12px] bg-surface-2 rounded-lg px-2.5 py-1.5 break-all select-all text-ink-2">{leadFormUrl}</code>
           <button onClick={copyLeadLink} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium whitespace-nowrap">{copied ? "Copied" : "Copy"}</button>
@@ -3633,7 +3703,7 @@ function AutomationTab() {
             return (
               <div key={p.name} className="border border-line rounded-xl p-3.5 flex flex-col bg-surface-2/40">
                 <div className="text-[13px] font-medium text-ink mb-0.5">{p.name}</div>
-                <div className="text-[11.5px] text-muted leading-snug flex-1 mb-3">{p.desc}</div>
+                <div className="text-[12px] text-muted leading-snug flex-1 mb-3">{p.desc}</div>
                 <button
                   disabled={on || enabling === p.name}
                   onClick={() => enablePremade(p)}
@@ -3645,7 +3715,7 @@ function AutomationTab() {
             );
           })}
         </div>
-        <p className="text-[11px] text-muted mt-2.5">Requires email connected (Settings → Email). Fine-tune or remove any rule below.</p>
+        <p className="text-[12px] text-muted mt-2.5">Requires email connected (Settings → Email). Fine-tune or remove any rule below.</p>
       </div>
 
       <button onClick={() => setShowForm(true)} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 mb-5 transition-colors">
@@ -3658,7 +3728,7 @@ function AutomationTab() {
             <label className="block text-[12.5px] font-medium text-muted mb-1.5">Rule name</label>
             <input className={inp} placeholder="e.g. Typeform new client signups" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
-          <p className="text-[11px] text-muted">Patterns are <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-accent underline">regular expressions</a>. At least one is required.</p>
+          <p className="text-[12px] text-muted">Patterns are <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-accent underline">regular expressions</a>. At least one is required.</p>
           <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1.5">Sender pattern (regex)</label>
             <input className={`${inp} font-mono`} placeholder="e.g. noreply@typeform\.com" value={form.sender_pattern} onChange={(e) => setForm({ ...form, sender_pattern: e.target.value })} />
@@ -3679,7 +3749,7 @@ function AutomationTab() {
           <div key={r.id} className="border border-line rounded-xl px-4 py-3 flex items-center justify-between hover:border-line transition-colors">
             <div className="flex-1">
               <div className="text-[13px] font-medium text-ink">{r.name}</div>
-              <div className="text-[11px] text-muted font-mono space-y-0.5 mt-0.5">
+              <div className="text-[12px] text-muted font-mono space-y-0.5 mt-0.5">
                 {r.sender_pattern && <div>From: {r.sender_pattern}</div>}
                 {r.subject_pattern && <div>Subject: {r.subject_pattern}</div>}
               </div>
@@ -3698,7 +3768,7 @@ function AutomationTab() {
 
     <SettingCard icon={RefreshCw} title="Follow-up rules"
       purpose="Email or remind clients automatically when a trigger fires."
-      aside={lastRun ? <span className="text-[11px] text-muted">Last run {(() => { const d = new Date(lastRun); const mins = Math.floor((Date.now() - d.getTime()) / 60000); return mins < 120 ? `${mins} min ago` : `${Math.floor(mins / 60)} hr ago`; })()}</span> : undefined}>
+      aside={lastRun ? <span className="text-[12px] text-muted">Last run {(() => { const d = new Date(lastRun); const mins = Math.floor((Date.now() - d.getTime()) / 60000); return mins < 120 ? `${mins} min ago` : `${Math.floor(mins / 60)} hr ago`; })()}</span> : undefined}>
 
         <div className="flex items-center gap-2 mb-4">
           <button onClick={() => { setEditingFu(null); setFuForm({ name: "", trigger_type: "no_order", trigger_value: 30, action_type: "email", email_subject: "", email_body: "" }); setShowFuForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1">
@@ -3762,13 +3832,13 @@ function AutomationTab() {
             <div key={r.id} className="border border-line rounded-xl px-4 py-3 flex items-center justify-between hover:border-line transition-colors">
               <div className="flex-1">
                 <div className="text-[13px] font-medium text-ink">{r.name}</div>
-                <div className="text-[11px] text-muted mt-0.5">{triggerLabels[r.trigger_type] || r.trigger_type} &gt; {r.trigger_value}d → {actionLabels[r.action_type] || r.action_type}</div>
+                <div className="text-[12px] text-muted mt-0.5">{triggerLabels[r.trigger_type] || r.trigger_type} &gt; {r.trigger_value}d → {actionLabels[r.action_type] || r.action_type}</div>
               </div>
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-1.5 text-[12px] cursor-pointer text-muted">
                   <input type="checkbox" className="accent-accent" checked={r.is_active} onChange={() => api.toggleFollowupRule(r.id).then(loadFu)} /> Active
                 </label>
-                <button onClick={() => editFu(r)} className="text-[11px] text-muted hover:text-ink-2">Edit</button>
+                <button onClick={() => editFu(r)} className="text-[12px] text-muted hover:text-ink-2">Edit</button>
                 <button onClick={() => confirm("Delete rule?") && api.deleteFollowupRule(r.id).then(loadFu)} className="text-faint hover:text-danger-ink p-1 rounded-lg hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
               </div>
             </div>
@@ -3780,7 +3850,7 @@ function AutomationTab() {
             <p className="text-[12.5px] font-medium text-muted mb-2">Recent activity</p>
             <div className="space-y-1 max-h-40 overflow-y-auto">
               {fuLog.slice(0, 20).map((l) => (
-                <div key={l.id} className="text-[11px] text-muted flex items-center gap-2">
+                <div key={l.id} className="text-[12px] text-muted flex items-center gap-2">
                   <span className="text-muted w-16 flex-shrink-0">{l.triggered_at.slice(0, 10)}</span>
                   <span className="font-medium text-ink-2">{l.action_taken}</span>
                   {l.details && <span className="text-muted truncate">· {l.details}</span>}
@@ -3883,7 +3953,7 @@ function IntakeSourceCard({ source, fields, onChange }: { source: any; fields: {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+    <div className="border-t border-line pt-4 space-y-3">
       <div className="flex items-center justify-between gap-2">
         <div className="font-medium text-[13px] text-ink truncate">{source.name}</div>
         <button onClick={del} className="text-[12px] text-danger-ink hover:underline shrink-0">{confirmDel ? "Confirm delete?" : "Delete"}</button>
@@ -4003,7 +4073,7 @@ function FacebookTab() {
         </p>
       </div>
 
-      <div className="bg-surface border border-line rounded-xl p-4 space-y-3.5">
+      <div className="border-t border-line pt-4 space-y-3.5">
         <div className="text-[12px] font-medium">
           Status: {st?.connected
             ? <span className="text-success-ink">Connected · {st.page_name}</span>
@@ -4037,7 +4107,7 @@ function FacebookTab() {
                 className="flex items-center gap-1.5 px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
                 <Facebook size={14} /> {connecting ? "Waiting for Facebook…" : "Connect Facebook Page"}
               </button>
-              {!st?.has_app && <p className="text-[11.5px] text-muted mt-1.5">Save your App ID and secret first.</p>}
+              {!st?.has_app && <p className="text-[12px] text-muted mt-1.5">Save your App ID and secret first.</p>}
             </div>
           </>
         )}
@@ -4049,7 +4119,7 @@ function FacebookTab() {
               {pages.map((p) => (
                 <button key={p.id} onClick={() => pick(p.id)}
                   className="w-full text-left px-3 py-2.5 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center justify-between transition-colors">
-                  <span>{p.name}</span><span className="text-[11px] text-accent">Select</span>
+                  <span>{p.name}</span><span className="text-[12px] text-accent">Select</span>
                 </button>
               ))}
             </div>
@@ -4057,7 +4127,7 @@ function FacebookTab() {
         )}
       </div>
 
-      <div className="bg-surface border border-line rounded-xl p-4">
+      <div className="border-t border-line pt-4">
         <div className="text-[12px] font-semibold text-ink mb-2.5">Set it up in Meta (one time)</div>
         <ol className="text-[12.5px] text-muted space-y-2 list-decimal pl-4 leading-relaxed marker:text-muted">
           <li>Go to <strong className="text-ink-2">developers.facebook.com</strong> → <strong className="text-ink-2">My Apps → Create App</strong> → type <strong className="text-ink-2">Business</strong>.</li>
@@ -4138,7 +4208,7 @@ function CalendarTab() {
       {error && <p className="text-[12.5px] text-danger-ink">{error}</p>}
 
       {st && (
-        <div className="bg-surface border border-line rounded-xl p-4 space-y-3.5">
+        <div className="border-t border-line pt-4 space-y-3.5">
           {st.connected ? (
             <>
               <p className="text-[13px] text-ink-2 leading-relaxed">
@@ -4160,7 +4230,7 @@ function CalendarTab() {
               <button onClick={() => run("connect")} disabled={!st.app_set || busy || waiting} className={primary}>
                 <CalendarDays size={14} /> {waiting ? "Waiting for Google…" : "Connect Google"}
               </button>
-              <p className="text-[11.5px] text-muted">
+              <p className="text-[12px] text-muted">
                 {waiting ? "Finish signing in in your browser. This updates on its own."
                   : st.app_set ? "Sign in with the company Google account and press Allow. That is all."
                   : "Google sign-in is not switched on for Ecliptr yet."}
@@ -4171,7 +4241,7 @@ function CalendarTab() {
       )}
 
       {st?.connected && (
-        <div className="bg-surface border border-line rounded-xl p-4">
+        <div className="border-t border-line pt-4">
           <div className="text-[12px] font-semibold text-ink mb-1">Who sees them</div>
           <p className="text-[12px] text-muted mb-3 leading-relaxed">
             A tick shares that calendar with the person, read only, and Google emails them an invite. The Ecliptr calendar has the money, so it is for admins.
@@ -4185,7 +4255,7 @@ function CalendarTab() {
                 <div key={p.staff_id} className="flex items-center gap-3 px-3 py-2.5 text-[13px]">
                   <div className="flex-1 min-w-0">
                     <div className="text-ink truncate">{p.name}</div>
-                    <div className="text-[11.5px] text-muted truncate">{p.is_account ? `${p.email}, the connected account: sees both` : p.email}</div>
+                    <div className="text-[12px] text-muted truncate">{p.is_account ? `${p.email}, the connected account: sees both` : p.email}</div>
                   </div>
                   {!p.is_account && (["main", "logistics"] as const).map((w) => {
                     const may = w === "main" ? p.may_main : p.may_logistics;
@@ -4210,7 +4280,7 @@ function CalendarTab() {
       {/* R-573: Ecliptr's one Google app. Only the platform owner sees this, once, before it is switched on;
           every admin after that sees the Connect button alone. */}
       {st?.owner && !st.app_set && (
-        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+        <div className="border-t border-line pt-4 space-y-3">
           <div>
             <div className="text-[12px] font-semibold text-ink">Switch on Google sign-in for Ecliptr</div>
             <p className="text-[12px] text-muted mt-1 leading-relaxed">Only you see this, as Ecliptr's owner, and you do it once. After that every company on Ecliptr connects with the button above.</p>
@@ -4270,7 +4340,7 @@ function ShopifyTab() {
         </p>
       </div>
 
-      <div className="bg-surface border border-line rounded-xl p-4 space-y-3.5">
+      <div className="border-t border-line pt-4 space-y-3.5">
         <div className="text-[12px] font-medium">
           Status: {cfg?.configured ? <span className="text-success-ink">Connected</span> : <span className="text-muted">Not set up yet</span>}
         </div>
@@ -4295,7 +4365,7 @@ function ShopifyTab() {
         </div>
       </div>
 
-      <div className="bg-surface border border-line rounded-xl p-4">
+      <div className="border-t border-line pt-4">
         <div className="text-[12px] font-semibold text-ink mb-2.5">Set it up in Shopify (one time)</div>
         <ol className="text-[12.5px] text-muted space-y-2 list-decimal pl-4 leading-relaxed marker:text-muted">
           <li>Shopify admin → <strong className="text-ink-2">Settings → Notifications → Webhooks</strong> → <strong className="text-ink-2">Create webhook</strong>.</li>
@@ -4388,7 +4458,7 @@ function PaymentsTab() {
           <Field label="Details">
             <textarea
               rows={3}
-              className="border border-line px-3 py-2 rounded-lg text-[13px] w-full font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+              className="border border-line px-3 py-2 rounded-lg text-[13px] w-full font-mono focus:outline-none focus:border-ink transition-colors"
               placeholder={"Account #: 123456789\nRouting: 021000021\nBank: Chase"}
               value={form.details ?? ""}
               onChange={(e) => setForm({ ...form, details: e.target.value })}
@@ -4426,7 +4496,7 @@ function PaymentsTab() {
                 <span className="text-[13px] font-medium text-ink">{m.label}</span>
               </div>
               {m.details && (
-                <pre className="text-[11px] text-muted mt-1 whitespace-pre-wrap font-mono">{m.details}</pre>
+                <pre className="text-[12px] text-muted mt-1 whitespace-pre-wrap font-mono">{m.details}</pre>
               )}
             </div>
             <div className="flex items-center gap-1 ml-3">
@@ -4446,9 +4516,7 @@ function PaymentsTab() {
         ))}
         {methods.length === 0 && !showForm && (
           <div className="py-10 flex flex-col items-center">
-            <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
-              <CreditCard size={18} />
-            </div>
+            <CreditCard size={18} strokeWidth={1.75} className="text-faint mb-3" />
             <div className="text-[13px] text-muted mb-3">No payment methods yet</div>
             <button
               onClick={() => { setEditing(null); setForm({ kind: "ACH", label: "", details: "" }); setShowForm(true); }}
@@ -4587,12 +4655,8 @@ function StorefrontTab() {
     setCopied(true); setTimeout(() => setCopied(false), 1500);
   };
 
-  const inpCls = "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40";
-  const Toggle = ({ on, onClick }: { on: boolean; onClick: () => void }) => (
-    <button onClick={onClick} className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${on ? "bg-accent" : "bg-surface-3 border border-line"}`}>
-      <span className={`absolute top-[3px] left-[3px] w-[18px] h-[18px] rounded-full shadow transition-transform ${on ? "bg-on-accent translate-x-5" : "bg-faint"}`} />
-    </button>
-  );
+  const inpCls = "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:border-ink";
+  const Toggle = ({ on, onClick }: { on: boolean; onClick: () => void }) => <Switch on={on} onToggle={onClick} />;
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -4604,7 +4668,7 @@ function StorefrontTab() {
       <div className="flex items-center justify-between bg-surface border border-line rounded-xl px-4 py-3">
         <div>
           <div className="text-[13px] font-medium text-ink">Public storefront</div>
-          <div className="text-[11.5px] text-muted">{cfg.enabled ? "Live, anyone with the link can view your available lots" : "Off, turn on to generate your shareable link"}</div>
+          <div className="text-[12px] text-muted">{cfg.enabled ? "Live, anyone with the link can view your available lots" : "Off, turn on to generate your shareable link"}</div>
         </div>
         <Toggle on={cfg.enabled} onClick={() => save({ enabled: !cfg.enabled })} />
       </div>
@@ -4620,7 +4684,7 @@ function StorefrontTab() {
             </button>
             <button onClick={() => api.openExternal(cfg.url!)} className="border border-line rounded-lg px-3 h-9 text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Open</button>
           </div>
-          <p className="text-[11px] text-muted mt-1.5">Anyone can view it. The link is unguessable. Turning the storefront off makes it stop working.</p>
+          <p className="text-[12px] text-muted mt-1.5">Anyone can view it. The link is unguessable. Turning the storefront off makes it stop working.</p>
         </div>
       )}
 
@@ -4640,7 +4704,7 @@ function StorefrontTab() {
       {/* Contact — powers the "Inquire" button on every lot */}
       <div className="space-y-3">
         <SectionLabel>Inquire button</SectionLabel>
-        <p className="text-[11.5px] text-muted -mt-1">Each lot gets an “Inquire” button. WhatsApp is used if set, otherwise email.</p>
+        <p className="text-[12px] text-muted -mt-1">Each lot gets an “Inquire” button. WhatsApp is used if set, otherwise email.</p>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-[12px] text-muted">WhatsApp number</label>
@@ -4691,7 +4755,7 @@ function StorefrontTab() {
               The page falls back to Ecliptr orange rather than rendering invisible
               buttons, but it should be a deliberate choice, not a rescue. */}
           {accentTooLightForBg(cfg.accent, cfg.bg) && (
-            <p className="text-[11px] text-warning-ink mt-2">
+            <p className="text-[12px] text-warning-ink mt-2">
               {cfg.accent} is too light to read on this background, so the storefront falls back to Ecliptr orange.
               Pick a darker accent to use your own colour.
             </p>
@@ -4850,7 +4914,7 @@ function CategoriesTab() {
         <>
           <input value={editLabel} onChange={(e) => setEditLabel(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") update(c.id); if (e.key === "Escape") setEditingId(null); }}
-            className="flex-1 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" autoFocus />
+            className="flex-1 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:border-ink transition-colors" autoFocus />
           <button onClick={() => update(c.id)}       title="Save"   className="text-success-ink p-1.5 rounded-lg hover:bg-success-bg transition-colors"><Check size={14} /></button>
           <button onClick={() => setEditingId(null)} title="Cancel" className="text-muted hover:text-ink-2 p-1.5 rounded-lg hover:bg-surface-3 transition-colors"><X size={14} /></button>
         </>
@@ -4860,7 +4924,7 @@ function CategoriesTab() {
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
             {!child && (
               <button onClick={() => { setNewParent(c.id); setNewLabel(""); setTimeout(() => document.getElementById("cat-new-input")?.focus(), 0); }}
-                title="Add subcategory" className="text-faint hover:text-accent px-1.5 py-1 rounded-lg hover:bg-surface-3 transition-colors flex items-center gap-0.5 text-[11px] font-medium"><Plus size={12} /> sub</button>
+                title="Add subcategory" className="text-faint hover:text-accent px-1.5 py-1 rounded-lg hover:bg-surface-3 transition-colors flex items-center gap-0.5 text-[12px] font-medium"><Plus size={12} /> sub</button>
             )}
             <button onClick={() => { setEditingId(c.id); setEditLabel(c.label); }} title="Rename" className="text-faint hover:text-ink-2 p-1.5 rounded-lg hover:bg-surface-3 transition-colors"><Edit2 size={13} /></button>
             <button onClick={() => remove(c.id, c.label)}                          title="Delete" className="text-faint hover:text-danger-ink p-1.5 rounded-lg hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
@@ -4901,7 +4965,7 @@ function CategoriesTab() {
 
       {/* Import panel — shared by the spreadsheet-file and connected-Sheet sources */}
       {imp && (
-        <div className="bg-surface border border-line rounded-xl p-4 mb-4">
+        <div className="border-t border-line pt-4 mb-4">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-1.5 text-[13px] font-medium text-ink">
               {imp.source === "sheet" ? <Sheet size={14} className="text-muted" /> : <Upload size={14} className="text-muted" />}
@@ -4911,7 +4975,7 @@ function CategoriesTab() {
           </div>
           {imp.source === "csv" && (
             <>
-              <div className="text-[11.5px] text-muted mb-3">{imp.total} rows detected. Choose the column that holds the category.</div>
+              <div className="text-[12px] text-muted mb-3">{imp.total} rows detected. Choose the column that holds the category.</div>
               <div className="flex flex-wrap gap-1.5 mb-3">
                 {imp.headers.map((h, i) => (
                   <button key={i} onClick={() => pickColumn(i)}
@@ -4929,7 +4993,7 @@ function CategoriesTab() {
               : <>
                   <div className="flex items-center justify-between mb-2">
                     <div className="text-[12px] text-muted">{imp.values.length} distinct value{imp.values.length === 1 ? "" : "s"}, new ones are pre-selected.</div>
-                    <div className="flex gap-3 text-[11.5px]">
+                    <div className="flex gap-3 text-[12px]">
                       <button className="text-accent" onClick={() => setImp({ ...imp, chosen: Object.fromEntries(imp.values.map((v) => [v, true])) })}>All</button>
                       <button className="text-muted hover:text-ink-2" onClick={() => setImp({ ...imp, chosen: {} })}>None</button>
                     </div>
@@ -4941,7 +5005,7 @@ function CategoriesTab() {
                         <label key={v} className="flex items-center gap-2 px-3 py-1.5 text-[13px] cursor-pointer hover:bg-surface-2/50">
                           <input type="checkbox" checked={!!imp.chosen[v]} onChange={(e) => setImp({ ...imp, chosen: { ...imp.chosen, [v]: e.target.checked } })} />
                           <span className="flex-1 text-ink">{v}</span>
-                          {exists && <span className="text-[10.5px] text-muted">already exists</span>}
+                          {exists && <span className="text-[12px] text-muted">already exists</span>}
                         </label>
                       );
                     })}
@@ -4958,7 +5022,7 @@ function CategoriesTab() {
       {/* Add row */}
       <div className="flex gap-2 mb-5">
         <select value={newParent} onChange={(e) => setNewParent(e.target.value)}
-          className="border border-line px-2.5 h-10 rounded-lg text-[13px] bg-surface max-w-[170px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors">
+          className="border border-line px-2.5 h-10 rounded-lg text-[13px] bg-surface max-w-[170px] focus:outline-none focus:border-ink transition-colors">
           <option value="">Top-level</option>
           {tops.map((t) => <option key={t.id} value={t.id}>Under: {t.label}</option>)}
         </select>
@@ -4974,7 +5038,7 @@ function CategoriesTab() {
       {/* Tree */}
       {cats.length === 0 ? (
         <div className="bg-surface border border-dashed border-line rounded-xl py-12 px-6 text-center">
-          <div className="mx-auto w-9 h-9 rounded-lg bg-surface-2 flex items-center justify-center text-muted mb-3"><Tag size={17} /></div>
+          <Tag size={18} strokeWidth={1.75} className="mx-auto text-muted mb-3" />
           <div className="text-[13px] font-medium text-ink-2">No categories yet</div>
           <div className="text-[12px] text-muted mt-1 max-w-xs mx-auto leading-relaxed">Add one above, or import your existing labels from a spreadsheet or your connected Sheet.</div>
         </div>
@@ -5024,7 +5088,7 @@ function GoogleConnectCard() {
 
   const connected = !!gStatus?.connected;
   return (
-    <div className="bg-surface border border-line rounded-xl p-5">
+    <div className="border-t border-line pt-4">
       <div className="flex items-center gap-2 mb-1">
         <Cloud size={15} className="text-accent" />
         <span className="text-[13px] font-semibold text-ink">Google account</span>
@@ -5168,7 +5232,7 @@ function SheetsTab() {
     return `${Math.floor(hrs / 24)} days ago`;
   };
 
-  const colSelect = "border border-line h-9 px-2 rounded-lg text-[12px] w-full bg-surface focus:outline-none focus:ring-1 focus:ring-accent/40 focus:border-accent transition-colors";
+  const colSelect = "border border-line h-9 px-2 rounded-lg text-[12px] w-full bg-surface focus:outline-none focus:border-ink transition-colors";
 
   return (
     <div className="max-w-4xl space-y-4">
@@ -5183,7 +5247,7 @@ function SheetsTab() {
       <GoogleConnectCard />
 
       {/* Setup */}
-      <div className="bg-surface border border-line rounded-xl p-5">
+      <div className="border-t border-line pt-4">
         <SectionLabel>Sheet setup</SectionLabel>
         <div className="space-y-3 mt-3">
           <Field label="Google Sheet URL">
@@ -5200,10 +5264,10 @@ function SheetsTab() {
               { label: "Category",   key: "category_col"   as const, val: config.category_col,   hint: "P" },
               { label: "Lead Status",key: "lead_status_col"as const, val: config.lead_status_col,hint: "V" },
               { label: "Notes",      key: "notes_col"      as const, val: config.notes_col,      hint: "AA" },
-              { label: "Fallback",   key: "name_col"       as const, val: config.name_col,       hint: "–" },
+              { label: "Fallback",   key: "name_col"       as const, val: config.name_col,       hint: "None" },
             ].map((f) => (
               <div key={f.key}>
-                <label className="block text-[10px] font-medium text-muted mb-1">
+                <label className="block text-[12px] font-medium text-muted mb-1">
                   {f.label} <span className="text-faint">({f.hint})</span>
                 </label>
                 <select
@@ -5218,17 +5282,17 @@ function SheetsTab() {
           </div>
           {customFields.length > 0 && (
             <div>
-              <label className="block text-[10px] font-medium text-muted mb-1.5">Custom fields: pick the column each lives in</label>
+              <label className="block text-[12px] font-medium text-muted mb-1.5">Custom fields: pick the column each lives in</label>
               <div className="grid grid-cols-3 xl:grid-cols-5 gap-3">
                 {customFields.map((f) => (
                   <div key={f.value}>
-                    <label className="block text-[10px] font-medium text-muted mb-1 truncate" title={f.label}>{f.label}</label>
+                    <label className="block text-[12px] font-medium text-muted mb-1 truncate" title={f.label}>{f.label}</label>
                     <select
                       value={fieldToCol[f.value] ?? ""}
                       onChange={(e) => setCustomFieldCol(f.value, e.target.value)}
                       className={colSelect}
                     >
-                      <option value="">–</option>
+                      <option value="">None</option>
                       {columns.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
@@ -5237,7 +5301,7 @@ function SheetsTab() {
             </div>
           )}
           <div className="w-32">
-            <label className="block text-[10px] font-medium text-muted mb-1">Skip header rows</label>
+            <label className="block text-[12px] font-medium text-muted mb-1">Skip header rows</label>
             <NumberInput integer value={config.skip_header_rows} onValue={(n) => setConfig({ ...config, skip_header_rows: Math.max(0, n) })} className={inpSm} />
           </div>
           </Advanced>
@@ -5252,7 +5316,7 @@ function SheetsTab() {
       </div>
 
       {/* Write-back: approved lead → new sheet row */}
-      <div className="bg-surface border border-line rounded-xl p-5">
+      <div className="border-t border-line pt-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <SectionLabel>Sync approvals back to the sheet</SectionLabel>
@@ -5261,15 +5325,7 @@ function SheetsTab() {
               mapped to the same columns above. Runs on approvals made here on the desktop.
             </p>
           </div>
-          <button
-            onClick={toggleWriteback}
-            role="switch"
-            aria-checked={config.writeback_enabled}
-            title={config.writeback_enabled ? "Turn write-back off" : "Turn write-back on"}
-            className={`shrink-0 w-11 h-6 rounded-full relative transition-colors ${config.writeback_enabled ? "bg-accent" : "bg-surface-3"}`}
-          >
-            <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${config.writeback_enabled ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
-          </button>
+          <Switch on={config.writeback_enabled} onToggle={toggleWriteback} label={config.writeback_enabled ? "Turn write-back off" : "Turn write-back on"} />
         </div>
 
         {wbStatus && (
@@ -5310,7 +5366,7 @@ function SheetsTab() {
       </div>
 
       {/* Sync */}
-      <div className="bg-surface border border-line rounded-xl p-5">
+      <div className="border-t border-line pt-4">
         <SectionLabel>Sync</SectionLabel>
         <div className="flex items-center gap-3 mt-3">
           <button
@@ -5325,13 +5381,13 @@ function SheetsTab() {
             {config.last_synced_count > 0 && `, ${config.last_synced_count} clients added`}
           </span>
         </div>
-        <div className="text-[11px] text-faint mt-1.5">Auto-syncs every 10 minutes</div>
+        <div className="text-[12px] text-faint mt-1.5">Auto-syncs every 10 minutes</div>
 
         {result && (
           <div className={`mt-3 text-[12px] px-3 py-2 rounded-lg ${result.errors.length > 0 ? "bg-warning-bg text-warning-ink border border-warning" : "bg-success-bg text-success-ink border border-success"}`}>
             {result.new_clients} new clients added, {result.skipped_duplicates} duplicates skipped
             {result.errors.length > 0 && (
-              <button onClick={() => alert(result.errors.join("\n"))} className="ml-2 underline text-[11px]">
+              <button onClick={() => alert(result.errors.join("\n"))} className="ml-2 underline text-[12px]">
                 {result.errors.length} errors
               </button>
             )}
@@ -5553,11 +5609,11 @@ function SplitsTab() {
           <div className="flex justify-between border-t border-line pt-1.5"><span className="text-ink-2 font-medium">Remainder</span><span className="tabular-nums text-ink font-medium">${remainder.toFixed(2)}</span></div>
           {shares.map((s, i) => (
             <div key={i} className="flex justify-between pl-3">
-              <span className="text-muted">{s.name || "–"} <span className="text-faint">· {KIND_LABEL[s.kind]}</span> · <span className="tabular-nums">{s.pct}%</span></span>
+              <span className="text-muted">{s.name || "None"} <span className="text-faint">· {KIND_LABEL[s.kind]}</span> · <span className="tabular-nums">{s.pct}%</span></span>
               <span className="tabular-nums text-ink">${(remainder * (Number(s.pct) || 0) / 100).toFixed(2)}</span>
             </div>
           ))}
-          {!previewRep && <p className="text-[11px] text-muted pt-1">No rep with a profit-% rule yet, the full profit goes to the split above.</p>}
+          {!previewRep && <p className="text-[12px] text-muted pt-1">No rep with a profit-% rule yet, the full profit goes to the split above.</p>}
         </div>
       </SettingCard>
     </div>
@@ -5615,7 +5671,7 @@ function BackupTab() {
   const lastTime = status?.last_backup ? new Date(status.last_backup).toLocaleString() : "Never";
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
+    <div className="border-t border-line pt-4 max-w-2xl">
       <h3 className="text-[14px] font-semibold text-ink mb-1">Database backup</h3>
       <p className="text-[12px] text-muted mb-5">Automatic daily backups. Restore if something goes wrong.</p>
 
@@ -5623,9 +5679,9 @@ function BackupTab() {
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[12.5px] font-medium text-muted">Backup location</p>
-            <p className="text-[12px] text-ink-2 font-mono mt-0.5">{status?.backup_dir || "–"}</p>
+            <p className="text-[12px] text-ink-2 font-mono mt-0.5">{status?.backup_dir || "None"}</p>
           </div>
-          <button onClick={handleDirChange} className="text-[11px] text-accent hover:text-accent-hover">Change</button>
+          <button onClick={handleDirChange} className="text-[12px] text-accent hover:text-accent-hover">Change</button>
         </div>
         <div>
           <p className="text-[12.5px] font-medium text-muted">Last backup</p>
@@ -5651,9 +5707,9 @@ function BackupTab() {
                   <p className="text-[12px] font-medium text-ink-2 flex items-center gap-1.5">
                     {b.date} {!b.is_valid && <span title="Backup may be corrupted" className="text-danger-ink text-[14px]">&#9888;</span>}
                   </p>
-                  <p className="text-[11px] text-muted">{fmtSize(b.size)}</p>
+                  <p className="text-[12px] text-muted">{fmtSize(b.size)}</p>
                 </div>
-                <button onClick={() => handleRestore(b.filename, b.is_valid)} disabled={busy} className="text-[11px] text-danger-ink hover:text-danger-ink font-medium disabled:opacity-50">Restore</button>
+                <button onClick={() => handleRestore(b.filename, b.is_valid)} disabled={busy} className="text-[12px] text-danger-ink hover:text-danger-ink font-medium disabled:opacity-50">Restore</button>
               </div>
             ))}
           </div>
@@ -5709,13 +5765,9 @@ function TeamTab() {
   }, [jump.card]);
   return (
     <div className="max-w-3xl">
-      <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit mb-4">
-        {(["people", "roles", "approvals", "invites", "payouts"] as const).map((s) => (
-          <button key={s} onClick={() => setSub(s)}
-            className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors capitalize ${sub === s ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-            {s}
-          </button>
-        ))}
+      <div className="mb-4">
+        <Tabs label="Team" value={sub} onChange={(t) => setSub(t as Sub)}
+          tabs={[{ id: "people", label: "People" }, { id: "roles", label: "Roles" }, { id: "approvals", label: "Approvals" }, { id: "invites", label: "Invites" }, { id: "payouts", label: "Payouts" }]} />
       </div>
       {sub === "people" && <PeoplePanel />}
       {sub === "roles" && <RolesPanel />}
@@ -5782,16 +5834,16 @@ function ApprovalPolicyPanel() {
     <label className="flex items-start justify-between gap-4 py-3 cursor-pointer">
       <div>
         <div className="text-[13px] font-medium text-ink">{label}</div>
-        <div className="text-[11px] text-muted mt-0.5">{hint}</div>
+        <div className="text-[12px] text-muted mt-0.5">{hint}</div>
       </div>
       <input type="checkbox" checked={on} onChange={onToggle} className="mt-1" />
     </label>
   );
   return (
-    <div className="bg-surface border border-line rounded-xl p-5 max-w-xl">
+    <div className="border-t border-line pt-4 max-w-xl">
       <div className="flex items-center justify-between mb-1">
         <h4 className="text-[14px] font-semibold text-ink">Client approvals</h4>
-        {saved && <span className="text-[11px] text-emerald-500">Saved</span>}
+        {saved && <StatusPill tone="success">Saved</StatusPill>}
       </div>
       <p className="text-[12px] text-muted mb-2">When on, a rep's action is held for an admin to approve from the notification bell. Admins and the owner always act immediately.</p>
       <div className="divide-y divide-line">
@@ -5803,7 +5855,7 @@ function ApprovalPolicyPanel() {
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-[13px] font-medium text-ink">Checkup session visibility</div>
-            <div className="text-[11px] text-muted mt-0.5">Who can see each other's checkup sessions. Admins always see all.</div>
+            <div className="text-[12px] text-muted mt-0.5">Who can see each other's checkup sessions. Admins always see all.</div>
           </div>
           <select value={vis} onChange={(e) => saveVis(e.target.value)} className="bg-surface-2 border border-line rounded-lg h-8 px-2 text-[12px] text-ink">
             <option value="team">Whole team</option>
@@ -5817,7 +5869,7 @@ function ApprovalPolicyPanel() {
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-[13px] font-medium text-ink">Chart true net on the dashboard</div>
-            <div className="text-[11px] text-muted mt-0.5">The dashboard line draws true net instead of profit. The true net, shipping and fee figures always show, here and on Analytics.</div>
+            <div className="text-[12px] text-muted mt-0.5">The dashboard line draws true net instead of profit. The true net, shipping and fee figures always show, here and on Analytics.</div>
           </div>
           <ClauseSwitch on={trueNet} onClick={toggleTrueNet} label="Chart true net on the dashboard" />
         </div>
@@ -5909,7 +5961,7 @@ function PeoplePanel() {
               </StatusPill>
             )}
           </div>
-          <div className="text-[11.5px] text-muted">Upload the email, Stripe, Google, Shopify, Plaid and bank logins saved on this device so other admins inherit them without re-typing.</div>
+          <div className="text-[12px] text-muted">Upload the email, Stripe, Google, Shopify, Plaid and bank logins saved on this device so other admins inherit them without re-typing.</div>
         </div>
         <button onClick={shareConnections} disabled={sharing}
           title="Push this device's saved connections up to your team's secure server store, no re-typing on other admins' devices."
@@ -5922,7 +5974,7 @@ function PeoplePanel() {
           <label className="flex items-center justify-between cursor-pointer gap-3">
             <div>
               <div className="font-medium text-ink text-[13px]">Rep payouts</div>
-              <div className="text-[11.5px] text-muted">Pay reps a cut of completed deals; owners split the rest.</div>
+              <div className="text-[12px] text-muted">Pay reps a cut of completed deals; owners split the rest.</div>
             </div>
             <input type="checkbox" checked={!!rp.enabled} onChange={(e) => saveRp({ enabled: e.target.checked })} className="accent-accent" />
           </label>
@@ -5940,7 +5992,7 @@ function PeoplePanel() {
                 <input key={rp.custom_days} type="text" inputMode="numeric" defaultValue={rp.custom_days || 14} onBlur={(e) => saveRp({ customDays: parseCount(e.target.value, 14) || 14 })}
                   className="w-16 border border-line px-2 h-8 rounded-lg text-[12px]" />
               )}
-              <span className="text-muted ml-auto text-[11px]">Completed deals only.</span>
+              <span className="text-muted ml-auto text-[12px]">Completed deals only.</span>
             </div>
           )}
         </div>
@@ -5962,7 +6014,7 @@ function PeoplePanel() {
                     : <div className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold text-on-accent flex-shrink-0" style={{ background: "var(--accent-600)" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
                   <div className="min-w-0">
                     <div className="font-medium text-ink truncate group-hover:text-accent">{u.display_name}</div>
-                    <div className="text-[11px] text-muted truncate">{u.title ? `${u.title} · ` : ""}{u.email}</div>
+                    <div className="text-[12px] text-muted truncate">{u.title ? `${u.title} · ` : ""}{u.email}</div>
                   </div>
                 </button>
               </td>
@@ -5973,7 +6025,7 @@ function PeoplePanel() {
                     {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                   </select>
                   {rowMsg[u.id] && (
-                    <span className={`text-[10.5px] font-medium whitespace-nowrap ${
+                    <span className={`text-[12px] font-medium whitespace-nowrap ${
                       rowMsg[u.id].t === "error" ? "text-danger-ink"
                       : rowMsg[u.id].t === "saved" ? "text-success-ink" : "text-muted"}`}
                       title={rowMsg[u.id].msg || ""}>
@@ -5987,18 +6039,18 @@ function PeoplePanel() {
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {/* R-577: the rate is set in one place, Splits, Pay rules, where a change starts today. */}
                   <span className="text-[12px] text-ink-2 whitespace-nowrap" title="Change it under Splits, Pay rules">{ruleLabel((u as any).pay_type, u.commission_pct)}</span>
-                  <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-1" title="Hide pay figures from this person. They are still paid.">
+                  <label className="flex items-center gap-1 text-[12px] text-muted cursor-pointer ml-1" title="Hide pay figures from this person. They are still paid.">
                     <input type="checkbox" defaultChecked={u.hide_pay_cuts} onChange={(e) => setHide(u.id, e.target.checked)} /> hide
                   </label>
                 </div>
               </td>
               <td className="px-4 py-3">
                 {u.status === "active"
-                  ? <span className="text-[10px] px-2 py-0.5 rounded-full bg-success-bg text-success-ink font-semibold">Active</span>
-                  : <span className="text-[10px] px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink font-semibold">Suspended</span>}
+                  ? <StatusPill tone="success">Active</StatusPill>
+                  : <StatusPill tone="warning">Suspended</StatusPill>}
               </td>
               <td className="px-4 py-3 text-right">
-                {u.id === me ? <span className="text-[11px] text-muted">You</span>
+                {u.id === me ? <span className="text-[12px] text-muted">You</span>
                   : <div className="flex items-center gap-3 justify-end">
                       {u.status === "active"
                         ? <button onClick={() => setStatus(u.id, "suspended")} className="text-[12px] text-danger-ink font-medium">Suspend</button>
@@ -6012,7 +6064,7 @@ function PeoplePanel() {
         </tbody>
       </table>
       </div>
-      {viewing && <ProfileModal u={viewing} roleName={roles.find((r) => r.id === viewing.role_id)?.name || viewing.role_name || "–"} onClose={() => setViewing(null)} />}
+      {viewing && <ProfileModal u={viewing} roleName={roles.find((r) => r.id === viewing.role_id)?.name || viewing.role_name || "None"} onClose={() => setViewing(null)} />}
     </div>
   );
 }
@@ -6034,10 +6086,10 @@ function ProfileModal({ u, roleName, onClose }: { u: StaffMember; roleName: stri
           <div className="mt-3 text-[17px] font-semibold text-ink">{u.display_name}</div>
           {u.title && <div className="text-[13px] text-muted">{u.title}</div>}
           <div className="mt-2 flex items-center gap-2">
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent font-semibold">{roleName}</span>
+            <StatusPill tone="accent">{roleName}</StatusPill>
             {u.status === "active"
-              ? <span className="text-[10px] px-2 py-0.5 rounded-full bg-success-bg text-success-ink font-semibold">Active</span>
-              : <span className="text-[10px] px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink font-semibold">Suspended</span>}
+              ? <StatusPill tone="success">Active</StatusPill>
+              : <StatusPill tone="warning">Suspended</StatusPill>}
           </div>
         </div>
         <div className="px-6 py-3">
@@ -6084,9 +6136,9 @@ function RolesPanel() {
         const full = r.id === "role_admin" || r.permissions.includes("*");
         const has = (p: string) => draft[r.id]?.has(p);
         return (
-          <div key={r.id} className="bg-surface border border-line rounded-xl p-5">
+          <div key={r.id} className="border-t border-line pt-4">
             <div className="flex items-center justify-between mb-3">
-              <h4 className="text-[14px] font-semibold text-ink">{r.name} {r.is_system && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-muted ml-1">Built-in</span>}</h4>
+              <h4 className="text-[14px] font-semibold text-ink">{r.name} {r.is_system && <span className="ml-1.5 align-middle"><StatusPill tone="neutral">Built-in</StatusPill></span>}</h4>
               {!full && <button onClick={() => save(r.id)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Save</button>}
             </div>
             {full ? (
@@ -6120,7 +6172,7 @@ function RolesPanel() {
                     {VIS_TOGGLES.map(([perm, label, hint]) => (
                       <label key={perm} className="flex items-start gap-2 text-[12px] text-ink-2 cursor-pointer">
                         <input type="checkbox" checked={!!has(perm)} onChange={() => toggle(r.id, perm)} className="mt-0.5" />
-                        <span>{label}<span className="block text-[10px] text-muted">{hint}</span></span>
+                        <span>{label}<span className="block text-[12px] text-muted">{hint}</span></span>
                       </label>
                     ))}
                   </div>
@@ -6130,7 +6182,7 @@ function RolesPanel() {
           </div>
         );
       })}
-      <div className="bg-surface border border-line rounded-xl p-4 flex items-center gap-2">
+      <div className="border-t border-line pt-4 flex items-center gap-2">
         <input className={inpSm} placeholder="New role name (e.g. Junior Rep)" value={newRole} onChange={(e) => setNewRole(e.target.value)} />
         <button onClick={create} disabled={!newRole.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">Add role</button>
       </div>
@@ -6162,7 +6214,7 @@ function InvitesPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="bg-surface border border-line rounded-xl p-4">
+      <div className="border-t border-line pt-4">
         <p className="text-[13px] font-semibold text-ink">Invite someone</p>
         <p className="text-[12px] text-muted mb-3">Pick a role, create the link, and share it. It works once and expires in 7 days.</p>
         <div className="flex gap-2">
@@ -6194,8 +6246,8 @@ function InvitesPanel() {
             {invites.map((i) => (
               <tr key={i.token} style={{ borderBottom: "1px solid var(--t-b2)" }}>
                 <td className="px-4 py-2.5 text-ink">{i.role_name || i.role_id}</td>
-                <td className="px-4 py-2.5 text-muted">{i.email || "–"}</td>
-                <td className="px-4 py-2.5"><span className="text-[11px] text-ink-2">{status(i)}</span></td>
+                <td className="px-4 py-2.5 text-muted">{i.email || "None"}</td>
+                <td className="px-4 py-2.5"><span className="text-[12px] text-ink-2">{status(i)}</span></td>
                 <td className="px-4 py-2.5 text-muted text-[12px]">{i.expires_at.slice(0, 10)}</td>
                 <td className="px-4 py-2.5 text-right">
                   {(i.used_at || new Date(i.expires_at) < new Date()) && <button onClick={() => reopen(i.token)} className="text-[12px] text-accent font-medium mr-3">Reopen</button>}
@@ -6250,7 +6302,7 @@ function InvoiceNumberingSection() {
             onValue={(n) => update({ next_number: n || 1 })} />
         </div>
       </div>
-      <p className="text-[11px] text-muted mb-3">Preview: <span className="tabular-nums font-semibold text-accent-hover">{cfg.preview}</span></p>
+      <p className="text-[12px] text-muted mb-3">Preview: <span className="tabular-nums font-semibold text-accent-hover">{cfg.preview}</span></p>
       <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">
         {saved ? "Saved" : "Save"}
       </button>
@@ -6297,7 +6349,7 @@ function QuoteNumberingSection() {
             onValue={(n) => update({ next_number: n || 1 })} />
         </div>
       </div>
-      <p className="text-[11px] text-muted mb-3">Preview: <span className="tabular-nums font-semibold text-accent-hover">{cfg.preview}</span></p>
+      <p className="text-[12px] text-muted mb-3">Preview: <span className="tabular-nums font-semibold text-accent-hover">{cfg.preview}</span></p>
       <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">
         {saved ? "Saved" : "Save"}
       </button>
@@ -6328,7 +6380,7 @@ function BillingTab() {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
+    <div className="border-t border-line pt-4 max-w-2xl">
       <h3 className="text-[14px] font-semibold text-ink mb-1">Stripe (Coming Soon)</h3>
       <p className="text-[12px] text-muted mb-5">Configure Stripe keys to accept card payments from invoices.</p>
 
@@ -6347,13 +6399,13 @@ function BillingTab() {
           </div>
           <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1">
-              Secret Key {config?.secret_key_present && <span className="text-success-ink">●</span>}
+              Secret Key {config?.secret_key_present && <Check size={12} strokeWidth={1.75} className="inline text-success-ink" />}
             </label>
             <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full font-mono" type="password" placeholder="sk_test_..." value={sk} onChange={(e) => setSk(e.target.value)} />
           </div>
           <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1">
-              Webhook Secret {config?.webhook_secret_present && <span className="text-success-ink">●</span>}
+              Webhook Secret {config?.webhook_secret_present && <Check size={12} strokeWidth={1.75} className="inline text-success-ink" />}
             </label>
             <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full font-mono" type="password" placeholder="whsec_..." value={wh} onChange={(e) => setWh(e.target.value)} />
           </div>
@@ -6368,7 +6420,7 @@ function BillingTab() {
         {saved && <span className="text-[12px] text-success-ink font-medium">{saved}</span>}
       </div>
 
-      <p className="text-[10px] text-muted mt-4">When keys are configured, you'll be able to request payments from invoices and receive them via Stripe. Full activation when the SaaS server is live.</p>
+      <p className="text-[12px] text-muted mt-4">When keys are configured, you'll be able to request payments from invoices and receive them via Stripe. Full activation when the SaaS server is live.</p>
     </div>
   );
 }
@@ -6389,7 +6441,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   }, [hit]);
   return (
     <div ref={ref} data-setting-label={slug}
-      className={`text-[13px] font-semibold text-ink-2 ${hit ? "ring-2 ring-accent/30 rounded-md px-1.5 -mx-1.5 py-0.5" : ""}`}>
+      className={`text-[14px] font-medium text-ink transition-colors duration-300 ${hit ? "bg-surface-2 rounded-md px-1.5 -mx-1.5 py-0.5" : ""}`}>
       {children}
     </div>
   );
@@ -6462,8 +6514,8 @@ function CustomFieldsTab() {
                   <td className="px-4 py-2.5 text-[12px] text-muted font-mono">{f.field_key}</td>
                   <td className="px-4 py-2.5 text-[12px] text-muted capitalize">{f.field_type}</td>
                   <td className="px-4 py-2.5 text-right space-x-1">
-                    <button onClick={() => openEdit(f)} className="text-[11px] text-muted hover:text-ink-2">Edit</button>
-                    <button onClick={() => del(f)} className="text-[11px] text-danger-ink hover:text-danger-ink">Del</button>
+                    <button onClick={() => openEdit(f)} className="text-[12px] text-muted hover:text-ink-2">Edit</button>
+                    <button onClick={() => del(f)} className="text-[12px] text-danger-ink hover:text-danger-ink">Del</button>
                   </td>
                 </tr>
               ))}

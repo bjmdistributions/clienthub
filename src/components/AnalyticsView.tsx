@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
-  api, AnalyticsRange, AnalyticsMonth, AnalyticsReconciliation, ReconRow, AnalyticsPace,
+  api, AnalyticsRange, AnalyticsMonth, AnalyticsReconciliation, ReconRow, AnalyticsPace, AnalyticsPaceMonth,
   DashboardStats, FinancialsOverview, BuyerTier, Client, AnalyticsLabels, LabelRow,
   AnalyticsRefunds, AnalyticsRefundDeal, openDealFlow,
 } from "../lib/api";
@@ -9,55 +9,22 @@ import { fmtAmount, fmtCompactCurrency, localDay, parseLocalDay } from "../lib/f
 import { RefreshCw, FileDown } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
-  BarChart, Bar, PieChart, Pie, ComposedChart, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceLine, Cell,
+  BarChart, Bar as RBar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import TierBadge from "./TierBadge";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 import DealLabelsModal, { LabelFocus } from "./DealLabelsModal";
+import { Button, Kpi, MonoAreaChart, PageActions, Tabs } from "./ui";
 
-// ─── Theme-aware chart palette (R-319: Apple system colours) ──────
-// Every colour on this screen is read through a CSS token, so light, dark and the two
-// mono themes all get a palette that was chosen for them rather than flipped. The values
-// behind these tokens are Apple's published system colours — see src/index.css.
+// ─── Chart colours (R-583) ─────────────────────────────────────────
+// Everything neutral is read from the chart tokens (grey on both themes); only profit and loss wear
+// the mockup's green and red. Resolved once per theme flip, because recharts wants real colours.
 const cssVar = (n: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const rgbVar = (n: string) => `rgb(${cssVar(n)})`;
-// SVG `fill` wants a colour it can parse everywhere, so alpha is built explicitly
-// rather than relying on the `rgb(r g b / a)` space-separated form.
-const rgbaVar = (n: string, a: number) => {
-  const [r, g, b] = cssVar(n).split(/\s+/);
-  return `rgba(${r}, ${g}, ${b}, ${a})`;
-};
-
-// Refined, muted tier swatches — premium metallics, not neon. An IDENTITY palette,
-// deliberately outside the categorical slots below: the tier hues are fixed in ~17
-// places across the app and only move all at once (architecture/client-tiers-platinum).
-const TIER_CLR: Record<string, string> = {
-  P:        "#8B5CF6",   // Platinum — violet (top tier)
-  S:        "#2563EB",   // Diamond — sapphire (fixed data-viz hue, not the accent)
-  A:        "#C9A227",   // Gold (muted)
-  B:        "#A6AEBC",   // Silver
-  C:        "#B17F4A",   // Bronze (muted)
-  Prospect: "#9CA3AF",   // Prospect
-};
-
-const TIER_NAME: Record<string, string> = {
-  P: "Platinum", S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect",
-};
 
 const TIER_ORDER = ["P", "S", "A", "B", "C", "Prospect"];
 
-// Resolve brand tokens to concrete chart colors; re-render on light/dark flip.
-//
-// Memoised on the theme tick. It used to run ~20 getComputedStyle reads on EVERY render
-// of this view, and a tooltip hover renders this view — that alone was a measurable part
-// of the lag, before a single chart redrew.
-//
-// Two families, and the difference matters: a MARK colour is Apple's exact system value
-// and goes on bars, lines, dots and swatches; an INK colour is Apple's published
-// accessible variant of the same hue and goes on text. systemGreen on white is 2.2:1 and
-// cannot carry a 12.5px table cell — the ink can.
 function usePalette() {
   const [tick, force] = useState(0);
   useEffect(() => {
@@ -66,129 +33,37 @@ function usePalette() {
     return () => obs.disconnect();
   }, []);
   return useMemo(() => {
-    void tick;   // the theme flip IS the input — every value below is read off the DOM
-    const neutral = rgbVar("--c-faint");
-    // Revenue's own data hue — Apple's systemBlue. Not the accent (that greys out under
-    // mono and is spoken for by the app's chrome) and not a status colour.
-    const chartRevenue = rgbVar("--c-chart-revenue");
-    // The categorical slots. Assigned in this order and never cycled — a seventh series
-    // folds into "Other" rather than inventing a hue.
-    const cat = [1, 2, 3, 4, 5, 6].map((i) => rgbVar(`--c-chart-${i}`));
-    // Ordinal ramp for margin bands: one hue (profit's systemGreen), monotone lightness.
-    const profitRamp = [0.45, 0.6, 0.72, 0.86, 1].map((a) => rgbaVar("--c-chart-profit", a));
-    const MARK = {
-      profit:  rgbVar("--c-chart-profit"),
-      loss:    rgbVar("--c-chart-loss"),
-      caution: rgbVar("--c-chart-caution"),
-    };
+    void tick;   // the theme flip IS the input: every value below is read off the DOM
+    const ink = rgbVar("--c-ink");
+    const muted = rgbVar("--c-muted");
     return {
-      neutral, chartRevenue, cat, profitRamp, MARK,
-      grid: rgbVar("--c-line"),
-      // Text inks. `emerald`/`rose`/`amber` keep their names because they are referenced
-      // ~40 times on this screen; the values behind them are now Apple's accessible
-      // green, red and orange.
-      CLR: {
-        emerald: rgbVar("--c-chart-profit-ink"),
-        rose:    rgbVar("--c-chart-loss-ink"),
-        amber:   rgbVar("--c-chart-caution-ink"),
-      },
-      STATUS: {
-        paid: MARK.profit, sent: chartRevenue, overdue: MARK.loss,
-        draft: neutral, void: MARK.loss,
-      } as Record<string, string>,
+      grid: cssVar("--chart-grid"),
+      line: cssVar("--chart-line"),
+      hi: cssVar("--chart-hi"),
+      profit: rgbVar("--c-chart-profit"),
+      loss: rgbVar("--c-chart-loss"),
       TT: {
         contentStyle: {
-          background: rgbVar("--c-surface"),
+          background: cssVar("--chart-tip"),
           border: `1px solid ${rgbVar("--c-line")}`,
-          borderRadius: 12,
-          color: rgbVar("--c-ink"),
+          borderRadius: 8,
+          color: ink,
           fontSize: 12,
-          padding: "9px 13px",
-          boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
+          padding: "8px 10px",
+          boxShadow: "0 10px 30px -10px rgba(0,0,0,0.5)",
         },
-        // The hover cursor is chrome, not a mark — it wears ink, never the accent.
-        cursor: { fill: rgbaVar("--c-ink", 0.05) },
-        itemStyle: { color: rgbVar("--c-ink") },
-        labelStyle: { color: rgbVar("--c-muted"), marginBottom: 3 },
+        cursor: { fill: "rgba(128,128,128,0.08)" },
+        itemStyle: { color: ink },
+        labelStyle: { color: muted, marginBottom: 3 },
       },
-      AX: { fontSize: 10, fill: rgbVar("--c-muted") },
+      AX: { fontSize: 12, fill: muted },
     };
   }, [tick]);
 }
 
-// Recharts animates every series on mount AND on every data change. Thirteen charts
-// doing that at once is most of what "slow and laggy" was. Data is drawn, not performed.
-const STILL = { isAnimationActive: false } as const;
-
-// ─── R-403: translucent gradient fills ───────────────────────────
-// Jack, 2026-09-30: "the solid color look stale. the liquid glass transparent gradient
-// looks really clean as shown on margin distribution." So a bar is its hue as a gradient
-// from faint to strong, never a flat slab. The hue still means what it meant (profit,
-// loss, revenue, a categorical slot); only the fill changes. Lines stay solid: a line is
-// read by its edge. HTML bars use `glassBar` / `glassSeg`; SVG bars use `<GlassFill>` in
-// the chart's <defs> and fill with `url(#id)`.
-// A colour that is already translucent keeps its own strength: the alphas multiply. The
-// Month comparisons legend draws its three earlier months as ink at 20/32/44%, and before
-// R-410 this replaced that alpha, so all three swatches came out as one solid square.
-function withAlpha(c: string, a: number): string {
-  const m = c.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?/);
-  if (m) {
-    const own = m[4] === undefined ? 1 : m[4].endsWith("%") ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
-    return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${+(own * a).toFixed(3)})`;
-  }
-  const h = c.match(/^#([0-9a-f]{6})$/i);
-  if (h) {
-    const n = parseInt(h[1], 16);
-    return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
-  }
-  return c;
-}
-/** A bar that grows to the right: faint where it starts, strong where it ends. */
-const glassBar = (c: string) => `linear-gradient(90deg, ${withAlpha(c, 0.3)}, ${withAlpha(c, 0.9)})`;
-/** A segment or a swatch: strong at the top, softer below, like light through glass. */
-const glassSeg = (c: string) => `linear-gradient(180deg, ${withAlpha(c, 0.92)}, ${withAlpha(c, 0.5)})`;
-/** An SVG gradient for a column (strong at its top) or a horizontal bar (strong at its end). */
-/** `down` is a column that hangs below zero (a loss month): strong at its bottom tip. */
-function GlassFill({ id, color, horizontal, down }: { id: string; color: string; horizontal?: boolean; down?: boolean }) {
-  const [from, to] = horizontal || down ? [0.35, 0.92] : [0.92, 0.32];
-  return (
-    <linearGradient id={id} x1="0" y1="0" x2={horizontal ? "1" : "0"} y2={horizontal ? "0" : "1"}>
-      <stop offset="0%" stopColor={color} stopOpacity={from} />
-      <stop offset="100%" stopColor={color} stopOpacity={to} />
-    </linearGradient>
-  );
-}
-
-// ─── Deferred mount ───────────────────────────────────────────────
-// A panel below the fold still costs a ResponsiveContainer, its ResizeObserver and a
-// recharts layout pass before anyone has scrolled to it. This mounts its children the
-// first time they come near the viewport, and then leaves them mounted.
-function Defer({ h, children }: { h: number; children: React.ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [shown, setShown] = useState(false);
-  useEffect(() => {
-    if (shown) return;
-    const el = ref.current;
-    if (!el || typeof IntersectionObserver === "undefined") { setShown(true); return; }
-    const io = new IntersectionObserver(
-      (es) => { if (es.some((e) => e.isIntersecting)) { setShown(true); io.disconnect(); } },
-      { rootMargin: "500px 0px" },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [shown]);
-  return (
-    <div ref={ref} className="min-w-0">
-      {shown ? children : <div className="rounded-[18px] bg-surface-2/50" style={{ minHeight: h }} />}
-    </div>
-  );
-}
-
-// ─── Date presets ─────────────────────────────────────────────────
-// R-159: local (Central) day, computed per call — the old module-level UTC
-// constants flipped "This month" to the next month on month-end evenings and
-// went stale if the app stayed open past midnight.
+// ─── Small helpers ─────────────────────────────────────────────────
 const PRESETS = ["All time", "This year", "This month"] as const;
+// R-159: local (Central) day, computed per call.
 function presetRange(label: string): { start: string; end: string } {
   const today = localDay();
   if (label === "This year") return { start: today.slice(0, 4) + "-01-01", end: today };
@@ -196,21 +71,16 @@ function presetRange(label: string): { start: string; end: string } {
   return { start: "", end: "" };
 }
 
-// A negative figure reads "-$4,260.00" through fmtAmount, which puts the sign in the
-// wrong place. Money that can go negative on this screen wears a real minus in front.
-// Under half a cent is zero, so a float leftover never prints as "-0.00".
+// A negative figure reads "-$4,260.00" through fmtAmount, which puts the sign in the wrong place.
+// Money that can go negative on this screen wears a real minus in front. Under half a cent is zero.
 const signed = (n: number) => (Math.abs(n) < 0.005 ? fmtAmount(0) : n < 0 ? "−" + fmtAmount(Math.abs(n)) : fmtAmount(n));
+const pnTone = (n: number) => (n >= 0 ? "text-success-ink" : "text-danger-ink");
+// Kpi has no colour prop; its figure takes the tone through its wrapper.
+const kpiTone = (n: number) => (n >= 0 ? "[&_.ui-fig]:text-success-ink" : "[&_.ui-fig]:text-danger-ink");
 
-// Jack, 2026-09-16: "im questioning why all dates say 26th of each month. why not just
-// say the month." The old format was { month: "short", year: "2-digit" }, so 2026
-// rendered as "Apr 26" and read as a day. A month is now just its name. The year is
-// added only when the series really does span more than one calendar year, and then only
-// on the FIRST bucket of each year rather than on all of them.
-const shortMonth = (m: string) =>
-  parseLocalDay(m + "-01").toLocaleDateString("en-US", { month: "short" });
-const longMonth = (m: string) =>
-  parseLocalDay(m + "-01").toLocaleDateString("en-US", { month: "long" });
-
+// A month is just its name; the year is added only on the first bucket of a year when the series spans several.
+const shortMonth = (m: string) => parseLocalDay(m + "-01").toLocaleDateString("en-US", { month: "short" });
+const longMonth = (m: string) => parseLocalDay(m + "-01").toLocaleDateString("en-US", { month: "long" });
 function monthLabels(months: string[]): string[] {
   const spans = new Set(months.map((m) => m.slice(0, 4))).size > 1;
   const seen = new Set<string>();
@@ -222,19 +92,112 @@ function monthLabels(months: string[]): string[] {
   });
 }
 
+// Share bars and ranks wear ink at falling strengths: the name beside them is the identity, not a hue.
+const RAMP = [0.9, 0.62, 0.44, 0.3, 0.2, 0.13];
+const inkAt = (i: number) => `rgb(var(--c-ink) / ${RAMP[Math.min(i, RAMP.length - 1)]})`;
+
+type TabId = "overview" | "money" | "deals" | "buyers";
+const TAB_KEY = "clienthub_analytics_tab";
+const readTab = (): TabId => {
+  try { const t = localStorage.getItem(TAB_KEY); if (t === "overview" || t === "money" || t === "deals" || t === "buyers") return t; } catch { /* storage off */ }
+  return "overview";
+};
+
+// ─── Layout pieces ─────────────────────────────────────────────────
+function Head({ title, sub, right }: { title: string; sub?: React.ReactNode; right?: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+      <div className="min-w-0">
+        <div className="text-[14px] font-medium leading-5">{title}</div>
+        {sub && <div className="ui-note mt-0.5 leading-[1.45]">{sub}</div>}
+      </div>
+      {right && <div className="flex-shrink-0">{right}</div>}
+    </div>
+  );
+}
+
+const Block = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => (
+  <section className={`px-4 py-5 min-w-0 ${className}`}>{children}</section>
+);
+
+/** Two blocks side by side with a fading hairline between, stacked below ~1400px. */
+function Cols({ a, b }: { a: React.ReactNode; b: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-1 min-[1400px]:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)] min-[1400px]:gap-x-2">
+      {a}
+      <div className="vsep hidden min-[1400px]:block mt-4" />
+      <div className="hsep min-[1400px]:hidden" />
+      {b}
+    </div>
+  );
+}
+
+type Tone = "up" | "down" | "warn";
+const TONE: Record<Tone, string> = { up: "text-success-ink", down: "text-danger-ink", warn: "text-warning-ink" };
+
+function Fig({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: Tone }) {
+  return (
+    <div className="min-w-0">
+      <div className="ui-label truncate">{label}</div>
+      <div className={`ui-fig !text-[22px] !leading-7 mt-1 truncate ${tone ? TONE[tone] : ""}`}>{value}</div>
+      {hint && <div className="ui-note mt-0.5 truncate tabular-nums">{hint}</div>}
+    </div>
+  );
+}
+
+/** A thin share bar. It grows by scaling, not by changing its width, so it stays on the GPU. */
+function Bar({ frac, h = 6, tone = "bg-faint", on = true, delay = 0 }: { frac: number; h?: number; tone?: string; on?: boolean; delay?: number }) {
+  const f = on ? Math.max(0, Math.min(1, frac)) : 0;
+  return (
+    <span className="block overflow-hidden rounded-full bg-surface-3" style={{ height: h }}>
+      <span className={`block h-full w-full rounded-full origin-left transition-transform duration-[600ms] ease-out ${tone}`}
+        style={{ transform: `scaleX(${f})`, transitionDelay: `${delay}ms` }} />
+    </span>
+  );
+}
+
+/** A 100% bar split into the named parts and one "Other". */
+function ShareBar({ parts, total, on }: { parts: { name: string; value: number }[]; total: number; on: boolean }) {
+  if (total <= 0) return null;
+  const named = parts.reduce((s, p) => s + p.value, 0);
+  const other = Math.max(total - named, 0);
+  const segs = other > 0.005 ? [...parts, { name: "Other", value: other }] : parts;
+  return (
+    <div className={`flex gap-0.5 h-2.5 transition-opacity duration-500 ${on ? "opacity-100" : "opacity-0"}`}>
+      {segs.map((s, i) => (
+        <span key={s.name} className="rounded-[3px]" title={`${s.name}, ${((s.value / total) * 100).toFixed(1)}%`}
+          style={{ flex: `${Math.max(s.value, 0)} 0 0`, background: s.name === "Other" ? inkAt(5) : inkAt(i) }} />
+      ))}
+    </div>
+  );
+}
+
+function Blank({ h = 160, text = "No data yet" }: { h?: number; text?: string }) {
+  return <div className="flex items-center justify-center text-center text-[13px] text-faint px-4" style={{ height: h }}>{text}</div>;
+}
+
+/** The key to a chart series: a short bar of its colour beside its name. */
+function Key({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[12px] text-muted whitespace-nowrap">
+      <span className="inline-block w-3.5 h-0.5 rounded-sm" style={{ background: color }} />{label}
+    </span>
+  );
+}
+
 // ─── Main view ───────────────────────────────────────────────────
 export default function AnalyticsView() {
   const P = usePalette();
-  // R-320: which month the pace chart is singling out (null = just this month).
-  const [paceHi, setPaceHi] = useState<string | null>(null);
-  const CLR = P.CLR;
-  const TT = P.TT;
-  const AX = P.AX;
-  const revenueClr = P.chartRevenue;
+  const { TT, AX } = P;
+  const [tab, setTabState] = useState<TabId>(readTab);
+  const setTab = (t: TabId) => { setTabState(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* storage off */ } };
+
+  const [paceCmp, setPaceCmp] = useState<string | null>(null);
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
   const [range,     setRange]     = useState<AnalyticsRange | null>(null);
   const [recon,     setRecon]     = useState<AnalyticsReconciliation | null>(null);
   const [refunds,   setRefunds]   = useState<AnalyticsRefunds | null>(null);
+  const [refundsBusy, setRefundsBusy] = useState(false);
   const [tiers,     setTiers]     = useState<any[]>([]);
   const [money,     setMoney]     = useState<FinancialsOverview | null>(null);
   const [clients,   setClients]   = useState<Client[] | null>(null);
@@ -243,22 +206,15 @@ export default function AnalyticsView() {
   const [preset,    setPreset]    = useState<string>("All time");
   const [startDate, setStartDate] = useState("");
   const [endDate,   setEndDate]   = useState("");
-  // Revenue or profit on the pace chart. One question, one line, a toggle rather than
-  // two charts fighting over one axis.
+  // Revenue or profit on the pace chart. One question, one line, a toggle rather than two charts.
   const [paceMetric, setPaceMetric] = useState<"revenue" | "profit">("revenue");
-  // The reconciliation table can run to hundreds of rows. It renders the first 25 until
-  // asked for the rest, which is the difference between one layout pass and hundreds.
+  // The reconciliation table can run to hundreds of rows. It renders the first 25 until asked for the rest.
   const [reconAll, setReconAll] = useState(false);
   // R-402: revenue and profit by category and by brand, and the screen that labels deals.
-  // Loaded on its own, like the reconciliation: a failure here never blanks the page.
   const [labels, setLabels] = useState<AnalyticsLabels | null>(null);
   const [catMetric, setCatMetric] = useState<"revenue" | "profit">("revenue");
   const [brandMetric, setBrandMetric] = useState<"revenue" | "profit">("revenue");
   const [labelling, setLabelling] = useState<{ focus: LabelFocus | null } | null>(null);
-
-  // The KPI count-ups are gone (R-319). Four of them re-rendered this entire view on
-  // every animation frame — and this view owns thirteen charts, so each frame was
-  // thirteen recharts layout passes. The figures render immediately instead.
 
   // R-444: only the latest range's refunds land, and the old list goes as a new range starts,
   // so the card never shows one range's deals under another's heading.
@@ -266,9 +222,11 @@ export default function AnalyticsView() {
   const loadRefunds = (start: string, end: string) => {
     const seq = ++refundsSeq.current;
     setRefunds(null);
+    setRefundsBusy(true);
     api.analyticsRefunds(start, end)
       .then((r) => { if (seq === refundsSeq.current) setRefunds(r); })
-      .catch(() => { if (seq === refundsSeq.current) setRefunds(null); });
+      .catch(() => { if (seq === refundsSeq.current) setRefunds(null); })
+      .finally(() => { if (seq === refundsSeq.current) setRefundsBusy(false); });
   };
 
   const loadRange = async (start: string, end: string) => {
@@ -307,7 +265,7 @@ export default function AnalyticsView() {
       setStats(s);
       setTiers(t);
       setRange(r);
-      // Cash position is secondary — load separately so a Plaid/overview hiccup
+      // Cash position is secondary: load separately so a Plaid/overview hiccup
       // never blanks the analytics page. Same for the reconciliation read.
       api.financialsOverview().then(setMoney).catch(() => {});
       api.listClientsFiltered({}).then(setClients).catch(() => setClients(null));
@@ -325,9 +283,8 @@ export default function AnalyticsView() {
 
   const rangeLabel = preset === "Custom" ? "the selected range" : preset.toLowerCase();
 
-  // Where the profit is: client profit (the Tiers figure) summed by US state or
-  // country, the same rollup the Globe's region list shows. Rejected leads are out,
-  // as everywhere; a client with no state or country is counted apart.
+  // Where the profit is: client profit (the Tiers figure) summed by US state or country, the same
+  // rollup the Globe's region list shows. Rejected leads are out, as everywhere.
   const regions = useMemo(() => {
     if (!clients) return null;
     const tierMap: Record<string, BuyerTier> = Object.fromEntries((tiers as BuyerTier[]).map((t) => [t.client_id, t]));
@@ -336,78 +293,62 @@ export default function AnalyticsView() {
     return { list, unplaced: rows.filter((r) => !r.region).length };
   }, [clients, tiers]);
 
-  // The primary trend. The in-progress month is marked but NOT projected here: R-316
-  // stacked the projection as a remainder on top of the real bar, which asked the eye to
-  // decode a forecast as the top of a column. The projection lives on the pace panel now,
-  // where it is a line with a "today" marker and a sentence.
+  // The primary trend. The in-progress month is marked but NOT projected here; the projection lives
+  // on the pace panel, where it is a line with a sentence.
   const trend = useMemo(() => {
     const months: AnalyticsMonth[] = range?.monthly_profit ?? [];
-    const labels = monthLabels(months.map((m) => m.month));
+    const names = monthLabels(months.map((m) => m.month));
     const rr = range?.run_rate ?? null;
-    return months.map((m, i) => ({
-      ...m,
-      label: labels[i],
-      projected: !!rr && rr.month === m.month,
-    }));
+    return months.map((m, i) => ({ ...m, label: names[i], projected: !!rr && rr.month === m.month }));
   }, [range?.monthly_profit, range?.run_rate]);
 
-  // Velocity carries its own month series, so it gets its own year-aware labels.
+  // Velocity carries its own month series, so it gets its own year-aware labels. A month with no
+  // measured deal has no median and is left out of the line.
   const velocityRows = useMemo(() => {
     const by = range?.velocity.by_month ?? [];
-    const labels = monthLabels(by.map((v) => v.month));
-    return by.map((v, i) => ({ ...v, label: labels[i] }));
+    const names = monthLabels(by.map((v) => v.month));
+    return by.map((v, i) => ({ ...v, label: names[i] })).filter((v) => v.median_days !== null);
   }, [range?.velocity]);
 
-  // ── Pace rows: one row per day of month, one series per month ────────────────────
-  // The current month's series is cut off at today — past that there is no data, and a
-  // line that ran flat to the month end would read as "we stopped selling".
+  // ── Pace: this month's running total against a month before it, or the average of those ──
   const pace: AnalyticsPace | null = range?.pace ?? null;
-  const paceRows = useMemo(() => {
-    if (!pace || pace.months.length === 0) return [];
-    const span = Math.max(...pace.months.map((m) => m.days_in_month));
-    const curIdx = pace.months.length - 1;
-    const rows: Record<string, number | null>[] = [];
-    for (let d = 1; d <= span; d++) {
-      const row: Record<string, number | null> = { day: d };
-      pace.months.forEach((m, i) => {
-        const pt = m.days[d - 1];
-        const past = i === curIdx && d > pace.day_of_month;
-        row[`m${i}`] = pt && !past ? pt[paceMetric] : null;
+  const paceView = useMemo(() => {
+    if (!pace || pace.months.length === 0) return null;
+    const cur = pace.months[pace.months.length - 1];
+    const priors = pace.months.slice(0, -1);
+    const total = Math.max(...pace.months.map((m) => m.days_in_month));
+    // A shorter month runs flat after its last day so every series is `total` long.
+    const fill = (m: AnalyticsPaceMonth) => Array.from({ length: total }, (_, i) => {
+      const pt = m.days[Math.min(i, m.days.length - 1)];
+      return Math.max(0, pt ? pt[paceMetric] : 0);
+    });
+    const values = cur.days.slice(0, pace.day_of_month).map((p) => Math.max(0, p[paceMetric]));
+    const filled = priors.map(fill);
+    const options: { id: string; label: string; vals: number[] }[] =
+      priors.map((m, i) => ({ id: m.month, label: longMonth(m.month), vals: filled[i] })).reverse();
+    if (priors.length > 1) {
+      options.push({
+        id: "avg", label: `${priors.length}-month average`,
+        vals: Array.from({ length: total }, (_, i) => filled.reduce((s, f) => s + f[i], 0) / priors.length),
       });
-      rows.push(row);
     }
-    return rows;
+    return { total, values, options };
   }, [pace, paceMetric]);
+  const paceCompare = paceView ? (paceView.options.find((o) => o.id === paceCmp) ?? paceView.options[0] ?? null) : null;
 
   const reconRows = useMemo(
     () => (reconAll ? recon?.deals ?? [] : (recon?.deals ?? []).slice(0, 25)),
     [recon, reconAll],
   );
 
-  // Skeleton mirrors the real layout: header, KPI band, primary trend, overhead panel,
-  // then the paired analysis cards. Blocks, not spinners — the page keeps its shape.
-  if (loading) return (
-    <div className="space-y-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="h-6 w-28 bg-surface-2 rounded-md animate-pulse" />
-          <div className="h-3.5 w-52 bg-surface-2 rounded animate-pulse mt-2" />
-        </div>
-        <div className="h-8 w-72 bg-surface-2 rounded-lg animate-pulse" />
-      </div>
-      <div className="h-[168px] bg-surface-2 rounded-[20px] animate-pulse" />
-      <div className="h-[360px] bg-surface-2 rounded-[18px] animate-pulse" />
-      <div className="h-[340px] bg-surface-2 rounded-[18px] animate-pulse" />
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <div className="h-72 bg-surface-2 rounded-2xl animate-pulse" />
-        <div className="h-72 bg-surface-2 rounded-2xl animate-pulse" />
-      </div>
-      <div className="h-[260px] bg-surface-2 rounded-2xl animate-pulse" />
-      <div className="h-[300px] bg-surface-2 rounded-2xl animate-pulse" />
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <div className="h-64 bg-surface-2 rounded-2xl animate-pulse" />
-        <div className="h-64 bg-surface-2 rounded-2xl animate-pulse" />
-      </div>
+  // Skeleton mirrors the real layout: KPI band, tabs, a chart and a table. Blocks, not spinners.
+  if (!range && loading) return (
+    <div aria-busy="true">
+      <div className="h-8 w-80 rounded-lg bg-surface-2 animate-pulse mb-4" />
+      <div className="h-[136px] rounded-xl bg-surface-2 animate-pulse" />
+      <div className="h-[36px] w-80 rounded-[10px] bg-surface-2 animate-pulse mt-6" />
+      <div className="h-[300px] rounded-xl bg-surface-2 animate-pulse mt-5" />
+      <div className="h-[260px] rounded-xl bg-surface-2 animate-pulse mt-5" />
     </div>
   );
   if (!stats || !range) return (
@@ -423,10 +364,10 @@ export default function AnalyticsView() {
   }, {} as Record<string, number>);
   const totalCl  = tiers.length;
   const totalSV  = stats.invoice_status_breakdown.reduce((s, x) => s + x.total, 0);
-
   const overheadTotal = range.total_shipping + range.total_fees;
   const rn = range.repeat_new;
   const repeatTotal = rn.new_revenue + rn.repeat_revenue;
+  const plural = (n: number, w: string) => `${n} ${w}${n !== 1 ? "s" : ""}`;
 
   const handleExportAnalytics = async () => {
     const path = await saveDialog({ filters: [{ name: "Excel", extensions: ["xlsx"] }], defaultPath: "analytics.xlsx" });
@@ -435,1054 +376,685 @@ export default function AnalyticsView() {
     toast("Exported analytics to Excel");
   };
 
+  const inputCls = "h-8 px-2.5 rounded-lg ring-1 ring-line-3 bg-transparent text-[13px] text-ink transition-colors duration-[130ms] focus:outline-none focus:ring-ink";
+
   // ── Layout ───────────────────────────────────────────────────
-  // `analytics-stage` is the wash the glass samples: without something behind it, a
-  // translucent panel over a flat page is just a tint.
   return (
     <>
-    <div className="space-y-5 analytics-stage">
+    <div className={`transition-opacity duration-200 ${loading ? "opacity-70" : "opacity-100"}`}>
+      <PageActions>
+        <Button onClick={load} icon={<RefreshCw size={14} className={loading ? "animate-spin" : ""} />}>Refresh</Button>
+        <Button variant="ink" onClick={handleExportAnalytics} icon={<FileDown size={14} />}>Export</Button>
+      </PageActions>
 
-      {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Analytics</h2>
-          <p className="text-[12px] text-muted mt-0.5">Closed-deal performance for {rangeLabel}</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
+      {/* The range: a sentence on the left, presets and dates on the right */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+        <div className="text-[13px] text-muted">Closed-deal performance for {rangeLabel}</div>
+        <div className="flex flex-wrap items-center gap-2">
           {PRESETS.map((p) => (
-            <button
-              key={p}
-              onClick={() => applyPreset(p)}
-              className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
-                preset === p
-                  ? "bg-accent text-on-accent"
-                  : "bg-surface ring-1 ring-line text-muted hover:ring-accent hover:text-accent"
-              }`}
-            >
-              {p}
-            </button>
+            <button key={p} onClick={() => applyPreset(p)} className={`ui-opt ${preset === p ? "on" : ""}`} aria-pressed={preset === p}>{p}</button>
           ))}
-          <div className="flex items-center gap-1.5">
-            <input
-              type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
-              className="ring-1 ring-line bg-surface h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40"
-            />
-            <span className="text-[11px] text-muted">to</span>
-            <input
-              type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
-              className="ring-1 ring-line bg-surface h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40"
-            />
-            <button onClick={applyCustomRange}
-              className="px-3 h-8 bg-surface ring-1 ring-line rounded-lg text-[12px] text-muted hover:ring-accent hover:text-accent transition-colors">
-              Apply
-            </button>
-          </div>
-          <button onClick={load}
-            className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
-                       px-2.5 h-8 rounded-lg hover:bg-surface-3 transition-colors ring-1 ring-line">
-            <RefreshCw size={13} /> Refresh
-          </button>
-          <button onClick={handleExportAnalytics}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium transition-colors">
-            <FileDown size={13} /> Export
-          </button>
+          <input type="date" aria-label="Start date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={inputCls} />
+          <span className="ui-note">to</span>
+          <input type="date" aria-label="End date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputCls} />
+          <Button size="sm" onClick={applyCustomRange}>Apply</Button>
         </div>
       </div>
 
-      {/* ── How are we doing ───────────────────────────────────────
-          Six tiles on a hairline grid. The gap-px trick draws the dividers,
-          so they stay correct at every wrap instead of relying on divide-x
-          on a column count that was guessed. Steps 2 → 3 → 6 across the
-          sidebar-narrowed pane; it is the old xl:grid-cols-5 that overflowed.
-      ─────────────────────────────────────────────────────────── */}
-      <div className="rounded-[20px] overflow-hidden ring-1 ring-line/70 bg-line/60 glass">
-        <div className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-px">
-          <Kpi label="Revenue" value={fmtAmount(range.total_revenue)} hint="closed deal revenue" color={revenueClr} />
-          <Kpi label="Net profit" value={signed(range.total_profit)} hint="after all deal costs"
-            color={range.total_profit >= 0 ? CLR.emerald : CLR.rose} />
-          <Kpi label="True net" value={signed(range.true_net)} hint="after shipping and bank fees"
-            color={range.true_net >= 0 ? CLR.emerald : CLR.rose} />
-          <Kpi label="Margin" value={`${range.avg_margin.toFixed(1)}%`} hint="revenue-weighted" />
-          <Kpi label="Deals closed" value={String(won)} hint={`${lost} fell through`} />
-          <Kpi label="Win rate" value={won + lost > 0 ? `${winRate.toFixed(0)}%` : "–"} hint="won vs fell through"
-            color={won + lost === 0 ? undefined : winRate >= 60 ? CLR.emerald : winRate >= 40 ? CLR.amber : CLR.rose} />
-        </div>
-        {/* The range needs something to be compared against, on the same population. */}
-        <div className="bg-surface/70 px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[11.5px] text-muted">
+      {/* ── How are we doing: six figures, no boxes ──────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_1px_minmax(0,1fr)]">
+        <Kpi label="Revenue" value={range.total_revenue} format={fmtAmount} caption="closed deal revenue" />
+        <div className="vsep hidden md:block mt-4" />
+        <Kpi label="Net profit" value={range.total_profit} format={signed} className={kpiTone(range.total_profit)}
+          caption={`after ${fmtAmount(range.total_cost)} of deal costs`} />
+        <div className="vsep hidden md:block mt-4" />
+        <Kpi label="True net" value={range.true_net} format={signed} className={kpiTone(range.true_net)}
+          caption="after shipping and bank fees" />
+      </div>
+      <div className="hsep" />
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_1px_minmax(0,1fr)]">
+        <Kpi label="Margin" value={range.avg_margin} format={(n) => `${n.toFixed(1)}%`} caption="revenue-weighted" />
+        <div className="vsep hidden md:block mt-4" />
+        <Kpi label="Deals closed" value={won} caption={`${lost} fell through`} />
+        <div className="vsep hidden md:block mt-4" />
+        <Kpi label="Win rate" value={won + lost > 0 ? winRate : "None yet"} format={(n) => `${n.toFixed(0)}%`}
+          caption="won vs fell through"
+          className={won + lost === 0 ? "" : winRate >= 60 ? "[&_.ui-fig]:text-success-ink" : winRate >= 40 ? "[&_.ui-fig]:text-warning-ink" : "[&_.ui-fig]:text-danger-ink"} />
+      </div>
+      <div className="hsep" />
+      <div className="ui-note flex flex-wrap gap-x-6 gap-y-1.5 px-4 py-3">
+        {preset !== "All time" && (
           <span>
-            This month <b className="text-ink-2 tabular-nums font-semibold">{fmtAmount(range.revenue_this_month)}</b> revenue
-            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{signed(range.profit_this_month)}</b> profit
-            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{range.margin_this_month.toFixed(1)}%</b>
+            All time <b className="text-ink font-medium tabular-nums">{fmtAmount(range.revenue_all_time)}</b> revenue,{" "}
+            <b className="text-ink font-medium tabular-nums">{signed(range.profit_all_time)}</b> profit,{" "}
+            <b className="text-ink font-medium tabular-nums">{range.margin_all_time.toFixed(1)}%</b>
           </span>
-          <span>
-            All time <b className="text-ink-2 tabular-nums font-semibold">{fmtAmount(range.revenue_all_time)}</b> revenue
-            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{signed(range.profit_all_time)}</b> profit
-            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{range.margin_all_time.toFixed(1)}%</b>
-          </span>
-          <span>
-            <b className="text-ink-2 tabular-nums font-semibold">{range.new_clients}</b> new clients
-            {" · "}<b className="text-ink-2 tabular-nums font-semibold">{range.interactions}</b> interactions in {rangeLabel}
-          </span>
-        </div>
+        )}
+        <span>
+          <b className="text-ink font-medium tabular-nums">{range.new_clients}</b> new clients,{" "}
+          <b className="text-ink font-medium tabular-nums">{range.interactions}</b> interactions in {rangeLabel}
+        </span>
       </div>
 
-      {/* ── How this month is going (R-319) ───────────────────────
-          Jack asked to see how the current month is doing "compared to where we were at
-          this point in previous months". That is a cumulative line by DAY OF MONTH: the
-          current month bold and stopping at today, the three before it faint and running
-          their full length. Day 16 against day 16 is then a vertical distance, not an
-          inference. The answer is also stated in words above the chart, because the
-          sentence is the thing he actually asked for.
-      ─────────────────────────────────────────────────────────── */}
-      {pace && (
-        <Card
-          title="Month comparisons"
-          sub={`${longMonth(pace.current_month)} against the ${pace.prior_count} month${pace.prior_count !== 1 ? "s" : ""} before it · not affected by the date range`}
-          right={
-            <div className="flex items-center gap-1 bg-surface-2 rounded-lg p-0.5">
-              {(["revenue", "profit"] as const).map((m) => (
-                <button key={m} onClick={() => setPaceMetric(m)}
-                  className={`px-2.5 h-6 rounded-md text-[11.5px] font-medium capitalize transition-colors ${
-                    paceMetric === m ? "bg-surface text-ink ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
-                  {m}
-                </button>
-              ))}
-            </div>
-          }
-        >
-          <PaceSummary pace={pace} metric={paceMetric} CLR={CLR} />
-          {paceRows.length > 0 ? (
+      <div className="mt-4 mb-1">
+        <Tabs label="Analytics sections" value={tab} onChange={(id) => setTab(id as TabId)}
+          tabs={[
+            { id: "overview", label: "Overview" },
+            { id: "money", label: "Money" },
+            { id: "deals", label: "Deals" },
+            { id: "buyers", label: "Buyers" },
+          ]} />
+      </div>
+
+      <div key={tab} className="animate-fade-up motion-reduce:animate-none">
+
+      {/* ═════════════════ OVERVIEW ═════════════════ */}
+      {tab === "overview" && (
+        <>
+          {/* ── How this month is going (R-319) ───────────────────── */}
+          {pace && (
             <>
-              <ResponsiveContainer width="100%" height={270}>
-                <LineChart data={paceRows} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
-                  <XAxis dataKey="day" tick={AX} axisLine={false} tickLine={false}
-                    tickFormatter={(d: number) => String(d)} interval={2} />
-                  <YAxis tick={AX} axisLine={false} tickLine={false} width={54}
-                    tickFormatter={(v: number) => fmtCompactCurrency(v)} />
-                  <Tooltip {...TT}
-                    formatter={(v: any, n: any) => [signed(Number(v)), n]}
-                    labelFormatter={(d: any) => `Day ${d}`} />
-                  <ReferenceLine x={pace.day_of_month} stroke={rgbaVar("--c-ink", 0.28)}
-                    strokeDasharray="3 3"
-                    label={{ value: "Today", position: "insideTopRight", fill: rgbVar("--c-muted"), fontSize: 10 }} />
-                  {/* Prior months wear ink at low alpha, not a hue: only the month being
-                      asked about carries colour, so the comparison reads at a glance. */}
-                  {pace.months.map((m, i) => {
-                    const current = i === pace.months.length - 1;
-                    const picked  = paceHi === m.month;
-                    // Nothing picked: this month carries the hue and the rest are ink.
-                    // Pick one and IT carries a hue of its own, the others step back — so
-                    // any two months can be read against each other, not just against now.
-                    const clr = picked
-                      ? P.cat[i % P.cat.length]
-                      : current
-                        ? (paceMetric === "revenue" ? revenueClr : P.MARK.profit)
-                        : rgbaVar("--c-ink", 0.20 + i * 0.12);
-                    const dimmed = paceHi !== null && !picked && !current;
-                    return (
-                      <Line key={m.month} type="monotone" dataKey={`m${i}`} name={longMonth(m.month)}
-                        stroke={clr} strokeWidth={picked ? 3 : current ? 2.75 : 1.5}
-                        strokeOpacity={dimmed ? 0.35 : 1}
-                        dot={false} connectNulls={false} {...STILL} />
-                    );
-                  })}
-                </LineChart>
-              </ResponsiveContainer>
-              <div className="flex items-center gap-4 flex-wrap mt-3">
-                {pace.months.map((m, i) => {
-                  const current = i === pace.months.length - 1;
-                  const picked  = paceHi === m.month;
-                  return (
-                    <Legend key={m.month}
-                      color={picked
-                        ? P.cat[i % P.cat.length]
-                        : current
-                          ? (paceMetric === "revenue" ? revenueClr : P.MARK.profit)
-                          : rgbaVar("--c-ink", 0.20 + i * 0.12)}
-                      label={current ? `${longMonth(m.month)} (so far)` : longMonth(m.month)}
-                      active={picked}
-                      onClick={() => setPaceHi(picked ? null : m.month)} />
-                  );
-                })}
-                {paceHi && (
-                  <button type="button" onClick={() => setPaceHi(null)}
-                    className="text-[11px] text-muted hover:text-ink transition-colors duration-[130ms]">
-                    Clear
-                  </button>
-                )}
-              </div>
+              <Block>
+                <Head title="Month comparisons"
+                  sub={`${longMonth(pace.current_month)} against the ${pace.prior_count} month${pace.prior_count !== 1 ? "s" : ""} before it, not affected by the date range`}
+                  right={
+                    <Tabs label="Measure" value={paceMetric} onChange={(id) => setPaceMetric(id as "revenue" | "profit")}
+                      tabs={[{ id: "revenue", label: "Revenue" }, { id: "profit", label: "Profit" }]} />
+                  } />
+                <PaceSummary pace={pace} metric={paceMetric} />
+                {paceView && paceView.values.length > 0 ? (
+                  <div className="mt-6">
+                    <MonoAreaChart
+                      values={paceView.values}
+                      total={paceView.total}
+                      prev={paceCompare?.vals}
+                      label={(i) => `${shortMonth(pace.current_month)} ${i + 1}`}
+                      tipLabel={(i) => `${longMonth(pace.current_month)} ${i + 1}`}
+                      format={signed}
+                      formatAxis={fmtCompactCurrency}
+                      seriesName={`${longMonth(pace.current_month)} so far`}
+                      prevName={paceCompare?.label ?? "Month before"}
+                      height={220}
+                      ariaLabel={`${paceMetric === "revenue" ? "Revenue" : "Profit"} so far in ${longMonth(pace.current_month)} by day of the month`}
+                    />
+                    {paceView.options.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-3">
+                        <span className="ui-note">Compare with</span>
+                        <Tabs label="Compare with" value={paceCompare?.id ?? ""} onChange={(id) => setPaceCmp(id)}
+                          tabs={paceView.options.map((o) => ({ id: o.id, label: o.label }))} />
+                      </div>
+                    )}
+                  </div>
+                ) : <Blank h={220} text="No closed deals in the last four months" />}
+              </Block>
+              <div className="hsep" />
             </>
-          ) : <Blank h={270} text="No closed deals in the last four months" />}
-        </Card>
-      )}
+          )}
 
-      <Defer h={320}>
-      {/* ── Month by month ─────────────────────────────────────── */}
-      <Card title="Month by month" sub="Every month with a closed deal or an overhead payment">
-        {trend.length > 0 ? (
-          <div className="overflow-x-auto -mx-5 px-5">
-            <table className="w-full min-w-[720px] text-[12.5px]">
-              <thead>
-                <tr className="text-[11px] text-muted border-b border-line">
-                  <th className="text-left font-medium py-2 pr-3">Month</th>
-                  <th className="text-right font-medium py-2 px-3">Deals</th>
-                  <th className="text-right font-medium py-2 px-3">Revenue</th>
-                  <th className="text-right font-medium py-2 px-3">Profit</th>
-                  <th className="text-right font-medium py-2 px-3">Margin</th>
-                  <th className="text-right font-medium py-2 px-3">Shipping</th>
-                  <th className="text-right font-medium py-2 px-3">Fees</th>
-                  <th className="text-right font-medium py-2 pl-3">True net</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...trend].reverse().map((m) => (
-                  <tr key={m.month} className="border-b border-line-2 last:border-0 hover:bg-surface-2 transition-colors">
-                    <td className="py-2.5 pr-3 text-ink whitespace-nowrap">
-                      {m.label}
-                      {m.projected && <span className="ml-2"><StatusPill>In progress</StatusPill></span>}
-                    </td>
-                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{m.count}</td>
-                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{fmtAmount(m.revenue)}</td>
-                    <td className="py-2.5 px-3 text-right tabular-nums font-medium"
-                      style={{ color: m.profit >= 0 ? CLR.emerald : CLR.rose }}>{signed(m.profit)}</td>
-                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums">{m.margin_pct.toFixed(1)}%</td>
-                    <td className="py-2.5 px-3 text-right text-muted tabular-nums">{fmtAmount(m.shipping)}</td>
-                    <td className="py-2.5 px-3 text-right text-muted tabular-nums">{fmtAmount(m.fees)}</td>
-                    <td className="py-2.5 pl-3 text-right tabular-nums font-medium"
-                      style={{ color: m.true_net >= 0 ? CLR.emerald : CLR.rose }}>{signed(m.true_net)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : <Blank h={160} text="No months to show for this range" />}
-      </Card>
-      </Defer>
-
-      {/* ── Primary trend ───────────────────────────────────────── */}
-      <Card
-        title="Revenue and profit by month"
-        sub={trend.length > 0
-          ? `${trend.length} month${trend.length !== 1 ? "s" : ""} of closed deals`
-          : "No closed deals in this range"}
-        right={
-          <div className="flex items-center gap-4 flex-wrap justify-end">
-            <Legend color={revenueClr} label="Revenue" />
-            <Legend color={P.MARK.profit} label="Profit" />
-          </div>
-        }
-      >
-        {trend.length > 0 ? (
-          <>
-            <ResponsiveContainer width="100%" height={300}>
-              <ComposedChart data={trend} barCategoryGap="34%" barGap={3}
-                margin={{ top: 4, right: 4, left: -12, bottom: 0 }}>
-                <defs>
-                  <GlassFill id="an-g-rev" color={revenueClr} />
-                  <GlassFill id="an-g-profit" color={P.MARK.profit} />
-                  <GlassFill id="an-g-loss" color={P.MARK.loss} down />
-                </defs>
-                <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
-                <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
-                <YAxis tick={AX} axisLine={false} tickLine={false}
-                  tickFormatter={(v: number) => fmtCompactCurrency(v)} width={54} />
-                <Tooltip {...TT} formatter={(v: any, n: any) => [signed(Number(v)), n]}
-                  labelFormatter={(l: any) => String(l)} />
-                {/* An open month is drawn at half strength rather than carrying a stacked
-                    forecast on its head. What it will finish at is on the pace panel. */}
-                <Bar dataKey="revenue" name="Revenue" radius={[5, 5, 0, 0]} maxBarSize={38} {...STILL}>
-                  {trend.map((m, i) => (
-                    <Cell key={i} fill="url(#an-g-rev)" fillOpacity={m.projected ? 0.42 : 1} />
-                  ))}
-                </Bar>
-                <Bar dataKey="profit" name="Profit" radius={[5, 5, 0, 0]} maxBarSize={38} {...STILL}>
-                  {trend.map((m, i) => (
-                    <Cell key={i} fill={m.profit >= 0 ? "url(#an-g-profit)" : "url(#an-g-loss)"}
-                      fillOpacity={m.projected ? 0.42 : 1} />
-                  ))}
-                </Bar>
-              </ComposedChart>
-            </ResponsiveContainer>
-            {range.run_rate && (
-              <p className="text-[11px] text-muted mt-3 tabular-nums">
-                {longMonth(range.run_rate.month)} is still open: {range.run_rate.days_elapsed} of{" "}
-                {range.run_rate.days_in_month} days in, so its bars are drawn at half strength.
-              </p>
-            )}
-          </>
-        ) : <Blank h={300} text="Nothing closed in this range" />}
-      </Card>
-
-      {/* ── Refunds (R-444) ───────────────────────────────────────
-          Jack: refunds "noticed and be able to view them", in Analytics. Every refunded
-          deal that closed in the range, what went back and when, and how it came out. A
-          refund comes off its deal on the day the deal closed (his choice), so these
-          figures tie to the revenue and profit above. A refunded deal still at a loss says
-          why: almost always the supplier's money back was never linked to it.
-      ─────────────────────────────────────────────────────────── */}
-      {refunds && (refunds.deals.length > 0 || refunds.totals.owed_back_all > 0.005 || refunds.supplier_back_unlinked > 0.005) && (
-        <Card title="Refunds"
-          sub="Every refunded deal that closed in this range. A refund comes off the deal's revenue and profit on the day the deal closed.">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-5 mb-5">
-            <Stat label="Refunded" value={signed(-refunds.totals.refunded)}
-              color={refunds.totals.refunded > 0 ? CLR.rose : undefined}
-              hint={`${refunds.totals.refunded_deals} deal${refunds.totals.refunded_deals !== 1 ? "s" : ""}`} />
-            <Stat label="Cancelled out" value={String(refunds.totals.cancelled)}
-              hint="The refund undid the sale" />
-            <Stat label="Still a loss" value={refunds.totals.loss_deals ? signed(refunds.totals.loss_total) : "None"}
-              color={refunds.totals.loss_deals ? CLR.rose : undefined}
-              hint={`${refunds.totals.loss_deals} refunded deal${refunds.totals.loss_deals !== 1 ? "s" : ""}`} />
-            <Stat label="Owed back" value={fmtAmount(refunds.totals.owed_back_all)}
-              color={refunds.totals.owed_back_all > 0.005 ? CLR.amber : undefined}
-              hint={refunds.totals.owed_back_deals ? `${refunds.totals.owed_back_deals} deal${refunds.totals.owed_back_deals !== 1 ? "s" : ""}, any date` : "Nothing to send back"} />
-          </div>
-          {refunds.deals.length > 0 ? (
-            <div className="overflow-x-auto -mx-5 px-5 max-h-[480px] overflow-y-auto">
-              <table className="w-full min-w-[860px] text-[12.5px]">
-                <thead className="sticky top-0 bg-surface z-10">
-                  <tr className="text-[11px] text-muted border-b border-line">
-                    <th className="text-left font-medium py-2 pr-3">Invoice</th>
-                    <th className="text-left font-medium py-2 px-3">Buyer</th>
-                    <th className="text-left font-medium py-2 px-3">Closed</th>
-                    <th className="text-left font-medium py-2 px-3">Refunded on</th>
-                    <th className="text-right font-medium py-2 px-3">Sold</th>
-                    <th className="text-right font-medium py-2 px-3">Refunded</th>
-                    <th className="text-right font-medium py-2 px-3">Result</th>
-                    <th className="text-left font-medium py-2 pl-3">How it came out</th>
+          {/* ── Month by month ────────────────────────────────────── */}
+          <Block className="!pb-2">
+            <Head title="Month by month" sub="Every month with a closed deal or an overhead payment" />
+          </Block>
+          {trend.length > 0 ? (
+            <div className="overflow-x-auto px-1.5 pb-4">
+              <table className="ui-table min-w-[720px]">
+                <thead>
+                  <tr>
+                    <th>Month</th><th className="r">Deals</th><th className="r">Revenue</th><th className="r">Profit</th>
+                    <th className="r">Margin</th><th className="r">Shipping</th><th className="r">Fees</th><th className="r">True net</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {refunds.deals.map((d) => (
-                    <tr key={d.deal_flow_id} onClick={() => d.invoice_number && openDealFlow(d.invoice_number, "refund")}
-                      title="Open this deal's refund step"
-                      className="border-b border-line-2 hover:bg-surface-2 transition-colors cursor-pointer">
-                      <td className="py-2.5 pr-3 text-ink whitespace-nowrap">{d.invoice_number || "No number"}</td>
-                      <td className="py-2.5 px-3 text-ink-2 min-w-0"><div className="truncate max-w-[200px]">{d.client_name}</div></td>
-                      <td className="py-2.5 px-3 text-muted tabular-nums whitespace-nowrap">{d.closed_on}</td>
-                      <td className="py-2.5 px-3 text-muted tabular-nums whitespace-nowrap">{d.refunded_on || "–"}</td>
-                      <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap text-ink-2">{fmtAmount(d.sold)}</td>
-                      <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap">
-                        <span style={d.refunded > 0 ? { color: CLR.rose } : undefined}>{d.refunded > 0 ? signed(-d.refunded) : "–"}</span>
-                        {d.refunded > 0.005 && <span className="text-[11px] text-faint ml-1.5">{d.full ? "full" : "part"}</span>}
+                  {[...trend].reverse().map((m) => (
+                    <tr key={m.month}>
+                      <td className="whitespace-nowrap">
+                        {m.label}
+                        {m.projected && <span className="ml-2 align-middle"><StatusPill>In progress</StatusPill></span>}
                       </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums font-medium whitespace-nowrap"
-                        style={{ color: d.profit > 0.5 ? CLR.emerald : d.profit < -0.5 ? CLR.rose : undefined }}>{signed(d.profit)}</td>
-                      <td className="py-2.5 pl-3 min-w-[220px]"><RefundOutcome d={d} /></td>
+                      <td className="r text-muted">{m.count}</td>
+                      <td className="r text-muted">{fmtAmount(m.revenue)}</td>
+                      <td className={`r font-medium ${pnTone(m.profit)}`}>{signed(m.profit)}</td>
+                      <td className="r text-muted">{m.margin_pct.toFixed(1)}%</td>
+                      <td className="r text-faint">{fmtAmount(m.shipping)}</td>
+                      <td className="r text-faint">{fmtAmount(m.fees)}</td>
+                      <td className={`r font-medium ${pnTone(m.true_net)}`}>{signed(m.true_net)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          ) : <Blank h={80} text="No refunded deal closed in this range" />}
-          {refunds.supplier_back_unlinked > 0.005 && (
-            <p className="text-[11.5px] text-muted mt-4">
-              {fmtAmount(refunds.supplier_back_unlinked)} of supplier money back in the bank ({refunds.supplier_back_count} payment{refunds.supplier_back_count !== 1 ? "s" : ""} in this range)
-              is linked to no deal. Link it on the refunded deal's refund step, under supplier money back, and that deal's loss clears.
-            </p>
-          )}
-        </Card>
-      )}
+          ) : <Blank h={160} text="No months to show for this range" />}
 
-      {/* ── Money in, money out (R-317) ───────────────────────────
-          A statement, not a dashboard. Three blocks that have to agree with one
-          another, and that say so in words when they do not: the bridge from revenue
-          to true net, the bank measured against those same deals, and every deal with
-          the bank evidence behind it. The bridge and the bank sit side by side on xl;
-          the table is full width beneath them with a sticky header and a sticky total.
-      ─────────────────────────────────────────────────────────── */}
-      {recon && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <Card
-              glass
-              title="Money in, money out"
-              sub={`Revenue down to true net for ${rangeLabel}`}
-              right={recon.bridge_ties
-                ? <StatusPill tone="success">Every line ties</StatusPill>
-                : <StatusPill tone="danger">Does not tie</StatusPill>}
-            >
-              <BridgeList rows={recon.bridge} CLR={CLR} />
-              <p className="text-[11px] text-muted mt-4">
-                Each subtotal is read straight from the book, not added up from the lines
-                above it. Where the two disagree, the difference is named on the line.
-              </p>
-            </Card>
+          <div className="hsep" />
 
-            <Card
-              glass
-              title="The bank against these deals"
-              sub="Why the account moved by a different figure from the profit"
-              right={recon.bank.ties
-                ? <StatusPill tone="success">Fully explained</StatusPill>
-                : <StatusPill tone="warning">{fmtAmount(Math.abs(recon.bank.residual))} unexplained</StatusPill>}
-            >
-              <BridgeList rows={recon.bank.rows} CLR={CLR} />
-              <p className="text-[11px] text-muted mt-4">
-                A bank line is dated by the day it posted; a deal is dated by the day it
-                completed. Over all time those are the same book. Over a short range they
-                are not, and the difference lands on the unexplained line.
-              </p>
-              {recon.bank.supplier_back_count > 0 && (
-                <p className="text-[11px] text-warning-ink mt-2">
-                  {fmtAmount(recon.bank.supplier_back_unlinked)} of supplier refunds across{" "}
-                  {recon.bank.supplier_back_count} transaction
-                  {recon.bank.supplier_back_count !== 1 ? "s" : ""} is not tied to a deal. A
-                  deal's cost is built from what is linked to it, so that money has not come
-                  off any cost yet. Tie each one to its deal in Financials as money back
-                  from the supplier.
-                </p>
-              )}
-              {recon.bank.orphan_allocations > 0 && (
-                <p className="text-[11px] text-danger-ink mt-2">
-                  {recon.bank.orphan_allocations} allocation
-                  {recon.bank.orphan_allocations !== 1 ? "s" : ""} worth{" "}
-                  {fmtAmount(recon.bank.orphan_amount)} point at a bank transaction that no
-                  longer exists. That money cannot be traced from either side.
-                </p>
-              )}
-            </Card>
-          </div>
-
-          <Card
-            title="Every closed deal, and the money behind it"
-            sub={recon.deals_capped
-              ? `The ${recon.deals.length} most profitable of ${recon.totals.deal_count} closed deals: the totals cover all of them`
-              : `${recon.totals.deal_count} closed deal${recon.totals.deal_count !== 1 ? "s" : ""} in ${rangeLabel}`}
-          >
-            {recon.deals.length > 0 ? (
+          {/* ── Primary trend ─────────────────────────────────────── */}
+          <Block>
+            <Head title="Revenue and profit by month"
+              sub={trend.length > 0 ? plural(trend.length, "month") + " of closed deals" : "No closed deals in this range"}
+              right={<div className="flex items-center gap-4"><Key color={P.line} label="Revenue" /><Key color={P.hi} label="Profit" /></div>} />
+            {trend.length > 0 ? (
               <>
-                <div className="overflow-x-auto -mx-5 px-5 max-h-[560px] overflow-y-auto">
-                  <table className="w-full min-w-[860px] text-[12.5px]">
-                    <thead className="sticky top-0 bg-surface z-10">
-                      <tr className="text-[11px] text-muted border-b border-line">
-                        <th className="text-left font-medium py-2 pr-3">Invoice</th>
-                        <th className="text-left font-medium py-2 px-3">Buyer</th>
-                        <th className="text-left font-medium py-2 px-3">Closed</th>
-                        <th className="text-right font-medium py-2 px-3">Money in</th>
-                        <th className="text-right font-medium py-2 px-3">Money out</th>
-                        <th className="text-right font-medium py-2 px-3">Refunds</th>
-                        <th className="text-right font-medium py-2 px-3">Profit</th>
-                        <th className="text-right font-medium py-2 pl-3">True net</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reconRows.map((d, i) => (
-                        <tr key={`${d.invoice_number}-${i}`}
-                          className="border-b border-line-2 hover:bg-surface-2 transition-colors">
-                          <td className="py-2.5 pr-3 text-ink whitespace-nowrap">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span>{d.invoice_number}</span>
-                              {d.flags.map((f) => (
-                                <StatusPill key={f} tone="warning">{f}</StatusPill>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="py-2.5 px-3 text-ink-2 min-w-0">
-                            <div className="truncate max-w-[200px]">{d.client_name}</div>
-                          </td>
-                          <td className="py-2.5 px-3 text-muted tabular-nums whitespace-nowrap">{d.completed_on}</td>
-                          <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap text-success-ink">
-                            {fmtAmount(d.money_in)}
-                          </td>
-                          <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap text-ink-2">
-                            {fmtAmount(d.money_out)}
-                          </td>
-                          <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap"
-                            style={d.refunds > 0 ? { color: CLR.rose } : undefined}>
-                            {d.refunds > 0 ? signed(-d.refunds) : "–"}
-                          </td>
-                          <td className="py-2.5 px-3 text-right tabular-nums font-medium whitespace-nowrap"
-                            style={{ color: d.profit >= 0 ? CLR.emerald : CLR.rose }}>{signed(d.profit)}</td>
-                          <td className="py-2.5 pl-3 text-right tabular-nums font-medium whitespace-nowrap"
-                            style={{ color: d.true_net_share >= 0 ? CLR.emerald : CLR.rose }}>
-                            {signed(d.true_net_share)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot className="sticky bottom-0 bg-surface">
-                      <tr className="border-t border-line text-[12.5px] font-semibold">
-                        <td className="py-2.5 pr-3 text-ink whitespace-nowrap">
-                          {recon.totals.deal_count} deal{recon.totals.deal_count !== 1 ? "s" : ""}
-                        </td>
-                        <td className="py-2.5 px-3" />
-                        <td className="py-2.5 px-3" />
-                        <td className="py-2.5 px-3 text-right tabular-nums text-success-ink whitespace-nowrap">
-                          {fmtAmount(recon.totals.money_in)}
-                        </td>
-                        <td className="py-2.5 px-3 text-right tabular-nums text-ink whitespace-nowrap">
-                          {fmtAmount(recon.totals.money_out)}
-                        </td>
-                        <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap"
-                          style={recon.totals.refunds > 0 ? { color: CLR.rose } : undefined}>
-                          {recon.totals.refunds > 0 ? signed(-recon.totals.refunds) : "–"}
-                        </td>
-                        <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap"
-                          style={{ color: recon.totals.profit >= 0 ? CLR.emerald : CLR.rose }}>
-                          {signed(recon.totals.profit)}
-                        </td>
-                        <td className="py-2.5 pl-3 text-right tabular-nums whitespace-nowrap"
-                          style={{ color: recon.totals.true_net_share >= 0 ? CLR.emerald : CLR.rose }}>
-                          {signed(recon.totals.true_net_share)}
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                <div className="mt-5">
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={trend} barCategoryGap="34%" barGap={3} margin={{ top: 4, right: 4, left: -8, bottom: 0 }}>
+                      <CartesianGrid stroke={P.grid} vertical={false} />
+                      <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
+                      <YAxis tick={AX} axisLine={false} tickLine={false} width={54} tickFormatter={(v: number) => fmtCompactCurrency(v)} />
+                      <Tooltip {...TT} formatter={(v: any, n: any) => [signed(Number(v)), n]} labelFormatter={(l: any) => String(l)} />
+                      {/* An open month is drawn at half strength rather than carrying a stacked forecast on its head. */}
+                      <RBar dataKey="revenue" name="Revenue" radius={[3, 3, 0, 0]} maxBarSize={22} animationDuration={600}>
+                        {trend.map((m, i) => <Cell key={i} fill={P.line} fillOpacity={m.projected ? 0.42 : 1} />)}
+                      </RBar>
+                      <RBar dataKey="profit" name="Profit" radius={[3, 3, 0, 0]} maxBarSize={22} animationDuration={600}>
+                        {trend.map((m, i) => <Cell key={i} fill={m.profit >= 0 ? P.hi : P.loss} fillOpacity={m.projected ? 0.42 : 1} />)}
+                      </RBar>
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
-                {!reconAll && recon.deals.length > reconRows.length && (
-                  <button onClick={() => setReconAll(true)}
-                    className="mt-3 px-3 h-8 rounded-lg bg-surface ring-1 ring-line text-[12px] text-muted
-                               hover:ring-accent hover:text-accent transition-colors">
-                    Show all {recon.deals.length} rows
-                  </button>
-                )}
-                <div className="text-[11px] mt-3 space-y-1">
-                  <p className="text-muted">
-                    Profit and true net add back to the bridge exactly. Money in and money out
-                    are bank evidence (what is actually allocated to the deal), so they are
-                    allowed to differ from revenue and cost, and here is by how much.
+                {range.run_rate && (
+                  <p className="ui-note mt-3 tabular-nums">
+                    {longMonth(range.run_rate.month)} is still open: {range.run_rate.days_elapsed} of{" "}
+                    {range.run_rate.days_in_month} days in, so its bars are drawn at half strength.
                   </p>
-                  <Gap label="Buyer money banked" gap={recon.totals.money_in_gap} against="recorded revenue" CLR={CLR} />
-                  <Gap label="Supplier money banked" gap={recon.totals.money_out_gap} against="recorded cost" CLR={CLR}
-                    because={Math.abs(recon.totals.money_out_gap - recon.totals.supplier_refund_in) < 0.005
-                      && recon.totals.supplier_refund_in > 0
-                      ? `exactly the ${fmtAmount(recon.totals.supplier_refund_in)} a supplier sent back`
-                      : undefined} />
-                </div>
+                )}
               </>
-            ) : <Blank h={160} text="Nothing closed in this range to reconcile" />}
-          </Card>
-        </div>
+            ) : <Blank h={260} text="Nothing closed in this range" />}
+          </Block>
+
+          <div className="hsep" />
+
+          {/* ── What went wrong + standouts ───────────────────────── */}
+          <Cols
+            a={
+              <Block>
+                <Head title="What went wrong" sub={`Closed below cost in ${rangeLabel}`} />
+                <div className="mt-4">
+                  <Fig label="Closed at a loss" value={String(range.loss_deals)} tone={range.loss_deals > 0 ? "down" : undefined}
+                    hint={range.loss_total < 0 ? signed(range.loss_total) : "none"} />
+                </div>
+                <p className="ui-note mt-4 leading-[1.5]">
+                  {lost + range.loss_deals + range.refunded_deals === 0
+                    ? `Nothing was lost, refunded or closed below cost in ${rangeLabel}.`
+                    : `A loss is a deal whose profit went negative after refunds. Deals that fell through (${lost}) are counted above, and refunds are under Money.`}
+                </p>
+              </Block>
+            }
+            b={
+              <Block>
+                <Head title="Standouts" sub={`The extremes of ${rangeLabel}`} />
+                <div className="mt-2">
+                  <Highlight label="Best margin"
+                    name={range.best_margin_deal?.title ?? null}
+                    sub={range.best_margin_deal ? range.best_margin_deal.client_name : null}
+                    value={range.best_margin_deal ? `${range.best_margin_deal.margin_pct.toFixed(1)}%` : null}
+                    valueCls="text-success-ink"
+                    amount={range.best_margin_deal ? signed(range.best_margin_deal.net_profit) : null} />
+                  <Highlight label="Worst margin"
+                    name={range.worst_margin_deal?.title ?? null}
+                    sub={range.worst_margin_deal ? range.worst_margin_deal.client_name : null}
+                    value={range.worst_margin_deal ? `${range.worst_margin_deal.margin_pct.toFixed(1)}%` : null}
+                    valueCls={(range.worst_margin_deal?.margin_pct ?? 0) < 0 ? "text-danger-ink" : "text-warning-ink"}
+                    amount={range.worst_margin_deal ? signed(range.worst_margin_deal.net_profit) : null} />
+                  <Highlight label="Biggest invoice"
+                    name={range.biggest_invoice?.number ?? null}
+                    sub={range.biggest_invoice?.client_name ?? null}
+                    value={range.biggest_invoice ? fmtAmount(range.biggest_invoice.total) : null}
+                    amount={null} />
+                </div>
+              </Block>
+            }
+          />
+        </>
       )}
 
-      <Defer h={420}>
-      {/* ── Shipping and bank fees: its own panel, not a line above a chart ── */}
-      <Card
-        title="Shipping and bank fees"
-        sub="Money that leaves the bank and never reaches a deal's cost"
-      >
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,240px)_minmax(0,1fr)] gap-x-8 gap-y-6">
-          {/* The two sums Jack asked for, stated plainly, with the ratio under them. */}
-          <div className="min-w-0 space-y-4">
-            <Stat label="Shipping" value={fmtAmount(range.total_shipping)} swatch={P.cat[0]} />
-            <Stat label="Bank and wire fees" value={fmtAmount(range.total_fees)} swatch={P.cat[1]} />
-            <div className="pt-4 border-t border-line-2">
-              <Stat label="Overhead" value={fmtAmount(overheadTotal)}
-                hint={`${range.overhead_ratio.toFixed(1)}% of revenue`} />
-            </div>
-            <div className="pt-4 border-t border-line-2">
-              <Stat label="True net" value={signed(range.true_net)}
-                color={range.true_net >= 0 ? CLR.emerald : CLR.rose}
-                hint="net profit minus this overhead" />
-            </div>
-          </div>
-
-          {/* One dollar axis for the two overhead series; the ratio is a different
-              measure, so it gets its own chart rather than a second y-axis. */}
-          <div className="min-w-0 space-y-4">
-            <div className="min-w-0">
-              <div className="flex items-center justify-between gap-3 mb-2">
-                <span className="text-[11.5px] text-muted">Overhead by month</span>
-                <div className="flex items-center gap-4">
-                  <Legend color={P.cat[0]} label="Shipping" />
-                  <Legend color={P.cat[1]} label="Fees" />
+      {/* ═════════════════ MONEY ═════════════════ */}
+      {tab === "money" && (
+        <>
+          {/* ── Refunds (R-444) ───────────────────────────────────── */}
+          {refundsBusy && !refunds && (
+            <>
+              <Block><div className="h-[120px] rounded-xl bg-surface-2 animate-pulse" aria-busy="true" /></Block>
+              <div className="hsep" />
+            </>
+          )}
+          {refunds && (refunds.deals.length > 0 || refunds.totals.owed_back_all > 0.005 || refunds.supplier_back_unlinked > 0.005) && (
+            <>
+              <Block className="!pb-2">
+                <Head title="Refunds"
+                  sub="Every refunded deal that closed in this range. A refund comes off the deal's revenue and profit on the day the deal closed." />
+                <div className="grid grid-cols-2 min-[1200px]:grid-cols-4 gap-x-6 gap-y-5 mt-4">
+                  <Fig label="Refunded" value={signed(-refunds.totals.refunded)}
+                    tone={refunds.totals.refunded > 0 ? "down" : undefined}
+                    hint={plural(refunds.totals.refunded_deals, "deal")} />
+                  <Fig label="Cancelled out" value={String(refunds.totals.cancelled)} hint="The refund undid the sale" />
+                  <Fig label="Still a loss" value={refunds.totals.loss_deals ? signed(refunds.totals.loss_total) : "None"}
+                    tone={refunds.totals.loss_deals ? "down" : undefined}
+                    hint={`${plural(refunds.totals.loss_deals, "refunded deal")}`} />
+                  <Fig label="Owed back" value={fmtAmount(refunds.totals.owed_back_all)}
+                    tone={refunds.totals.owed_back_all > 0.005 ? "warn" : undefined}
+                    hint={refunds.totals.owed_back_deals ? `${plural(refunds.totals.owed_back_deals, "deal")}, any date` : "Nothing to send back"} />
                 </div>
-              </div>
-              {trend.length > 0 ? (
-                <ResponsiveContainer width="100%" height={170}>
-                  <BarChart data={trend} margin={{ top: 4, right: 4, left: -12, bottom: 0 }} barCategoryGap="34%">
-                    <defs>
-                      <GlassFill id="an-g-ship" color={P.cat[0]} />
-                      <GlassFill id="an-g-fees" color={P.cat[1]} />
-                    </defs>
-                    <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
-                    <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
-                    <YAxis tick={AX} axisLine={false} tickLine={false} width={54}
-                      tickFormatter={(v: number) => fmtCompactCurrency(v)} />
-                    <Tooltip {...TT} formatter={(v: any, n: any) => [signed(Number(v)), n]} />
-                    <Bar dataKey="shipping" name="Shipping" stackId="oh" fill="url(#an-g-ship)" maxBarSize={34} {...STILL} />
-                    <Bar dataKey="fees" name="Fees" stackId="oh" fill="url(#an-g-fees)" maxBarSize={34} radius={[5, 5, 0, 0]} {...STILL} />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : <Blank h={170} text="No overhead recorded in this range" />}
-            </div>
-            <div className="min-w-0">
-              <span className="text-[11.5px] text-muted">Overhead as a share of revenue</span>
-              {trend.length > 0 ? (
-                <ResponsiveContainer width="100%" height={130}>
-                  <LineChart data={trend} margin={{ top: 8, right: 4, left: -12, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
-                    <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
-                    <YAxis tick={AX} axisLine={false} tickLine={false} width={54}
-                      tickFormatter={(v: number) => `${v.toFixed(0)}%`} />
-                    <Tooltip {...TT} formatter={(v: any) => [`${Number(v).toFixed(1)}%`, "Overhead"]} />
-                    <Line type="monotone" dataKey="overhead_pct" name="Overhead" stroke={P.cat[0]}
-                      strokeWidth={2} dot={{ r: 2.5, strokeWidth: 0, fill: P.cat[0] }} {...STILL} />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : <Blank h={130} text="No revenue to compare against" />}
-            </div>
-          </div>
-        </div>
-      </Card>
-      </Defer>
-
-      <Defer h={360}>
-      {/* ── Margin distribution + revenue concentration ─────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card title="Margin distribution" sub="Deals by margin band, so a fat tail stays visible">
-          {range.margin_bands.some((b) => b.deals > 0) ? (
-            <>
-              <ResponsiveContainer width="100%" height={230}>
-                <BarChart data={range.margin_bands} layout="vertical" barCategoryGap="26%"
-                  margin={{ top: 0, right: 12, left: 6, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="2 4" stroke={P.grid} horizontal={false} />
-                  <XAxis type="number" tick={AX} axisLine={false} tickLine={false} allowDecimals={false} />
-                  <YAxis type="category" dataKey="label" tick={AX} axisLine={false} tickLine={false} width={56} />
-                  <Tooltip {...TT}
-                    formatter={(v: any, _n: any, e: any) => [
-                      `${v} deal${v !== 1 ? "s" : ""} · ${fmtAmount(e?.payload?.revenue ?? 0)} revenue`, "Deals"]} />
-                  <Bar dataKey="deals" name="Deals" radius={[0, 5, 5, 0]} maxBarSize={24} {...STILL}>
-                    {range.margin_bands.map((b, i) => (
-                      <Cell key={b.label} fill={i === 0 ? P.MARK.loss : P.profitRamp[Math.min(i - 1, P.profitRamp.length - 1)]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5 text-[11.5px]">
-                {range.margin_bands.filter((b) => b.deals > 0).map((b) => (
-                  <div key={b.label} className="flex items-center justify-between gap-2 min-w-0">
-                    <span className="text-muted truncate">{b.label}</span>
-                    <span className="text-ink-2 tabular-nums font-medium flex-shrink-0">{signed(b.profit)}</span>
-                  </div>
-                ))}
-              </div>
+              </Block>
+              {refunds.deals.length > 0 ? (
+                <RefundsTable deals={refunds.deals} />
+              ) : <Blank h={80} text="No refunded deal closed in this range" />}
+              {refunds.supplier_back_unlinked > 0.005 && (
+                <p className="ui-note px-4 pb-4 leading-[1.5]">
+                  {fmtAmount(refunds.supplier_back_unlinked)} of supplier money back in the bank ({plural(refunds.supplier_back_count, "payment")} in this range)
+                  is linked to no deal. Link it on the refunded deal's refund step, under supplier money back, and that deal's loss clears.
+                </p>
+              )}
+              <div className="hsep" />
             </>
-          ) : <Blank h={230} text="No closed deals with revenue in this range" />}
-        </Card>
+          )}
 
-        <Card title="Where the revenue is concentrated"
-          sub={`${range.concentration.client_count} buyer${range.concentration.client_count !== 1 ? "s" : ""} in ${rangeLabel}`}>
-          {range.concentration.client_count > 0 ? (
+          {/* ── Money in, money out (R-317) ───────────────────────── */}
+          {recon && (
             <>
-              <div className="grid grid-cols-3 gap-3 mb-5">
-                <Concentration label="Top buyer" pct={range.concentration.top1_pct} warnAt={40} unit="of revenue" P={P} />
-                <Concentration label="Top 3" pct={range.concentration.top3_pct} warnAt={70} unit="of revenue" P={P} />
-                <Concentration label="Top 5" pct={range.concentration.top5_pct} warnAt={85} unit="of revenue" P={P} />
-              </div>
-              <ShareBar
-                parts={range.top_revenue_clients.map((c, i) => ({ name: c.name, value: c.revenue, color: P.cat[i] }))}
-                total={range.concentration.total_revenue} otherColor={P.neutral} animate={bars}
+              <Cols
+                a={
+                  <Block>
+                    <Head title="Money in, money out" sub={`Revenue down to true net for ${rangeLabel}`}
+                      right={recon.bridge_ties
+                        ? <StatusPill tone="success">Every line ties</StatusPill>
+                        : <StatusPill tone="danger">Does not tie</StatusPill>} />
+                    <div className="mt-3"><BridgeList rows={recon.bridge} /></div>
+                    <p className="ui-note mt-3 leading-[1.5]">
+                      Each subtotal is read straight from the book, not added up from the lines
+                      above it. Where the two disagree, the difference is named on the line.
+                    </p>
+                  </Block>
+                }
+                b={
+                  <Block>
+                    <Head title="The bank against these deals" sub="Why the account moved by a different figure from the profit"
+                      right={recon.bank.ties
+                        ? <StatusPill tone="success">Fully explained</StatusPill>
+                        : <StatusPill tone="warning">{fmtAmount(Math.abs(recon.bank.residual))} unexplained</StatusPill>} />
+                    <div className="mt-3"><BridgeList rows={recon.bank.rows} /></div>
+                    <p className="ui-note mt-3 leading-[1.5]">
+                      A bank line is dated by the day it posted; a deal is dated by the day it
+                      completed. Over all time those are the same book. Over a short range they
+                      are not, and the difference lands on the unexplained line.
+                    </p>
+                    {recon.bank.supplier_back_count > 0 && (
+                      <p className="ui-note text-warning-ink mt-2 leading-[1.5]">
+                        {fmtAmount(recon.bank.supplier_back_unlinked)} of supplier refunds across{" "}
+                        {plural(recon.bank.supplier_back_count, "transaction")} is not tied to a deal. A
+                        deal's cost is built from what is linked to it, so that money has not come
+                        off any cost yet. Tie each one to its deal in Financials as money back
+                        from the supplier.
+                      </p>
+                    )}
+                    {recon.bank.orphan_allocations > 0 && (
+                      <p className="ui-note text-danger-ink mt-2 leading-[1.5]">
+                        {plural(recon.bank.orphan_allocations, "allocation")} worth{" "}
+                        {fmtAmount(recon.bank.orphan_amount)} point at a bank transaction that no
+                        longer exists. That money cannot be traced from either side.
+                      </p>
+                    )}
+                  </Block>
+                }
               />
-              <div className="mt-4 space-y-2">
-                {range.top_revenue_clients.map((c, i) => (
-                  <div key={c.name} className="flex items-center gap-2.5 min-w-0">
-                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: glassSeg(P.cat[i]) }} />
-                    <span className="text-[12.5px] text-ink truncate flex-1 min-w-0">{c.name}</span>
-                    <span className="text-[11px] text-muted tabular-nums flex-shrink-0 w-11 text-right">
-                      {c.pct.toFixed(1)}%
-                    </span>
-                    <span className="text-[12.5px] text-ink-2 font-semibold tabular-nums flex-shrink-0">
-                      {fmtAmount(c.revenue)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : <Blank h={230} text="No buyers with revenue in this range" />}
-        </Card>
-      </div>
-      </Defer>
+              <div className="hsep" />
 
-      <Defer h={360}>
-      {/* ── Repeat versus new + deal velocity ──────────────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card title="Repeat buyers versus first-time"
-          sub="A deal counts as first-time when it is that buyer's earliest closed deal">
-          {repeatTotal > 0 ? (
-            <>
-              <ShareBar
-                parts={[
-                  { name: "Repeat", value: rn.repeat_revenue, color: P.cat[0] },
-                  { name: "First-time", value: rn.new_revenue, color: P.cat[1] },
-                ]}
-                total={repeatTotal} otherColor={P.neutral} animate={bars}
-              />
-              <div className="grid grid-cols-2 gap-x-6 gap-y-4 mt-5">
-                <Stat label="Repeat revenue" value={fmtAmount(rn.repeat_revenue)} swatch={P.cat[0]}
-                  hint={`${rn.repeat_deals} deal${rn.repeat_deals !== 1 ? "s" : ""} · ${rn.repeat_clients} buyer${rn.repeat_clients !== 1 ? "s" : ""}`} />
-                <Stat label="First-time revenue" value={fmtAmount(rn.new_revenue)} swatch={P.cat[1]}
-                  hint={`${rn.new_deals} deal${rn.new_deals !== 1 ? "s" : ""} · ${rn.new_clients} buyer${rn.new_clients !== 1 ? "s" : ""}`} />
-                <Stat label="Repeat profit" value={signed(rn.repeat_profit)}
-                  color={rn.repeat_profit >= 0 ? CLR.emerald : CLR.rose} />
-                <Stat label="First-time profit" value={signed(rn.new_profit)}
-                  color={rn.new_profit >= 0 ? CLR.emerald : CLR.rose} />
-              </div>
-            </>
-          ) : <Blank h={230} text="No revenue to split in this range" />}
-        </Card>
-
-        <Card title="Deal velocity"
-          sub={range.velocity.median_days !== null
-            ? `Median ${range.velocity.median_days.toFixed(0)} days from invoice issued to deal completed, over ${range.velocity.deals_measured} deal${range.velocity.deals_measured !== 1 ? "s" : ""}`
-            : "Days from invoice issued to deal completed"}>
-          {velocityRows.length > 0 ? (
-            <ResponsiveContainer width="100%" height={230}>
-              <LineChart data={velocityRows}
-                margin={{ top: 8, right: 4, left: -12, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
-                <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
-                <YAxis tick={AX} axisLine={false} tickLine={false} width={40}
-                  tickFormatter={(v: number) => `${v}d`} />
-                <Tooltip {...TT}
-                  formatter={(v: any, _n: any, e: any) => [
-                    `${Number(v).toFixed(0)} days · ${e?.payload?.deals ?? 0} deal${e?.payload?.deals !== 1 ? "s" : ""}`,
-                    "Median"]} />
-                <Line type="monotone" dataKey="median_days" name="Median" stroke={P.cat[0]} strokeWidth={2}
-                  dot={{ r: 2.5, strokeWidth: 0, fill: P.cat[0] }} connectNulls {...STILL} />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : <Blank h={230} text="No deal has both an issue date and a completion date yet" />}
-        </Card>
-      </div>
-      </Defer>
-
-      <Defer h={360}>
-      {/* ── R-402: what sells, by category and by brand ─────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <LabelCard kind="category" labels={labels} metric={catMetric} setMetric={setCatMetric}
-          rangeLabel={rangeLabel} bars={bars} P={P} onOpen={(focus) => setLabelling({ focus })} />
-        <LabelCard kind="brand" labels={labels} metric={brandMetric} setMetric={setBrandMetric}
-          rangeLabel={rangeLabel} bars={bars} P={P} onOpen={(focus) => setLabelling({ focus })} />
-      </div>
-      </Defer>
-
-      <Defer h={360}>
-      {/* ── Supplier spend + where the profit is (by state or country) ── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card title="Where the money goes"
-          sub={`${range.supplier_concentration.supplier_count} supplier${range.supplier_concentration.supplier_count !== 1 ? "s" : ""} paid in ${rangeLabel}`}>
-          {range.supplier_concentration.supplier_count > 0 ? (
-            <>
-              <div className="grid grid-cols-2 gap-3 mb-5">
-                <Concentration label="Top supplier" pct={range.supplier_concentration.top1_pct} warnAt={50} unit="of spend" P={P} />
-                <Concentration label="Top 3" pct={range.supplier_concentration.top3_pct} warnAt={80} unit="of spend" P={P} />
-              </div>
-              <ShareBar
-                parts={range.top_suppliers_range.map((s, i) => ({ name: s.name, value: s.total_paid, color: P.cat[i] }))}
-                total={range.supplier_concentration.total_spend} otherColor={P.neutral} animate={bars}
-              />
-              <div className="mt-4 space-y-2">
-                {range.top_suppliers_range.map((s, i) => (
-                  <div key={s.name} className="flex items-center gap-2.5 min-w-0">
-                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: glassSeg(P.cat[i]) }} />
-                    <span className="text-[12.5px] text-ink truncate flex-1 min-w-0">{s.name}</span>
-                    <span className="text-[11px] text-muted tabular-nums flex-shrink-0">
-                      {s.deal_count} deal{s.deal_count !== 1 ? "s" : ""}
-                    </span>
-                    <span className="text-[12.5px] text-ink-2 font-semibold tabular-nums flex-shrink-0 w-24 text-right">
-                      {fmtAmount(s.total_paid)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : <Blank h={230} text="No supplier payments in this range" />}
-        </Card>
-
-        {regions && (
-        <Card title="Where the profit is"
-          sub={`Client profit by state, or by country outside the US · all time${regions.unplaced ? ` · ${regions.unplaced} client${regions.unplaced !== 1 ? "s" : ""} with no state or country` : ""}`}>
-          {regions.list.length > 0 ? (
-            <>
-              <div className="space-y-3.5">
-                {(() => {
-                  const top = Math.max(1, ...regions.list.map((r) => Math.abs(r.profit)));
-                  return regions.list.slice(0, 10).map((r, i) => (
-                    <div key={r.region} className="min-w-0">
-                      <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
-                        <span className="text-[12px] font-medium text-ink-2 truncate min-w-0">{r.label}</span>
-                        <div className="flex items-center gap-2.5 flex-shrink-0">
-                          <span className="text-[11px] text-muted tabular-nums">
-                            {r.count} client{r.count !== 1 ? "s" : ""}
-                          </span>
-                          <span className="text-[12px] font-semibold tabular-nums" style={{ color: r.profit < 0 ? CLR.rose : undefined }}>
-                            {fmtAmount(r.profit)}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
-                        <div className="h-full rounded-full transition-all duration-700 ease-out"
-                          style={{
-                            width: bars ? `${(Math.abs(r.profit) / top) * 100}%` : "0%",
-                            background: glassBar(r.profit < 0 ? CLR.rose : i < P.cat.length ? P.cat[i] : P.neutral),
-                            transitionDelay: `${i * 55}ms`,
-                          }} />
-                      </div>
+              <Block className="!pb-2">
+                <Head title="Every closed deal, and the money behind it"
+                  sub={recon.deals_capped
+                    ? `The ${recon.deals.length} most profitable of ${recon.totals.deal_count} closed deals: the totals cover all of them`
+                    : `${plural(recon.totals.deal_count, "closed deal")} in ${rangeLabel}`} />
+              </Block>
+              {recon.deals.length > 0 ? (
+                <>
+                  <ReconTable recon={recon} rows={reconRows} />
+                  <div className="px-4 pt-3 pb-5">
+                    {!reconAll && recon.deals.length > reconRows.length && (
+                      <Button size="sm" onClick={() => setReconAll(true)}>Show all {recon.deals.length} rows</Button>
+                    )}
+                    <div className="ui-note mt-3 space-y-1.5 leading-[1.5]">
+                      <p className="m-0">
+                        Profit and true net add back to the bridge exactly. Money in and money out
+                        are bank evidence (what is actually allocated to the deal), so they are
+                        allowed to differ from revenue and cost, and here is by how much.
+                      </p>
+                      <Gap label="Buyer money banked" gap={recon.totals.money_in_gap} against="recorded revenue" />
+                      <Gap label="Supplier money banked" gap={recon.totals.money_out_gap} against="recorded cost"
+                        because={Math.abs(recon.totals.money_out_gap - recon.totals.supplier_refund_in) < 0.005
+                          && recon.totals.supplier_refund_in > 0
+                          ? `exactly the ${fmtAmount(recon.totals.supplier_refund_in)} a supplier sent back`
+                          : undefined} />
                     </div>
-                  ));
-                })()}
-              </div>
-              <button
-                onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "globe" }))}
-                className="mt-5 text-[12px] font-medium text-accent hover:underline">
-                See them on the globe
-              </button>
+                  </div>
+                </>
+              ) : <Blank h={160} text="Nothing closed in this range to reconcile" />}
+              <div className="hsep" />
             </>
-          ) : <Blank h={160} text="No client has a state or country yet" />}
-        </Card>
-        )}
-      </div>
-      </Defer>
+          )}
 
-      <Defer h={280}>
-      {/* ── What went wrong + standouts ────────────────────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card glass title="What went wrong" sub={`Losses, refunds and deals that fell through in ${rangeLabel}`}>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-            <Stat label="Fell through" value={String(lost)} color={lost > 0 ? CLR.rose : undefined}
-              hint="invoices voided" />
-            <Stat label="Closed at a loss" value={String(range.loss_deals)}
-              color={range.loss_deals > 0 ? CLR.rose : undefined}
-              hint={range.loss_total < 0 ? signed(range.loss_total) : "none"} />
-            <Stat label="Refunded" value={signed(-range.refunded_in_range)}
-              color={range.refunded_in_range > 0 ? CLR.rose : undefined}
-              hint={`${range.refunded_deals} deal${range.refunded_deals !== 1 ? "s" : ""}`} />
-            <Stat label="Still owed back" value={fmtAmount(stats.refund_owed_remaining)}
-              color={stats.refund_owed_remaining > 0 ? CLR.amber : undefined}
-              hint="promised, not yet sent" />
-          </div>
-          <p className="text-[11.5px] text-muted mt-5">
-            {lost + range.loss_deals + range.refunded_deals === 0
-              ? `Nothing was lost, refunded or closed below cost in ${rangeLabel}.`
-              : `Lost deals are invoices voided in ${rangeLabel}; a loss is a deal whose profit went negative after refunds.`}
-          </p>
-        </Card>
-
-        <Card glass title="Standouts" sub={`The extremes of ${rangeLabel}`}>
-          <div className="space-y-3">
-            <Highlight
-              label="Best margin"
-              name={range.best_margin_deal?.title ?? null}
-              sub={range.best_margin_deal ? range.best_margin_deal.client_name : null}
-              value={range.best_margin_deal ? `${range.best_margin_deal.margin_pct.toFixed(1)}%` : null}
-              valueColor={CLR.emerald}
-              amount={range.best_margin_deal ? signed(range.best_margin_deal.net_profit) : null}
-            />
-            <Highlight
-              label="Worst margin"
-              name={range.worst_margin_deal?.title ?? null}
-              sub={range.worst_margin_deal ? range.worst_margin_deal.client_name : null}
-              value={range.worst_margin_deal ? `${range.worst_margin_deal.margin_pct.toFixed(1)}%` : null}
-              valueColor={(range.worst_margin_deal?.margin_pct ?? 0) < 0 ? CLR.rose : CLR.amber}
-              amount={range.worst_margin_deal ? signed(range.worst_margin_deal.net_profit) : null}
-            />
-            <Highlight
-              label="Biggest invoice"
-              name={range.biggest_invoice?.number ?? null}
-              sub={range.biggest_invoice?.client_name ?? null}
-              value={range.biggest_invoice ? fmtAmount(range.biggest_invoice.total) : null}
-              valueColor={undefined}
-              amount={null}
-            />
-          </div>
-        </Card>
-      </div>
-      </Defer>
-
-      <Defer h={300}>
-      {/* ── Client mix + invoice status ────────────────────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card title="Client mix" sub={`${totalCl} client${totalCl !== 1 ? "s" : ""} by tier · all time`}>
-          {totalCl > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)] gap-5 items-center">
+          {/* ── Shipping and bank fees ────────────────────────────── */}
+          <Block>
+            <Head title="Shipping and bank fees" sub="Money that leaves the bank and never reaches a deal's cost" />
+            <div className="grid grid-cols-1 min-[1200px]:grid-cols-[minmax(0,200px)_minmax(0,1fr)] gap-x-10 gap-y-6 mt-4">
               <div className="min-w-0">
-                <ResponsiveContainer width="100%" height={180}>
-                  <PieChart>
-                    <defs>
-                      {Object.entries(TIER_CLR).map(([t, c]) => <GlassFill key={t} id={`an-g-tier-${t}`} color={c} />)}
-                    </defs>
-                    <Pie
-                      data={TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => ({ name: TIER_NAME[t], value: tierMap[t] }))}
-                      dataKey="value" nameKey="name" cx="50%" cy="50%"
-                      innerRadius={48} outerRadius={78} paddingAngle={2} stroke="none" {...STILL}>
-                      {TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => (
-                        <Cell key={t} fill={`url(#an-g-tier-${t})`} />
-                      ))}
-                    </Pie>
-                    <Tooltip {...TT} formatter={(v: any, n: any) => [`${v} client${v !== 1 ? "s" : ""}`, n]} />
-                  </PieChart>
-                </ResponsiveContainer>
+                <Fig label="Shipping" value={fmtAmount(range.total_shipping)} />
+                <div className="mt-3.5"><Fig label="Bank and wire fees" value={fmtAmount(range.total_fees)} /></div>
+                <div className="hsep my-3.5" />
+                <Fig label="Overhead" value={fmtAmount(overheadTotal)} hint={`${range.overhead_ratio.toFixed(1)}% of revenue`} />
               </div>
+
               <div className="min-w-0">
-                {TIER_ORDER.map((t) => {
-                  const n = tierMap[t] || 0;
-                  if (!n) return null;
-                  return (
-                    <div key={t} className="flex items-center justify-between gap-3 py-2 border-b border-line-2 last:border-0 min-w-0">
-                      <TierBadge tier={t} />
-                      <div className="flex items-center gap-3 flex-shrink-0">
-                        <span className="text-[11px] text-muted tabular-nums w-11 text-right">
-                          {((n / totalCl) * 100).toFixed(1)}%
-                        </span>
-                        <span className="text-[13px] font-semibold text-ink tabular-nums w-6 text-right">{n}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="ui-label">Overhead by month</span>
+                  <div className="flex items-center gap-4"><Key color={P.line} label="Shipping" /><Key color={P.hi} label="Fees" /></div>
+                </div>
+                {trend.length > 0 ? (
+                  <div className="mt-2.5">
+                    <ResponsiveContainer width="100%" height={160}>
+                      <BarChart data={trend} margin={{ top: 4, right: 4, left: -8, bottom: 0 }} barCategoryGap="34%">
+                        <CartesianGrid stroke={P.grid} vertical={false} />
+                        <XAxis dataKey="label" tick={AX} axisLine={false} tickLine={false} />
+                        <YAxis tick={AX} axisLine={false} tickLine={false} width={54} tickFormatter={(v: number) => fmtCompactCurrency(v)} />
+                        <Tooltip {...TT} formatter={(v: any, n: any) => [signed(Number(v)), n]} />
+                        <RBar dataKey="shipping" name="Shipping" stackId="oh" fill={P.line} maxBarSize={22} animationDuration={600} />
+                        <RBar dataKey="fees" name="Fees" stackId="oh" fill={P.hi} maxBarSize={22} radius={[3, 3, 0, 0]} animationDuration={600} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : <Blank h={160} text="No overhead recorded in this range" />}
+
+                <div className="ui-label mt-6">Overhead as a share of revenue</div>
+                {trend.length > 0 ? (
+                  <div className="mt-3">
+                    <MonoAreaChart
+                      values={trend.map((m) => Math.max(0, m.overhead_pct))}
+                      label={(i) => trend[i]?.label ?? ""}
+                      format={(v) => `${v.toFixed(1)}%`}
+                      formatAxis={(v) => `${v.toFixed(0)}%`}
+                      seriesName="Overhead"
+                      prevName=""
+                      height={120}
+                      ariaLabel="Overhead as a share of revenue, by month"
+                    />
+                  </div>
+                ) : <Blank h={120} text="No revenue to compare against" />}
+              </div>
+            </div>
+          </Block>
+
+          <div className="hsep" />
+
+          {/* ── Supplier spend + cash position ────────────────────── */}
+          <Cols
+            a={
+              <Block>
+                <Head title="Where the money goes" sub={`${plural(range.supplier_concentration.supplier_count, "supplier")} paid in ${rangeLabel}`} />
+                {range.supplier_concentration.supplier_count > 0 ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-3 mt-4">
+                      <Concentration label="Top supplier" pct={range.supplier_concentration.top1_pct} warnAt={50} unit="of spend" />
+                      <Concentration label="Top 3" pct={range.supplier_concentration.top3_pct} warnAt={80} unit="of spend" />
+                    </div>
+                    <div className="mt-4">
+                      <ShareBar on={bars} total={range.supplier_concentration.total_spend}
+                        parts={range.top_suppliers_range.map((s) => ({ name: s.name, value: s.total_paid }))} />
+                    </div>
+                    <div className="mt-3">
+                      {range.top_suppliers_range.map((s) => (
+                        <div key={s.name} className="grid grid-cols-[minmax(0,1fr)_64px_96px] items-center gap-3 min-h-[36px] text-[13px] [&+&]:shadow-[inset_0_1px_0_rgb(var(--c-line))]">
+                          <span className="truncate">{s.name}</span>
+                          <span className="text-right text-muted tabular-nums">{plural(s.deal_count, "deal")}</span>
+                          <span className="text-right font-medium tabular-nums">{fmtAmount(s.total_paid)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : <Blank h={200} text="No supplier payments in this range" />}
+              </Block>
+            }
+            b={
+              <Block>
+                <Head title="Cash position" sub="Live from Financials, not affected by the date range" />
+                {money ? (
+                  <div className="mt-3.5">
+                    <div className="flex items-end justify-between gap-3">
+                      <span className="ui-label">Free cash</span>
+                      <span className={`ui-fig ${pnTone(money.free_cash)}`}>{signed(money.free_cash)}</span>
+                    </div>
+                    <div className="hsep my-2.5" />
+                    {[
+                      { label: "Bank balance",      v: money.bank_balance,        out: false },
+                      { label: "Credit card owed",  v: money.credit_card_balance, out: true },
+                      { label: "Supplier payables", v: money.supplier_payables,   out: true },
+                      { label: "Refund liability",  v: money.refund_liability,    out: true },
+                      { label: "Cash floor",        v: money.cash_floor,          out: true },
+                      { label: "Loans outstanding", v: money.loan_outstanding,    out: true },
+                    ].filter((r) => r.v > 0.005 || r.label === "Bank balance").map((r) => (
+                      <div key={r.label} className="ui-kv">
+                        <span>{r.label}</span>
+                        <span className={r.out ? "text-danger-ink" : "text-success-ink"}>{r.out ? "−" : ""}{fmtAmount(r.v)}</span>
                       </div>
+                    ))}
+                  </div>
+                ) : <Blank h={200} text="Connect a bank in Financials to see cash position" />}
+              </Block>
+            }
+          />
+        </>
+      )}
+
+      {/* ═════════════════ DEALS ═════════════════ */}
+      {tab === "deals" && (
+        <>
+          <Cols
+            a={
+              <Block>
+                <Head title="Margin distribution" sub="Deals by margin band, so a fat tail stays visible" />
+                {range.margin_bands.some((b) => b.deals > 0) ? (() => {
+                  const top = Math.max(1, ...range.margin_bands.map((b) => b.deals));
+                  return (
+                    <div className="mt-4">
+                      {range.margin_bands.map((b, i) => (
+                        <div key={b.label} className="grid grid-cols-[70px_minmax(0,1fr)_30px_84px] items-center gap-2.5 h-[34px] text-[13px]">
+                          <span className="text-muted">{b.label}</span>
+                          <Bar frac={b.deals / top} h={8} on={bars} delay={i * 40}
+                            tone={i === 0 ? "bg-[rgb(var(--c-chart-loss))]" : "bg-faint"} />
+                          <span className="text-right tabular-nums">{b.deals}</span>
+                          <span className={`text-right tabular-nums ${b.deals > 0 ? pnTone(b.profit) : "text-faint"}`}>{b.deals > 0 ? signed(b.profit) : ""}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })() : <Blank h={230} text="No closed deals with revenue in this range" />}
+              </Block>
+            }
+            b={
+              <Block>
+                <Head title="Deal velocity"
+                  sub={range.velocity.median_days !== null
+                    ? `Median ${range.velocity.median_days.toFixed(0)} days from invoice issued to deal completed, over ${plural(range.velocity.deals_measured, "deal")}`
+                    : "Days from invoice issued to deal completed"} />
+                {velocityRows.length > 0 ? (
+                  <div className="mt-5">
+                    <MonoAreaChart
+                      values={velocityRows.map((v) => Math.max(0, v.median_days ?? 0))}
+                      label={(i) => velocityRows[i]?.label ?? ""}
+                      tipLabel={(i) => `${velocityRows[i]?.label ?? ""}, ${plural(velocityRows[i]?.deals ?? 0, "deal")}`}
+                      format={(v) => `${v.toFixed(0)} days`}
+                      formatAxis={(v) => `${v.toFixed(0)}d`}
+                      seriesName="Median"
+                      prevName=""
+                      height={150}
+                      ariaLabel="Median days from invoice to completed deal, by month"
+                    />
+                  </div>
+                ) : <Blank h={230} text="No deal has both an issue date and a completion date yet" />}
+              </Block>
+            }
+          />
+          <div className="hsep" />
+
+          {/* ── R-402: what sells, by category and by brand ──────── */}
+          <Cols
+            a={<LabelCard kind="category" labels={labels} metric={catMetric} setMetric={setCatMetric}
+              rangeLabel={rangeLabel} bars={bars} onOpen={(focus) => setLabelling({ focus })} />}
+            b={<LabelCard kind="brand" labels={labels} metric={brandMetric} setMetric={setBrandMetric}
+              rangeLabel={rangeLabel} bars={bars} onOpen={(focus) => setLabelling({ focus })} />}
+          />
+          <div className="hsep" />
+
+          {/* ── What people bought ───────────────────────────────── */}
+          <Block className="!pb-2">
+            <Head title="What people bought"
+              sub={range.completed_deals_capped
+                ? `The ${range.completed_deals.length} most recent of ${range.deal_count} closed deals`
+                : `${plural(range.completed_deals.length, "closed deal")} in ${rangeLabel}`} />
+          </Block>
+          {range.completed_deals.length > 0 ? <BoughtTable deals={range.completed_deals} /> : <Blank h={160} text="Nothing closed in this range" />}
+          <div className="hsep" />
+
+          {/* ── Invoice status ───────────────────────────────────── */}
+          <Block>
+            <Head title="Invoice status" sub={`${plural(stats.invoices, "invoice")}, all time`} />
+            {stats.invoice_status_breakdown.length > 0 ? (
+              <div className="mt-4 max-w-[720px]">
+                {stats.invoice_status_breakdown.map((s, i) => {
+                  const pct = totalSV > 0 ? s.total / totalSV : 0;
+                  const tone = s.status === "paid" ? "bg-[rgb(var(--c-chart-profit))]"
+                    : s.status === "overdue" || s.status === "void" ? "bg-[rgb(var(--c-chart-loss))]" : "bg-faint";
+                  return (
+                    <div key={s.status} className="mb-3.5">
+                      <div className="flex items-center justify-between gap-3 text-[13px] mb-1.5">
+                        <span className="flex items-center gap-2 min-w-0">
+                          <span className="capitalize truncate">{s.status.replace("_", " ")}</span>
+                          <StatusPill>{s.count}</StatusPill>
+                        </span>
+                        <span className="font-medium tabular-nums flex-shrink-0">{fmtAmount(s.total)}</span>
+                      </div>
+                      <Bar frac={pct} on={bars} delay={i * 60} tone={tone} />
                     </div>
                   );
                 })}
               </div>
-            </div>
-          ) : <Blank h={200} text="No clients yet" />}
-        </Card>
+            ) : <Blank h={160} text="No invoices yet" />}
+          </Block>
+        </>
+      )}
 
-        <Card title="Invoice status" sub={`${stats.invoices} invoices · all time`}>
-          {stats.invoice_status_breakdown.length > 0 ? (
-            <div className="space-y-4">
-              {stats.invoice_status_breakdown.map((s, i) => {
-                const clr = P.STATUS[s.status] ?? P.neutral;
-                const pct = totalSV > 0 ? (s.total / totalSV) * 100 : 0;
-                return (
-                  <div key={s.status} className="min-w-0">
-                    <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: glassSeg(clr) }} />
-                        <span className="text-[12px] text-ink-2 capitalize truncate">{s.status.replace("_", " ")}</span>
-                        <StatusPill>{s.count}</StatusPill>
-                      </div>
-                      <span className="text-[12px] font-semibold text-ink tabular-nums flex-shrink-0">
-                        {fmtAmount(s.total)}
-                      </span>
+      {/* ═════════════════ BUYERS ═════════════════ */}
+      {tab === "buyers" && (
+        <>
+          <Cols
+            a={
+              <Block>
+                <Head title="Where the revenue is concentrated" sub={`${plural(range.concentration.client_count, "buyer")} in ${rangeLabel}`} />
+                {range.concentration.client_count > 0 ? (
+                  <>
+                    <div className="grid grid-cols-3 gap-3 mt-4">
+                      <Concentration label="Top buyer" pct={range.concentration.top1_pct} warnAt={40} unit="of revenue" />
+                      <Concentration label="Top 3" pct={range.concentration.top3_pct} warnAt={70} unit="of revenue" />
+                      <Concentration label="Top 5" pct={range.concentration.top5_pct} warnAt={85} unit="of revenue" />
                     </div>
-                    <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all duration-700 ease-out"
-                        style={{ width: bars ? `${pct}%` : "0%", background: glassBar(clr), transitionDelay: `${i * 75}ms` }} />
+                    <div className="mt-4">
+                      <ShareBar on={bars} total={range.concentration.total_revenue}
+                        parts={range.top_revenue_clients.map((c) => ({ name: c.name, value: c.revenue }))} />
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : <Blank h={200} text="No invoices yet" />}
-        </Card>
-      </div>
-      </Defer>
-
-      <Defer h={300}>
-      {/* ── Cash position + financial summary ──────────────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card glass title="Cash position" sub="Live from Financials · not affected by the date range">
-          {money ? (
-            <div className="space-y-3">
-              <div className="flex items-end justify-between gap-3">
-                <span className="text-[12.5px] font-medium text-muted">Free cash</span>
-                <span className="text-[24px] font-bold tabular-nums leading-none"
-                  style={{ color: money.free_cash >= 0 ? CLR.emerald : CLR.rose }}>
-                  {signed(money.free_cash)}
-                </span>
-              </div>
-              <div className="border-t border-line-2 pt-3 space-y-2">
-                {[
-                  { label: "Bank balance",      v: money.bank_balance,        out: false },
-                  { label: "Credit card owed",  v: money.credit_card_balance, out: true },
-                  { label: "Supplier payables", v: money.supplier_payables,   out: true },
-                  { label: "Refund liability",  v: money.refund_liability,    out: true },
-                  { label: "Cash floor",        v: money.cash_floor,          out: true },
-                  { label: "Loans outstanding", v: money.loan_outstanding,    out: true },
-                ].filter((r) => r.v > 0.005 || r.label === "Bank balance").map((r) => (
-                  <div key={r.label} className="flex items-center justify-between gap-3 text-[12.5px] min-w-0">
-                    <span className="text-ink-2 truncate min-w-0">{r.label}</span>
-                    <span className={`tabular-nums font-medium flex-shrink-0 ${r.out ? "text-danger-ink" : "text-success-ink"}`}>
-                      {r.out ? "−" : ""}{fmtAmount(r.v)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : <Blank h={200} text="Connect a bank in Financials to see cash position" />}
-        </Card>
-
-        <Card glass title="Financial summary" sub={`Completed deals · ${rangeLabel}`}>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-            {[
-              { label: "Revenue",             value: fmtAmount(range.total_revenue) },
-              { label: "Total cost",          value: fmtAmount(range.total_cost) },
-              { label: "Net profit",          value: signed(range.total_profit),
-                color: range.total_profit >= 0 ? CLR.emerald : CLR.rose },
-              { label: "Margin",              value: `${range.avg_margin.toFixed(1)}%` },
-              { label: "Shipping",            value: fmtAmount(range.total_shipping) },
-              { label: "Bank and wire fees",  value: fmtAmount(range.total_fees) },
-              { label: "True net",            value: signed(range.true_net),
-                color: range.true_net >= 0 ? CLR.emerald : CLR.rose },
-              { label: "Outstanding",         value: fmtAmount(stats.outstanding), color: CLR.amber },
-              { label: "Open closeouts",      value: String(stats.incomplete_shipping) },
-            ].map((item) => (
-              <Stat key={item.label} label={item.label} value={item.value} color={item.color} size="md" />
-            ))}
-          </div>
-        </Card>
-      </div>
-      </Defer>
-
-      <Defer h={320}>
-      {/* ── What people bought ─────────────────────────────────── */}
-      <Card
-        title="What people bought"
-        sub={range.completed_deals_capped
-          ? `The ${range.completed_deals.length} most recent of ${range.deal_count} closed deals`
-          : `${range.completed_deals.length} closed deal${range.completed_deals.length !== 1 ? "s" : ""} in ${rangeLabel}`}
-      >
-        {range.completed_deals.length > 0 ? (
-          <div className="overflow-x-auto -mx-5 px-5 max-h-[520px] overflow-y-auto">
-            <table className="w-full min-w-[760px] text-[12.5px]">
-              <thead className="sticky top-0 bg-surface">
-                <tr className="text-[11px] text-muted border-b border-line">
-                  <th className="text-left font-medium py-2 pr-3">Closed</th>
-                  <th className="text-left font-medium py-2 px-3">Buyer</th>
-                  <th className="text-left font-medium py-2 px-3">Products</th>
-                  <th className="text-left font-medium py-2 px-3">Supplier</th>
-                  <th className="text-right font-medium py-2 px-3">Revenue</th>
-                  <th className="text-right font-medium py-2 pl-3">Profit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {range.completed_deals.map((d) => (
-                  <tr key={d.deal_flow_id} className="border-b border-line-2 last:border-0 hover:bg-surface-2 transition-colors align-top">
-                    <td className="py-2.5 pr-3 text-muted tabular-nums whitespace-nowrap">{d.completed_on}</td>
-                    <td className="py-2.5 px-3 text-ink min-w-0">
-                      <div className="truncate max-w-[180px]">{d.client_name}</div>
-                      <div className="text-[10.5px] text-faint truncate max-w-[180px]">{d.invoice_number}</div>
-                    </td>
-                    <td className="py-2.5 px-3 text-ink-2 min-w-0">
-                      {d.products.length > 0 ? (
-                        <div className="max-w-[300px]">
-                          {d.products.slice(0, 2).map((p, i) => (
-                            <div key={i} className="truncate">
-                              {p.name}{p.qty > 1 ? ` ×${p.qty}` : ""}
-                            </div>
-                          ))}
-                          {d.products.length > 2 && (
-                            <div className="text-[10.5px] text-faint">+{d.products.length - 2} more</div>
-                          )}
+                    <div className="mt-3">
+                      {range.top_revenue_clients.map((c) => (
+                        <div key={c.name} className="grid grid-cols-[minmax(0,1fr)_48px_90px] items-center gap-3 min-h-[36px] text-[13px] [&+&]:shadow-[inset_0_1px_0_rgb(var(--c-line))]">
+                          <span className="truncate">{c.name}</span>
+                          <span className="text-right text-muted tabular-nums">{c.pct.toFixed(1)}%</span>
+                          <span className="text-right font-medium tabular-nums">{fmtAmount(c.revenue)}</span>
                         </div>
-                      ) : <span className="text-faint">–</span>}
-                    </td>
-                    <td className="py-2.5 px-3 text-ink-2 min-w-0">
-                      <div className="truncate max-w-[160px]">{d.suppliers.join(", ") || "–"}</div>
-                    </td>
-                    <td className="py-2.5 px-3 text-right text-ink-2 tabular-nums whitespace-nowrap">{fmtAmount(d.revenue)}</td>
-                    <td className="py-2.5 pl-3 text-right tabular-nums font-medium whitespace-nowrap"
-                      style={{ color: d.net_profit >= 0 ? CLR.emerald : CLR.rose }}>{signed(d.net_profit)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : <Blank h={160} text="Nothing closed in this range" />}
-      </Card>
-      </Defer>
+                      ))}
+                    </div>
+                  </>
+                ) : <Blank h={230} text="No buyers with revenue in this range" />}
+              </Block>
+            }
+            b={
+              <Block>
+                <Head title="Repeat buyers versus first-time" sub="A deal counts as first-time when it is that buyer's earliest closed deal" />
+                {repeatTotal > 0 ? (
+                  <>
+                    <div className="mt-4">
+                      <ShareBar on={bars} total={repeatTotal}
+                        parts={[{ name: "Repeat", value: rn.repeat_revenue }, { name: "First-time", value: rn.new_revenue }]} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-4 mt-5">
+                      <Fig label="Repeat revenue" value={fmtAmount(rn.repeat_revenue)}
+                        hint={`${plural(rn.repeat_deals, "deal")}, ${plural(rn.repeat_clients, "buyer")}`} />
+                      <Fig label="First-time revenue" value={fmtAmount(rn.new_revenue)}
+                        hint={`${plural(rn.new_deals, "deal")}, ${plural(rn.new_clients, "buyer")}`} />
+                      <Fig label="Repeat profit" value={signed(rn.repeat_profit)} tone={rn.repeat_profit >= 0 ? "up" : "down"} />
+                      <Fig label="First-time profit" value={signed(rn.new_profit)} tone={rn.new_profit >= 0 ? "up" : "down"} />
+                    </div>
+                  </>
+                ) : <Blank h={230} text="No revenue to split in this range" />}
+              </Block>
+            }
+          />
+          <div className="hsep" />
 
+          <Cols
+            a={
+              <Block>
+                <Head title="Client mix" sub={`${plural(totalCl, "client")} by tier, all time`} />
+                {totalCl > 0 ? (
+                  <>
+                    <div className="mt-4">
+                      <ShareBar on={bars} total={totalCl}
+                        parts={TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => ({ name: t, value: tierMap[t] }))} />
+                    </div>
+                    <div className="mt-2">
+                      {TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => (
+                        <div key={t} className="grid grid-cols-[minmax(0,1fr)_56px_40px] items-center gap-3 min-h-[36px] text-[13px] [&+&]:shadow-[inset_0_1px_0_rgb(var(--c-line))]">
+                          <span><TierBadge tier={t} /></span>
+                          <span className="text-right text-muted tabular-nums">{((tierMap[t] / totalCl) * 100).toFixed(1)}%</span>
+                          <span className="text-right font-medium tabular-nums">{tierMap[t]}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : <Blank h={200} text="No clients yet" />}
+              </Block>
+            }
+            b={regions ? (
+              <Block>
+                <Head title="Where the profit is"
+                  sub={`Client profit by state, or by country outside the US, all time${regions.unplaced ? `. ${plural(regions.unplaced, "client")} with no state or country` : ""}`} />
+                {regions.list.length > 0 ? (
+                  <>
+                    <div className="mt-4">
+                      {(() => {
+                        const top = Math.max(1, ...regions.list.map((r) => Math.abs(r.profit)));
+                        return regions.list.slice(0, 10).map((r, i) => (
+                          <div key={r.region} className="mb-3 min-w-0">
+                            <div className="flex items-center justify-between gap-3 mb-1.5 text-[13px]">
+                              <span className="font-medium truncate">{r.label}</span>
+                              <span className="flex-shrink-0 whitespace-nowrap">
+                                <span className="text-faint tabular-nums">{plural(r.count, "client")}</span>
+                                <span className={`ml-2 font-medium tabular-nums ${r.profit < 0 ? "text-danger-ink" : ""}`}>{fmtAmount(r.profit)}</span>
+                              </span>
+                            </div>
+                            <Bar frac={Math.abs(r.profit) / top} on={bars} delay={i * 45}
+                              tone={r.profit < 0 ? "bg-[rgb(var(--c-chart-loss))]" : "bg-faint"} />
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                    <button onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "globe" }))} className="ui-link mt-2">
+                      See them on the globe
+                    </button>
+                  </>
+                ) : <Blank h={160} text="No client has a state or country yet" />}
+              </Block>
+            ) : <Block><div className="h-40 rounded-xl bg-surface-2 animate-pulse" aria-busy="true" /></Block>}
+          />
+        </>
+      )}
+      </div>
     </div>
-    {/* Outside the stage: `isolation: isolate` there would trap the modal's z-index. */}
+    {/* Outside the faded wrapper so the modal is never dimmed while a refresh runs. */}
     {labelling && (
       <DealLabelsModal focus={labelling.focus} onClose={(changed) => {
         setLabelling(null);
@@ -1493,235 +1065,232 @@ export default function AnalyticsView() {
   );
 }
 
-// ─── Shared pieces ────────────────────────────────────────────────
+// ─── Tables (memoised: a tab flip or a hover elsewhere must not rebuild hundreds of rows) ─────────
 
-// The one section shell. `glass` opts a panel into the liquid-glass recipe (.glass in
-// index.css: translucent surface, 20px backdrop blur, specular top hairline, soft wide
-// shadow, no hard border). It is OPT-IN, not the default, because glass must never sit
-// behind a chart's plotting area or a dense table — blur under data costs legibility and
-// costs paint time, and paint time is half of what "slow and laggy" was. Panels that
-// hold charts or tables stay on the solid surface token.
+const RefundsTable = memo(function RefundsTable({ deals }: { deals: AnalyticsRefundDeal[] }) {
+  return (
+    <div className="overflow-x-auto overflow-y-auto max-h-[480px] px-1.5">
+      <table className="ui-table ui-table-click min-w-[860px]">
+        <thead>
+          <tr>
+            {["Invoice", "Buyer", "Closed", "Refunded on"].map((h) => <th key={h} className="sticky top-0 z-[2] bg-surface">{h}</th>)}
+            {["Sold", "Refunded", "Result"].map((h) => <th key={h} className="r sticky top-0 z-[2] bg-surface">{h}</th>)}
+            <th className="sticky top-0 z-[2] bg-surface">How it came out</th>
+          </tr>
+        </thead>
+        <tbody>
+          {deals.map((d) => (
+            <tr key={d.deal_flow_id} onClick={() => d.invoice_number && openDealFlow(d.invoice_number, "refund")}
+              title="Open this deal's refund step">
+              <td className="whitespace-nowrap">{d.invoice_number || "No number"}</td>
+              <td><div className="truncate max-w-[200px]">{d.client_name}</div></td>
+              <td className="text-muted tabular-nums whitespace-nowrap">{d.closed_on}</td>
+              <td className="text-muted tabular-nums whitespace-nowrap">{d.refunded_on || "None"}</td>
+              <td className="r text-muted">{fmtAmount(d.sold)}</td>
+              <td className="r">
+                <span className={d.refunded > 0 ? "text-danger-ink" : "text-faint"}>{d.refunded > 0 ? signed(-d.refunded) : "None"}</span>
+                {d.refunded > 0.005 && <span className="text-[12px] text-faint ml-1.5">{d.full ? "full" : "part"}</span>}
+              </td>
+              <td className={`r font-medium ${d.profit > 0.5 ? "text-success-ink" : d.profit < -0.5 ? "text-danger-ink" : ""}`}>{signed(d.profit)}</td>
+              <td className="min-w-[220px]"><RefundOutcome d={d} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+});
+
+const ReconTable = memo(function ReconTable({ recon, rows }: { recon: AnalyticsReconciliation; rows: AnalyticsReconciliation["deals"] }) {
+  const t = recon.totals;
+  return (
+    <div className="overflow-x-auto overflow-y-auto max-h-[460px] px-1.5">
+      <table className="ui-table min-w-[820px]">
+        <thead>
+          <tr>
+            {["Invoice", "Buyer", "Closed"].map((h) => <th key={h} className="sticky top-0 z-[2] bg-surface">{h}</th>)}
+            {["Money in", "Money out", "Refunds", "Profit", "True net"].map((h) => <th key={h} className="r sticky top-0 z-[2] bg-surface">{h}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((d, i) => (
+            <tr key={`${d.invoice_number}-${i}`}>
+              <td className="whitespace-nowrap">
+                <div className="flex items-center gap-1.5">
+                  <span>{d.invoice_number}</span>
+                  {d.flags.slice(0, 2).map((f) => <span key={f} className="whitespace-nowrap"><StatusPill tone="warning">{f}</StatusPill></span>)}
+                  {d.flags.length > 2 && <span className="ui-note">+{d.flags.length - 2}</span>}
+                </div>
+              </td>
+              <td><div className="truncate max-w-[200px]">{d.client_name}</div></td>
+              <td className="text-muted tabular-nums whitespace-nowrap">{d.completed_on}</td>
+              <td className="r text-success-ink">{fmtAmount(d.money_in)}</td>
+              <td className="r text-muted">{fmtAmount(d.money_out)}</td>
+              <td className={`r ${d.refunds > 0 ? "text-danger-ink" : "text-faint"}`}>{d.refunds > 0 ? signed(-d.refunds) : "None"}</td>
+              <td className={`r font-medium ${pnTone(d.profit)}`}>{signed(d.profit)}</td>
+              <td className={`r font-medium ${pnTone(d.true_net_share)}`}>{signed(d.true_net_share)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr className="font-medium">
+            <td className="sticky bottom-0 bg-surface whitespace-nowrap">{plural1(t.deal_count, "deal")}</td>
+            <td className="sticky bottom-0 bg-surface" /><td className="sticky bottom-0 bg-surface" />
+            <td className="r sticky bottom-0 bg-surface text-success-ink">{fmtAmount(t.money_in)}</td>
+            <td className="r sticky bottom-0 bg-surface">{fmtAmount(t.money_out)}</td>
+            <td className={`r sticky bottom-0 bg-surface ${t.refunds > 0 ? "text-danger-ink" : "text-faint"}`}>{t.refunds > 0 ? signed(-t.refunds) : "None"}</td>
+            <td className={`r sticky bottom-0 bg-surface ${pnTone(t.profit)}`}>{signed(t.profit)}</td>
+            <td className={`r sticky bottom-0 bg-surface ${pnTone(t.true_net_share)}`}>{signed(t.true_net_share)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+});
+const plural1 = (n: number, w: string) => `${n} ${w}${n !== 1 ? "s" : ""}`;
+
+const BoughtTable = memo(function BoughtTable({ deals }: { deals: AnalyticsRange["completed_deals"] }) {
+  return (
+    <div className="overflow-x-auto overflow-y-auto max-h-[460px] px-1.5 pb-3">
+      <table className="ui-table min-w-[760px]">
+        <thead>
+          <tr>
+            {["Closed", "Buyer", "Products", "Supplier"].map((h) => <th key={h} className="sticky top-0 z-[2] bg-surface">{h}</th>)}
+            {["Revenue", "Profit"].map((h) => <th key={h} className="r sticky top-0 z-[2] bg-surface">{h}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {deals.map((d) => (
+            <tr key={d.deal_flow_id} className="align-top">
+              <td className="text-muted tabular-nums whitespace-nowrap">{d.completed_on}</td>
+              <td className="min-w-0">
+                <div className="truncate max-w-[180px]">{d.client_name}</div>
+                <div className="text-[12px] text-faint truncate max-w-[180px]">{d.invoice_number}</div>
+              </td>
+              <td className="text-muted min-w-0">
+                {d.products.length > 0 ? (
+                  <div className="max-w-[300px]">
+                    {d.products.slice(0, 2).map((p, i) => (
+                      <div key={i} className="truncate">{p.name}{p.qty > 1 ? ` x${p.qty}` : ""}</div>
+                    ))}
+                    {d.products.length > 2 && <div className="text-[12px] text-faint">+{d.products.length - 2} more</div>}
+                  </div>
+                ) : <span className="text-faint">None</span>}
+              </td>
+              <td className="text-muted min-w-0"><div className="truncate max-w-[160px]">{d.suppliers.join(", ") || "None"}</div></td>
+              <td className="r text-muted">{fmtAmount(d.revenue)}</td>
+              <td className={`r font-medium ${pnTone(d.net_profit)}`}>{signed(d.net_profit)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+});
+
 // ─── R-402: what sells, by category or by brand ──────────────────
 // One row per category (or brand). Every closed deal in the range counts in exactly one row,
 // so the rows add back to the KPI band's revenue and net profit. The toggle changes what the
-// rows are measured and sorted by, never which rows exist. A row keeps its colour when the
-// toggle flips (slots follow revenue rank); a loss wears the loss hue; Uncategorized and
-// No brand are not categories and wear the neutral ink. Any row opens the labelling screen
-// on its own deals.
-function LabelCard({ kind, labels, metric, setMetric, rangeLabel, bars, P, onOpen }: {
+// rows are measured and sorted by, never which rows exist. A loss wears the loss hue; Uncategorized
+// and No brand are not categories and wear the faint ink. Any row opens the labelling screen on its own deals.
+function LabelCard({ kind, labels, metric, setMetric, rangeLabel, bars, onOpen }: {
   kind: "category" | "brand";
   labels: AnalyticsLabels | null;
   metric: "revenue" | "profit";
   setMetric: (m: "revenue" | "profit") => void;
   rangeLabel: string;
   bars: boolean;
-  P: ReturnType<typeof usePalette>;
   onOpen: (focus: LabelFocus | null) => void;
 }) {
   const noun = kind === "category" ? "category" : "brand";
   const none = kind === "category" ? "Uncategorized" : "No brand";
   const rows: LabelRow[] = labels ? (kind === "category" ? labels.categories : labels.brands) : [];
-  const slotOf = new Map<string, number>();
-  rows.filter((r) => r.name !== none).forEach((r, i) => slotOf.set(r.name, i));
   const sorted = [...rows].sort((a, b) => (b[metric] - a[metric]) || a.name.localeCompare(b.name));
   const top = Math.max(1, ...sorted.map((r) => Math.abs(r[metric])));
   const missing = labels ? (kind === "category" ? labels.uncategorized : labels.unbranded) : 0;
   const guessed = labels ? (kind === "category" ? labels.categories_guessed : labels.brands_guessed) : 0;
   const n = labels?.deals ?? 0;
   return (
-    <Card
-      title={`${metric === "revenue" ? "Revenue" : "Profit"} by ${noun}`}
-      sub={labels ? `${n} closed deal${n !== 1 ? "s" : ""} in ${rangeLabel}, one ${noun} each` : `Closed deals in ${rangeLabel}`}
-      right={
-        <div className="flex items-center gap-1 bg-surface-2 rounded-lg p-0.5">
-          {(["revenue", "profit"] as const).map((m) => (
-            <button key={m} onClick={() => setMetric(m)}
-              className={`px-2.5 h-6 rounded-md text-[11.5px] font-medium capitalize transition-colors ${
-                metric === m ? "bg-surface text-ink ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
-              {m}
-            </button>
-          ))}
-        </div>
-      }
-    >
+    <Block>
+      <Head
+        title={`${metric === "revenue" ? "Revenue" : "Profit"} by ${noun}`}
+        sub={labels ? `${n} closed deal${n !== 1 ? "s" : ""} in ${rangeLabel}, one ${noun} each` : `Closed deals in ${rangeLabel}`}
+        right={
+          <Tabs label={`${noun} measure`} value={metric} onChange={(id) => setMetric(id as "revenue" | "profit")}
+            tabs={[{ id: "revenue", label: "Revenue" }, { id: "profit", label: "Profit" }]} />
+        } />
       {sorted.length > 0 ? (
         <>
-          <div className="space-y-0.5 max-h-[344px] overflow-y-auto -mx-2 px-0.5">
+          <div className="mt-3 max-h-[344px] overflow-y-auto -mx-1.5 px-0.5">
             {sorted.map((r, i) => {
               const isNone = r.name === none;
-              const slot = slotOf.get(r.name) ?? 99;
               const value = r[metric];
-              const clr = value < 0 ? P.MARK.loss : isNone || slot >= P.cat.length ? P.neutral : P.cat[slot];
               const margin = r.revenue > 0 ? (r.profit / r.revenue) * 100 : null;
               return (
                 <button key={r.name} onClick={() => onOpen({ kind, name: r.name })}
                   title={`Open the ${r.deals} deal${r.deals !== 1 ? "s" : ""} in ${r.name}`}
-                  className="block w-full text-left rounded-lg px-2 py-1.5 hover:bg-surface-2 transition-colors duration-[130ms] min-w-0">
-                  <div className="flex items-center justify-between gap-3 mb-1.5 min-w-0">
-                    <span className={`text-[12px] font-medium truncate min-w-0 ${isNone ? "text-muted" : "text-ink-2"}`}>{r.name}</span>
-                    <div className="flex items-center gap-2.5 flex-shrink-0">
-                      {r.guessed > 0 && !isNone && (
-                        <span className="text-[11px] text-faint tabular-nums">{r.guessed} guessed</span>
-                      )}
-                      <span className="text-[11px] text-muted tabular-nums">
-                        {r.deals} deal{r.deals !== 1 ? "s" : ""}
-                      </span>
-                      {metric === "profit" && (
-                        <span className="text-[11px] text-muted tabular-nums whitespace-nowrap w-[84px] text-right">
-                          {margin === null ? "" : `${margin.toFixed(1)}% margin`}
-                        </span>
-                      )}
-                      <span className="text-[12px] font-semibold tabular-nums w-[92px] text-right"
-                        style={{ color: metric === "profit" ? (value < 0 ? P.CLR.rose : P.CLR.emerald) : "rgb(var(--c-ink))" }}>
-                        {signed(value)}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-700 ease-out"
-                      style={{
-                        width: bars ? `${(Math.abs(value) / top) * 100}%` : "0%",
-                        background: glassBar(clr),
-                        transitionDelay: `${Math.min(i, 12) * 45}ms`,
-                      }} />
-                  </div>
+                  className="block w-full text-left rounded-lg px-1.5 py-2 min-h-[52px] hover:bg-surface-2 transition-colors duration-[130ms] min-w-0">
+                  <span className="flex items-baseline justify-between gap-3 mb-1.5 min-w-0 text-[13px]">
+                    <span className={`truncate font-medium ${isNone ? "text-muted" : ""}`}>{r.name}</span>
+                    <span className="flex items-baseline gap-2.5 flex-shrink-0 whitespace-nowrap">
+                      {r.guessed > 0 && !isNone && <span className="text-faint tabular-nums">{r.guessed} guessed</span>}
+                      <span className="text-muted tabular-nums">{r.deals} deal{r.deals !== 1 ? "s" : ""}</span>
+                      {metric === "profit" && margin !== null && <span className="text-muted tabular-nums">{margin.toFixed(1)}% margin</span>}
+                      <span className={`font-medium tabular-nums min-w-[84px] text-right ${metric === "profit" ? pnTone(value) : ""}`}>{signed(value)}</span>
+                    </span>
+                  </span>
+                  <Bar frac={Math.abs(value) / top} on={bars} delay={Math.min(i, 12) * 40}
+                    tone={value < 0 ? "bg-[rgb(var(--c-chart-loss))]" : isNone ? "bg-line-3" : "bg-faint"} />
                 </button>
               );
             })}
           </div>
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <p className="text-[11.5px] text-muted min-w-0">
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <p className="ui-note m-0 min-w-0">
               {missing > 0 ? `${missing} deal${missing !== 1 ? "s" : ""} with no ${noun} yet` : `Every deal has a ${noun}`}
               {guessed > 0 ? `, ${guessed} guessed and not confirmed` : ""}.
             </p>
-            <button onClick={() => onOpen(null)} className="text-[12px] font-medium text-accent hover:underline flex-shrink-0">
+            <button onClick={() => onOpen(null)} className="ui-link flex-shrink-0">
               Identify {kind === "category" ? "categories" : "brands"}
             </button>
           </div>
         </>
       ) : <Blank h={230} text={labels ? "No closed deals in this range" : "Reading your deals"} />}
-    </Card>
+    </Block>
   );
 }
 
-function Card({ title, sub, right, children, glass }: {
-  title: string; sub?: string; right?: React.ReactNode; children: React.ReactNode; glass?: boolean;
-}) {
-  return (
-    <section className={`ring-1 rounded-[18px] p-5 min-w-0 ${
-      glass ? "glass ring-line/60" : "bg-surface ring-line"}`}>
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 mb-5">
-        <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink">{title}</h3>
-          {sub && <p className="text-[11px] text-muted mt-0.5">{sub}</p>}
-        </div>
-        {right && <div className="min-w-0">{right}</div>}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function Kpi({ label, value, hint, color, accentClass }: {
-  label: string; value: string; hint?: string; color?: string; accentClass?: string;
-}) {
-  return (
-    <div className="bg-surface/70 px-4 py-5 min-w-0">
-      <div className="text-[12.5px] font-medium text-muted truncate">{label}</div>
-      {/* A six-figure amount needs ~152px at 24px; a tile is narrower than that once the
-          216px sidebar takes its cut, and `truncate` turned the money into an ellipsis.
-          The figure steps up with the tile instead of being cut off. */}
-      <div className={`text-[19px] sm:text-[21px] 2xl:text-[24px] font-bold tabular-nums mt-1.5 leading-none tracking-tight truncate ${accentClass ?? "text-ink"}`}
-        style={color ? { color } : undefined}>
-        {value}
-      </div>
-      {hint && <div className="text-[11px] text-faint mt-1.5 truncate">{hint}</div>}
-    </div>
-  );
-}
-
-function Stat({ label, value, hint, color, swatch, size = "sm" }: {
-  label: string; value: string; hint?: string; color?: string; swatch?: string; size?: "sm" | "md";
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="flex items-center gap-2 min-w-0">
-        {swatch && <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: glassSeg(swatch) }} />}
-        <span className="text-[12.5px] font-medium text-muted truncate">{label}</span>
-      </div>
-      <div className={`${size === "md" ? "text-[20px]" : "text-[18px]"} font-bold tabular-nums mt-1.5 leading-none truncate`}
-        style={{ color: color ?? "rgb(var(--c-ink))" }}>
-        {value}
-      </div>
-      {hint && <div className="text-[11px] text-faint mt-1.5 truncate tabular-nums">{hint}</div>}
-    </div>
-  );
-}
-
-// A concentration reading is a risk statement: past its threshold it wears the warning
-// ink, so "the top buyer is 61% of revenue" is not something you have to notice yourself.
-function Concentration({ label, pct, warnAt, unit, P }: {
-  label: string; pct: number; warnAt: number; unit: string; P: ReturnType<typeof usePalette>;
-}) {
+// A concentration reading is a risk statement: past its threshold it wears the warning ink, so
+// "the top buyer is 61% of revenue" is not something you have to notice yourself.
+function Concentration({ label, pct, warnAt, unit }: { label: string; pct: number; warnAt: number; unit: string }) {
   const hot = pct >= warnAt;
   return (
-    <div className="rounded-[14px] glass ring-1 ring-line/50 px-3.5 py-3 min-w-0">
-      <div className="text-[11px] text-muted truncate">{label}</div>
-      <div className="text-[19px] font-bold tabular-nums mt-1 leading-none"
-        style={{ color: hot ? P.CLR.amber : "rgb(var(--c-ink))" }}>
-        {pct.toFixed(0)}%
-      </div>
-      <div className="text-[10.5px] text-faint mt-1">{unit}</div>
+    <div className="min-w-0">
+      <div className="ui-label truncate">{label}</div>
+      <div className={`ui-fig !text-[22px] !leading-7 mt-1 ${hot ? "text-warning-ink" : ""}`}>{pct.toFixed(0)}%</div>
+      <div className="ui-note">{unit}</div>
     </div>
   );
 }
 
-// A 100% share bar. Anything past the named parts folds into one "Other" segment rather
-// than taking a seventh hue — the categorical palette is six fixed slots, never cycled.
-function ShareBar({ parts, total, otherColor, animate }: {
-  parts: { name: string; value: number; color: string }[]; total: number; otherColor: string; animate: boolean;
-}) {
-  const named = parts.reduce((s, p) => s + p.value, 0);
-  const other = Math.max(total - named, 0);
-  const segs = other > 0.005 ? [...parts, { name: "Other", value: other, color: otherColor }] : parts;
-  if (total <= 0) return null;
-  return (
-    <div className="h-2.5 bg-surface-3 rounded-full overflow-hidden flex gap-px">
-      {segs.map((s, i) => (
-        <div key={s.name} className="h-full transition-all duration-700 ease-out first:rounded-l-full last:rounded-r-full"
-          title={`${s.name} · ${((s.value / total) * 100).toFixed(1)}%`}
-          style={{
-            width: animate ? `${(s.value / total) * 100}%` : "0%",
-            background: glassSeg(s.color),
-            transitionDelay: `${i * 70}ms`,
-          }} />
-      ))}
-    </div>
-  );
-}
-
-function Highlight({ label, name, sub, value, valueColor, amount }: {
-  label: string; name: string | null; sub: string | null; value: string | null;
-  valueColor?: string; amount: string | null;
+function Highlight({ label, name, sub, value, valueCls = "", amount }: {
+  label: string; name: string | null; sub: string | null; value: string | null; valueCls?: string; amount: string | null;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-2.5 border-b border-line-2 last:border-0 min-w-0">
+    <div className="flex items-start justify-between gap-3 py-2.5 min-w-0 [&+&]:shadow-[inset_0_1px_0_rgb(var(--c-line))]">
       <div className="min-w-0">
-        <div className="text-[11px] text-muted">{label}</div>
+        <div className="ui-note">{label}</div>
         {name ? (
           <>
-            <div className="text-[13px] font-medium text-ink truncate">{name}</div>
-            {sub && <div className="text-[11px] text-faint truncate">{sub}</div>}
+            <div className="text-[14px] font-medium truncate">{name}</div>
+            {sub && <div className="ui-note truncate">{sub}</div>}
           </>
-        ) : (
-          <div className="text-[12.5px] text-faint mt-0.5">Nothing in this range</div>
-        )}
+        ) : <div className="text-[13px] text-faint mt-0.5">Nothing in this range</div>}
       </div>
       {value && (
         <div className="text-right flex-shrink-0">
-          <div className="text-[16px] font-bold tabular-nums leading-none"
-            style={{ color: valueColor ?? "rgb(var(--c-ink))" }}>{value}</div>
-          {amount && <div className="text-[11px] text-muted tabular-nums mt-1">{amount}</div>}
+          <div className={`text-[16px] font-medium tabular-nums ${valueCls}`}>{value}</div>
+          {amount && <div className="ui-note tabular-nums">{amount}</div>}
         </div>
       )}
     </div>
@@ -1729,44 +1298,34 @@ function Highlight({ label, name, sub, value, valueColor, amount }: {
 }
 
 // ─── R-317 bridge ─────────────────────────────────────────────────
-// A waterfall read as a statement rather than drawn as a chart: label left, amount
-// right, tabular figures, and a hairline above every line that has to tie.
-//
-// Amounts arrive already signed — a subtract row is negative in the payload — so the
-// list never re-decides what a line means. Colour follows the rest of the screen: money
-// arriving wears the muted emerald ink, money leaving is plain ink, and only a subtotal
-// that is itself negative goes rose.
-//
-// The drift note is the reason this section exists. A subtotal is the figure read from
-// the book; `running` is what the lines above it add up to. When they disagree the list
-// keeps showing the figure it read and says so underneath, in rose.
-function BridgeList({ rows, CLR }: { rows: ReconRow[]; CLR: { emerald: string; rose: string } }) {
+// A waterfall read as a statement rather than drawn as a chart: label left, amount right, tabular
+// figures, and a hairline above every line that has to tie. Amounts arrive already signed, so the list
+// never re-decides what a line means. Money arriving wears green, money leaving is plain ink, and only a
+// subtotal that is itself negative goes red. The drift note is the reason this section exists: when a
+// subtotal read from the book disagrees with the lines above it, the list says so underneath, in red.
+function BridgeList({ rows }: { rows: ReconRow[] }) {
   return (
     <div className="min-w-0">
       {rows.map((r) => {
         const heavy = r.kind === "subtotal" || r.kind === "total";
         const drift = r.drift ?? 0;
-        const lightTone =
+        const light =
           r.kind === "residual" ? (Math.abs(r.amount) < 0.005 ? "text-faint" : "text-danger-ink")
-          : r.amount >= 0 ? "text-success-ink" : "text-ink-2";
+          : r.amount >= 0 ? "text-success-ink" : "text-ink";
         return (
-          <div key={r.label} className={`min-w-0 ${heavy ? "border-t border-line mt-2 pt-2" : ""}`}>
-            <div className="flex items-baseline justify-between gap-3 min-w-0 py-1">
+          <div key={r.label} className="min-w-0">
+            {heavy && <div className="hsep my-1.5" />}
+            <div className="flex items-baseline justify-between gap-3 min-w-0 py-1.5">
               <div className="min-w-0">
-                <div className={`truncate ${heavy ? "text-[13px] font-semibold text-ink" : "text-[12.5px] text-ink-2"}`}>
-                  {r.label}
-                </div>
-                {r.hint && <div className="text-[10.5px] text-faint truncate">{r.hint}</div>}
+                <div className={`truncate text-[14px] ${heavy ? "font-medium text-ink" : "text-muted"}`}>{r.label}</div>
+                {r.hint && <div className="ui-note truncate">{r.hint}</div>}
               </div>
-              <span
-                className={`tabular-nums flex-shrink-0 ${heavy ? "text-[16px] font-bold" : `text-[13px] font-medium ${lightTone}`}`}
-                style={heavy ? { color: r.amount >= 0 ? CLR.emerald : CLR.rose } : undefined}
-              >
+              <span className={`tabular-nums flex-shrink-0 text-[14px] ${heavy ? `font-medium ${pnTone(r.amount)}` : light}`}>
                 {signed(r.amount)}
               </span>
             </div>
             {Math.abs(drift) >= 0.005 && (
-              <p className="text-[11px] text-danger-ink pb-1.5">
+              <p className="ui-note text-danger-ink pb-1.5 m-0">
                 Does not tie: the lines above come to {signed(r.running ?? 0)}, a difference
                 of {signed(drift)}.
               </p>
@@ -1778,16 +1337,12 @@ function BridgeList({ rows, CLR }: { rows: ReconRow[]; CLR: { emerald: string; r
   );
 }
 
-// Whether a bank column ties to its ledger figure, and by how much when it does not.
-// It always renders: "no note" and "ties to the cent" must not look the same.
-function Gap({ label, gap, against, because, CLR }: {
-  label: string; gap: number; against: string; because?: string; CLR: { rose: string };
-}) {
-  if (Math.abs(gap) < 0.005) {
-    return <p className="text-muted">{label} matches {against} to the cent.</p>;
-  }
+// Whether a bank column ties to its ledger figure, and by how much when it does not. It always
+// renders: "no note" and "ties to the cent" must not look the same.
+function Gap({ label, gap, against, because }: { label: string; gap: number; against: string; because?: string }) {
+  if (Math.abs(gap) < 0.005) return <p className="m-0">{label} matches {against} to the cent.</p>;
   return (
-    <p className={because ? "text-muted" : undefined} style={because ? undefined : { color: CLR.rose }}>
+    <p className={`m-0 ${because ? "" : "text-danger-ink"}`}>
       {label} is {fmtAmount(Math.abs(gap))} {gap > 0 ? "more than" : "less than"} {against}
       {because ? `: ${because}` : ""}.
     </p>
@@ -1795,65 +1350,30 @@ function Gap({ label, gap, against, because, CLR }: {
 }
 
 // ─── R-319 pace summary ───────────────────────────────────────────
-// The sentence is the answer; the chart is the evidence. Jack asked to know "how well
-// we are doing so far in the current month" — that is a claim in words, with the two
-// comparisons that make it mean something, and the pace the month is on. Ahead reads
-// green, behind reads red, on Apple's accessible hues.
-function PaceSummary({ pace, metric, CLR }: {
-  pace: AnalyticsPace; metric: "revenue" | "profit"; CLR: { emerald: string; rose: string };
-}) {
+// The sentence is the answer; the chart is the evidence. Ahead reads green, behind reads red.
+function PaceSummary({ pace, metric }: { pace: AnalyticsPace; metric: "revenue" | "profit" }) {
   const now  = metric === "revenue" ? pace.revenue_so_far      : pace.profit_so_far;
   const prev = metric === "revenue" ? pace.prev_at_day_revenue : pace.prev_at_day_profit;
   const avg  = metric === "revenue" ? pace.avg_at_day_revenue  : pace.avg_at_day_profit;
   const proj = metric === "revenue" ? pace.projected_revenue   : pace.projected_profit;
   const word = metric === "revenue" ? "Revenue" : "Profit";
-
-  // A delta phrase: the amount, then ahead or behind, coloured by which it is.
   const Delta = ({ v }: { v: number }) => (
-    <b className="font-semibold tabular-nums" style={{ color: v >= 0 ? CLR.emerald : CLR.rose }}>
+    <b className={`font-medium tabular-nums ${v >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
       {fmtAmount(Math.abs(v))} {v >= 0 ? "ahead" : "behind"}
     </b>
   );
-
   return (
-    <p className="text-[13px] text-ink-2 leading-relaxed mb-4">
-      <b className="text-ink font-semibold">Day {pace.day_of_month}</b> of{" "}
-      {pace.days_in_month}. {word} is{" "}
-      <b className="text-ink font-semibold tabular-nums">{signed(now)}</b>
+    <p className="text-[14px] leading-[22px] text-muted mt-4 mb-0">
+      <b className="text-ink font-medium">Day {pace.day_of_month}</b> of {pace.days_in_month}. {word} is{" "}
+      <b className="text-ink font-medium tabular-nums">{signed(now)}</b>
       {pace.prior_count > 0 ? (
         <>
           , which is <Delta v={now - prev} /> of where {longMonth(pace.prev_month)} stood on
-          day {pace.day_of_month}, and <Delta v={now - avg} /> of the{" "}
-          {pace.prior_count}-month average for this day.
+          day {pace.day_of_month}, and <Delta v={now - avg} /> of the {pace.prior_count}-month average for this day.
         </>
       ) : <>. There is no earlier month to compare it against yet.</>}
-      {" "}At this pace the month finishes near{" "}
-      <b className="text-ink font-semibold tabular-nums">{signed(proj)}</b>.
+      {" "}At this pace the month finishes near <b className="text-ink font-medium tabular-nums">{signed(proj)}</b>.
     </p>
-  );
-}
-
-function Legend({ color, label, dashed, onClick, active }: {
-  color: string; label: string; dashed?: boolean; onClick?: () => void; active?: boolean;
-}) {
-  const body = (
-    <>
-      <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
-        style={dashed
-          ? { border: `1.5px dashed ${color}` }
-          : { background: glassSeg(color) }} />
-      <span className={`text-[11px] whitespace-nowrap ${active ? "text-ink font-medium" : "text-muted"}`}>{label}</span>
-    </>
-  );
-  // A legend that picks a month is a control, so it is a real button — focusable,
-  // and it says which month is currently singled out.
-  if (!onClick) return <div className="flex items-center gap-1.5 flex-shrink-0">{body}</div>;
-  return (
-    <button type="button" onClick={onClick} aria-pressed={!!active}
-      className={`flex items-center gap-1.5 flex-shrink-0 rounded-md px-2 h-6 -mx-1 transition-colors duration-[130ms] ${
-        active ? "bg-surface-2 ring-1 ring-line" : "hover:bg-surface-2"}`}>
-      {body}
-    </button>
   );
 }
 
@@ -1865,20 +1385,11 @@ function RefundOutcome({ d }: { d: AnalyticsRefundDeal }) {
   if (d.status === "cost_here") return (
     <div className="min-w-0">
       <StatusPill tone="danger">Supplier cost still here</StatusPill>
-      <div className="text-[11px] text-muted mt-1 whitespace-normal">
+      <div className="ui-note mt-1 whitespace-normal">
         Link the supplier's money back on its refund step, or move the cost if the goods were resold.
       </div>
     </div>
   );
   if (d.status === "loss_kept") return <StatusPill tone="danger">A real loss</StatusPill>;
   return <StatusPill tone="danger">Refund more than it made</StatusPill>;
-}
-
-function Blank({ h = 160, text = "No data yet" }: { h?: number; text?: string }) {
-  return (
-    <div className="flex items-center justify-center text-center text-[12px] text-faint px-4"
-      style={{ height: h }}>
-      {text}
-    </div>
-  );
 }

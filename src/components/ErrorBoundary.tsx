@@ -44,50 +44,32 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          background: "#0D0A09",
-          color: "#F3EEE8",
+          background: "var(--t-bg)",
+          color: "var(--t-tx1)",
           fontFamily:
             "'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
           padding: "24px",
         }}
       >
         <div style={{ maxWidth: 440, textAlign: "center" }}>
-          <div
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 12,
-              margin: "0 auto 18px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: "rgba(255,101,32,0.14)",
-              border: "1px solid rgba(255,101,32,0.3)",
-              color: "#FF6520",
-              fontSize: 22,
-              fontWeight: 800,
-            }}
-          >
-            !
-          </div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 8px", letterSpacing: "-0.01em" }}>
+          <h1 style={{ fontSize: 20, fontWeight: 500, margin: "0 0 8px", letterSpacing: "-0.01em" }}>
             Something went wrong
           </h1>
-          <p style={{ fontSize: 14, lineHeight: 1.5, color: "#B9AEA3", margin: "0 0 20px" }}>
+          <p style={{ fontSize: 14, lineHeight: 1.5, color: "var(--t-tx3)", margin: "0 0 20px" }}>
             The screen hit an unexpected error. Your data is safe, and reloading usually
             fixes it.
           </p>
           <button
             onClick={reloadFromDashboard}
             style={{
-              background: "#FF6520",
-              color: "#fff",
+              background: "var(--t-tx1)",
+              color: "var(--t-bg)",
               border: "none",
               borderRadius: 11,
               height: 44,
               padding: "0 22px",
               fontSize: 14.5,
-              fontWeight: 600,
+              fontWeight: 500,
               cursor: "pointer",
               fontFamily: "inherit",
             }}
@@ -99,7 +81,7 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
               style={{
                 marginTop: 22,
                 fontSize: 11.5,
-                color: "#8A7F74",
+                color: "var(--t-tx4)",
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
                 textAlign: "left",

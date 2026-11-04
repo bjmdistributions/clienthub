@@ -35,60 +35,60 @@ export default function LeadBubbles({ pendingApprovals, onApprovalsChanged }: {
 
   return (
     <>
-      <div className="bg-surface-2/60 border border-line-2 rounded-2xl overflow-hidden">
-        <div className="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x divide-line-2">
-          <button onClick={() => setOpen("requests")}
-            className="min-w-0 px-5 py-4 flex items-center gap-3.5 text-left hover:bg-surface-2 transition-colors">
-            <span className="w-9 h-9 rounded-lg bg-surface text-ink-2 border border-line-2 flex items-center justify-center flex-shrink-0"><UserPlus size={16} strokeWidth={1.75} /></span>
-            <div className="min-w-0">
-              <div className="text-[22px] font-bold text-ink tabular-nums leading-none">{pendingApprovals.length}</div>
-              <div className="text-[12px] text-muted mt-1">New customer requests</div>
-            </div>
-          </button>
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_1px_1fr_1px_1fr]">
+        <button onClick={() => setOpen("requests")}
+          className="min-w-0 my-1 px-4 py-3.5 flex items-center gap-3.5 text-left rounded-xl hover:bg-surface-2 transition-colors duration-150">
+          <UserPlus size={18} strokeWidth={1.75} className="text-muted flex-shrink-0" />
+          <div className="min-w-0">
+            <div className="ui-fig">{pendingApprovals.length}</div>
+            <div className="ui-label">New customer requests</div>
+          </div>
+        </button>
+        <div className="vsep hidden lg:block my-2" />
 
-          <button onClick={() => setOpen("calls")}
-            className="min-w-0 px-5 py-4 flex items-center gap-3.5 text-left hover:bg-surface-2 transition-colors">
-            <span className="w-9 h-9 rounded-lg bg-surface text-ink-2 border border-line-2 flex items-center justify-center flex-shrink-0"><PhoneCall size={16} strokeWidth={1.75} /></span>
-            <div className="min-w-0 flex-1">
-              {statsUnavailable ? (
-                <>
-                  <div className="text-[13px] font-medium text-faint">Unavailable</div>
-                  <div className="text-[12px] text-muted mt-1">Booked calls</div>
-                </>
-              ) : (
-                <>
-                  <div className="text-[22px] font-bold text-ink tabular-nums leading-none">{pendingCalls}</div>
-                  <div className="text-[12px] text-muted mt-1">Booked calls</div>
-                  {nextCall && (
-                    <div className="flex items-center gap-1.5 mt-1.5 min-w-0">
-                      <StatusPill tone="success">Next</StatusPill>
-                      <span className="text-[11px] text-ink-2 truncate">{nextCall.name} · {fmtWhen(nextCall.scheduled_at)}</span>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </button>
+        <button onClick={() => setOpen("calls")}
+          className="min-w-0 my-1 px-4 py-3.5 flex items-center gap-3.5 text-left rounded-xl hover:bg-surface-2 transition-colors duration-150">
+          <PhoneCall size={18} strokeWidth={1.75} className="text-muted flex-shrink-0" />
+          <div className="min-w-0 flex-1">
+            {statsUnavailable ? (
+              <>
+                <div className="text-[14px] font-medium text-faint">Unavailable</div>
+                <div className="ui-label">Booked calls</div>
+              </>
+            ) : (
+              <>
+                <div className="ui-fig">{pendingCalls}</div>
+                <div className="ui-label">Booked calls</div>
+                {nextCall && (
+                  <div className="flex items-center gap-1.5 mt-1.5 min-w-0">
+                    <StatusPill tone="success">Next</StatusPill>
+                    <span className="ui-note truncate">{nextCall.name}, {fmtWhen(nextCall.scheduled_at)}</span>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </button>
+        <div className="vsep hidden lg:block my-2" />
 
-          <button onClick={() => setOpen("leads")}
-            className="min-w-0 px-5 py-4 flex items-center gap-3.5 text-left hover:bg-surface-2 transition-colors">
-            <span className="w-9 h-9 rounded-lg bg-surface text-ink-2 border border-line-2 flex items-center justify-center flex-shrink-0"><Radar size={16} strokeWidth={1.75} /></span>
-            <div className="min-w-0">
-              {statsUnavailable ? (
-                <>
-                  <div className="text-[13px] font-medium text-faint">Unavailable</div>
-                  <div className="text-[12px] text-muted mt-1">Organic leads</div>
-                </>
-              ) : (
-                <>
-                  <div className="text-[22px] font-bold text-ink tabular-nums leading-none">{organic?.total ?? 0}</div>
-                  <div className="text-[12px] text-muted mt-1">Organic leads</div>
-                  <div className="text-[11px] text-faint mt-1">{organic?.last_30d ?? 0} in 30 days · {organic?.today ?? 0} today</div>
-                </>
-              )}
-            </div>
-          </button>
-        </div>
+        <button onClick={() => setOpen("leads")}
+          className="min-w-0 my-1 px-4 py-3.5 flex items-center gap-3.5 text-left rounded-xl hover:bg-surface-2 transition-colors duration-150">
+          <Radar size={18} strokeWidth={1.75} className="text-muted flex-shrink-0" />
+          <div className="min-w-0">
+            {statsUnavailable ? (
+              <>
+                <div className="text-[14px] font-medium text-faint">Unavailable</div>
+                <div className="ui-label">Organic leads</div>
+              </>
+            ) : (
+              <>
+                <div className="ui-fig">{organic?.total ?? 0}</div>
+                <div className="ui-label">Organic leads</div>
+                <div className="ui-note mt-1">{organic?.last_30d ?? 0} in 30 days, {organic?.today ?? 0} today</div>
+              </>
+            )}
+          </div>
+        </button>
       </div>
 
       {open === "requests" && (

@@ -18,7 +18,7 @@ export default function RefundPanel({ dealFlowId, refreshKey }: { dealFlowId: st
       {owed > 0 && (
         <div className="flex items-center justify-between text-[12px] bg-danger-bg border border-danger rounded-lg px-3 py-2">
           <span className="text-danger-ink font-medium">Owed back to customer</span>
-          <span className="tabular-nums font-bold text-danger-ink">{fmtAmount(owed)}</span>
+          <span className="tabular-nums font-medium text-danger-ink">{fmtAmount(owed)}</span>
         </div>
       )}
     </div>
@@ -54,13 +54,13 @@ function LocalPayoutPanel({ dealFlowId }: { dealFlowId: string }) {
 
 
   return (
-    <div className="bg-surface border border-line rounded-xl px-4 py-3 space-y-3">
+    <div className="py-1 space-y-3">
       <div className="flex items-center justify-between">
         <div className="text-[12.5px] font-medium text-muted">
           Payout{enabled && payout.lead_rep_id ? " & Lead Rep" : ""}{refunded > 0 ? " · Refunded" : ""}
         </div>
         {refunded > 0 && (
-          <span className="text-[11px] font-semibold text-danger-ink">
+          <span className="text-[12px] font-medium text-danger-ink">
             −{fmtAmount(refunded)} refunded
           </span>
         )}
@@ -74,9 +74,9 @@ function LocalPayoutPanel({ dealFlowId }: { dealFlowId: string }) {
             {/* R-577: shown, never changed here; a deal's reps are set on its Payouts box. */}
             <span className="text-ink">{payout.lead_rep_name || reps.find((r) => r.id === payout.lead_rep_id)?.display_name || "No rep"}</span>
             {payout.lead_rep_id && (
-              <span className="tabular-nums font-semibold text-ink">
+              <span className="tabular-nums font-medium text-ink">
                 {fmtAmount(repCut)}
-                <span className="text-muted font-normal ml-1 text-[10px]">
+                <span className="text-muted font-normal ml-1 text-[11px]">
                   {payout.pay_type === "gross_pct" ? `${payout.commission_pct}% gross` : payout.pay_type === "fixed" ? "fixed" : `${payout.commission_pct}% profit`}
                   {payout.keep_rep_cut ? " · kept" : ""}
                 </span>
@@ -90,7 +90,7 @@ function LocalPayoutPanel({ dealFlowId }: { dealFlowId: string }) {
       {(Math.abs(Number(payout.logistics_pay)) > 0.005 || payout.logistics_pay_pending) && (
         <div className="flex items-center justify-between gap-3 text-[12px]">
           <span className="text-muted">Logistics pay</span>
-          <span className="tabular-nums font-semibold text-ink">
+          <span className="tabular-nums font-medium text-ink">
             {payout.logistics_pay_pending ? "Waiting on the freight amount" : `${Number(payout.logistics_pay) < 0 ? "-" : ""}${fmtAmount(Math.abs(Number(payout.logistics_pay)))}`}
           </span>
         </div>
@@ -100,7 +100,7 @@ function LocalPayoutPanel({ dealFlowId }: { dealFlowId: string }) {
       {enabled && unmatched && (
         <div className="flex items-start gap-2 bg-warning-bg border border-warning rounded-lg px-3 py-2">
           <span className="text-[12px] text-warning-ink leading-snug">
-            Rep <strong>“{unmatchedName}”</strong> on this client isn't an employee. No payout is calculated for them. Fix the spelling on the client, or add/invite them under <strong>Settings → Team</strong>.
+            Rep <strong>"{unmatchedName}"</strong> on this client isn't an employee. No payout is calculated for them. Fix the spelling on the client, or add/invite them under <strong>Settings → Team</strong>.
           </span>
         </div>
       )}
@@ -116,7 +116,7 @@ function LocalPayoutPanel({ dealFlowId }: { dealFlowId: string }) {
             {splits.map((s, i) => (
               <div key={i} className="flex-1 min-w-[80px]">
                 <div className="text-[12px] text-muted truncate">{s.name}</div>
-                <div className={`text-[16px] font-bold tabular-nums mt-0.5 ${s.amount < 0 ? "text-danger-ink" : "text-success-ink"}`}>
+                <div className={`text-[16px] font-medium tabular-nums mt-0.5 ${s.amount < 0 ? "text-danger-ink" : "text-success-ink"}`}>
                   {fmtAmount(s.amount)}
                 </div>
               </div>
@@ -125,7 +125,7 @@ function LocalPayoutPanel({ dealFlowId }: { dealFlowId: string }) {
         </div>
       )}
 
-      {err && <div className="text-[11.5px] text-danger-ink">{err}</div>}
+      {err && <div className="text-[12px] text-danger-ink">{err}</div>}
     </div>
   );
 }

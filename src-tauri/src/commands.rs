@@ -15957,16 +15957,21 @@ struct LabelledDeal {
 /// Every closed deal, all time, oldest first (the order `label_all` learns in), labelled.
 /// Learning always reads every deal Jack labelled, whatever range the screen shows.
 fn labelled_deals(conn: &rusqlite::Connection) -> Result<Vec<LabelledDeal>, String> {
+    labelled_deals_where(conn, "df.stage='complete'")
+}
+
+/// R-583: the same labels for deals still open, so Deal Flow can say what every deal sells (Shoes, Nike) before it closes.
+fn labelled_deals_where(conn: &rusqlite::Connection, stage: &str) -> Result<Vec<LabelledDeal>, String> {
     let sql = format!(
         "SELECT df.id, COALESCE(date(df.completed_at),''), COALESCE(i.number,''), COALESCE(c.name,''), \
                 COALESCE(i.line_items_json,'[]'), COALESCE(df.name,''), COALESCE({DF_NET_REVENUE_SQL},0), {np}, \
                 COALESCE(df.category,''), COALESCE(df.brand,''), \
                 COALESCE(CASE WHEN json_valid(c.metadata) THEN CAST(json_extract(c.metadata,'$.category') AS TEXT) END,'') \
          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id LEFT JOIN clients c ON c.id=i.client_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+         WHERE {stage} AND COALESCE(df.archived,0)=0 \
            AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
          ORDER BY df.completed_at, df.id",
-        np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL);
+        np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL, stage = stage);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows: Vec<(String, String, String, String, String, String, f64, f64, String, String, String)> = stmt
         .query_map([], |r| Ok((
@@ -16073,6 +16078,20 @@ pub async fn list_deal_labels() -> Result<Value, String> {
         "brand": d.label.brand, "brand_from": d.label.brand_from, "brand_why": d.label.brand_why,
     })).collect();
     Ok(json!({ "deals": deals, "categories": categories, "brands": brands }))
+}
+
+/// R-583: category and brand for every open deal (read only; the same rules as closed deals, a guess stays a guess).
+#[tauri::command]
+pub async fn list_open_deal_labels() -> Result<Value, String> {
+    let all = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        labelled_deals_where(&conn, "df.stage<>'complete'")?
+    };
+    let deals: Vec<Value> = all.iter().map(|d| json!({
+        "id": d.id, "category": d.label.category, "category_from": d.label.category_from,
+        "brand": d.label.brand, "brand_from": d.label.brand_from,
+    })).collect();
+    Ok(json!({ "deals": deals }))
 }
 
 #[derive(Deserialize)]

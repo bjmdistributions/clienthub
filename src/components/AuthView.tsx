@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ArrowRight } from "lucide-react";
 import { api, Me } from "../lib/api";
 
 // Accounts are created on the website — the desktop only ever signs in. A
@@ -81,19 +82,19 @@ export default function AuthView({
   const openRegister = () => { api.openExternal(REGISTER_URL).catch(() => {}); };
   const openForgot = () => { api.openExternal(FORGOT_URL).catch(() => {}); };
 
-  const inp = "w-full h-11 px-3.5 rounded-xl text-[14px] bg-white/5 border border-white/12 text-white placeholder-white/35 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-white/25 transition";
+  const inp = "w-full h-11 px-3.5 rounded-lg text-[14px] bg-transparent border border-line-3 text-ink placeholder:text-faint focus:outline-none focus:border-ink transition-colors";
 
   return (
-    <div className="fixed inset-0 overflow-hidden flex items-center justify-center" style={{ background: "radial-gradient(70% 50% at 50% 0%, #17171A 0%, #0A0A0B 65%)" }}>
+    <div className="fixed inset-0 overflow-hidden flex items-center justify-center bg-surface text-ink">
 
       <div className="relative z-10 w-full max-w-[380px] px-6 animate-auth-rise">
         <div className="flex flex-col items-center text-center mb-7">
           <div className="auth-logo-tile mb-4">
             <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-16 w-16" />
           </div>
-          <p className="text-[16px] font-semibold tracking-tight text-white/90 mb-2">Ecliptr</p>
-          <h1 className="text-[26px] font-bold tracking-tight text-white">Welcome back</h1>
-          <p className="text-[13px] text-white/55 mt-1.5 max-w-[300px]">Sign in to your workspace.</p>
+          <p className="text-[14px] font-medium text-ink mb-2">Ecliptr</p>
+          <h1 className="text-[24px] font-medium tracking-tight text-ink">Welcome back</h1>
+          <p className="text-[13px] text-muted mt-1.5 max-w-[300px]">Sign in to your workspace.</p>
         </div>
 
         <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (!busy) submit(); }}>
@@ -115,20 +116,20 @@ export default function AuthView({
               // functional update always flips regardless of a stale render.
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setShowPw((v) => !v)}
-              className="absolute right-1 top-1/2 -translate-y-1/2 text-[13px] font-semibold text-white/50 hover:text-white/80 px-3 py-2 select-none"
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-[13px] font-medium text-muted hover:text-ink px-3 py-2 select-none"
             >
               {showPw ? "Hide" : "Show"}
             </button>
           </div>
 
           <div className="flex justify-end -mt-1">
-            <button type="button" onClick={openForgot} className="text-[12px] text-white/45 hover:text-white/70 transition-colors">
+            <button type="button" onClick={openForgot} className="text-[12px] text-muted hover:text-ink transition-colors">
               Forgot password?
             </button>
           </div>
 
           {error && (
-            <div className="text-[12px] text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
+            <div className="text-[12px] text-danger-ink bg-danger-bg rounded-lg px-3 py-2">
               {error}
             </div>
           )}
@@ -136,19 +137,18 @@ export default function AuthView({
           <button
             type="submit"
             disabled={busy}
-            className="w-full h-11 rounded-xl text-[14px] font-semibold text-[#0A0A0B] transition-all duration-150 disabled:opacity-60 hover:-translate-y-px flex items-center justify-center gap-2"
-            style={{ background: "#F4F2EF", boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}
+            className="ui-btn ui-btn-ink w-full !h-11 !text-[14px] disabled:opacity-60 gap-2"
           >
-            {busy && <span className="w-3.5 h-3.5 rounded-full border-2 border-black/25 border-t-black animate-spin" />}
+            {busy && <span className="w-3.5 h-3.5 rounded-full border-2 border-on-accent/30 border-t-on-accent animate-spin" />}
             {restoring ? "Restoring your account…" : busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
 
-        <p className="text-center text-[12px] text-white/45 mt-6">
+        <p className="text-center text-[12px] text-muted mt-6">
           Don't have an account?{" "}
-          <button onClick={openRegister} className="group inline-flex items-center gap-1 text-accent hover:text-accent-hover font-medium transition-colors">
+          <button onClick={openRegister} className="group inline-flex items-center gap-1 text-ink hover:opacity-70 font-medium transition-opacity">
             Sign up at ecliptr.app
-            <span className="transition-transform group-hover:translate-x-0.5">→</span>
+            <ArrowRight size={13} className="transition-transform group-hover:translate-x-0.5" />
           </button>
         </p>
       </div>
@@ -158,8 +158,7 @@ export default function AuthView({
         .animate-auth-rise { animation: authRise 0.2s cubic-bezier(0.16,1,0.3,1); }
         .auth-logo-tile {
           width: 64px; height: 64px; border-radius: 15px; display: flex; align-items: center; justify-content: center;
-          /* The mark carries its own dark tile; float it on a neutral shadow, no tint (R-424). */
-          box-shadow: 0 18px 44px rgba(0,0,0,0.55);
+          /* The mark carries its own dark tile (R-424). R-583: no shadow under it. */
         }
       `}</style>
     </div>

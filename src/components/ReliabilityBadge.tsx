@@ -1,10 +1,10 @@
-import { AlertTriangle, CheckCircle2, MinusCircle } from "lucide-react";
+import StatusPill from "./StatusPill";
 
 /**
- * Buyer reliability — how often the quotes we send a client actually convert
+ * Buyer reliability: how often the quotes we send a client actually convert
  * into a deal. Only meaningful after a few quotes; flagged once >= 3 are sent.
- * "low" is shown boldly so a client who keeps getting quotes but never buys
- * stands out as not a serious buyer.
+ * "low" is shown in the loss red so a client who keeps getting quotes but never buys
+ * stands out as not a serious buyer. R-583: it is a StatusPill like every other badge.
  */
 export default function ReliabilityBadge({
   reliability, pct, quotesSent, quotesWon, size = "sm", compact = false,
@@ -19,28 +19,24 @@ export default function ReliabilityBadge({
   if (reliability === "unrated") {
     if (quotesSent === 0 || compact) return null;
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted" title={`${quotesSent} quote(s) sent: need 3 to rate reliability`}>
-        <MinusCircle size={11} /> Unrated
+      <span className="inline-flex items-center text-[12px] font-medium text-muted" title={`${quotesSent} quote(s) sent: need 3 to rate reliability`}>
+        Unrated
       </span>
     );
   }
 
-  const cfg = {
-    reliable: { cls: "bg-success-bg text-success-ink border-success", icon: CheckCircle2, label: compact ? "Reliable" : "Reliable buyer" },
-    mixed:    { cls: "bg-warning-bg text-warning-ink border-warning",       icon: AlertTriangle, label: compact ? "Mixed" : "Mixed" },
-    low:      { cls: "bg-danger-bg text-danger-ink border-danger",            icon: AlertTriangle, label: compact ? "Low intent" : "Not a serious buyer" },
-  }[reliability] ?? { cls: "bg-surface-2 text-muted border-line", icon: MinusCircle, label: reliability };
+  const cfg = ({
+    reliable: { tone: "success", label: compact ? "Reliable" : "Reliable buyer" },
+    mixed:    { tone: "warning", label: "Mixed" },
+    low:      { tone: "danger",  label: compact ? "Low intent" : "Not a serious buyer" },
+  } as const)[reliability as "reliable" | "mixed" | "low"] ?? { tone: "neutral" as const, label: reliability };
 
-  const Icon = cfg.icon;
-  const pad = size === "md" ? "px-2.5 py-1 text-[11px]" : "px-2 py-0.5 text-[10px]";
   const tip = `Converted ${quotesWon} of ${quotesSent} quotes (${pct.toFixed(0)}%)`;
 
   return (
-    <span title={tip}
-      className={`inline-flex items-center gap-1 rounded-full border font-semibold whitespace-nowrap max-w-full ${pad} ${cfg.cls} ${reliability === "low" ? "tracking-wide" : ""}`}>
-      <Icon size={size === "md" ? 13 : 11} className="flex-shrink-0" />
+    <StatusPill tone={cfg.tone} size={size === "md" ? "md" : "sm"} title={tip}>
       <span className="truncate">{cfg.label}</span>
-      <span className="font-normal opacity-70 flex-shrink-0">· {pct.toFixed(0)}%</span>
-    </span>
+      <span className="font-normal opacity-70 flex-shrink-0 ml-1">{pct.toFixed(0)}%</span>
+    </StatusPill>
   );
 }

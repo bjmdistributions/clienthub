@@ -82,13 +82,13 @@ export default function CostProfitPanel({
             clr:   margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink",
           },
         ].map((item) => (
-          <div key={item.label} className="bg-surface border border-line rounded-xl px-3 py-2.5 min-w-0">
+          <div key={item.label} className="min-w-0">
             <div className="text-[12px] font-medium text-muted">{item.label}</div>
             {/* Money is never truncated — an unreadable figure is worse than a small one —
                 so an unusually long value steps the type down instead of spilling. Two
                 columns fit eight figures at 16px; the steps cover the rest. */}
-            <div className={`${moneySize(item.value)} font-bold tabular-nums mt-0.5 ${item.clr}`}>{item.value}</div>
-            {"sub" in item && item.sub && <div className="text-[11px] text-muted tabular-nums mt-0.5">{item.sub}</div>}
+            <div className={`${moneySize(item.value)} font-medium tabular-nums mt-0.5 ${item.clr}`}>{item.value}</div>
+            {"sub" in item && item.sub && <div className="text-[12px] text-muted tabular-nums mt-0.5">{item.sub}</div>}
           </div>
         ))}
       </div>
@@ -98,7 +98,7 @@ export default function CostProfitPanel({
       {isComplete && (
         <DealPayoutsBox dealFlowId={flow.id} refreshKey={flow.updated_at} fallback={
           (isComplete && profit > 0 && (alloc.length > 0 || logiPay.amount > 0.005 || logiPay.pending)) ? (
-            <div className="bg-surface border border-line rounded-xl px-4 py-3">
+            <div className="py-1">
               <div className="text-[12.5px] font-medium text-muted mb-2">
                 Profit split
               </div>
@@ -106,8 +106,8 @@ export default function CostProfitPanel({
                 <LogisticsPayCell pay={logiPay} />
                 {alloc.map((item, i) => (
                   <div key={i}>
-                    <div className="text-[11px] text-muted">{item.name}</div>
-                    <div className="text-[13px] font-semibold text-success-ink tabular-nums">
+                    <div className="text-[12px] text-muted">{item.name}</div>
+                    <div className="text-[13px] font-medium text-success-ink tabular-nums">
                       {fmtAmount(item.amount)}
                     </div>
                   </div>

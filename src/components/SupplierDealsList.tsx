@@ -122,7 +122,7 @@ export default function SupplierDealsList({
                       />
                       <div className="flex-1 min-w-0">
                         <div className="text-[13px] font-medium text-ink truncate">
-                          {d.client_name || "–"}
+                          {d.client_name || "-"}
                         </div>
                         <div className="text-[11px] text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
                           {d.invoice_number && (
@@ -146,7 +146,7 @@ export default function SupplierDealsList({
                           clr={profit >= 0 ? "text-success-ink" : "text-danger-ink"}
                         />
                         <Stat
-                          value={margin === null ? "–" : `${margin.toFixed(1)}%`}
+                          value={margin === null ? "-" : `${margin.toFixed(1)}%`}
                           clr={
                             margin === null ? "text-faint"
                             : margin >= 20 ? "text-success-ink"
@@ -156,7 +156,7 @@ export default function SupplierDealsList({
                         />
                         <Stat value={fmtAmount(d.supplier_amount)} />
                         <Stat
-                          value={refunded > 0 ? signedAmount(-refunded) : "–"}
+                          value={refunded > 0 ? signedAmount(-refunded) : "-"}
                           clr={refunded > 0 ? "text-danger-ink" : "text-faint"}
                         />
                         <Stat value={fmtAmount(netPaid)} />
@@ -192,12 +192,12 @@ export default function SupplierDealsList({
                       clr={totals.profit >= 0 ? "text-success-ink" : "text-danger-ink"}
                     />
                     <Stat
-                      value={totalMargin === null ? "–" : `${totalMargin.toFixed(1)}%`}
+                      value={totalMargin === null ? "-" : `${totalMargin.toFixed(1)}%`}
                       clr={totalMargin === null ? "text-faint" : "text-ink-2"}
                     />
                     <Stat value={fmtAmount(totals.paid)} />
                     <Stat
-                      value={totals.refunded > 0 ? signedAmount(-totals.refunded) : "–"}
+                      value={totals.refunded > 0 ? signedAmount(-totals.refunded) : "-"}
                       clr={totals.refunded > 0 ? "text-danger-ink" : "text-faint"}
                     />
                     <Stat value={fmtAmount(totals.paid - totals.refunded)} />

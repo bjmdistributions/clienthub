@@ -53,7 +53,7 @@ export default function VariablePicker({ onSelect }: VariablePickerProps) {
               onClick={() => { onSelect(v.token); setOpen(false); }}
             >
               <code className="text-[12px] font-mono text-accent-hover whitespace-nowrap min-w-[140px]">{v.token}</code>
-              <span className="text-[11px] text-muted">{v.label}</span>
+              <span className="text-[12px] text-muted">{v.label}</span>
             </button>
           ))}
         </div>
@@ -78,7 +78,7 @@ export function VariableReference() {
           <button key={v.token} type="button" onClick={() => copy(v.token)}
             className="flex items-center justify-between gap-2 text-left px-2 py-1.5 rounded-md hover:bg-surface-3 transition-colors">
             <code className="font-mono text-[12px] text-accent whitespace-nowrap">{v.token}</code>
-            <span className={`text-[11px] truncate ${copied === v.token ? "text-emerald-500 font-medium" : "text-muted"}`}>
+            <span className={`text-[12px] truncate ${copied === v.token ? "text-success-ink font-medium" : "text-muted"}`}>
               {copied === v.token ? "Copied!" : v.label}
             </span>
           </button>

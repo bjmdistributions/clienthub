@@ -4,7 +4,7 @@ import { ChevronRight, FileText, Search } from "lucide-react";
 import { api, type CarrierPayResponse, type CarrierPayRow, type PaidState } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import {
-  OPEN_LOAD_KEY, UNDO_PAID_PATCH, carrierPayCandidates, encodeOpenLoad, linkAmountCheck, linkAmountStart, linkRateStart, payActions, payDue, payMethodLabel,
+  OPEN_LOAD_KEY, PAY_METHODS, UNDO_PAID_PATCH, carrierPayCandidates, encodeOpenLoad, linkAmountCheck, linkAmountStart, linkRateStart, payActions, payDue, payMethodLabel,
   toPaySummary, type BankCandidate,
 } from "../lib/logisticsCarriers";
 import { fmtDayLabel, paidStateOf, paidView, type LoadStep, type PaidFacts, type PaidView } from "../lib/logisticsLoad";
@@ -25,8 +25,8 @@ import { toast } from "./Toast";
 
 const REFRESH_MS = 30_000;
 const inp =
-  "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted " +
-  "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors disabled:opacity-60";
+  "border border-line-3 px-3 h-9 rounded-lg text-[14px] w-full bg-transparent text-ink placeholder-faint " +
+  "focus:outline-none focus:border-ink transition-colors disabled:opacity-60";
 
 /** Open a load on a step from another screen: stash it, switch to Logistics, and tell a Logistics screen that
  *  is already open (the same stash-then-switch handoff `invoices_open_id` uses). */
@@ -64,6 +64,8 @@ export interface PayTarget {
   bookingId: string; label: string; rate: number | null; linked?: number | null;
   /** R-551: a truck that brings a buy in: its payment is the buy's shipping in, not a line on a deal. */
   buy?: boolean;
+  /** R-588: a load with no deal and no buy: there is no bank row to link, so the team marks it paid. */
+  standalone?: boolean;
 }
 
 /** The bank rows that look like this payment (money out, with money left on it, around the pay day). Picking one
@@ -109,17 +111,17 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
         : <button onClick={onClose} className={modalPrimary}>Close</button>}>
       {picked ? (
         <>
-          <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5 min-w-0">
+          <div className="rounded-xl bg-surface-2 px-4 py-3 min-w-0">
             <div className="flex items-baseline gap-3 min-w-0">
-              <div className="text-[13px] text-ink truncate min-w-0 flex-1">{picked.who || picked.memo || "Bank payment"}</div>
-              {picked.amount != null && <span className="text-[13px] tabular-nums text-ink flex-shrink-0">{fmtAmount(picked.amount)}</span>}
+              <div className="text-[14px] text-ink truncate min-w-0 flex-1">{picked.who || picked.memo || "Bank payment"}</div>
+              {picked.amount != null && <span className="text-[14px] tabular-nums font-medium text-ink flex-shrink-0">{fmtAmount(picked.amount)}</span>}
             </div>
-            <div className="text-[11.5px] text-muted truncate">{[fmtDayLabel(picked.day), picked.who && picked.memo ? picked.memo : ""].filter(Boolean).join(" · ")}</div>
+            <div className="text-[12px] text-muted truncate">{[fmtDayLabel(picked.day), picked.who && picked.memo ? picked.memo : ""].filter(Boolean).join(" · ")}</div>
           </div>
           <div className="min-w-0">
-            <label className="block text-[12px] font-medium text-muted mb-1">Amount to link to this load</label>
+            <label className="block ui-label mb-1.5">Amount to link to this load</label>
             <NumberInput className={inp} value={amount} placeholder="0.00" autoFocus onValue={(_n, raw) => setAmount(raw)} />
-            <div className="text-[11px] text-muted mt-1">
+            <div className="text-[12px] text-faint mt-1.5 leading-[1.4]">
               {[
                 picked.free != null ? `${fmtAmount(picked.free)} free on this payment.` : "",
                 target.rate != null ? `Carrier rate ${fmtAmount(target.rate)}.` : "",
@@ -133,7 +135,7 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
         </>
       ) : (
         <>
-          <p className="text-[12.5px] text-muted">
+          <p className="text-[13px] text-muted m-0">
             Money that left the account in the last few months and is not fully booked yet. Pick the payment that went to this carrier.
           </p>
           <div className="relative">
@@ -141,31 +143,31 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search an amount or words" aria-label="Search bank payments"
               className={`${inp} pl-8`} />
           </div>
-          {rows === null ? <p className="text-[12.5px] text-muted">Looking...</p> : rows.length === 0 ? (
-            <p className="text-[12.5px] text-ink-2">{err ? "" : q.trim() ? "No bank payment matches that." : "No bank payment to link yet. It shows up here once the money leaves the account, pending or posted."}</p>
+          {rows === null ? <p className="text-[14px] text-muted m-0">Looking...</p> : rows.length === 0 ? (
+            <p className="text-[14px] text-ink-2 m-0">{err ? "" : q.trim() ? "No bank payment matches that." : "No bank payment to link yet. It shows up here once the money leaves the account, pending or posted."}</p>
           ) : (
-            <div className="rounded-lg border border-line divide-y divide-line">
+            <div>
               {rows.map((c) => (
-                <div key={c.txnId} className="flex items-center gap-3 px-3 py-2.5 min-w-0">
+                <div key={c.txnId} className="flex items-center gap-3 px-2 py-3 min-w-0 rounded-lg transition-colors duration-[130ms] hover:bg-surface-2" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[13px] text-ink truncate">{c.who || c.memo || "Bank payment"}</div>
-                    <div className="text-[11.5px] text-muted truncate">
+                    <div className="text-[14px] text-ink truncate">{c.who || c.memo || "Bank payment"}</div>
+                    <div className="text-[12px] text-muted truncate">
                       {[fmtDayLabel(c.day), c.who && c.memo ? c.memo : "", c.method, c.reason].filter(Boolean).join(" · ")}
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    {c.amount != null && <div className="text-[13px] tabular-nums text-ink">{fmtAmount(c.amount)}</div>}
-                    {c.free != null && <div className="text-[11px] tabular-nums text-muted">{fmtAmount(c.free)} {c.linked ? "on this deal" : "free on it"}</div>}
+                    {c.amount != null && <div className="text-[14px] tabular-nums font-medium text-ink">{fmtAmount(c.amount)}</div>}
+                    {c.free != null && <div className="text-[12px] tabular-nums text-muted">{fmtAmount(c.free)} {c.linked ? "on this deal" : "free on it"}</div>}
                   </div>
                   <button onClick={() => pick(c)}
-                    className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink hover:bg-surface-2 whitespace-nowrap">Choose</button>
+                    className="ui-btn ui-btn-sm whitespace-nowrap">Choose</button>
                 </div>
               ))}
             </div>
           )}
         </>
       )}
-      {err && <div className="text-[12px] text-danger-ink" role="alert">{err}</div>}
+      {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
     </LogisticsModal>
   );
 }
@@ -174,6 +176,7 @@ export function LinkBankSheet({ target, onClose, onDone }: { target: PayTarget; 
  *  `onChanged` runs after any of them changes the load, so the screen reads it again. */
 export function usePaidControls(onChanged: () => void) {
   const [target, setTarget] = useState<PayTarget | null>(null);
+  const [recording, setRecording] = useState<PayTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const run = async (what: () => Promise<unknown>, done: string) => {
     setBusy(true);
@@ -183,8 +186,10 @@ export function usePaidControls(onChanged: () => void) {
   };
   return {
     busy,
-    open: target !== null,
+    open: target !== null || recording !== null,
     link: (t: PayTarget) => setTarget(t),
+    /** R-588: Mark paid on a load with no deal. */
+    record: (t: PayTarget) => setRecording(t),
     unlink: async (t: PayTarget) => {
       if (!confirm("Unlink this bank payment? The load goes back to To pay.")) return;
       await run(() => api.logistics.carrierPay.unlink(t.bookingId), "Bank payment unlinked");
@@ -194,12 +199,61 @@ export function usePaidControls(onChanged: () => void) {
       if (!confirm(`Undo the payment on ${t.label}? The load goes back to To pay.`)) return;
       await run(() => api.logistics.update(t.bookingId, UNDO_PAID_PATCH), "Payment undone");
     },
-    sheet: target ? <LinkBankSheet target={target} onClose={() => setTarget(null)} onDone={() => { setTarget(null); onChanged(); }} /> : null,
+    sheet: target ? <LinkBankSheet target={target} onClose={() => setTarget(null)} onDone={() => { setTarget(null); onChanged(); }} />
+      : recording ? <RecordPaidSheet target={recording} onClose={() => setRecording(null)} onDone={() => { setRecording(null); onChanged(); }} /> : null,
   };
 }
 
-const ghostBtn = "px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap";
-const primaryBtn = "bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12.5px] font-medium disabled:opacity-40 whitespace-nowrap";
+/** R-588: what the carrier was paid on a load with no deal, the day, how and a reference, kept on the load by the server. */
+function RecordPaidSheet({ target, onClose, onDone }: { target: PayTarget; onClose: () => void; onDone: () => void }) {
+  const [amount, setAmount] = useState(target.rate != null ? String(target.rate) : "");
+  const [day, setDay] = useState(localDay());
+  const [method, setMethod] = useState("");
+  const [ref, setRef] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const go = async () => {
+    const n = Number(amount.replace(/[$,\s]/g, ""));
+    if (!(n > 0)) { setErr("Enter what the carrier was paid."); return; }
+    if (!day) { setErr("Add the day the carrier was paid."); return; }
+    setBusy(true); setErr("");
+    try { await api.logistics.update(target.bookingId, { paid_amount: n, paid_at: day, paid_method: method, paid_note: ref.trim() }); toast("Marked paid"); onDone(); }
+    catch (e) { setErr(String(e)); setBusy(false); }
+  };
+  return (
+    <LogisticsModal title="Mark paid" sub={target.label} onClose={onClose}
+      footer={<>
+        <button onClick={onClose} disabled={busy} className={modalGhost}>Cancel</button>
+        <button onClick={go} disabled={busy} className={modalPrimary}>{busy ? "Saving..." : "Mark paid"}</button>
+      </>}>
+      <div className="space-y-3">
+        <div className="min-w-0">
+          <label className="block ui-label mb-1.5">Paid to the carrier</label>
+          <NumberInput className={inp} value={amount} placeholder="0.00" autoFocus onValue={(_n, raw) => setAmount(raw)} />
+        </div>
+        <div className="min-w-0">
+          <label className="block ui-label mb-1.5">Day paid</label>
+          <input type="date" className={inp} value={day} onChange={(e) => setDay(e.target.value)} />
+        </div>
+        <div className="min-w-0">
+          <label className="block ui-label mb-1.5">How</label>
+          <select className={inp} value={method} onChange={(e) => setMethod(e.target.value)}>
+            <option value="">Not set</option>
+            {PAY_METHODS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+          </select>
+        </div>
+        <div className="min-w-0">
+          <label className="block ui-label mb-1.5">Reference</label>
+          <input className={inp} value={ref} placeholder="Like a check number" onChange={(e) => setRef(e.target.value)} />
+        </div>
+        {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
+      </div>
+    </LogisticsModal>
+  );
+}
+
+const ghostBtn = "ui-btn ui-btn-sm whitespace-nowrap";
+const primaryBtn = "ui-btn ui-btn-sm ui-btn-ink whitespace-nowrap";
 
 const TONE_TEXT: Record<PaidView["tone"], string> = {
   neutral: "text-ink-2", warning: "text-warning-ink", danger: "text-danger-ink", success: "text-success-ink",
@@ -211,8 +265,8 @@ export function PaidSummary({ b, today, className = "" }: { b: PaidFacts; today:
   if (!v.text) return null;
   return (
     <div className={`min-w-0 ${className}`}>
-      <div className={`text-[13px] break-words ${TONE_TEXT[v.tone]} ${v.state === "unpaid" ? "" : "font-medium"}`}>{v.text}</div>
-      {v.note && <div className={`text-[12px] break-words ${v.noteTone === "neutral" ? "text-muted" : TONE_TEXT[v.noteTone]}`}>{v.note}</div>}
+      <div className={`text-[14px] break-words ${TONE_TEXT[v.tone]} ${v.state === "unpaid" ? "" : "font-medium"}`}>{v.text}</div>
+      {v.note && <div className={`text-[13px] break-words ${v.noteTone === "neutral" ? "text-muted" : TONE_TEXT[v.noteTone]}`}>{v.note}</div>}
     </div>
   );
 }
@@ -223,6 +277,12 @@ export function PaidSummary({ b, today, className = "" }: { b: PaidFacts; today:
 export function PaidButtons({ state, bankLinked, amount, canLink, canChange, target, controls }: {
   state: PaidState; bankLinked?: string | null; amount?: number | null; canLink: boolean; canChange: boolean; target: PayTarget; controls: ReturnType<typeof usePaidControls>;
 }) {
+  // R-588: a load with no deal is marked paid by the team (no bank row to link), and undone the same way.
+  if (target.standalone) {
+    if (state === "unpaid" && canLink) return <div className="flex items-center gap-2 flex-wrap"><button type="button" onClick={() => controls.record(target)} disabled={controls.busy} className={primaryBtn}>Mark paid</button></div>;
+    if (state !== "unpaid" && state !== "hidden" && canChange) return <div className="flex items-center gap-2 flex-wrap"><button type="button" onClick={() => controls.undo(target)} disabled={controls.busy} className={ghostBtn}>Undo</button></div>;
+    return null;
+  }
   const show = payActions(state, bankLinked, amount, canLink, canChange);
   const linkBtn = show.link && (
     <button type="button" onClick={() => controls.link(target)} disabled={controls.busy} className={primaryBtn}>Link bank payment</button>
@@ -234,7 +294,7 @@ export function PaidButtons({ state, bankLinked, amount, canLink, canChange, tar
     <button type="button" onClick={() => controls.unlink(target)} disabled={controls.busy} className={ghostBtn}>Unlink</button>
   );
   if (!linkBtn && !undoBtn && !unlinkBtn) return null;
-  return <div className="flex items-center gap-1.5 flex-wrap">{linkBtn}{undoBtn}{unlinkBtn}</div>;
+  return <div className="flex items-center gap-2 flex-wrap">{linkBtn}{undoBtn}{unlinkBtn}</div>;
 }
 
 // ─── a file on a load, opened in place ────────────────────────────────────
@@ -255,7 +315,7 @@ function useOpenFile() {
     } catch (e) { toast(String(e), "error"); }
   };
   const node = preview && (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 p-6" onClick={() => setPreview(null)}>
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 p-6 animate-fade-in" onClick={() => setPreview(null)}>
       {preview.mime === "application/pdf"
         ? <iframe src={preview.url} title={preview.name} className="w-full max-w-[900px] h-full rounded-lg bg-surface" />
         : <img src={preview.url} alt={preview.name} className="max-w-full max-h-full rounded-lg shadow-xl" />}
@@ -268,29 +328,33 @@ function useOpenFile() {
 
 function Group({ title, count, note, children }: { title: string; count: number; note?: ReactNode; children: ReactNode }) {
   return (
-    <section className="bg-surface border border-line rounded-xl overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-line flex items-center gap-2 flex-wrap">
-        <h3 className="text-[13px] font-semibold text-ink">{title}</h3>
-        <StatusPill tone="neutral">{count}</StatusPill>
-        {note && <span className="text-[12px] text-muted ml-auto">{note}</span>}
+    <section>
+      <div className="flex items-baseline gap-2.5 flex-wrap pb-1.5">
+        <h3 className="m-0 text-[16px] font-medium text-ink">{title}</h3>
+        <span className="text-[12px] text-muted tabular-nums">{count}</span>
+        {note && <span className="text-[13px] text-muted ml-auto">{note}</span>}
       </div>
-      <div className="divide-y divide-line">{children}</div>
+      <div>{children}</div>
     </section>
   );
 }
 
+/** One row of a group: the fading hairline on top, a faint fill under the pointer. */
+const rowCls = "flex items-center gap-x-[18px] gap-y-2 px-2 py-3.5 min-w-0 flex-wrap rounded-lg transition-colors duration-[130ms] hover:bg-surface-2";
+const rowLine = { boxShadow: "inset 0 1px 0 rgb(var(--c-line))" } as const;
+
 function Who({ r, onOpen }: { r: CarrierPayRow; onOpen: () => void }) {
   return (
-    <div className="min-w-0 flex-1">
-      <div className="flex items-baseline gap-2 min-w-0">
-        <button type="button" onClick={onOpen} className="font-mono text-[12px] text-accent hover:underline flex-shrink-0" title="Open the load on its Pay step">{r.load_number}</button>
-        <span className="text-[13.5px] font-medium text-ink truncate min-w-0">{r.carrier || "Carrier not named"}</span>
+    <div className="min-w-0 flex-1 basis-[260px]">
+      <div className="flex items-baseline gap-2.5 min-w-0">
+        <button type="button" onClick={onOpen} className="ui-link flex-shrink-0 tabular-nums" title="Open the load on its Pay step">{r.load_number}</button>
+        <span className="text-[15px] font-medium text-ink truncate min-w-0">{r.carrier || "Carrier not named"}</span>
       </div>
-      <div className="text-[12px] text-muted mt-0.5 truncate">
+      <div className="text-[13px] text-muted mt-0.5 truncate">
         {r.route}{r.route && r.deal_label ? " · " : ""}
         {/* R-551: a truck that brings a buy in reads "Coming in: <name>", and opens the buy where a deal's label would open its deal. */}
         {r.buy_id && r.deal_label
-          ? <button type="button" onClick={() => openBuyInDealFlow(r.buy_id!)} title="Open the buy in Deal Flow, Inventory" className="hover:text-accent-hover hover:underline">{r.deal_label}</button>
+          ? <button type="button" onClick={() => openBuyInDealFlow(r.buy_id!)} title="Open the buy in Deal Flow, Inventory" className="hover:text-ink hover:underline">{r.deal_label}</button>
           : r.deal_label}
       </div>
     </div>
@@ -308,7 +372,7 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
   const today = localDay();
   const targetOf = (r: CarrierPayRow): PayTarget => ({
     bookingId: r.booking_id, label: `${r.carrier || "Carrier"}, ${r.load_number}`, rate: r.rate, linked: paidStateOf(r) === "part" ? r.paid_amount : null,
-    buy: !!r.buy_id,
+    buy: !!r.buy_id, standalone: !!r.standalone,
   });
   const sum = useMemo(() => toPaySummary(data?.to_pay ?? [], today), [data, today]);
 
@@ -320,24 +384,24 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
     <PaidButtons state={state} bankLinked={r.bank_linked} amount={r.paid_amount} canLink={attach} canChange={attach} target={targetOf(r)} controls={controls} />
   );
   return (
-    <div className="space-y-5 min-w-0">
+    <div className="space-y-7 min-w-0">
       {error && (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning-bg px-4 py-3 text-[12.5px] text-warning-ink" role="alert">
+        <div className="flex items-center justify-between gap-3 rounded-xl bg-warning-bg px-4 py-3 text-[13px] text-warning-ink" role="alert">
           <span className="min-w-0 break-words">{error}</span>
-          <button type="button" onClick={reload} className="font-medium underline flex-shrink-0">Try again</button>
+          <button type="button" onClick={reload} className="ui-link flex-shrink-0">Try again</button>
         </div>
       )}
 
       <Group title="To pay" count={data.to_pay.length}
         note={data.to_pay.length > 0 ? <>{sum.late > 0 ? `${sum.late} due or late, ` : ""}{fmtAmount(sum.total)} owed{sum.noRate > 0 ? `, ${sum.noRate} with no rate` : ""}</> : undefined}>
-        {data.to_pay.length === 0 && <div className="px-4 py-4 text-[12.5px] text-muted">No carrier is waiting to be paid.</div>}
+        {data.to_pay.length === 0 && <div className="px-2 py-3.5 text-[14px] text-muted" style={rowLine}>No carrier is waiting to be paid.</div>}
         {data.to_pay.map((r) => {
           const due = payDue(r, today);
           const state = paidStateOf(r);
           return (
-            <div key={r.booking_id} className="flex items-center gap-3 px-4 py-3 min-w-0 flex-wrap">
+            <div key={r.booking_id} className={rowCls} style={rowLine}>
               <Who r={r} onOpen={() => onOpenLoad(r.booking_id, "pay")} />
-              <div className="text-[12px] text-muted min-w-0 max-w-[260px]">
+              <div className="text-[13px] text-muted min-w-0 max-w-[260px]">
                 <div className="truncate">{payMethodLabel(r.pay_method) ? `Pay by ${payMethodLabel(r.pay_method)}` : "No pay method saved"}</div>
                 {r.pay_details && <div className="truncate" title={r.pay_details}>{r.pay_details}</div>}
               </div>
@@ -345,10 +409,10 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
                 <StatusPill tone={due.tone}>{due.label}</StatusPill>
                 {r.carrier_invoice_file_id
                   ? <button type="button" onClick={() => file.open(r.booking_id, r.carrier_invoice_file_id)}
-                      className="flex items-center gap-1 px-2 h-7 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap"><FileText size={12} /> Carrier invoice</button>
+                      className="ui-btn ui-btn-sm whitespace-nowrap"><FileText size={14} /> Carrier invoice</button>
                   : <StatusPill tone="warning">No carrier invoice</StatusPill>}
               </div>
-              <span className="text-[14px] font-semibold tabular-nums text-ink w-24 text-right flex-shrink-0">{r.rate != null ? fmtAmount(r.rate) : "No rate"}</span>
+              <span className="text-[15px] font-medium tabular-nums text-ink w-24 text-right flex-shrink-0">{r.rate != null ? fmtAmount(r.rate) : "No rate"}</span>
               {state === "part" && <PaidSummary b={{ ...r, quoted_cost: r.rate, pay_due_date: "" }} today={today} className="max-w-[320px]" />}
               {buttons(r, state)}
             </div>
@@ -358,9 +422,9 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
 
       <Group title="Link the bank payment" count={toLink.length}
         note={toLink.length > 0 ? "Marked paid before, but not tied to a bank payment" : undefined}>
-        {toLink.length === 0 && <div className="px-4 py-4 text-[12.5px] text-muted">Every paid load is linked to the bank.</div>}
+        {toLink.length === 0 && <div className="px-2 py-3.5 text-[14px] text-muted" style={rowLine}>Every paid load is linked to the bank.</div>}
         {toLink.map((r) => (
-          <div key={r.booking_id} className="flex items-center gap-3 px-4 py-3 min-w-0 flex-wrap">
+          <div key={r.booking_id} className={rowCls} style={rowLine}>
             <Who r={r} onOpen={() => onOpenLoad(r.booking_id, "pay")} />
             <PaidSummary b={{ ...r, paid_state: "marked", quoted_cost: r.rate }} today={today} className="max-w-[320px]" />
             {buttons(r, "marked")}
@@ -369,9 +433,9 @@ export function PayCarriersView({ onOpenLoad, rev }: { onOpenLoad: (bookingId: s
       </Group>
 
       <Group title="Paid" count={data.paid.length} note="Last 60 days">
-        {data.paid.length === 0 && <div className="px-4 py-4 text-[12.5px] text-muted">Nothing paid in the last 60 days.</div>}
+        {data.paid.length === 0 && <div className="px-2 py-3.5 text-[14px] text-muted" style={rowLine}>Nothing paid in the last 60 days.</div>}
         {data.paid.map((r) => (
-          <div key={r.booking_id} className="flex items-center gap-3 px-4 py-3 min-w-0 flex-wrap">
+          <div key={r.booking_id} className={rowCls} style={rowLine}>
             <Who r={r} onOpen={() => onOpenLoad(r.booking_id, "pay")} />
             <PaidSummary b={{ ...r, paid_state: "paid", quoted_cost: r.rate }} today={today} className="max-w-[320px]" />
             {buttons(r, "paid")}
@@ -399,28 +463,29 @@ export function CarriersToPaySection({ canPay, data: given }: { canPay: boolean;
   const sum = useMemo(() => toPaySummary(rows, today), [rows, today]);
   if (!canPay || rows.length === 0) return null;
   return (
-    <section className="mb-5 bg-surface border border-line rounded-2xl overflow-hidden" aria-label="Carriers to pay">
-      <div className="px-4 py-3 border-b border-line flex items-center gap-2 flex-wrap">
-        <h3 className="text-[14px] font-semibold text-ink">Carriers to pay</h3>
+    <section className="mb-6" aria-label="Carriers to pay">
+      <div className="flex items-baseline gap-2.5 flex-wrap pb-1.5">
+        <h3 className="m-0 text-[16px] font-medium text-ink">Carriers to pay</h3>
         <StatusPill tone={sum.late > 0 ? "danger" : "neutral"}>{rows.length}</StatusPill>
-        <span className="text-[12px] text-muted ml-auto">{fmtAmount(sum.total)} owed{sum.noRate > 0 ? `, ${sum.noRate} with no rate` : ""}</span>
+        <span className="text-[13px] text-muted ml-auto">{fmtAmount(sum.total)} owed{sum.noRate > 0 ? `, ${sum.noRate} with no rate` : ""}</span>
       </div>
-      <div className="divide-y divide-line">
+      <div>
         {rows.map((r) => {
           const due = payDue(r, today);
           return (
             <button key={r.booking_id} type="button" onClick={() => openLoadInLogistics(r.booking_id, "pay")}
-              className="w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/60 transition-colors min-w-0">
+              style={rowLine}
+              className="w-full text-left flex items-center gap-3 px-2 py-3 rounded-lg hover:bg-surface-2 transition-colors duration-[130ms] min-w-0">
               <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2 min-w-0">
-                  <span className="text-[13.5px] font-medium text-ink truncate min-w-0">{r.carrier || "Carrier not named"}</span>
-                  <span className="font-mono text-[12px] text-muted flex-shrink-0">{r.load_number}</span>
+                <div className="flex items-baseline gap-2.5 min-w-0">
+                  <span className="text-[15px] font-medium text-ink truncate min-w-0">{r.carrier || "Carrier not named"}</span>
+                  <span className="text-[13px] text-muted tabular-nums flex-shrink-0">{r.load_number}</span>
                 </div>
-                <div className="text-[12px] text-muted truncate">{payMethodLabel(r.pay_method) ? `Pay by ${payMethodLabel(r.pay_method)}` : "No pay method saved"}</div>
+                <div className="text-[13px] text-muted truncate">{payMethodLabel(r.pay_method) ? `Pay by ${payMethodLabel(r.pay_method)}` : "No pay method saved"}</div>
               </div>
               <StatusPill tone={due.tone}>{due.label}</StatusPill>
-              <span className="text-[13.5px] font-semibold tabular-nums text-ink w-24 text-right flex-shrink-0">{r.rate != null ? fmtAmount(r.rate) : "No rate"}</span>
-              <ChevronRight size={14} className="text-faint flex-shrink-0" />
+              <span className="text-[15px] font-medium tabular-nums text-ink w-24 text-right flex-shrink-0">{r.rate != null ? fmtAmount(r.rate) : "No rate"}</span>
+              <ChevronRight size={16} className="text-faint flex-shrink-0" />
             </button>
           );
         })}

@@ -18,7 +18,7 @@ import { toast } from "./Toast";
 
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted " +
-  "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "focus:outline-none focus:border-ink transition-colors";
 
 const NOT_YET = /that buy was not found/i;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -200,7 +200,7 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
               <div>
                 <label className="block text-[12px] font-medium text-ink-2 mb-1">Note for logistics</label>
                 <textarea
-                  className="border border-line px-3 py-2 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted resize-y min-h-[72px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+                  className="border border-line px-3 py-2 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted resize-y min-h-[72px] focus:outline-none focus:border-ink"
                   placeholder="Like: call the dock first" value={note} onChange={(e) => setNote(e.target.value)} />
               </div>
             </>

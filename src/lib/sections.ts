@@ -1,0 +1,108 @@
+// R-583: the shell's map. The sidebar shows nine sections; each section owns a list of screens (the
+// existing tab ids, unchanged) that the shell draws as a tab bar above the page. Pure data and pure
+// helpers so the routing rules can be tested without a DOM (sections.test.ts).
+//
+// Tab ids are the app's routing keys (navigate-tab events, the remembered screen, the command palette,
+// split view). Nothing here renames one. A section with one screen (Home, Logistics, Settings) has no
+// tab bar and no shell header; the screen draws its own PageHeader.
+
+export type TabId =
+  | "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "coldcalls" | "inventory"
+  | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices"
+  | "quotes" | "releaseletter" | "clientreceipt" | "purchaseorder" | "newsletter" | "analytics"
+  | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup"
+  | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety"
+  | "settings";
+
+export type SectionId = "home" | "deals" | "clients" | "inventory" | "logistics" | "money" | "insights" | "more" | "settings";
+
+export interface TabDef { id: TabId; label: string }
+export interface SectionDef {
+  id: SectionId;
+  label: string;
+  /** The screens in tab order. The first one the account may open is where a click on the section lands. */
+  tabs: TabDef[];
+}
+
+export const SECTIONS: SectionDef[] = [
+  { id: "home", label: "Home", tabs: [{ id: "dashboard", label: "Home" }] },
+  { id: "deals", label: "Deals", tabs: [
+    { id: "dealflow", label: "Deal Flow" },
+    { id: "quotes", label: "Quotes" },
+    { id: "releaseletter", label: "Release letter" },
+    { id: "clientreceipt", label: "Client receipt" },
+    { id: "purchaseorder", label: "Purchase order" },
+    { id: "invoices", label: "Invoices" },
+    { id: "completed", label: "Completed" },
+    { id: "bols", label: "BOLs" },
+  ] },
+  { id: "clients", label: "Clients", tabs: [
+    { id: "clients", label: "Clients" },
+    { id: "checkup", label: "Checkup" },
+    { id: "tiers", label: "Tiers" },
+    { id: "portals", label: "Customer portals" },
+    { id: "newsletter", label: "Newsletter" },
+    { id: "approvals", label: "Notifications" },
+  ] },
+  { id: "inventory", label: "Inventory", tabs: [
+    { id: "inventory", label: "Inventory" },
+    { id: "warehouse", label: "Warehouse" },
+    { id: "suppliers", label: "Suppliers" },
+    { id: "coldcalls", label: "Cold calls" },
+    { id: "manifest", label: "Manifest analyzer" },
+    { id: "renewals", label: "Renewals" },
+    { id: "lotengine", label: "Lot engine" },
+    { id: "showpacking", label: "Show packing" },
+    { id: "sheetcopy", label: "Sheet copy" },
+  ] },
+  { id: "logistics", label: "Logistics", tabs: [{ id: "logistics", label: "Logistics" }] },
+  { id: "money", label: "Money", tabs: [
+    { id: "financials", label: "Financials" },
+    { id: "bills", label: "Bills" },
+  ] },
+  { id: "insights", label: "Insights", tabs: [
+    { id: "analytics", label: "Analytics" },
+    { id: "brief", label: "Brief" },
+    { id: "automation", label: "Automation" },
+    { id: "globe", label: "Globe" },
+  ] },
+  { id: "more", label: "More", tabs: [
+    { id: "notes", label: "Notes" },
+    { id: "documents", label: "Documents" },
+    { id: "archive", label: "Archive" },
+    { id: "platform", label: "Platform" },
+    { id: "datasafety", label: "Data safety" },
+  ] },
+  { id: "settings", label: "Settings", tabs: [{ id: "settings", label: "Settings" }] },
+];
+
+/** Every screen id with its label, in section order (the split picker and the All screens menu). */
+export const ALL_TABS: TabDef[] = SECTIONS.flatMap((s) => s.tabs);
+
+export function sectionOfTab(id: string): SectionDef | undefined {
+  return SECTIONS.find((s) => s.tabs.some((t) => t.id === id));
+}
+
+export function sectionById(id: string): SectionDef | undefined {
+  return SECTIONS.find((s) => s.id === id);
+}
+
+/** The section's screens this account may open, in tab order. */
+export function visibleTabs(section: SectionDef, visible: (id: TabId) => boolean): TabDef[] {
+  return section.tabs.filter((t) => visible(t.id));
+}
+
+/** Where a click on a section lands: the screen last used in it when that is still openable,
+ *  otherwise the first screen the account may open, otherwise null (the section is hidden). */
+export function landingTab(section: SectionDef, visible: (id: TabId) => boolean, lastUsed?: string | null): TabId | null {
+  const open = visibleTabs(section, visible);
+  if (lastUsed && open.some((t) => t.id === lastUsed)) return lastUsed as TabId;
+  return open[0]?.id ?? null;
+}
+
+/** Whether the shell draws its own header (section title, action slot and tab bar) for a screen.
+ *  Only sections that group several screens get one; Home, Logistics and Settings draw their own. */
+export function shellDrawsHeader(id: string): boolean {
+  const s = sectionOfTab(id);
+  return !!s && s.tabs.length > 1;
+}

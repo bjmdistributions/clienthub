@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { api, FollowUpLogEntry, FollowUpRule, AutomationsSummary, IntakeSourceSummary } from "../lib/api";
 import {
-  AlertCircle, CheckCircle2, Clock, Bell, UserPlus, Globe, ArrowRight,
-  Copy, Check, BookOpen, ChevronRight, Settings2, Zap,
+  AlertCircle, CheckCircle2, Bell, UserPlus, Globe, ArrowRight,
+  Copy, Check, BookOpen, Zap,
 } from "lucide-react";
 import { SetupGuide } from "./IntakeSetupGuide";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 import { copyText, COPY_FAILED } from "../lib/clipboard";
+import { Button, PageActions } from "./ui";
 
 // Jump to a Settings sub-tab (persisted key the SettingsView reads on mount).
 function goToSettings(tab: string) {
@@ -22,33 +23,29 @@ function CopyField({ value }: { value: string }) {
     setCopied(true); setTimeout(() => setCopied(false), 1500);
   };
   return (
-    <div className="flex items-center gap-1.5 min-w-0">
-      <code className="flex-1 bg-surface-2 border border-line rounded-md h-7 px-2 text-[11px] text-ink-2 truncate flex items-center font-mono">{value}</code>
-      <button onClick={copy} title="Copy URL"
-        className="flex-shrink-0 flex items-center gap-1 border border-line px-2 h-7 rounded-md text-[11px] text-ink-2 hover:bg-surface-2 transition-colors">
-        {copied ? <><Check size={12} className="text-success-ink" /> Copied</> : <><Copy size={12} /> Copy</>}
-      </button>
+    <div className="flex items-center gap-2 min-w-0">
+      <code className="flex-1 min-w-0 bg-surface-2 ring-1 ring-line rounded-lg h-8 px-2.5 text-[12px] text-muted truncate flex items-center font-mono">{value}</code>
+      <Button size="sm" onClick={copy} title="Copy URL" aria-label="Copy URL"
+        icon={copied ? <Check size={13} className="text-success-ink" /> : <Copy size={13} />}>
+        {copied ? "Copied" : "Copy"}
+      </Button>
     </div>
   );
 }
 
-// A dashboard tile summarizing an automation family.
-function StatCard({ icon: Icon, tint, label, value, sub, cta, onCta }: {
-  icon: typeof Bell; tint: string; label: string; value: string; sub: string; cta?: string; onCta?: () => void;
+// One automation family: label, the figure, a line of context and the one link that goes further.
+function Stat({ icon: Icon, label, value, sub, cta, onCta }: {
+  icon: typeof Bell; label: string; value: string; sub: string; cta?: string; onCta?: () => void;
 }) {
   return (
-    <div className="bg-surface border border-line rounded-xl p-4 flex flex-col">
-      <div className="flex items-center gap-2.5 mb-3">
-        <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${tint}`}><Icon size={16} /></span>
-        <span className="text-[12px] font-semibold text-ink-2">{label}</span>
+    <div className="min-w-0 p-4 flex flex-col">
+      <div className="flex items-center gap-2 text-muted">
+        <Icon size={16} />
+        <span className="ui-label">{label}</span>
       </div>
-      <div className="text-[24px] font-bold text-ink tabular-nums leading-none">{value}</div>
-      <div className="text-[11.5px] text-muted mt-1.5 flex-1">{sub}</div>
-      {cta && (
-        <button onClick={onCta} className="mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:text-accent-hover self-start">
-          {cta} <ChevronRight size={13} />
-        </button>
-      )}
+      <div className="ui-fig mt-2">{value}</div>
+      <div className="ui-note mt-1 leading-[1.5] flex-1">{sub}</div>
+      {cta && <button onClick={onCta} className="ui-link mt-2.5 self-start">{cta}</button>}
     </div>
   );
 }
@@ -93,140 +90,140 @@ export default function AutomationLogView() {
   const fu = summary?.followup_rules ?? { total: 0, active: 0 };
   const su = summary?.signup_rules ?? { total: 0, active: 0 };
   const sources = summary?.intake_sources ?? [];
+  const captured = sources.reduce((n, s) => n + (s.captured_count || 0), 0);
 
   return (
-    <div className="max-w-[1100px] space-y-6">
-      <div>
-        <h2 className="text-[18px] font-bold text-ink">Automations</h2>
-        <p className="text-[12px] text-muted mt-0.5">Rules and inbound forms that create and nurture clients without manual work.</p>
-      </div>
+    <div className="max-w-[1120px] animate-fade-up motion-reduce:animate-none">
+      <PageActions>
+        <Button icon={<BookOpen size={14} />} onClick={() => setGuideFor("generic")}>Setup guide</Button>
+        <Button variant="ink" icon={<Zap size={14} />} onClick={() => goToSettings("webforms")}>Add or configure</Button>
+      </PageActions>
 
-      {/* Dashboard tiles */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
-        <StatCard icon={Bell} tint="bg-accent/10 text-accent-hover"
-          label="Follow-up rules" value={`${fu.active}`}
-          sub={`${fu.active} active of ${fu.total} · e.g. email a client after 30 quiet days`}
+      <p className="text-[13px] text-muted mb-2">Rules and inbound forms that create and nurture clients without manual work.</p>
+
+      {/* The three families. No boxes: a fading vertical hairline between them. */}
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_1px_minmax(0,1fr)]">
+        <Stat icon={Bell} label="Follow-up rules" value={`${fu.active}`}
+          sub={`${fu.active} active of ${fu.total}. For example, email a client after 30 quiet days.`}
           cta="Manage rules" onCta={() => goToSettings("automation")} />
-        <StatCard icon={UserPlus} tint="bg-success-bg text-success-ink"
-          label="Signup automations" value={`${su.active}`}
-          sub={`${su.active} active of ${su.total} · turn signup emails into pending clients`}
+        <div className="vsep hidden md:block mt-4" />
+        <Stat icon={UserPlus} label="Signup automations" value={`${su.active}`}
+          sub={`${su.active} active of ${su.total}. Turn signup emails into pending clients.`}
           cta="Manage signups" onCta={() => goToSettings("automation")} />
-        <StatCard icon={Globe} tint="bg-warning-bg text-warning-ink"
-          label="Web forms" value={`${sources.length}`}
-          sub={`${sources.reduce((n, s) => n + (s.captured_count || 0), 0)} leads captured across all forms`}
+        <div className="vsep hidden md:block mt-4" />
+        <Stat icon={Globe} label="Web forms" value={`${sources.length}`}
+          sub={`${captured} lead${captured !== 1 ? "s" : ""} captured across all forms.`}
           cta="How it works" onCta={() => setGuideFor("generic")} />
       </div>
 
-      {/* Web forms / intake sources */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Globe size={15} className="text-muted" />
-            <h3 className="text-[14px] font-semibold text-ink">Web forms &amp; intake sources</h3>
+      <div className="hsep" />
+
+      {/* Web forms and intake sources */}
+      <section className="pt-5 pb-4">
+        <div className="flex items-center justify-between gap-3 px-1 mb-2">
+          <div className="flex items-center gap-2 text-muted">
+            <Globe size={16} />
+            <h3 className="text-[14px] font-medium text-ink">Web forms and intake sources</h3>
           </div>
-          <button onClick={() => goToSettings("webforms")}
-            className="inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:text-accent-hover">
-            <Settings2 size={13} /> Add / configure
-          </button>
+          <Button size="sm" onClick={() => goToSettings("webforms")}>Add or configure</Button>
         </div>
 
         {loading && !summary ? (
-          <div className="bg-surface border border-line rounded-xl h-32 animate-pulse" />
+          <div className="h-32 rounded-xl bg-surface-2 animate-pulse" />
         ) : sources.length === 0 ? (
-          <div className="bg-surface border border-dashed border-line rounded-xl py-12 px-6 text-center">
-            <div className="mx-auto w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-muted mb-3"><Globe size={18} /></div>
-            <div className="text-[13px] font-medium text-ink-2">No web forms yet</div>
-            <div className="text-[12px] text-muted mt-1 max-w-sm mx-auto leading-relaxed">
+          <div className="py-12 px-6 text-center">
+            <div className="text-[14px] font-medium text-ink">No web forms yet</div>
+            <div className="text-[13px] text-muted mt-1.5 max-w-sm mx-auto leading-relaxed">
               Create an intake source, drop its URL into any website form, and submissions arrive as pending leads.
             </div>
             <div className="flex items-center justify-center gap-2 mt-4">
-              <button onClick={() => goToSettings("webforms")} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Create a web form</button>
-              <button onClick={() => setGuideFor("generic")} className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"><BookOpen size={13} /> Setup guide</button>
+              <Button variant="ink" onClick={() => goToSettings("webforms")}>Create a web form</Button>
+              <Button icon={<BookOpen size={14} />} onClick={() => setGuideFor("generic")}>Setup guide</Button>
             </div>
           </div>
         ) : (
-          <div className="space-y-2.5">
-            {sources.map((s) => (
-              <div key={s.id} className="bg-surface border border-line rounded-xl p-4">
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13.5px] font-semibold text-ink truncate">{s.name}</span>
-                      <StatusPill tone="neutral">{s.kind || "form"}</StatusPill>
-                    </div>
-                    <div className="text-[11.5px] text-muted mt-0.5 tabular-nums">
-                      {s.captured_count} lead{s.captured_count !== 1 ? "s" : ""} captured
-                    </div>
+          <div>
+            {sources.map((s, i) => (
+              <div key={s.id}
+                className={`grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2.5 items-center py-3.5 px-1 ${i > 0 ? "shadow-[inset_0_1px_0_rgb(var(--c-line))]" : ""}`}>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[14px] font-medium text-ink truncate">{s.name}</span>
+                    <StatusPill tone="neutral">{s.kind || "form"}</StatusPill>
                   </div>
-                  <button onClick={() => setGuideFor(s)}
-                    className="flex-shrink-0 inline-flex items-center gap-1.5 border border-line px-3 h-8 rounded-lg text-[12px] font-medium text-ink-2 hover:bg-surface-2 transition-colors">
-                    <BookOpen size={13} /> Setup guide
-                  </button>
+                  <div className="ui-note mt-0.5 tabular-nums">
+                    {s.captured_count} lead{s.captured_count !== 1 ? "s" : ""} captured
+                  </div>
                 </div>
-                <CopyField value={s.url} />
+                <Button size="sm" icon={<BookOpen size={13} />} onClick={() => setGuideFor(s)}>Setup guide</Button>
+                <div className="col-span-2 min-w-0"><CopyField value={s.url} /></div>
               </div>
             ))}
           </div>
         )}
       </section>
 
-      {/* Follow-up activity log — one section, below the dashboard */}
-      <section>
-        <div className="flex items-center gap-2 mb-3">
-          <Zap size={15} className="text-muted" />
-          <h3 className="text-[14px] font-semibold text-ink">Follow-up activity</h3>
+      <div className="hsep" />
+
+      {/* Follow-up activity log */}
+      <section className="pt-5 pb-2">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+          <div className="flex items-center gap-2 text-muted">
+            <Zap size={16} />
+            <h3 className="text-[14px] font-medium text-ink">Follow-up activity</h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={filterRule} onChange={(e) => setFilterRule(e.target.value)} aria-label="Rule"
+              className="ring-1 ring-line-3 h-8 px-2.5 rounded-lg text-[13px] text-ink bg-surface transition-colors duration-[130ms]">
+              <option value="">All rules</option>
+              {rules.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+            <select value={since} onChange={(e) => setSince(e.target.value)} aria-label="Period"
+              className="ring-1 ring-line-3 h-8 px-2.5 rounded-lg text-[13px] text-ink bg-surface transition-colors duration-[130ms]">
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="all">All time</option>
+            </select>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2.5 mb-3 flex-wrap">
-          <select value={filterRule} onChange={(e) => setFilterRule(e.target.value)}
-            className="border border-line h-8 px-2.5 rounded-lg text-[12.5px] text-ink-2 bg-surface">
-            <option value="">All rules</option>
-            {rules.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
-          <select value={since} onChange={(e) => setSince(e.target.value)}
-            className="border border-line h-8 px-2.5 rounded-lg text-[12.5px] text-ink-2 bg-surface">
-            <option value="7">Last 7 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="90">Last 90 days</option>
-            <option value="all">All time</option>
-          </select>
-        </div>
-
-        {loading ? (
-          <div className="text-center py-10 text-[13px] text-muted"><Clock size={16} className="inline mr-1 animate-spin" /> Loading…</div>
+        {/* The old rows stay until the new ones arrive, so a refresh never flashes empty. */}
+        {loading && log.length === 0 ? (
+          <div className="mt-3 h-40 rounded-xl bg-surface-2 animate-pulse" />
         ) : filtered.length === 0 ? (
-          <div className="bg-surface border border-line rounded-xl py-10 px-6 text-center">
-            <div className="text-[13px] text-ink-2 font-medium mb-1">No follow-up activity yet</div>
-            <div className="text-[12px] text-muted max-w-md mx-auto leading-relaxed">
-              This log tracks follow-up rules firing (e.g. "email a client after 30 days of no order").
-              Configure them in <button onClick={() => goToSettings("automation")} className="text-accent hover:underline">Settings → Automation</button>.
+          <div className="py-10 px-6 text-center">
+            <div className="text-[14px] font-medium text-ink mb-1">No follow-up activity yet</div>
+            <div className="text-[13px] text-muted max-w-md mx-auto leading-relaxed">
+              This log tracks follow-up rules firing, for example email a client after 30 days of no order.
+              Configure them in <button onClick={() => goToSettings("automation")} className="ui-link">Settings, Automation</button>.
             </div>
           </div>
         ) : (
-          <div className="bg-surface border border-line rounded-xl overflow-x-auto">
-            <table className="min-w-full text-sm">
+          <div className={`mt-2 overflow-x-auto transition-opacity duration-200 ${loading ? "opacity-60" : "opacity-100"}`}>
+            <table className="ui-table ui-table-sm min-w-[640px]">
               <thead>
-                <tr className="border-b border-line-2">
-                  <th className="text-left px-4 py-2.5 text-[12px] font-medium text-muted">Date</th>
-                  <th className="text-left px-4 py-2.5 text-[12px] font-medium text-muted">Rule</th>
-                  <th className="text-left px-4 py-2.5 text-[12px] font-medium text-muted">Action</th>
-                  <th className="text-left px-4 py-2.5 text-[12px] font-medium text-muted">Result</th>
+                <tr>
+                  <th>Date</th>
+                  <th>Rule</th>
+                  <th>Action</th>
+                  <th>Result</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.slice(0, 200).map((e) => {
                   const ok = !e.details?.includes("failed") && !e.details?.includes("error") && !e.details?.includes("SMTP");
                   return (
-                    <tr key={e.id} className="border-b border-line-2 last:border-0 hover:bg-surface-2/60">
-                      <td className="px-4 py-2.5 text-[12px] text-muted tabular-nums whitespace-nowrap">
+                    <tr key={e.id}>
+                      <td className="text-muted tabular-nums whitespace-nowrap">
                         {new Date(e.triggered_at).toLocaleDateString()} {new Date(e.triggered_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                       </td>
-                      <td className="px-4 py-2.5 text-[13px] font-medium text-ink">{ruleName(e.rule_id)}</td>
-                      <td className="px-4 py-2.5 text-[12px] text-ink-2">{e.action_taken}</td>
-                      <td className="px-4 py-2.5">
+                      <td className="font-medium text-ink">{ruleName(e.rule_id)}</td>
+                      <td className="text-muted">{e.action_taken}</td>
+                      <td>
                         {ok
-                          ? <span className="inline-flex items-center gap-1 text-[11px] text-success-ink"><CheckCircle2 size={12} /> {e.details || "OK"}</span>
-                          : <span className="inline-flex items-center gap-1 text-[11px] text-danger-ink"><AlertCircle size={12} /> {e.details || "Failed"}</span>}
+                          ? <span className="inline-flex items-center gap-1.5 text-[13px] text-success-ink"><CheckCircle2 size={14} className="flex-none" /> {e.details || "OK"}</span>
+                          : <span className="inline-flex items-center gap-1.5 text-[13px] text-danger-ink"><AlertCircle size={14} className="flex-none" /> {e.details || "Failed"}</span>}
                       </td>
                     </tr>
                   );
@@ -235,12 +232,24 @@ export default function AutomationLogView() {
             </table>
           </div>
         )}
+        {filtered.length > 0 && (
+          <div className="ui-note px-1 pb-3">
+            {filtered.length > 200 ? `Showing the latest 200 of ${filtered.length} entries` : `${filtered.length} entr${filtered.length !== 1 ? "ies" : "y"}`}
+          </div>
+        )}
       </section>
 
-      {/* Legend footer: the inbound flow, so users grasp what "pending" means */}
-      <div className="flex items-center flex-wrap gap-2 text-[11.5px] text-muted bg-surface-2/50 border border-line-2 rounded-lg px-4 py-2.5">
-        <span className="font-medium text-ink-2">How inbound works:</span>
-        <span className="flex items-center gap-1.5">Form / signup <ArrowRight size={12} className="text-faint" /> Pending lead <ArrowRight size={12} className="text-faint" /> you approve in <button onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "approvals" }))} className="text-accent hover:underline">Notifications</button></span>
+      <div className="hsep" />
+
+      {/* The inbound flow, so "pending" is understood */}
+      <div className="flex items-center flex-wrap gap-x-2.5 gap-y-1.5 p-4 text-[13px]">
+        <span className="font-medium text-ink">How inbound works</span>
+        <span className="text-muted">Form or signup</span>
+        <ArrowRight size={13} className="text-faint" />
+        <span className="text-muted">Pending lead</span>
+        <ArrowRight size={13} className="text-faint" />
+        <span className="text-muted">you approve in</span>
+        <button onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "approvals" }))} className="ui-link">Notifications</button>
       </div>
     </div>
   );

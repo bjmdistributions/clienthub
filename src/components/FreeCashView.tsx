@@ -5,9 +5,10 @@ import { api, FinancialsOverview, MoneyConfig, ReconAccount } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, SlidersHorizontal, X, AlertTriangle, ShieldCheck } from "lucide-react";
 import { toast } from "./Toast";
+import { Button, PageActions } from "./ui";
 
 const inputCls =
-  "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "w-full border border-line-3 rounded-lg h-9 px-2.5 text-[13.5px] text-ink tabular-nums focus:outline-none focus:border-accent transition-colors";
 
 // One connected depository account, offered as the place the reserve actually sits.
 // `key` is the same account identity the balance sum de-duplicates with — never a
@@ -262,33 +263,29 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
   const hasAlerts = !!ov && (ov.alerts.refund_deals > 0 || ov.alerts.stale_unallocated_in > 0);
 
   return (
-    <div className="min-h-full flex flex-col" style={{ background: "var(--t-bg)" }}>
+    <div className="max-w-[1120px]">
 
-      {/* ── Page header ─────────────────────────────────── */}
-      <div className="px-6 py-4 flex items-center justify-between flex-shrink-0 bg-surface border-b border-line">
-        <div>
-          <h2 className="text-[17px] font-semibold tracking-tight text-ink">Free cash</h2>
-          <p className="text-[12px] text-muted mt-0.5">What's actually yours to spend</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => loadOverview()}
-            disabled={refreshing}
-            title="Refresh"
-            className="w-9 h-9 flex items-center justify-center rounded-lg border border-line text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-          </button>
-          <button
-            onClick={() => { loadConfig(); setReserveKeyStr(ov?.reserve_account_key ?? ""); setAdjustOpen(true); }}
-            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-line text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 transition-colors"
-          >
-            <SlidersHorizontal size={14} /> Adjust
-          </button>
-        </div>
-      </div>
+      <PageActions>
+        <Button
+          onClick={() => loadOverview()}
+          disabled={refreshing}
+          title="Refresh"
+          aria-label="Refresh free cash"
+          icon={<RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />}
+        >
+          Refresh
+        </Button>
+        <Button
+          variant="ink"
+          onClick={() => { loadConfig(); setReserveKeyStr(ov?.reserve_account_key ?? ""); setAdjustOpen(true); }}
+          icon={<SlidersHorizontal size={14} />}
+        >
+          Adjust
+        </Button>
+      </PageActions>
 
-      <div className="flex-1 p-6 flex flex-col gap-5 max-w-[720px] w-full mx-auto">
+      <div className="flex flex-col gap-5 w-full">
+        <p className="text-[13px] text-muted -mb-1">What is actually yours to spend: the bank balance, minus everything that is not yours.</p>
 
         {/* Does the ledger still tie out to the bank? Only rendered when there is
             something to say — a drift, or a quiet one-line confirmation. */}
@@ -296,19 +293,19 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
           const drifted = recon.filter((r) => Math.abs(r.drift) >= 0.01);
           if (drifted.length === 0) {
             return (
-              <div className="text-[12px] text-muted flex items-center gap-1.5">
-                <ShieldCheck size={13} className="text-success-ink" />
+              <div className="text-[13px] text-muted flex items-center gap-2">
+                <ShieldCheck size={15} className="text-success-ink" />
                 Ledger agrees with {recon.length === 1 ? "your bank" : `all ${recon.length} accounts`}
               </div>
             );
           }
           return (
-            <div className="border border-danger-line rounded-xl p-4 bg-danger-bg/30">
-              <div className="text-[13px] font-semibold text-ink flex items-center gap-2">
+            <div className="border-y border-line py-3.5 max-w-[1120px]">
+              <div className="text-[14px] font-medium text-ink flex items-center gap-2">
                 <AlertTriangle size={15} className="text-danger-ink" />
                 Your ledger no longer matches your bank
               </div>
-              <p className="text-[12px] text-muted mt-1 leading-relaxed">
+              <p className="text-[13px] text-muted mt-1.5 leading-relaxed max-w-[760px]">
                 Transactions have been added, removed or changed since this was last checked. The amount is
                 the size of what moved. It is not money missing from your bank, it is money missing from
                 (or doubled in) your records.
@@ -325,7 +322,7 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
               </div>
               <button
                 onClick={() => api.reconcileAccounts(true).then(setRecon).catch(() => {})}
-                className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
+                className="mt-3 text-[12px] font-medium text-ink hover:opacity-70"
               >
                 These records are correct: use them as the new baseline
               </button>
@@ -336,23 +333,24 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
         {ov === null && loadError ? (
           // A failed load used to leave the skeleton pulsing forever, which reads as
           // "still loading" rather than "this failed and here's why".
-          <div className="border border-line rounded-2xl p-5">
-            <div className="text-[13px] font-semibold text-ink-2">Could not load your figures</div>
+          <div className="border-y border-line py-4">
+            <div className="text-[14px] font-medium text-ink-2">Could not load your figures</div>
             <div className="text-[12px] text-muted mt-1 break-words">{loadError}</div>
             <div className="text-[11.5px] text-faint mt-1">Nothing has changed. This is a read that failed.</div>
-            <button onClick={() => loadOverview()} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
+            <button onClick={() => loadOverview()} className="mt-3 text-[12px] font-medium text-ink hover:opacity-70">
               Try again
             </button>
           </div>
         ) : ov === null ? (
-          <div className="h-[168px] bg-surface-2 rounded-2xl animate-pulse" />
+          <div className="h-[168px] bg-surface-2 rounded-xl animate-pulse" />
         ) : (
-          <>
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)] gap-x-10 gap-y-8">
+            <div className="min-w-0 space-y-7">
             {/* ── The number — quiet, no card, no pill ───── */}
             <div>
-              <div className="text-[12.5px] font-medium text-muted">Free cash</div>
+              <div className="ui-label">Free cash</div>
               <div className="flex items-baseline gap-3 mt-1.5 flex-wrap">
-                <span className={`text-[34px] font-semibold tabular-nums leading-none tracking-tight ${numCls}`}>
+                <span className={`ui-fig ${numCls}`}>
                   {fmtAmount(ov.free_cash)}
                 </span>
               </div>
@@ -360,10 +358,10 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
 
             {/* ── The breakdown — hairlines, not a card ──── */}
             <div>
-              <h3 className="text-[13px] font-semibold text-ink tracking-tight">Where it comes from</h3>
-              <p className="text-[11px] text-muted mt-0.5">Bank balance, minus everything that isn't yours to spend</p>
-              <div className="mt-3 border-t border-line-2">
-                <div className="flex items-center gap-3 py-2.5 min-w-0 border-b border-line-2">
+              <h3 className="text-[14px] font-medium text-ink">Where it comes from</h3>
+              <p className="ui-note mt-0.5 leading-relaxed">Bank balance, minus everything that isn't yours to spend</p>
+              <div className="mt-3 border-t border-line">
+                <div className="flex items-center gap-3 py-2.5 min-w-0 border-b border-line">
                   <span className="min-w-0 flex-1 text-[13px] text-ink">
                     Bank balance
                     {ov.balance_source === "synced" && (
@@ -383,12 +381,12 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
                 </div>
                 <div className="border-t border-line py-3 flex items-center gap-3 min-w-0">
                   <span className="min-w-0 flex-1 text-[14px] font-semibold text-ink">Free cash</span>
-                  <span className={`text-[15px] font-bold tabular-nums w-28 text-right flex-shrink-0 ${numCls}`}>
+                  <span className={`text-[15px] font-medium tabular-nums w-28 text-right flex-shrink-0 ${numCls}`}>
                     {fmtAmount(ov.free_cash)}
                   </span>
                 </div>
                 {reconciled > 0 && (
-                  <div className="border-t border-line-2 py-2.5 text-[11px] text-muted">
+                  <div className="border-t border-line py-2.5 ui-note">
                     {fmtAmount(reconciled)} reconciled from the bank feed
                     {ov.allocated_actuals.supplier_paid > 0 && ` · ${fmtAmount(ov.allocated_actuals.supplier_paid)} to suppliers`}
                     {ov.allocated_actuals.refunds_out > 0 && ` · ${fmtAmount(ov.allocated_actuals.refunds_out)} refunded`}
@@ -397,6 +395,47 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
               </div>
             </div>
 
+            {/* ── War chest progress (informational target, not deducted) ── */}
+            {ov.war_chest > 0 && (
+              <div className="min-w-0">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="min-w-0 flex-1 text-[13px] text-ink-2">War chest target</span>
+                  <span className="text-[13px] tabular-nums text-muted flex-shrink-0">
+                    {fmtAmount(Math.max(0, ov.free_cash))} / {fmtAmount(ov.war_chest)}
+                  </span>
+                </div>
+                <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-ink-2 transition-all"
+                    style={{ width: `${Math.min(100, Math.max(0, (ov.free_cash / ov.war_chest) * 100))}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ── Aging alerts (only when present) ───────── */}
+            {hasAlerts && (
+              <div className="border-t border-line">
+                {ov.alerts.refund_deals > 0 && (
+                  <div className="flex items-center gap-2.5 py-2.5 min-w-0 border-b border-line">
+                    <AlertTriangle size={15} className="text-danger-ink flex-shrink-0" />
+                    <span className="text-[13px] text-danger-ink min-w-0">
+                      {ov.alerts.refund_deals} deal{ov.alerts.refund_deals !== 1 ? "s" : ""} with a refund you owe
+                    </span>
+                  </div>
+                )}
+                {ov.alerts.stale_unallocated_in > 0 && (
+                  <div className="flex items-center gap-2.5 py-2.5 min-w-0 border-b border-line">
+                    <AlertTriangle size={15} className="text-danger-ink flex-shrink-0" />
+                    <span className="text-[13px] text-danger-ink min-w-0">
+                      {ov.alerts.stale_unallocated_in} incoming payment{ov.alerts.stale_unallocated_in !== 1 ? "s" : ""} unallocated over 7 days
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+            </div>
+            <div className="vsep hidden xl:block" />
             {/* ── Reserve targets — a record, never a deduction ──
                 These used to be subtracted from free cash, which hid the money
                 permanently and double-counted every tax payment (the payment
@@ -404,15 +443,15 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
                 real account, so they are stated, not taken. */}
             {(reserveTotal > 0.005 || reserveDesignated) && (
               <div className="min-w-0">
-                <h3 className="text-[13px] font-semibold text-ink tracking-tight">Set aside</h3>
-                <p className="text-[11px] text-muted mt-0.5">
+                <h3 className="text-[14px] font-medium text-ink">Set aside</h3>
+                <p className="ui-note mt-0.5 leading-relaxed">
                   Tax on this year's net income from the ledger, less the estimated tax you have paid. Refunds on {fmtAmount(ov.refund_reserve_base ?? 0)} of deal profit this year.{" "}
                   {reserveLinked
                     ? <>{ov.reserve_account_label} holds the money, and its balance is already out of the number above.</>
                     : <>For the record only, not taken out of the number above.</>}
                 </p>
                 {reserveDesignated && !reserveLinked && (
-                  <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-danger-line bg-danger-bg/40 px-3 py-2.5">
+                  <div className="mt-2.5 flex items-start gap-2 text-danger-ink">
                     <AlertTriangle size={14} className="text-danger-ink flex-shrink-0 mt-0.5" />
                     <span className="text-[11.5px] text-ink-2 min-w-0">
                       The account you set aside is no longer connected on this device, so nothing is counted as parked.
@@ -420,7 +459,7 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
                     </span>
                   </div>
                 )}
-                <div className="mt-3 border-t border-line-2 divide-y divide-line-2">
+                <div className="mt-3 border-t border-line divide-y divide-line-2">
                   {/* R-579: the tax figure, line by line, so the number can be checked by hand. */}
                   <div className="flex items-center gap-3 py-2.5 min-w-0">
                     <span className="min-w-0 flex-1 text-[13px] text-ink-2">Net income this year, from the ledger</span>
@@ -472,7 +511,7 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
                             The ledger and the bank disagree by {fmtAmount(Math.abs(ov.reserve_drift))} on this account since it was last checked.
                             A transfer is missing or doubled in your records.
                             {onCheckBooks && ov.reserve_mask && (
-                              <button onClick={() => onCheckBooks(ov.reserve_mask!)} className="ml-1.5 font-medium text-accent hover:text-accent-hover">
+                              <button onClick={() => onCheckBooks(ov.reserve_mask!)} className="ml-1.5 font-medium text-ink hover:opacity-70">
                                 Check books
                               </button>
                             )}
@@ -493,46 +532,7 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
               </div>
             )}
 
-            {/* ── War chest progress (informational target, not deducted) ── */}
-            {ov.war_chest > 0 && (
-              <div className="min-w-0">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="min-w-0 flex-1 text-[13px] text-ink-2">War chest target</span>
-                  <span className="text-[13px] tabular-nums text-muted flex-shrink-0">
-                    {fmtAmount(Math.max(0, ov.free_cash))} / {fmtAmount(ov.war_chest)}
-                  </span>
-                </div>
-                <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-ink-2 transition-all"
-                    style={{ width: `${Math.min(100, Math.max(0, (ov.free_cash / ov.war_chest) * 100))}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* ── Aging alerts (only when present) ───────── */}
-            {hasAlerts && (
-              <div className="border-t border-line-2">
-                {ov.alerts.refund_deals > 0 && (
-                  <div className="flex items-center gap-2.5 py-2.5 min-w-0 border-b border-line-2">
-                    <AlertTriangle size={15} className="text-danger-ink flex-shrink-0" />
-                    <span className="text-[13px] text-danger-ink min-w-0">
-                      {ov.alerts.refund_deals} deal{ov.alerts.refund_deals !== 1 ? "s" : ""} with a refund you owe
-                    </span>
-                  </div>
-                )}
-                {ov.alerts.stale_unallocated_in > 0 && (
-                  <div className="flex items-center gap-2.5 py-2.5 min-w-0 border-b border-line-2">
-                    <AlertTriangle size={15} className="text-danger-ink flex-shrink-0" />
-                    <span className="text-[13px] text-danger-ink min-w-0">
-                      {ov.alerts.stale_unallocated_in} incoming payment{ov.alerts.stale_unallocated_in !== 1 ? "s" : ""} unallocated over 7 days
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-          </>
+          </div>
         )}
       </div>
 
@@ -561,13 +561,13 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
 
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto">
               {configError && (
-                <div className="flex items-start gap-2 rounded-lg border border-danger-line bg-danger-bg/40 px-3 py-2.5">
+                <div className="flex items-start gap-2 border-y border-line py-2.5">
                   <AlertTriangle size={14} className="text-danger-ink flex-shrink-0 mt-0.5" />
                   <div className="min-w-0">
                     <div className="text-[12px] font-medium text-ink-2">Your saved figures could not be loaded</div>
                     <div className="text-[11.5px] text-muted mt-0.5 break-words">{configError}</div>
                     <div className="text-[11.5px] text-muted mt-0.5">Saving is blocked so these fields can't overwrite your settings with zeros.</div>
-                    <button onClick={() => loadConfig()} className="mt-1.5 text-[11.5px] font-medium text-accent hover:text-accent-hover">
+                    <button onClick={() => loadConfig()} className="mt-1.5 text-[11.5px] font-medium text-ink hover:opacity-70">
                       Try again
                     </button>
                   </div>
@@ -634,7 +634,7 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
                   value={reserveKeyStr}
                   onChange={(e) => setReserveKeyStr(e.target.value)}
                   disabled={reserveAccounts.length === 0}
-                  className={"w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" + (reserveAccounts.length === 0 ? " opacity-50 cursor-not-allowed" : "")}
+                  className={"w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:border-accent transition-colors" + (reserveAccounts.length === 0 ? " opacity-50 cursor-not-allowed" : "")}
                 >
                   <option value="">None: keep the reserve as an estimate</option>
                   {reserveAccounts.map((a) => (
@@ -652,14 +652,14 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
             <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-line">
               <button
                 onClick={() => setAdjustOpen(false)}
-                className="h-9 px-3.5 rounded-lg border border-line text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 transition-colors"
+                className="ui-btn"
               >
                 Cancel
               </button>
               <button
                 onClick={save}
                 disabled={saving}
-                className="h-9 px-4 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12.5px] font-medium transition-colors disabled:opacity-60"
+                className="ui-btn ui-btn-ink disabled:opacity-60"
               >
                 {saving ? "Saving…" : "Save"}
               </button>

@@ -89,7 +89,7 @@ export default function BuysView({ search = "", compact = false }: { search?: st
   const coming_ = compact ? [] : coming.filter((c) => words.every((w) => `${c.name} ${c.supplier_name}`.toLowerCase().includes(w)));
   const newBuy = !compact && (
     <div className="flex items-center justify-between gap-3 flex-wrap">
-      <p className="text-[12.5px] text-muted max-w-[640px]">Buying a load in? Start it here before it arrives, send it to logistics, and add its manifest when it is unloaded.</p>
+      <p className="text-[13px] text-muted max-w-[640px]">Buying a load in? Start it here before it arrives, send it to logistics, and add its manifest when it is unloaded.</p>
       <button onClick={() => setCreating(true)} className={WH_BTN_PRIMARY}><Plus size={14} /> New buy</button>
     </div>
   );
@@ -111,44 +111,44 @@ export default function BuysView({ search = "", compact = false }: { search?: st
     <div className="space-y-4">
       {newBuy}
       {onTheWay}
-      <div className={`${WH_CARD} overflow-hidden`}>
+      <div>
         {!compact && (
-          <div className="px-4 py-3 border-b border-line text-[12.5px] text-muted">
+          <p className="pb-3 text-[13px] text-muted">
             Stock in the Warehouse. Each sale from it is its own deal in the pipeline; here is what each buy cost and has made.
-          </div>
+          </p>
         )}
         <div className="overflow-x-auto">
-          <table className="w-full text-[13px]">
+          <table className="ui-table ui-table-click">
             <thead>
-              <tr className="text-left text-[12px] text-muted border-b border-line">
-                <th className="font-medium px-4 py-2">Stock</th>
-                <th className="font-medium px-3 py-2 text-right">Left</th>
-                <th className="font-medium px-3 py-2 text-right">Sold</th>
-                {numbers && <th className="font-medium px-3 py-2 text-right">Cost a unit</th>}
-                {numbers && <th className="font-medium px-3 py-2 text-right">Made on what is sold</th>}
-                <th className="font-medium px-3 py-2" />
+              <tr>
+                <th>Stock</th>
+                <th className="text-right">Left</th>
+                <th className="text-right">Sold</th>
+                {numbers && <th className="text-right">Cost a unit</th>}
+                {numbers && <th className="text-right">Made on what is sold</th>}
+                <th />
               </tr>
             </thead>
             <tbody>
               {shown.map((s) => {
                 const r = s.buy?.rollup;
                 return (
-                  <tr key={`${s.kind}:${s.id}`} onClick={() => setOpen(s)} className="border-b border-line last:border-0 cursor-pointer hover:bg-surface-2/50">
-                    <td className="px-4 py-2.5 min-w-0">
+                  <tr key={`${s.kind}:${s.id}`} onClick={() => setOpen(s)}>
+                    <td className="min-w-0">
                       <div className="text-ink font-medium truncate max-w-[320px]">{s.name || "Unnamed"}</div>
                       <div className="text-[11.5px] text-muted truncate max-w-[320px]">
                         {s.kind === "load" ? "Delivery" : "Product"}{s.buy?.supplier_name ? ` from ${s.buy.supplier_name}` : ""}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">{n0(s.left)} {s.unit}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">{r ? `${n0(r.sold)} of ${n0(r.bought)}` : "–"}</td>
-                    {numbers && <td className="px-3 py-2.5 text-right tabular-nums">{r ? perUnit(r.unit_cost) : "–"}</td>}
+                    <td className="r">{n0(s.left)} {s.unit}</td>
+                    <td className="r">{r ? `${n0(r.sold)} of ${n0(r.bought)}` : "-"}</td>
+                    {numbers && <td className="r">{r ? perUnit(r.unit_cost) : "-"}</td>}
                     {numbers && (
-                      <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${r && r.sold > 0 ? (r.made_on_sold >= 0 ? "text-success-ink" : "text-danger-ink") : "text-muted"}`}>
-                        {r && r.sold > 0 ? fmtAmount(r.made_on_sold) : "–"}
+                      <td className={`r font-medium ${r && r.sold > 0 ? (r.made_on_sold >= 0 ? "text-success-ink" : "text-danger-ink") : "text-muted"}`}>
+                        {r && r.sold > 0 ? fmtAmount(r.made_on_sold) : "-"}
                       </td>
                     )}
-                    <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                    <td className="r">
                       <span className="inline-flex items-center gap-2">
                         {!s.buy ? <StatusPill tone="warning">Cost not recorded</StatusPill>
                           : r?.sold_out ? <StatusPill tone="success">Sold out</StatusPill>

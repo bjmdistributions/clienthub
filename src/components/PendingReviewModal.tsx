@@ -165,9 +165,9 @@ export default function PendingReviewModal({ client, onClose, onResolved }: {
             <input value={tags} onChange={(e) => setTags(e.target.value)} className={inputCls} placeholder="Comma-separated, e.g. Wholesale, VIP" />
             {tagList.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {tagList.slice(0, 3).map((t) => <span key={t} className="whitespace-nowrap flex-shrink-0 text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">{t}</span>)}
+                {tagList.slice(0, 3).map((t) => <StatusPill key={t}>{t}</StatusPill>)}
                 {tagList.length > 3 && (
-                  <span title={tagList.slice(3).join(" · ")} className="whitespace-nowrap flex-shrink-0 text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">+{tagList.length - 3}</span>
+                  <StatusPill title={tagList.slice(3).join(", ")}>+{tagList.length - 3}</StatusPill>
                 )}
               </div>
             )}

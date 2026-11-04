@@ -95,20 +95,20 @@ export function FormsPanel() {
             <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Save form</button>
           </div>
         </div>
-        <div className="space-y-3 bg-surface border border-line rounded-xl p-4">
+        <div className="space-y-3 border-t border-line pt-4">
           <div>
             <label className="block text-[12px] font-medium text-muted mb-1">This form collects</label>
-            <div className="inline-flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5">
-              <button onClick={() => setEditing({ ...editing, collects: "clients" })}
-                className={`px-3 h-7 rounded-md text-[12px] font-medium transition-colors ${editing.collects !== "suppliers" ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+            <div className="inline-flex items-center gap-1.5" role="group" aria-label="This form collects">
+              <button type="button" onClick={() => setEditing({ ...editing, collects: "clients" })} aria-pressed={editing.collects !== "suppliers"}
+                className={`ui-opt ${editing.collects !== "suppliers" ? "on" : ""}`}>
                 Customers
               </button>
-              <button onClick={() => setEditing({ ...editing, collects: "suppliers" })}
-                className={`px-3 h-7 rounded-md text-[12px] font-medium transition-colors ${editing.collects === "suppliers" ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+              <button type="button" onClick={() => setEditing({ ...editing, collects: "suppliers" })} aria-pressed={editing.collects === "suppliers"}
+                className={`ui-opt ${editing.collects === "suppliers" ? "on" : ""}`}>
                 Suppliers
               </button>
             </div>
-            <p className="text-[11px] text-muted mt-1.5">
+            <p className="text-[12px] text-muted mt-1.5">
               {editing.collects === "suppliers"
                 ? "Suppliers land in Suppliers and in Supplier leads on the dashboard."
                 : "Submissions become pending customers awaiting review."}
@@ -136,11 +136,11 @@ export function FormsPanel() {
                   {FIELD_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
                 <input value={f.label} onChange={(e) => setField(i, { label: e.target.value })} placeholder="Label" className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2 text-[13px] text-ink" />
-                <label className="text-[11px] text-ink-2 flex items-center gap-1"><input type="checkbox" checked={f.required} onChange={(e) => setField(i, { required: e.target.checked })} /> req</label>
+                <label className="text-[12px] text-ink-2 flex items-center gap-1"><input type="checkbox" checked={f.required} onChange={(e) => setField(i, { required: e.target.checked })} /> req</label>
                 <button onClick={() => removeField(i)} className="text-muted hover:text-danger-ink px-1"><X size={13} /></button>
               </div>
               <div className="flex items-center gap-2 mt-2">
-                <span className="text-[11px] text-muted whitespace-nowrap">Maps to</span>
+                <span className="text-[12px] text-muted whitespace-nowrap">Maps to</span>
                 <select
                   value={f.map ?? (["name", "email", "phone", "company"].includes(f.type) ? f.type : "")}
                   onChange={(e) => setField(i, { map: e.target.value })}
@@ -175,10 +175,10 @@ export function FormsPanel() {
       {forms.length === 0 ? (
         <p className="text-muted text-[13px] bg-surface border border-line rounded-xl p-6 text-center">No forms yet.</p>
       ) : forms.map((f) => (
-        <div key={f.id} className="bg-surface border border-line rounded-xl p-4 flex items-center justify-between gap-3">
+        <div key={f.id} className="border-t border-line pt-4 flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-[14px] font-medium text-ink truncate">{f.name || f.title}{!f.active && <span className="ml-2 text-[10px] text-muted">(inactive)</span>}</div>
-            <div className="text-[11px] text-accent truncate">ecliptr.app/f/{f.id.slice(0, 10)}…</div>
+            <div className="text-[14px] font-medium text-ink truncate">{f.name || f.title}{!f.active && <span className="ml-2 text-[12px] text-muted">(inactive)</span>}</div>
+            <div className="text-[12px] text-accent truncate">ecliptr.app/f/{f.id.slice(0, 10)}…</div>
           </div>
           <div className="flex gap-2 flex-shrink-0">
             <button onClick={() => copy(f.id)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">{copied === f.id ? "Copied" : "Copy link"}</button>

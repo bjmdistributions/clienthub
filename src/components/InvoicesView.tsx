@@ -1,3 +1,4 @@
+import { Check, CreditCard, Download, Edit2, ExternalLink, FileDown, type LucideIcon, MoreVertical, Plus, RotateCcw, Search, Send, Trash2, X, XCircle } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow, type BuyBrief } from "../lib/api";
 import { canSeePayments } from "../lib/dealPayments";
@@ -6,16 +7,18 @@ import { useSessionMe } from "../lib/useSessionMe";
 import { parseLineItems, queryTokens, matchesAllTokens, matchingItems, describeItem, isNoiseItem } from "../lib/itemSearch";
 import { fmtAmount, localDay, projectedCostOf } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { FileDown, Send, Plus, X, Check, Trash2, ExternalLink, Edit2, FileText, RotateCcw, CreditCard, Download, XCircle, Search, MoreVertical, type LucideIcon } from "lucide-react";
+
 import RecurringView from "./RecurringView";
 import InvoicePreview, { DEFAULT_INVOICE_TEMPLATE } from "./InvoicePreview";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import InvoiceCostSection from "./InvoiceCostSection";
 import { toast } from "./Toast";
+import { Button, Kpi, PageActions, Tabs } from "./ui";
 import { LinkDeliveryModal } from "./LinkDelivery";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
+import Switch from "./Switch";
 import { FromPicker, useSendFromOptions } from "./FromPicker";
 import { changesForInvoice, INVOICE_PREFILL_KEY, plainLines, unitsOnInvoice, type DlTag, type InvoicePrefill, type WhTag } from "../lib/warehouse";
 import { pendingTakeKey, pickKey } from "../lib/deliveries";
@@ -36,10 +39,10 @@ const statusColor = (inv: Invoice): string => {
   const s = inv.status;
   const lo = s.toLowerCase();
   if (lo === "void")                    return "bg-surface-3 text-muted line-through";
-  if (lo === "paid" && inv.is_complete) return "bg-success-bg text-success-ink";
-  if (lo === "paid")                    return "bg-warning-bg text-warning-ink";
-  if (lo === "sent" || lo === "deposit_pending") return "bg-info-bg text-info-ink";
-  if (lo === "overdue")                 return "bg-danger-bg text-danger-ink";
+  if (lo === "paid" && inv.is_complete) return "bg-surface-3 text-success-ink";
+  if (lo === "paid")                    return "bg-surface-3 text-warning-ink";
+  if (lo === "sent" || lo === "deposit_pending") return "bg-surface-3 text-muted";
+  if (lo === "overdue")                 return "bg-surface-3 text-danger-ink";
   return "bg-surface-3 text-ink-2";
 };
 
@@ -61,33 +64,26 @@ function flowStageSi(stage?: string | null): number {
 
 const FLOW_LABELS = ["Invoiced", "Payment in", "Supplier paid", "Complete"];
 
-// 4-dot deal flow progress indicator — red → amber → lime → green gradient
+// 4-bar deal flow progress indicator: the steps reached are lit, the rest empty.
 function FlowDots({ stage }: { stage?: string | null }) {
-  const colors    = ["bg-danger", "bg-warning", "bg-lime-500", "bg-success"];
   const cur       = flowStageSi(stage ?? null);
   const label     = cur >= 0 ? FLOW_LABELS[cur] : "No flow";
   return (
     <div
-      className="flex items-center gap-0.5 ml-2"
+      className="flex items-center gap-[2px] ml-2"
       title={`Deal flow: ${label}`}
     >
       {FLOW_STAGES.map((_, i) => (
-        <div
+        <i
           key={i}
-          className={`rounded-full transition-all ${
-            cur < 0
-              ? "w-1.5 h-1.5 bg-surface-3"           // no flow yet — faint grey
-              : i <= cur
-              ? `w-2 h-2 ${colors[i]}`               // completed step
-              : "w-1.5 h-1.5 bg-surface-3"            // future step
-          }`}
+          className={`block w-3 h-[3px] rounded-sm transition-colors duration-200 ${i <= cur ? "bg-ink" : "bg-surface-3"}`}
         />
       ))}
     </div>
   );
 }
 
-const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+const inp = "border border-line-3 bg-transparent px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:border-ink transition-colors duration-150";
 
 export default function InvoicesView() {
   const [invoices, setInvoices]         = useState<Invoice[]>([]);
@@ -231,7 +227,7 @@ export default function InvoicesView() {
 
   // Void ("deal fell through") — two-step confirm; un-void reverses it.
   const handleVoid = async (id: string, voided: boolean) => {
-    if (voided && !confirm("Mark this deal as fallen through? The invoice is voided. It drops out of receivables and owed totals, but nothing is deleted.")) return;
+    if (voided && !confirm("Mark this deal as fallen through? The invoice is voided. It drops out of the owed totals, but nothing is deleted.")) return;
     try { await api.setInvoiceVoid(id, voided); toast(voided ? "Invoice voided" : "Invoice restored"); load(); }
     catch (e: any) { toast(String(e), "error"); }
   };
@@ -316,86 +312,65 @@ export default function InvoicesView() {
 
   return (
     <div>
-      {/* Header */}
-      <div className="flex justify-between items-center gap-3 flex-wrap mb-5">
-        <div>
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Invoices</h2>
-          <p className="text-[12px] text-muted mt-0.5">{invoices.length} total · {fmtAmount(outstanding)} outstanding</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={handleExportInvoices}
-            className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors">
-            <FileDown size={13} /> Export CSV
-          </button>
-          <button
-            onClick={() => { setEditing(null); setShowForm(true); }}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
-          >
-            <Plus size={14} /> New invoice
-          </button>
-        </div>
-      </div>
+      <PageActions>
+        {viewTab !== "recurring" && (
+          <label className="ui-search">
+            <Search size={14} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by item, number, client or amount"
+              aria-label="Search invoices"
+              style={{ width: 260 }}
+            />
+            {search && (
+              <button onClick={() => setSearch("")} aria-label="Clear search" className="text-faint hover:text-ink transition-colors duration-150">
+                <X size={12} />
+              </button>
+            )}
+          </label>
+        )}
+        <Button onClick={handleExportInvoices} icon={<FileDown size={14} />}>Export CSV</Button>
+        <Button variant="ink" onClick={() => { setEditing(null); setShowForm(true); }} icon={<Plus size={14} />}>New invoice</Button>
+      </PageActions>
+
+      <p className="m-0 mb-3.5 ml-1 text-[14px] text-muted">{invoices.length} total · {fmtAmount(outstanding)} outstanding</p>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit mb-5">
-        {(["active", "all", "drafts", "sent", "paid", "recurring"] as const).map((t) => (
-          <button key={t} onClick={() => setViewTab(t)}
-            className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors capitalize ${viewTab === t ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-            {t}
-          </button>
-        ))}
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+        <Tabs label="Invoices" value={viewTab} onChange={(id) => setViewTab(id as typeof viewTab)}
+          tabs={(["active", "all", "drafts", "sent", "paid", "recurring"] as const).map((t) => ({ id: t, label: t.charAt(0).toUpperCase() + t.slice(1) }))} />
+        {viewTab !== "recurring" && (
+          <label className="flex items-center gap-2 text-[13px] text-ink-2 cursor-pointer select-none whitespace-nowrap">
+            <input type="checkbox" className="accent-ink" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} />
+            Show completed
+          </label>
+        )}
       </div>
 
       {viewTab === "recurring" ? (
         <RecurringView />
       ) : (
         <>
-      {/* Search + show-completed */}
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <div className="relative flex-1 min-w-[220px]">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by item, number, client, or amount…"
-            className="w-full pl-9 pr-8 h-9 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
-          />
-          {search && (
-            <button onClick={() => setSearch("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-faint hover:text-muted">
-              <X size={12} />
-            </button>
-          )}
-        </div>
-        <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer select-none whitespace-nowrap">
-          <input type="checkbox" className="accent-accent" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} />
-          Show completed
-        </label>
-      </div>
-
       {/* R-234: a search deliberately ignores the tab, so say so rather than
           leaving him to wonder why completed and voided rows appeared. */}
       {searching && (
-        <p className="-mt-2 mb-4 text-[12px] text-muted">
+        <p className="mb-3 ml-1 text-[12px] text-muted">
           Searching every invoice: {visible.length} match{visible.length === 1 ? "" : "es"}, including completed and fell-through.
         </p>
       )}
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 xl:grid-cols-6 gap-3 mb-5">
-        {[
-          { label: "Total",          value: invoices.length,          color: "text-ink" },
-          { label: "Completed",      value: completedCount,           color: completedCount > 0 ? "text-success-ink" : "text-muted" },
-          { label: "Paid",           value: paidCount - completedCount, color: (paidCount - completedCount) > 0 ? "text-warning-ink" : "text-muted" },
-          { label: "Sent",           value: sentCount,                color: sentCount > 0 ? "text-info-ink" : "text-muted" },
-          { label: "Overdue",        value: overdueCount,             color: overdueCount > 0 ? "text-danger-ink" : "text-muted" },
-          { label: "Total profit",   value: fmtAmount(totalProfit),   color: totalProfit >= 0 ? "text-success-ink" : "text-danger-ink" },
-        ].map((s) => (
-          <div key={s.label} className="bg-surface border border-line rounded-xl px-4 py-3.5">
-            <p className="text-[12.5px] font-medium text-muted mb-1">{s.label}</p>
-            <p className={`text-[22px] font-bold tabular-nums ${s.color}`}>{s.value}</p>
-          </div>
-        ))}
+      {/* Key figures */}
+      <div className="hsep" />
+      <div className="grid grid-cols-3 gap-y-1 py-1.5 lg:grid-cols-[repeat(6,minmax(0,1fr))]">
+        <Kpi label="Total" value={invoices.length} />
+        <Kpi label="Completed" value={completedCount} className={completedCount > 0 ? "[&_.ui-fig]:text-success-ink" : ""} />
+        <Kpi label="Paid" value={paidCount - completedCount} className={(paidCount - completedCount) > 0 ? "[&_.ui-fig]:text-warning-ink" : ""} />
+        <Kpi label="Sent" value={sentCount} />
+        <Kpi label="Overdue" value={overdueCount} className={overdueCount > 0 ? "[&_.ui-fig]:text-danger-ink" : ""} />
+        <Kpi label="Total profit" value={totalProfit} format={(n) => (n < 0 ? "−" : "") + fmtAmount(Math.abs(n))} className={totalProfit >= 0 ? "[&_.ui-fig]:text-success-ink" : "[&_.ui-fig]:text-danger-ink"} />
       </div>
+      <div className="hsep mb-3" />
 
       {/* Invoice form */}
       {showForm && (
@@ -405,35 +380,35 @@ export default function InvoicesView() {
 
       {/* Mark paid modal */}
       {payModal && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setPayModal(null)}>
-          <div className="bg-surface rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.14)] w-[420px] max-w-[92vw] animate-fade-up" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-4 border-b border-line-2">
-              <h3 className="text-[14px] font-semibold text-ink">Mark as paid</h3>
-              <button onClick={() => setPayModal(null)} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors">
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/40 animate-fade-in" onClick={() => setPayModal(null)}>
+          <div className="bg-surface rounded-2xl ring-1 ring-line-3 shadow-2xl w-[420px] max-w-[92vw] animate-fade-up" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4">
+              <h3 className="text-[16px] font-medium text-ink m-0">Mark as paid</h3>
+              <button onClick={() => setPayModal(null)} aria-label="Close" className="ui-ib">
                 <X size={16} />
               </button>
             </div>
             <div className="px-5 py-4 space-y-3.5">
               <div>
-                <label className="block text-[11px] font-medium text-muted mb-1.5">Date</label>
+                <label className="block text-[12px] font-medium text-muted mb-1.5">Date</label>
                 <input type="date" className={inp} value={payDate} onChange={(e) => setPayDate(e.target.value)} />
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-muted mb-1.5">Method</label>
+                <label className="block text-[12px] font-medium text-muted mb-1.5">Method</label>
                 <select className={inp} value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
-                  <option value="">– select –</option>
+                  <option value="">Select a method</option>
                   {payMethods.map((m) => <option key={m.id} value={m.label}>{m.label}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-muted mb-1.5">Reference (optional)</label>
+                <label className="block text-[12px] font-medium text-muted mb-1.5">Reference (optional)</label>
                 <input className={inp} placeholder="e.g. check #1234" value={payRef} onChange={(e) => setPayRef(e.target.value)} />
               </div>
               <div className="flex justify-end gap-2 pt-1">
-                <button onClick={() => setPayModal(null)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
+                <button onClick={() => setPayModal(null)} className="ui-btn">Cancel</button>
                 <button onClick={confirmPay} disabled={busy === payModal}
-                  className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-                  {busy === payModal ? "Saving…" : "Confirm"}
+                  className="ui-btn ui-btn-ink">
+                  {busy === payModal ? "Saving..." : "Confirm"}
                 </button>
               </div>
             </div>
@@ -444,11 +419,11 @@ export default function InvoicesView() {
       {sendModal && (() => {
         const inv = invoices.find((i) => i.id === sendModal);
         return (
-          <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setSendModal(null)}>
-            <div className="bg-surface rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.14)] w-[420px] max-w-[92vw] animate-fade-up" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-4 border-b border-line-2">
-                <h3 className="text-[14px] font-semibold text-ink">Send invoice {inv?.number ?? ""}</h3>
-                <button onClick={() => setSendModal(null)} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors">
+          <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/40 animate-fade-in" onClick={() => setSendModal(null)}>
+            <div className="bg-surface rounded-2xl ring-1 ring-line-3 shadow-2xl w-[420px] max-w-[92vw] animate-fade-up" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-4">
+                <h3 className="text-[16px] font-medium text-ink m-0">Send invoice {inv?.number ?? ""}</h3>
+                <button onClick={() => setSendModal(null)} aria-label="Close" className="ui-ib">
                   <X size={16} />
                 </button>
               </div>
@@ -456,10 +431,10 @@ export default function InvoicesView() {
                 <div className="text-[13px] text-ink-2">To <span className="font-medium text-ink">{inv ? clientName(inv.client_id) : ""}</span></div>
                 <FromPicker options={fromOptions} value={sendFrom} onChange={setSendFrom} forInvoice />
                 <div className="flex justify-end gap-2 pt-1">
-                  <button onClick={() => setSendModal(null)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
+                  <button onClick={() => setSendModal(null)} className="ui-btn">Cancel</button>
                   <button onClick={confirmSend} disabled={busy === sendModal}
-                    className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-                    {busy === sendModal ? "Sending…" : "Send"}
+                    className="ui-btn ui-btn-ink">
+                    {busy === sendModal ? "Sending..." : "Send"}
                   </button>
                 </div>
               </div>
@@ -469,22 +444,22 @@ export default function InvoicesView() {
       })()}
 
       {/* Table */}
-      <div className="bg-surface border border-line-2 rounded-xl overflow-x-auto">
-        <table className="min-w-full text-sm">
+      <div className="overflow-x-auto">
+        <table className="ui-table ui-table-click [&_td]:px-2 [&_th]:px-2">
           <thead>
-            <tr className="border-b border-line-2">
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Number</th>
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Client</th>
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Issue</th>
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Due</th>
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Total</th>
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Profit</th>
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Status</th>
-              <th className="px-4 py-3"></th>
+            <tr>
+              <th>Number</th>
+              <th>Client</th>
+              <th className="hidden xl:table-cell">Issue</th>
+              <th>Due</th>
+              <th className="r">Total</th>
+              <th className="r">Profit</th>
+              <th>Status</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {visible.map((inv, rowIdx) => {
+            {visible.map((inv) => {
               // The deal's profit, as its Deal flow card states it: recorded profit once
               // complete, else projected (revenue − supplier costs entered so far), less
               // anything refunded. An invoice with no deal falls back to its own figures.
@@ -512,54 +487,53 @@ export default function InvoicesView() {
               const goods = parseLineItems(inv.line_items_json).map((it) => (it.description || "").trim()).filter((d) => d && !isNoiseItem(d));
               return (
                 <Fragment key={inv.id}>
-                <tr className={`border-b border-line-2 last:border-0 hover:bg-surface-2 cursor-pointer transition-colors ${rowIdx % 2 === 1 ? "bg-surface-2/40" : ""} ${voided ? "opacity-55" : ""}`} onClick={() => openDetail(inv.id)}>
-                  <td className="px-4 py-3 font-mono text-[11px] text-muted">{inv.number}</td>
-                  <td className="px-4 py-3 max-w-[320px]">
-                    <div className="text-[13px] font-medium text-ink truncate">{clientName(inv.client_id)}</div>
+                <tr className={voided ? "opacity-55" : ""} onClick={() => openDetail(inv.id)}>
+                  <td className="text-[12.5px] text-muted tabular-nums whitespace-nowrap">{inv.number}</td>
+                  <td className="max-w-[230px]">
+                    <div className="text-[14px] font-medium text-ink truncate">{clientName(inv.client_id)}</div>
                     {goods.length > 0 && (
                       <div className="text-[12.5px] text-ink-2 truncate mt-0.5" title={goods.join(", ")}>
                         {goods.slice(0, 2).join(", ")}{goods.length > 2 ? ` and ${goods.length - 2} more` : ""}
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.issue_date.slice(0, 10)}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.due_date.slice(0, 10)}</td>
-                  <td className={`px-4 py-3 text-[13px] font-semibold text-ink tabular-nums ${voided ? "line-through" : ""}`}>{fmtAmount(inv.total)}</td>
-                  <td className={`px-4 py-3 text-[13px] font-semibold tabular-nums ${voided ? "text-faint" : profit != null ? (profit >= 0 ? "text-success-ink" : "text-danger-ink") : "text-faint"}`}>
+                  <td className="text-[13px] text-muted tabular-nums whitespace-nowrap hidden xl:table-cell">{inv.issue_date.slice(0, 10)}</td>
+                  <td className="text-[13px] text-muted tabular-nums whitespace-nowrap">{inv.due_date.slice(0, 10)}</td>
+                  <td className={`r font-medium text-ink ${voided ? "line-through" : ""}`}>{fmtAmount(inv.total)}</td>
+                  <td className={`r font-medium ${voided ? "text-faint" : profit != null ? (profit >= 0 ? "text-success-ink" : "text-danger-ink") : "text-faint"}`}>
                     {profit != null ? (
                       <span className="inline-flex items-baseline gap-1" title={projected ? "Projected profit: revenue minus costs entered so far" : undefined}>
                         {fmtAmount(profit)}
-                        {projected && <span className="text-[9px] font-semibold text-muted">Proj</span>}
+                        {projected && <span className="text-[12px] font-normal text-muted">proj</span>}
                       </span>
-                    ) : "–"}
+                    ) : "-"}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-0 flex-wrap gap-y-1">
+                  <td>
+                    <div className="flex items-center gap-y-1 flex-wrap max-w-[150px]">
                       <StatusPill className={statusColor(inv)}>{statusLabel(inv)}</StatusPill>
                       {/* Deal flow progress dots — a completed invoice always shows all stages filled. */}
                       <FlowDots stage={inv.is_complete ? "complete" : inv.deal_flow_stage} />
                       {inv.deal_flow_id && refundMap[inv.deal_flow_id] && (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-danger-ink ml-1.5">
-                          <RotateCcw size={10} />
+                        <span className="inline-flex items-center gap-1 text-[12px] font-medium text-danger-ink ml-2">
                           {refundMap[inv.deal_flow_id].remaining > 0 ? `Refund · ${fmtAmount(refundMap[inv.deal_flow_id].remaining)}` : "Refunded"}
                         </span>
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                  <td className="text-right" onClick={(e) => e.stopPropagation()}>
                     {/* Common actions inline; secondary and destructive ones live in the overflow menu. */}
                     <div className="inline-flex items-center gap-0.5">
-                      <button title="Edit" onClick={() => { setEditing(inv); setShowForm(true); }}
-                        className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors">
-                        <Edit2 size={13} />
+                      <button title="Edit" aria-label="Edit" onClick={() => { setEditing(inv); setShowForm(true); }}
+                        className="ui-ib">
+                        <Edit2 size={16} />
                       </button>
                       {!voided && !inv.sent_at && (
-                        <button title="Send invoice" onClick={() => handleSend(inv.id)}
-                          className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-info-ink hover:bg-info-bg transition-colors"><Send size={13} /></button>
+                        <button title="Send invoice" aria-label="Send invoice" onClick={() => handleSend(inv.id)}
+                          className="ui-ib"><Send size={16} /></button>
                       )}
                       {!voided && inv.status.toLowerCase() !== "paid" && (
-                        <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
-                          className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><Check size={13} /></button>
+                        <button title="Mark as paid" aria-label="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
+                          className="ui-ib hover:!text-success-ink"><Check size={16} /></button>
                       )}
                       <RowActionsMenu>
                         {(close) => (
@@ -589,9 +563,9 @@ export default function InvoicesView() {
                   </td>
                 </tr>
                 {hits.length > 0 && (
-                  <tr className={`border-b border-line-2 cursor-pointer hover:bg-surface-2 ${voided ? "opacity-55" : ""}`} onClick={() => openDetail(inv.id)}>
-                    <td colSpan={8} className="px-4 pb-2.5 pt-0">
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-1 border-l-2 border-accent/40 ml-1">
+                  <tr className={voided ? "opacity-55" : ""} onClick={() => openDetail(inv.id)}>
+                    <td colSpan={8} className="!pt-0 !shadow-none">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-3 border-l border-line-3 ml-1">
                         {hits.map((it, n) => (
                           <span key={n} className="text-[12px] text-ink-2">
                             {it.description}
@@ -607,21 +581,18 @@ export default function InvoicesView() {
             })}
             {invoices.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-16 text-center">
-                  <div className="w-10 h-10 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
-                    <FileText size={16} className="text-muted" />
-                  </div>
-                  <p className="text-[15px] font-semibold text-ink mb-1">No invoices yet</p>
+                <td colSpan={8} className="!py-16 text-center">
+                  <p className="text-[15px] font-medium text-ink mb-1">No invoices yet</p>
                   <p className="text-[13px] text-muted mb-4">Create your first invoice to send to a client</p>
                   <button onClick={() => { setEditing(null); setShowForm(true); }}
-                    className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
-                    <Plus size={13} /> Create invoice
+                    className="ui-btn ui-btn-ink">
+                    <Plus size={14} /> Create invoice
                   </button>
                 </td>
               </tr>
             ) : visible.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center text-[13px] text-muted">
+                <td colSpan={8} className="!py-10 text-center text-[13px] text-muted">
                   {search ? "No invoices match your search" : `No ${viewTab === "drafts" ? "draft" : viewTab} invoices`}
                 </td>
               </tr>
@@ -792,7 +763,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
   const selectedClient = clients.find((c) => c.id === clientId);
   const fmtPreviewDate = (d: string) => d ? new Date(`${d}T00:00:00`).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }) : "";
   const previewData = {
-    clientName: createNew ? (newClient.name.trim() || "New client") : (selectedClient?.name || "–"),
+    clientName: createNew ? (newClient.name.trim() || "New client") : (selectedClient?.name || "-"),
     clientAddress: createNew ? "" : [selectedClient?.street_address, selectedClient?.city, selectedClient?.state, selectedClient?.zip_code].filter(Boolean).join(", "),
     number: initial?.number,
     issueDate: fmtPreviewDate(issueDate),
@@ -903,10 +874,10 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
 
   return (
     <div className="flex flex-col xl:flex-row gap-5 items-start mb-4">
-      <div className="w-full xl:flex-1 min-w-0 bg-surface border border-line rounded-xl p-6 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
+      <div className="w-full xl:flex-1 min-w-0 bg-surface border border-line rounded-xl p-6">
       <div className="flex justify-between items-center mb-5">
-        <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit invoice" : "New invoice"}</h3>
-        <button onClick={onClose} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
+        <h3 className="text-[14px] font-medium text-ink">{initial ? "Edit invoice" : "New invoice"}</h3>
+        <button onClick={onClose} aria-label="Close" className="ui-ib"><X size={16} /></button>
       </div>
 
       {/* New invoice: full header including client picker */}
@@ -917,11 +888,11 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
               <div className="flex items-center gap-2">
                 <span className="text-[13px] text-ink font-medium">{clients.find((c) => c.id === clientId)?.name ?? "Unknown"}</span>
                 <button type="button" onClick={() => { setShowClientPicker(true); setClientSearch(""); }}
-                  className="text-[11px] text-accent hover:text-accent-hover underline">Change</button>
+                  className="text-[12px] text-accent hover:text-ink underline">Change</button>
               </div>
             ) : (
               <>
-                <input className={inp} placeholder="Type to search clients…" value={clientSearch}
+                <input className={inp} placeholder="Type to search clients..." value={clientSearch}
                   onChange={(e) => { setClientSearch(e.target.value); }}
                   onFocus={() => setShowClientPicker(true)} />
                 {showClientPicker && (
@@ -929,13 +900,13 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
                     {filteredClients.map((c) => (
                       <button key={c.id} type="button"
                         onClick={() => { setClientId(c.id); setClientSearch(c.name); setShowClientPicker(false); setCreateNew(false); }}
-                        className="w-full text-left px-3 py-2 text-[13px] hover:bg-accent/10 border-b border-line-2 last:border-0 transition-colors">
+                        className="w-full text-left px-3 py-2 text-[13px] hover:bg-surface-2 border-b border-line-2 last:border-0 transition-colors duration-150">
                         {c.name}
                       </button>
                     ))}
                     <button type="button"
                       onClick={() => { setCreateNew(true); setShowClientPicker(false); setClientSearch(""); }}
-                      className="w-full text-left px-3 py-2 text-[13px] text-accent hover:bg-accent/10 transition-colors">
+                      className="w-full text-left px-3 py-2 text-[13px] text-accent hover:bg-surface-2 transition-colors duration-150">
                       + Create new client
                     </button>
                   </div>
@@ -948,7 +919,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
                 <input className={inp} placeholder="Email (optional)" value={newClient.email} onChange={(e) => setNewClient({ ...newClient, email: e.target.value })} />
                 <input className={inp} placeholder="Phone (optional)" value={newClient.phone} onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })} />
                 <button type="button" onClick={() => { setCreateNew(false); setShowClientPicker(true); }}
-                  className="text-[11px] text-muted hover:text-ink-2 underline">Cancel</button>
+                  className="text-[12px] text-muted hover:text-ink-2 underline">Cancel</button>
               </div>
             )}
           </Field>
@@ -966,7 +937,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
       {/* Edit mode: show dates + tax (no client change) */}
       {initial && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-5 p-4 bg-surface-2 border border-line rounded-xl">
-          <div className="lg:col-span-3 text-[11px] text-warning-ink font-medium -mb-1">
+          <div className="lg:col-span-3 text-[12px] text-warning-ink font-medium -mb-1">
             Editing a {initial.status.toLowerCase() === "paid" ? "paid" : "sent"} invoice. Amounts and dates can be adjusted.
           </div>
           <Field label="Due date"><input type="date" className={inp} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
@@ -981,7 +952,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
       )}
 
       {!initial && createNew && (
-        <div className="grid grid-cols-2 gap-4 mb-5 p-4 bg-accent/10 border border-accent/10 rounded-xl">
+        <div className="grid grid-cols-2 gap-4 mb-5 p-4 bg-surface-2 border border-line rounded-xl">
           <Field label="Name *"><input className={inp} value={newClient.name} onChange={(e) => setNewClient({ ...newClient, name: e.target.value })} /></Field>
           <Field label="Email"><input className={inp} value={newClient.email} onChange={(e) => setNewClient({ ...newClient, email: e.target.value })} /></Field>
           <Field label="Phone"><input className={inp} value={newClient.phone} onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })} /></Field>
@@ -993,9 +964,9 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
           it is always visible rather than behind a hover — an owed credit forgotten at
           invoice time is money given away twice. */}
       {!initial && storeCredit && storeCredit.balance > 0 && (
-        <div className="mb-5 p-4 bg-accent/10 border border-accent/10 rounded-xl flex items-center justify-between gap-4 flex-wrap">
+        <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl flex items-center justify-between gap-4 flex-wrap">
           <div className="text-[13px] text-ink min-w-0">
-            <strong className="font-semibold">You owe this buyer {fmtAmount(storeCredit.balance)} in credit.</strong>
+            <strong className="font-medium">You owe this buyer {fmtAmount(storeCredit.balance)} in credit.</strong>
             {creditIssuedOn ? ` Issued ${creditIssuedOn}.` : ""}
             {creditApplied > 0
               ? ` ${fmtAmount(creditApplied)} is on this invoice as a line below${creditLeft > 0 ? `, leaving ${fmtAmount(creditLeft)} for next time` : ""}.`
@@ -1005,7 +976,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
           </div>
           {creditLeft > 0 && subtotal > 0 && (
             <button type="button" onClick={applyCredit}
-              className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors flex-shrink-0">
+              className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors duration-150 flex-shrink-0">
               Apply {fmtAmount(Math.min(creditLeft, subtotal))}
             </button>
           )}
@@ -1017,7 +988,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
         <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl text-[13px] text-ink">
           {dlPairs > 0 ? (
             <>
-              <strong className="font-semibold">From the delivery.</strong> Creating this invoice takes {dlPairs.toLocaleString()} {dlPairs === 1 ? "pair" : "pairs"} off {prefill.delivery.load_name}, the styles and sizes you picked.
+              <strong className="font-medium">From the delivery.</strong> Creating this invoice takes {dlPairs.toLocaleString()} {dlPairs === 1 ? "pair" : "pairs"} off {prefill.delivery.load_name}, the styles and sizes you picked.
               <span className="text-muted"> Quantities are fixed; delete a line to leave its pairs on the delivery.</span>
             </>
           ) : (
@@ -1029,12 +1000,12 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
         <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl text-[13px] text-ink">
           {whUnits > 0 ? (
             <>
-              <strong className="font-semibold">From the warehouse.</strong> Creating this invoice takes{" "}
+              <strong className="font-medium">From the warehouse.</strong> Creating this invoice takes{" "}
               {whUnits.toLocaleString()} {whUnits === 1 ? "unit" : "units"} of {prefill.warehouse?.item_name} off the shelf, in the boxes each line names.
               <span className="text-muted"> Change a quantity and that many units are taken instead; delete a line and nothing is taken for it.</span>
             </>
           ) : prefill.built ? (
-            <><strong className="font-semibold">Built in the warehouse.</strong> These boxes came off the shelf as they were grabbed, so creating this invoice takes nothing more.</>
+            <><strong className="font-medium">Built in the warehouse.</strong> These boxes came off the shelf as they were grabbed, so creating this invoice takes nothing more.</>
           ) : (
             <>No warehouse lines are left on this invoice, so nothing will be taken off the shelf.</>
           )}
@@ -1050,7 +1021,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
           ) : (
             <span className="inline-flex items-center gap-x-2 gap-y-1 flex-wrap">
               <span className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 basis-full tabular-nums">
-                <strong className="font-semibold">Your cost</strong><span>{buyLines?.[0]}</span>
+                <strong className="font-medium">Your cost</strong><span>{buyLines?.[0]}</span>
                 <span aria-hidden />
                 <span>{buyLines?.[1]}</span>
               </span>
@@ -1058,12 +1029,12 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
               {typingCost ? (
                 <span className="inline-flex items-center gap-1.5">
                   <NumberInput value={buyGoods} onValue={(v) => setBuyCost(v)} autoFocus
-                    className="w-28 h-8 px-2 border border-line rounded-lg text-[13px] tabular-nums bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40" />
-                  <button type="button" onClick={() => setTypingCost(false)} className="text-[12.5px] text-accent-hover">Done</button>
+                    className="w-28 h-8 px-2 border border-line rounded-lg text-[13px] tabular-nums bg-surface focus:outline-none focus:border-ink" />
+                  <button type="button" onClick={() => setTypingCost(false)} className="text-[12.5px] text-ink">Done</button>
                   {buyCost !== null && <button type="button" onClick={() => { setBuyCost(null); setTypingCost(false); }} className="text-[12.5px] text-muted">Use the buy's cost</button>}
                 </span>
               ) : (
-                <button type="button" onClick={() => setTypingCost(true)} className="text-[12.5px] text-accent-hover hover:underline">Change it</button>
+                <button type="button" onClick={() => setTypingCost(true)} className="text-[12.5px] text-ink hover:underline">Change it</button>
               )}
             </span>
           )}
@@ -1081,35 +1052,35 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
         </div>
         {items.map((it, i) => (
           <div key={i} className="grid grid-cols-12 gap-2 mb-1.5">
-            <input className="col-span-6 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+            <input className="col-span-6 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:border-ink transition-colors duration-150"
               value={it.description} onChange={(e) => updateItem(i, "description", e.target.value)} />
-            <NumberInput className="col-span-1 border border-line px-2 h-9 rounded-lg text-[13px] text-center focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
+            <NumberInput className="col-span-1 border border-line px-2 h-9 rounded-lg text-[13px] text-center focus:outline-none focus:border-ink transition-colors duration-150"
               value={it.qty || ""} onValue={(n) => updateItem(i, "qty", n)}
               readOnly={!!it.dl} title={it.dl ? "The pairs picked on the delivery. Delete the line to leave them out." : undefined} />
             <div className="col-span-2 relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-              <NumberInput className="w-full border border-line pl-7 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
+              <NumberInput className="w-full border border-line pl-7 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:border-ink transition-colors duration-150"
                 value={it.rate || ""} onValue={(n) => updateItem(i, "rate", n)} />
             </div>
             <input readOnly className="col-span-2 border border-line bg-surface-2 px-3 h-9 rounded-lg text-[13px] text-right text-muted tabular-nums"
               value={it.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} />
             <button onClick={() => setItems(items.filter((_, j) => j !== i))}
-              className="col-span-1 text-faint hover:text-danger-ink flex items-center justify-center transition-colors">
+              className="col-span-1 text-faint hover:text-danger-ink flex items-center justify-center transition-colors duration-150">
               <Trash2 size={13} />
             </button>
           </div>
         ))}
         <div className="flex items-center gap-3 mt-2">
           <button onClick={() => setItems([...items, { description: "", qty: 1, rate: 0, amount: 0 }])}
-            className="text-[12px] font-medium text-accent hover:text-accent-hover flex items-center gap-1 transition-colors">
+            className="text-[12px] font-medium text-accent hover:text-ink flex items-center gap-1 transition-colors duration-150">
             <Plus size={13} /> Add line
           </button>
           {templates.length > 0 && (
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-muted">Templates:</span>
+              <span className="text-[12px] text-muted">Templates:</span>
               {templates.map((t) => (
                 <button key={t.id} onClick={() => setItems([...items, { description: t.description, qty: t.qty, rate: t.rate, amount: t.qty * t.rate }])}
-                  className="text-[11px] bg-surface-3 hover:bg-surface-3 px-2.5 py-1 rounded-full text-ink-2 transition-colors">
+                  className="text-[12px] bg-surface-3 hover:bg-surface-3 px-2.5 py-1 rounded-full text-ink-2 transition-colors duration-150">
                   {t.description}
                 </button>
               ))}
@@ -1124,7 +1095,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
           new invoice and freely editable per deal before finalizing. */}
       <div className="mb-5">
         <div className="flex items-center gap-3 mb-1.5">
-          <label className="text-[11px] font-medium text-muted">Return policy</label>
+          <label className="text-[12px] font-medium text-muted">Return policy</label>
           {/* Same token treatment as the Settings clause switch: a white knob vanished
               against both the near-white OFF track and mono-dark's near-white accent,
               so an OFF toggle read as nothing at all. See ClauseSwitch in SettingsView.
@@ -1132,22 +1103,18 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
               with no left anchors to the track's MIDPOINT, and translate-x-[22px] then
               threw it clean off the right edge — ON rendered as a solid accent blob with
               no knob at all. Same defect in the other button-based switches. */}
-          <button type="button" onClick={() => setPolicyOn((v) => !v)} role="switch" aria-checked={policyOn}
-            aria-label="Include the return policy on this invoice"
-            className={`w-11 h-6 rounded-full relative transition-colors ring-1 ${policyOn ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
-            <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${policyOn ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
-          </button>
+          <Switch on={policyOn} onToggle={() => setPolicyOn((v) => !v)} label="Include the return policy on this invoice" />
           {policyOn && !policyText.trim() && (
-            <span className="text-[11px] text-muted">Add the wording in Settings, or type it here.</span>
+            <span className="text-[12px] text-muted">Add the wording in Settings, or type it here.</span>
           )}
         </div>
         {policyOn && (
-          <textarea rows={3} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+          <textarea rows={3} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:border-ink transition-colors duration-150"
             placeholder="Return policy wording that prints on this invoice and repeats in the send email"
             value={policyText} onChange={(e) => setPolicyText(e.target.value)} />
         )}
         {noticeClause && (
-          <p className="text-[11px] text-muted mt-1.5">
+          <p className="text-[12px] text-muted mt-1.5">
             The 24-hour notice also prints on this invoice. Edit it in Settings under Email.
           </p>
         )}
@@ -1157,13 +1124,13 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
       <div className="mb-5">
         <div className="flex gap-4 items-end">
           <div className="flex-1">
-            <label className="block text-[11px] font-medium text-muted mb-1.5">Notes</label>
-            <textarea rows={3} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
-              placeholder="Shipping instructions, payment terms…" value={notes} onChange={(e) => setNotes(e.target.value)} />
+            <label className="block text-[12px] font-medium text-muted mb-1.5">Notes</label>
+            <textarea rows={3} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:border-ink transition-colors duration-150"
+              placeholder="Shipping instructions, payment terms..." value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
           <div>
-            <label className="block text-[11px] font-medium text-muted mb-1.5">Recurring</label>
-            <select className="border border-line px-3 h-10 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
+            <label className="block text-[12px] font-medium text-muted mb-1.5">Recurring</label>
+            <select className="border border-line px-3 h-10 rounded-lg text-[13px] focus:outline-none focus:border-ink transition-colors duration-150"
               value={recurring} onChange={(e) => setRecurring(e.target.value)}>
               <option value="">One-time</option>
               <option value="monthly">Monthly</option>
@@ -1190,15 +1157,15 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
         </div>
       )}
       <div className="flex justify-end gap-2 mt-4 flex-wrap">
-        <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
+        <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors duration-150">Cancel</button>
         <button onClick={handlePreview} disabled={previewing || items.length === 0 || createNew}
           title={createNew ? "Save the new client first to open the real PDF" : undefined}
-          className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] flex items-center gap-1.5 disabled:opacity-40 transition-colors">
-          <ExternalLink size={13} /> {previewing ? "Opening…" : "View actual PDF"}
+          className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] flex items-center gap-1.5 disabled:opacity-40 transition-colors duration-150">
+          <ExternalLink size={13} /> {previewing ? "Opening..." : "View actual PDF"}
         </button>
         <button onClick={submit} disabled={submitting || (!createNew && !clientId) || items.length === 0}
-          className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-          {submitting ? "Saving…" : initial ? "Save changes" : "Create invoice"}
+          className="ui-btn ui-btn-ink">
+          {submitting ? "Saving..." : initial ? "Save changes" : "Create invoice"}
         </button>
       </div>
       </div>
@@ -1207,7 +1174,7 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
       <div className="w-full xl:w-[360px] xl:flex-shrink-0 xl:sticky xl:top-4">
         <div className="text-[12.5px] font-medium text-muted mb-2.5">Live preview</div>
         <InvoicePreview info={companyInfo} tpl={template} logoVersion={0} data={previewData} />
-        <p className="text-[11px] text-muted mt-2 text-center">A close approximation. The PDF is the ground truth.</p>
+        <p className="text-[12px] text-muted mt-2 text-center">A close approximation. The PDF is the ground truth.</p>
       </div>
     </div>
   );
@@ -1251,11 +1218,11 @@ function InvoiceEditForm2({ invoice, onCancel, onSaved }: { invoice: Invoice; on
       </div>
 
       <div className="flex justify-between items-center py-3 border-t border-line mt-4">
-        <div className="text-[14px] text-muted">Total: <span className="font-semibold text-ink">{fmtAmount(total)}</span></div>
+        <div className="text-[14px] text-muted">Total: <span className="font-medium text-ink">{fmtAmount(total)}</span></div>
         <div className="flex gap-3">
-          <button onClick={onCancel} className="px-4 h-9 rounded-lg text-[13px] text-muted hover:bg-surface-3 transition-colors">Cancel</button>
-          <button onClick={save} disabled={saving} className="px-5 h-9 rounded-lg text-[13px] font-medium bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors">
-            {saving ? "Saving…" : "Update tax"}
+          <button onClick={onCancel} className="px-4 h-9 rounded-lg text-[13px] text-muted hover:bg-surface-3 transition-colors duration-150">Cancel</button>
+          <button onClick={save} disabled={saving} className="ui-btn ui-btn-ink">
+            {saving ? "Saving..." : "Update tax"}
           </button>
         </div>
       </div>
@@ -1265,7 +1232,7 @@ function InvoiceEditForm2({ invoice, onCancel, onSaved }: { invoice: Invoice; on
 
 function Row({ label, value, bold }: { label: string; value: number; bold?: boolean }) {
   return (
-    <div className={`flex justify-between tabular-nums ${bold ? "font-semibold text-[14px] pt-1.5 border-t border-line" : "text-ink-2"}`}>
+    <div className={`flex justify-between tabular-nums ${bold ? "font-medium text-[14px] pt-1.5 border-t border-line" : "text-ink-2"}`}>
       <span>{label}</span><span>{fmtAmount(value)}</span>
     </div>
   );
@@ -1274,7 +1241,7 @@ function Row({ label, value, bold }: { label: string; value: number; bold?: bool
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-[11px] font-medium text-muted mb-1.5">{label}</label>
+      <label className="block text-[12px] font-medium text-muted mb-1.5">{label}</label>
       {children}
     </div>
   );
@@ -1318,7 +1285,7 @@ function RowActionsMenu({ children }: { children: (close: () => void) => React.R
   return (
     <>
       <button ref={btnRef} title="More actions" onClick={toggle}
-        className={`flex items-center justify-center w-8 h-7 rounded-md transition-colors ${open ? "text-ink-2 bg-surface-3" : "text-faint hover:text-ink-2 hover:bg-surface-3"}`}>
+        className={`flex items-center justify-center w-8 h-7 rounded-md transition-colors duration-150 ${open ? "text-ink-2 bg-surface-3" : "text-faint hover:text-ink-2 hover:bg-surface-3"}`}>
         <MoreVertical size={13} />
       </button>
       {open && (
@@ -1336,7 +1303,7 @@ function MenuItem({ icon: Icon, label, onClick, danger }: {
 }) {
   return (
     <button type="button" onClick={onClick}
-      className={`w-full flex items-center gap-2.5 px-3 h-8 text-[12.5px] text-left transition-colors ${danger ? "text-danger-ink hover:bg-danger-bg" : "text-ink-2 hover:bg-surface-2"}`}>
+      className={`w-full flex items-center gap-2.5 px-3 h-8 text-[12.5px] text-left transition-colors duration-150 ${danger ? "text-danger-ink hover:bg-danger-bg" : "text-ink-2 hover:bg-surface-2"}`}>
       <Icon size={13} className="flex-shrink-0" /> {label}
     </button>
   );
@@ -1366,9 +1333,9 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
 
   const statCol = (s: string) => {
     if (s === "void")    return "bg-surface-3 text-muted";
-    if (s === "paid")    return invoice.is_complete ? "bg-success-bg text-success-ink" : "bg-warning-bg text-warning-ink";
-    if (s === "sent")    return "bg-info-bg text-info-ink";
-    if (s === "overdue") return "bg-danger-bg text-danger-ink";
+    if (s === "paid")    return invoice.is_complete ? "bg-surface-3 text-success-ink" : "bg-surface-3 text-warning-ink";
+    if (s === "sent")    return "bg-surface-3 text-muted";
+    if (s === "overdue") return "bg-surface-3 text-danger-ink";
     return "bg-surface-3 text-ink-2";
   };
 
@@ -1377,8 +1344,8 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
       <div className="fixed inset-0 bg-black/20 backdrop-blur-[2px] z-40" onClick={onClose} />
       <div className="fixed inset-y-0 right-0 w-[480px] max-w-[92vw] bg-surface shadow-[0_0_50px_rgba(0,0,0,0.12)] h-full overflow-auto z-50 animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 bg-surface/95 backdrop-blur-sm border-b border-line px-6 py-4 flex items-center justify-between z-10">
-          <h3 className="text-[14px] font-semibold text-ink font-mono">{invoice.number}</h3>
-          <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
+          <h3 className="text-[14px] font-medium text-ink font-mono">{invoice.number}</h3>
+          <button onClick={onClose} title="Close" aria-label="Close" className="ui-ib"><X size={16} /></button>
         </div>
 
         <div className="px-6 py-5 space-y-5">
@@ -1387,7 +1354,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           {voided && (
             <div className="flex items-center gap-2 bg-surface-2 border border-line rounded-xl px-4 py-3 text-[12.5px] text-ink-2">
               <XCircle size={15} className="text-muted flex-shrink-0" />
-              <span>This deal fell through. The invoice is voided and excluded from receivables. Nothing was deleted; you can restore it.</span>
+              <span>This deal fell through. The invoice is voided and left out of the owed totals. Nothing was deleted; you can restore it.</span>
             </div>
           )}
 
@@ -1438,7 +1405,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           <div className="border-t border-line pt-4 space-y-1.5 text-[13px]">
             <div className="flex justify-between text-ink-2"><span>Subtotal</span><span className="tabular-nums">{fmtAmount(invoice.subtotal)}</span></div>
             <div className="flex justify-between text-ink-2"><span>Tax</span><span className="tabular-nums">{fmtAmount(invoice.tax)}</span></div>
-            <div className="flex justify-between font-semibold text-[14px] text-ink pt-1.5 border-t border-line">
+            <div className="flex justify-between font-medium text-[14px] text-ink pt-1.5 border-t border-line">
               <span>Total</span><span className="tabular-nums">{fmtAmount(invoice.total)}</span>
             </div>
           </div>
@@ -1474,21 +1441,21 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
         <div className="sticky bottom-0 bg-surface/95 backdrop-blur-sm border-t border-line px-6 py-4 space-y-2.5">
           <button onClick={async () => { try { await api.openInvoicePdf(invoice.id); } catch (e: any) { toast(String(e), "error"); } }}
             title="Open the invoice PDF in your browser"
-            className="w-full bg-surface border border-line hover:bg-surface-2 text-ink-2 h-10 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-2">
+            className="ui-btn ui-btn-block">
             <ExternalLink size={15} /> View invoice
           </button>
           <button onClick={onPdf} title="Save the invoice PDF to your invoices folder"
-            className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-2">
+            className="ui-btn ui-btn-ink">
             <Download size={15} /> Download PDF
           </button>
           {voided ? (
             <div className="flex gap-2.5">
               <button onClick={() => onVoid(false)} title="Restore this voided invoice"
-                className="flex-1 bg-surface border border-line hover:bg-success-bg hover:border-success text-ink-2 hover:text-success-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                className="ui-btn flex-1">
                 <RotateCcw size={13} /> Un-void invoice
               </button>
               <button onClick={onDelete} title="Move to Archive (restorable)"
-                className="flex-1 bg-surface border border-danger hover:bg-danger-bg text-danger-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                className="ui-btn ui-btn-danger flex-1">
                 <Trash2 size={13} /> Delete
               </button>
             </div>
@@ -1496,25 +1463,25 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
             <>
               <div className="flex gap-2.5">
                 <button onClick={onResend} title={invoice.sent_at ? "Resend invoice" : "Send invoice"}
-                  className="flex-1 bg-surface border border-line hover:bg-surface-2 text-ink-2 h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                  className="ui-btn flex-1">
                   <Send size={13} /> {invoice.sent_at ? "Resend" : "Send"}
                 </button>
                 <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { toast(String(e), "error"); } }}
-                  className="flex-1 bg-surface border border-line hover:bg-accent/10 hover:border-accent/30 text-accent h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5"
+                  className="ui-btn flex-1"
                   title="Request payment via Stripe">
                   <CreditCard size={13} /> Pay
                 </button>
                 <button onClick={onDelete} title="Move to Archive (restorable)"
-                  className="flex-1 bg-surface border border-danger hover:bg-danger-bg text-danger-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                  className="ui-btn ui-btn-danger flex-1">
                   <Trash2 size={13} /> Delete
                 </button>
               </div>
               <button onClick={() => setLinking(true)} title="Take this invoice's pairs off a shoe delivery and put the landed cost on its deal"
-                className="w-full bg-surface border border-line hover:bg-surface-2 text-ink-2 h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                className="ui-btn ui-btn-block">
                 Link to a delivery
               </button>
-              <button onClick={() => onVoid(true)} title="Void this invoice: drops it from receivables; nothing is deleted"
-                className="w-full bg-surface border border-line hover:bg-warning-bg hover:border-warning text-muted hover:text-warning-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+              <button onClick={() => onVoid(true)} title="Void this invoice: drops it from the owed totals; nothing is deleted"
+                className="ui-btn ui-btn-block">
                 <XCircle size={13} /> Mark deal fell through
               </button>
             </>

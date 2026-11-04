@@ -20,11 +20,11 @@ function Side({ label, date, amount, description, note }: {
   label: string; date: string; amount?: number; description: string; note: string;
 }) {
   return (
-    <div className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 py-2">
-      <div className="text-[10.5px] text-muted">{label}</div>
-      <div className="text-[12px] text-ink truncate" title={description}>{description || "No description"}</div>
-      <div className="text-[11px] text-muted tabular-nums">{date}{amount !== undefined ? ` · ${fmtAmount(amount)}` : ""}</div>
-      <div className="text-[11px] mt-0.5 text-ink-2">{note}</div>
+    <div className="min-w-0 flex-1 rounded-[10px] bg-surface-2 ring-1 ring-line px-3 py-2.5">
+      <div className="ui-note">{label}</div>
+      <div className="text-[13px] text-ink truncate" title={description}>{description || "No description"}</div>
+      <div className="ui-note tabular-nums">{date}{amount !== undefined ? ` · ${fmtAmount(amount)}` : ""}</div>
+      <div className="text-[12px] mt-0.5 text-ink-2">{note}</div>
     </div>
   );
 }
@@ -81,31 +81,31 @@ export default function RetractedRows({ rows, onChanged, onShow }: {
 
   if (rows.length === 0) return null;
   return (
-    <div className="rounded-xl border border-warning/40 bg-warning-bg">
-      <div className="flex items-center gap-2 px-4 py-2.5">
-        <button onClick={() => setOpen((v) => !v)} className="flex-1 min-w-0 flex items-center gap-2 text-left">
-          <AlertTriangle size={14} className="text-warning-ink flex-shrink-0" />
-          <span className="flex-1 min-w-0 text-[12.5px] font-medium text-ink">
+    <div className="border-t border-line">
+      <div className="flex items-center gap-2 py-3">
+        <button onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex-1 min-w-0 flex items-center gap-2.5 text-left">
+          <AlertTriangle size={16} className="text-warning-ink flex-shrink-0" />
+          <span className="flex-1 min-w-0 text-[14px] text-ink">
             {rows.length === 1 ? "1 transaction your bank retracted is still on the books." : `${rows.length} transactions your bank retracted are still on the books.`}
-            <span className="text-muted font-normal"> Swap each onto its posted copy, or remove it if the bank cancelled it.</span>
+            <span className="text-muted"> Swap each onto its posted copy, or remove it if the bank cancelled it.</span>
           </span>
-          <ChevronDown size={14} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />
+          <ChevronDown size={16} className={`text-muted transition-transform duration-[180ms] ${open ? "rotate-180" : ""}`} />
         </button>
         <button onClick={onShow}
-          className="h-7 px-2.5 rounded-lg border border-line text-[11.5px] text-ink-2 hover:bg-surface flex-shrink-0 transition-colors">
+          className="ui-btn ui-btn-sm flex-shrink-0">
           Show only these
         </button>
       </div>
       {open && (
-        <div className="px-4 pb-4 space-y-3">
+        <div className="pb-4 space-y-3 dash-load">
           {rows.map((r) => (
-            <div key={r.id} className="rounded-lg border border-line bg-surface-2 p-3 space-y-2">
+            <div key={r.id} className="rounded-[10px] bg-surface-2 ring-1 ring-line p-3.5 space-y-2.5">
               <div className="flex items-baseline justify-between gap-2 flex-wrap">
-                <span className="text-[13px] font-semibold text-ink tabular-nums">
+                <span className="text-[14px] font-medium text-ink tabular-nums">
                   {fmtAmount(r.amount)} {r.direction === "in" ? "in" : "out"}
-                  <span className="text-[11.5px] font-normal text-muted"> on {r.account}</span>
+                  <span className="text-[13px] font-normal text-muted"> on {r.account}</span>
                 </span>
-                <span className="text-[11px] text-muted">
+                <span className="ui-note">
                   {r.matches.length
                     ? r.matches.some((m) => m.automatic)
                       ? "Same name, same amount: it swaps on the next bank sync unless you say it is not the same."
@@ -129,25 +129,24 @@ export default function RetractedRows({ rows, onChanged, onShow }: {
                 {r.matches.map((m) => (
                   <span key={m.id} className="inline-flex items-center gap-1.5">
                     <button onClick={() => swap(r, m)} disabled={busy !== null}
-                      className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+                      className="ui-btn ui-btn-sm ui-btn-ink">
                       {r.matches.length === 1 ? "Swap: move the booking to the posted copy" : `Swap onto the ${m.date.slice(5)} copy`}
                     </button>
                     <button onClick={() => notSame(r, m)} disabled={busy !== null}
                       title="Keep both. This pair is never offered or swapped again."
-                      className="h-8 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface disabled:opacity-40 transition-colors">
+                      className="ui-btn ui-btn-sm">
                       {r.matches.length === 1 ? "Not the same" : `Not the ${m.date.slice(5)} one`}
                     </button>
                   </span>
                 ))}
                 <button onClick={() => remove(r)} disabled={busy !== null}
-                  className={`h-8 px-3 rounded-lg text-[12px] font-medium disabled:opacity-40 transition-colors ${
-                    r.matches.length ? "border border-line text-ink-2 hover:bg-surface" : "bg-accent hover:bg-accent-hover text-on-accent"}`}>
+                  className={`ui-btn ui-btn-sm ${r.matches.length ? "" : "ui-btn-ink"}`}>
                   Remove it
                 </button>
               </div>
             </div>
           ))}
-          <div className="text-[11px] text-muted">
+          <div className="ui-note leading-relaxed">
             Swap moves the booking and deal links onto the posted copy and removes the retracted row. Not the same keeps both and stops that pair being offered.
             Remove takes the row and its deal links off the books. Every removal writes a backup first. A row tied to a refund, loan, expense or bill is never removed: move that link first.
           </div>

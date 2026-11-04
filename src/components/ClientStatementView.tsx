@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api, type Client, type StatementData, type StatementOptions, type StatementOverrides } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Receipt, FileDown, Send, Loader2, AlertTriangle } from "lucide-react";
+import { FileDown, Send, Loader2, AlertTriangle } from "lucide-react";
+import { Button } from "./ui";
 import { toast } from "./Toast";
 
 const INPUT_CLASS =
-  "w-full border border-line px-3 h-10 rounded-lg text-[13.5px] text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "w-full border border-line-3 bg-transparent px-3 h-9 rounded-lg text-[14px] text-ink placeholder:text-faint focus:outline-none focus:border-ink transition-colors duration-150";
 const SMALL_INPUT =
-  "border border-line px-2.5 h-8 rounded-lg text-[12.5px] text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "border border-line-3 bg-transparent px-2.5 h-8 rounded-lg text-[13px] text-ink placeholder:text-faint focus:outline-none focus:border-ink transition-colors duration-150";
 
 const DEFAULT_OPTIONS: StatementOptions = {
   include_items: true,
@@ -220,32 +221,23 @@ export default function ClientStatementView({ initialClientId }: { initialClient
   const clientGaps = gaps.filter((g) => g.kind === "client_email" || g.kind === "client_address");
 
   return (
-    <div className="p-6 max-w-[1080px] space-y-5">
-      {/* Header */}
-      <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center text-accent flex-shrink-0 mt-0.5">
-          <Receipt size={18} />
-        </div>
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-bold text-ink">Client receipt</h2>
-          <p className="text-[12.5px] text-muted mt-0.5 leading-relaxed">
-            Pick a client, tick the deals, and send them one PDF of every payment with its
-            date, invoice numbers, item labels and refunds included. Nothing on it shows
-            cost or margin.
-          </p>
-        </div>
-      </div>
+    <div className="max-w-[1080px] space-y-5">
+      <p className="text-[14px] text-muted leading-relaxed max-w-[720px]">
+        Pick a client, tick the deals, and send them one PDF of every payment with its
+        date, invoice numbers, item labels and refunds included. Nothing on it shows
+        cost or margin.
+      </p>
 
       {/* Client */}
-      <div className="bg-surface border border-line rounded-xl p-5 space-y-1.5">
-        <label className="block text-[12px] font-medium text-muted">Client</label>
+      <div className="space-y-1.5">
+        <label className="ui-label block">Client</label>
         <select
           value={clientId}
           onChange={(e) => setClientId(e.target.value)}
           style={{ background: "var(--t-input-bg)" }}
           className={INPUT_CLASS}
         >
-          <option value="">Select a client…</option>
+          <option value="">Select a client...</option>
           {[...clients]
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((c) => (
@@ -258,41 +250,28 @@ export default function ClientStatementView({ initialClientId }: { initialClient
 
       {loading && (
         <div className="flex items-center gap-2 text-[13px] text-muted">
-          <Loader2 size={14} className="animate-spin" /> Loading deals…
+          <Loader2 size={14} className="animate-spin" /> Loading deals...
         </div>
       )}
 
       {data && !loading && (
         <>
           {/* Deals */}
-          <div className="bg-surface border border-line rounded-xl overflow-hidden">
-            <div className="flex flex-wrap items-center gap-2 px-5 py-3.5 border-b border-line">
-              <span className="text-[13px] font-semibold text-ink mr-1">
+          <div>
+            <div className="hsep" />
+            <div className="flex flex-wrap items-center gap-2 py-4">
+              <span className="text-[14px] font-medium text-ink mr-1">
                 {chosen.length} of {data.deals.length} selected
               </span>
-              <button
-                onClick={() => setSelected(new Set(visible.map((d) => d.deal_flow_id)))}
-                className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium transition-colors"
-              >
-                Select all
-              </button>
-              <button
-                onClick={() => setSelected(new Set())}
-                className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium transition-colors"
-              >
-                Clear
-              </button>
+              <Button size="sm" onClick={() => setSelected(new Set(visible.map((d) => d.deal_flow_id)))}>Select all</Button>
+              <Button size="sm" onClick={() => setSelected(new Set())}>Clear</Button>
               <div className="flex-1" />
               <div className="flex flex-wrap items-center gap-2">
                 {(["all", "complete", "open", "refunded"] as StageFilter[]).map((s) => (
                   <button
                     key={s}
                     onClick={() => setStage(s)}
-                    className={`px-3 h-8 rounded-lg border text-[12px] font-medium transition-colors ${
-                      stage === s
-                        ? "bg-accent text-on-accent border-accent"
-                        : "bg-surface text-muted border-line hover:bg-surface-2"
-                    }`}
+                    className={`ui-opt ${stage === s ? "on" : ""}`}
                   >
                     {s === "all" ? "All" : s === "complete" ? "Completed" : s === "open" ? "In progress" : "Refunded"}
                   </button>
@@ -304,7 +283,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
                   style={{ background: "var(--t-input-bg)" }}
                   className={SMALL_INPUT}
                 />
-                <span className="text-[12px] text-faint">to</span>
+                <span className="text-[13px] text-faint">to</span>
                 <input
                   type="date"
                   value={to}
@@ -316,15 +295,15 @@ export default function ClientStatementView({ initialClientId }: { initialClient
             </div>
 
             {visible.length === 0 ? (
-              <p className="px-5 py-8 text-[13px] text-muted text-center">
+              <p className="px-5 py-8 text-[14px] text-muted text-center">
                 {data.deals.length === 0 ? "This client has no deals yet." : "No deals match these filters."}
               </p>
             ) : (
-              <div className="divide-y divide-line">
+              <div>
                 {visible.map((d) => (
                   <label
                     key={d.deal_flow_id}
-                    className="flex items-start gap-3 px-5 py-3 cursor-pointer hover:bg-surface-2 transition-colors"
+                    className="flex items-start gap-3 px-2 py-3 cursor-pointer hover:bg-surface-2 shadow-[inset_0_1px_0_rgb(var(--c-line))] transition-colors duration-150"
                   >
                     <input
                       type="checkbox"
@@ -334,16 +313,16 @@ export default function ClientStatementView({ initialClientId }: { initialClient
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline gap-2 flex-wrap">
-                        <span className="text-[13.5px] font-semibold text-ink">
+                        <span className="text-[14px] font-medium text-ink">
                           {d.invoice_number || "No invoice number"}
                         </span>
-                        {d.name && <span className="text-[13px] text-ink-2 truncate">{d.name}</span>}
-                        <span className="text-[11.5px] text-faint">
+                        {d.name && <span className="text-[14px] text-ink-2 truncate">{d.name}</span>}
+                        <span className="text-[13px] text-faint">
                           {STAGE_LABEL[d.stage] ?? d.stage}
                         </span>
                       </div>
-                      <div className="text-[12px] text-muted mt-0.5">
-                        {d.issue_date || "–"}
+                      <div className="text-[13px] text-muted mt-0.5">
+                        {d.issue_date || "-"}
                         {d.items.length > 0 && (
                           <>
                             {" · "}
@@ -357,8 +336,8 @@ export default function ClientStatementView({ initialClientId }: { initialClient
                       </div>
                     </div>
                     <div className="text-right flex-shrink-0">
-                      <div className="text-[13.5px] font-semibold text-ink tabular-nums">{fmtAmount(d.total)}</div>
-                      <div className="text-[11.5px] text-muted tabular-nums">
+                      <div className="text-[14px] font-medium text-ink tabular-nums">{fmtAmount(d.total)}</div>
+                      <div className="text-[13px] text-muted tabular-nums">
                         paid {fmtAmount(d.paid)}
                         {d.balance > 0.005 && ` · due ${fmtAmount(d.balance)}`}
                       </div>
@@ -369,20 +348,20 @@ export default function ClientStatementView({ initialClientId }: { initialClient
             )}
 
             {chosen.length > 0 && (
-              <div className="flex flex-wrap gap-x-6 gap-y-1 px-5 py-3 border-t border-line text-[12.5px]">
+              <div className="flex flex-wrap gap-x-6 gap-y-1 px-2 py-3 shadow-[inset_0_1px_0_rgb(var(--c-line))] text-[13px]">
                 <span className="text-muted">
-                  Invoiced <span className="text-ink font-semibold tabular-nums">{fmtAmount(totals.invoiced)}</span>
+                  Invoiced <span className="text-ink font-medium tabular-nums">{fmtAmount(totals.invoiced)}</span>
                 </span>
                 <span className="text-muted">
-                  Paid <span className="text-ink font-semibold tabular-nums">{fmtAmount(totals.paid)}</span>
+                  Paid <span className="text-ink font-medium tabular-nums">{fmtAmount(totals.paid)}</span>
                 </span>
                 {totals.refunded > 0.005 && (
                   <span className="text-muted">
-                    Refunded <span className="text-ink font-semibold tabular-nums">{fmtAmount(totals.refunded)}</span>
+                    Refunded <span className="text-ink font-medium tabular-nums">{fmtAmount(totals.refunded)}</span>
                   </span>
                 )}
                 <span className="text-muted">
-                  Balance due <span className="text-ink font-semibold tabular-nums">{fmtAmount(totals.balance)}</span>
+                  Balance due <span className="text-ink font-medium tabular-nums">{fmtAmount(totals.balance)}</span>
                 </span>
               </div>
             )}
@@ -390,12 +369,13 @@ export default function ClientStatementView({ initialClientId }: { initialClient
 
           {/* Missing information */}
           {gaps.length > 0 && (
-            <div className="bg-surface border border-line rounded-xl p-5 space-y-4">
+            <div className="space-y-4">
+              <div className="hsep" />
               <div className="flex items-start gap-2.5">
-                <AlertTriangle size={16} className="text-warning flex-shrink-0 mt-0.5" />
+                <AlertTriangle size={16} className="text-warning-ink flex-shrink-0 mt-0.5" />
                 <div className="min-w-0">
-                  <h3 className="text-[13.5px] font-semibold text-ink">Missing information</h3>
-                  <p className="text-[12px] text-muted mt-0.5 leading-relaxed">
+                  <h3 className="text-[14px] font-medium text-ink">Missing information</h3>
+                  <p className="ui-note mt-0.5 leading-relaxed">
                     These would print blank. Payment dates and methods are used on this
                     document only. They sit on the bank transaction, and changing one
                     there would move the deal's closed date.
@@ -406,7 +386,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
               {clientGaps.length > 0 && (
                 <div className="space-y-2.5">
                   {clientGaps.map((g) => (
-                    <p key={g.kind} className="text-[12.5px] text-ink-2">
+                    <p key={g.kind} className="text-[13px] text-ink-2">
                       {g.label}
                     </p>
                   ))}
@@ -446,19 +426,14 @@ export default function ClientStatementView({ initialClientId }: { initialClient
                       style={{ background: "var(--t-input-bg)" }}
                       className={`${SMALL_INPUT} w-full`}
                     />
-                    <button
-                      onClick={saveClientFills}
-                      className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium transition-colors"
-                    >
-                      Save to client record
-                    </button>
+                    <Button size="sm" onClick={saveClientFills}>Save to client record</Button>
                   </div>
                 </div>
               )}
 
               {labelGaps.map((g) => (
                 <div key={g.target_id} className="space-y-1.5">
-                  <p className="text-[12.5px] text-ink-2">{g.label}</p>
+                  <p className="text-[13px] text-ink-2">{g.label}</p>
                   <input
                     value={overrides.deal_labels[g.target_id] ?? ""}
                     onChange={(e) =>
@@ -476,7 +451,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
 
               {paymentGaps.map((g) => (
                 <div key={`${g.kind}-${g.target_id}`} className="space-y-1.5">
-                  <p className="text-[12.5px] text-ink-2">{g.label}</p>
+                  <p className="text-[13px] text-ink-2">{g.label}</p>
                   {g.kind === "payment_date" ? (
                     <input
                       type="date"
@@ -499,7 +474,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
                           payment_methods: { ...o.payment_methods, [g.target_id]: e.target.value },
                         }))
                       }
-                      placeholder="Wire, ACH, check…"
+                      placeholder="Wire, ACH, check..."
                       style={{ background: "var(--t-input-bg)" }}
                       className={`${SMALL_INPUT} w-full max-w-[260px]`}
                     />
@@ -510,8 +485,9 @@ export default function ClientStatementView({ initialClientId }: { initialClient
           )}
 
           {/* What goes on it */}
-          <div className="bg-surface border border-line rounded-xl p-5 space-y-4">
-            <h3 className="text-[13.5px] font-semibold text-ink">What goes on it</h3>
+          <div className="space-y-4">
+            <div className="hsep" />
+            <h3 className="text-[14px] font-medium text-ink pt-1">What goes on it</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
               {([
                 ["include_items", "Item lines"],
@@ -523,7 +499,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
               ] as [keyof StatementOptions, string][]).map(([key, label]) => (
                 <label
                   key={key}
-                  className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer select-none"
+                  className="flex items-center gap-2 text-[13px] text-ink-2 cursor-pointer select-none"
                 >
                   <input
                     type="checkbox"
@@ -537,7 +513,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="space-y-1.5 min-w-0">
-                <label className="block text-[12px] font-medium text-muted">Title</label>
+                <label className="ui-label block">Title</label>
                 <input
                   value={options.title}
                   onChange={(e) => setOptions((o) => ({ ...o, title: e.target.value }))}
@@ -547,7 +523,7 @@ export default function ClientStatementView({ initialClientId }: { initialClient
                 />
               </div>
               <div className="space-y-1.5 min-w-0">
-                <label className="block text-[12px] font-medium text-muted">Note to the client</label>
+                <label className="ui-label block">Note to the client</label>
                 <input
                   value={options.intro}
                   onChange={(e) => setOptions((o) => ({ ...o, intro: e.target.value }))}
@@ -560,24 +536,20 @@ export default function ClientStatementView({ initialClientId }: { initialClient
           </div>
 
           {/* Actions */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <button
+          <div className="flex flex-wrap items-center gap-2.5 pt-1">
+            <Button
+              variant="ink"
               onClick={download}
               disabled={working || chosen.length === 0}
-              className="inline-flex items-center gap-2 px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              icon={working ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
             >
-              {working ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
               Download PDF
-            </button>
-            <button
-              onClick={emailIt}
-              disabled={working || chosen.length === 0}
-              className="inline-flex items-center gap-2 border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Send size={14} /> Email to client
-            </button>
+            </Button>
+            <Button onClick={emailIt} disabled={working || chosen.length === 0} icon={<Send size={14} />}>
+              Email to client
+            </Button>
             {chosen.length === 0 && (
-              <span className="text-[12.5px] text-faint">Tick at least one deal.</span>
+              <span className="text-[13px] text-faint">Tick at least one deal.</span>
             )}
           </div>
         </>

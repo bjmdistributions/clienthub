@@ -157,7 +157,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
 
   const missingMedia = lots.filter((l) => parsePhotos(l).length === 0 || !l.manifest_path);
 
-  const btn = "flex items-center gap-1 text-[11px] font-medium px-2 h-7 rounded-md border transition-colors";
+  const btn = "flex items-center gap-1 text-[12px] font-medium px-2 h-7 rounded-md border transition-colors";
   const btnQuiet = `${btn} text-[var(--t-tx2)]`;
   const fileName = (p: string) => p.split(/[/\\]/).pop() || p;
 
@@ -181,7 +181,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
           <section>
             <div className="flex items-center justify-between mb-2">
               <span className="text-[12.5px] font-medium" style={{ color: "var(--t-tx4)" }}>Message</span>
-              <button onClick={regenerate} className="flex items-center gap-1 text-[11px]" style={{ color: "var(--t-tx3)" }}>
+              <button onClick={regenerate} className="flex items-center gap-1 text-[12px]" style={{ color: "var(--t-tx3)" }}>
                 <RefreshCw size={11} /> Regenerate
               </button>
             </div>
@@ -209,7 +209,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
           <section>
             <div className="flex items-center justify-between">
               <span className="text-[12.5px] font-medium" style={{ color: "var(--t-tx4)" }}>Files</span>
-              <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--t-tx4)" }}><GripVertical size={11} /> drag into the chat →</span>
+              <span className="flex items-center gap-1 text-[12px]" style={{ color: "var(--t-tx4)" }}><GripVertical size={11} /> drag into the chat →</span>
             </div>
             <div className="space-y-2.5 mt-2">
               {lots.map((lot) => {
@@ -252,13 +252,13 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
                             className="h-11 px-2 rounded-md flex items-center gap-1.5 flex-shrink-0 cursor-grab active:cursor-grabbing" style={{ border: "1px solid var(--t-b1)", background: "var(--t-s1)" }}
                             title="Drag into the chat to attach">
                             <FileText size={13} style={{ color: "var(--t-tx3)" }} />
-                            <span className="text-[11px] truncate max-w-[90px]" style={{ color: "var(--t-tx3)" }}>{fileName(lot.manifest_path || "manifest")}</span>
+                            <span className="text-[12px] truncate max-w-[90px]" style={{ color: "var(--t-tx3)" }}>{fileName(lot.manifest_path || "manifest")}</span>
                           </div>
                         ) : (
                           <div className="h-11 px-2 rounded-md flex items-center gap-1.5 flex-shrink-0" style={{ border: "1px dashed var(--t-b1)", background: "var(--t-s1)", opacity: 0.6 }}
                             title="This manifest is still syncing to this device. It'll be draggable once it arrives.">
                             <RefreshCw size={12} className="animate-spin" style={{ color: "var(--t-tx4)" }} />
-                            <span className="text-[11px] truncate max-w-[90px]" style={{ color: "var(--t-tx4)" }}>Manifest syncing…</span>
+                            <span className="text-[12px] truncate max-w-[90px]" style={{ color: "var(--t-tx4)" }}>Manifest syncing…</span>
                           </div>
                         ))}
                       </div>

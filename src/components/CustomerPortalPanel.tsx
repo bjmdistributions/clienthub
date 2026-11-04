@@ -27,9 +27,9 @@ export async function openCustomerPortal(clientId: string) {
   }
 }
 
-const btn = "inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium transition-colors whitespace-nowrap disabled:opacity-50";
-const quiet = `${btn} border border-line bg-surface text-ink hover:bg-surface-2`;
-const primary = `${btn} bg-accent hover:bg-accent-hover text-on-accent`;
+const btn = "ui-btn ui-btn-sm whitespace-nowrap";
+const quiet = btn;
+const primary = `${btn} ui-btn-ink`;
 
 export default function CustomerPortalPanel({
   clientId, clientName, clientEmail, onChange, bare, card,
@@ -100,14 +100,14 @@ export default function CustomerPortalPanel({
   const showForm = (!hasAccess && !data.invite) || inviting;
 
   return (
-    <div className={card ? "bg-surface border border-line rounded-2xl px-5 py-4 min-w-0" : bare ? "" : "mt-4 pt-4 border-t border-line-2"}>
+    <div className={card ? "min-w-0 border-t border-line pt-4 pb-5" : bare ? "" : "mt-4 pt-4 border-t border-line-2"}>
       {!bare && (
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-2">
           {card
-            ? <div className="flex items-center gap-2 text-[13px] font-semibold text-ink"><DoorOpen size={14} className="text-muted" />Customer portal</div>
-            : <p className="text-[12.5px] font-medium text-muted">Customer portal</p>}
-          <button onClick={() => openCustomerPortal(clientId)} className="inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:underline">
-            View their portal <ExternalLink size={12} />
+            ? <div className="flex items-center gap-2 text-[14px] font-medium text-ink"><DoorOpen size={15} className="text-muted" />Customer portal</div>
+            : <p className="ui-label">Customer portal</p>}
+          <button onClick={() => openCustomerPortal(clientId)} className="ui-link">
+            View their portal <ExternalLink size={13} />
           </button>
         </div>
       )}
@@ -115,11 +115,11 @@ export default function CustomerPortalPanel({
       {/* R-504: each fact on its own line and the buttons on a row of their own. Beside three no-wrap buttons in the
           profile's narrow side column, a flex-1 line shrank to one word per line. */}
       {data.accounts.map((a) => (
-        <div key={a.id} className="py-2.5 border-b border-line-2 last:border-b-0">
+        <div key={a.id} className="py-2.5 shadow-[inset_0_1px_0_rgb(var(--c-line))] first:shadow-none">
           <div className="text-[13px] text-ink [overflow-wrap:anywhere]">
-            <span className="font-semibold">{a.email}</span> {a.status === "suspended" ? "is suspended and cannot sign in" : "can sign in"}
+            <span className="font-medium">{a.email}</span> {a.status === "suspended" ? "is suspended and cannot sign in" : "can sign in"}
           </div>
-          <div className="text-[11.5px] text-muted">
+          <div className="ui-note">
             {a.last_login_at ? `Last signed in ${portalDate(a.last_login_at)}` : "Has not signed in yet"}
           </div>
           <div className="mt-2"><button
@@ -139,14 +139,14 @@ export default function CustomerPortalPanel({
       {data.invite && !inviting && (
         <div className="py-2.5">
           <div className="text-[13px] text-ink [overflow-wrap:anywhere]">
-            Invite sent{data.invite.email ? <> to <span className="font-semibold">{data.invite.email}</span></> : ""}
+            Invite sent{data.invite.email ? <> to <span className="font-medium">{data.invite.email}</span></> : ""}
           </div>
-          <div className="text-[11.5px] text-muted">Not signed up yet. The link expires {portalDate(data.invite.expires_at)}.</div>
+          <div className="ui-note">Not signed up yet. The link expires {portalDate(data.invite.expires_at)}.</div>
           <div className="flex flex-wrap gap-2 mt-2">
           <button disabled={busy} onClick={() => copy(data.invite!.link)} className={quiet}><Copy size={13} />Copy link</button>
           <button disabled={busy} onClick={() => { setEmail(data.invite!.email || email); setInviting(true); }} className={quiet}><Mail size={13} />Send again</button>
           <button disabled={busy} onClick={() => { if (confirm("Revoke this invite link? It stops working straight away.")) run(() => api.customerPortalRevokeInvite(clientId)); }}
-            className={`${btn} text-danger-ink hover:bg-danger-bg`}>Revoke</button>
+            className={`${btn} ui-btn-danger`}>Revoke</button>
           </div>
           {linkShown && (
             <input
@@ -154,7 +154,7 @@ export default function CustomerPortalPanel({
               value={data.invite.link}
               aria-label="Invite link"
               onFocus={(e) => e.currentTarget.select()}
-              className="w-full mt-2 border border-line px-3 h-8 rounded-lg text-[12px] bg-surface-2 text-ink-2 font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+              className="w-full mt-2 border border-line-3 px-3 h-8 rounded-lg text-[12px] bg-transparent text-ink-2 font-mono focus:outline-none focus:border-ink"
             />
           )}
         </div>
@@ -163,24 +163,24 @@ export default function CustomerPortalPanel({
       {showForm ? (
         <div className="py-1">
           {!hasAccess && !data.invite && (
-            <p className="text-[12.5px] text-ink-2 mb-2">No login yet. Give {first} a login to see what they owe, what they have paid and what is complete.</p>
+            <p className="text-[13px] text-ink-2 mb-2">No login yet. Give {first} a login to see what they owe, what they have paid and what is complete.</p>
           )}
           <input
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="Email to send the invite to"
               type="email"
-            className="w-full border border-line px-3 h-8 rounded-lg text-[12.5px] bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+            className="w-full border border-line-3 px-3 h-8 rounded-lg text-[13px] bg-transparent text-ink focus:outline-none focus:border-ink"
           />
           <div className="flex flex-wrap items-center gap-2 mt-2">
             <button disabled={busy || !email.includes("@")} onClick={() => invite(true)} className={primary}><Mail size={13} />Email invite</button>
             <button disabled={busy} onClick={() => invite(false)} className={quiet}><Copy size={13} />Copy link</button>
-            {inviting && <button onClick={() => setInviting(false)} className={`${btn} text-muted hover:text-ink`}>Cancel</button>}
+            {inviting && <button onClick={() => setInviting(false)} className="ui-link muted">Cancel</button>}
           </div>
-          <p className="text-[11px] text-muted mt-1.5">The link works once and expires in 14 days. A new invite replaces any open one.</p>
+          <p className="ui-note mt-1.5">The link works once and expires in 14 days. A new invite replaces any open one.</p>
         </div>
       ) : hasAccess && !data.invite && (
-        <button onClick={() => setInviting(true)} className="mt-1 text-[12px] font-medium text-accent hover:underline">Invite another person</button>
+        <button onClick={() => setInviting(true)} className="ui-link mt-1">Invite another person</button>
       )}
     </div>
   );

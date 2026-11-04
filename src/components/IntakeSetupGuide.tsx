@@ -25,12 +25,9 @@ function StepNum({ n }: { n: number }) {
 // A stylized "browser card" wrapper for mock UI illustrations.
 function MockWindow({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-line bg-surface-2 overflow-hidden shadow-sm">
+    <div className="rounded-xl border border-line bg-surface-2 overflow-hidden">
       <div className="flex items-center gap-1.5 px-3 h-7 border-b border-line bg-surface">
-        <span className="w-2 h-2 rounded-full bg-line-3" />
-        <span className="w-2 h-2 rounded-full bg-line-3" />
-        <span className="w-2 h-2 rounded-full bg-line-3" />
-        <span className="ml-2 text-[10px] text-faint truncate">{title}</span>
+        <span className="text-[12px] text-faint truncate">{title}</span>
       </div>
       <div className="p-4">{children}</div>
     </div>
@@ -48,14 +45,14 @@ function FlowIllustration() {
             <div className="h-8 rounded-md border border-line bg-surface" />
             <div className="h-8 rounded-md border border-line bg-surface" />
             <div className="h-8 rounded-md border border-line bg-surface" />
-            <div className="h-8 w-24 rounded-md bg-accent flex items-center justify-center text-on-accent text-[11px] font-semibold">Submit</div>
+            <div className="h-8 w-24 rounded-md bg-accent flex items-center justify-center text-on-accent text-[12px] font-semibold">Submit</div>
           </div>
         </MockWindow>
       </div>
       <div className="flex sm:flex-col items-center justify-center text-accent">
         <ArrowRight size={22} className="hidden sm:block" />
         <ArrowDown size={22} className="sm:hidden" />
-        <span className="text-[10px] font-medium text-muted mt-1 hidden sm:block">POST</span>
+        <span className="text-[12px] font-medium text-muted mt-1 hidden sm:block">POST</span>
       </div>
       <div className="flex-1">
         <MockWindow title="Ecliptr · Notifications">
@@ -63,7 +60,7 @@ function FlowIllustration() {
             <span className="w-9 h-9 rounded-full bg-success-bg text-success-ink flex items-center justify-center text-[13px] font-bold">JD</span>
             <div className="min-w-0">
               <div className="text-[12px] font-semibold text-ink">New pending lead</div>
-              <div className="text-[10.5px] text-muted">jane@acme.com · from your website</div>
+              <div className="text-[12px] text-muted">jane@acme.com · from your website</div>
             </div>
             <span className="ml-auto"><StatusPill tone="accent">Pending</StatusPill></span>
           </div>
@@ -128,11 +125,11 @@ export function SetupGuide({ source, baseUrl, onBack }: {
       </div>
 
       {/* Method tabs */}
-      <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit mb-4">
+      <div className="flex flex-wrap items-center gap-1.5 mb-4" role="group" aria-label="Method">
         {TABS.map(([v, label, Icon]) => (
-          <button key={v} onClick={() => setTab(v)}
-            className={`inline-flex items-center gap-1.5 px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors ${tab === v ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-            <Icon size={13} /> {label}
+          <button key={v} type="button" onClick={() => setTab(v)} aria-pressed={tab === v}
+            className={`ui-opt inline-flex items-center gap-1.5 ${tab === v ? "on" : ""}`}>
+            <Icon size={14} /> {label}
           </button>
         ))}
       </div>
@@ -144,9 +141,9 @@ export function SetupGuide({ source, baseUrl, onBack }: {
               Paste it into your site's HTML. The <code className="text-ink-2 bg-surface-2 px-1 rounded">action</code> is already set to your intake URL: no JavaScript needed.
             </p>
             <div className="relative">
-              <pre className="bg-surface-2 border border-line rounded-lg p-3.5 pr-24 text-[11.5px] text-ink-2 overflow-x-auto font-mono leading-relaxed">{snippet}</pre>
+              <pre className="bg-surface-2 border border-line rounded-lg p-3.5 pr-24 text-[12px] text-ink-2 overflow-x-auto font-mono leading-relaxed">{snippet}</pre>
               <button onClick={() => copy(snippet)}
-                className="absolute top-2.5 right-2.5 inline-flex items-center gap-1 bg-accent hover:bg-accent-hover text-on-accent px-2.5 h-7 rounded-md text-[11px] font-medium">
+                className="absolute top-2.5 right-2.5 inline-flex items-center gap-1 bg-accent hover:bg-accent-hover text-on-accent px-2.5 h-7 rounded-md text-[12px] font-medium">
                 {copied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy</>}
               </button>
             </div>
@@ -156,20 +153,20 @@ export function SetupGuide({ source, baseUrl, onBack }: {
             <p className="text-[12px] text-muted mb-2">Ecliptr recognizes these <code className="text-ink-2 bg-surface-2 px-1 rounded">name</code> attributes:</p>
             <div className="flex flex-wrap gap-1.5">
               {["email", "name", "first_name", "last_name", "phone", "company", "notes"].map((f) => (
-                <span key={f} className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded">{f}</span>
+                <span key={f} className="text-[12px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded">{f}</span>
               ))}
             </div>
-            <p className="text-[11.5px] text-muted mt-2.5">Any other field names are preserved on the lead's record as extra details.</p>
+            <p className="text-[12px] text-muted mt-2.5">Any other field names are preserved on the lead's record as extra details.</p>
           </StepRow>
 
           <StepRow n={3} title="Optional niceties" last>
             <ul className="space-y-2 text-[12px] text-muted">
               <li className="flex gap-2">
-                <span className="text-accent font-mono text-[11px] mt-0.5">_redirect</span>
+                <span className="text-accent font-mono text-[12px] mt-0.5">_redirect</span>
                 <span>A hidden input: after submitting, the visitor is sent (303) to this thank-you URL.</span>
               </li>
               <li className="flex gap-2">
-                <span className="text-accent font-mono text-[11px] mt-0.5">website</span>
+                <span className="text-accent font-mono text-[12px] mt-0.5">website</span>
                 <span>A hidden honeypot. Real people leave it blank; bots that fill it are silently dropped. Keep it hidden.</span>
               </li>
             </ul>
@@ -191,8 +188,8 @@ export function SetupGuide({ source, baseUrl, onBack }: {
 
           <StepRow n={1} title="Set the form's POST target">
             <div className="flex items-center gap-2 min-w-0">
-              <code className="flex-1 bg-surface-2 border border-line rounded-md h-8 px-2.5 text-[11.5px] text-ink-2 truncate flex items-center font-mono">{url}</code>
-              <button onClick={() => copy(url)} className="flex-shrink-0 inline-flex items-center gap-1 border border-line px-2.5 h-8 rounded-md text-[11.5px] text-ink-2 hover:bg-surface-2 transition-colors">
+              <code className="flex-1 bg-surface-2 border border-line rounded-md h-8 px-2.5 text-[12px] text-ink-2 truncate flex items-center font-mono">{url}</code>
+              <button onClick={() => copy(url)} className="flex-shrink-0 inline-flex items-center gap-1 border border-line px-2.5 h-8 rounded-md text-[12px] text-ink-2 hover:bg-surface-2 transition-colors">
                 {copied ? <><Check size={12} className="text-success-ink" /> Copied</> : <><Copy size={12} /> Copy</>}
               </button>
             </div>
@@ -252,19 +249,19 @@ export function SetupGuide({ source, baseUrl, onBack }: {
         </p>
         <div className="space-y-2.5">
           <div className="flex items-start gap-2.5">
-            <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">buyer</span>
+            <span className="text-[12px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">buyer</span>
             <span className="text-[12px] text-muted leading-relaxed">A pending client in <span className="text-ink-2 font-medium">Notifications</span> (the default).</span>
           </div>
           <div className="flex items-start gap-2.5">
-            <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">supplier</span>
+            <span className="text-[12px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">supplier</span>
             <span className="text-[12px] text-muted leading-relaxed">An acknowledge-only <span className="text-ink-2 font-medium">supplier lead</span> notification. No client is created.</span>
           </div>
           <div className="flex items-start gap-2.5">
-            <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">call</span>
+            <span className="text-[12px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">call</span>
             <span className="text-[12px] text-muted leading-relaxed">A <span className="text-ink-2 font-medium">booked call</span> request, even when the contact matches an existing client.</span>
           </div>
         </div>
-        <p className="text-[11.5px] text-muted mt-3 leading-relaxed">
+        <p className="text-[12px] text-muted mt-3 leading-relaxed">
           Older forms that send free-text <code className="text-ink-2 bg-surface-2 px-1 rounded">inquiry_type</code> instead still work: a value containing "Selling a load" is read as supplier, "call request" is read as call.
         </p>
       </div>
@@ -275,9 +272,9 @@ export function SetupGuide({ source, baseUrl, onBack }: {
         <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
           If you run an Ecliptr storefront, track WhatsApp button clicks on your lot pages by posting to your storefront feed URL:
         </p>
-        <pre className="bg-surface-2 border border-line rounded-lg p-3 text-[11.5px] text-ink-2 overflow-x-auto font-mono leading-relaxed">{`POST <your storefront feed URL>/lead-click
+        <pre className="bg-surface-2 border border-line rounded-lg p-3 text-[12px] text-ink-2 overflow-x-auto font-mono leading-relaxed">{`POST <your storefront feed URL>/lead-click
 { "lot_id": "<lot id, optional>", "kind": "whatsapp" }`}</pre>
-        <p className="text-[11.5px] text-muted mt-2.5 leading-relaxed">
+        <p className="text-[12px] text-muted mt-2.5 leading-relaxed">
           204 on success, 404 on an unknown token, 429 past 60 clicks/hour/IP. Clicks show on the dashboard as a count, not in the notification feed.
         </p>
       </div>

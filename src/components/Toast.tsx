@@ -5,7 +5,7 @@ import { Check, AlertCircle, PackageCheck } from "lucide-react";
 // call toast("Exported 12 deals") from anywhere; ToastHost (mounted once in
 // App) renders the stack bottom-right in the same style the views already use.
 // "delivered" is R-318: a freight delivery, the one toast that announces something the
-// world did rather than something the user just clicked — so it is green, bold, and stays
+// world did rather than something the user just clicked — so it is green and stays
 // up long enough to be read from across the room.
 export type ToastKind = "success" | "error" | "delivered";
 
@@ -35,10 +35,8 @@ export function ToastHost() {
     <div className="fixed bottom-5 right-5 z-[90] flex flex-col items-end gap-2 pointer-events-none">
       {toasts.map((t) => (
         <div key={t.id}
-          className={`px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] flex items-center gap-2 animate-fade-in max-w-[380px] pointer-events-auto ${
-            t.kind === "delivered"
-              ? "bg-success-bg text-success-ink border border-success/30 font-semibold"
-              : "bg-ink text-surface"}`}>
+          className={`px-4 py-2.5 rounded-xl shadow-md bg-surface text-[13px] font-medium flex items-center gap-2 animate-fade-in max-w-[380px] pointer-events-auto ${
+            t.kind === "delivered" ? "text-success-ink" : "text-ink"}`}>
           {t.kind === "error"
             ? <AlertCircle size={13} className="text-danger-ink flex-shrink-0" />
             : t.kind === "delivered"

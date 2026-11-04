@@ -1,3 +1,4 @@
+import { Kpi } from "./ui";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Pencil, Plus, X } from "lucide-react";
 import {
@@ -16,16 +17,10 @@ import { fmtDay } from "./LogisticsBookingForm";
 // and asks the server to change anything.
 
 // A field with its own width takes `field`; `inp` fills its cell.
-const field =
-  "border border-line px-3 h-9 rounded-lg text-[13px] bg-surface text-ink placeholder-muted " +
-  "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors disabled:opacity-60";
+const field = "field-input h-9 text-[13px]";
 const inp = `${field} w-full`;
-const btn =
-  "inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-[13px] font-medium border border-line text-ink-2 " +
-  "hover:bg-surface-2 disabled:opacity-50 transition-colors whitespace-nowrap";
-const btnPrimary =
-  "inline-flex items-center gap-1.5 h-9 px-4 rounded-lg text-[13px] font-medium bg-accent hover:bg-accent-hover " +
-  "text-on-accent disabled:opacity-50 transition-colors whitespace-nowrap";
+const btn = "ui-btn";
+const btnPrimary = "ui-btn ui-btn-ink";
 
 const METHODS = ["Zelle", "ACH", "Check", "Cash", "Other"];
 const KIND_LABEL: Record<PayeeKind, string> = { rep: "Rep", owner: "Owner", business: "Business", logistics: "Logistics" };
@@ -101,9 +96,9 @@ export function DealPayoutsBox({ dealFlowId, refreshKey, fallback }: { dealFlowI
   const p = view.payout;
   const lines = p ? p.lines.filter((l) => !(l.kind === "logistics" && near0(l.amount) && !l.pending)) : [];
   return (
-    <div className="rounded-lg border border-line bg-surface px-4 py-3 space-y-3">
+    <div className="border-t border-line pt-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-[12px] font-medium text-muted">Payouts</div>
+        <div className="text-[14px] font-medium text-ink">Payouts</div>
         {view.projected && <StatusPill tone="neutral" title="The deal has not completed, so nothing is booked yet.">Projected</StatusPill>}
       </div>
       {view.projected && (
@@ -137,7 +132,7 @@ export function DealPayoutsBox({ dealFlowId, refreshKey, fallback }: { dealFlowI
                   {l.typed && !isTyping && (
                     <div className="text-[12px] text-muted mt-0.5">
                       The rule says {fmtAmount(l.computed)}.{" "}
-                      <button type="button" disabled={busy} onClick={() => saveTyped(l, null)} className="text-accent font-medium hover:underline disabled:opacity-50">Use the rule</button>
+                      <button type="button" disabled={busy} onClick={() => saveTyped(l, null)} className="text-ink font-medium hover:underline disabled:opacity-50">Use the rule</button>
                     </div>
                   )}
                 </div>
@@ -151,13 +146,13 @@ export function DealPayoutsBox({ dealFlowId, refreshKey, fallback }: { dealFlowI
                   </div>
                 ) : (
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className={`text-[14px] font-semibold tabular-nums ${l.amount < -0.005 ? "text-danger-ink" : "text-ink"}`}>
+                    <span className={`text-[14px] font-medium tabular-nums ${l.amount < -0.005 ? "text-danger-ink" : "text-ink"}`}>
                       {l.pending ? "Pending" : fmtAmount(l.amount)}
                     </span>
                     {l.kind !== "logistics" && (
                       <button type="button" disabled={busy} onClick={() => setTyping({ key, amount: l.amount })}
-                        className="h-7 w-7 flex items-center justify-center rounded-md text-muted hover:text-ink hover:bg-surface-2 disabled:opacity-50"
-                        title="Type a different amount" aria-label={`Type a different amount for ${l.name}`}><Pencil size={13} /></button>
+                        className="ui-ib disabled:opacity-50"
+                        title="Type a different amount" aria-label={`Type a different amount for ${l.name}`}><Pencil size={14} /></button>
                     )}
                   </div>
                 )}
@@ -167,7 +162,7 @@ export function DealPayoutsBox({ dealFlowId, refreshKey, fallback }: { dealFlowI
           {p.unallocated > 0.005 && (
             <div className="py-2.5 flex items-center justify-between gap-3">
               <span className="text-[12.5px] text-warning-ink">Not given to anyone: no profit split is set up.</span>
-              <span className="text-[14px] font-semibold tabular-nums text-warning-ink">{fmtAmount(p.unallocated)}</span>
+              <span className="text-[14px] font-medium tabular-nums text-warning-ink">{fmtAmount(p.unallocated)}</span>
             </div>
           )}
           <div className="pt-2.5 flex items-center justify-between gap-3 text-[12.5px]">
@@ -260,7 +255,7 @@ function RepsField({ view, busy, editing, setEditing, onSave }: {
       <div className="flex items-center gap-2 flex-wrap">
         {people !== null && people.some((x) => !rows.some((r) => r.rep_id === x.staff_id)) && (
           <button type="button" onClick={rows.length === 0 ? () => setRows([{ rep_id: people[0].staff_id, share_pct: 100 }]) : add} className={btn}>
-            <Plus size={13} /> {rows.length === 0 ? "Add a rep" : "Add another rep"}
+            <Plus size={14} /> {rows.length === 0 ? "Add a rep" : "Add another rep"}
           </button>
         )}
         <div className="ml-auto flex items-center gap-2">
@@ -298,9 +293,9 @@ export function PayoutsLedgerPanel() {
   }
   const people = data.people;
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {data.ledger_since && (
-        <div className="text-[12.5px] text-muted">
+        <div className="ui-note">
           The ledger started on {fmtDay(data.ledger_since)}. Deals from before then were worked out afterwards, at the rates in force then.
         </div>
       )}
@@ -309,32 +304,41 @@ export function PayoutsLedgerPanel() {
           {data.problems.length === 1 ? "One deal" : `${data.problems.length} deals`} could not be worked out: {data.problems.map((p) => p.error).filter(Boolean).slice(0, 2).join(" ")}
         </div>
       )}
+      {people.length > 0 && (
+        <div className="grid grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_1px_minmax(0,1fr)] max-w-[720px]">
+          <Kpi label="Earned" value={people.reduce((n, p) => n + p.earned, 0)} format={fmtAmount} />
+          <div className="vsep" />
+          <Kpi label="Paid" value={people.reduce((n, p) => n + p.paid, 0)} format={fmtAmount} className="text-success-ink" />
+          <div className="vsep" />
+          <Kpi label="Owed" value={people.reduce((n, p) => n + p.balance, 0)} format={fmtAmount} />
+        </div>
+      )}
       {people.length === 0 ? (
         <div className="text-[12.5px] text-muted py-4 text-center">No one has earned anything yet. Lines appear here once a deal completes.</div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] text-[13px]">
+          <table className="ui-table ui-table-click min-w-[560px]">
             <thead>
-              <tr className="border-b border-line">
+              <tr>
                 {["Name", "Deals", "Earned", "Paid", "Owed", ""].map((h, i) => (
-                  <th key={i} className={`px-3 py-2 text-[12px] font-medium text-muted ${i >= 2 ? "text-right" : "text-left"}`}>{h}</th>
+                  <th key={i} className={i >= 2 ? "r" : ""}>{h}</th>
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-line">
+            <tbody>
               {people.map((p) => (
-                <tr key={`${p.kind}:${p.payee_id}`} className="hover:bg-surface-2 cursor-pointer" onClick={() => setOpen({ kind: p.kind, id: p.payee_id })}>
-                  <td className="px-3 py-2.5">
+                <tr key={`${p.kind}:${p.payee_id}`} onClick={() => setOpen({ kind: p.kind, id: p.payee_id })}>
+                  <td>
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-ink">{p.name}</span>
                       {p.name !== KIND_LABEL[p.kind] && <StatusPill tone="neutral">{KIND_LABEL[p.kind]}</StatusPill>}
                     </div>
                   </td>
-                  <td className="px-3 py-2.5 text-muted tabular-nums">{p.deals}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-ink-2">{fmtAmount(p.earned)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-ink-2">{fmtAmount(p.paid)}</td>
-                  <td className={`px-3 py-2.5 text-right tabular-nums font-semibold ${p.balance < -0.005 ? "text-danger-ink" : "text-ink"}`}>{fmtAmount(p.balance)}</td>
-                  <td className="px-3 py-2.5 text-right text-muted"><ChevronRight size={15} className="inline" /></td>
+                  <td className="text-muted tabular-nums">{p.deals}</td>
+                  <td className="r text-muted">{fmtAmount(p.earned)}</td>
+                  <td className="r text-muted">{fmtAmount(p.paid)}</td>
+                  <td className={`r font-medium ${p.balance < -0.005 ? "text-danger-ink" : "text-ink"}`}>{fmtAmount(p.balance)}</td>
+                  <td className="r text-faint"><ChevronRight size={16} className="inline" /></td>
                 </tr>
               ))}
             </tbody>
@@ -408,11 +412,11 @@ function PersonLedger({ kind, id, since, onBack }: { kind: PayeeKind; id: string
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-[15px] font-semibold text-ink">{d.name || "Unknown"}</span>
+            <span className="text-[16px] font-medium text-ink">{d.name || "Unknown"}</span>
             {d.name !== KIND_LABEL[d.kind] && <StatusPill tone="neutral">{KIND_LABEL[d.kind]}</StatusPill>}
           </div>
           <div className="flex items-baseline gap-3 mt-1.5 flex-wrap">
-            <span className={`text-[24px] font-bold tabular-nums leading-none ${d.balance < -0.005 ? "text-danger-ink" : "text-ink"}`}>{fmtAmount(Math.abs(d.balance))}</span>
+            <span className={`ui-fig ${d.balance < -0.005 ? "text-danger-ink" : "text-ink"}`}>{fmtAmount(Math.abs(d.balance))}</span>
             <span className="text-[13px] text-ink-2">{d.balance < -0.005 ? "paid ahead" : "owed"}</span>
           </div>
           <div className="text-[12.5px] text-muted mt-1.5">
@@ -425,7 +429,7 @@ function PersonLedger({ kind, id, since, onBack }: { kind: PayeeKind; id: string
       </div>
 
       {d.before_ledger > 0.005 && (
-        <div className="rounded-lg border border-line bg-surface-2 px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+        <div className="border-y border-line py-3 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-[12.5px] text-ink-2 min-w-0">
             {fmtAmount(d.before_ledger)} of this was earned before the ledger started{since ? ` on ${fmtDay(since)}` : ""}. If it was paid outside the app, count it as paid.
           </div>
@@ -433,8 +437,9 @@ function PersonLedger({ kind, id, since, onBack }: { kind: PayeeKind; id: string
         </div>
       )}
 
-      <div className="rounded-lg border border-line px-4 py-3 space-y-3">
-        <div className="text-[13px] font-medium text-ink">Record a payment</div>
+      <div className="space-y-3">
+        <div className="hsep" />
+        <div className="text-[14px] font-medium text-ink">Record a payment</div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
           <div>
             <label className="block text-[12px] font-medium text-muted mb-1.5">Amount</label>
@@ -462,7 +467,8 @@ function PersonLedger({ kind, id, since, onBack }: { kind: PayeeKind; id: string
       </div>
 
       <div>
-        <div className="text-[13px] font-medium text-ink mb-2">Payments</div>
+        <div className="hsep mb-4" />
+        <div className="text-[14px] font-medium text-ink mb-2">Payments</div>
         {d.payments.length === 0 ? (
           <div className="text-[12.5px] text-muted">None recorded.</div>
         ) : (
@@ -496,20 +502,21 @@ function PersonLedger({ kind, id, since, onBack }: { kind: PayeeKind; id: string
       </div>
 
       <div>
-        <div className="text-[13px] font-medium text-ink mb-2">Deals</div>
+        <div className="hsep mb-4" />
+        <div className="text-[14px] font-medium text-ink mb-2">Deals</div>
         {d.lines.length === 0 ? (
           <div className="text-[12.5px] text-muted">Nothing earned yet.</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[620px] text-[13px]">
+            <table className="ui-table ui-table-sm min-w-[620px]">
               <thead>
-                <tr className="border-b border-line">
+                <tr>
                   {["Day", "Deal", "How", "Amount"].map((h, i) => (
-                    <th key={h} className={`px-3 py-2 text-[12px] font-medium text-muted ${i === 3 ? "text-right" : "text-left"}`}>{h}</th>
+                    <th key={h} className={i === 3 ? "r" : ""}>{h}</th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-line">
+              <tbody>
                 {[...d.lines].reverse().map((l) => {
                   const r = REASON[l.reason] || REASON.adjusted;
                   const how = l.reason === "adjusted"
@@ -517,17 +524,17 @@ function PersonLedger({ kind, id, since, onBack }: { kind: PayeeKind; id: string
                     : [l.rule, l.share_pct != null && l.share_pct < 99.995 ? `${l.share_pct}% share` : "", l.typed ? `typed, the rule said ${fmtAmount(l.computed ?? 0)}` : ""].filter(Boolean).join(", ");
                   return (
                     <tr key={l.id}>
-                      <td className="px-3 py-2.5 text-ink-2 whitespace-nowrap">{fmtDay(l.on_day)}</td>
-                      <td className="px-3 py-2.5">
+                      <td className="text-muted whitespace-nowrap">{fmtDay(l.on_day)}</td>
+                      <td>
                         <div className="text-ink">{l.invoice_number || "Deal"}{l.client ? `, ${l.client}` : ""}</div>
                       </td>
-                      <td className="px-3 py-2.5">
+                      <td>
                         <div className="flex items-center gap-2 flex-wrap">
                           <StatusPill tone={l.reason === "adjusted" ? "warning" : "neutral"} title={r.title}>{r.label}</StatusPill>
-                          {how && <span className="text-[12px] text-muted">{how}</span>}
+                          {how && <span className="ui-note">{how}</span>}
                         </div>
                       </td>
-                      <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${l.amount < -0.005 ? "text-danger-ink" : "text-ink"}`}>{fmtAmount(l.amount)}</td>
+                      <td className={`r font-medium ${l.amount < -0.005 ? "text-danger-ink" : "text-ink"}`}>{fmtAmount(l.amount)}</td>
                     </tr>
                   );
                 })}

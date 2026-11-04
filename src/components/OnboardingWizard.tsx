@@ -111,7 +111,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
   const steps = ["Welcome", "Business", "Email", "Import", "Done"];
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
       <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
         <div className="px-6 pt-6 pb-4 border-b border-line">
           <div className="flex items-center justify-center gap-2 mb-4">
@@ -125,10 +125,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
         <div className="px-6 py-5">
           {step === 0 && (
             <div className="text-center py-8">
-              <div className="w-16 h-16 rounded-2xl mx-auto mb-5 flex items-center justify-center"
-                style={{ background: "radial-gradient(circle at 50% 42%, #12162A 0%, #070912 68%, #030305 100%)", boxShadow: "inset 0 0 0 1px rgba(150,190,255,0.12)" }}>
-                <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-9 w-9" />
-              </div>
+              <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-16 w-16 mx-auto mb-5" />
               <h3 className="text-[20px] font-bold text-ink mb-2">Welcome to Ecliptr</h3>
               <p className="text-[13px] text-muted max-w-[320px] mx-auto leading-relaxed mb-2">
                 Your clients, invoices, deal flow, and newsletters: all in one place.
@@ -256,9 +253,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
           {step === 4 && (
             <div className="text-center py-6">
-              <div className="w-12 h-12 rounded-full bg-success-bg flex items-center justify-center mx-auto mb-4">
-                <Check size={20} className="text-success-ink" />
-              </div>
+              <Check size={28} className="text-success-ink mx-auto mb-4" />
               <h3 className="text-[16px] font-bold text-ink mb-2">You're all set!</h3>
               <p className="text-[13px] text-muted mb-4">Ecliptr is ready.</p>
               <div className="text-[12px] text-muted space-y-1">

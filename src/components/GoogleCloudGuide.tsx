@@ -8,10 +8,7 @@ function MockWindow({ title, children }: { title: string; children: React.ReactN
   return (
     <div className="rounded-lg border border-line bg-surface-2 overflow-hidden">
       <div className="flex items-center gap-1.5 px-3 h-6 border-b border-line bg-surface">
-        <span className="w-1.5 h-1.5 rounded-full bg-line-3" />
-        <span className="w-1.5 h-1.5 rounded-full bg-line-3" />
-        <span className="w-1.5 h-1.5 rounded-full bg-line-3" />
-        <span className="ml-1.5 text-[9px] text-faint truncate">{title}</span>
+        <span className="text-[12px] text-faint truncate">{title}</span>
       </div>
       <div className="p-3">{children}</div>
     </div>
@@ -66,8 +63,8 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
         <Step n={1} icon={Cloud} title="Create a project"
           mock={
             <MockWindow title="console.cloud.google.com">
-              <div className="text-[9px] text-faint mb-1.5">Select a project ▾</div>
-              <div className="h-6 rounded border border-dashed border-line-3 flex items-center justify-center text-[10px] text-accent font-medium">+ New Project</div>
+              <div className="text-[12px] text-faint mb-1.5">Select a project ▾</div>
+              <div className="h-6 rounded border border-dashed border-line-3 flex items-center justify-center text-[12px] text-accent font-medium">+ New Project</div>
             </MockWindow>
           }>
           At the top of the console, open the project picker and create a new project (e.g. "Ecliptr Mail"). Select it once created.
@@ -76,8 +73,8 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
         <Step n={2} icon={ListChecks} title="Enable the Gmail API"
           mock={
             <MockWindow title="APIs &amp; Services · Library">
-              <div className="h-5 rounded bg-surface border border-line mb-1.5 flex items-center gap-1 px-1.5 text-[9px] text-faint"><Search size={9} className="flex-shrink-0" /> Gmail API</div>
-              <div className="h-6 rounded bg-accent/90 flex items-center justify-center text-[10px] text-on-accent font-semibold">Enable</div>
+              <div className="h-5 rounded bg-surface border border-line mb-1.5 flex items-center gap-1 px-1.5 text-[12px] text-faint"><Search size={9} className="flex-shrink-0" /> Gmail API</div>
+              <div className="h-6 rounded bg-accent/90 flex items-center justify-center text-[12px] text-on-accent font-semibold">Enable</div>
             </MockWindow>
           }>
           Go to <span className="text-ink-2">APIs &amp; Services → Library</span>, search <span className="text-ink-2 font-medium">Gmail API</span>, and click <span className="text-ink-2">Enable</span>.
@@ -86,9 +83,9 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
         <Step n={3} icon={ShieldCheck} title="Configure the consent screen"
           mock={
             <MockWindow title="OAuth consent screen">
-              <div className="flex items-center gap-1.5 mb-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-accent" /><span className="text-[9px] text-ink-2">External</span></div>
-              <div className="text-[9px] text-faint mb-1">Test users</div>
-              <div className="h-5 rounded bg-surface border border-line flex items-center px-1.5 text-[9px] text-success-ink">+ you@gmail.com</div>
+              <div className="text-[12px] text-ink-2 mb-1.5">External</div>
+              <div className="text-[12px] text-faint mb-1">Test users</div>
+              <div className="h-5 rounded bg-surface border border-line flex items-center px-1.5 text-[12px] text-success-ink">+ you@gmail.com</div>
             </MockWindow>
           }>
           Under <span className="text-ink-2">OAuth consent screen</span>, choose <span className="text-ink-2 font-medium">External</span>. On the "Test users" step, <span className="text-ink-2 font-medium">add your own Google address</span>. This keeps the app in testing mode (no Google review needed) and lets you authorize it.
@@ -97,9 +94,9 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
         <Step n={4} icon={KeyRound} title="Create OAuth credentials"
           mock={
             <MockWindow title="Credentials · OAuth client ID">
-              <div className="text-[9px] text-faint mb-1">Application type</div>
-              <div className="h-6 rounded border border-accent bg-accent/10 flex items-center px-2 text-[10px] text-accent font-semibold">Desktop app ▾</div>
-              <div className="h-5 mt-1.5 rounded bg-accent/90 flex items-center justify-center text-[9px] text-on-accent font-semibold">Create</div>
+              <div className="text-[12px] text-faint mb-1">Application type</div>
+              <div className="h-6 rounded border border-accent bg-accent/10 flex items-center px-2 text-[12px] text-accent font-semibold">Desktop app ▾</div>
+              <div className="h-5 mt-1.5 rounded bg-accent/90 flex items-center justify-center text-[12px] text-on-accent font-semibold">Create</div>
             </MockWindow>
           }>
           Go to <span className="text-ink-2">Credentials → Create credentials → OAuth client ID</span>. For <span className="text-ink-2">Application type</span> pick <span className="text-ink-2 font-medium">Desktop app</span> (important: this enables the local loopback flow Ecliptr uses).
@@ -108,9 +105,9 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
         <Step n={5} icon={Copy} title="Copy the ID + secret into Ecliptr" last
           mock={
             <MockWindow title="OAuth client created">
-              <div className="text-[9px] text-faint">Client ID</div>
+              <div className="text-[12px] text-faint">Client ID</div>
               <div className="h-4 rounded bg-surface border border-line mb-1.5" />
-              <div className="text-[9px] text-faint">Client secret</div>
+              <div className="text-[12px] text-faint">Client secret</div>
               <div className="h-4 rounded bg-surface border border-line" />
             </MockWindow>
           }>
@@ -118,7 +115,7 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
         </Step>
       </div>
 
-      <div className="mt-5 flex items-start gap-2 text-[11.5px] text-muted bg-surface-2/60 border border-line-2 rounded-lg px-3.5 py-2.5 leading-relaxed">
+      <div className="mt-5 flex items-start gap-2 text-[12px] text-muted bg-surface-2/60 border border-line-2 rounded-lg px-3.5 py-2.5 leading-relaxed">
         <ShieldCheck size={14} className="text-success-ink flex-shrink-0 mt-0.5" />
         <span>Ecliptr stores the ID, secret, and Google token in your OS keychain: never your password, never synced to the cloud. You can revoke access anytime from your Google account's security settings.</span>
       </div>

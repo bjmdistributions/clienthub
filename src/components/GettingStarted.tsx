@@ -17,22 +17,17 @@ export default function GettingStarted({ onDone }: { onDone: () => void }) {
   const finish = () => { try { localStorage.setItem("ec_welcome_desktop_v1", "1"); } catch { /* ignore */ } onDone(); };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
       <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
         <div className="flex justify-end px-4 pt-4">
           <button onClick={finish} className="text-muted hover:text-ink transition-colors text-[12px] flex items-center gap-1"><X size={14} /> Skip</button>
         </div>
         <div className="px-8 pt-1 text-center">
           {Icon ? (
-            <div className="mx-auto mb-5 w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "var(--accent-600)" }}>
-              <Icon size={26} className="text-on-accent" />
-            </div>
+            <Icon size={28} className="mx-auto mb-5 text-ink" />
           ) : (
             // Welcome step leads with THE app mark (same asset as auth/sidebar).
-            <div className="mx-auto mb-5 w-14 h-14 rounded-2xl flex items-center justify-center"
-              style={{ background: "radial-gradient(circle at 50% 42%, #12162A 0%, #070912 68%, #030305 100%)", boxShadow: "inset 0 0 0 1px rgba(150,190,255,0.12)" }}>
-              <img src="/ecliptr-mark.svg" alt="Ecliptr" className="w-8 h-8" />
-            </div>
+            <img src="/ecliptr-mark.svg" alt="Ecliptr" className="mx-auto mb-5 w-14 h-14" />
           )}
           <h2 className="text-[18px] font-semibold text-ink mb-2 tracking-tight">{step.title}</h2>
           <p className="text-[13.5px] text-muted leading-relaxed">{step.body}</p>
@@ -48,7 +43,7 @@ export default function GettingStarted({ onDone }: { onDone: () => void }) {
             <ArrowLeft size={15} /> Back
           </button>
           <button onClick={() => (last ? finish() : setI((n) => n + 1))}
-            className="flex items-center gap-1.5 px-5 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold hover:opacity-90 transition-opacity">
+            className="ui-btn ui-btn-ink gap-1.5 !px-5">
             {last ? "Get started" : "Next"} {!last && <ArrowRight size={15} />}
           </button>
         </div>

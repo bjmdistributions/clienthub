@@ -295,7 +295,7 @@ function BuyView({ d, unit, numbers, onEdit, onChanged, onReload, onRemoved, onA
   const live = d.orders.filter((o) => !o.undone);
   const back = d.orders.filter((o) => o.undone);
   const canRemove = live.length === 0 && d.payments.length === 0 && d.truck_cost.live === 0;
-  const m = (n: number) => (numbers ? fmtAmount(n) : "–");
+  const m = (n: number) => (numbers ? fmtAmount(n) : "-");
   const steps = buySteps(d, numbers);
   const goTo = (k: StepKey) => document.getElementById(SECTION[k])?.scrollIntoView({ behavior: "smooth", block: "start" });
 
@@ -464,7 +464,7 @@ function OrderRow({ o, d, unit, numbers, busy, run }: {
   return (
     <tr className="border-b border-line last:border-0">
       <td className="px-4 py-2.5 whitespace-nowrap text-ink">{o.number || "No number"}{o.voided ? <span className="text-muted"> (voided)</span> : null}</td>
-      <td className="px-3 py-2.5 text-ink-2 max-w-[220px] truncate">{o.client || "–"}</td>
+      <td className="px-3 py-2.5 text-ink-2 max-w-[220px] truncate">{o.client || "-"}</td>
       <td className="px-3 py-2.5 text-right tabular-nums">{n0(o.count)}</td>
       {numbers && (
         <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">

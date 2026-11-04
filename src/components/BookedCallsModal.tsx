@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { api, CallRequest, OrUnavailable, isUnavailable } from "../lib/api";
 import { X } from "lucide-react";
 import StatusPill from "./StatusPill";
+import { Button } from "./ui";
 
 function fmtWhen(iso: string): string {
   const d = new Date(iso);
@@ -37,18 +38,18 @@ function ConsequenceStep({ kind, call, reason, setReason, onCancel, onNext }: {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
       <div className="bg-surface border border-line rounded-2xl p-5 max-w-sm w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-[15px] font-semibold text-ink">{title}</h3>
+        <h3 className="text-[16px] font-medium text-ink">{title}</h3>
         <p className="text-[13px] text-muted mt-1.5 leading-relaxed">{text}</p>
         {kind === "cancel" && (
           <div className="mt-3">
             <label className="block text-[12px] font-medium text-muted mb-1">Reason (optional)</label>
             <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2}
-              className="w-full bg-surface-2 border border-line rounded-lg px-2.5 py-2 text-[13px] text-ink resize-none focus:outline-none focus:ring-2 focus:ring-accent/40" />
+              className="w-full bg-transparent border border-line-3 rounded-lg px-2.5 py-2 text-[13px] text-ink resize-none focus:outline-none focus:border-ink" />
           </div>
         )}
         <div className="mt-4 flex justify-end gap-2">
-          <button onClick={onCancel} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Never mind</button>
-          <button onClick={onNext} className="bg-danger hover:opacity-90 text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Continue</button>
+          <Button onClick={onCancel}>Never mind</Button>
+          <Button variant="danger" onClick={onNext}>Continue</Button>
         </div>
       </div>
     </div>
@@ -68,8 +69,8 @@ function TypedConfirmStep({ kind, call, rescheduleAt, setRescheduleAt, onBack, o
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onBack}>
       <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="px-5 pt-5 pb-3">
-          <h2 className="text-[16px] font-semibold text-ink">{label}</h2>
-          <p className="text-[12px] text-muted mt-0.5">To confirm, type <span className="font-semibold text-ink">{call.name}</span> below.</p>
+          <h2 className="text-[16px] font-medium text-ink">{label}</h2>
+          <p className="text-[12px] text-muted mt-0.5">To confirm, type <span className="font-medium text-ink">{call.name}</span> below.</p>
         </div>
         <div className="px-5 pb-2 space-y-3">
           <input
@@ -77,28 +78,25 @@ function TypedConfirmStep({ kind, call, rescheduleAt, setRescheduleAt, onBack, o
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             placeholder={call.name}
-            className="w-full bg-surface-2 border border-line rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-danger/40 focus:border-danger transition-colors"
+            className="w-full bg-transparent border border-line-3 rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:border-ink"
           />
           {kind === "reschedule" && (
             <div>
               <label className="block text-[12px] font-medium text-muted mb-1">New date and time</label>
               <input type="datetime-local" value={rescheduleAt} onChange={(e) => setRescheduleAt(e.target.value)}
-                className="w-full bg-surface-2 border border-line rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" />
+                className="w-full bg-transparent border border-line-3 rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:border-ink" />
             </div>
           )}
         </div>
-        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-line mt-2">
-          <button onClick={onBack} disabled={busy}
-            className="px-4 h-9 rounded-lg border border-line text-ink-2 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors">
-            Back
-          </button>
-          <button
+        <div className="flex items-center justify-end gap-2 px-5 py-4 mt-2">
+          <Button onClick={onBack} disabled={busy}>Back</Button>
+          <Button
+            variant="danger"
             onClick={onConfirm}
             disabled={!match || busy || (kind === "reschedule" && !rescheduleAt)}
-            className="px-4 h-9 rounded-lg bg-danger text-white text-[13px] font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
           >
-            {busy ? "Working…" : label}
-          </button>
+            {busy ? "Working..." : label}
+          </Button>
         </div>
       </div>
     </div>
@@ -125,39 +123,35 @@ function PendingCallRow({ call, onAccept, onDecline }: {
     <div className="px-5 py-3.5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[13.5px] font-semibold text-ink truncate">{call.name}{call.company ? ` · ${call.company}` : ""}</div>
-          <div className="text-[11.5px] text-muted mt-0.5 truncate">{[call.phone, call.email].filter(Boolean).join(" · ")}</div>
-          {call.best_time && <div className="text-[11px] text-faint mt-1">Best time: {call.best_time}</div>}
+          <div className="text-[13.5px] font-medium text-ink truncate">{call.name}{call.company ? ` · ${call.company}` : ""}</div>
+          <div className="text-[12px] text-muted mt-0.5 truncate">{[call.phone, call.email].filter(Boolean).join(" · ")}</div>
+          {call.best_time && <div className="text-[12px] text-faint mt-1">Best time: {call.best_time}</div>}
           {call.questions && <div className="text-[12px] text-ink-2 mt-1.5 whitespace-pre-wrap">{call.questions}</div>}
         </div>
         {!accepting && (
           <div className="flex gap-1.5 flex-shrink-0">
-            <button onClick={() => setAccepting(true)}
-              className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Accept</button>
-            <button onClick={() => onDecline(call.id)}
-              className="border border-line text-muted hover:text-danger-ink hover:bg-danger-bg px-3 h-8 rounded-lg text-[12px] font-medium">Decline</button>
+            <Button variant="ink" size="sm" onClick={() => setAccepting(true)}>Accept</Button>
+            <Button size="sm" onClick={() => onDecline(call.id)}>Decline</Button>
           </div>
         )}
       </div>
 
       {accepting && (
-        <div className="mt-3 bg-surface-2 border border-line rounded-xl p-3.5 space-y-3">
+        <div className="mt-3 bg-surface-2 rounded-xl p-3.5 space-y-3">
           <div>
             <label className="block text-[12px] font-medium text-muted mb-1">Date and time</label>
             <input type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)}
-              className="w-full bg-surface border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+              className="w-full bg-transparent border border-line-3 rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none " />
           </div>
           <label className="flex items-center gap-2 text-[12.5px] text-ink-2">
-            <input type="checkbox" checked={sendEmail} onChange={(e) => setSendEmail(e.target.checked)} className="rounded border-line" />
+            <input type="checkbox" checked={sendEmail} onChange={(e) => setSendEmail(e.target.checked)} className="accent-accent" />
             Send confirmation from sales@
           </label>
           <div className="flex justify-end gap-2">
-            <button onClick={() => setAccepting(false)} disabled={busy}
-              className="border border-line text-ink-2 px-3 h-8 rounded-lg text-[12px]">Cancel</button>
-            <button onClick={confirm} disabled={busy || !scheduledAt}
-              className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-50">
-              {busy ? "Confirming…" : "Confirm"}
-            </button>
+            <Button size="sm" onClick={() => setAccepting(false)} disabled={busy}>Cancel</Button>
+            <Button variant="ink" size="sm" onClick={confirm} disabled={busy || !scheduledAt}>
+              {busy ? "Confirming..." : "Confirm"}
+            </Button>
           </div>
         </div>
       )}
@@ -170,23 +164,20 @@ function ConfirmedCallRow({ call, onAction }: { call: CallRequest; onAction: (ki
     <div className="px-5 py-3.5 flex items-start justify-between gap-3">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-[13.5px] font-semibold text-ink truncate">{call.name}{call.company ? ` · ${call.company}` : ""}</span>
+          <span className="text-[13.5px] font-medium text-ink truncate">{call.name}{call.company ? ` · ${call.company}` : ""}</span>
           <StatusPill tone="success">Confirmed</StatusPill>
         </div>
-        <div className="text-[12px] text-ink-2 mt-1 tabular-nums">{call.scheduled_at ? fmtWhen(call.scheduled_at) : "–"}</div>
+        <div className="text-[12px] text-ink-2 mt-1 tabular-nums">{call.scheduled_at ? fmtWhen(call.scheduled_at) : "-"}</div>
         {call.confirmation_sent_via && (
-          <div className="text-[11px] text-faint mt-1">
+          <div className="text-[12px] text-faint mt-1">
             Confirmation sent via {call.confirmation_sent_via === "desktop_smtp" ? "sales@ (desktop)" : "no-reply@ecliptr.app"}
           </div>
         )}
       </div>
       <div className="flex gap-1.5 flex-shrink-0">
-        <button onClick={() => onAction("reschedule", call)}
-          className="border border-line text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-lg text-[11.5px] font-medium">Reschedule</button>
-        <button onClick={() => onAction("cancel", call)}
-          className="border border-line text-muted hover:text-danger-ink hover:bg-danger-bg px-2.5 h-7 rounded-lg text-[11.5px] font-medium">Cancel</button>
-        <button onClick={() => onAction("archive", call)}
-          className="border border-line text-muted hover:text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-lg text-[11.5px] font-medium">Archive</button>
+        <Button size="sm" onClick={() => onAction("reschedule", call)}>Reschedule</Button>
+        <Button size="sm" onClick={() => onAction("cancel", call)}>Cancel</Button>
+        <Button size="sm" onClick={() => onAction("archive", call)}>Archive</Button>
       </div>
     </div>
   );
@@ -243,17 +234,17 @@ export default function BookedCallsModal({ onClose, onChanged }: { onClose: () =
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
       <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
+        <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line-2">
           <div>
-            <h2 className="text-[16px] font-semibold text-ink">Booked calls</h2>
-            <p className="text-[12px] text-muted mt-0.5">Accept, confirm, and manage 15-minute call requests.</p>
+            <h2 className="text-[16px] font-medium text-ink">Booked calls</h2>
+            <p className="text-[12px] text-muted mt-0.5">Accept, confirm, and manage 15 minute call requests.</p>
           </div>
-          <button onClick={onClose} className="text-muted hover:text-ink transition-colors p-1 -mr-1 -mt-1"><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close" className="ui-ib -mr-1 -mt-1"><X size={18} /></button>
         </div>
 
         <div className="overflow-y-auto flex-1">
           {calls === null ? (
-            <div className="text-[13px] text-muted text-center py-10">Loading…</div>
+            <div className="text-[13px] text-muted text-center py-10">Loading...</div>
           ) : unavailable ? (
             <div className="text-[13px] text-muted text-center py-10">Unavailable</div>
           ) : list.length === 0 ? (
@@ -278,7 +269,7 @@ export default function BookedCallsModal({ onClose, onChanged }: { onClose: () =
               )}
               {otherCalls.length > 0 && (
                 <div>
-                  <div className="px-5 pt-4 pb-1.5 text-[12.5px] font-medium text-muted">Cancelled / declined</div>
+                  <div className="px-5 pt-4 pb-1.5 text-[12.5px] font-medium text-muted">Cancelled and declined</div>
                   <div className="divide-y divide-line-2">
                     {otherCalls.map((c) => (
                       <div key={c.id} className="px-5 py-3 flex items-center gap-3">
@@ -286,8 +277,7 @@ export default function BookedCallsModal({ onClose, onChanged }: { onClose: () =
                           <div className="text-[13px] font-medium text-ink truncate">{c.name}</div>
                         </div>
                         <StatusPill tone={c.status === "declined" ? "neutral" : "danger"}>{c.status === "declined" ? "Declined" : "Cancelled"}</StatusPill>
-                        <button onClick={() => openAction("archive", c)}
-                          className="border border-line text-muted hover:text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-lg text-[11.5px] font-medium">Archive</button>
+                        <Button size="sm" onClick={() => openAction("archive", c)}>Archive</Button>
                       </div>
                     ))}
                   </div>

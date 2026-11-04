@@ -2,14 +2,15 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, Note } from "../lib/api";
 import { Plus, Pin, Trash2, StickyNote, GripVertical, Lock, Flag, Check, Clock } from "lucide-react";
+import { Button, PageActions } from "./ui";
 
-const COLORS: { key: string; fill: string; accent: string }[] = [
-  { key: "yellow", fill: "rgba(250,204,21,0.18)",  accent: "#FACC15" },
-  { key: "blue",   fill: "rgba(96,165,250,0.18)",  accent: "#60A5FA" },
-  { key: "green",  fill: "rgba(52,211,153,0.18)",  accent: "#34D399" },
-  { key: "pink",   fill: "rgba(244,114,182,0.18)", accent: "#F472B6" },
-  { key: "purple", fill: "rgba(167,139,250,0.18)", accent: "#A78BFA" },
-  { key: "orange", fill: "rgba(251,146,60,0.18)",  accent: "#FB923C" },
+const COLORS: { key: string; name: string; accent: string }[] = [
+  { key: "yellow", name: "Yellow", accent: "#FFD60A" },
+  { key: "blue",   name: "Blue",   accent: "#0A84FF" },
+  { key: "green",  name: "Green",  accent: "#30D158" },
+  { key: "pink",   name: "Pink",   accent: "#FF375F" },
+  { key: "purple", name: "Purple", accent: "#BF5AF2" },
+  { key: "orange", name: "Orange", accent: "#FF9F0A" },
 ];
 const colorOf = (k: string) => COLORS.find((c) => c.key === k) || COLORS[0];
 const NOTE_W = 226, NOTE_H = 190;      // defaults for a fresh note
@@ -41,9 +42,9 @@ const exactTime = (iso: string) => { const t = new Date(iso); return isNaN(+t) ?
 // Urgency drives how prominently a note reads AND how quickly it counts as "posted too
 // long" (its staleness window). Order matters for cycling + sorting the attention list.
 const URGENCY: Record<string, { label: string; color: string; staleDays: number; rank: number }> = {
-  normal: { label: "Normal", color: "var(--t-tx4)", staleDays: 14, rank: 0 },
-  high:   { label: "High",   color: "#FB923C",      staleDays: 5,  rank: 1 },
-  urgent: { label: "Urgent", color: "#F43F5E",      staleDays: 2,  rank: 2 },
+  normal: { label: "Normal", color: "rgb(var(--c-faint))",      staleDays: 14, rank: 0 },
+  high:   { label: "High",   color: "rgb(var(--c-ink))",        staleDays: 5,  rank: 1 },
+  urgent: { label: "Urgent", color: "rgb(var(--c-danger-ink))", staleDays: 2,  rank: 2 },
 };
 const urg = (n: Note) => URGENCY[n.urgency] || URGENCY.normal;
 const NEXT_URGENCY: Record<string, string> = { normal: "high", high: "urgent", urgent: "normal" };
@@ -64,6 +65,7 @@ export default function NotesView({ me }: { me: string }) {
   const [loading, setLoading] = useState(true);
   const [, tick] = useState(0);
   const [highlightId, setHighlightId] = useState<string | null>(null); // pulsed when jumped to from the attention strip
+  const [confirmId, setConfirmId] = useState<string | null>(null);     // the note whose delete is waiting on a second click
   const boardRef = useRef<HTMLDivElement>(null);
   const notesRef = useRef<Note[]>([]);
   notesRef.current = notes;
@@ -265,7 +267,7 @@ export default function NotesView({ me }: { me: string }) {
     api.updateNote(id, { pinned }).catch(() => {});
   };
   const remove = (id: string) => {
-    if (!confirm("Delete this note?")) return;
+    setConfirmId(null);
     clearTimeout(saveTimers.current[id]); // cancel a pending body save so it can't fire post-delete
     delete saveTimers.current[id]; delete pendingBodies.current[id];
     pendingCreates.current.delete(id);
@@ -295,6 +297,9 @@ export default function NotesView({ me }: { me: string }) {
     setTimeout(() => setHighlightId((h) => (h === id ? null : h)), 1600);
   };
 
+  // Delete asks on the note itself (Cancel / Delete), and brings the note into view.
+  const askRemove = (id: string) => { setConfirmId(id); focusNote(id); };
+
   const boardH = Math.max(520, ...notes.map((n) => n.y + hOf(n) + 24), 0);
   // What needs a look: notes past their staleness window, most-urgent + longest-up first.
   const attention = notes
@@ -302,75 +307,63 @@ export default function NotesView({ me }: { me: string }) {
     .sort((a, b) => (urg(b).rank - urg(a).rank) || (noteAge(b) - noteAge(a)));
 
   return (
-    <div className="min-h-full flex flex-col" style={{ background: "var(--t-bg)" }}>
-      <div className="px-6 py-4 flex items-center justify-between flex-shrink-0"
-        style={{ background: "var(--t-s1)", borderBottom: "1px solid var(--t-b1)" }}>
-        <div>
-          <h2 className="text-[17px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)" }}>Notes</h2>
-          <p className="text-[12px] mt-0.5" style={{ color: "var(--t-tx4)" }}>
-            {notes.length === 0 ? "Pin quick notes to your board: drag to arrange" : `${notes.length} note${notes.length > 1 ? "s" : ""} · drag by the top bar to move`}
-          </p>
-        </div>
-        <button onClick={addNote}
-          className="btn-ripple flex items-center gap-1.5 text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium"
-          style={{ background: "var(--accent-600)" }}>
-          <Plus size={14} /> New note
-        </button>
-      </div>
+    <div className="flex flex-col">
+      <PageActions>
+        <span className="text-[12px] text-muted">
+          {notes.length === 0 ? "Pin quick notes to your board, drag to arrange" : `${notes.length} note${notes.length > 1 ? "s" : ""}, drag by the top bar to move`}
+        </span>
+        <Button variant="ink" icon={<Plus size={14} />} onClick={addNote}>New note</Button>
+      </PageActions>
 
       {attention.length > 0 && (
-        <div className="px-6 py-3 flex-shrink-0" style={{ background: "var(--t-s1)", borderBottom: "1px solid var(--t-b1)" }}>
-          <div className="flex items-center gap-1.5 mb-2">
-            <Clock size={13} style={{ color: "#FB923C" }} />
-            <span className="text-[12px] font-medium" style={{ color: "var(--t-tx2)" }}>
+        <>
+          <section aria-label="Notes that need a look" className="pb-4">
+            <div className="flex items-center gap-2 mb-3 text-[13px] font-medium text-ink">
+              <Clock size={16} className="text-muted" />
               {attention.length} note{attention.length > 1 ? "s" : ""} up for a while, still needed?
-            </span>
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {attention.map((n) => {
-              const u = urg(n);
-              return (
-                <div key={n.id}
-                  className="flex items-center gap-2 flex-shrink-0 rounded-lg pl-2.5 pr-1.5 py-1.5"
-                  style={{ background: "var(--t-s2)", border: "1px solid var(--t-b1)", borderLeft: `3px solid ${u.color}` }}>
-                  <button onClick={() => focusNote(n.id)} className="text-left max-w-[190px]" title="Show on board">
-                    <div className="text-[12px] truncate" style={{ color: "var(--t-tx1)" }}>{notePreview(n)}</div>
-                    <div className="text-[10.5px]" style={{ color: "var(--t-tx4)" }}>
-                      up {staleLabel(n)}{n.urgency !== "normal" ? ` · ${u.label.toLowerCase()}` : ""}
-                    </div>
-                  </button>
-                  <button onClick={() => keep(n.id)} title="Keep (still needed)"
-                    className="w-7 h-7 flex items-center justify-center rounded-md flex-shrink-0"
-                    style={{ color: "#34D399" }}><Check size={14} /></button>
-                  <button onClick={() => remove(n.id)} title="Delete"
-                    className="w-7 h-7 flex items-center justify-center rounded-md flex-shrink-0"
-                    style={{ color: "var(--t-tx4)" }}><Trash2 size={13} /></button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+            </div>
+            <div className="flex gap-2.5 overflow-x-auto pb-1">
+              {attention.map((n) => {
+                const u = urg(n);
+                return (
+                  <div key={n.id}
+                    className="flex items-center gap-1 flex-shrink-0 rounded-[10px] bg-surface-2 border border-line pl-3 pr-1.5 py-1.5"
+                    style={{ boxShadow: `inset 3px 0 0 ${u.color}` }}>
+                    <button onClick={() => focusNote(n.id)} className="text-left max-w-[220px] min-w-0 pl-1 pr-2" title="Show on board">
+                      <div className="text-[13px] font-medium text-ink truncate">{notePreview(n)}</div>
+                      <div className="text-[12px] text-muted">
+                        up {staleLabel(n)}{n.urgency !== "normal" ? `, ${u.label.toLowerCase()}` : ""}
+                      </div>
+                    </button>
+                    <button onClick={() => keep(n.id)} title="Keep (still needed)" aria-label="Keep, still needed" className="ui-ib flex-shrink-0">
+                      <Check size={16} />
+                    </button>
+                    <button onClick={() => askRemove(n.id)} title="Delete" aria-label="Delete note" className="ui-ib flex-shrink-0 hover:!text-danger-ink">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+          <div className="hsep" />
+        </>
       )}
 
-      <div className="flex-1 overflow-auto">
+      <div>
         {loading ? (
-          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 p-6">
-            {Array.from({ length: 4 }).map((_, i) => <div key={i} className={`skeleton rounded-2xl`} style={{ height: NOTE_H }} />)}
+          <div className="grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 pt-4">
+            {Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton rounded-xl" style={{ height: NOTE_H }} />)}
           </div>
         ) : notes.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-center py-28 animate-fade-up">
-            <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4" style={{ background: "var(--accent-tint)", color: "var(--accent-400)" }}>
-              <StickyNote size={24} />
-            </div>
-            <p className="text-[15px] font-semibold mb-1" style={{ color: "var(--t-tx1)" }}>Your board is empty</p>
-            <p className="text-[13px] mb-5" style={{ color: "var(--t-tx4)" }}>Add a sticky note and drag it anywhere.</p>
-            <button onClick={addNote} className="text-[13px] font-medium px-4 h-9 rounded-lg"
-              style={{ background: "var(--accent-tint)", color: "var(--accent-400)", border: "1px solid var(--accent-glow)" }}>
-              + Add your first note
-            </button>
+            <StickyNote size={22} className="text-muted" />
+            <p className="m-0 mt-3 mb-1 text-[15px] font-medium text-ink">Your board is empty</p>
+            <p className="m-0 mb-5 text-[13px] text-muted">Add a sticky note and drag it anywhere.</p>
+            <Button icon={<Plus size={14} />} onClick={addNote}>Add your first note</Button>
           </div>
         ) : (
-          <div ref={boardRef} className="notes-board" style={{ minHeight: boardH }}>
+          <div ref={boardRef} className="relative w-full mt-4" style={{ minHeight: boardH, touchAction: "none" }}>
             {notes.map((n) => {
               const c = colorOf(n.color);
               const locker = lockedBy(n);
@@ -378,58 +371,77 @@ export default function NotesView({ me }: { me: string }) {
               const stale = isStale(n);
               const hot = highlightId === n.id;
               const emphasize = stale || n.urgency !== "normal";
+              const confirming = confirmId === n.id;
+              const border = locker ? c.accent : n.urgency !== "normal" ? u.color : stale ? "rgb(var(--c-muted))" : `${c.accent}66`;
               return (
-                <div key={n.id} id={`note-${n.id}`} className="sticky-note"
-                  style={{ left: n.x, top: n.y, width: wOf(n), height: hOf(n), minHeight: 0, zIndex: n.pinned || hot ? 6 : 1,
-                    transform: `rotate(${stableRot(n.id)}deg)`, transition: "box-shadow 160ms ease",
-                    background: `linear-gradient(162deg, ${c.fill}, transparent 78%), var(--t-s1)`,
-                    borderColor: locker ? `${c.accent}` : stale ? "#FB923C" : (n.urgency !== "normal" ? u.color : `${c.accent}55`),
-                    borderWidth: emphasize ? 2 : undefined,
-                    boxShadow: hot ? `0 0 0 3px ${u.color}, 0 8px 24px rgba(0,0,0,0.16)` : undefined }}>
-                  <div className="sn-grip" onPointerDown={(e) => startDrag(e, n.id)} title="Drag to move">
-                    <GripVertical size={13} style={{ color: c.accent, opacity: 0.8 }} />
+                <div key={n.id} id={`note-${n.id}`}
+                  className="absolute flex flex-col overflow-hidden rounded-xl"
+                  style={{ left: n.x, top: n.y, width: wOf(n), height: hOf(n), zIndex: n.pinned || hot ? 6 : 1,
+                    transform: `rotate(${stableRot(n.id)}deg)`,
+                    transition: "box-shadow 160ms var(--ease), filter 160ms var(--ease)",
+                    animation: "noteIn 0.26s var(--ease) both",
+                    background: `linear-gradient(162deg, ${c.accent}2E, transparent 78%), rgb(var(--c-surface-2))`,
+                    boxShadow: `inset 0 0 0 ${emphasize ? 1.5 : 1}px ${border}`,
+                    outline: hot ? "3px solid rgb(var(--c-ink))" : undefined, outlineOffset: hot ? 2 : undefined,
+                    filter: n.pinned ? "drop-shadow(0 10px 18px rgba(0,0,0,0.35))" : undefined }}>
+                  <div className="flex items-center gap-2 flex-none h-7 px-2 select-none cursor-grab active:cursor-grabbing"
+                    style={{ touchAction: "none" }} onPointerDown={(e) => startDrag(e, n.id)} title="Drag to move">
+                    <GripVertical size={16} className="text-faint" />
                     {!locker && n.urgency !== "normal" && (
-                      <span className="flex items-center gap-1 text-[10px] font-medium" style={{ color: u.color }} title={`${u.label} urgency`}>
-                        <Flag size={9} /> {u.label}
+                      <span className="flex items-center gap-1 text-[12px] font-medium" style={{ color: n.urgency === "urgent" ? u.color : "rgb(var(--c-ink))" }} title={`${u.label} urgency`}>
+                        <Flag size={12} /> {u.label}
                       </span>
                     )}
-                    <span className="sn-grip-fill" />
+                    <span className="flex-1 h-full" />
                     {locker && (
-                      <span className="flex items-center gap-1 text-[10px] font-medium truncate"
-                        style={{ color: c.accent }} title={`${locker} is editing this note`}>
-                        <Lock size={10} /> {locker} editing
+                      <span className="flex items-center gap-1 text-[12px] font-medium truncate text-muted" title={`${locker} is editing this note`}>
+                        <Lock size={12} /> {locker} editing
                       </span>
                     )}
-                    {n.pinned && <Pin size={12} style={{ color: c.accent, fill: c.accent }} />}
+                    {n.pinned && <Pin size={14} className="text-ink" fill="currentColor" />}
                   </div>
                   <textarea id={`note-ta-${n.id}`} value={n.body} onChange={(e) => editBody(n.id, e.target.value)}
                     onFocus={() => { if (!locker) acquireLock(n.id); }} onBlur={() => releaseLock(n.id)}
                     readOnly={!!locker}
-                    placeholder={locker ? "" : "Write a note…"} spellCheck={false} className="sn-body"
-                    style={{ color: "var(--t-tx1)", fontSize: `${(13.5 * fontScale(n)).toFixed(1)}px`, lineHeight: 1.5,
+                    placeholder={locker ? "" : "Write a note…"} spellCheck={false}
+                    className="flex-1 min-h-0 w-full bg-transparent border-0 outline-none resize-none text-ink px-3 pt-0.5 pb-1"
+                    style={{ fontSize: `${(13.5 * fontScale(n)).toFixed(1)}px`, lineHeight: 1.5,
                              cursor: locker ? "not-allowed" : "text", opacity: locker ? 0.7 : 1 }} />
-                  <div className="sn-foot">
-                    <div className="sn-dots">
-                      {COLORS.map((o) => (
-                        <button key={o.key} title={o.key} onClick={() => setColor(n.id, o.key)} className="sn-dot"
-                          style={{ background: o.accent, opacity: n.color === o.key ? 1 : 0.5, transform: n.color === o.key ? "scale(1.18)" : "none" }} />
-                      ))}
+                  {confirming ? (
+                    <div className="flex items-center justify-between gap-1.5 flex-none px-2 py-1 bg-surface-2">
+                      <span className="text-[12.5px] font-medium text-ink">Delete this note?</span>
+                      <span className="flex gap-1.5">
+                        <Button size="sm" onClick={() => setConfirmId(null)}>Cancel</Button>
+                        <Button size="sm" variant="danger" onClick={() => remove(n.id)}>Delete</Button>
+                      </span>
                     </div>
-                    <div className="sn-actions">
-                      <button title={`Urgency: ${u.label}, click to change`} onClick={() => cycleUrgency(n.id)}
-                        style={{ color: n.urgency === "normal" ? "var(--t-tx4)" : u.color }}><Flag size={13} /></button>
-                      <button title={n.pinned ? "Unpin" : "Pin"} onClick={() => togglePin(n.id, !n.pinned)} style={{ color: n.pinned ? c.accent : "var(--t-tx4)" }}><Pin size={13} /></button>
-                      {!locker && <button title="Delete" onClick={() => remove(n.id)} className="sn-del" style={{ color: "var(--t-tx4)" }}><Trash2 size={13} /></button>}
+                  ) : (
+                    <div className="flex items-center justify-between gap-1.5 flex-none px-2 py-1">
+                      <div className="flex gap-1.5" role="group" aria-label="Note colour">
+                        {COLORS.map((o) => (
+                          <button key={o.key} title={o.name} aria-label={o.name} onClick={() => setColor(n.id, o.key)}
+                            className="w-3.5 h-3.5 p-0 border-0 rounded-full cursor-pointer"
+                            style={{ background: o.accent, opacity: n.color === o.key ? 1 : 0.45, transform: n.color === o.key ? "scale(1.2)" : "none",
+                                     transition: "transform 150ms var(--ease), opacity 150ms var(--ease)" }} />
+                        ))}
+                      </div>
+                      <div className="flex gap-0.5">
+                        <button title={`Urgency: ${u.label}, click to change`} aria-label={`Urgency: ${u.label}, click to change`} onClick={() => cycleUrgency(n.id)}
+                          className="ui-ib !w-6 !h-6" style={{ color: u.color }}><Flag size={14} /></button>
+                        <button title={n.pinned ? "Unpin" : "Pin"} aria-label={n.pinned ? "Unpin" : "Pin"} onClick={() => togglePin(n.id, !n.pinned)}
+                          className="ui-ib !w-6 !h-6" style={{ color: n.pinned ? "rgb(var(--c-ink))" : "rgb(var(--c-faint))" }}><Pin size={14} /></button>
+                        {!locker && <button title="Delete" aria-label="Delete note" onClick={() => setConfirmId(n.id)}
+                          className="ui-ib !w-6 !h-6 hover:!text-danger-ink" style={{ color: "rgb(var(--c-faint))" }}><Trash2 size={14} /></button>}
+                      </div>
                     </div>
-                  </div>
-                  <div className="sn-time" title={exactTime(n.updated_at)}
-                    style={stale ? { color: "#FB923C", display: "flex", alignItems: "center", gap: 5 } : undefined}>
+                  )}
+                  <div className="flex items-center gap-1.5 flex-none px-3 pb-2 text-[12px] text-faint" title={exactTime(n.updated_at)}>
                     {stale ? (
                       <>
-                        <Clock size={10} /> up {staleLabel(n)}
+                        <Clock size={12} /> <span className="text-ink">up {staleLabel(n)}</span>
                         <button onClick={() => keep(n.id)} title="Still needed, keep it (resets the clock)"
-                          className="flex items-center gap-0.5 rounded px-1" style={{ color: "#34D399", fontWeight: 600, marginLeft: 2 }}>
-                          <Check size={11} /> Keep
+                          className="flex items-center gap-0.5 rounded px-1 text-[12px] font-medium text-ink hover:opacity-70 transition-opacity">
+                          <Check size={12} /> Keep
                         </button>
                       </>
                     ) : (
@@ -438,13 +450,9 @@ export default function NotesView({ me }: { me: string }) {
                   </div>
                   <div
                     onPointerDown={(e) => startResize(e, n.id)}
-                    title="Drag to resize"
-                    style={{
-                      position: "absolute", right: 3, bottom: 3, width: 14, height: 14,
-                      cursor: "nwse-resize", touchAction: "none",
-                      borderRight: `2px solid ${c.accent}`, borderBottom: `2px solid ${c.accent}`,
-                      borderBottomRightRadius: 9, opacity: 0.5,
-                    }}
+                    title="Drag to resize" aria-hidden="true"
+                    className="absolute right-1 bottom-1 w-3 h-3 opacity-60 border-r-2 border-b-2 border-faint rounded-br-[7px]"
+                    style={{ cursor: "nwse-resize", touchAction: "none" }}
                   />
                 </div>
               );

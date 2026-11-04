@@ -4,7 +4,8 @@ import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
-import { Upload, ClipboardList, RotateCcw } from "lucide-react";
+import { Upload, RotateCcw } from "lucide-react";
+import { Button, PageActions } from "./ui";
 import StatusPill from "./StatusPill";
 import Session, { SaveForm, SessionData } from "./manifest/Session";
 import SavedReadOnly from "./manifest/SavedReadOnly";
@@ -225,32 +226,26 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
     try { await api.restoreManifest(id); setUndo(null); await loadList(); toast("Restored."); } catch (e: any) { toast(String(e), "error"); }
   };
 
-  const th = "px-3 py-2 font-medium text-muted";
-  const linkBtn = "text-[12px] text-ink-2 hover:text-accent disabled:opacity-50 whitespace-nowrap";
+  const th = "";
+  const linkBtn = "ui-link muted disabled:opacity-50";
 
   return (
     <div>
-      <div className="flex items-start justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-[20px] font-semibold text-ink flex items-center gap-2">
-            <ClipboardList size={18} className="text-accent" /> Manifest analyzer
-          </h1>
-          <p className="text-[13px] text-muted mt-1 max-w-[560px]">
-            What is in a load, what the sheet charges for it per unit, and what you can pay at your own resale rates.
-            Every figure comes from the file, your rules or a number you set.
-          </p>
-        </div>
-        <button onClick={upload} disabled={busy}
-          className="shrink-0 flex items-center gap-1.5 text-[12px] text-ink-2 border border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors disabled:opacity-50">
-          {session ? <RotateCcw size={13} /> : <Upload size={13} />} {busy ? "Reading…" : session ? "Analyze another" : "Analyze a manifest"}
-        </button>
-      </div>
+      <PageActions>
+        <Button variant="ink" onClick={upload} disabled={busy} icon={session ? <RotateCcw size={14} /> : <Upload size={14} />}>
+          {busy ? "Reading…" : session ? "Analyze another" : "Analyze a manifest"}
+        </Button>
+      </PageActions>
+      <p className="text-[13px] text-muted mb-6 max-w-[640px]">
+        What is in a load, what the sheet charges for it per unit, and what you can pay at your own resale rates.
+        Every figure comes from the file, your rules or a number you set.
+      </p>
 
       {/* Dropping over a result replaces it, so say so rather than swapping silently. */}
       {dragActive && (
         <div className="fixed inset-0 z-40 bg-surface/80 flex items-center justify-center pointer-events-none">
-          <div className="rounded-2xl border-2 border-dashed border-accent bg-surface px-8 py-6 text-center">
-            <p className="text-[15px] font-semibold text-ink">Drop to analyze this manifest</p>
+          <div className="rounded-2xl border-2 border-dashed border-ink bg-surface px-8 py-6 text-center">
+            <p className="text-[15px] font-medium text-ink">Drop to analyze this manifest</p>
             {session && <p className="text-[12px] text-muted mt-1">It replaces the manifest on screen.</p>}
           </div>
         </div>
@@ -266,7 +261,7 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
           <div className="flex items-center gap-1" role="group">
             {([[false, "Saved"], [true, "Deleted"]] as const).map(([v, label]) => (
               <button key={label} onClick={() => { setShowDeleted(v); setList(null); loadList(v); }}
-                className={`px-3 h-8 rounded-lg text-[12.5px] ${showDeleted === v ? "bg-surface-2 text-ink font-medium" : "text-muted hover:text-ink-2"}`}>
+                className={`px-3 h-8 rounded-lg text-[13px] transition-colors duration-150 ${showDeleted === v ? "bg-surface-3 text-ink font-medium" : "text-muted hover:text-ink"}`}>
                 {label}
               </button>
             ))}
@@ -277,13 +272,11 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
               <p className="text-[13px] text-muted">Nothing has been deleted.</p>
             ) : (
               <button onClick={upload} disabled={busy}
-                className={`w-full max-w-[640px] rounded-2xl border border-dashed bg-surface transition-colors py-14 px-6 flex flex-col items-center text-center disabled:opacity-60 ${
-                  dragActive ? "border-accent bg-surface-2" : "border-line-3 hover:border-accent hover:bg-surface-2"
+                className={`w-full max-w-[640px] rounded-2xl border border-dashed transition-colors duration-150 py-14 px-6 flex flex-col items-center text-center disabled:opacity-60 ${
+                  dragActive ? "border-ink bg-surface-2" : "border-line-3 hover:border-ink hover:bg-surface-2"
                 }`}>
-                <div className="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center mb-4">
-                  <Upload size={20} className="text-accent" />
-                </div>
-                <p className="text-[15px] font-semibold text-ink">
+                <Upload size={20} className="text-ink-2 mb-4" />
+                <p className="text-[15px] font-medium text-ink">
                   {busy ? "Reading…" : dragActive ? "Drop it here" : "Drop a manifest here, or click to browse"}
                 </p>
                 <p className="text-[12.5px] text-muted mt-1 max-w-[400px]">
@@ -295,17 +288,17 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
             <>
               {showDeleted && <p className="text-[12px] text-muted">Deleted manifests are kept. Restore one to bring it back to your list.</p>}
               <div className="overflow-x-auto">
-                <table className="w-full text-[12.5px]">
-                  <thead className="bg-surface-2">
+                <table className="ui-table">
+                  <thead>
                     <tr>
-                      <th className={`${th} text-left rounded-l-lg`}>Manifest</th>
+                      <th className={`${th} text-left`}>Manifest</th>
                       <th className={`${th} text-left`}>Supplier</th>
                       <th className={`${th} text-left`}>Date</th>
                       <th className={`${th} text-right`}>Units</th>
                       <th className={`${th} text-right`}>Retail</th>
                       <th className={`${th} text-right`}>Ask</th>
                       <th className={`${th} text-left`}>Where it went</th>
-                      <th className={`${th} text-right rounded-r-lg`}></th>
+                      <th className={`${th} text-right`}></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -313,8 +306,8 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
                       const t = savedTotals(m);
                       const isBusy = working === m.id;
                       return (
-                        <tr key={m.id} className="border-t border-line">
-                          <td className="px-3 py-2 text-ink">
+                        <tr key={m.id}>
+                          <td className="text-ink">
                             {renaming?.id === m.id ? (
                               <input autoFocus className={`${S.input} w-56`} value={renaming.text}
                                 onChange={(e) => setRenaming({ id: m.id, text: e.target.value })}
@@ -327,25 +320,25 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
                               </>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-ink-2 whitespace-nowrap">{m.supplier || <span className="text-muted">-</span>}</td>
-                          <td className="px-3 py-2 text-muted whitespace-nowrap">{fmtDay(m.created_at)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums text-ink-2">{fmtInt(t.units)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{t.retail > 0 ? fmtAmount(t.retail) : "-"}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{m.ask != null && m.ask > 0 ? fmtAmount(m.ask) : "-"}</td>
-                          <td className="px-3 py-2">
+                          <td className="text-ink-2 whitespace-nowrap">{m.supplier || <span className="text-muted">-</span>}</td>
+                          <td className="text-muted whitespace-nowrap">{fmtDay(m.created_at)}</td>
+                          <td className="text-right tabular-nums text-ink-2">{fmtInt(t.units)}</td>
+                          <td className="text-right tabular-nums">{t.retail > 0 ? fmtAmount(t.retail) : "-"}</td>
+                          <td className="text-right tabular-nums">{m.ask != null && m.ask > 0 ? fmtAmount(m.ask) : "-"}</td>
+                          <td>
                             <span className="flex items-center gap-1.5">
                               {m.lot_id && <StatusPill tone="accent">Lot in Inventory</StatusPill>}
                               {m.load_id && <StatusPill tone="shipping">Delivery</StatusPill>}
                               {!m.lot_id && !m.load_id && <StatusPill>Not sent</StatusPill>}
                             </span>
                           </td>
-                          <td className="px-3 py-2">
+                          <td>
                             <span className="flex items-center justify-end gap-3">
                               {showDeleted ? (
                                 <button onClick={() => restore(m.id)} className={linkBtn}>Restore</button>
                               ) : (
                                 <>
-                                  <button onClick={() => openSaved(m)} disabled={isBusy} className="text-[12px] font-medium text-accent hover:underline disabled:opacity-50">{isBusy ? "Working…" : "Open"}</button>
+                                  <button onClick={() => openSaved(m)} disabled={isBusy} className="ui-link disabled:opacity-50">{isBusy ? "Working…" : "Open"}</button>
                                   <button onClick={() => setRenaming({ id: m.id, text: m.name })} className={linkBtn}>Rename</button>
                                   <button onClick={() => rereadSaved(m)} disabled={isBusy} className={linkBtn} title="Read the file again with your rules as they are now">Re-read</button>
                                   <button onClick={() => remove(m)} className={linkBtn}>Delete</button>
@@ -367,7 +360,7 @@ export default function ManifestView({ onNavigate }: { onNavigate: (t: any) => v
       {undo && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[80] bg-ink text-surface text-[13px] rounded-xl px-4 py-2.5 shadow-[0_8px_24px_rgba(0,0,0,0.18)] flex items-center gap-4">
           <span className="truncate max-w-[320px]">Deleted {undo.name}.</span>
-          <button onClick={() => restore(undo.id)} className="font-semibold underline shrink-0">Undo</button>
+          <button onClick={() => restore(undo.id)} className="font-medium underline shrink-0">Undo</button>
         </div>
       )}
     </div>

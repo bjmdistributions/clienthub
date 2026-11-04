@@ -37,7 +37,7 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
   if (!data) return null;
   const balance: number = data.balance || 0;
   const entries: any[] = data.entries || [];
-  const dealLabel = (d: DealFlow) => `#${d.invoice_number || "–"} · ${fmtAmount(d.invoice_total)}`;
+  const dealLabel = (d: DealFlow) => `#${d.invoice_number || "-"} · ${fmtAmount(d.invoice_total)}`;
   const dealNo = (id: string) => deals.find((d) => d.id === id)?.invoice_number || "";
 
   const act = (sign: number) => {
@@ -54,10 +54,10 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl px-4 py-3 space-y-2">
+    <div className="py-1 space-y-2">
       <div className="flex items-center justify-between gap-3">
         <div className="text-[12.5px] font-medium text-muted">Store credit</div>
-        <div className={`text-[18px] font-bold tabular-nums ${balance > 0 ? "text-success-ink" : "text-ink"}`}>{fmtAmount(balance)}</div>
+        <div className={`text-[18px] font-medium tabular-nums ${balance > 0 ? "text-success-ink" : "text-ink"}`}>{fmtAmount(balance)}</div>
       </div>
       <button onClick={() => setOpen((o) => !o)} className="text-[12px] text-muted hover:text-ink-2 underline underline-offset-2">
         {open ? "Hide" : "Manage credit"}
@@ -99,7 +99,7 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
           {entries.length > 0 && (
             <div className="space-y-1 pt-1">
               {entries.slice(0, 8).map((e) => (
-                <div key={e.id} className="flex items-center justify-between text-[11.5px] py-0.5 gap-2">
+                <div key={e.id} className="flex items-center justify-between text-[12px] py-0.5 gap-2">
                   <span className="text-muted min-w-0 truncate" title={e.note || undefined}>
                     {fmtDay(e.created_at)}{fmtDay(e.created_at) ? " · " : ""}{e.kind}
                     {e.source_deal_flow_id && dealNo(e.source_deal_flow_id) ? ` · from #${dealNo(e.source_deal_flow_id)}` : ""}
@@ -113,7 +113,7 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
           )}
         </div>
       )}
-      {err && <div className="text-[11.5px] text-danger-ink">{err}</div>}
+      {err && <div className="text-[12px] text-danger-ink">{err}</div>}
     </div>
   );
 }

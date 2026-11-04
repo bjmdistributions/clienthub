@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, FileUp, Mail, Pencil, Phone, Plus, Reply, Search, Settings2, X } from "lucide-react";
 import StatusPill from "./StatusPill";
+import { PageActions, Tabs } from "./ui";
 import ColdCallsMap from "./ColdCallsMap";
 import { copyText, COPY_FAILED } from "../lib/clipboard";
 import { toast } from "./Toast";
@@ -17,9 +18,9 @@ import {
 // the daily limit spread across those hours, and watches the cold email inbox for replies.
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const ghost = "border border-line text-ink-2 hover:bg-surface-2 px-3 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50 whitespace-nowrap inline-flex items-center gap-1.5";
-const solid = "bg-accent hover:bg-accent-hover text-on-accent px-3 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50 whitespace-nowrap inline-flex items-center gap-1.5";
-const field = "w-full bg-surface border border-line rounded-lg px-3 py-2 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/30";
+const ghost = "ui-btn";
+const solid = "ui-btn ui-btn-ink";
+const field = "w-full bg-transparent border border-line-3 rounded-lg px-3 py-2 text-[13.5px] text-ink focus:outline-none focus:border-ink transition-colors duration-150";
 const label = "block text-[12px] font-medium text-ink-2 mb-1";
 
 const TONE: Record<LeadStatus, "neutral" | "step" | "accent" | "warning" | "success" | "danger"> = {
@@ -140,24 +141,19 @@ export default function ColdCallsView() {
       : `Sending from ${st.send_from || "your email"}, ${st.hours}, up to ${st.daily_cap} a day.${st.pump_note ? " " + st.pump_note : ""}`;
 
   return (
-    <div className="max-w-5xl mx-auto min-w-0">
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Cold calls</h2>
-          <p className="text-[12.5px] text-muted mt-0.5">Warehouses to call and email, kept apart from your clients and suppliers until one becomes a supplier.</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button className={solid} onClick={emailShown}><Mail size={14} /> Email these</button>
-          <button className={ghost} onClick={() => setCompose({ ids: [], bump: true })}><Reply size={14} /> Bumps</button>
-          <button className={ghost} onClick={() => setForm({})}><Plus size={14} /> Add</button>
-          <button className={ghost} onClick={() => fileRef.current?.click()}><FileUp size={14} /> Import a sheet</button>
-          <button className={ghost} onClick={() => setSettingsOpen(true)}><Settings2 size={14} /> Settings</button>
-          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
-        </div>
-      </div>
+    <div className="min-w-0">
+      <PageActions>
+        <button className={ghost} onClick={() => setCompose({ ids: [], bump: true })}><Reply size={14} /> Bumps</button>
+        <button className={ghost} onClick={() => setForm({})}><Plus size={14} /> Add</button>
+        <button className={ghost} onClick={() => fileRef.current?.click()}><FileUp size={14} /> Import a sheet</button>
+        <button className={ghost} onClick={() => setSettingsOpen(true)}><Settings2 size={14} /> Settings</button>
+        <button className={solid} onClick={emailShown}><Mail size={14} /> Email these</button>
+        <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
+      </PageActions>
+      <p className="text-[13px] text-muted mb-5">Warehouses to call and email, kept apart from your clients and suppliers until one becomes a supplier.</p>
 
       {error && (
-        <div className="mb-4 flex items-center justify-between gap-3 text-[13px] text-danger-ink bg-danger-bg border border-danger-ink/20 rounded-lg px-3 py-2" role="alert">
+        <div className="mb-4 flex items-center justify-between gap-3 text-[13px] text-danger-ink bg-danger-bg rounded-lg px-3 py-2" role="alert">
           <span className="min-w-0">{error}</span>
           <button onClick={load} className={ghost}>Try again</button>
         </div>
@@ -175,61 +171,62 @@ export default function ColdCallsView() {
               ))}
             </div>
           )}
-          <div className="grid grid-cols-3 gap-3 mb-2">
-            {([["Due today", data.due], ["Waiting to send", data.queue.waiting], ["Sent today", data.queue.sent_today]] as [string, number][]).map(([l, v]) => (
-              <div key={l} className="bg-surface border border-line rounded-2xl px-4 py-3">
-                <div className="text-[12px] text-muted">{l}</div>
-                <div className="text-[22px] font-semibold text-ink tabular-nums">{v}</div>
-              </div>
+          <div className="hsep" />
+          <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr] gap-x-6 py-4">
+            {([["Due today", data.due], ["Waiting to send", data.queue.waiting], ["Sent today", data.queue.sent_today]] as [string, number][]).map(([l, v], i) => (
+              <Fragment key={l}>
+                {i > 0 && <div className="vsep" />}
+                <div className="min-w-0">
+                  <div className="ui-label">{l}</div>
+                  <div className="ui-fig mt-1">{v}</div>
+                </div>
+              </Fragment>
             ))}
           </div>
-          <p className={`text-[12.5px] mb-4 ${!seen ? "text-warning-ink" : "text-muted"}`}>
+          <div className="hsep mb-3" />
+          <p className={`text-[13px] mb-5 ${!seen ? "text-warning-ink" : "text-muted"}`}>
             {pumpLine}
             {data.queue.failed > 0 && <span className="text-danger-ink font-medium"> {data.queue.failed} failed to send: open the warehouse to try again.</span>}
           </p>
 
-          <div className="inline-flex p-0.5 mb-3 bg-surface-2 border border-line rounded-lg">
-            {([["leads", "Warehouses", 0], ["map", "Map", 0], ["text", "To text", toText], ["replies", "Replies", data.replies_waiting ?? 0]] as ["leads" | "map" | "text" | "replies", string, number][]).map(([k, lb, n]) => (
-              <button key={k} onClick={() => setView(k)}
-                className={`h-8 px-3.5 rounded-md text-[13px] inline-flex items-center gap-1.5 transition-colors ${view === k ? "bg-surface text-ink font-medium shadow-sm" : "text-ink-2 hover:text-ink"}`}>
-                {lb}
-                {n > 0 && <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-on-accent text-[11px] font-semibold tabular-nums inline-flex items-center justify-center">{n}</span>}
-              </button>
-            ))}
+          <div className="mb-4">
+            <Tabs label="Cold calls" value={view} onChange={(v) => setView(v as typeof view)}
+              tabs={([["leads", "Warehouses", 0], ["map", "Map", 0], ["text", "To text", toText], ["replies", "Replies", data.replies_waiting ?? 0]] as ["leads" | "map" | "text" | "replies", string, number][])
+                .map(([id, label, n]) => ({ id, label, count: n > 0 ? n : undefined }))} />
           </div>
 
           {view === "replies" ? <Replies onOpenLead={setOpenId} onChanged={load} />
           : view === "map" ? <ColdCallsMap leads={leads} onOpen={setOpenId} />
           : view === "text" ? <TextList leads={leads} onOpen={setOpenId} onChanged={load} /> : <>
           <div className="flex flex-wrap items-center gap-2 mb-3">
-            <div className="relative w-64 max-w-full">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Company, city, email" className={field + " pl-8 h-9 py-0"} />
-            </div>
+            <label className="ui-search w-64 max-w-full">
+              <Search size={14} />
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Company, city, email" aria-label="Search warehouses" />
+            </label>
             {chips.map(([k, l, n]) => (
               <button key={k} onClick={() => setFilter(k)}
-                className={`h-8 px-3 rounded-full border text-[12.5px] whitespace-nowrap transition-colors ${filter === k ? "bg-accent/10 border-accent/40 text-accent-hover font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
-                {l} <span className="tabular-nums text-muted">{n}</span>
+                className={`ui-opt ${filter === k ? "on" : ""}`}>
+                {l} <span className="tabular-nums opacity-60 ml-1">{n}</span>
               </button>
             ))}
-            <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status" className="h-8 bg-surface border border-line rounded-lg px-2.5 text-[12.5px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/30">
+            <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status" className="ui-btn">
               <option value="">Any status</option>
               {STATUSES.filter((x) => statusCounts[x]).map((x) => <option key={x} value={x}>{STATUS_LABEL[x]} ({statusCounts[x]})</option>)}
             </select>
           </div>
 
           {leads.length === 0 ? (
-            <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">No warehouses yet. Import a sheet or add one.</div>
+            <div className="py-16 text-center text-[13px] text-muted">No warehouses yet. Import a sheet or add one.</div>
           ) : shown.length === 0 ? (
-            <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">{filter === "due" && !query && !status ? "Nothing is due today." : "No warehouses match."}</div>
+            <div className="py-16 text-center text-[13px] text-muted">{filter === "due" && !query && !status ? "Nothing is due today." : "No warehouses match."}</div>
           ) : (
-            <div className="bg-surface border border-line rounded-2xl divide-y divide-line-2 overflow-hidden">
+            <div className="divide-y divide-line border-t border-line">
               {shown.map((l) => {
                 const place = [l.city, l.state].filter(Boolean).join(", ");
                 const next = nextLine(l.next_touch, data.today);
                 const said = saidLine(l.said);
                 return (
-                  <button key={l.id} onClick={() => setOpenId(l.id)} className="w-full text-left flex items-start gap-4 px-4 py-3 hover:bg-surface-2 min-w-0">
+                  <button key={l.id} onClick={() => setOpenId(l.id)} className="w-full text-left flex items-start gap-4 px-3 py-3.5 hover:bg-surface-2 transition-colors duration-150 min-w-0">
                     <div className="min-w-0 flex-1">
                       <div className="text-[14px] font-medium text-ink truncate">{l.company}</div>
                       <div className="text-[12.5px] text-muted truncate">
@@ -298,8 +295,8 @@ function agoDay(iso: string): string {
 function ListCard({ name, n, on, onPick, onRename }: { name: string; n: LeadListName; on: boolean; onPick: () => void; onRename?: () => void }) {
   const pct = (k: number) => (n.total ? Math.round((k / n.total) * 100) : 0);
   return (
-    <div className={`relative flex-shrink-0 w-[220px] rounded-2xl border px-3.5 py-3 transition-colors ${on ? "border-accent ring-1 ring-accent/25 bg-surface" : "border-line bg-surface hover:bg-surface-2"}`}>
-      <button onClick={onPick} className="absolute inset-0 rounded-2xl" aria-label={`Show ${name}`} />
+    <div className={`relative flex-shrink-0 w-[220px] rounded-xl border px-3.5 py-3 transition-colors duration-150 ${on ? "border-ink" : "border-line hover:bg-surface-2"}`}>
+      <button onClick={onPick} className="absolute inset-0 rounded-xl" aria-label={`Show ${name}`} />
       <div className="flex items-start justify-between gap-2">
         <div className="text-[13.5px] font-medium text-ink truncate pr-1" title={name}>{name}</div>
         {onRename && (
@@ -308,8 +305,8 @@ function ListCard({ name, n, on, onPick, onRename }: { name: string; n: LeadList
       </div>
       <div className="text-[12px] text-muted tabular-nums">{n.total === 1 ? "1 warehouse" : `${n.total} warehouses`}</div>
       <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden flex">
-        <div className="bg-accent" style={{ width: `${pct(n.replied)}%` }} />
-        <div className="bg-step-now" style={{ width: `${Math.max(0, pct(n.emailed) - pct(n.replied))}%` }} />
+        <div className="bg-ink" style={{ width: `${pct(n.replied)}%` }} />
+        <div className="bg-muted" style={{ width: `${Math.max(0, pct(n.emailed) - pct(n.replied))}%` }} />
       </div>
       <div className="mt-1.5 text-[12px] text-ink-2 tabular-nums truncate">
         {n.emailed} emailed, {n.replied} replied{n.texted ? `, ${n.texted} texted` : ""}
@@ -376,18 +373,18 @@ function TextList({ leads, onOpen, onChanged }: { leads: Lead[]; onOpen: (id: st
       <div className="flex flex-wrap items-center gap-2 mb-3">
         {chips.map(([k, lb, n]) => (
           <button key={k} onClick={() => setWhich(k)}
-            className={`h-8 px-3 rounded-full border text-[12.5px] whitespace-nowrap transition-colors ${which === k ? "bg-accent/10 border-accent/40 text-accent-hover font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
-            {lb} <span className="tabular-nums text-muted">{n}</span>
+            className={`ui-opt ${which === k ? "on" : ""}`}>
+            {lb} <span className="tabular-nums opacity-60 ml-1">{n}</span>
           </button>
         ))}
         <span className="text-[12px] text-muted">Called or emailed, and never heard back.{pool.length > withPhone.length ? ` ${pool.length - withPhone.length} more have no phone number.` : ""}</span>
       </div>
       {shown.length === 0 ? (
-        <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">
+        <div className="py-16 text-center text-[13px] text-muted">
           {withPhone.length === 0 ? "No one is waiting on a text. Everyone you called or emailed has answered, or has no number." : which === "not" ? "Every number here has been texted." : "None texted yet."}
         </div>
       ) : (
-        <div className="bg-surface border border-line rounded-2xl divide-y divide-line-2 overflow-hidden">
+        <div className="divide-y divide-line border-t border-line">
           {shown.map((l) => (
             <div key={l.id} className="flex items-center gap-4 px-4 py-3 min-w-0">
               <button onClick={() => onOpen(l.id)} className="min-w-0 flex-1 text-left">
@@ -434,7 +431,7 @@ function Replies({ onOpenLead, onChanged }: { onOpenLead: (leadId: string) => vo
     return () => window.clearInterval(t);
   }, [load]);
 
-  if (!list) return <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">Loading replies...</div>;
+  if (!list) return <div className="py-16 text-center text-[13px] text-muted">Loading replies...</div>;
   const waiting = list.filter((r) => !r.answered);
   const shown = all ? list : waiting;
   const answer = async (r: OutreachReply) => {
@@ -447,20 +444,20 @@ function Replies({ onOpenLead, onChanged }: { onOpenLead: (leadId: string) => vo
       <div className="flex flex-wrap items-center gap-2 mb-3">
         {([[false, "To answer", waiting.length], [true, "All replies", list.length]] as [boolean, string, number][]).map(([k, lb, n]) => (
           <button key={lb} onClick={() => setAll(k)}
-            className={`h-8 px-3 rounded-full border text-[12.5px] whitespace-nowrap transition-colors ${all === k ? "bg-accent/10 border-accent/40 text-accent-hover font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
-            {lb} <span className="tabular-nums text-muted">{n}</span>
+            className={`ui-opt ${all === k ? "on" : ""}`}>
+            {lb} <span className="tabular-nums opacity-60 ml-1">{n}</span>
           </button>
         ))}
         <span className="text-[12px] text-muted">A reply counts as answered once you email them from your mailbox, log a call, or mark it.</span>
       </div>
       {shown.length === 0 ? (
-        <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">
+        <div className="py-16 text-center text-[13px] text-muted">
           {list.length === 0 ? "No replies yet. When a warehouse answers a cold email it shows here." : "You have answered every reply."}
         </div>
       ) : (
-        <div className="bg-surface border border-line rounded-2xl divide-y divide-line-2 overflow-hidden">
+        <div className="divide-y divide-line border-t border-line">
           {shown.map((r) => (
-            <button key={r.id} onClick={() => setOpen(r)} className="w-full text-left flex items-start gap-4 px-4 py-3 hover:bg-surface-2 min-w-0">
+            <button key={r.id} onClick={() => setOpen(r)} className="w-full text-left flex items-start gap-4 px-3 py-3.5 hover:bg-surface-2 transition-colors duration-150 min-w-0">
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline gap-2 min-w-0">
                   <span className="text-[14px] font-medium text-ink truncate">{r.company}</span>

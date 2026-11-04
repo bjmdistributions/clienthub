@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import StatusPill from "./StatusPill";
+import { Button, PageActions } from "./ui";
 import BuysView from "./BuysView";
 import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotPriceTier, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus, LotMatch } from "../lib/api";
 import { fmtAmount } from "../lib/format";
@@ -51,22 +53,20 @@ const unitsLabel = (lot: Lot, det: LotDetails) => {
   const lo = det.qty_per_pallet ?? 0, hi = det.qty_per_pallet_max ?? 0, pallets = det.pallets ?? 0;
   const ranged = det.qty_basis === "per_pallet" && hi > lo && pallets > 0;
   return ranged
-    ? `${lot.quantity.toLocaleString()}–${(hi * pallets).toLocaleString()} units`
+    ? `${lot.quantity.toLocaleString()} to ${(hi * pallets).toLocaleString()} units`
     : `${lot.quantity.toLocaleString()}${det.qty_approx ? "+" : ""} units`;
 };
 
-const statusColor = (s: string) => {
-  switch (s) { case "available": return "bg-success-bg text-success-ink"; case "reserved": return "bg-info-bg text-info-ink"; case "sold": return "bg-surface-3 text-ink-2"; case "archived": return "bg-warning-bg text-warning-ink"; default: return "bg-surface-3 text-ink-2"; }
-};
+const lotTone = (s: string): "success" | "neutral" | "warning" => (s === "available" ? "success" : s === "archived" ? "warning" : "neutral");
 // Pill tokens for a deal stage — negotiating leans on the accent, earlier stages
 // read as informational. Shared by the link picker and the linked-deal row.
 const dealStageColor = (s: string) => s === "negotiating" ? "bg-accent/10 text-accent" : "bg-info-bg text-info-ink";
 const dealStageLabel = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-const inp = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+const inp = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:border-ink transition-colors";
 // Grid-cell input WITHOUT w-full — for side-by-side boxes whose width comes from an
 // explicit class (the old form's w-full fought flex/fixed widths and collapsed boxes).
-const cellInp = "border border-line rounded-lg h-9 px-2.5 text-[13px] focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors";
+const cellInp = "border border-line rounded-lg h-9 px-2.5 text-[13px] focus:outline-none focus:border-ink transition-colors";
 
 // ── Variant pricing (R-232) ──────────────────────────────────────────────────
 // A variant's price is ALWAYS PER UNIT. It is not a second price_type and there is
@@ -113,8 +113,11 @@ const INV_MOTION_CSS = `
 .inv-rise { animation: invRise 0.2s cubic-bezier(0.16,1,0.3,1) both; }
 .inv-fade { animation: invFade 0.2s cubic-bezier(0.16,1,0.3,1) both; }
 .inv-slideover { transition: transform 0.2s cubic-bezier(0.16,1,0.3,1); }
+@keyframes invDrawer { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+.inv-drawer { animation: invDrawer 0.24s cubic-bezier(0.16,1,0.3,1) both; }
 @media (prefers-reduced-motion: reduce) {
   .inv-rise { animation: invFade 0.2s ease both; }
+  .inv-drawer { animation: invFade 0.2s ease both; }
   .inv-slideover { transition: none; }
   .inv-photo-zoom { transform: none !important; }
 }
@@ -161,7 +164,7 @@ function InWarehouse() {
   const flip = () => { const v = !open; setOpen(v); try { localStorage.setItem("inventory_warehouse_open", v ? "1" : "0"); } catch { /* ignore */ } };
   return (
     <div className="mb-4">
-      <button onClick={flip} className="flex items-center gap-1.5 text-[13px] font-semibold text-ink mb-2">
+      <button onClick={flip} className="flex items-center gap-1.5 text-[14px] font-medium text-ink mb-2">
         <ChevronDown size={14} className={`text-muted transition-transform duration-[130ms] ${open ? "" : "-rotate-90"}`} /> In the warehouse
       </button>
       {open && <BuysView compact />}
@@ -479,7 +482,7 @@ export default function InventoryView() {
   // returns a neutral zero/dash for them — the display never renders those lines.
   const unitCost = (lot: Lot) => lot.price_type === "total" && lot.quantity > 0 ? lot.total_cost / lot.quantity : lot.total_cost;
   const unitAsk = (lot: Lot) => lot.price_type === "custom" ? 0 : lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity : lot.asking_price;
-  const margin = (lot: Lot) => lot.price_type === "custom" ? "–" : unitCost(lot) > 0 ? `${(((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100).toFixed(0)}%` : "–";
+  const margin = (lot: Lot) => lot.price_type === "custom" ? "-" : unitCost(lot) > 0 ? `${(((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100).toFixed(0)}%` : "-";
   const marginPct = (lot: Lot) => lot.price_type === "custom" ? 0 : unitCost(lot) > 0 ? ((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100 : 0;
   const totalProfit = (lot: Lot) => lot.price_type === "custom" ? 0 : lot.price_type === "total" ? lot.asking_price - lot.total_cost : (lot.asking_price - lot.total_cost) * lot.quantity;
   const totalAsk = (lot: Lot) => lot.price_type === "custom" ? 0 : lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
@@ -544,102 +547,80 @@ export default function InventoryView() {
     <div>
       <style>{INV_MOTION_CSS}</style>
 
-      {/* Band A — header */}
-      <div className="flex flex-wrap justify-between items-start gap-3 mb-4">
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Inventory</h2>
-          <p className="text-[12px] text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
-            <span className="text-ink-2 font-medium tabular-nums">{counts.all}</span> lots
-            <span className="text-faint">·</span>
-            <span className="text-ink-2 font-medium tabular-nums">{totalUnits.toLocaleString()}</span> units
-            <span className="text-faint">·</span>
-            <span className="text-ink-2 font-medium tabular-nums">{fmtAmount(totalValue)}</span> total value
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {selectMode ? (
-            <button onClick={exitSelect} className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
-              Cancel
-            </button>
-          ) : (
-            <>
-              <button onClick={() => setPasting(true)} title="Paste a supplier load message: it fills the form for you"
-                className="flex items-center gap-1.5 border border-accent/40 text-accent px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-accent/10 transition-colors">
-                <Clipboard size={13} /> Paste a load
+      {/* Band A: the shell draws the title, so the lot count rides as a quiet line and the buttons go in its actions slot */}
+      <PageActions>
+        {selectMode ? (
+          <Button onClick={exitSelect}>Cancel</Button>
+        ) : (
+          <>
+            <Button onClick={() => setPasting(true)} title="Paste a supplier load message: it fills the form for you" icon={<Clipboard size={14} />}>Paste a load</Button>
+            <Button onClick={() => setImporting(true)} title="Add many lots at once from a spreadsheet" icon={<FileSpreadsheet size={14} />}>Import</Button>
+            {/* R-566: out of the ... menu, so select all and mass edit are one click away. */}
+            <Button onClick={() => setSelectMode(true)} title="Pick lots to edit, mark or send together" icon={<CheckSquare size={14} />}>Select</Button>
+            <Button variant="ink" onClick={startAdd} icon={<Plus size={14} />}>Add lot</Button>
+            {/* Overflow: low-emphasis utilities */}
+            <div className="relative" ref={overflowRef}>
+              <button onClick={() => setOverflowOpen((o) => !o)} title="More" aria-label="More" className="ui-btn px-0 w-8 justify-center">
+                <MoreHorizontal size={16} />
               </button>
-              <button onClick={() => setImporting(true)} title="Add many lots at once from a spreadsheet"
-                className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors">
-                <FileSpreadsheet size={13} /> Import
-              </button>
-              {/* R-566: out of the ... menu, so select all and mass edit are one click away. */}
-              <button onClick={() => setSelectMode(true)} title="Pick lots to edit, mark or send together"
-                className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors">
-                <CheckSquare size={13} /> Select
-              </button>
-              <button onClick={startAdd} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
-                <Plus size={14} /> Add lot
-              </button>
-              {/* Overflow — low-emphasis utilities */}
-              <div className="relative" ref={overflowRef}>
-                <button onClick={() => setOverflowOpen((o) => !o)} title="More"
-                  className="flex items-center justify-center border border-line-3 text-ink-2 w-9 h-9 rounded-lg hover:bg-surface-2 transition-colors">
-                  <MoreHorizontal size={16} />
-                </button>
-                {overflowOpen && (
-                  <div className="absolute right-0 mt-1 z-30 w-52 bg-surface border border-line rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.10)] py-1 inv-fade">
-                    <button onClick={() => { setOverflowOpen(false); resync(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><RefreshCw size={13} className="text-muted" /> Sync to devices</button>
-                    <button onClick={() => { setOverflowOpen(false); syncPhotos(); }} disabled={photoSyncBusy} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors disabled:opacity-50"><Image size={13} className="text-muted" /> {photoSyncBusy ? "Syncing photos…" : "Sync photos now"}</button>
-                    <button onClick={() => { setOverflowOpen(false); checkStaleLots(); }} disabled={staleBusy} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors disabled:opacity-50"><Trash2 size={13} className="text-muted" /> Clean up removed lots</button>
-                    <button onClick={() => { setOverflowOpen(false); handleExportInventory(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><FileDown size={13} className="text-muted" /> Export CSV</button>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
+              {overflowOpen && (
+                <div className="ui-pop right-0 top-9 w-56 inv-fade">
+                  <button onClick={() => { setOverflowOpen(false); resync(); }} className="ui-pop-item"><span>Sync to devices</span><RefreshCw size={14} className="text-muted" /></button>
+                  <button onClick={() => { setOverflowOpen(false); syncPhotos(); }} disabled={photoSyncBusy} className="ui-pop-item disabled:opacity-50"><span>{photoSyncBusy ? "Syncing photos…" : "Sync photos now"}</span><Image size={14} className="text-muted" /></button>
+                  <button onClick={() => { setOverflowOpen(false); checkStaleLots(); }} disabled={staleBusy} className="ui-pop-item disabled:opacity-50"><span>Clean up removed lots</span><Trash2 size={14} className="text-muted" /></button>
+                  <button onClick={() => { setOverflowOpen(false); handleExportInventory(); }} className="ui-pop-item"><span>Export CSV</span><FileDown size={14} className="text-muted" /></button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </PageActions>
+      <p className="text-[13px] text-muted mb-4 flex items-center gap-1.5 flex-wrap">
+        <span className="text-ink-2 tabular-nums">{counts.all}</span> lots
+        <span className="text-faint">·</span>
+        <span className="text-ink-2 tabular-nums">{totalUnits.toLocaleString()}</span> units
+        <span className="text-faint">·</span>
+        <span className="text-ink-2 tabular-nums">{fmtAmount(totalValue)}</span> total value
+      </p>
 
       {/* Storefront link — one calm row; live link when on, quiet hint when off */}
       {storefront && !selectMode && (
         storeUrl ? (
-          <div className="flex items-center gap-2 mb-4 bg-surface-2 border border-line rounded-lg px-3 h-10">
-            <Link2 size={13} className="text-muted flex-shrink-0" />
-            <span className="text-[12px] text-muted flex-shrink-0">Storefront</span>
-            <span className="text-[12px] text-ink-2 truncate min-w-0 flex-1" title={storeUrl}>{storeUrl}</span>
-            <button onClick={() => copyStoreLink()}
-              className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-line-3 px-2.5 h-7 rounded-md hover:bg-surface-2 transition-colors flex-shrink-0">
-              <Clipboard size={12} /> Copy link
-            </button>
-            <button onClick={() => api.openExternal(storeUrl)}
-              className="flex items-center gap-1.5 text-[12px] text-accent px-2.5 h-7 rounded-md hover:bg-accent/10 transition-colors flex-shrink-0">
-              <ExternalLink size={12} /> Open
-            </button>
-          </div>
+          <>
+            <div className="flex items-center gap-3 py-3">
+              <Link2 size={14} className="text-muted flex-shrink-0" />
+              <span className="ui-label flex-shrink-0">Storefront</span>
+              <span className="text-[13px] text-ink-2 truncate min-w-0 flex-1" title={storeUrl}>{storeUrl}</span>
+              <Button size="sm" icon={<Clipboard size={13} />} onClick={() => copyStoreLink()}>Copy link</Button>
+              <Button size="sm" icon={<ExternalLink size={13} />} onClick={() => api.openExternal(storeUrl)}>Open</Button>
+            </div>
+            <div className="hsep mb-4" />
+          </>
         ) : (
-          <p className="text-[12px] text-muted flex items-center gap-1.5 mb-4">
-            <Link2 size={13} className="text-faint flex-shrink-0" /> Your public storefront is off. Turn it on in Settings → Storefront.
+          <p className="text-[13px] text-muted flex items-center gap-1.5 mb-4">
+            <Link2 size={14} className="text-faint flex-shrink-0" /> Your public storefront is off. Turn it on in Settings → Storefront.
           </p>
         )
       )}
 
       {/* Bulk action bar */}
       {selectMode && (
-        <div className="sticky top-0 z-20 mb-4 flex flex-wrap items-center gap-2 bg-surface border border-line rounded-xl px-4 py-2.5 shadow-sm">
-          <span className="text-[13px] font-semibold text-ink-2 mr-1 tabular-nums">{selected.size} selected</span>
-          <button onClick={() => setSelected(new Set(filtered.map((l) => l.id)))} className="text-[12px] text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-accent/10">Select all</button>
-          {selected.size > 0 && <button onClick={() => setSelected(new Set())} className="text-[12px] text-muted hover:text-ink-2 px-2 py-1 rounded hover:bg-surface-2">Clear</button>}
+        <div className="sticky top-0 z-20 mb-4 flex flex-wrap items-center gap-2 bg-surface py-2.5 shadow-[0_1px_0_rgb(var(--c-line))] inv-fade">
+          <span className="text-[14px] font-medium text-ink mr-1 tabular-nums">{selected.size} selected</span>
+          <button onClick={() => setSelected(new Set(filtered.map((l) => l.id)))} className="ui-link">Select all</button>
+          {selected.size > 0 && <button onClick={() => setSelected(new Set())} className="ui-link muted">Clear</button>}
           <div className="flex-1" />
-          <button onClick={() => setBulkEditing(true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line-3 px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><Pencil size={12} /> Edit</button>
-          <button onClick={() => bulkStatus("sold")} disabled={!selected.size} className="text-[12px] text-success-ink border border-success px-2.5 h-8 rounded-lg hover:bg-success-bg disabled:opacity-40 flex items-center gap-1"><DollarSign size={12} /> Sold</button>
-          <button onClick={() => bulkStatus("archived")} disabled={!selected.size} className="text-[12px] text-danger-ink border border-danger px-2.5 h-8 rounded-lg hover:bg-danger-bg disabled:opacity-40 flex items-center gap-1"><Ban size={12} /> Unavailable</button>
-          <button onClick={() => bulkSent("whatsapp", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><MessageCircle size={12} /> WA sent</button>
-          <button onClick={() => bulkSent("email", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><Mail size={12} /> Emailed</button>
-          <button onClick={() => bulkSent("facebook", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><Facebook size={12} /> FB posted</button>
-          <button onClick={bulkDelete} disabled={!selected.size} className="text-[12px] text-danger-ink bg-danger-bg border border-danger px-2.5 h-8 rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center gap-1"><Trash2 size={12} /> Delete</button>
+          <button onClick={() => setBulkEditing(true)} disabled={!selected.size} className="ui-btn ui-btn-sm"><Pencil size={12} /> Edit</button>
+          <button onClick={() => bulkStatus("sold")} disabled={!selected.size} className="ui-btn ui-btn-sm"><DollarSign size={12} /> Sold</button>
+          <button onClick={() => bulkStatus("archived")} disabled={!selected.size} className="ui-btn ui-btn-sm ui-btn-danger"><Ban size={12} /> Unavailable</button>
+          <button onClick={() => bulkSent("whatsapp", true)} disabled={!selected.size} className="ui-btn ui-btn-sm"><MessageCircle size={12} /> WA sent</button>
+          <button onClick={() => bulkSent("email", true)} disabled={!selected.size} className="ui-btn ui-btn-sm"><Mail size={12} /> Emailed</button>
+          <button onClick={() => bulkSent("facebook", true)} disabled={!selected.size} className="ui-btn ui-btn-sm"><Facebook size={12} /> FB posted</button>
+          <button onClick={bulkDelete} disabled={!selected.size} className="ui-btn ui-btn-sm ui-btn-danger"><Trash2 size={12} /> Delete</button>
           <button onClick={() => {
             window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: Array.from(selected) }));
-          }} disabled={!selected.size} className="text-[12px] text-success-ink bg-success-bg border border-success px-2.5 h-8 rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center gap-1"><Send size={12} /> Share WA</button>
-          <button onClick={sendSelectedToNewsletter} disabled={!selected.size} className="text-[12px] text-on-accent bg-accent border border-accent px-2.5 h-8 rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center gap-1"><Mail size={12} /> Send to newsletter</button>
+          }} disabled={!selected.size} className="ui-btn ui-btn-sm"><Send size={12} /> Share WA</button>
+          <button onClick={sendSelectedToNewsletter} disabled={!selected.size} className="ui-btn ui-btn-sm ui-btn-ink"><Mail size={12} /> Send to newsletter</button>
         </div>
       )}
 
@@ -650,10 +631,10 @@ export default function InventoryView() {
         return (
           <button
             onClick={() => { const id = Object.keys(newOfferByLot)[0]; if (id) setDetailId(id); }}
-            className="w-full flex items-center gap-2.5 mb-4 rounded-xl border border-accent/40 bg-accent/10 px-4 py-3 text-left hover:bg-accent/15 transition-colors">
-            <DollarSign size={16} className="text-accent flex-shrink-0" />
+            className="w-full flex items-center gap-3 mb-1 rounded-lg px-3 py-2.5 text-left hover:bg-surface-2 transition-colors duration-150">
+            <DollarSign size={16} className="text-ink-2 flex-shrink-0" />
             <span className="text-[13px] text-ink min-w-0">
-              <span className="font-semibold">{newOffers.length} new offer{newOffers.length !== 1 ? "s" : ""}</span>
+              <span className="font-medium">{newOffers.length} new offer{newOffers.length !== 1 ? "s" : ""}</span>
               <span className="text-muted"> · {first}{names.length > 1 ? ` +${names.length - 1} more` : ""}, review {newOffers.length !== 1 ? "them" : "it"} on the lot</span>
             </span>
           </button>
@@ -665,10 +646,10 @@ export default function InventoryView() {
       {locFixCount > 0 && (
         <button
           onClick={() => setLocFixOpen(true)}
-          className="w-full flex items-center gap-2.5 mb-4 rounded-xl border border-line bg-surface-2 px-4 py-3 text-left hover:border-accent/40 transition-colors">
-          <MapPin size={16} className="text-accent flex-shrink-0" />
+          className="w-full flex items-center gap-3 mb-1 rounded-lg px-3 py-2.5 text-left hover:bg-surface-2 transition-colors duration-150">
+          <MapPin size={16} className="text-ink-2 flex-shrink-0" />
           <span className="text-[13px] text-ink min-w-0">
-            <span className="font-semibold">{locFixCount} location{locFixCount !== 1 ? "s" : ""} to tidy up</span>
+            <span className="font-medium">{locFixCount} location{locFixCount !== 1 ? "s" : ""} to tidy up</span>
             <span className="text-muted"> · set a state so these loads show on the storefront map</span>
           </span>
         </button>
@@ -679,22 +660,21 @@ export default function InventoryView() {
 
       {/* Band B — toolbar */}
       {!selectMode && (
-        <div className="flex flex-wrap items-center gap-2.5 pb-3 mb-4 border-b border-line">
+        <><div className="hsep mt-3 mb-4" /><div className="flex flex-wrap items-center gap-2.5 mb-4">
           {/* Search */}
-          <div className="relative flex-1 min-w-[180px]">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint pointer-events-none" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, supplier, category, location…"
-              className="w-full border border-line rounded-lg h-9 pl-9 pr-8 text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" />
+          <label className="ui-search flex-1 min-w-[200px]">
+            <Search size={14} />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, supplier, category, location" aria-label="Search lots" />
             {search && (
-              <button onClick={() => setSearch("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-faint hover:text-ink-2 transition-colors" title="Clear search"><X size={14} /></button>
+              <button onClick={() => setSearch("")} className="text-faint hover:text-ink-2 transition-colors" title="Clear search"><X size={14} /></button>
             )}
-          </div>
+          </label>
 
           {/* Status segmented control */}
-          <div className="flex items-center bg-surface-3 rounded-lg p-0.5">
+          <div className="flex items-center gap-0.5 bg-surface-2 rounded-lg p-0.5 ring-1 ring-line">
             {STATUS_FILTERS.map((f) => (
               <button key={f} onClick={() => { setFilter(f); if (f !== "all" && f !== "available") setRenewOnly(false); }}
-                className={`text-[12px] font-medium px-2.5 h-8 rounded-md transition-all duration-[140ms] flex items-center gap-1 ${filter === f ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                className={`text-[13px] font-medium px-2.5 h-[26px] rounded-md transition-colors duration-150 flex items-center gap-1 ${filter === f ? "bg-surface-3 text-ink" : "text-muted hover:text-ink"}`}>
                 <span>{f === "all" ? "All" : f.charAt(0).toUpperCase() + f.slice(1)}</span>
                 <span className="text-faint tabular-nums">{counts[f]}</span>
               </button>
@@ -705,14 +685,14 @@ export default function InventoryView() {
           {staleCount > 0 && (
             <button onClick={() => { const next = !renewOnly; setRenewOnly(next); if (next && filter !== "all" && filter !== "available") setFilter("available"); }}
               title="Available lots not re-shared in over 2 days"
-              className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-[12px] font-medium border transition-colors ${renewOnly ? "bg-warning-bg text-warning-ink border-warning" : "bg-surface text-warning-ink border-warning/50 hover:bg-warning-bg"}`}>
-              <RefreshCw size={12} /> <span className="tabular-nums">{staleCount}</span> need renewing
+              className={`ui-btn ${renewOnly ? "text-warning-ink bg-warning-bg" : "text-warning-ink"}`}>
+              <RefreshCw size={13} /> <span className="tabular-nums">{staleCount}</span> need renewing
             </button>
           )}
 
           {/* Category filter */}
           <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}
-            className="h-9 px-2.5 rounded-lg text-[12px] text-ink-2 border border-line-3 bg-surface hover:bg-surface-2 transition-colors focus:outline-none focus:border-accent max-w-[160px]">
+            className="ui-btn max-w-[170px]">
             <option value="all">All categories</option>
             {categoryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
@@ -720,7 +700,7 @@ export default function InventoryView() {
           {/* Tag filter (R-310) — only once something is tagged; an empty filter is noise. */}
           {tagOptions.length > 0 && (
             <select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)}
-              className="h-9 px-2.5 rounded-lg text-[12px] text-ink-2 border border-line-3 bg-surface hover:bg-surface-2 transition-colors focus:outline-none focus:border-accent max-w-[160px]">
+              className="ui-btn max-w-[170px]">
               <option value="all">All tags</option>
               {tagOptions.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
@@ -728,7 +708,7 @@ export default function InventoryView() {
 
           {/* Sent status filter */}
           <select value={sentFilter} onChange={(e) => setSentFilter(e.target.value as any)}
-            className="h-9 px-2.5 rounded-lg text-[12px] text-ink-2 border border-line-3 bg-surface hover:bg-surface-2 transition-colors focus:outline-none focus:border-accent">
+            className="ui-btn">
             <option value="any">Any send status</option>
             <option value="email">Emailed</option>
             <option value="whatsapp">Sent on WhatsApp</option>
@@ -739,15 +719,15 @@ export default function InventoryView() {
           {/* Sort */}
           <div className="relative" ref={sortRef}>
             <button onClick={() => setSortOpen((o) => !o)}
-              className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-[12px] text-ink-2 border border-line-3 hover:bg-surface-2 transition-colors">
+              className="ui-btn">
               {({ newest: "Newest", profit: "Profit", margin: "Margin", value: "Value", stale: "Stale first" } as Record<SortKey, string>)[sort]}
               <ChevronDown size={13} className={`text-muted transition-transform ${sortOpen ? "rotate-180" : ""}`} />
             </button>
             {sortOpen && (
-              <div className="absolute right-0 mt-1 z-30 w-40 bg-surface border border-line rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.10)] py-1 inv-fade">
+              <div className="ui-pop right-0 top-9 w-44 inv-fade">
                 {([["newest", "Newest"], ["profit", "Profit"], ["margin", "Margin"], ["value", "Value"], ["stale", "Stale first"]] as [SortKey, string][]).map(([k, label]) => (
                   <button key={k} onClick={() => { setSort(k); setSortOpen(false); }}
-                    className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center justify-between transition-colors ${sort === k ? "text-accent" : "text-ink-2 hover:bg-surface-2"}`}>
+                    className={`ui-pop-item ${sort === k ? "bg-surface-3" : ""}`}>
                     {label} {sort === k && <Check size={13} />}
                   </button>
                 ))}
@@ -758,22 +738,22 @@ export default function InventoryView() {
           {/* Include sold & archived — only meaningful under "all" */}
           {filter === "all" && (
             <button onClick={() => { const next = !includeDone; setShowSold(next); setShowArchived(next); }}
-              className={`h-9 px-2.5 rounded-lg text-[12px] transition-colors ${includeDone ? "text-accent" : "text-muted hover:text-ink-2"}`}>
+              className={`ui-link muted ${includeDone ? "!text-ink" : ""}`}>
               {includeDone ? "Hide sold & archived" : "Include sold & archived"}
             </button>
           )}
-        </div>
+        </div></>
       )}
 
       {/* Needs-attention banner — missing info or media that hasn't fully synced */}
       {attentionCount > 0 && (
         <button type="button" onClick={() => { if (!attentionOnly) clearFilters(); setAttentionOnly(!attentionOnly); }}
-          className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border text-left transition-colors mb-3 ${attentionOnly ? "border-warning bg-warning-bg" : "border-warning/40 bg-warning-bg/50 hover:bg-warning-bg"}`}>
-          <RefreshCw size={14} className="text-warning-ink flex-shrink-0" />
-          <span className="text-[12.5px] text-ink-2 flex-1 min-w-0">
-            <span className="font-semibold text-ink">{attentionCount} lot{attentionCount !== 1 ? "s" : ""}</span> need attention: missing photos, price, category, or media that hasn’t synced across devices.
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors duration-150 mb-4 hover:bg-surface-2 ${attentionOnly ? "bg-surface-2" : ""}`}>
+          <RefreshCw size={16} className="text-warning-ink flex-shrink-0" />
+          <span className="text-[13px] text-ink-2 flex-1 min-w-0">
+            <span className="font-medium text-ink">{attentionCount} lot{attentionCount !== 1 ? "s" : ""}</span> need attention: missing photos, price, category, or media that hasn’t synced across devices.
           </span>
-          <span className="text-[11.5px] font-medium text-warning-ink flex-shrink-0">{attentionOnly ? "Show all" : "Show these"}</span>
+          <span className="text-[13px] font-medium text-ink-2 flex-shrink-0">{attentionOnly ? "Show all" : "Show these"}</span>
         </button>
       )}
 
@@ -807,22 +787,22 @@ export default function InventoryView() {
 
         {filtered.length === 0 && lots.length === 0 && (
           <div className="col-span-full flex flex-col items-center text-center py-16 inv-rise">
-            <div className="w-12 h-12 rounded-xl bg-surface-3 flex items-center justify-center mb-3"><Package size={22} className="text-muted" strokeWidth={1.5} /></div>
-            <p className="text-[15px] font-semibold text-ink mb-1">No inventory yet</p>
+            <Package size={20} className="text-muted mb-3" />
+            <p className="text-[15px] font-medium text-ink mb-1">No inventory yet</p>
             <p className="text-[13px] text-muted max-w-xs">Add your first lot, or paste a supplier message and let it fill the form.</p>
             <div className="flex items-center gap-2 mt-4">
-              <button onClick={() => setPasting(true)} className="flex items-center gap-1.5 border border-accent/40 text-accent px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-accent/10 transition-colors"><Clipboard size={13} /> Paste a load</button>
-              <button onClick={() => setImporting(true)} className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"><FileSpreadsheet size={13} /> Import a spreadsheet</button>
-              <button onClick={startAdd} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5"><Plus size={14} /> Add lot</button>
+              <Button icon={<Clipboard size={14} />} onClick={() => setPasting(true)}>Paste a load</Button>
+              <Button icon={<FileSpreadsheet size={14} />} onClick={() => setImporting(true)}>Import a spreadsheet</Button>
+              <Button variant="ink" icon={<Plus size={14} />} onClick={startAdd}>Add lot</Button>
             </div>
           </div>
         )}
         {filtered.length === 0 && lots.length > 0 && (
           <div className="col-span-full flex flex-col items-center text-center py-16 inv-rise">
-            <div className="w-12 h-12 rounded-xl bg-surface-3 flex items-center justify-center mb-3"><Package size={22} className="text-muted" strokeWidth={1.5} /></div>
-            <p className="text-[15px] font-semibold text-ink mb-1">No lots match</p>
+            <Package size={20} className="text-muted mb-3" />
+            <p className="text-[15px] font-medium text-ink mb-1">No lots match</p>
             <p className="text-[13px] text-muted max-w-xs">Try a different status or clear your search.</p>
-            <button onClick={clearFilters} className="mt-4 text-[13px] text-ink-2 px-3 h-9 rounded-lg hover:bg-surface-2 transition-colors">Clear filters</button>
+            <Button className="mt-4" onClick={clearFilters}>Clear filters</Button>
           </div>
         )}
       </div>
@@ -991,12 +971,12 @@ function LotCard({
             className={`w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03] inv-photo-zoom ${sold ? "opacity-70" : archived ? "opacity-60 grayscale-[0.3]" : ""}`}
             onError={() => setImgErr(true)} />
         ) : (
-          <Package size={26} className={`text-faint ${archived ? "opacity-60" : ""}`} strokeWidth={1.5} />
+          <Package size={26} className={`text-faint ${archived ? "opacity-60" : ""}`} />
         )}
 
         {/* Status pill — sentence case */}
-        <span className={`absolute top-2.5 left-2.5 text-[10px] font-semibold px-2 py-0.5 rounded-full flex items-center gap-1.5 bg-surface/85 backdrop-blur-sm ${statusColor(lot.status)}`}>
-          {lot.status.charAt(0).toUpperCase() + lot.status.slice(1)}
+        <span className="absolute top-2.5 left-2.5">
+          <StatusPill tone={lotTone(lot.status)}>{lot.status.charAt(0).toUpperCase() + lot.status.slice(1)}</StatusPill>
         </span>
 
         {/* Needs-attention chip — missing info or unsynced media (tooltip lists them) */}
@@ -1007,10 +987,10 @@ function LotCard({
         {/* Bottom-right meta chips */}
         <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5">
           {lot.manifest_path && (
-            <span className="w-5 h-5 rounded-full bg-black/55 text-white flex items-center justify-center" title="Manifest attached"><FileText size={11} /></span>
+            <StatusPill title="Manifest attached">Manifest</StatusPill>
           )}
           {photos.length > 1 && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-black/55 text-white font-medium flex items-center gap-1"><Image size={9} /> {photos.length}</span>
+            <StatusPill title={`${photos.length} photo${photos.length === 1 ? "" : "s"}`}>{photos.length} photo{photos.length === 1 ? "" : "s"}</StatusPill>
           )}
         </div>
 
@@ -1069,7 +1049,7 @@ function LotCard({
             <div className={`text-[19px] font-semibold ${isCustom ? "leading-snug line-clamp-2" : "tabular-nums leading-none"} ${sold || !price.priced ? "text-muted" : "text-ink"}`}>{price.headline}</div>
             {price.unit && <span className="text-[10.5px] text-muted">{price.unit}</span>}
             {prevTotal != null && !sold && !archived && (
-              <span className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded-full bg-success-bg text-success-ink">Reduced</span>
+              <StatusPill tone="success">Reduced</StatusPill>
             )}
           </div>
           {price.moq && <div className="text-[11px] text-muted tabular-nums mt-1">{price.moq}</div>}
@@ -1090,7 +1070,7 @@ function LotCard({
         {cardTags.length > 0 && (
           <div className="flex items-center gap-1 mt-2.5 flex-nowrap overflow-hidden">
             {cardTags.slice(0, 3).map((t) => (
-              <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-surface-3 text-ink-2 border border-line whitespace-nowrap flex-shrink-0">{t}</span>
+              <StatusPill key={t}>{t}</StatusPill>
             ))}
             {cardTags.length > 3 && <span className="text-[10px] text-muted whitespace-nowrap flex-shrink-0" title={cardTags.slice(3).join(" · ")}>+{cardTags.length - 3}</span>}
           </div>
@@ -1221,7 +1201,7 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
           rows={8}
           autoFocus
           placeholder="Paste the supplier message(s) here…"
-          className="w-full border border-line px-3 py-2.5 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-none"
+          className="w-full border border-line px-3 py-2.5 rounded-lg text-[13px] focus:outline-none focus:border-ink transition-colors resize-none"
         />
         {err && <div className="text-[11.5px] text-danger-ink mt-2">{err}</div>}
         <div className="flex justify-end gap-2 mt-4">
@@ -1280,7 +1260,7 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
       const palletPriceLines = pallet
         ? [`PRICE PER PALLET - $${fmtAmount(pallet.perPallet).replace(/^\$/, "")}`,
            pallet.unitHigh > 0
-             ? `PRICE PER UNIT - ${pallet.unitLow < pallet.unitHigh ? `${fmtAmount(pallet.unitLow)}–${fmtAmount(pallet.unitHigh)}` : fmtAmount(pallet.unitHigh)}`
+             ? `PRICE PER UNIT - ${pallet.unitLow < pallet.unitHigh ? `${fmtAmount(pallet.unitLow)} to ${fmtAmount(pallet.unitHigh)}` : fmtAmount(pallet.unitHigh)}`
              : ""].filter(Boolean)
         : [];
       // Header summary line: "<pallets> pallets · <units> units · <brand mix>".
@@ -1381,9 +1361,9 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
 
             <div className="space-y-2">
               <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject"
-                className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:border-ink" />
               <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={9}
-                className="w-full bg-surface-2 border border-line rounded-lg px-2.5 py-2 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none leading-relaxed" />
+                className="w-full bg-surface-2 border border-line rounded-lg px-2.5 py-2 text-[13px] text-ink focus:outline-none focus:border-ink resize-none leading-relaxed" />
               <p className="text-[11px] text-muted"><code>{"{{first_name}}"}</code> is personalized per buyer.</p>
             </div>
 
@@ -1458,7 +1438,7 @@ function ChipMultiSelect({ value, onChange, options, placeholder, createLabel = 
             return (
               <button key={o} type="button" onMouseDown={(e) => { e.preventDefault(); toggle(o); }}
                 className={`w-full flex items-center gap-2 text-left px-3 py-2 text-[13px] hover:bg-surface-2 ${on ? "text-accent font-medium" : "text-ink-2"}`}>
-                <span className={`w-[15px] h-[15px] rounded-[4px] flex items-center justify-center shrink-0 ring-1 ${on ? "bg-accent text-on-accent ring-accent" : "ring-line"}`}>{on && <Check size={10} strokeWidth={3} />}</span>
+                <span className={`w-[15px] h-[15px] rounded-[4px] flex items-center justify-center shrink-0 ring-1 ${on ? "bg-accent text-on-accent ring-accent" : "ring-line"}`}>{on && <Check size={10} />}</span>
                 <span className="truncate">{o}</span>
               </button>
             );
@@ -1574,11 +1554,11 @@ function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
               return (
                 <div key={ci} className="flex items-center gap-3 px-3 py-2">
                   <span className="flex-1 min-w-0 text-[13px] text-ink truncate">{c.join(" / ")}</span>
-                  <NumberInput className={cellInp + " w-24 text-right tabular-nums"} integer value={v?.qty || ""} placeholder="–"
+                  <NumberInput className={cellInp + " w-24 text-right tabular-nums"} integer value={v?.qty || ""} placeholder="-"
                     onValue={(n) => upsert(c, { qty: n })} />
                   <div className="relative w-32">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                    <NumberInput className={cellInp + " w-32 pl-6 text-right tabular-nums"} value={v?.price ?? ""} placeholder="–"
+                    <NumberInput className={cellInp + " w-32 pl-6 text-right tabular-nums"} value={v?.price ?? ""} placeholder="-"
                       onValue={(n, raw) => upsert(c, { price: raw.trim() === "" ? null : n })} />
                   </div>
                 </div>
@@ -1728,7 +1708,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     if (lo <= 0) return "";
     const high = ask / lo;
     const low = hi > lo ? ask / hi : high;
-    return low < high ? ` · ${fmtAmount(low)}–${fmtAmount(high)} / unit` : ` · ${fmtAmount(high)} / unit`;
+    return low < high ? ` · ${fmtAmount(low)} to ${fmtAmount(high)} / unit` : ` · ${fmtAmount(high)} / unit`;
   })();
   // Third price mode: a free-text price shown verbatim (no per-unit math).
   const [priceText, setPriceText] = useState<string>(details0.price_text ?? "");
@@ -1980,14 +1960,14 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 {/* Stepping through a pasted batch: say which load this is, so a long
                     paste never leaves you guessing how many are still to come. */}
                 {draft && (
-                  <span className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums flex-shrink-0">{draft.label}</span>
+                  <StatusPill>{draft.label}</StatusPill>
                 )}
                 {!initial && !draft && pasteTotal > 0 && (
-                  <span className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums flex-shrink-0">
+                  <StatusPill>
                     {batchFrom === "split"
                       ? (pasteTotal > 1 ? `Split ${pasteIndex} of ${pasteTotal}` : "From a manifest split")
                       : (pasteTotal > 1 ? `Pasted load ${pasteIndex} of ${pasteTotal}` : "From a pasted load")}
-                  </span>
+                  </StatusPill>
                 )}
               </div>
               <p className="text-[11.5px] text-muted mt-0.5">
@@ -2094,9 +2074,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                   <p className="text-[11.5px] mt-1.5 tabular-nums">
                     {pallets > 0 && perPallet > 0 ? (
                       <span className="text-ink-2">
-                        {perPallet.toLocaleString()}{perPalletMax > perPallet ? `–${perPalletMax.toLocaleString()}` : ""} × {pallets} pallet{pallets === 1 ? "" : "s"} ={" "}
+                        {perPallet.toLocaleString()}{perPalletMax > perPallet ? ` to ${perPalletMax.toLocaleString()}` : ""} × {pallets} pallet{pallets === 1 ? "" : "s"} ={" "}
                         <span className="font-semibold text-ink">
-                          {perPalletTotal.toLocaleString()}{perPalletTotalMax ? `–${perPalletTotalMax.toLocaleString()}` : ""} units
+                          {perPalletTotal.toLocaleString()}{perPalletTotalMax ? ` to ${perPalletTotalMax.toLocaleString()}` : ""} units
                         </span>
                         {perPalletTotalMax ? ": the lower figure is what's stored, so the lot never over-promises" : " stored on this lot"}
                       </span>
@@ -2268,7 +2248,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                          try { await api.removeLotPhoto(initial.id, p); } catch (e: any) { toast(String(e), "error"); }
                        }
                        setPhotos(photos.filter((_, idx) => idx !== i));
-                     }} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-danger text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
+                     }} className="absolute top-1 right-1 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] opacity-0 group-hover:opacity-100 transition-opacity duration-150"><X size={14} /></button>
                   </div>
                 ))}
               </div>
@@ -2494,7 +2474,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
   const uAsk = lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity : lot.asking_price;
   const profit = lot.price_type === "total" ? lot.asking_price - lot.total_cost : (lot.asking_price - lot.total_cost) * lot.quantity;
   const marginPct = uCost > 0 ? ((uAsk - uCost) / uCost) * 100 : 0;
-  const marginStr = uCost > 0 ? `${marginPct.toFixed(0)}%` : "–";
+  const marginStr = uCost > 0 ? `${marginPct.toFixed(0)}%` : "-";
   const totalCostAll = lot.price_type === "per_unit" ? lot.total_cost * lot.quantity : lot.total_cost;
   // Custom-priced lots show a free-text price verbatim (no per-unit / profit math).
   const isCustom = lot.price_type === "custom";
@@ -2521,18 +2501,17 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
 
   return (
     <>
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] bg-black/30 backdrop-blur-[3px] overflow-y-auto" onClick={onClose}>
-      <div className="bg-surface rounded-2xl shadow-xl w-[720px] max-w-[94vw] mb-10" onClick={(e) => e.stopPropagation()}>
+    {createPortal(
+    <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-black/50 overflow-y-auto inv-fade" onClick={onClose}>
+      <div className="bg-surface shadow-xl w-[640px] max-w-full min-h-full inv-drawer" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-start justify-between p-5 border-b border-line">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-              <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold flex items-center gap-1.5 ${statusColor(lot.status)}`}>
-                {lot.status.charAt(0).toUpperCase() + lot.status.slice(1)}
-              </span>
-              {allCats.slice(0, 3).map((c) => <span key={c} className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent font-semibold whitespace-nowrap flex-shrink-0">{c}</span>)}
-              {allCats.length > 3 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent font-semibold whitespace-nowrap flex-shrink-0" title={allCats.slice(3).join(" · ")}>+{allCats.length - 3}</span>}
-              {condition && <span className="text-[10px] px-2 py-0.5 rounded-full bg-surface-3 text-ink-2 font-semibold border border-line">{condition}</span>}
+              <StatusPill tone={lotTone(lot.status)}>{lot.status.charAt(0).toUpperCase() + lot.status.slice(1)}</StatusPill>
+              {allCats.slice(0, 2).map((c) => <StatusPill key={c}>{c}</StatusPill>)}
+              {allCats.length > 2 && <StatusPill title={allCats.slice(2).join(", ")}>+{allCats.length - 2}</StatusPill>}
+              {condition && <StatusPill>{condition}</StatusPill>}
             </div>
             <h3 className="text-[17px] font-semibold text-ink leading-tight">{lot.name}</h3>
           </div>
@@ -2559,7 +2538,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
             <Link2 size={13} className="text-muted flex-shrink-0" />
             <span className="text-[12px] text-muted flex-shrink-0">Linked to</span>
             <span className="text-[12.5px] font-medium text-ink truncate">{linkedDeal.title}</span>
-            <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold flex-shrink-0 ${dealStageColor(linkedDeal.stage)}`}>{dealStageLabel(linkedDeal.stage)}</span>
+            <StatusPill className={dealStageColor(linkedDeal.stage)}>{dealStageLabel(linkedDeal.stage)}</StatusPill>
           </div>
         )}
 
@@ -2581,7 +2560,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
               )}
             </div>
           ) : (
-            <div className="w-full h-40 bg-surface-2 rounded-xl flex items-center justify-center"><Package size={28} className="text-faint" strokeWidth={1.5} /></div>
+            <div className="w-full h-40 bg-surface-2 rounded-xl flex items-center justify-center"><Package size={28} className="text-faint" /></div>
           )}
 
           {/* Sent indicators — quiet flags, click to toggle (same language as the card) */}
@@ -2612,7 +2591,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
               {prevTotalAll != null && (
                 <span className="flex items-center gap-1.5 text-[11px]">
                   <span className="text-muted line-through tabular-nums">{fmtAmount(prevTotalAll)}</span>
-                  <span className="font-semibold px-1.5 py-0.5 rounded-full bg-success-bg text-success-ink">Reduced</span>
+                  <StatusPill tone="success">Reduced</StatusPill>
                 </span>
               )}
             </div>
@@ -2631,10 +2610,10 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
           {/* Details grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Row label="Quantity" value={unitsLabel(lot, det)} />
-            <Row label="Minimum order" value={(det.moq ?? 0) > 0 ? `${(det.moq as number).toLocaleString()} units` : "–"} />
-            <Row label="Supplier" value={lot.supplier || "–"} />
-            <Row label="Location" value={lot.location || "–"} />
-            <Row label="Notes" value={lot.notes || "–"} />
+            <Row label="Minimum order" value={(det.moq ?? 0) > 0 ? `${(det.moq as number).toLocaleString()} units` : "-"} />
+            <Row label="Supplier" value={lot.supplier || "-"} />
+            <Row label="Location" value={lot.location || "-"} />
+            <Row label="Notes" value={lot.notes || "-"} />
           </div>
           {/* Tags (R-310) — outlined, not accent-filled, so they never read as categories.
               Categories sit in the header strip above; these only drive filtering. */}
@@ -2643,7 +2622,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
               <p className="text-[12.5px] font-medium text-muted mb-1">Tags</p>
               <div className="flex flex-wrap gap-1.5">
                 {tagList.map((t) => (
-                  <span key={t} className="text-[11.5px] px-2 py-0.5 rounded-full bg-surface-3 text-ink-2 border border-line">{t}</span>
+                  <StatusPill key={t}>{t}</StatusPill>
                 ))}
               </div>
             </div>
@@ -2841,14 +2820,10 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       {m.closed && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-success-bg text-success-ink border border-success-line">
-                          Closed
-                        </span>
+                        <StatusPill tone="success">Closed</StatusPill>
                       )}
                       {m.price_close && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-surface-3 text-ink-2 border border-line">
-                          Similar price
-                        </span>
+                        <StatusPill>Similar price</StatusPill>
                       )}
                     </div>
                   </div>
@@ -2858,7 +2833,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
           </div>
         )}
       </div>
-    </div>
+    </div>, document.body)}
     {zoom && photos.length > 0 && (
       <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setZoom(false)}>
         <button onClick={() => setZoom(false)} className="absolute top-4 right-4 text-white/70 hover:text-white p-2"><X size={24} /></button>
@@ -2897,7 +2872,7 @@ function LinkDealModal({ lot, deals, clients, mediaBase, onClose, onLink }: {
   const isCustom = lot.price_type === "custom";
   const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
   const totalAsk = lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
-  const priceLabel = isCustom ? (priceText || "–") : fmtAmount(totalAsk);
+  const priceLabel = isCustom ? (priceText || "-") : fmtAmount(totalAsk);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[3px] p-4" onClick={onClose}>
@@ -2915,7 +2890,7 @@ function LinkDealModal({ lot, deals, clients, mediaBase, onClose, onLink }: {
         {/* Product identity — never leaves you guessing which lot you're linking. */}
         <div className="flex items-center gap-3 px-5 py-3 bg-surface-2 border-b border-line">
           <div className="w-10 h-10 rounded-lg bg-surface-3 overflow-hidden flex items-center justify-center flex-shrink-0">
-            {thumb ? <img src={thumb} alt="" className="w-full h-full object-cover" /> : <Package size={16} className="text-faint" strokeWidth={1.5} />}
+            {thumb ? <img src={thumb} alt="" className="w-full h-full object-cover" /> : <Package size={16} className="text-faint" />}
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-[13px] font-medium text-ink truncate">{lot.name}</p>
@@ -2929,14 +2904,14 @@ function LinkDealModal({ lot, deals, clients, mediaBase, onClose, onLink }: {
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search deals or clients" autoFocus
-                className="border border-line pl-9 pr-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" />
+                className="border border-line pl-9 pr-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:border-ink transition-colors" />
             </div>
           </div>
         )}
 
         {open.length === 0 ? (
           <div className="px-5 py-10 text-center">
-            <div className="w-11 h-11 rounded-xl bg-surface-2 flex items-center justify-center mx-auto mb-3"><GitBranch size={18} className="text-faint" strokeWidth={1.5} /></div>
+            <GitBranch size={18} className="text-faint mx-auto mb-3" />
             <p className="text-[13px] font-medium text-ink">No open deals yet</p>
             <p className="text-[12px] text-muted mt-1">Create a deal in Deals to link this product.</p>
           </div>
@@ -2953,7 +2928,7 @@ function LinkDealModal({ lot, deals, clients, mediaBase, onClose, onLink }: {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-[13px] font-medium text-ink truncate">{d.title}</span>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold flex-shrink-0 ${dealStageColor(d.stage)}`}>{dealStageLabel(d.stage)}</span>
+                      <StatusPill className={dealStageColor(d.stage)}>{dealStageLabel(d.stage)}</StatusPill>
                     </div>
                     {client && <p className="text-[11px] text-muted truncate mt-0.5">{client}</p>}
                   </div>

@@ -20,6 +20,7 @@ import {
   Me,
 } from "../lib/api";
 import { isAdmin } from "../lib/permissions";
+import { Button, PageActions, Tabs } from "./ui";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 // The NATIVE clipboard, not navigator.clipboard. The web API throws NotAllowedError inside
@@ -40,7 +41,6 @@ import {
   ChevronRight,
   ClipboardCopy,
   Download,
-  Layers,
   Plus,
   RotateCcw,
   Search,
@@ -76,7 +76,7 @@ const DEBOUNCE_MS = 140;
 const CARD_LIMIT = 150;
 
 const inp =
-  "w-full bg-surface border border-line-2 rounded-lg px-2.5 h-8 text-[12.5px] text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "w-full bg-surface border border-line-2 rounded-lg px-2.5 h-8 text-[12.5px] text-ink placeholder:text-faint focus:outline-none focus:border-ink transition-colors";
 
 const n = (v: number) => Math.round(v).toLocaleString();
 
@@ -221,44 +221,34 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
 
   return (
     <div>
-      <div className="flex items-start justify-between gap-4 mb-5">
-        <div className="min-w-0">
-          <h1 className="text-[20px] font-semibold text-ink flex items-center gap-2">
-            <Layers size={18} className="text-accent" /> Lot engine
-          </h1>
-          <p className="text-[13px] text-muted mt-1 max-w-[620px]">
-            Build a lot by taking whole warehouse locations. Filters rank and qualify slots. They
-            never pick items out of one, because a slot is all or nothing.
-          </p>
-        </div>
-        <div className="shrink-0 flex items-center gap-2">
-          {sheets.length > 1 && (
-            <select
-              value={sheetId ?? ""}
-              onChange={(e) => setSheetId(e.target.value)}
-              className="bg-surface border border-line-2 rounded-lg px-2.5 h-9 text-[12.5px] text-ink focus:outline-none focus:border-accent transition-colors max-w-[220px]"
-            >
-              {sheets.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          )}
-          <button
-            onClick={pick}
-            disabled={busy}
-            className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors disabled:opacity-50"
+      <PageActions>
+        {sheets.length > 1 && (
+          <select
+            value={sheetId ?? ""}
+            onChange={(e) => setSheetId(e.target.value)}
+            className="ui-btn max-w-[220px]"
+            aria-label="Sheet"
           >
-            <Upload size={13} /> {busy ? "Reading…" : sheets.length ? "Import another" : "Import a sheet"}
-          </button>
-        </div>
-      </div>
+            {sheets.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <Button variant="ink" onClick={pick} disabled={busy} icon={<Upload size={14} />}>
+          {busy ? "Reading…" : sheets.length ? "Import another" : "Import a sheet"}
+        </Button>
+      </PageActions>
+      <p className="text-[13px] text-muted mb-5 max-w-[640px]">
+        Build a lot by taking whole warehouse locations. Filters rank and qualify slots. They
+        never pick items out of one, because a slot is all or nothing.
+      </p>
 
       {dragActive && (
         <div className="fixed inset-0 z-40 bg-surface/80 flex items-center justify-center pointer-events-none">
-          <div className="rounded-2xl border-2 border-dashed border-accent bg-surface px-8 py-6 text-center">
-            <p className="text-[15px] font-semibold text-ink">Drop to import this sheet</p>
+          <div className="rounded-2xl border-2 border-dashed border-ink bg-surface px-8 py-6 text-center">
+            <p className="text-[15px] font-medium text-ink">Drop to import this sheet</p>
             <p className="text-[12px] text-muted mt-1">It becomes a new sheet. Nothing already here changes.</p>
           </div>
         </div>
@@ -267,12 +257,10 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
       {!sheet && !busy && (
         <button
           onClick={pick}
-          className="w-full max-w-[640px] rounded-2xl border border-dashed border-line-3 hover:border-accent hover:bg-surface-2 bg-surface transition-colors py-14 px-6 flex flex-col items-center text-center"
+          className="w-full max-w-[640px] rounded-2xl border border-dashed border-line-3 hover:border-ink hover:bg-surface-2 transition-colors duration-150 py-14 px-6 flex flex-col items-center text-center"
         >
-          <div className="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center mb-4">
-            <Upload size={20} className="text-accent" />
-          </div>
-          <p className="text-[15px] font-semibold text-ink">Drop a warehouse sheet here, or click to browse</p>
+          <Upload size={20} className="text-ink-2 mb-4" />
+          <p className="text-[15px] font-medium text-ink">Drop a warehouse sheet here, or click to browse</p>
           <p className="text-[12.5px] text-muted mt-1 max-w-[420px]">
             Excel or CSV. Six columns matter: barcode, location, box, quantity, description and retail.
             Column order doesn't, and the header row can sit below junk rows.
@@ -283,9 +271,12 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
       {sheet && (
         <>
           <PoolBar sheet={sheet} facets={facets} />
-          <div className="flex items-center gap-1 border-b border-line mt-4 mb-4">
-            {(
-              [
+          <div className="mt-5 mb-5">
+            <Tabs
+              label="Lot engine"
+              value={tab}
+              onChange={(id) => setTab(id as Tab)}
+              tabs={([
                 ["sheets", "Sheets"],
                 ["build", "Build a lot"],
                 ["auto", "Auto lots"],
@@ -293,20 +284,8 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
                 ["quality", "Quality"],
                 ["barcodes", "Barcodes"],
                 ["lots", "Saved lots"],
-              ] as [Tab, string][]
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => setTab(id)}
-                className={`text-[12.5px] px-3 h-9 -mb-px border-b-2 transition-colors ${
-                  tab === id
-                    ? "border-accent text-ink font-medium"
-                    : "border-transparent text-muted hover:text-ink-2"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+              ] as [Tab, string][]).map(([id, label]) => ({ id, label }))}
+            />
           </div>
 
           {tab === "build" && facets && (
@@ -354,9 +333,9 @@ export default function LotEngineView({ me }: { me?: Me | null }) {
 function PoolBar({ sheet, facets }: { sheet: LotSheet; facets: LotFacets | null }) {
   const claimed = sheet.staged_slots + sheet.removed_slots;
   const cells = [
-    { label: "Still on the master list", value: facets ? n(facets.pool_units) : "–", accent: true },
-    { label: "Its retail", value: facets ? fmtAmount(facets.pool_msrp) : "–" },
-    { label: "Slots left to sell", value: facets ? n(facets.pool_slots) : "–" },
+    { label: "Still on the master list", value: facets ? n(facets.pool_units) : "-", accent: true },
+    { label: "Its retail", value: facets ? fmtAmount(facets.pool_msrp) : "-" },
+    { label: "Slots left to sell", value: facets ? n(facets.pool_slots) : "-" },
     { label: "Claimed by a lot", value: n(sheet.staged_slots) },
     { label: "Shipped, gone for good", value: n(sheet.removed_slots) },
   ];
@@ -368,19 +347,18 @@ function PoolBar({ sheet, facets }: { sheet: LotSheet; facets: LotFacets | null 
           being fetched, and the numbers below fill in once it lands.
         </p>
       )}
-    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2.5">
+    <>
+    <div className="hsep" />
+    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-x-6 gap-y-4 py-4">
       {cells.map((c) => (
-        <div
-          key={c.label}
-          className={`rounded-lg px-3.5 py-2.5 min-w-0 ${
-            c.accent ? "bg-accent/10 ring-1 ring-accent/30" : "bg-surface-2"
-          }`}
-        >
-          <p className="text-[11.5px] font-medium text-muted truncate">{c.label}</p>
-          <p className="text-[17px] font-bold text-ink tabular-nums mt-0.5 truncate">{c.value}</p>
+        <div key={c.label} className="min-w-0">
+          <p className="ui-label truncate">{c.label}</p>
+          <p className="ui-fig mt-1 truncate">{c.value}</p>
         </div>
       ))}
     </div>
+    <div className="hsep" />
+    </>
     {claimed > 0 && (
       <p className="text-[11.5px] text-muted mt-2 leading-snug">
         <span className="tabular-nums font-medium text-ink-2">{n(claimed)}</span> of this sheet's{" "}
@@ -799,15 +777,11 @@ function ModeRow({
       onClick={onClick}
       aria-pressed={on}
       className={`w-full text-left rounded-md border px-2 py-1.5 transition-colors ${
-        on ? "border-accent bg-accent/10" : "border-line-2 bg-surface hover:border-line-3"
+        on ? "border-ink bg-surface-2" : "border-line-2 hover:border-line-3"
       }`}
     >
       <span className="flex items-start gap-1.5">
-        <span
-          className={`mt-[3px] w-2.5 h-2.5 rounded-full shrink-0 ${
-            on ? "bg-accent ring-2 ring-accent/30" : "ring-1 ring-line-3"
-          }`}
-        />
+        {on ? <Check size={12} className="mt-[3px] shrink-0 text-ink" /> : <span className="mt-[3px] w-3 h-3 rounded-full shrink-0 ring-1 ring-line-3" />}
         <span className="min-w-0">
           <span className={`block text-[11.5px] leading-snug ${on ? "text-ink font-medium" : "text-ink-2"}`}>
             {title}
@@ -1566,9 +1540,9 @@ function LotPanel(p: {
 
 function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
-    <div className="bg-surface rounded-lg px-2.5 py-2 border border-line-2 min-w-0">
-      <p className="text-[10.5px] text-muted truncate">{label}</p>
-      <p className={`text-[14px] font-semibold tabular-nums truncate ${accent ? "text-accent" : "text-ink"}`}>
+    <div className="px-1 py-1.5 min-w-0">
+      <p className="ui-label truncate">{label}</p>
+      <p className={`text-[16px] font-medium tabular-nums truncate ${accent ? "text-ink" : "text-ink-2"}`}>
         {value}
       </p>
     </div>
@@ -3277,7 +3251,7 @@ function ActBtn({
     <button
       onClick={onClick}
       disabled={busy}
-      className="flex items-center gap-1.5 text-[11.5px] text-ink-2 border border-line-3 hover:border-accent hover:text-accent px-2.5 h-8 rounded-lg transition-colors disabled:opacity-50"
+      className="ui-btn ui-btn-sm"
     >
       {icon}
       {children}

@@ -6,6 +6,7 @@ import { fmtAmount, localDay } from "../lib/format";
 import { can } from "../lib/permissions";
 import TierBadge from "./TierBadge";
 import StatusPill from "./StatusPill";
+import { Button, PageActions, Tabs } from "./ui";
 import ClientMap2D from "./globe/ClientMap2D";
 import {
   arcDeg, buildPlaces, clusterPlaces, dueToReorder, FOLLOWUP_LABEL, FOLLOWUP_RGB, lensRgb,
@@ -16,7 +17,7 @@ import {
 import { disposeMarkTextures, makeSprite, markRoom, styleSprite } from "./globe/marks";
 import {
   X, MapPin, MapPinOff, Map as MapIcon, Globe2, Maximize2, ChevronLeft, ExternalLink,
-  RotateCcw, RefreshCw, Search, SlidersHorizontal,
+  RotateCcw, RefreshCw, Search,
 } from "lucide-react";
 
 // How long the globe waits after a manual drag release before it starts
@@ -101,7 +102,6 @@ export default function GlobeView({ me }: { me?: Me | null }) {
   const [geocodeMsg, setGeocodeMsg] = useState<string | null>(null);
   const [size,     setSize]     = useState({ w: 1200, h: 800 });   // the globe canvas
   const [rootW,    setRootW]    = useState(1200);                   // the whole tab
-  const [railOpen, setRailOpen] = useState(false);
   // Cluster level: the camera altitude, quantised, so marks regroup as you zoom
   // but not on every frame of a rotation.
   const [altLevel, setAltLevel] = useState(() => altToLevel(saved.pov?.altitude ?? HOME_POV.altitude));
@@ -317,7 +317,7 @@ export default function GlobeView({ me }: { me?: Me | null }) {
       globe = Globe({ rendererConfig: { antialias: true, alpha: true, powerPreference: "high-performance" } })
         .backgroundColor("rgba(0,0,0,0)")
         .showAtmosphere(true)
-        .atmosphereColor("#4C74E0")
+        .atmosphereColor("#8E94A3")
         .atmosphereAltitude(0.18)
         .width(el.clientWidth)
         .height(el.clientHeight)
@@ -567,79 +567,32 @@ export default function GlobeView({ me }: { me?: Me | null }) {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        if (rootW < 820) setRailOpen(true);
         setTimeout(() => searchRef.current?.focus(), 0);
       } else if (e.key === "Escape" && document.activeElement !== searchRef.current) {
         setPanel(null);
-        setRailOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rootW]);
+  }, []);
 
-  const narrow = rootW < 820;
+  // Below this width the stage and its side panel stack instead of sitting side by side.
+  const stack = rootW < 1040;
   const panelRow = selectedClient ? rows.find((r) => r.id === selectedClient) ?? null : null;
   const toggleTier = (t: string) => setTiersOn((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
   const topRegions = allRegions ? regions : regions.slice(0, 8);
   const regionTop = Math.max(1, ...regions.map((r) => (byProfit ? Math.max(0, r.profit) : r.count)));
   const filtered = shown.length !== rows.length;
+  const lensTabs = LENSES.filter(([l]) => l !== "profit" || showMoney).map(([l, label]) => ({ id: l, label }));
+  const panelKey = panel ? (panel.kind === "client" ? `c-${panel.id}` : panel.kind === "group" ? `g-${panel.group.key}` : "missing") : "overview";
 
   // ── Render ──────────────────────────────────────────────────
   return (
-    <div ref={rootRef} className={`globe-root relative w-full h-full ${panel ? "has-panel" : ""}`}
-      style={{ background: "#060610", color: "#eef0f6" }}>
-      <div className="globe-neb" />
-      <canvas ref={starCanvasRef} className="globe-starfield" />
-      <div ref={containerRef} className={`globe-container ${narrow ? "" : "with-rail"}`} style={{ visibility: view === "globe" ? "visible" : "hidden" }} />
-
-      {view === "map" && (
-        <div className={`globe-map-pane ${narrow ? "" : "with-rail"}`}>
-          <ClientMap2D
-            scope={scope} places={places} regions={regionList} lens={lens} today={today}
-            showMoney={showMoney} selectedKey={selectedGroup?.key ?? null} regionFilter={region}
-            onSelect={openGroup} onRegion={pickRegion} onScope={setScope}
-          />
-        </div>
-      )}
-
-      {loading && (
-        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-          <div className="text-[13px]" style={{ color: "#7E8798" }}>Loading clients…</div>
-        </div>
-      )}
-      {error && (
-        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-          <div className="text-[13px] text-center" style={{ color: "#7E8798" }}>{error}</div>
-        </div>
-      )}
-
-      {/* ── Left rail: search, what is shown, how it is coloured, where ── */}
-      {narrow && !railOpen && (
-        <button className="globe-rail-toggle globe-ctrl-btn" onClick={() => setRailOpen(true)} aria-label="Show filters" title="Show filters">
-          <SlidersHorizontal size={15} />
-        </button>
-      )}
-      {(!narrow || railOpen) && (
-        <aside className={`globe-rail ${narrow ? "floating" : ""}`}>
-          <div className="globe-rail-head">
-            <div className="globe-seg" role="tablist" aria-label="View">
-              <button className={view === "globe" ? "on" : ""} onClick={() => setView("globe")}><Globe2 size={13} /> Globe</button>
-              <button className={view === "map" ? "on" : ""} onClick={() => setView("map")}><MapIcon size={13} /> Map</button>
-            </div>
-            {view === "map" && (
-              <div className="globe-seg" aria-label="Map area">
-                <button className={scope === "us" ? "on" : ""} onClick={() => setScope("us")}>US</button>
-                <button className={scope === "world" ? "on" : ""} onClick={() => setScope("world")}>World</button>
-              </div>
-            )}
-            {narrow && (
-              <button className="globe-panel-close ml-auto" onClick={() => setRailOpen(false)} aria-label="Hide filters"><X size={16} /></button>
-            )}
-          </div>
-
-          <div className="globe-rail-search">
-            <Search size={13} className="globe-rail-search-icon" />
+    <div ref={rootRef} className="globe-root absolute inset-0 flex flex-col overflow-y-auto bg-surface px-8 pb-8 text-ink">
+      <PageActions>
+        <div className="relative">
+          <label className="ui-search [&_input]:w-[280px]">
+            <Search size={14} />
             <input
               ref={searchRef}
               value={query}
@@ -654,305 +607,399 @@ export default function GlobeView({ me }: { me?: Me | null }) {
               spellCheck={false}
               aria-label="Find a client"
             />
-          </div>
+          </label>
           {q && (
-            <div className="globe-rail-results">
-              {results.length === 0 && <div className="globe-rail-empty">No client matches</div>}
+            <div className="ui-pop left-0 top-10 w-[340px] max-w-[80vw]">
+              {results.length === 0 && <div className="px-2.5 py-3 text-[13px] text-muted">No client matches</div>}
               {results.map((r, i) => (
                 <button key={r.id} onClick={() => choose(r)} onMouseEnter={() => setActive(i)}
-                  className={`globe-rail-result ${i === active ? "on" : ""}`}>
-                  <span className="globe-swatch" style={{ background: `rgb(${TIER_RGB[r.tier] ?? TIER_RGB.New})` }} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[12.5px] font-medium truncate" style={{ color: "#F2F4F8" }}>{r.name}</span>
-                    <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>
-                      {r.lat === null ? `Not on the map · ${missingReason(r).toLowerCase()}` : placeLabel(r.city, r.state, r.country)}
+                  className={`ui-pop-item !min-h-[44px] ${i === active ? "!bg-surface-3" : ""}`}>
+                  <span className="min-w-0">
+                    <span className="block text-[13.5px] font-medium truncate">{r.name}</span>
+                    <span className="block ui-note truncate font-normal">
+                      {r.lat === null ? `Not on the map, ${missingReason(r).toLowerCase()}` : placeLabel(r.city, r.state, r.country)}
                     </span>
                   </span>
+                  <span className="ui-note whitespace-nowrap font-normal">{TIER_NAME[r.tier] ?? r.tier}</span>
                 </button>
               ))}
             </div>
           )}
-
-          <section className="globe-rail-section">
-            <div className="globe-coverage">
-              <span className="tabular-nums">{mapped} of {rows.length}</span> clients on the map
-              {filtered && <span style={{ color: "#7E8798" }}> · {shownMapped} shown</span>}
-            </div>
-            <div className="globe-coverage-bar"><span style={{ width: `${rows.length ? (mapped / rows.length) * 100 : 0}%` }} /></div>
-            <div className="flex items-center gap-2 mt-2">
-              {missing.count > 0 && (
-                <button className="globe-link" onClick={() => setPanel({ kind: "missing" })}>
-                  <MapPinOff size={12} /> {missing.count} not on the map
-                </button>
-              )}
-              <button onClick={() => runGeocode()} disabled={geocoding} className="globe-icon-btn ml-auto"
-                title="Re-check every pin against its address" aria-label="Re-check every pin against its address">
-                <RefreshCw size={12} className={geocoding ? "animate-spin" : ""} />
-              </button>
-            </div>
-            {geocodeMsg && <div className="globe-geocode-msg">{geocodeMsg}</div>}
-          </section>
-
-          <section className="globe-rail-section">
-            <div className="globe-rail-label">Colour by</div>
-            <div className="globe-seg full">
-              {LENSES.filter(([l]) => l !== "profit" || showMoney).map(([l, label]) => (
-                <button key={l} className={lens === l ? "on" : ""} onClick={() => setLens(l)}>{label}</button>
-              ))}
-            </div>
-            {lens !== "tier" && <LensLegend lens={lens} />}
-          </section>
-
-          <section className="globe-rail-section">
-            <div className="globe-rail-label">Show</div>
-            {TIER_ROWS.map((t) => (
-              <button key={t} className={`globe-legend-row ${tiersOn.includes(t) ? "" : "off"}`} onClick={() => toggleTier(t)}
-                aria-pressed={tiersOn.includes(t)}>
-                <span className="globe-swatch" style={{ background: `rgb(${TIER_RGB[t]})` }} />
-                <span className="flex-1 text-left">{TIER_NAME[t]}</span>
-                <span className="tabular-nums" style={{ color: "#7E8798" }}>{tierCounts[t] || 0}</span>
-              </button>
-            ))}
-            <label className="globe-check">
-              <input type="checkbox" checked={highOnly} onChange={(e) => setHighOnly(e.target.checked)} />
-              High value only
-            </label>
-            <div className="grid grid-cols-2 gap-2 mt-2">
-              <select className="globe-select" value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Category">
-                <option value="">All categories</option>
-                {categories.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-              <select className="globe-select" value={lead} onChange={(e) => setLead(e.target.value)} aria-label="Lead status">
-                <option value="">Any status</option>
-                {leads.map((l) => <option key={l} value={l}>{niceStatus(l)}</option>)}
-              </select>
-            </div>
-            {region && (
-              <button className="globe-chip-on mt-2" onClick={() => setRegion("")}>
-                {regions.find((r) => r.region === region)?.label ?? region} <X size={11} />
-              </button>
-            )}
-          </section>
-
-          <section className="globe-rail-section">
-            <div className="globe-rail-label">{byProfit ? "Regions by profit" : "Regions by clients"}</div>
-            {regions.length === 0 && <div className="globe-rail-empty">No client has a state or country yet</div>}
-            {topRegions.map((r) => {
-              const v = byProfit ? Math.max(0, r.profit) : r.count;
-              return (
-                <button key={r.region} className={`globe-region-row ${region === r.region ? "on" : ""}`} onClick={() => pickRegion(r.region)}>
-                  <span className="flex items-baseline gap-2 min-w-0">
-                    <span className="truncate flex-1 text-left">{r.label}</span>
-                    <span className="tabular-nums flex-shrink-0" style={{ color: "#A9B1C6" }}>
-                      {showMoney && byProfit ? fmtAmount(r.profit) : r.count}
-                    </span>
-                  </span>
-                  <span className="globe-region-bar"><span style={{ width: `${(v / regionTop) * 100}%` }} /></span>
-                </button>
-              );
-            })}
-            {regions.length > 8 && (
-              <button className="globe-link mt-1" onClick={() => setAllRegions((a) => !a)}>
-                {allRegions ? "Show fewer" : `Show all ${regions.length}`}
-              </button>
-            )}
-          </section>
-        </aside>
-      )}
-
-      {/* Camera controls */}
-      {view === "globe" && (
-        <div className="globe-top-controls">
-          <button onClick={() => { setPanel(null); navTo(HOME_POV, 800, !reduceMotion()); }} className="globe-ctrl-btn" title="Reset view and spin" aria-label="Reset view and spin">
-            <RotateCcw size={15} />
-          </button>
-          <button onClick={() => navTo(US_POV, 600, false)} className="globe-ctrl-btn" title="Zoom to the US" aria-label="Zoom to the US">
-            <MapIcon size={15} />
-          </button>
-          <button onClick={() => fitTo(places)} className="globe-ctrl-btn" title="Fit every client in view" aria-label="Fit every client in view">
-            <Maximize2 size={14} />
-          </button>
         </div>
-      )}
+      </PageActions>
 
-      {/* ── Right panel ── */}
-      {panel?.kind === "group" && (
-        <div className="globe-client-panel open">
-          <div className="p-5">
-            <PanelHead title={panel.group.label} onClose={() => setPanel(null)} />
-            <div className="text-[12px] mb-3" style={{ color: "#A9B1C6" }}>
-              {panel.group.count} clients{panel.group.placeCount > 1 ? ` in ${panel.group.placeCount} places` : ""}
-              {showMoney && <> · <span className="tabular-nums">{fmtAmount(panel.group.profit)}</span> profit</>}
-            </div>
-            {panel.group.approximate && <div className="globe-note mb-3">These pins are the centre of a state or country, not an exact city.</div>}
-            {panel.group.clients.map((c) => (
-              <button key={c.id} className="globe-missing-row" onClick={() => openClient(c, panel.group)}>
-                <span className="globe-swatch" style={{ background: `rgb(${TIER_RGB[c.tier] ?? TIER_RGB.New})` }} />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[12.5px] truncate" style={{ color: "#F2F4F8" }}>{c.name}</span>
-                  <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>
-                    {TIER_NAME[c.tier] ?? c.tier}{panel.group.placeCount > 1 ? ` · ${placeLabel(c.city, c.state, c.country)}` : ""}
-                  </span>
-                </span>
-                {showMoney && <span className="text-[11.5px] tabular-nums" style={{ color: "#A9B1C6" }}>{fmtAmount(c.profit)}</span>}
-              </button>
-            ))}
-          </div>
+      {/* How the map is coloured, which view, which area */}
+      <div className="shrink-0 flex flex-wrap items-center gap-x-5 gap-y-2.5 mt-1 mb-3">
+        <div className="flex items-center gap-2.5">
+          <span className="text-[13px] text-muted">Colour by</span>
+          <Tabs label="Colour by" value={lens} onChange={(id) => setLens(id as Lens)} tabs={lensTabs} />
         </div>
-      )}
+        <Tabs label="View" value={view} onChange={(id) => setView(id as "globe" | "map")}
+          tabs={[
+            { id: "globe", label: <><Globe2 size={14} /> Globe</> },
+            { id: "map", label: <><MapIcon size={14} /> Map</> },
+          ]} />
+        {view === "map" && (
+          <Tabs label="Map area" value={scope} onChange={(id) => setScope(id as "us" | "world")}
+            tabs={[{ id: "us", label: "US" }, { id: "world", label: "World" }]} />
+        )}
+        <span className="flex-1" />
+        <span className="text-[13px] text-muted">
+          <span className="text-ink font-medium tabular-nums">{mapped} of {rows.length}</span> clients on the map
+          {filtered && <>, <span className="tabular-nums">{shownMapped}</span> shown</>}
+        </span>
+      </div>
 
-      {panel?.kind === "client" && panelRow && (
-        <div className="globe-client-panel open">
-          <div className="p-5 space-y-4">
-            {panel.from && (
-              <button className="globe-link" onClick={() => setPanel({ kind: "group", group: panel.from! })}>
-                <ChevronLeft size={13} /> {panel.from.label}
+      {/* What is shown */}
+      <div className="shrink-0 flex flex-wrap items-center gap-2 mb-2">
+        {TIER_ROWS.map((t) => (
+          <button key={t} className={chip(tiersOn.includes(t))} onClick={() => toggleTier(t)} aria-pressed={tiersOn.includes(t)}>
+            {TIER_NAME[t]} <span className="text-faint tabular-nums">{tierCounts[t] || 0}</span>
+          </button>
+        ))}
+        <label className={`${chip(highOnly)} cursor-pointer`}>
+          <input type="checkbox" checked={highOnly} onChange={(e) => setHighOnly(e.target.checked)}
+            className="m-0 w-[13px] h-[13px]" style={{ accentColor: "rgb(var(--c-ink))" }} />
+          High value only
+        </label>
+        {region && (
+          <button className={chip(true)} onClick={() => setRegion("")} aria-label="Clear the region filter">
+            {regions.find((r) => r.region === region)?.label ?? region} <X size={12} />
+          </button>
+        )}
+      </div>
+      <div className="shrink-0 flex flex-wrap items-center gap-2 mb-4">
+        <select className={selectCls} value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Category">
+          <option value="">All categories</option>
+          {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select className={selectCls} value={lead} onChange={(e) => setLead(e.target.value)} aria-label="Lead status">
+          <option value="">Any status</option>
+          {leads.map((l) => <option key={l} value={l}>{niceStatus(l)}</option>)}
+        </select>
+      </div>
+
+      <div className={`flex-1 min-h-[480px] flex items-stretch ${stack ? "flex-col" : "flex-row"}`}>
+        {/* The stage. A night sky in both themes: the earth is a photograph, so it keeps its own ground. */}
+        <div className={`relative overflow-hidden rounded-2xl ring-1 ring-line ${stack ? "h-[520px] shrink-0" : "flex-1 min-w-0"}`}
+          style={{ background: STAGE_BG }}>
+          <canvas ref={starCanvasRef} className="globe-starfield" />
+          <div ref={containerRef} className="globe-container" style={{ visibility: view === "globe" ? "visible" : "hidden" }} />
+
+          {view === "map" && (
+            <div className="globe-map-pane">
+              <ClientMap2D
+                scope={scope} places={places} regions={regionList} lens={lens} today={today}
+                showMoney={showMoney} selectedKey={selectedGroup?.key ?? null} regionFilter={region}
+                onSelect={openGroup} onRegion={pickRegion} onScope={setScope}
+              />
+            </div>
+          )}
+
+          {loading && (
+            <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+              <div className="text-[13px]" style={{ color: STAGE_MUTED }}>Loading clients...</div>
+            </div>
+          )}
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+              <div className="text-[13px] text-center" style={{ color: STAGE_MUTED }}>{error}</div>
+            </div>
+          )}
+
+          {/* Camera controls */}
+          {view === "globe" && (
+            <div className="absolute left-3.5 bottom-3.5 z-[5] flex flex-col gap-1.5">
+              <button onClick={() => { setPanel(null); navTo(HOME_POV, 800, !reduceMotion()); }} className={STAGE_BTN} title="Reset view and spin" aria-label="Reset view and spin">
+                <RotateCcw size={15} />
               </button>
+              <button onClick={() => navTo(US_POV, 600, false)} className={STAGE_BTN} title="Zoom to the US" aria-label="Zoom to the US">
+                <MapIcon size={15} />
+              </button>
+              <button onClick={() => fitTo(places)} className={STAGE_BTN} title="Fit every client in view" aria-label="Fit every client in view">
+                <Maximize2 size={14} />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {stack ? <div className="hsep my-5" /> : <div className="vsep ml-5 my-2" />}
+
+        {/* The side panel: the overview, a place's clients, one client, or the clients with no pin. */}
+        <aside className={stack ? "" : "w-[340px] shrink-0 min-h-0 overflow-y-auto pl-5 pr-1"}>
+          <div key={panelKey} className="animate-fade-up motion-reduce:animate-none">
+
+            {!panel && (
+              <>
+                <div className="text-[14px] font-medium leading-5">Clients on the map</div>
+                <div className="mt-2.5 flex items-baseline justify-between gap-2">
+                  <span className="text-[14px]"><span className="font-medium tabular-nums">{mapped} of {rows.length}</span> on the map</span>
+                  <span className="ui-note">{shownMapped} shown</span>
+                </div>
+                <Bar frac={rows.length ? mapped / rows.length : 0} className="mt-2" h={6} tone="bg-ink" />
+                <div className="flex items-center justify-between gap-2 mt-2.5">
+                  {missing.count > 0 ? (
+                    <button className="ui-link muted" onClick={() => setPanel({ kind: "missing" })}>
+                      <MapPinOff size={13} /> {missing.count} not on the map
+                    </button>
+                  ) : <span />}
+                  <button onClick={() => runGeocode()} disabled={geocoding} className="ui-ib"
+                    title="Re-check every pin against its address" aria-label="Re-check every pin against its address">
+                    <RefreshCw size={13} className={geocoding ? "animate-spin" : ""} />
+                  </button>
+                </div>
+                {geocodeMsg && <div className="ui-note mt-2 leading-[1.5]">{geocodeMsg}</div>}
+
+                <div className="hsep my-[18px]" />
+
+                <div className="text-[14px] font-medium leading-5">{LENS_TITLE[lens]}</div>
+                {LENS_NOTE[lens] && <div className="ui-note mt-1 leading-[1.5]">{LENS_NOTE[lens]}</div>}
+                <LensLegend lens={lens} />
+
+                <div className="hsep my-[18px]" />
+
+                <div className="text-[14px] font-medium leading-5">{byProfit ? "Regions by profit" : "Regions by clients"}</div>
+                <div className="mt-2">
+                  {regions.length === 0 && <div className="ui-note py-2.5">No client has a state or country yet</div>}
+                  {topRegions.map((r) => {
+                    const v = byProfit ? Math.max(0, r.profit) : r.count;
+                    return (
+                      <button key={r.region} onClick={() => pickRegion(r.region)}
+                        className={`block w-full text-left px-1.5 py-2 rounded-lg transition-colors duration-[130ms] hover:bg-surface-2 ${region === r.region ? "bg-surface-2" : ""}`}>
+                        <span className="flex items-baseline justify-between gap-2.5 text-[13.5px]">
+                          <span className="truncate">{r.label}</span>
+                          <span className="text-muted tabular-nums flex-shrink-0">{showMoney && byProfit ? fmtAmount(r.profit) : r.count}</span>
+                        </span>
+                        <Bar frac={v / regionTop} className="mt-1.5" h={4} tone="bg-faint" />
+                      </button>
+                    );
+                  })}
+                  {regions.length > 8 && (
+                    <button className="ui-link muted mt-1.5" onClick={() => setAllRegions((a) => !a)}>
+                      {allRegions ? "Show fewer" : `Show all ${regions.length}`}
+                    </button>
+                  )}
+                </div>
+              </>
             )}
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <h3 className="text-[15px] font-semibold mb-1.5">{panelRow.name}</h3>
-                {panelRow.company && panelRow.company !== panelRow.name && (
-                  <div className="text-[12px] mb-1.5 truncate" style={{ color: "#A9B1C6" }}>{panelRow.company}</div>
-                )}
-                <div className="flex items-center gap-1.5 flex-wrap">
+
+            {panel?.kind === "group" && (
+              <>
+                <button className="ui-link muted mb-2.5" onClick={() => setPanel(null)}><ChevronLeft size={13} /> All clients</button>
+                <PanelHead title={panel.group.label} onClose={() => setPanel(null)} />
+                <div className="text-[13px] text-muted">
+                  {panel.group.count} clients{panel.group.placeCount > 1 ? ` in ${panel.group.placeCount} places` : ""}
+                  {showMoney && <>, <span className="tabular-nums">{fmtAmount(panel.group.profit)}</span> profit</>}
+                </div>
+                {panel.group.approximate && <div className="ui-note mt-2 leading-[1.5]">These pins are the centre of a state or country, not an exact city.</div>}
+                <div className={`mt-3 ${SEP}`}>
+                  {panel.group.clients.map((c) => (
+                    <button key={c.id} className={ROW_BTN} onClick={() => openClient(c, panel.group)}>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[14px] font-medium truncate">{c.name}</span>
+                        <span className="block ui-note truncate">
+                          {TIER_NAME[c.tier] ?? c.tier}{panel.group.placeCount > 1 ? `, ${placeLabel(c.city, c.state, c.country)}` : ""}
+                        </span>
+                      </span>
+                      {showMoney && <span className="text-[13px] text-muted tabular-nums">{fmtAmount(c.profit)}</span>}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {panel?.kind === "client" && panelRow && (
+              <>
+                <button className="ui-link muted mb-2.5"
+                  onClick={() => (panel.from ? setPanel({ kind: "group", group: panel.from }) : setPanel(null))}>
+                  <ChevronLeft size={13} /> {panel.from ? panel.from.label : "All clients"}
+                </button>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h2 className="m-0 text-[16px] font-medium">{panelRow.name}</h2>
+                    {panelRow.company && panelRow.company !== panelRow.name && (
+                      <div className="text-[13px] text-muted mt-0.5 truncate">{panelRow.company}</div>
+                    )}
+                  </div>
+                  <button onClick={() => setPanel(null)} className="ui-ib flex-shrink-0" aria-label="Close"><X size={15} /></button>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap mt-2.5">
                   <TierBadge tier={panelRow.tier} size="sm" />
                   {panelRow.highValue && <StatusPill tone="accent">High value</StatusPill>}
                   {dueToReorder(panelRow, today) && <StatusPill tone="warning">Due to reorder</StatusPill>}
                 </div>
-              </div>
-              <button onClick={() => setPanel(null)} className="globe-panel-close" aria-label="Close"><X size={16} /></button>
-            </div>
 
-            {showMoney && (
-              <div className="globe-figures">
-                <div>
-                  <div className="globe-fig-label">Profit</div>
-                  <div className="globe-fig tabular-nums" style={{ color: panelRow.profit < 0 ? `rgb(${PROFIT_NEGATIVE})` : "#F2F4F8" }}>{fmtAmount(panelRow.profit)}</div>
-                </div>
-                <div>
-                  <div className="globe-fig-label">Revenue</div>
-                  <div className="globe-fig small tabular-nums">{fmtAmount(panelRow.revenue)}</div>
-                </div>
-              </div>
+                {showMoney && (
+                  <div className="grid grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)] gap-x-3 mt-4">
+                    <div>
+                      <div className="ui-label">Profit</div>
+                      <div className={`ui-fig !text-[22px] ${panelRow.profit < 0 ? "text-danger-ink" : ""}`}>{fmtAmount(panelRow.profit)}</div>
+                    </div>
+                    <div className="vsep" />
+                    <div>
+                      <div className="ui-label">Revenue</div>
+                      <div className="ui-fig !text-[22px]">{fmtAmount(panelRow.revenue)}</div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="hsep mt-3.5 mb-1.5" />
+                <dl className="m-0">
+                  <Fact label="Location">
+                    {panelRow.lat === null
+                      ? <span>Not on the map, {missingReason(panelRow).toLowerCase()}</span>
+                      : <span className="inline-flex items-center gap-1.5">
+                          <MapPin size={13} className="text-muted flex-shrink-0" />
+                          {placeLabel(panelRow.city, panelRow.state, panelRow.country)}
+                          {panelRow.precision !== "city" && <span className="text-faint">(approximate)</span>}
+                        </span>}
+                  </Fact>
+                  <Fact label="Deals landed">{panelRow.dealsLanded}</Fact>
+                  <Fact label="Last invoice">{panelRow.lastInvoice ? relTime(panelRow.lastInvoice) : "None yet"}</Fact>
+                  {panelRow.cadenceDays ? <Fact label="Orders">About every {Math.round(panelRow.cadenceDays)} days</Fact> : null}
+                  <Fact label="Payment">{RELIABILITY[panelRow.reliability] ?? niceStatus(panelRow.reliability)}</Fact>
+                  <Fact label="Last contact">{relTime(panelRow.lastContact)}</Fact>
+                  {panelRow.nextFollowUp && (
+                    <Fact label="Follow-up">
+                      <span style={{ color: followColor(panelRow.nextFollowUp, today) }}>{panelRow.nextFollowUp.slice(0, 10)}</span>
+                    </Fact>
+                  )}
+                  {panelRow.category && <Fact label="Category">{panelRow.category}</Fact>}
+                  {panelRow.leadStatus && <Fact label="Status">{niceStatus(panelRow.leadStatus)}</Fact>}
+                </dl>
+
+                {(() => {
+                  const others = panel.from ? [] : (allPlaces.find((p) => p.clients.some((c) => c.id === panelRow.id))?.clients ?? []).filter((c) => c.id !== panelRow.id);
+                  return others.length > 0 && (
+                    <>
+                      <div className="hsep mt-2.5 mb-3" />
+                      <div className="ui-label">Also in {placeLabel(panelRow.city, panelRow.state, panelRow.country)}</div>
+                      <div className={`mt-1 ${SEP}`}>
+                        {others.slice(0, 6).map((c) => (
+                          <button key={c.id} className={ROW_BTN} onClick={() => openClient(c)}>
+                            <span className="text-[14px] truncate flex-1 text-left">{c.name}</span>
+                            <span className="ui-note">{TIER_NAME[c.tier] ?? c.tier}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()}
+
+                <Button variant="ink" block className="mt-[18px]" onClick={() => viewProfile(panelRow.id)} icon={<ExternalLink size={14} />}>
+                  Open client
+                </Button>
+              </>
             )}
 
-            <dl className="globe-facts">
-              <Fact label="Location">
-                {panelRow.lat === null
-                  ? <span>Not on the map · {missingReason(panelRow).toLowerCase()}</span>
-                  : <span className="inline-flex items-center gap-1.5">
-                      <MapPin size={12} style={{ color: "var(--accent-500)" }} />
-                      {placeLabel(panelRow.city, panelRow.state, panelRow.country)}
-                      {panelRow.precision !== "city" && <span style={{ color: "#7E8798" }}>(approximate)</span>}
-                    </span>}
-              </Fact>
-              <Fact label="Deals landed">{panelRow.dealsLanded}</Fact>
-              <Fact label="Last invoice">{panelRow.lastInvoice ? relTime(panelRow.lastInvoice) : "None yet"}</Fact>
-              {panelRow.cadenceDays ? <Fact label="Orders">About every {Math.round(panelRow.cadenceDays)} days</Fact> : null}
-              <Fact label="Payment">{RELIABILITY[panelRow.reliability] ?? niceStatus(panelRow.reliability)}</Fact>
-              <Fact label="Last contact">{relTime(panelRow.lastContact)}</Fact>
-              {panelRow.nextFollowUp && (
-                <Fact label="Follow-up">
-                  <span style={{ color: followColor(panelRow.nextFollowUp, today) }}>{panelRow.nextFollowUp.slice(0, 10)}</span>
-                </Fact>
-              )}
-              {panelRow.category && <Fact label="Category">{panelRow.category}</Fact>}
-              {panelRow.leadStatus && <Fact label="Status">{niceStatus(panelRow.leadStatus)}</Fact>}
-            </dl>
-
-            {(() => {
-              const others = panel.from ? [] : (allPlaces.find((p) => p.clients.some((c) => c.id === panelRow.id))?.clients ?? []).filter((c) => c.id !== panelRow.id);
-              return others.length > 0 && (
-                <div>
-                  <div className="globe-rail-label">Also in {placeLabel(panelRow.city, panelRow.state, panelRow.country)}</div>
-                  {others.slice(0, 6).map((c) => (
-                    <button key={c.id} className="globe-missing-row" onClick={() => openClient(c)}>
-                      <span className="globe-swatch" style={{ background: `rgb(${TIER_RGB[c.tier] ?? TIER_RGB.New})` }} />
-                      <span className="block text-[12.5px] truncate flex-1 text-left" style={{ color: "#F2F4F8" }}>{c.name}</span>
-                    </button>
-                  ))}
-                </div>
-              );
-            })()}
-
-            <button onClick={() => viewProfile(panelRow.id)} className="globe-primary">
-              <ExternalLink size={12} /> Open client
-            </button>
+            {/* Every client without a pin, grouped by why */}
+            {panel?.kind === "missing" && (
+              <>
+                <button className="ui-link muted mb-2.5" onClick={() => setPanel(null)}><ChevronLeft size={13} /> All clients</button>
+                <PanelHead title="Not on the map" onClose={() => setPanel(null)} />
+                <p className="text-[13px] leading-relaxed text-muted mt-1.5 mb-3.5">
+                  {missing.count} of {rows.length} clients have no pin. Fix the address on the client and it lands on the map the next time this page opens.
+                </p>
+                {missing.groups.map(([why, list]) => (
+                  <div key={why} className="mb-3.5">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-[13.5px] font-medium">{why}</span>
+                      <span className="ui-note tabular-nums">{list.length}</span>
+                    </div>
+                    <div className="ui-note mt-0.5 mb-1">{MISSING_HINT[why]}</div>
+                    <div className={SEP}>{list.map((r) => {
+                      const where = placeLabel(r.city, r.state, r.country);
+                      return (
+                        <button key={r.id} onClick={() => viewProfile(r.id)} className={ROW_BTN}>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[14px] truncate">{r.name}</span>
+                            {where && <span className="block ui-note truncate">{where}</span>}
+                          </span>
+                          <ExternalLink size={13} className="flex-shrink-0 text-faint" />
+                        </button>
+                      );
+                    })}</div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
-        </div>
-      )}
-
-      {/* Every client without a pin, grouped by why */}
-      {panel?.kind === "missing" && (
-        <div className="globe-client-panel open">
-          <div className="p-5">
-            <PanelHead title="Not on the map" onClose={() => setPanel(null)} />
-            <p className="text-[12px] leading-relaxed mb-4" style={{ color: "#7E8798" }}>
-              {missing.count} of {rows.length} clients have no pin. Fix the address on the client and it lands on the map the next time this page opens.
-            </p>
-            {missing.groups.map(([why, list]) => (
-              <div key={why} className="mb-4">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-[12.5px] font-medium" style={{ color: "#E7ECF6" }}>{why}</span>
-                  <span className="text-[11.5px] tabular-nums" style={{ color: "#7E8798" }}>{list.length}</span>
-                </div>
-                <div className="text-[11px] mb-1.5" style={{ color: "#7E8798" }}>{MISSING_HINT[why]}</div>
-                {list.map((r) => {
-                  const where = placeLabel(r.city, r.state, r.country);
-                  return (
-                    <button key={r.id} onClick={() => viewProfile(r.id)} className="globe-missing-row">
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-[12.5px] truncate" style={{ color: "#F2F4F8" }}>{r.name}</span>
-                        {where && <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>{where}</span>}
-                      </span>
-                      <ExternalLink size={12} className="flex-shrink-0" style={{ color: "#6B7488" }} />
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+        </aside>
+      </div>
     </div>
   );
 }
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
 
+/** The stage is a night sky in both themes (the earth is a photograph), so its own text and buttons keep one set of colours. */
+const STAGE_BG = "#0A0A0A";
+const STAGE_MUTED = "rgba(250,250,250,0.55)";
+const STAGE_BTN =
+  "grid place-items-center w-8 h-8 rounded-lg ring-1 ring-[rgba(250,250,250,0.18)] bg-[rgba(10,10,10,0.78)] text-[rgba(250,250,250,0.8)] " +
+  "transition-colors duration-[130ms] hover:bg-[rgba(250,250,250,0.14)] hover:text-[rgb(250,250,250)]";
+
+const ROW_BTN =
+  "w-full flex items-center gap-2.5 min-h-[46px] px-1 py-1.5 text-left transition-colors duration-[130ms] hover:bg-surface-2";
+const SEP = "[&>button+button]:shadow-[inset_0_1px_0_rgb(var(--c-line))]";
+
+const LENS_TITLE: Record<Lens, string> = { tier: "Colour by tier", profit: "Colour by profit", recency: "Colour by recency", followup: "Colour by follow-up" };
+const LENS_NOTE: Partial<Record<Lens, string>> = {
+  tier: "A mark takes the colour of the best tier among its clients.",
+  recency: "Days since the last invoice, or the last contact when there is none.",
+};
+
+const chip = (on: boolean) =>
+  `inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium whitespace-nowrap transition-colors duration-[130ms] ${
+    on ? "bg-surface-3 text-ink" : "ring-1 ring-line-3 text-muted hover:text-ink"}`;
+
+const selectCls =
+  "h-8 px-2.5 rounded-lg ring-1 ring-line-3 bg-surface text-[13px] text-ink transition-colors duration-[130ms]";
+
+/** A thin share bar. It grows by scaling, not by changing its width, so it stays on the GPU. */
+function Bar({ frac, h, tone, className = "" }: { frac: number; h: number; tone: string; className?: string }) {
+  const f = Math.max(0, Math.min(1, frac));
+  return (
+    <span className={`block overflow-hidden rounded-full bg-surface-3 ${className}`} style={{ height: h }}>
+      <span className={`block h-full w-full rounded-full ${tone} origin-left transition-transform duration-500 ease-out`}
+        style={{ transform: `scaleX(${f})` }} />
+    </span>
+  );
+}
+
 function PanelHead({ title, onClose }: { title: string; onClose: () => void }) {
   return (
-    <div className="flex items-start justify-between gap-3 mb-1.5">
-      <h3 className="text-[15px] font-semibold min-w-0">{title}</h3>
-      <button onClick={onClose} className="globe-panel-close" aria-label="Close"><X size={16} /></button>
+    <div className="flex items-start justify-between gap-3 mb-1">
+      <h2 className="m-0 text-[16px] font-medium min-w-0">{title}</h2>
+      <button onClick={onClose} className="ui-ib flex-shrink-0" aria-label="Close"><X size={15} /></button>
     </div>
   );
 }
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="globe-fact">
-      <dt>{label}</dt>
-      <dd>{children}</dd>
+    <div className="ui-kv !text-[13.5px] items-start">
+      <dt className="m-0 flex-shrink-0">{label}</dt>
+      <dd className="m-0 text-right text-ink min-w-0">{children}</dd>
     </div>
   );
 }
 
 function LensLegend({ lens }: { lens: Lens }) {
   const rows: [string, string][] =
-    lens === "recency" ? [...RECENCY_STEPS.map((s) => [s.rgb, s.label] as [string, string]), [NEVER_RGB, "No invoice or contact"]]
+    lens === "tier" ? TIER_ROWS.map((t) => [TIER_RGB[t], TIER_NAME[t]] as [string, string])
+    : lens === "recency" ? [...RECENCY_STEPS.map((s) => [s.rgb, s.label] as [string, string]), [NEVER_RGB, "No invoice or contact"]]
     : lens === "followup" ? (["overdue", "today", "soon", "none"] as FollowUp[]).map((f) => [FOLLOWUP_RGB[f], FOLLOWUP_LABEL[f]] as [string, string])
     : [[PROFIT_STEPS[4], "Most profit on screen"], [PROFIT_STEPS[2], "Middle"], [PROFIT_STEPS[0], "None yet"], [PROFIT_NEGATIVE, "A loss"]];
+  // The key to the map's colours: a small bar of the colour beside its meaning, not a dot before a label.
   return (
     <div className="mt-2">
       {rows.map(([rgb, label]) => (
-        <div key={label} className="globe-legend-row static">
-          <span className="globe-swatch" style={{ background: `rgb(${rgb})` }} />
+        <div key={label} className="ui-kv !py-[5px] items-center">
           <span>{label}</span>
+          <span className="w-[22px] h-2 rounded-[3px] flex-shrink-0" style={{ background: `rgb(${rgb})` }} />
         </div>
       ))}
-      {lens === "recency" && <div className="globe-note mt-1">Days since the last invoice, or the last contact when there is none.</div>}
     </div>
   );
 }
@@ -961,7 +1008,7 @@ function followColor(date: string, today: string): string {
   const d = date.slice(0, 10);
   if (d < today) return `rgb(${FOLLOWUP_RGB.overdue})`;
   if (d === today) return `rgb(${FOLLOWUP_RGB.today})`;
-  return "#E7ECF6";
+  return "rgb(var(--c-ink))";
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

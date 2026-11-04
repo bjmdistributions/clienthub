@@ -34,7 +34,14 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
   const [dq, setDq] = useState("");
   const [rows, setRows] = useState<PickTxn[] | null>(null);
   const [pickError, setPickError] = useState("");
-  useEscape(onClose);
+  // R-583: the drawer slides in and out (transform only); onClose waits for the slide out.
+  const [shown, setShown] = useState(false);
+  useEffect(() => { const r = requestAnimationFrame(() => setShown(true)); return () => cancelAnimationFrame(r); }, []);
+  const closeSoon = useCallback(() => {
+    setShown(false);
+    window.setTimeout(onClose, 200);
+  }, [onClose]);
+  useEscape(closeSoon);
 
   const load = useCallback(async () => {
     try { setD(await billsApi.get(id)); setError(""); } catch (e) { setError(msg(e)); }
@@ -73,30 +80,31 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
   const pill = b ? STATUS_PILL[b.state.status] : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
-      <aside className="w-full max-w-[540px] h-full bg-surface border-l border-line overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="sticky top-0 z-10 bg-surface px-5 py-4 border-b border-line-2 flex items-center gap-3 min-w-0">
-          {b ? <BillLogo name={b.name} logo={b.logo} size={44} /> : <div className="w-11 h-11 rounded-lg bg-surface-2 animate-pulse" />}
+    <>
+      <div className={`ui-scrim ${shown ? "open" : ""}`} onClick={closeSoon} />
+      <aside className={`ui-drawer ${shown ? "open" : ""}`} style={{ width: 540 }} role="dialog" aria-modal="true" aria-label={b?.name || "Bill"}>
+        <div className="ui-drawer-head min-w-0">
+          {b ? <BillLogo name={b.name} logo={b.logo} size={44} /> : <div className="w-11 h-11 rounded-full bg-surface-2 animate-pulse" />}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 min-w-0">
-              <h3 className="text-[16px] font-semibold text-ink truncate">{b?.name || "Bill"}</h3>
+              <h3 className="text-[16px] font-medium text-ink truncate m-0">{b?.name || "Bill"}</h3>
               {pill && <StatusPill tone={pill.tone}>{pill.label}</StatusPill>}
             </div>
-            {b && <div className="text-[12px] text-muted truncate">{cadenceLabel(b.cadence)}{b.method ? `, ${billMethodLabel(b.method)}` : ""}</div>}
+            {b && <div className="ui-note truncate">{cadenceLabel(b.cadence)}{b.method ? `, ${billMethodLabel(b.method)}` : ""}</div>}
           </div>
-          <button onClick={onClose} className="text-muted hover:text-ink p-1" aria-label="Close"><X size={16} /></button>
+          <button onClick={closeSoon} className="ui-ib" aria-label="Close"><X size={16} /></button>
         </div>
 
-        {error && !d && <div className="m-5 text-[13px] text-danger-ink bg-danger-bg border border-danger-ink/20 rounded-lg px-3 py-2">{error}</div>}
+        {error && !d && <div className="m-6 text-[13px] text-danger-ink border-y border-line py-2.5">{error}</div>}
 
         {b && d && (
-          <div className="p-5 space-y-6">
+          <div className="ui-drawer-body space-y-6">
             {admin && (
               <div className="flex items-center gap-2 flex-wrap">
-                <button onClick={() => onEdit(b)} className={btn}><Pencil size={12} /> Edit</button>
+                <button onClick={() => onEdit(b)} className={btn}><Pencil size={14} /> Edit</button>
                 {b.status === "archived"
-                  ? <button disabled={busy === "arch"} onClick={() => act("arch", () => billsApi.archive(b.id, false), "Restored")} className={btn}><RotateCcw size={12} /> Restore</button>
-                  : <button disabled={busy === "arch"} onClick={() => act("arch", () => billsApi.archive(b.id, true), "Archived. It stays under Archived on the Bills screen.")} className={btn}><Archive size={12} /> Archive</button>}
+                  ? <button disabled={busy === "arch"} onClick={() => act("arch", () => billsApi.archive(b.id, false), "Restored")} className={btn}><RotateCcw size={14} /> Restore</button>
+                  : <button disabled={busy === "arch"} onClick={() => act("arch", () => billsApi.archive(b.id, true), "Archived. It stays under Archived on the Bills screen.")} className={btn}><Archive size={14} /> Archive</button>}
               </div>
             )}
 
@@ -119,30 +127,31 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
             </dl>
 
             <section>
-              <h4 className="text-[13px] font-semibold text-ink mb-2">Due dates</h4>
+              <div className="hsep mb-4" />
+              <h4 className="text-[14px] font-medium text-ink mb-2 mt-0">Due dates</h4>
               {b.state.history.length === 0 ? (
-                <p className="text-[12.5px] text-muted">No due dates yet. The first one is {longDay(b.anchor_date)}.</p>
+                <p className="text-[13px] text-muted">No due dates yet. The first one is {longDay(b.anchor_date)}.</p>
               ) : (
-                <div className="border border-line-2 rounded-xl overflow-x-auto">
-                  <table className="w-full text-[12.5px]">
+                <div className="overflow-x-auto">
+                  <table className="ui-table ui-table-sm">
                     <thead>
-                      <tr className="text-left text-muted border-b border-line-2">
-                        <th className="font-medium px-3 py-2">Due</th>
-                        <th className="font-medium px-3 py-2">Paid on</th>
-                        <th className="font-medium px-3 py-2 text-right">Amount</th>
-                        <th className="font-medium px-3 py-2 text-right">Status</th>
+                      <tr>
+                        <th>Due</th>
+                        <th>Paid on</th>
+                        <th className="r">Amount</th>
+                        <th className="r">Status</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-line-2">
+                    <tbody>
                       {b.state.history.map((p) => (
                         <tr key={p.due}>
-                          <td className="px-3 py-2 text-ink whitespace-nowrap">{longDay(p.due)}</td>
-                          <td className="px-3 py-2 text-ink-2 whitespace-nowrap">{p.paid_on ? shortDay(p.paid_on) : "-"}</td>
-                          <td className="px-3 py-2 text-ink-2 text-right tabular-nums">
-                            {p.paid_on ? fmtAmount(p.paid_amount) : "-"}
-                            {p.extra_amount > 0 && <div className="text-[11px] text-muted whitespace-nowrap">{extraNote(p.extra_amount, fmtAmount)}</div>}
+                          <td className="text-ink whitespace-nowrap">{longDay(p.due)}</td>
+                          <td className="text-ink-2 whitespace-nowrap">{p.paid_on ? shortDay(p.paid_on) : "Not paid"}</td>
+                          <td className="r text-ink-2">
+                            {p.paid_on ? fmtAmount(p.paid_amount) : ""}
+                            {p.extra_amount > 0 && <div className="ui-note whitespace-nowrap">{extraNote(p.extra_amount, fmtAmount)}</div>}
                           </td>
-                          <td className="px-3 py-2 text-right"><StatusPill tone={PERIOD_PILL[p.state].tone}>{PERIOD_PILL[p.state].label}</StatusPill></td>
+                          <td className="r"><StatusPill tone={PERIOD_PILL[p.state].tone}>{PERIOD_PILL[p.state].label}</StatusPill></td>
                         </tr>
                       ))}
                     </tbody>
@@ -152,22 +161,23 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
             </section>
 
             <section>
+              <div className="hsep mb-4" />
               <div className="flex items-center justify-between gap-3 mb-2">
-                <h4 className="text-[13px] font-semibold text-ink">Payments</h4>
+                <h4 className="text-[14px] font-medium text-ink m-0">Payments</h4>
                 {admin && b.status === "active" && (
                   <button onClick={() => (pickOpen ? closePicker() : setPickOpen(true))} className={btn}>
-                    <Link2 size={12} /> {pickOpen ? "Close the list" : "Link a payment"}
+                    <Link2 size={14} /> {pickOpen ? "Close the list" : "Link a payment"}
                   </button>
                 )}
               </div>
 
               {pickOpen && (
-                <div className="mb-3 border border-line rounded-xl bg-surface-2/40">
-                  <div className="px-3 py-2 border-b border-line-2">
+                <div className="mb-3 rounded-[10px] bg-surface-2 ring-1 ring-line dash-load">
+                  <div className="px-3 py-2 border-b border-line">
                     <input value={q} onChange={(e) => setQ(e.target.value)} className={inp} autoFocus
                       placeholder="Search payee, amount or date" aria-label="Search payments" />
                   </div>
-                  <div className="px-3 py-2 text-[12px] text-muted border-b border-line-2">
+                  <div className="px-3 py-2 ui-note border-b border-line">
                     {dq
                       ? "Every payment out of the bank that matches, newest first. One already on another bill is greyed out."
                       : "Recent payments out of the bank that no bill has claimed, closest matches first. Search to find a payment on any date."}
@@ -181,18 +191,18 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
                       {dq ? "No payment out of the bank matches that." : "There are no unlinked payments from the last 120 days."}
                     </div>
                   ) : (
-                    <div className="divide-y divide-line-2 max-h-72 overflow-y-auto">
+                    <div className="divide-y divide-line max-h-72 overflow-y-auto">
                       {rows.map((t) => {
                         const taken = !!t.linked_to;
                         return (
                           <div key={t.id} className={`flex items-center gap-3 px-3 py-2 min-w-0 ${taken ? "opacity-60" : ""}`}>
                             <div className="min-w-0 flex-1">
                               <div className="text-[12.5px] text-ink truncate">{t.payee || "Unnamed payee"}</div>
-                              <div className="text-[11px] text-muted truncate">{longDay(t.posted_at.slice(0, 10))}{t.memo ? `, ${t.memo}` : ""}</div>
+                              <div className="ui-note truncate">{longDay(t.posted_at.slice(0, 10))}{t.memo ? `, ${t.memo}` : ""}</div>
                             </div>
                             <div className="text-right flex-shrink-0">
                               <div className="text-[12.5px] text-ink tabular-nums">{fmtAmount(t.amount)}</div>
-                              <div className="text-[11px] text-muted max-w-[9rem] truncate" title={taken ? `Already on ${t.linked_to}` : undefined}>
+                              <div className="ui-note max-w-[9rem] truncate" title={taken ? `Already on ${t.linked_to}` : undefined}>
                                 {taken ? `Already on ${t.linked_to}` : paysText(t.due)}
                               </div>
                             </div>
@@ -212,7 +222,7 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
               {d.payments.length === 0 ? (
                 <p className="text-[12.5px] text-muted">No payment is linked to this bill yet.</p>
               ) : (
-                <div className="border border-line-2 rounded-xl divide-y divide-line-2">
+                <div className="divide-y divide-line border-y border-line">
                   {d.payments.map((p) => <PaymentRow key={p.id} p={p} admin={admin} busy={busy === p.id}
                     onUnlink={() => act(p.id, () => billsApi.reject(p.id), "Unlinked. Undo is next to it.")}
                     onUndo={() => act(p.id, () => billsApi.restore(p.id), "Linked again")} />)}
@@ -223,22 +233,22 @@ export default function BillDetail({ id, rev, admin, onClose, onEdit, onChanged 
         )}
 
         {!d && !error && (
-          <div className="p-5 space-y-3">
+          <div className="ui-drawer-body space-y-3">
             <div className="h-24 bg-surface-2 rounded-xl animate-pulse" />
             <div className="h-48 bg-surface-2 rounded-xl animate-pulse" />
           </div>
         )}
       </aside>
-    </div>
+    </>
   );
 }
 
 function Fact({ label, value, hint, wrap }: { label: string; value: string; hint?: string; wrap?: boolean }) {
   return (
     <div className="min-w-0">
-      <dt className="text-[11.5px] text-muted">{label}</dt>
-      <dd className={`text-[13px] text-ink mt-0.5 ${wrap ? "whitespace-pre-wrap break-words" : "truncate"}`} title={wrap ? undefined : value}>{value}</dd>
-      {hint && <dd className="text-[11px] text-muted mt-0.5 tabular-nums">{hint}</dd>}
+      <dt className="ui-label">{label}</dt>
+      <dd className={`text-[14px] text-ink mt-0.5 ml-0 ${wrap ? "whitespace-pre-wrap break-words" : "truncate"}`} title={wrap ? undefined : value}>{value}</dd>
+      {hint && <dd className="ui-note mt-0.5 ml-0 tabular-nums">{hint}</dd>}
     </div>
   );
 }
@@ -254,7 +264,7 @@ function PaymentRow({ p, admin, busy, onUnlink, onUndo }: {
           <div className={`text-[12.5px] text-ink truncate ${rejected ? "line-through" : ""}`}>{p.payee || "Unnamed payee"}</div>
           {!rejected && p.extra && <StatusPill tone="neutral">Extra charge</StatusPill>}
         </div>
-        <div className="text-[11px] text-muted truncate">
+        <div className="ui-note truncate">
           {shortDay(p.posted_at.slice(0, 10))}
           {rejected ? ", unlinked" : p.status === "auto" ? ", matched automatically" : ", linked by hand"}
           {!rejected && !p.extra && p.period ? `, pays ${shortDay(p.period)}` : ""}
@@ -262,7 +272,7 @@ function PaymentRow({ p, admin, busy, onUnlink, onUndo }: {
       </div>
       <div className={`text-[12.5px] tabular-nums flex-shrink-0 ${rejected ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
       {admin && (rejected
-        ? <button disabled={busy} onClick={onUndo} className={btn}><RotateCcw size={12} /> Undo</button>
+        ? <button disabled={busy} onClick={onUndo} className={btn}><RotateCcw size={14} /> Undo</button>
         : <button disabled={busy} onClick={onUnlink} className={btn}>Unlink</button>)}
     </div>
   );

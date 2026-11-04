@@ -7,40 +7,29 @@ import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
 import { LogisticsPayBriefBlock } from "./LogisticsPay";
+import { Button, PageActions, Tabs, useCountUp } from "./ui";
 import {
-  RefreshCw, Printer, ArrowRight, CheckCircle2, CalendarClock, Clock,
-  Banknote, FileText, Truck, AlertTriangle, Users, Receipt, PackageCheck,
+  RefreshCw, Printer, ChevronRight, CheckCircle2, CalendarClock, Clock,
+  Banknote, FileText, Truck, TriangleAlert, Users, Receipt, PackageCheck,
 } from "lucide-react";
-
-// Colors for payout-recipient boxes. Business uses the app accent; other
-// recipients cycle through a fixed palette so any number of them stay distinct.
-// The recipient's name used to be printed in its own hue, which meant a literal
-// that reads at ~3:1 on one theme and ~2:1 on the other. The identity is now the
-// 2.5px top rule and the tint; the name and the figure are theme tokens.
-const BIZ_COLOR = { accent: "var(--accent-400)", accentBg: "var(--accent-tint)", accentBorder: "var(--accent-glow)" };
-// R-577: the reps together and logistics pay come off before the owners split; they wear grey.
-const OFF_TOP_COLOR = { accent: "rgb(var(--c-faint))", accentBg: "rgb(var(--c-surface-2))", accentBorder: "rgb(var(--c-line-3))" };
-const RECIP_COLORS = [
-  { accent: "#34D399", accentBg: "rgba(16,185,129,0.08)", accentBorder: "rgba(16,185,129,0.2)" },
-  { accent: "#60A5FA", accentBg: "rgba(59,130,246,0.08)", accentBorder: "rgba(59,130,246,0.2)" },
-  { accent: "#A78BFA", accentBg: "rgba(139,92,246,0.08)", accentBorder: "rgba(139,92,246,0.2)" },
-  { accent: "#F472B6", accentBg: "rgba(236,72,153,0.08)", accentBorder: "rgba(236,72,153,0.2)" },
-  { accent: "#FBBF24", accentBg: "rgba(245,158,11,0.08)", accentBorder: "rgba(245,158,11,0.2)" },
-];
 
 /** Bare day out of either a `YYYY-MM-DD` or a full timestamp. */
 const day = (s?: string | null) => (s ? s.slice(0, 10) : "");
 
-/** "Sep 4" — dates on this screen are read at a glance, not filed. */
+/** "Sep 4": dates on this screen are read at a glance, not filed. */
 const shortDate = (s?: string | null) =>
   (s ? parseLocalDay(s).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "");
 
-/** Emerald for profit, rose for a loss, plain ink for nothing yet — zero is
+/** Green for profit, red for a loss, plain ink for nothing yet. Zero is
  *  neither, and the semantic hues only ever carry one of those two meanings. */
 const moneyCls = (n: number) => (n > 0 ? "text-success-ink" : n < 0 ? "text-danger-ink" : "text-ink");
 
+/** The app writes a loss as -$1,350.00, never $-1,350.00: fmtAmount only ever prefixes
+ *  the dollar sign, so the sign is placed here. */
+const signedAmt = (n: number) => (n < 0 ? `−${fmtAmount(Math.abs(n))}` : fmtAmount(n));
+
 /** Monday of the week `d` falls in, computed locally (R-159 date rules).
- *  Deliberately NOT read off `brief.week_start` — that window follows the stored
+ *  Deliberately NOT read off `brief.week_start`: that window follows the stored
  *  brief cadence, and this screen is today and this week only. */
 function mondayOf(d: string): string {
   const dt = parseLocalDay(d);
@@ -50,8 +39,8 @@ function mondayOf(d: string): string {
 
 const goTab = (tab: string) => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: tab }));
 
-/** Drill into the deal behind an invoice — the same stash-then-switch handoff
- *  Receivables, Payables and the client screen use. */
+/** Drill into the deal behind an invoice: the same stash-then-switch handoff
+ *  the client screen uses. */
 const openDeal = (invoiceNumber: string) => {
   try { localStorage.setItem("dealflow_invoice_filter", invoiceNumber); } catch { /* ignore */ }
   goTab("dealflow");
@@ -75,9 +64,12 @@ type Happening = {
   title: string;
   meta: string;
   amount: number;
-  signed: boolean;   // profit figure → emerald when up, rose when down
+  signed: boolean;   // profit figure: green when up, red when down
   invoiceNumber: string;
 };
+
+// The profit split bar wears ink at falling strengths: identity is the name beside it, not a hue.
+const SPLIT_ALPHA = [0.9, 0.62, 0.42, 0.28, 0.18, 0.12];
 
 export default function BriefView({ currentUser, me }: { currentUser?: any; me?: Me | null }) {
   // Org-wide detail (whose invoice, which deal, how much) stays with the people
@@ -107,7 +99,7 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
     setLoading(true);
     try {
       const repName = currentUser?.role === "sales_rep" ? currentUser.name : null;
-      // The screen asks for the window it is labelling (7 = this Monday–Sunday week),
+      // The screen asks for the window it is labelling (7 = this Monday to Sunday week),
       // rather than leaning on the org-shared cadence, which follows the emailed brief.
       const b = await api.generateWeeklyBrief(null, repName, 7);
       setBrief(b);
@@ -173,13 +165,13 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
     completed.forEach((f) => out.push({
       key: `d-${f.id}`, on: day(f.completed_at), kind: "deal",
       title: f.client_name || f.name || "Deal",
-      meta: `Deal completed${f.invoice_number ? ` · ${f.invoice_number}` : ""}`,
+      meta: `Deal completed${f.invoice_number ? `, ${f.invoice_number}` : ""}`,
       amount: f.net_profit || 0, signed: true, invoiceNumber: f.invoice_number || "",
     }));
     paidIn.forEach((f) => out.push({
       key: `p-${f.id}`, on: day(f.payment_received_at), kind: "payment",
       title: f.client_name || f.name || "Payment",
-      meta: `Payment in${f.payment_received_method ? ` · ${f.payment_received_method}` : ""}`,
+      meta: `Payment in${f.payment_received_method ? `, ${f.payment_received_method}` : ""}`,
       amount: f.payment_received_amount || 0, signed: false, invoiceNumber: f.invoice_number || "",
     }));
     sent.forEach((i) => {
@@ -187,8 +179,8 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
       out.push({
         key: `i-${i.id}`, on: day(i.sent_at), kind: "invoice",
         title: who || `Invoice ${i.number}`,
-        meta: who ? `Invoice ${i.number} sent · due ${shortDate(i.due_date)}`
-                  : `Sent · due ${shortDate(i.due_date)}`,
+        meta: who ? `Invoice ${i.number} sent, due ${shortDate(i.due_date)}`
+                  : `Sent, due ${shortDate(i.due_date)}`,
         amount: i.total || 0, signed: false, invoiceNumber: i.number,
       });
     });
@@ -227,129 +219,117 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
   const scopeWord = scope === "today" ? "today" : "this week";
   const dateLine = scope === "today"
     ? parseLocalDay(today).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
-    : `${parseLocalDay(weekStart).toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${parseLocalDay(today).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+    : `${parseLocalDay(weekStart).toLocaleDateString("en-US", { month: "short", day: "numeric" })} to ${parseLocalDay(today).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+
+  // The profit split: the share each recipient took of the week's net profit.
+  const split = brief?.payout_totals ?? [];
+  const splitSum = split.reduce((s, r) => s + Math.max(0, r.this_week), 0);
+  const netWeek = brief?.net_profit_this_week ?? 0;
 
   return (
     <div className="print-area">
-      {/* ── Toolbar ─────────────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Brief</h2>
-          <p className="text-[12px] text-muted mt-0.5">{dateLine}</p>
-        </div>
-        <div className="flex items-center gap-2 print:hidden">
-          <div className="flex items-center gap-0.5 bg-surface-2 border border-line rounded-lg p-0.5">
-            {([["today", "Today"], ["week", "This week"]] as [Scope, string][]).map(([id, label]) => (
-              <button key={id} onClick={() => setScope(id)}
-                className={`px-3 h-7 rounded-md text-[12px] font-medium whitespace-nowrap transition-colors duration-[130ms] ${scope === id ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <button onClick={load}
-            className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-[13px] text-ink-2 border border-line hover:bg-surface-2 transition-colors duration-[130ms]">
-            <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
-          </button>
-          <button onClick={() => window.print()}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent h-9 px-4 rounded-lg text-[13px] font-medium transition-colors duration-[130ms]">
-            <Printer size={14} /> Print
-          </button>
-        </div>
-      </div>
+      <PageActions>
+        <Tabs label="Window" value={scope} onChange={(id) => setScope(id as Scope)}
+          tabs={[{ id: "today", label: "Today" }, { id: "week", label: "This week" }]} />
+        <Button onClick={load} icon={<RefreshCw size={14} className={loading ? "animate-spin" : ""} />}>Refresh</Button>
+        <Button variant="ink" onClick={() => window.print()} icon={<Printer size={14} />}>Print</Button>
+      </PageActions>
+
+      <div className="text-[13px] text-muted mt-1 mb-2">{dateLine}</div>
 
       {loading && !brief ? (
-        <div className="space-y-4">
-          <div className="h-36 bg-surface-2 rounded-2xl animate-pulse" />
-          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-            <div className="xl:col-span-2 h-64 bg-surface-2 rounded-2xl animate-pulse" />
-            <div className="h-64 bg-surface-2 rounded-2xl animate-pulse" />
+        <div className="space-y-4" aria-busy="true">
+          <div className="h-[128px] rounded-xl bg-surface-2 animate-pulse" />
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_1px_328px] gap-x-2 gap-y-4">
+            <div className="h-72 rounded-xl bg-surface-2 animate-pulse" />
+            <div className="hidden xl:block" />
+            <div className="h-72 rounded-xl bg-surface-2 animate-pulse" />
           </div>
         </div>
       ) : (
-      <div className="space-y-4">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_1px_328px] xl:gap-x-2 animate-fade-up motion-reduce:animate-none">
 
-        {/* ── What happened ──────────────────────────────────────────────── */}
-        <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-          <div className="px-5 py-3.5 border-b border-line-2 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="text-[13px] font-semibold text-ink tracking-tight">What happened {scopeWord}</h3>
-              <p className="text-[11px] text-muted mt-0.5">Deals closed out, money in, invoices sent</p>
+        {/* ── Left: what happened, what needs you, where the profit went ── */}
+        <div className="min-w-0">
+
+          <div className="flex items-start justify-between gap-3 px-4 pt-3 pb-1">
+            <div>
+              <div className="text-[14px] font-medium leading-5">What happened {scopeWord}</div>
+              <div className="ui-note mt-0.5">Deals closed out, money in, invoices sent</div>
             </div>
-            <StatusPill tone={happenings.length > 0 ? "accent" : "neutral"}>
-              {happenings.length} update{happenings.length !== 1 ? "s" : ""}
-            </StatusPill>
+            <span className="ui-count">{happenings.length}</span>
           </div>
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 xl:divide-x xl:divide-line-2">
-            <Tile label="Deals completed" value={String(completed.length)}
+          <div className="grid grid-cols-2 md:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_1px_minmax(0,1fr)_1px_minmax(0,1fr)]">
+            <Tile label="Deals completed" value={completed.length}
               sub={completed.length > 0 ? `${fmtAmount(dealRevenue)} revenue` : "Nothing closed out yet"} />
-            <Tile label="Profit booked" value={fmtAmount(dealProfit)}
-              valueCls={moneyCls(dealProfit)}
+            <div className="vsep hidden md:block mt-4" />
+            <Tile label="Profit booked" value={dealProfit} money valueCls={moneyCls(dealProfit)}
               sub="From completed deals only" />
-            <Tile label="Money in" value={fmtAmount(moneyIn)}
-              sub={`${paidIn.length} buyer payment${paidIn.length !== 1 ? "s" : ""}`}
-              className="border-t border-line-2 xl:border-t-0" />
-            <Tile label="Invoices sent" value={String(sent.length)}
-              sub={sent.length > 0 ? fmtAmount(sentTotal) : "None sent yet"}
-              className="border-t border-line-2 xl:border-t-0" />
+            <div className="vsep hidden md:block mt-4" />
+            <Tile label="Money in" value={moneyIn} money
+              sub={`${paidIn.length} buyer payment${paidIn.length !== 1 ? "s" : ""}`} />
+            <div className="vsep hidden md:block mt-4" />
+            <Tile label="Invoices sent" value={sent.length}
+              sub={sent.length > 0 ? fmtAmount(sentTotal) : "None sent yet"} />
           </div>
 
-          {happenings.length === 0 ? (
-            <div className="px-5 py-8 text-[13px] text-muted text-center border-t border-line-2">
-              Nothing has been recorded {scopeWord} yet.
-            </div>
-          ) : (
-            <div className="divide-y divide-line-2 border-t border-line-2">
-              {happenings.slice(0, 8).map((h) => (
-                <HappeningRow key={h.key} h={h} showDate={scope === "week"} />
-              ))}
-              {happenings.length > 8 && (
-                <div className="px-5 py-2.5 text-[12px] text-muted">
-                  {happenings.length - 8} more {scope === "today" ? "today" : "this week"}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+          <div className="hsep" />
 
-        {/* ── Needs you now · at risk · people ───────────────────────────── */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-
-          <div className="xl:col-span-2 min-w-0 bg-surface border border-line rounded-2xl overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-line-2">
-              <h3 className="text-[13px] font-semibold text-ink tracking-tight">What needs you now</h3>
-              <p className="text-[11px] text-muted mt-0.5">Chasing, calls and deals waiting on a step from you</p>
-            </div>
-
-            {needsNothing ? (
-              <div className="py-10 flex flex-col items-center">
-                <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-success-ink mb-3">
-                  <CheckCircle2 size={18} />
-                </div>
-                <div className="text-[13px] text-muted">All clear, nothing needs you right now</div>
+          <div className="py-2 px-1">
+            {happenings.length === 0 ? (
+              <div className="py-7 text-[13px] text-muted text-center">
+                Nothing has been recorded {scopeWord} yet.
               </div>
             ) : (
-              <div className="divide-y divide-line-2">
+              <>
+                {happenings.slice(0, 8).map((h) => (
+                  <HappeningRow key={h.key} h={h} showDate={scope === "week"} />
+                ))}
+                {happenings.length > 8 && (
+                  <div className="ui-note px-3 pt-2.5 pb-1">
+                    {happenings.length - 8} more {scope === "today" ? "today" : "this week"}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="hsep" />
+
+          <div className="px-4 pt-5 pb-2">
+            <div className="text-[14px] font-medium leading-5">What needs you now</div>
+            <div className="ui-note mt-0.5">Chasing, calls and deals waiting on a step from you</div>
+          </div>
+
+          <div className="px-1 pb-4">
+            {needsNothing ? (
+              <div className="py-8 flex flex-col items-center gap-2 text-muted">
+                <CheckCircle2 size={18} className="text-success-ink" />
+                <div className="text-[13px]">All clear, nothing needs you right now</div>
+              </div>
+            ) : (
+              <div className="[&>button+button]:shadow-[inset_0_1px_0_rgb(var(--c-line))]">
                 {overdue.length > 0 && (
                   <ActionRow
-                    tone="danger" icon={<CalendarClock size={14} />}
+                    tone="danger" icon={<CalendarClock size={18} />}
                     title={`${overdue.length} invoice${overdue.length !== 1 ? "s" : ""} overdue`}
                     sub="Chase these first"
-                    amount={fmtAmount(overdueValue)}
-                    onClick={() => goTab("receivables")}
+                    amount={fmtAmount(overdueValue)} amountCls="text-danger-ink"
+                    onClick={() => goTab("dealflow")}
                   />
                 )}
                 {overdue.slice(0, 4).map((i) => <OverdueRow key={i.invoice_id} item={i} />)}
                 {overdue.length > 4 && (
-                  <button onClick={() => goTab("receivables")}
-                    className="w-full flex items-center gap-2 px-5 py-2.5 text-left text-[12px] text-accent font-medium hover:bg-surface-2/40 transition-colors duration-[130ms]">
-                    {overdue.length - 4} more overdue <ArrowRight size={12} className="text-faint" />
+                  <button onClick={() => goTab("dealflow")}
+                    className="w-full flex items-center gap-1.5 pl-[42px] pr-3 py-2.5 text-left text-[13px] text-muted hover:text-ink rounded-[10px] hover:bg-surface-2 transition-colors duration-[130ms]">
+                    {overdue.length - 4} more overdue <ChevronRight size={13} className="text-faint" />
                   </button>
                 )}
 
                 {billRow && (
                   <ActionRow
-                    tone={billRow.tone} icon={<Receipt size={14} />}
+                    tone={billRow.tone} icon={<Receipt size={18} />}
                     title={billRow.title} sub={billRow.sub}
                     onClick={() => goTab("bills")}
                   />
@@ -357,16 +337,16 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
 
                 {followups.length > 0 && (
                   <ActionRow
-                    tone="warning" icon={<Clock size={14} />}
+                    tone="warning" icon={<Clock size={18} />}
                     title={`${followups.length} follow-up${followups.length !== 1 ? "s" : ""} due`}
-                    sub={followups.slice(0, 3).map((c) => c.name).join(", ") + (followups.length > 3 ? "…" : "")}
+                    sub={followups.slice(0, 3).map((c) => c.name).join(", ") + (followups.length > 3 ? "..." : "")}
                     onClick={() => goTab("clients")}
                   />
                 )}
 
                 {readyToClose.length > 0 && (
                   <ActionRow
-                    tone="success" icon={<PackageCheck size={14} />}
+                    tone="success" icon={<PackageCheck size={18} />}
                     title={`${readyToClose.length} deal${readyToClose.length !== 1 ? "s" : ""} ready to close out`}
                     sub="The buyer has paid: complete them to book the profit"
                     onClick={() => goTab("dealflow")}
@@ -376,142 +356,169 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
             )}
           </div>
 
-          <div className="min-w-0 space-y-4">
-            {/* At risk */}
-            <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-              <div className="px-5 py-3.5 border-b border-line-2">
-                <h3 className="text-[13px] font-semibold text-ink tracking-tight">What is at risk</h3>
-                <p className="text-[11px] text-muted mt-0.5">Money and dates that have slipped</p>
-              </div>
-              {riskNothing ? (
-                <div className="px-5 py-8 text-[13px] text-muted text-center">Nothing aged or slipping.</div>
-              ) : (
-                <div className="divide-y divide-line-2">
-                  {aged.length > 0 && (
-                    <RiskRow
-                      icon={<AlertTriangle size={14} />} tone="danger"
-                      title={`${aged.length} receivable${aged.length !== 1 ? "s" : ""} over 30 days`}
-                      value={fmtAmount(agedValue)} onClick={() => goTab("receivables")}
-                    />
-                  )}
-                  {slipping.length > 0 && (
-                    <RiskRow
-                      icon={<Truck size={14} />} tone="warning"
-                      title={`${slipping.length} delivery date${slipping.length !== 1 ? "s" : ""} passed`}
-                      value={`${slipping.length} deal${slipping.length !== 1 ? "s" : ""}`}
-                      onClick={() => goTab("dealflow")}
-                    />
-                  )}
-                  {speculative.length > 0 && (
-                    <RiskRow
-                      icon={<Receipt size={14} />} tone="neutral"
-                      title={`${speculative.length} invoice${speculative.length !== 1 ? "s" : ""} not yet committed`}
-                      value={fmtAmount(speculativeValue)} onClick={() => goTab("receivables")}
-                    />
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* R-401: what the logistics person is owed, when, and what is waiting on an amount */}
-            {logiPay && <LogisticsPayBriefBlock t={logiPay} from={weekStart} onOpen={() => goTab("settings")} />}
-
-            {/* People and activity — brief-window figures, labelled with that window */}
-            {brief && (
-              <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-                <div className="px-5 py-3.5 border-b border-line-2">
-                  <h3 className="text-[13px] font-semibold text-ink tracking-tight">New clients and interactions</h3>
-                  <p className="text-[11px] text-muted mt-0.5">{shortDate(brief.week_start)} – {shortDate(brief.week_end)}</p>
-                </div>
-                <div className="grid grid-cols-2 divide-x divide-line-2">
-                  <CountCell icon={<Users size={16} />} value={brief.new_clients_this_week} label="new clients" />
-                  <CountCell icon={<FileText size={16} />} value={brief.interactions_this_week} label="interactions" />
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ── Where the profit went ──────────────────────────────────────── */}
-        {brief && (
-          <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-line-2 flex items-center justify-between gap-3 flex-wrap">
-              <div className="min-w-0">
-                <h3 className="text-[13px] font-semibold text-ink tracking-tight">Where the profit went</h3>
-                <p className="text-[11px] text-muted mt-0.5">Who earned what from deals, {shortDate(brief.week_start)} – {shortDate(brief.week_end)}</p>
-              </div>
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-[11px] text-muted">Net profit</span>
-                <span className={`text-[20px] font-bold tabular-nums ${moneyCls(brief.net_profit_this_week)}`}>
-                  {fmtAmount(brief.net_profit_this_week)}
-                </span>
-              </div>
-            </div>
-
-            <div className="p-5 space-y-4">
-              {brief.payout_totals && brief.payout_totals.length > 0 ? (
-                <>
-                  <div className="grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-                    {(() => {
-                      let nb = 0;
-                      return brief.payout_totals.map((r, i) => {
-                        const c = r.kind === "reps" || r.kind === "logistics" ? OFF_TOP_COLOR : r.is_business ? BIZ_COLOR : RECIP_COLORS[(nb++) % RECIP_COLORS.length];
-                        return (
-                          <SplitBox key={i}
-                            accent={c.accent} accentBg={c.accentBg} accentBorder={c.accentBorder}
-                            label={r.name} value={fmtAmount(r.this_week)}
-                          />
-                        );
-                      });
-                    })()}
+          {/* ── Where the profit went ─────────────────────────────────── */}
+          {brief && (
+            <>
+              <div className="hsep" />
+              <div className="px-4 pt-5 pb-2 flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[14px] font-medium leading-5">Where the profit went</div>
+                  <div className="ui-note mt-0.5">
+                    Who earned what from deals, {shortDate(brief.week_start)} to {shortDate(brief.week_end)}. Read from the commission ledger, so it agrees with every deal's Payouts.
                   </div>
+                </div>
+                <div className="text-right">
+                  <div className="ui-note">Net profit</div>
+                  <div className={`ui-fig !text-[22px] !leading-7 ${moneyCls(brief.net_profit_this_week)}`}>
+                    {signedAmt(brief.net_profit_this_week)}
+                  </div>
+                </div>
+              </div>
 
-                  {brief.net_profit_this_month !== 0 && (
-                    <div className="flex items-center justify-between gap-3 flex-wrap text-[12px] text-muted pt-3 border-t border-line-2">
-                      <span className="min-w-0">
-                        {parseLocalDay(localDay()).toLocaleString("en-US", { month: "long" })} so far:{" "}
-                        <span className="font-semibold text-ink-2 tabular-nums">{fmtAmount(brief.net_profit_this_month)}</span> profit
-                      </span>
-                      <span className="min-w-0 text-right">
-                        {brief.payout_totals.map((r, i) => (
-                          <span key={i}>
-                            {i > 0 && <span className="mx-1.5">&middot;</span>}
-                            {r.name} to date: <span className="font-medium text-ink-2 tabular-nums">{fmtAmount(r.this_month)}</span>
-                          </span>
+              {split.length > 0 ? (
+                <>
+                  {splitSum > 0 && (
+                    <div className="px-4 pt-2 pb-1">
+                      <div className="flex gap-0.5 h-2.5" aria-hidden="true">
+                        {split.map((r, i) => (
+                          <span key={i} className="rounded-[3px] transition-[flex-grow] duration-500"
+                            style={{
+                              flex: `${Math.max(0, r.this_week)} 0 0`,
+                              background: `rgb(var(--c-ink) / ${SPLIT_ALPHA[Math.min(i, SPLIT_ALPHA.length - 1)]})`,
+                            }} />
                         ))}
-                      </span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="px-1 pb-1 overflow-x-auto">
+                    <table className="ui-table min-w-[480px]">
+                      <thead>
+                        <tr>
+                          <th>Recipient</th>
+                          <th className="r">Share</th>
+                          <th className="r">This week</th>
+                          <th className="r">{parseLocalDay(localDay()).toLocaleString("en-US", { month: "long" })} to date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {split.map((r, i) => (
+                          <tr key={i}>
+                            <td>
+                              <span className="block font-medium truncate max-w-[260px]">{r.name}</span>
+                              {(r.kind === "reps" || r.kind === "logistics") && (
+                                <span className="block ui-note">Taken off before the owners' split</span>
+                              )}
+                            </td>
+                            <td className="r text-muted">{netWeek !== 0 ? `${Math.round((r.this_week / netWeek) * 100)}%` : ""}</td>
+                            <td className="r font-medium">{signedAmt(r.this_week)}</td>
+                            <td className="r text-muted">{signedAmt(r.this_month)}</td>
+                          </tr>
+                        ))}
+                        <tr className="font-medium">
+                          <td>Net profit</td>
+                          <td className="r text-muted">{netWeek !== 0 ? "100%" : ""}</td>
+                          <td className={`r ${moneyCls(brief.net_profit_this_week)}`}>{signedAmt(brief.net_profit_this_week)}</td>
+                          <td className={`r ${moneyCls(brief.net_profit_this_month)}`}>{signedAmt(brief.net_profit_this_month)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  {brief.net_profit_this_month !== 0 && (
+                    <div className="ui-note px-4 pt-2.5">
+                      {parseLocalDay(localDay()).toLocaleString("en-US", { month: "long" })} so far{" "}
+                      <span className="text-ink font-medium tabular-nums">{signedAmt(brief.net_profit_this_month)}</span> profit
                     </div>
                   )}
                 </>
               ) : (
-                <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <span className="text-[12px] text-muted min-w-0">Set up a payout split to see how each recipient's cut breaks down.</span>
-                  <button onClick={() => goTab("settings")}
-                    className="text-[12px] font-medium text-accent hover:underline">
-                    Set up payout split
-                  </button>
+                <div className="px-4 pb-3 flex items-center justify-between gap-3 flex-wrap">
+                  <span className="text-[13px] text-muted min-w-0">Set up a payout split to see how each recipient's cut breaks down.</span>
+                  <button onClick={() => goTab("settings")} className="ui-link">Set up payout split</button>
                 </div>
               )}
 
               {brief.rep_earnings_this_week > 0 && (
-                <div className="flex items-center justify-between gap-3 bg-surface-2 border border-line rounded-lg px-4 py-2.5">
-                  <span className="text-[12px] text-muted min-w-0">Your earnings this period, after any refunds</span>
-                  <span className="text-[15px] font-bold text-success-ink tabular-nums">{fmtAmount(brief.rep_earnings_this_week)}</span>
+                <div className="mx-4 mt-3 mb-5 flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-[10px] bg-surface-2 ring-1 ring-line">
+                  <span className="text-[13px] text-muted min-w-0">Your earnings this period, after any refunds</span>
+                  <span className="text-[15px] font-medium text-success-ink tabular-nums">{fmtAmount(brief.rep_earnings_this_week)}</span>
                 </div>
               )}
-            </div>
+            </>
+          )}
+        </div>
+
+        <div className="vsep hidden xl:block" />
+        <div className="hsep xl:hidden" />
+
+        {/* ── Right: at risk, logistics pay, people ──────────────────── */}
+        <div className="min-w-0">
+          <div className="p-4">
+            <div className="text-[14px] font-medium leading-5">What is at risk</div>
+            <div className="ui-note mt-0.5">Money and dates that have slipped</div>
+            {riskNothing ? (
+              <div className="py-6 text-[13px] text-muted text-center">Nothing aged or slipping.</div>
+            ) : (
+              <div className="mt-2 [&>button+button]:shadow-[inset_0_1px_0_rgb(var(--c-line))]">
+                {aged.length > 0 && (
+                  <RiskRow
+                    tone="danger" icon={<TriangleAlert size={16} />}
+                    title={`${aged.length} receivable${aged.length !== 1 ? "s" : ""} over 30 days`}
+                    value={fmtAmount(agedValue)} valueCls="text-danger-ink" onClick={() => goTab("dealflow")}
+                  />
+                )}
+                {slipping.length > 0 && (
+                  <RiskRow
+                    tone="warning" icon={<Truck size={16} />}
+                    title={`${slipping.length} delivery date${slipping.length !== 1 ? "s" : ""} passed`}
+                    value={`${slipping.length} deal${slipping.length !== 1 ? "s" : ""}`}
+                    onClick={() => goTab("dealflow")}
+                  />
+                )}
+                {speculative.length > 0 && (
+                  <RiskRow
+                    icon={<Receipt size={16} />}
+                    title={`${speculative.length} invoice${speculative.length !== 1 ? "s" : ""} not yet committed`}
+                    value={fmtAmount(speculativeValue)} onClick={() => goTab("dealflow")}
+                  />
+                )}
+              </div>
+            )}
           </div>
-        )}
+
+          {/* R-401: what the logistics person is owed, when, and what is waiting on an amount */}
+          {logiPay && (
+            <>
+              <div className="hsep" />
+              <div className="p-4"><LogisticsPayBriefBlock t={logiPay} from={weekStart} onOpen={() => goTab("settings")} /></div>
+            </>
+          )}
+
+          {/* People and activity: brief-window figures, labelled with that window */}
+          {brief && (
+            <>
+              <div className="hsep" />
+              <div className="p-4">
+                <div className="text-[14px] font-medium leading-5">New clients and interactions</div>
+                <div className="ui-note mt-0.5">{shortDate(brief.week_start)} to {shortDate(brief.week_end)}</div>
+                <div className="grid grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)] gap-x-3 mt-3.5">
+                  <CountCell icon={<Users size={18} />} value={brief.new_clients_this_week} label="new clients" />
+                  <div className="vsep" />
+                  <CountCell icon={<FileText size={18} />} value={brief.interactions_this_week} label="interactions" />
+                </div>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Where the numbers went (R-316) */}
-        <div className="flex items-center justify-between gap-3 flex-wrap px-1 pb-2">
-          <span className="text-[12px] text-muted min-w-0">
-            Revenue, margins, monthly history, win rate and what people bought now live on Analytics.
-          </span>
-          <button onClick={() => goTab("analytics")}
-            className="flex items-center gap-1.5 text-[12px] font-medium text-accent hover:underline print:hidden">
-            Open analytics <ArrowRight size={12} />
-          </button>
+        <div className="xl:col-span-3">
+          <div className="hsep mt-2" />
+          <div className="flex items-center justify-between gap-x-4 gap-y-2 flex-wrap px-4 py-3.5">
+            <span className="text-[13px] text-muted min-w-0">
+              Revenue, margins, monthly history, win rate and what people bought now live on Analytics.
+            </span>
+            <button onClick={() => goTab("analytics")} className="ui-link print:hidden">Open analytics</button>
+          </div>
         </div>
       </div>
       )}
@@ -519,84 +526,71 @@ export default function BriefView({ currentUser, me }: { currentUser?: any; me?:
   );
 }
 
-// ─── One cell of the "what happened" row (the card owns the border) ──────────
-function Tile({ label, value, sub, valueCls = "text-ink", className = "" }: {
-  label: string; value: string; sub?: string; valueCls?: string; className?: string;
+// ─── One figure of the "what happened" row: no box, a fading hairline between them ───
+function Tile({ label, value, sub, money, valueCls = "text-ink" }: {
+  label: string; value: number; sub?: string; money?: boolean; valueCls?: string;
 }) {
+  const shown = useCountUp(value) ?? value;
   return (
-    <div className={`p-5 min-w-0 ${className}`}>
-      <div className="text-[12px] font-medium text-muted truncate">{label}</div>
-      <div className={`text-[24px] font-bold tabular-nums mt-1.5 leading-none truncate ${valueCls}`}>{value}</div>
-      {sub && <div className="text-[11px] text-faint mt-1.5 truncate">{sub}</div>}
+    <div className="p-4 min-w-0">
+      <div className="ui-label truncate">{label}</div>
+      <div className={`ui-fig mt-2 ${valueCls}`}>{money ? signedAmt(shown) : Math.round(shown).toLocaleString("en-US")}</div>
+      {sub && <div className="ui-note mt-1.5 truncate">{sub}</div>}
     </div>
   );
 }
 
 // ─── One recorded event in the window ───────────────────────────────────────
 const HAPPENING_ICON = {
-  deal:    <PackageCheck size={14} />,
-  payment: <Banknote size={14} />,
-  invoice: <FileText size={14} />,
-};
-const HAPPENING_TONE = {
-  deal:    "bg-success-bg text-success-ink",
-  payment: "bg-accent/10 text-accent-hover",
-  invoice: "bg-surface-2 text-ink-2",
+  deal:    <PackageCheck size={18} />,
+  payment: <Banknote size={18} />,
+  invoice: <FileText size={18} />,
 };
 
 function HappeningRow({ h, showDate }: { h: Happening; showDate: boolean }) {
   const amountCls = h.signed ? moneyCls(h.amount) : "text-ink";
   const body = (
     <>
-      <span className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${HAPPENING_TONE[h.kind]}`}>
-        {HAPPENING_ICON[h.kind]}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium text-ink truncate">{h.title}</div>
-        <div className="text-[11px] text-muted truncate">
-          {showDate && <>{parseLocalDay(h.on).toLocaleDateString("en-US", { weekday: "short" })} &middot; </>}
+      <span className="flex-none text-muted">{HAPPENING_ICON[h.kind]}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[14px] font-medium text-ink truncate">{h.title}</span>
+        <span className="block ui-note truncate mt-px">
+          {showDate && <>{parseLocalDay(h.on).toLocaleDateString("en-US", { weekday: "short" })}, </>}
           {h.meta}
-        </div>
-      </div>
-      <span className={`text-[13px] font-semibold tabular-nums flex-shrink-0 ${amountCls}`}>
-        {/* The app writes a loss as −$1,350.00, never $-1,350.00: fmtAmount only
-            ever prefixes the dollar sign, so the sign is placed here. */}
-        {h.amount < 0 ? `−${fmtAmount(Math.abs(h.amount))}` : fmtAmount(h.amount)}
+        </span>
       </span>
+      <span className={`text-[14px] font-medium tabular-nums flex-shrink-0 ${amountCls}`}>{signedAmt(h.amount)}</span>
     </>
   );
-  if (!h.invoiceNumber) return <div className="flex items-center gap-3 px-5 py-3">{body}</div>;
+  const row = "flex items-center gap-3 min-h-[56px] px-3 py-2 rounded-[10px] w-full text-left";
+  if (!h.invoiceNumber) return <div className={row}>{body}</div>;
   return (
-    <button onClick={() => openDeal(h.invoiceNumber)}
-      className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors duration-[130ms] group">
+    <button onClick={() => openDeal(h.invoiceNumber)} title="Open the deal"
+      className={`${row} group hover:bg-surface-2 transition-colors duration-[130ms]`}>
       {body}
-      <ArrowRight size={13} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity duration-[130ms] flex-shrink-0" />
+      <ChevronRight size={14} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity duration-[130ms] flex-shrink-0" />
     </button>
   );
 }
 
 // ─── One thing waiting on you ───────────────────────────────────────────────
-const ACTION_TONE = {
-  danger:  "bg-danger-bg text-danger-ink",
-  warning: "bg-warning-bg text-warning-ink",
-  success: "bg-success-bg text-success-ink",
-  neutral: "bg-surface-2 text-ink-2",
-};
+// Meaning is carried by the icon's ink alone (no tinted chip): red late, amber due soon, green ready.
+const TONE_INK = { danger: "text-danger-ink", warning: "text-warning-ink", success: "text-success-ink", neutral: "text-muted" };
+type Tone = keyof typeof TONE_INK;
 
-function ActionRow({ tone, icon, title, sub, amount, onClick }: {
-  tone: keyof typeof ACTION_TONE; icon: React.ReactNode;
-  title: string; sub: string; amount?: string; onClick: () => void;
+function ActionRow({ tone = "neutral", icon, title, sub, amount, amountCls = "text-ink", onClick }: {
+  tone?: Tone; icon: React.ReactNode; title: string; sub: string; amount?: string; amountCls?: string; onClick: () => void;
 }) {
   return (
     <button onClick={onClick}
-      className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors duration-[130ms] group">
-      <span className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${ACTION_TONE[tone]}`}>{icon}</span>
-      <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium text-ink truncate">{title}</div>
-        <div className="text-[11px] text-muted truncate">{sub}</div>
-      </div>
-      {amount && <span className="text-[13px] font-bold text-ink tabular-nums flex-shrink-0">{amount}</span>}
-      <ArrowRight size={13} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity duration-[130ms] flex-shrink-0" />
+      className="w-full flex items-center gap-3 min-h-[54px] px-3 py-2 text-left rounded-[10px] group hover:bg-surface-2 transition-colors duration-[130ms]">
+      <span className={`flex-none ${TONE_INK[tone]}`}>{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[14px] font-medium text-ink truncate">{title}</span>
+        <span className="block ui-note truncate">{sub}</span>
+      </span>
+      {amount && <span className={`text-[14px] font-medium tabular-nums flex-shrink-0 ${amountCls}`}>{amount}</span>}
+      <ChevronRight size={14} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity duration-[130ms] flex-shrink-0" />
     </button>
   );
 }
@@ -605,55 +599,43 @@ function ActionRow({ tone, icon, title, sub, amount, onClick }: {
 function OverdueRow({ item }: { item: ARItem }) {
   return (
     <button onClick={() => openDeal(item.invoice_number)}
-      className="w-full flex items-center gap-3 pl-16 pr-5 py-2.5 text-left hover:bg-surface-2/40 transition-colors duration-[130ms] group">
-      <div className="min-w-0 flex-1">
-        <div className="text-[12.5px] text-ink truncate">{item.client_name}</div>
-        <div className="text-[11px] text-muted truncate">{item.invoice_number} &middot; due {shortDate(item.due_date)}</div>
-      </div>
+      className="w-full flex items-center gap-3 min-h-[48px] pl-[42px] pr-3 py-2 text-left rounded-[10px] hover:bg-surface-2 transition-colors duration-[130ms]">
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13.5px] text-ink truncate">{item.client_name}</span>
+        <span className="block ui-note truncate">{item.invoice_number}, due {shortDate(item.due_date)}</span>
+      </span>
       <StatusPill tone={item.days_overdue > 30 ? "danger" : "warning"}>
         {item.days_overdue}d late
       </StatusPill>
-      <span className="text-[12.5px] font-medium text-ink tabular-nums flex-shrink-0 w-24 text-right">{fmtAmount(item.amount)}</span>
+      <span className="text-[13.5px] text-ink tabular-nums flex-shrink-0 w-24 text-right">{fmtAmount(item.amount)}</span>
     </button>
   );
 }
 
 // ─── One at-risk line ───────────────────────────────────────────────────────
-function RiskRow({ icon, tone, title, value, onClick }: {
-  icon: React.ReactNode; tone: keyof typeof ACTION_TONE; title: string; value: string; onClick: () => void;
+function RiskRow({ tone = "neutral", icon, title, value, valueCls = "text-ink", onClick }: {
+  tone?: Tone; icon: React.ReactNode; title: string; value: string; valueCls?: string; onClick: () => void;
 }) {
   return (
     <button onClick={onClick}
-      className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors duration-[130ms]">
-      <span className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${ACTION_TONE[tone]}`}>{icon}</span>
-      <span className="text-[12.5px] text-ink-2 min-w-0 flex-1 truncate">{title}</span>
-      <span className="text-[12.5px] font-semibold text-ink tabular-nums flex-shrink-0">{value}</span>
+      className="w-full flex items-center gap-3 min-h-[46px] py-2 text-left text-[13px] text-ink-2 hover:text-ink transition-colors duration-[130ms]">
+      <span className={`flex-none ${TONE_INK[tone]}`}>{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{title}</span>
+      <span className={`font-medium tabular-nums flex-shrink-0 ${valueCls}`}>{value}</span>
     </button>
   );
 }
 
 // ─── One counted figure ─────────────────────────────────────────────────────
 function CountCell({ icon, value, label }: { icon: React.ReactNode; value: number; label: string }) {
+  const shown = useCountUp(value) ?? value;
   return (
-    <div className="px-5 py-4 flex items-center gap-3 min-w-0">
-      <span className="w-9 h-9 rounded-xl bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0">{icon}</span>
+    <div className="flex items-center gap-2.5 min-w-0">
+      <span className="flex-none text-muted">{icon}</span>
       <div className="min-w-0">
-        <div className="text-[22px] font-bold text-ink leading-none tabular-nums">{value}</div>
-        <div className="text-[11px] text-muted mt-1 leading-tight">{label}</div>
+        <div className="ui-fig !text-[22px] !leading-7">{Math.round(shown).toLocaleString("en-US")}</div>
+        <div className="ui-note">{label}</div>
       </div>
-    </div>
-  );
-}
-
-// ─── Profit split box ───────────────────────────────────────────────────────
-function SplitBox({ accent, accentBg, accentBorder, label, value }: {
-  accent: string; accentBg: string; accentBorder: string; label: string; value: string;
-}) {
-  return (
-    <div className="rounded-xl p-4 text-center min-w-0"
-      style={{ background: accentBg, border: `1px solid ${accentBorder}`, borderTop: `2.5px solid ${accent}` }}>
-      <div className="text-[12.5px] font-medium text-ink-2 mb-2 truncate">{label}</div>
-      <div className="text-[20px] font-bold text-ink tabular-nums truncate">{value}</div>
     </div>
   );
 }

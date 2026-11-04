@@ -150,6 +150,8 @@ export interface PaidFacts {
   paid_at?: string | null; paid_method?: string | null; paid_note?: string | null; pay_due_date?: string | null; can_see_money?: boolean;
   /** The carrier rate: what a part-linked load still has to reach. */
   quoted_cost?: number | null;
+  /** R-588: a load with no deal, whose payment is recorded by the team rather than linked to the bank. */
+  standalone?: boolean;
 }
 
 export interface PaidView {
@@ -201,7 +203,7 @@ export function paidView(b: PaidFacts, today: string, now?: Date): PaidView {
   if ((b.paid_at || "").trim()) bits.push(`on ${fmtDayLabel(b.paid_at, now)}`);
   if ((b.paid_method || "").trim()) bits.push(`by ${paidMethodWord(b.paid_method)}`);
   const ref = (b.paid_note || "").trim();
-  return { state, tone: "success", text: bits.join(" "), note: ["Linked to the bank", ref ? `Reference ${ref}` : ""].filter(Boolean).join(" · "), noteTone: "success", zero: false };
+  return { state, tone: "success", text: bits.join(" "), note: [b.standalone ? "Recorded by your team" : "Linked to the bank", ref ? `Reference ${ref}` : ""].filter(Boolean).join(" · "), noteTone: "success", zero: false };
 }
 
 // ─── days and times ───────────────────────────────────────────────────────

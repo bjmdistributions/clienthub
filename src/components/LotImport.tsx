@@ -289,7 +289,7 @@ export default function LotImport({ lots, categories, suppliers, onClose, onAdde
           <div className="max-w-[640px] mx-auto px-6 py-10 space-y-5">
             <button type="button" onClick={chooseFile} disabled={reading}
               className={`w-full border-2 border-dashed rounded-xl px-6 py-14 flex flex-col items-center justify-center gap-2 transition-colors ${dragOver ? "border-accent bg-accent/10" : "border-line-3 hover:border-accent hover:bg-accent/5"}`}>
-              <FileSpreadsheet size={28} className={dragOver ? "text-accent" : "text-muted"} strokeWidth={1.5} />
+              <FileSpreadsheet size={28} className={dragOver ? "text-accent" : "text-muted"} />
               <span className="text-[15px] font-semibold text-ink">{reading ? `Reading ${fileName(file || "")}…` : "Drop your spreadsheet here"}</span>
               <span className="text-[12.5px] text-muted">Excel or CSV, one row per lot</span>
               {!reading && <span className="mt-2 inline-flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[13px] font-medium bg-surface"><Upload size={13} /> Choose a file</span>}
@@ -466,7 +466,7 @@ function Row({ row, lots, dropping, busy, onToggle, onEdit, onPickPhotos, onRemo
                 <img src={convertFileSrc(p.path)} alt="" className="w-11 h-11 object-cover rounded-md border border-line" title={isAbs(p.ref) ? fileName(p.ref) : p.ref} />
                 {!added && !busy && (
                   <button onClick={() => onRemovePhoto(i)} title="Remove this photo"
-                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-danger text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
+                    className="absolute top-1 right-1 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] opacity-0 group-hover:opacity-100 transition-opacity duration-150"><X size={14} /></button>
                 )}
               </div>
             ) : null)}

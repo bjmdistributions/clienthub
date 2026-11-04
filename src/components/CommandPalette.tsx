@@ -76,7 +76,7 @@ export default function CommandPalette({ onClose, logisticsOnly = false }: Props
   };
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-start justify-center pt-[15vh] bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
+    <div className="fixed inset-0 z-[70] flex items-start justify-center pt-[15vh] bg-black/50" onClick={onClose}>
       <div className="bg-surface rounded-2xl shadow-2xl w-[560px] max-w-[92vw] max-h-[60vh] overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3 px-4 py-3 border-b border-line">
           <Search size={16} className="text-muted flex-shrink-0" />
@@ -84,20 +84,20 @@ export default function CommandPalette({ onClose, logisticsOnly = false }: Props
             onKeyDown={handleKey}
             placeholder={logisticsOnly ? "Search loads, BOLs, carriers..." : "Search clients, invoices, deals, suppliers, loads, BOLs..."}
             className="flex-1 text-[15px] outline-none text-ink placeholder:text-muted" />
-          <kbd className="text-[10px] text-muted bg-surface-3 px-1.5 py-0.5 rounded font-mono">Esc</kbd>
+          <kbd className="text-[11px] text-muted bg-surface-3 px-1.5 py-0.5 rounded">Esc</kbd>
         </div>
         {answered && allItems.length > 0 && (
           <div className="overflow-y-auto max-h-[50vh] py-1">
             {allItems.map((item, i) => (
               <button key={`${item.type}-${item.id}`}
                 onClick={() => navigate(item)}
-                className={`w-full text-left px-4 py-2.5 flex items-center gap-3 transition-colors ${i === selectedIdx ? "bg-accent/10" : "hover:bg-surface-2"}`}>
+                className={`w-full text-left px-4 py-2.5 flex items-center gap-3 transition-colors ${i === selectedIdx ? "bg-surface-3" : "hover:bg-surface-2"}`}>
                 <span className="w-6 flex items-center justify-center text-muted flex-shrink-0"><item.icon size={15} /></span>
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] font-medium text-ink truncate">{item.label}</div>
                   <div className="text-[11px] text-muted truncate">{item.sub}</div>
                 </div>
-                <span className="text-[10px] text-faint font-medium">{item.type}</span>
+                <span className="text-[11px] text-faint font-medium">{item.type}</span>
               </button>
             ))}
           </div>

@@ -146,10 +146,10 @@ export function PlacedPill({ placed }: { placed: ManifestPlaced }) {
 /** House styles for this screen. */
 export const S = {
   card: "bg-surface-2 rounded-lg px-3.5 py-3",
-  h2: "text-[13px] font-semibold text-ink mb-2",
-  input: "h-8 px-2.5 rounded-lg border border-line-3 bg-surface text-[12.5px] tabular-nums outline-none focus:border-accent",
+  h2: "text-[14px] font-medium text-ink mb-2",
+  input: "h-8 px-2.5 rounded-lg border border-line-3 bg-transparent text-[13px] tabular-nums outline-none focus:border-ink transition-colors duration-150",
   th: "px-3 py-2 font-medium text-muted",
   thL: "px-2 py-2 font-medium text-muted",
-  btn: "text-ink-2 border border-line-3 hover:border-accent hover:text-accent px-3.5 h-9 rounded-lg text-[12px] font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50",
-  btnPrimary: "bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50",
+  btn: "ui-btn",
+  btnPrimary: "ui-btn ui-btn-ink",
 };

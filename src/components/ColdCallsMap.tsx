@@ -133,7 +133,7 @@ export default function ColdCallsMap({ leads, onOpen }: { leads: Lead[]; onOpen:
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mb-2 text-[12.5px] text-ink-2">
         {STAGES.map(([s, lb, token]) => (
           <span key={s} className="inline-flex items-center gap-1.5 whitespace-nowrap">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: `rgb(var(${token}))` }} />{lb}
+            <span style={{ color: `rgb(var(${token}))` }}>{lb}</span>
             <span className="tabular-nums text-muted">{counts[s] ?? 0}</span>
           </span>
         ))}
@@ -150,14 +150,14 @@ export default function ColdCallsMap({ leads, onOpen }: { leads: Lead[]; onOpen:
         </p>
       )}
       {error && <p className="mb-2 text-[12.5px] text-danger-ink">{error}</p>}
-      <div className="relative h-[560px] rounded-2xl overflow-hidden border border-line bg-surface-2">
+      <div className="relative h-[560px] rounded-xl overflow-hidden border border-line bg-surface-2">
         {/* Its own height, not inset-0: MapLibre's stylesheet makes the container position: relative. */}
         <div ref={el} className="h-full w-full" />
         {sel && (
-          <div className="absolute left-3 bottom-3 w-[340px] max-w-[calc(100%-24px)] bg-surface border border-line rounded-xl shadow-lg p-3.5">
+          <div className="absolute left-3 bottom-3 w-[340px] max-w-[calc(100%-24px)] bg-surface rounded-xl shadow-lg p-3.5">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <div className="text-[14.5px] font-semibold text-ink truncate">{sel.company}</div>
+                <div className="text-[14px] font-medium text-ink truncate">{sel.company}</div>
                 <div className="text-[12.5px] text-muted truncate">
                   {[sel.city, sel.state].filter(Boolean).join(", ")}{selPin?.place === "city" ? ", placed by city" : ""}
                 </div>
@@ -174,8 +174,8 @@ export default function ColdCallsMap({ leads, onOpen }: { leads: Lead[]; onOpen:
             </div>
             {sel.said && <div className="mt-1.5 text-[13px] text-ink line-clamp-3">{saidLine(sel.said)}</div>}
             <div className="mt-3 flex gap-2">
-              <button onClick={() => onOpen(sel.id)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[13px] font-medium">Open</button>
-              <button onClick={() => setPicked(null)} className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[13px]">Close</button>
+              <button onClick={() => onOpen(sel.id)} className="ui-btn ui-btn-ink">Open</button>
+              <button onClick={() => setPicked(null)} className="ui-btn">Close</button>
             </div>
           </div>
         )}

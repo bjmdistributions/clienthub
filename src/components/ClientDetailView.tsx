@@ -8,6 +8,8 @@ import { fmtAmount, fmtPhone, localDay, parseLocalDay, primarySupplierLabel } fr
 import { parseLineItems, describeItem } from "../lib/itemSearch";
 import ReliabilityBadge from "./ReliabilityBadge";
 import StatusPill from "./StatusPill";
+import Switch from "./Switch";
+import { Button } from "./ui";
 import CustomerPortalPanel from "./CustomerPortalPanel";
 import { ProfileGrid, ProfileCard, Facts, Fact, KpiBand } from "./ProfileLayout";
 import CreditPanel from "./CreditPanel";
@@ -215,9 +217,9 @@ const whenLabel = (raw: string): string => {
 };
 
 const relTime = (d: string | null): string => {
-  if (!d) return "–";
+  if (!d) return "-";
   const ms = Date.now() - atMs(d);
-  if (!Number.isFinite(ms)) return "–";
+  if (!Number.isFinite(ms)) return "-";
   const days = Math.floor(ms / 86400000);
   if (days <= 0) return "Today";
   if (days === 1) return "Yesterday";
@@ -254,42 +256,16 @@ function FlagSwitch({ label, on, onToggle, title, tone = "accent" }: {
   tone?: "accent" | "neutral" | "danger";
 }) {
   const [busy, setBusy] = useState(false);
-  const trackOn =
-    tone === "danger" ? "bg-danger border-danger" :
-    tone === "neutral" ? "bg-ink-2 border-ink-2" :
-    "bg-accent border-accent";
   const click = () => {
     if (busy) return;
     setBusy(true);
     Promise.resolve(onToggle()).finally(() => setBusy(false));
   };
   return (
-    <button
-      onClick={click}
-      role="switch"
-      aria-checked={on}
-      aria-busy={busy}
-      title={title}
-      disabled={busy}
-      className={`group inline-flex items-center justify-between gap-3 w-[168px] pl-3 pr-2 h-8 rounded-lg border text-[12px] font-medium transition-colors disabled:opacity-70 ${
-        on
-          ? "bg-surface-2 border-line-3 text-ink"
-          : "bg-surface border-line text-muted hover:text-ink-2 hover:border-line-3"
-      }`}
-    >
-      <span className="truncate">{label}</span>
-      <span
-        className={`relative w-9 h-5 rounded-full flex-shrink-0 border transition-colors ${
-          on ? trackOn : "bg-surface-3 border-line-3"
-        }`}
-      >
-        <span
-          className={`absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full shadow-[0_1px_2px_rgba(0,0,0,0.25)] transition-all ${
-            on ? "left-[18px] bg-on-accent" : "left-[3px] bg-faint"
-          }`}
-        />
-      </span>
-    </button>
+    <span title={title} className="inline-flex items-center gap-2.5 text-[13px] text-ink-2">
+      <Switch on={on} onToggle={click} label={label} disabled={busy} />
+      <span className={on && tone === "danger" ? "text-danger-ink font-medium" : ""}>{label}</span>
+    </span>
   );
 }
 
@@ -297,16 +273,16 @@ function FlagSwitch({ label, on, onToggle, title, tone = "accent" }: {
 export function StatTile({ label, value, tone = "ink", hint }: { label: string; value: string; tone?: "ink" | "success" | "warning" | "danger" | "muted"; hint?: string }) {
   const valCls = tone === "success" ? "text-success-ink" : tone === "warning" ? "text-warning-ink" : tone === "danger" ? "text-danger-ink" : tone === "muted" ? "text-muted" : "text-ink";
   return (
-    <div className="bg-surface-2/60 border border-line-2 rounded-xl px-3.5 py-3">
-      <div className="text-[12.5px] font-medium text-muted tracking-wide">{label}</div>
-      <div className={`text-[17px] font-bold tabular-nums mt-1 truncate ${valCls}`}>{value}</div>
-      {hint && <div className="text-[10px] text-faint truncate mt-0.5">{hint}</div>}
+    <div className="min-w-0 py-3 pr-3">
+      <div className="ui-label">{label}</div>
+      <div className={`ui-fig mt-1.5 truncate ${valCls}`}>{value}</div>
+      {hint && <div className="ui-note truncate mt-1">{hint}</div>}
     </div>
   );
 }
 
 function SubHeading({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
-  return <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">{icon}{children}</div>;
+  return <div className="flex items-center gap-2 text-[13px] font-medium text-ink">{icon}{children}</div>;
 }
 
 /** A section that stays shut until asked for. The admin drawer at the bottom of
@@ -320,17 +296,18 @@ function Disclosure({ title, icon, children, defaultOpen = false }: {
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="bg-surface border border-line rounded-2xl overflow-hidden">
+    <div>
+      <div className="hsep" />
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="w-full flex items-center gap-2 px-5 py-4 text-left text-[13px] font-semibold text-ink hover:bg-surface-2 transition-colors"
+        className="w-full flex items-center gap-2 py-4 text-left text-[14px] font-medium text-ink hover:text-ink-2 transition-colors duration-150"
       >
-        {open ? <ChevronDown size={15} className="text-muted flex-shrink-0" /> : <ChevronRight size={15} className="text-muted flex-shrink-0" />}
+        <ChevronRight size={15} className={`text-muted flex-shrink-0 transition-transform duration-200 ${open ? "rotate-90" : ""}`} />
         {icon}
         {title}
       </button>
-      {open && <div className="px-5 pb-5">{children}</div>}
+      {open && <div className="pb-5 animate-fade-in">{children}</div>}
     </div>
   );
 }
@@ -356,39 +333,35 @@ export function NextActionBand({ actions, followUp, onFollowUp }: {
 }) {
   const head = actions[0];
   const rest = actions.slice(1);
-  const band =
-    head?.tone === "danger" ? "bg-danger-bg border-danger" :
-    head?.tone === "warning" ? "bg-warning-bg border-warning" :
-    "bg-surface-2 border-line";
   const headCls =
     head?.tone === "danger" ? "text-danger-ink" :
     head?.tone === "warning" ? "text-warning-ink" :
-    "text-ink-2";
+    "text-ink";
   return (
-    <div className={`mt-4 rounded-xl border px-4 py-3 ${band}`}>
+    <div className="mt-4 rounded-xl bg-surface-2 px-4 py-3">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0">
-          <div className={`text-[13.5px] font-semibold flex items-center gap-2 ${headCls}`}>
-            {head?.tone === "danger" && <AlertTriangle size={14} className="flex-shrink-0" />}
+          <div className={`text-[14px] font-medium flex items-center gap-2 ${headCls}`}>
+            {head?.tone === "danger" && <AlertTriangle size={15} className="flex-shrink-0" />}
             {head ? head.text : "Nothing is waiting on them right now."}
           </div>
           {rest.length > 0 && (
-            <div className="text-[12px] text-muted mt-1 leading-relaxed">{rest.map((a) => a.text).join(" · ")}</div>
+            <div className="text-[13px] text-muted mt-1 leading-relaxed">{rest.map((a) => a.text).join(" · ")}</div>
           )}
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-3 flex-shrink-0">
           {head?.go && (
-            <button onClick={head.go.onClick} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors">
-              {head.go.label} <ArrowRight size={12} />
+            <button onClick={head.go.onClick} className="ui-link">
+              {head.go.label} <ArrowRight size={13} />
             </button>
           )}
-          <label className="flex items-center gap-1.5 text-[11.5px] text-muted">
+          <label className="flex items-center gap-2 text-[13px] text-muted">
             Follow up
             <input
               type="date"
               value={followUp}
               onChange={(e) => onFollowUp(e.target.value)}
-              className="bg-surface border border-line rounded-lg h-7 px-2 text-[12px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="bg-transparent border border-line-3 rounded-lg h-8 px-2 text-[13px] text-ink focus:outline-none focus:border-ink"
             />
           </label>
         </div>
@@ -420,7 +393,7 @@ export type StreamItem = {
 };
 
 const GROUP_LABEL: Record<StreamGroup, string> = {
-  contact: "Notes & calls",
+  contact: "Notes and calls",
   email: "Emails",
   invoice: "Invoices",
   deal: "Deals",
@@ -441,51 +414,38 @@ export function ActivityStream({ items, header }: { items: StreamItem[]; header?
   const chips = (Object.keys(GROUP_LABEL) as StreamGroup[]).filter((g) => (counts[g] || 0) > 0 || group === g);
 
   return (
-    <div className="bg-surface border border-line rounded-2xl">
-      <div className="flex items-center justify-between gap-3 flex-wrap px-6 py-4 border-b border-line">
+    <div>
+      <div className="flex items-center justify-between gap-3 flex-wrap pb-3">
         <SubHeading icon={<MessageSquare size={15} className="text-muted" />}>Activity</SubHeading>
         {header}
       </div>
-      <div className="flex flex-wrap gap-1.5 px-6 pt-3">
-        <button
-          onClick={() => setGroup("all")}
-          className={`text-[11.5px] px-2.5 py-1 rounded-full border font-medium transition-colors ${
-            group === "all" ? "bg-accent text-on-accent border-accent" : "bg-surface text-muted border-line hover:bg-surface-2"
-          }`}
-        >
-          Everything · {items.length}
+      <div className="flex flex-wrap gap-1.5 pb-2">
+        <button onClick={() => setGroup("all")} className={`ui-opt ${group === "all" ? "on" : ""}`}>
+          Everything <span className="tabular-nums opacity-70">{items.length}</span>
         </button>
         {chips.map((g) => (
-          <button
-            key={g}
-            onClick={() => setGroup(group === g ? "all" : g)}
-            className={`text-[11.5px] px-2.5 py-1 rounded-full border font-medium transition-colors ${
-              group === g ? "bg-accent text-on-accent border-accent" : "bg-surface text-muted border-line hover:bg-surface-2"
-            }`}
-          >
-            {GROUP_LABEL[g]} · {counts[g] || 0}
+          <button key={g} onClick={() => setGroup(group === g ? "all" : g)} className={`ui-opt ${group === g ? "on" : ""}`}>
+            {GROUP_LABEL[g]} <span className="tabular-nums opacity-70">{counts[g] || 0}</span>
           </button>
         ))}
       </div>
-      <div className="mt-2 max-h-[640px] overflow-auto">
+      <div className="max-h-[640px] overflow-auto">
         {shown.map((it) => (
-          <div key={it.key} className="px-6 py-3 border-t border-line-2 first:border-t-0">
+          <div key={it.key} className="py-3 shadow-[inset_0_1px_0_rgb(var(--c-line))]">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium border ${it.chipCls}`}>
-                    {it.chip}
-                  </span>
-                  <span className="text-[11px] text-muted tabular-nums">{whenLabel(it.at)}</span>
-                  {it.author && <span className="text-[11px] text-ink-2">{it.author}</span>}
+                  <StatusPill className={it.chipCls}>{it.chip}</StatusPill>
+                  <span className="text-[13px] text-muted tabular-nums">{whenLabel(it.at)}</span>
+                  {it.author && <span className="text-[13px] text-ink-2">{it.author}</span>}
                 </div>
-                {it.title && <div className="text-[13.5px] font-medium text-ink mt-1">{it.title}</div>}
+                {it.title && <div className="text-[14px] font-medium text-ink mt-1">{it.title}</div>}
                 {it.body && <div className="text-[13px] text-ink-2 mt-0.5 whitespace-pre-wrap leading-relaxed">{it.body}</div>}
-                {it.meta && <div className="text-[11.5px] text-muted mt-0.5">{it.meta}</div>}
+                {it.meta && <div className="text-[13px] text-muted mt-0.5">{it.meta}</div>}
               </div>
               <div className="flex-shrink-0 text-right">
                 {typeof it.amount === "number" && (
-                  <div className={`text-[13px] font-semibold tabular-nums ${
+                  <div className={`text-[14px] font-medium tabular-nums ${
                     it.amountTone === "success" ? "text-success-ink" : it.amountTone === "danger" ? "text-danger-ink" : "text-ink"
                   }`}>
                     {fmtAmount(it.amount)}
@@ -496,9 +456,9 @@ export function ActivityStream({ items, header }: { items: StreamItem[]; header?
                     onClick={it.go.onClick}
                     title={it.go.label}
                     aria-label={it.go.label}
-                    className="mt-1 w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors"
+                    className="ui-ib mt-1"
                   >
-                    <ArrowRight size={11} />
+                    <ArrowRight size={14} />
                   </button>
                 )}
               </div>
@@ -506,7 +466,7 @@ export function ActivityStream({ items, header }: { items: StreamItem[]; header?
           </div>
         ))}
         {shown.length === 0 && (
-          <div className="px-6 py-10 text-center text-[13px] text-muted">
+          <div className="py-10 text-center text-[14px] text-muted">
             {items.length === 0 ? "Nothing has happened with them yet." : "Nothing under this filter."}
           </div>
         )}
@@ -551,56 +511,51 @@ function DealSection({ title, icon, rows, tone, empty, defaultOpen, showStage }:
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const value = rows.reduce((sum, r) => sum + (r.invoice.total || 0), 0);
-  const badge = {
-    success: "bg-success-bg text-success-ink border-success-line",
-    danger: "bg-danger-bg text-danger-ink border-danger-line",
-    accent: "bg-accent/10 text-accent-hover border-accent/20",
-  }[tone];
+  const count = tone === "danger" ? "ui-count urgent" : "ui-count";
 
   return (
-    <div className="bg-surface border border-line rounded-2xl p-5">
-      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between gap-3 text-left">
-        <span className="flex items-center gap-2">
+    <div>
+      <div className="hsep" />
+      <button onClick={() => setOpen(!open)} aria-expanded={open} className="w-full flex items-center justify-between gap-3 text-left py-4 hover:opacity-80 transition-opacity duration-150">
+        <span className="flex items-center gap-2.5">
           {icon}
-          <span className="text-[13px] font-semibold text-ink">{title}</span>
-          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium border ${badge}`}>
-            {rows.length}
-          </span>
+          <span className="text-[14px] font-medium text-ink">{title}</span>
+          <span className={count}>{rows.length}</span>
         </span>
         <span className="flex items-center gap-3">
-          <span className="text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(value)}</span>
-          <ChevronDown size={15} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />
+          <span className="text-[14px] font-medium text-ink tabular-nums">{fmtAmount(value)}</span>
+          <ChevronDown size={15} className={`text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
         </span>
       </button>
 
       {open && (rows.length === 0 ? (
-        <p className="text-[12.5px] text-muted mt-3">{empty}</p>
+        <p className="text-[14px] text-muted pb-4 animate-fade-in">{empty}</p>
       ) : (
-        <div className="mt-3 border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
+        <div className="pb-3 animate-fade-in">
           {rows.map(({ invoice, flow, items, refunded }) => {
             const supplier = flow ? primarySupplierLabel(flow.supplier_payments) : "";
             return (
-              <div key={invoice.id} className="px-3 py-3">
+              <div key={invoice.id} className="py-3 shadow-[inset_0_1px_0_rgb(var(--c-line))]">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <button
-                      onClick={() => openInvoice(invoice.id)}
-                      title="Open this invoice"
-                      className="text-[13px] text-ink hover:text-accent-hover transition-colors text-left truncate"
-                    >
-                      {invoice.number ? `Invoice ${invoice.number}` : flow?.name || "Deal"}
-                    </button>
-                    {showStage && flow && (
-                      <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-accent/10 text-accent-hover border border-accent/20">
-                        {STAGE_LABEL[flow.stage] || flow.stage}
-                      </span>
-                    )}
-                    {refunded > 0 && (
-                      <span className="ml-2 inline-flex items-center gap-1 text-[10.5px] font-semibold text-danger-ink">
-                        <RotateCcw size={10} /> Refunded {fmtAmount(refunded)}
-                      </span>
-                    )}
-                    <div className="text-[11.5px] text-muted mt-0.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={() => openInvoice(invoice.id)}
+                        title="Open this invoice"
+                        className="text-[14px] font-medium text-ink hover:opacity-70 transition-opacity duration-150 text-left truncate"
+                      >
+                        {invoice.number ? `Invoice ${invoice.number}` : flow?.name || "Deal"}
+                      </button>
+                      {showStage && flow && (
+                        <StatusPill tone="step">{STAGE_LABEL[flow.stage] || flow.stage}</StatusPill>
+                      )}
+                      {refunded > 0 && (
+                        <span className="inline-flex items-center gap-1 text-[13px] font-medium text-danger-ink">
+                          <RotateCcw size={12} /> Refunded {fmtAmount(refunded)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[13px] text-muted mt-0.5">
                       {[
                         invoice.issue_date ? invoice.issue_date.slice(0, 10) : null,
                         showStage && flow ? WAITING_ON[flow.stage] : null,
@@ -608,15 +563,15 @@ function DealSection({ title, icon, rows, tone, empty, defaultOpen, showStage }:
                       ].filter(Boolean).join(" · ")}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className={`text-[13px] font-semibold tabular-nums ${tone === "danger" ? "line-through text-faint" : "text-ink"}`}>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <span className={`text-[14px] font-medium tabular-nums ${tone === "danger" ? "line-through text-faint" : "text-ink"}`}>
                       {fmtAmount(invoice.total)}
                     </span>
                     {invoice.number && (
                       <button onClick={() => openDeal(invoice.number)} title="Open this deal in Deal flow"
                         aria-label="Open this deal in Deal flow"
-                        className="w-6 h-6 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors">
-                        <ArrowRight size={12} />
+                        className="ui-ib">
+                        <ArrowRight size={14} />
                       </button>
                     )}
                   </div>
@@ -626,18 +581,18 @@ function DealSection({ title, icon, rows, tone, empty, defaultOpen, showStage }:
                     name: the goods, with quantity and price, without opening
                     anything. Clicking one opens the invoice it sits on. */}
                 {items.length > 0 && (
-                  <div className="mt-2 pl-2 border-l-2 border-line-2 space-y-0.5">
+                  <div className="mt-2 space-y-0.5">
                     {items.map((it, n) => (
                       <button
                         key={n}
                         onClick={() => openInvoice(invoice.id)}
                         title="Open this invoice"
-                        className="w-full flex items-baseline justify-between gap-3 text-left hover:bg-surface-2 rounded px-1 -mx-1 py-0.5 transition-colors"
+                        className="w-full flex items-baseline justify-between gap-3 text-left hover:bg-surface-2 rounded-lg px-2 -mx-2 py-1 transition-colors duration-150"
                       >
-                        <span className="text-[12px] text-ink-2 truncate">
+                        <span className="text-[13px] text-ink-2 truncate">
                           {it.description || "(no description)"}
                         </span>
-                        <span className="text-[11.5px] text-muted tabular-nums flex-shrink-0">
+                        <span className="text-[13px] text-muted tabular-nums flex-shrink-0">
                           {describeItem(it)}
                         </span>
                       </button>
@@ -686,21 +641,20 @@ export function PartyLinkPanel({
 
   if (!link) {
     return (
-      <div className="bg-surface border border-line rounded-2xl px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
-        <div className="min-w-0">
-          <SubHeading icon={<Link2 size={15} className="text-muted" />}>{copy.linkOffer}</SubHeading>
-          <p className="text-[12px] text-muted mt-1 leading-relaxed">
-            Link the two records and both sides show here, kept apart. Nothing is merged and no figure is
-            netted: what they pay us stays revenue, what we pay them stays cost.
-          </p>
+      <div>
+        <div className="hsep" />
+        <div className="py-4 flex items-center justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <SubHeading icon={<Link2 size={15} className="text-muted" />}>{copy.linkOffer}</SubHeading>
+            <p className="text-[13px] text-muted mt-1 leading-relaxed">
+              Link the two records and both sides show here, kept apart. Nothing is merged and no figure is
+              netted: what they pay us stays revenue, what we pay them stays cost.
+            </p>
+          </div>
+          <Button onClick={onOpenPicker} disabled={busy} icon={<Link2 size={14} />}>
+            Link a {copy.other}
+          </Button>
         </div>
-        <button
-          onClick={onOpenPicker}
-          disabled={busy}
-          className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-50 transition-colors flex-shrink-0"
-        >
-          <Link2 size={13} /> Link a {copy.other}
-        </button>
       </div>
     );
   }
@@ -716,25 +670,25 @@ export function PartyLinkPanel({
   const linkedDetail = (
     <>
       {theirDeals.length > 0 && (
-        <div className="mt-3 border border-line rounded-lg divide-y divide-line-2 overflow-hidden max-h-[280px] overflow-y-auto">
+        <div className="mt-3 max-h-[280px] overflow-y-auto">
           {theirDeals.map(({ flow, amount, paid }) => (
-            <div key={flow.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+            <div key={flow.id} className="flex items-center justify-between gap-3 py-2.5 shadow-[inset_0_1px_0_rgb(var(--c-line))]">
               <div className="min-w-0">
-                <div className="text-[12.5px] text-ink truncate">
+                <div className="text-[14px] text-ink truncate">
                   {flow.invoice_number ? `#${flow.invoice_number}` : "Deal"}
                   <span className="text-muted"> · {STAGE_LABEL[flow.stage] || flow.stage}</span>
                 </div>
-                <div className="text-[11px] text-muted">
-                  {flow.client_name || "–"}{paid < amount - 0.01 ? ` · ${fmtAmount(amount - paid)} still to pay them` : " · paid"}
+                <div className="text-[13px] text-muted">
+                  {flow.client_name || "-"}{paid < amount - 0.01 ? ` · ${fmtAmount(amount - paid)} still to pay them` : " · paid"}
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <span className="text-[12.5px] font-semibold text-ink tabular-nums">{fmtAmount(amount)}</span>
+                <span className="text-[14px] font-medium text-ink tabular-nums">{fmtAmount(amount)}</span>
                 {flow.invoice_number && (
                   <button onClick={() => openDeal(flow.invoice_number as string)} title="Open this deal"
                     aria-label="Open this deal"
-                    className="w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors">
-                    <ArrowRight size={11} />
+                    className="ui-ib">
+                    <ArrowRight size={14} />
                   </button>
                 )}
               </div>
@@ -756,39 +710,36 @@ export function PartyLinkPanel({
   );
 
   return (
-    <div className="bg-surface border border-line rounded-2xl p-5">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
+    <div>
+      <div className="hsep" />
+      <div className="pt-5 flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0">
           <SubHeading icon={<Link2 size={15} className="text-muted" />}>
-            {selfName} is also a {copy.other}: <span className="text-accent-hover ml-1">{link.linked_name}</span>
+            {selfName} is also a {copy.other}: <span className="ml-1">{link.linked_name}</span>
           </SubHeading>
-          <p className="text-[12px] text-muted mt-1 leading-relaxed">
+          <p className="text-[13px] text-muted mt-1 leading-relaxed">
             Two records, linked, never merged. The two sides below stand on their own and no row appears in both.
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {/* Opens the linked record itself, now that a supplier is a page too (R-425). */}
-          <button onClick={() => openPartyRecord(copy.other, link.linked_id)} title={`Opens ${link.linked_name}`}
-            className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors">
-            Open <ArrowRight size={12} />
-          </button>
-          <button onClick={onOpenPicker} disabled={busy}
-            className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-50 transition-colors">
-            Change
-          </button>
+          <Button size="sm" onClick={() => openPartyRecord(copy.other, link.linked_id)} title={`Opens ${link.linked_name}`}>
+            Open <ArrowRight size={13} />
+          </Button>
+          <Button size="sm" onClick={onOpenPicker} disabled={busy}>Change</Button>
           <button onClick={onUnlink} disabled={busy} title="Remove the link. Neither record is changed otherwise"
-            className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-line text-faint hover:text-ink-2 hover:border-line-3 disabled:opacity-50 transition-colors">
-            <Unlink size={13} />
+            aria-label="Remove the link" className="ui-ib disabled:opacity-50">
+            <Unlink size={14} />
           </button>
         </div>
       </div>
 
-      {/* Their side — revenue. */}
+      {/* Their side: revenue. */}
       <div className="mt-5">
-        <div className="flex items-center gap-2 text-[12.5px] font-semibold text-ink">
-          <Banknote size={14} className="text-muted" /> {copy.theirSide}
+        <div className="flex items-center gap-2 text-[14px] font-medium text-ink">
+          <Banknote size={15} className="text-muted" /> {copy.theirSide}
         </div>
-        <p className="text-[11px] text-faint mt-0.5">Money from them. This is revenue.</p>
+        <p className="ui-note mt-0.5">Money from them. This is revenue.</p>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
           <StatTile label="Paid us" value={fmtAmount(theirSide.revenue)} tone="success" />
           <StatTile label="Still open" value={fmtAmount(theirSide.open)} tone={theirSide.open > 0 ? "warning" : "muted"} />
@@ -797,27 +748,27 @@ export function PartyLinkPanel({
         {!linkedDetailIsCost && linkedDetail}
       </div>
 
-      {/* Our side — cost. Never added to the block above. */}
-      <div className="mt-5 pt-5 border-t border-line-2">
-        <div className="flex items-center gap-2 text-[12.5px] font-semibold text-ink">
-          <Truck size={14} className="text-muted" /> {copy.ourSide}
+      {/* Our side: cost. Never added to the block above. */}
+      <div className="mt-5 pt-5 shadow-[inset_0_1px_0_rgb(var(--c-line))]">
+        <div className="flex items-center gap-2 text-[14px] font-medium text-ink">
+          <Truck size={15} className="text-muted" /> {copy.ourSide}
         </div>
-        <p className="text-[11px] text-faint mt-0.5">Money to them. This is cost, and it is never subtracted from the figures above.</p>
+        <p className="ui-note mt-0.5">Money to them. This is cost, and it is never subtracted from the figures above.</p>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
           <StatTile label="We paid them" value={fmtAmount(ourSide.cost)} tone="ink" />
           <StatTile label="Deals supplied" value={String(ourSide.deals)} tone="ink" />
-          <StatTile label="Last supplied" value={ourSide.last ? whenLabel(ourSide.last) : "–"} tone="muted" />
+          <StatTile label="Last supplied" value={ourSide.last ? whenLabel(ourSide.last) : "-"} tone="muted" />
         </div>
 
         {linkedDetailIsCost && linkedDetail}
       </div>
 
       {/* The one combined number, and what it is not. */}
-      <div className="mt-5 pt-4 border-t border-line-2 flex items-baseline justify-between gap-3 flex-wrap">
-        <span className="text-[12.5px] text-muted">
+      <div className="mt-5 pt-4 shadow-[inset_0_1px_0_rgb(var(--c-line))] flex items-baseline justify-between gap-3 flex-wrap">
+        <span className="text-[13px] text-muted">
           Position: what they paid us less what we paid them. It is not profit and no deal reads it.
         </span>
-        <span className={`text-[15px] font-bold tabular-nums ${position < 0 ? "text-danger-ink" : "text-ink"}`}>
+        <span className={`text-[16px] font-medium tabular-nums ${position < 0 ? "text-danger-ink" : "text-ink"}`}>
           {fmtAmount(position)}
         </span>
       </div>
@@ -1284,128 +1235,119 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
       )}
 
       {/* Back */}
-      <button
-        onClick={onBack}
-        className="flex items-center gap-1.5 text-[13px] font-medium text-muted hover:text-ink mb-5 transition-colors"
-      >
+      <button onClick={onBack} className="ui-link muted mb-5">
         <ArrowLeft size={14} /> Back to Clients
       </button>
 
       {/* ── Identity (R-425): the name and its actions on one line, the three flags as
-          one row under it, the money as its own band below the card. ─────────── */}
-      <div className="bg-surface border border-line rounded-2xl p-6">
-        <div className="cd-head flex items-start justify-between gap-4">
-          <div className="flex items-start gap-4 min-w-0">
-            <div className="w-14 h-14 rounded-2xl bg-accent/10 text-accent-hover flex items-center justify-center text-[18px] font-bold flex-shrink-0">{initials}</div>
-            <div className="min-w-0">
-              <h2 className="text-[20px] font-bold text-ink truncate">{client.name}</h2>
-              <div className="flex items-center gap-x-3 gap-y-0.5 mt-1 flex-wrap text-[13px] text-muted">
-                {client.company && <span className="inline-flex items-center gap-1.5"><Building2 size={14} /> {client.company}</span>}
-                <span className="inline-flex items-center gap-1.5" title="Sales rep"><User size={14} /> Rep: <span className={`font-medium ${rep ? "text-ink-2" : "text-faint"}`}>{repDisplay}</span></span>
-              </div>
-              <div className="mt-2.5 flex items-center gap-2 flex-wrap">
-                <StatusPill className={leadStatusColor(client.lead_status)}>
-                  {client.lead_status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                </StatusPill>
-                {tier && <TierBadge tier={tier.tier} />}
-                {tier && tier.avg_commission_pct > 0 && (
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ${
-                    tier.avg_commission_pct >= 25 ? "bg-success-bg text-success-ink" : tier.avg_commission_pct >= 10 ? "bg-warning-bg text-warning-ink" : "bg-danger-bg text-danger-ink"
-                  }`}>{tier.avg_commission_pct.toFixed(1)}% margin</span>
-                )}
-                {tier && <ReliabilityBadge reliability={tier.reliability} pct={tier.reliability_pct} quotesSent={tier.quotes_sent} quotesWon={tier.quotes_won} size="md" />}
-              </div>
+          one row under it, the money as its own band below. ─────────── */}
+      <div className="cd-head flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-start gap-4 min-w-0">
+          <div className="w-12 h-12 rounded-full bg-surface-3 text-ink flex items-center justify-center text-[15px] font-medium flex-shrink-0">{initials}</div>
+          <div className="min-w-0">
+            <h2 className="text-[20px] font-medium text-ink truncate">{client.name}</h2>
+            <div className="flex items-center gap-x-4 gap-y-0.5 mt-1 flex-wrap text-[13px] text-muted">
+              {client.company && <span className="inline-flex items-center gap-1.5"><Building2 size={14} /> {client.company}</span>}
+              <span className="inline-flex items-center gap-1.5" title="Sales rep"><User size={14} /> Rep: <span className={`font-medium ${rep ? "text-ink-2" : "text-faint"}`}>{repDisplay}</span></span>
             </div>
-          </div>
-
-          {/* Edit / Delete — restored after the profile redesign. Delete is a
-              deliberate two-step (type-the-name) confirm to prevent data loss. */}
-          <div className="cd-actions flex items-center justify-end gap-1.5 flex-wrap flex-shrink-0">
-            <button
-              onClick={() => setShowSendDetails(true)}
-              title="Email this contact your company + payment details so they can invoice or pay you."
-              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
-            >
-              <Send size={13} /> Send our details
-            </button>
-            <button
-              onClick={() => openStatement(client.id)}
-              title="Build a receipt covering their deals (every payment with its date) to download or email."
-              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
-            >
-              <Receipt size={13} /> Receipt
-            </button>
-            <button
-              onClick={() => onEdit?.(client)}
-              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
-            >
-              <Pencil size={13} /> Edit
-            </button>
-            <button
-              onClick={() => setConfirmDelete(true)}
-              title="Delete client"
-              aria-label="Delete client"
-              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-line text-faint hover:text-danger-ink hover:border-danger hover:bg-danger-bg transition-colors"
-            >
-              <Trash2 size={13} />
-            </button>
+            <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+              <StatusPill className={leadStatusColor(client.lead_status)}>
+                {client.lead_status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+              </StatusPill>
+              {tier && <TierBadge tier={tier.tier} />}
+              {tier && tier.avg_commission_pct > 0 && (
+                <StatusPill tone={tier.avg_commission_pct >= 25 ? "success" : tier.avg_commission_pct >= 10 ? "warning" : "danger"}>
+                  {tier.avg_commission_pct.toFixed(1)}% margin
+                </StatusPill>
+              )}
+              {tier && <ReliabilityBadge reliability={tier.reliability} pct={tier.reliability_pct} quotesSent={tier.quotes_sent} quotesWon={tier.quotes_won} size="md" />}
+            </div>
           </div>
         </div>
 
-        {/* Flag switches — clear on/off */}
-        <div className="flex flex-wrap items-center gap-2 mt-5 pt-4 border-t border-line-2">
-          <FlagSwitch label="High-value" tone="accent"
-            on={!!(client.high_value || client.metadata?.high_value)}
-            title="A positive label for your best buyers. Purely a tag. It does not change who receives newsletters."
-            onToggle={async () => {
-              const val = await api.toggleClientHighValue(client.id);
-              setClient((c) => c ? { ...c, high_value: val, metadata: { ...(c.metadata || {}), high_value: val } } : c);
-            }} />
-          <FlagSwitch label="No bulk email" tone="neutral"
-            on={!!(client.exclusive || client.metadata?.exclusive)}
-            title="Keeps this client off mass newsletters and auto-add, for people you don't want to bulk-email."
-            onToggle={async () => {
-              try {
-                const val = await api.toggleClientExclusive(client.id);
-                setClient((c) => c ? { ...c, exclusive: val, metadata: { ...(c.metadata || {}), exclusive: val } } : c);
-              } catch (e: any) {
-                // Opted-out client: turning No-bulk off alone won't resume their emails.
-                // Offer a deliberate resubscribe that also clears their opt-out.
-                if (String(e).includes("UNSUBSCRIBED_CONFIRM")) {
-                  const when = client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : "";
-                  if (confirm(`This client unsubscribed themselves${when}. Turning off "No bulk email" won't resume their emails unless you also resubscribe them.\n\nResubscribe ${client.name || "this client"} and resume emails?`)) {
-                    await api.resubscribeClient(client.id);
-                    setClient((c) => c ? { ...c, exclusive: false, metadata: { ...(c.metadata || {}), exclusive: false, unsubscribed: false } } : c);
-                  }
-                } else {
-                  throw e;
-                }
-              }
-            }} />
-          <FlagSwitch label="Blacklisted" tone="danger"
-            on={!!client.is_blacklisted}
-            title="Blacklisted clients are excluded from all sends."
-            onToggle={async () => {
-              const val = await api.toggleClientBlacklist(client.id);
-              setClient((c) => c ? { ...c, is_blacklisted: val } : c);
-            }} />
-          {client.metadata?.unsubscribed && (
-            <span className="inline-flex items-center text-[10px] font-semibold text-ink-2 bg-surface-3 border border-line px-2 py-1 rounded-lg"
-              title={`Unsubscribed via an email link${client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : ""}, kept off all sends`}>
-              Unsubscribed
-            </span>
-          )}
+        {/* Edit / Delete: restored after the profile redesign. Delete is a
+            deliberate two-step (type-the-name) confirm to prevent data loss. */}
+        <div className="cd-actions flex items-center justify-end gap-2 flex-wrap flex-shrink-0">
+          <Button
+            icon={<Send size={14} />}
+            onClick={() => setShowSendDetails(true)}
+            title="Email this contact your company and payment details so they can invoice or pay you."
+          >
+            Send our details
+          </Button>
+          <Button
+            icon={<Receipt size={14} />}
+            onClick={() => openStatement(client.id)}
+            title="Build a receipt covering their deals (every payment with its date) to download or email."
+          >
+            Receipt
+          </Button>
+          <Button icon={<Pencil size={14} />} onClick={() => onEdit?.(client)}>Edit</Button>
+          <button
+            onClick={() => setConfirmDelete(true)}
+            title="Delete client"
+            aria-label="Delete client"
+            className="ui-ib hover:!text-danger-ink"
+          >
+            <Trash2 size={15} />
+          </button>
         </div>
       </div>
 
-      {/* Money first. Profit leads — it is the figure Jack has said repeatedly
+      {/* Flag switches: clear on/off */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 mt-5 mb-5">
+        <FlagSwitch label="High value" tone="accent"
+          on={!!(client.high_value || client.metadata?.high_value)}
+          title="A positive label for your best buyers. Purely a tag. It does not change who receives newsletters."
+          onToggle={async () => {
+            const val = await api.toggleClientHighValue(client.id);
+            setClient((c) => c ? { ...c, high_value: val, metadata: { ...(c.metadata || {}), high_value: val } } : c);
+          }} />
+        <FlagSwitch label="No bulk email" tone="neutral"
+          on={!!(client.exclusive || client.metadata?.exclusive)}
+          title="Keeps this client off mass newsletters and auto-add, for people you don't want to bulk-email."
+          onToggle={async () => {
+            try {
+              const val = await api.toggleClientExclusive(client.id);
+              setClient((c) => c ? { ...c, exclusive: val, metadata: { ...(c.metadata || {}), exclusive: val } } : c);
+            } catch (e: any) {
+              // Opted-out client: turning No-bulk off alone won't resume their emails.
+              // Offer a deliberate resubscribe that also clears their opt-out.
+              if (String(e).includes("UNSUBSCRIBED_CONFIRM")) {
+                const when = client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : "";
+                if (confirm(`This client unsubscribed themselves${when}. Turning off "No bulk email" won't resume their emails unless you also resubscribe them.\n\nResubscribe ${client.name || "this client"} and resume emails?`)) {
+                  await api.resubscribeClient(client.id);
+                  setClient((c) => c ? { ...c, exclusive: false, metadata: { ...(c.metadata || {}), exclusive: false, unsubscribed: false } } : c);
+                }
+              } else {
+                throw e;
+              }
+            }
+          }} />
+        <FlagSwitch label="Blacklisted" tone="danger"
+          on={!!client.is_blacklisted}
+          title="Blacklisted clients are excluded from all sends."
+          onToggle={async () => {
+            const val = await api.toggleClientBlacklist(client.id);
+            setClient((c) => c ? { ...c, is_blacklisted: val } : c);
+          }} />
+        {client.metadata?.unsubscribed && (
+          <StatusPill tone="neutral"
+            title={`Unsubscribed via an email link${client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : ""}, kept off all sends`}>
+            Unsubscribed
+          </StatusPill>
+        )}
+      </div>
+      <div className="hsep" />
+
+      {/* Money first. Profit leads, it is the figure Jack has said repeatedly
           is the one that matters. Outstanding and Paid joined the band from the
           old details card, so every money figure is in one row. */}
-      <div className="mt-4">
+      <div className="mt-2">
         <KpiBand cols={6}>
           <StatTile
             label="Profit"
-            value={flows.length === 0 ? "–" : fmtAmount(clientProfit)}
+            value={flows.length === 0 ? "-" : fmtAmount(clientProfit)}
             tone={clientProfit < 0 ? "danger" : "success"}
             hint={refundedTotal > 0 ? `after ${fmtAmount(refundedTotal)} refunded` : `${completed.length} completed deal${completed.length === 1 ? "" : "s"}`}
           />
@@ -1490,18 +1432,18 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 calls, notes and email — nothing else carries them. */}
             <Disclosure title="Activity: notes, calls and email" icon={<MessageSquare size={14} className="text-muted" />}>
               {showNoteForm && (
-                <div className="bg-surface border border-line rounded-2xl mb-3 overflow-hidden">
+                <div className="mb-3 animate-fade-in">
                   <NoteForm clientId={clientId} onClose={() => { setShowNoteForm(false); load(); }} />
                 </div>
               )}
               {showSummary && (
-                <div className="bg-surface-2 border border-line rounded-2xl px-6 py-4 mb-3">
+                <div className="bg-surface-2 rounded-xl px-5 py-4 mb-3 animate-fade-in">
                   <div className="flex items-center justify-between gap-3">
                     <SubHeading icon={<Sparkles size={15} className="text-muted" />}>Summary of the history</SubHeading>
-                    <button onClick={() => setShowSummary(false)} className="text-muted hover:text-ink transition-colors" aria-label="Close the summary"><X size={15} /></button>
+                    <button onClick={() => setShowSummary(false)} className="ui-ib" aria-label="Close the summary"><X size={15} /></button>
                   </div>
                   {summarizing
-                    ? <p className="text-[13px] text-muted mt-2 flex items-center gap-2"><RefreshCw size={12} className="animate-spin" /> Reading everything on file…</p>
+                    ? <p className="text-[13px] text-muted mt-2 flex items-center gap-2"><RefreshCw size={12} className="animate-spin" /> Reading everything on file...</p>
                     : <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed mt-2">{summary || "Nothing came back."}</div>}
                 </div>
               )}
@@ -1509,20 +1451,18 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 items={stream}
                 header={
                   <div className="flex items-center gap-2">
-                    <button
+                    <Button
+                      size="sm"
+                      icon={<Sparkles size={13} />}
                       onClick={handleSummarize}
                       disabled={summarizing || interactions.length === 0}
                       title={interactions.length === 0 ? "There is nothing on file to summarise yet" : "Summarise the history with AI"}
-                      className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-40 transition-colors"
                     >
-                      <Sparkles size={13} /> {summary ? "Re-summarise" : "Summarise"}
-                    </button>
-                    <button
-                      onClick={() => setShowNoteForm(true)}
-                      className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors"
-                    >
-                      <Plus size={13} /> Add a note
-                    </button>
+                      {summary ? "Re-summarise" : "Summarise"}
+                    </Button>
+                    <Button variant="ink" size="sm" icon={<Plus size={13} />} onClick={() => setShowNoteForm(true)}>
+                      Add a note
+                    </Button>
                   </div>
                 }
               />
@@ -1555,7 +1495,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 <Fact label="Email">
                   {client.email ? (
                     <span className="inline-flex items-center gap-1.5 max-w-full">
-                      <a href={`mailto:${client.email}`} className="text-accent hover:text-accent-hover truncate">{client.email}</a>
+                      <a href={`mailto:${client.email}`} className="text-ink underline underline-offset-2 hover:opacity-70 transition-opacity duration-150 truncate">{client.email}</a>
                       <CopyEmail email={client.email} />
                     </span>
                   ) : <span className="text-faint">No email</span>}
@@ -1575,8 +1515,8 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
 
             <ProfileCard title="Account" icon={<Wallet size={14} className="text-muted" />}
               right={
-                <button onClick={openInvoices} className="inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors flex-shrink-0">
-                  <FileText size={12} /> Invoices <ArrowRight size={11} />
+                <button onClick={openInvoices} className="ui-link flex-shrink-0">
+                  <FileText size={13} /> Invoices <ArrowRight size={13} />
                 </button>
               }>
               <CreditPanel clientId={client.id} />
@@ -1588,14 +1528,14 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                       <input value={creditEdit} onChange={(e) => setCreditEdit(e.target.value)}
                         onBlur={async () => { const v = parseFloat(creditEdit) || 0; await api.setClientCreditLimit(client.id, v); const c = await api.getClientCreditStatus(client.id); setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : ""); }}
                         placeholder="none" aria-label="Credit limit"
-                        className="w-28 text-[13px] bg-surface border border-line rounded-lg px-2 py-1 text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                        className="w-28 text-[13px] bg-transparent border border-line-3 rounded-lg px-2 py-1 text-ink focus:outline-none focus:border-ink" />
                     </Fact>
                   )}
-                  {credit && <Fact label="Exposure"><span className="font-semibold text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></Fact>}
+                  {credit && <Fact label="Exposure"><span className="font-medium text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></Fact>}
                   {credit && credit.credit_limit > 0 && (
                     <Fact label="Available">
-                      <span className={`font-semibold tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span>
-                      {credit.over && <span className="ml-2 text-[10px] font-semibold text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>}
+                      <span className={`font-medium tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span>
+                      {credit.over && <span className="ml-2 inline-flex align-middle"><StatusPill tone="danger">Over limit</StatusPill></span>}
                     </Fact>
                   )}
                 </Facts>
@@ -1658,10 +1598,10 @@ function NoteForm({ clientId, onClose }: { clientId: string; onClose: () => void
   };
 
   return (
-    <div className="px-4 py-3 bg-surface-2 border-b border-line">
+    <div className="px-4 py-3 bg-surface-2 rounded-xl">
       <div className="flex gap-2 mb-2">
         <select
-          className="border border-line-3 px-2 h-8 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-accent"
+          className="border border-line-3 px-2 h-8 rounded-lg text-[13px] bg-transparent focus:outline-none focus:border-ink"
           value={kind}
           onChange={(e) => setKind(e.target.value)}
         >
@@ -1672,7 +1612,7 @@ function NoteForm({ clientId, onClose }: { clientId: string; onClose: () => void
         </select>
         <input
           placeholder="Subject (optional)"
-          className="border border-line-3 px-3 h-8 rounded-md text-[13px] flex-1 focus:outline-none focus:ring-1 focus:ring-accent"
+          className="border border-line-3 px-3 h-8 rounded-lg text-[13px] flex-1 bg-transparent focus:outline-none focus:border-ink"
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
         />
@@ -1680,19 +1620,15 @@ function NoteForm({ clientId, onClose }: { clientId: string; onClose: () => void
       <textarea
         placeholder="Notes..."
         rows={3}
-        className="border border-line-3 px-3 py-2 rounded-md text-[13px] w-full mb-2 focus:outline-none focus:ring-2 focus:ring-accent"
+        className="border border-line-3 px-3 py-2 rounded-lg text-[13px] w-full mb-2 bg-transparent focus:outline-none focus:border-ink"
         value={body}
         onChange={(e) => setBody(e.target.value)}
       />
       <div className="flex justify-end gap-2">
-        <button onClick={onClose} className="text-[12px] text-muted hover:text-ink">Cancel</button>
-        <button
-          onClick={save}
-          disabled={saving || !body.trim()}
-          className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-7 rounded-md text-[12px] font-medium disabled:opacity-40"
-        >
+        <Button size="sm" onClick={onClose}>Cancel</Button>
+        <Button variant="ink" size="sm" onClick={save} disabled={saving || !body.trim()}>
           {saving ? "Saving..." : "Save"}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -1709,18 +1645,15 @@ function DeleteClientModal({ name, onClose, onConfirm }: { name: string; onClose
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
       <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between px-5 pt-5 pb-3">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-danger-bg text-danger-ink flex-shrink-0"><AlertTriangle size={17} /></span>
-            <div>
-              <h2 className="text-[16px] font-semibold text-ink">Delete client</h2>
-              <p className="text-[12px] text-muted mt-0.5">This permanently removes the client and all their interactions.</p>
-            </div>
+          <div>
+            <h2 className="text-[16px] font-medium text-ink">Delete client</h2>
+            <p className="ui-note mt-0.5">This permanently removes the client and all their interactions.</p>
           </div>
-          <button onClick={onClose} className="text-muted hover:text-ink transition-colors p-1 -mr-1 -mt-1"><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close" className="ui-ib -mr-1 -mt-1"><X size={18} /></button>
         </div>
         <div className="px-5 pb-4">
           <p className="text-[13px] text-ink-2 mb-2">
-            To confirm, type <span className="font-semibold text-ink">{name}</span> below.
+            To confirm, type <span className="font-medium text-ink">{name}</span> below.
           </p>
           <input
             autoFocus
@@ -1728,21 +1661,19 @@ function DeleteClientModal({ name, onClose, onConfirm }: { name: string; onClose
             onChange={(e) => setTyped(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && match && !busy) { setBusy(true); Promise.resolve(onConfirm()).finally(() => setBusy(false)); } }}
             placeholder={name}
-            className="w-full bg-surface-2 border border-line rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-danger/40 focus:border-danger transition-colors"
+            className="w-full bg-transparent border border-line-3 rounded-lg h-10 px-3 text-[14px] text-ink focus:outline-none focus:border-danger transition-colors duration-150"
           />
         </div>
-        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-line">
-          <button onClick={onClose} disabled={busy}
-            className="px-4 h-9 rounded-lg border border-line text-ink-2 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors">
-            Cancel
-          </button>
-          <button
+        <div className="flex items-center justify-end gap-2 px-5 py-4">
+          <Button onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button
+            variant="danger"
+            icon={<Trash2 size={14} />}
             onClick={() => { setBusy(true); Promise.resolve(onConfirm()).finally(() => setBusy(false)); }}
             disabled={!match || busy}
-            className="inline-flex items-center gap-1.5 px-4 h-9 rounded-lg bg-danger text-white text-[13px] font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
           >
-            <Trash2 size={14} /> {busy ? "Deleting…" : "Delete client"}
-          </button>
+            {busy ? "Deleting..." : "Delete client"}
+          </Button>
         </div>
       </div>
     </div>
@@ -1758,7 +1689,7 @@ function CopyEmail({ email }: { email: string }) {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
       }}
-      className="text-[12px] text-muted hover:text-ink-2"
+      className="ui-link muted"
       title="Copy email"
     >
       {copied ? "Copied!" : "Copy"}
@@ -1853,59 +1784,49 @@ function SendOurDetailsModal({ clientName, clientEmail, onClose }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
       <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between px-5 pt-5 pb-3">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/10 text-accent-hover flex-shrink-0"><Send size={16} /></span>
-            <div>
-              <h2 className="text-[16px] font-semibold text-ink">Send our details</h2>
-              <p className="text-[12px] text-muted mt-0.5">Review before sending. Nothing goes out until you click Send.</p>
-            </div>
+          <div>
+            <h2 className="text-[16px] font-medium text-ink">Send our details</h2>
+            <p className="ui-note mt-0.5">Review before sending. Nothing goes out until you click Send.</p>
           </div>
-          <button onClick={onClose} className="text-muted hover:text-ink transition-colors p-1 -mr-1 -mt-1"><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close" className="ui-ib -mr-1 -mt-1"><X size={18} /></button>
         </div>
 
         <div className="px-5 pb-4 space-y-3 overflow-auto">
           <div>
-            <label className="block text-[12px] font-medium text-muted mb-1">Recipient</label>
+            <label className="ui-label block mb-1">Recipient</label>
             <input
               value={recipient}
               onChange={(e) => setRecipient(e.target.value)}
               placeholder="name@example.com"
-              className="w-full bg-surface-2 border border-line rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+              className="w-full bg-transparent border border-line-3 rounded-lg h-10 px-3 text-[14px] text-ink focus:outline-none focus:border-ink transition-colors duration-150"
             />
           </div>
           <div>
-            <label className="block text-[12px] font-medium text-muted mb-1">Subject</label>
+            <label className="ui-label block mb-1">Subject</label>
             <input
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              className="w-full bg-surface-2 border border-line rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+              className="w-full bg-transparent border border-line-3 rounded-lg h-10 px-3 text-[14px] text-ink focus:outline-none focus:border-ink transition-colors duration-150"
             />
           </div>
           <div>
-            <label className="block text-[12px] font-medium text-muted mb-1">Message</label>
+            <label className="ui-label block mb-1">Message</label>
             <textarea
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={12}
-              placeholder={loading ? "Loading your details…" : ""}
-              className="w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-y"
+              placeholder={loading ? "Loading your details..." : ""}
+              className="w-full bg-transparent border border-line-3 rounded-lg px-3 py-2 text-[13px] text-ink leading-relaxed focus:outline-none focus:border-ink transition-colors duration-150 resize-y"
             />
           </div>
           {error && <p className="text-[12px] text-danger-ink">{error}</p>}
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-line">
-          <button onClick={onClose} disabled={sending}
-            className="px-4 h-9 rounded-lg border border-line text-ink-2 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors">
-            Cancel
-          </button>
-          <button
-            onClick={send}
-            disabled={!canSend}
-            className="inline-flex items-center gap-1.5 px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            {sent ? <><Check size={14} /> Sent</> : sending ? <><RefreshCw size={14} className="animate-spin" /> Sending…</> : <><Send size={14} /> Send</>}
-          </button>
+        <div className="flex items-center justify-end gap-2 px-5 py-4">
+          <Button onClick={onClose} disabled={sending}>Cancel</Button>
+          <Button variant="ink" onClick={send} disabled={!canSend}>
+            {sent ? <><Check size={14} /> Sent</> : sending ? <><RefreshCw size={14} className="animate-spin" /> Sending...</> : <><Send size={14} /> Send</>}
+          </Button>
         </div>
       </div>
     </div>

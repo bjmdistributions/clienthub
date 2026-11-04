@@ -1226,6 +1226,7 @@ fn main() {
             set_refund_loss_ack,
             analytics_labels,
             list_deal_labels,
+            list_open_deal_labels,
             set_deal_labels,
             list_deals_for_supplier,
             // CSV import

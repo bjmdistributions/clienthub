@@ -1,5 +1,6 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+
 import { api, BankSuggestCandidate, BankTxn, DealFlow, LineItem } from "../lib/api";
 import { fmtAmount, parseLocalDay } from "../lib/format";
 import StatusPill from "./StatusPill";
@@ -35,7 +36,7 @@ import StatusPill from "./StatusPill";
  */
 
 const inp =
-  "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:border-ink transition-colors duration-150";
 
 /** How many rows of a section to render before "Show more". The old picker cut
  *  the list at twenty with no indication, so the twenty-first best deal was
@@ -341,14 +342,14 @@ export default function DealPicker({
           onMouseEnter={() => setActiveIdx(idx)}
           onClick={() => pick(r)}
           disabled={busy}
-          className={`w-full text-left px-4 py-3 rounded-xl border transition-colors min-w-0 disabled:opacity-50 ${
+          className={`w-full text-left px-4 py-3 rounded-xl border transition-colors duration-150 min-w-0 disabled:opacity-50 ${
             idx === activeIdx ? "bg-surface-2 border-line-3" : "border-line hover:bg-surface-2"
           } ${dim ? "opacity-70" : ""}`}
         >
           <div className="flex items-start gap-3 min-w-0">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 min-w-0">
-                <span className="text-[15px] font-semibold text-ink truncate">{dealLabel(d)}</span>
+                <span className="text-[15px] font-medium text-ink truncate">{dealLabel(d)}</span>
                 <StatusPill tone={isActive ? "step" : "neutral"}>{STAGE_WORDS[d.stage] ?? d.stage}</StatusPill>
               </div>
               <div className="text-[12.5px] text-muted mt-0.5 truncate">
@@ -364,8 +365,8 @@ export default function DealPicker({
               )}
             </div>
             <div className="text-right flex-shrink-0">
-              <div className={`text-[15px] tabular-nums ${exact ? "text-accent font-semibold" : "text-ink"}`}>
-                {money.value ? fmtAmount(money.value) : "–"}
+              <div className={`text-[15px] tabular-nums ${exact ? "text-accent font-medium" : "text-ink"}`}>
+                {money.value ? fmtAmount(money.value) : "-"}
               </div>
               <div className="text-[12px] text-muted tabular-nums">{money.label}</div>
             </div>
@@ -395,7 +396,7 @@ export default function DealPicker({
         onMouseEnter={() => setActiveIdx(idx)}
         onClick={() => pick(r)}
         disabled={busy}
-        className={`w-full text-left px-3 py-2 rounded-lg transition-colors flex items-start gap-2 min-w-0 disabled:opacity-50 ${
+        className={`w-full text-left px-3 py-2 rounded-lg transition-colors duration-150 flex items-start gap-2 min-w-0 disabled:opacity-50 ${
           idx === activeIdx ? "bg-surface-2" : "hover:bg-surface-2"
         } ${dim ? "opacity-70" : ""}`}
       >
@@ -403,13 +404,13 @@ export default function DealPicker({
           <div className="text-[13px] font-medium text-ink truncate">{dealLabel(d)}</div>
           <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
             <span
-              className={`text-[10px] px-1.5 py-px rounded-md border flex-shrink-0 ${
-                isActive ? "border-accent/40 bg-accent/5 text-accent" : "border-line bg-surface-2 text-muted"
+              className={`text-[11px] px-1.5 py-px rounded-md border flex-shrink-0 ${
+                isActive ? "border-line-3 bg-surface-2 text-accent" : "border-line bg-surface-2 text-muted"
               }`}
             >
               {STAGE_WORDS[d.stage] ?? d.stage}
             </span>
-            <span className="text-[11px] text-muted truncate min-w-0">
+            <span className="text-[12px] text-muted truncate min-w-0">
               {d.invoice_number ? `#${d.invoice_number}` : ""}
               {d.invoice_number && d.item_name ? " · " : ""}
               {d.item_name}
@@ -418,36 +419,36 @@ export default function DealPicker({
             </span>
           </div>
           {cand?.reason && (
-            <div className="text-[11px] text-accent truncate mt-0.5">
+            <div className="text-[12px] text-accent truncate mt-0.5">
               {cand.reason}
               {cand.role === "supplier_payment" && cand.supplier_name ? ` · ${cand.supplier_name}` : ""}
             </div>
           )}
           {d.notes?.trim() && (
-            <div className="text-[11px] text-muted truncate mt-0.5" title={d.notes.trim()}>
+            <div className="text-[12px] text-muted truncate mt-0.5" title={d.notes.trim()}>
               {d.notes.trim()}
             </div>
           )}
         </div>
         <div className="text-right flex-shrink-0">
-          <div className={`text-[12.5px] tabular-nums ${exact ? "text-accent font-semibold" : "text-ink-2"}`}>
-            {money.value ? fmtAmount(money.value) : "–"}
+          <div className={`text-[12.5px] tabular-nums ${exact ? "text-accent font-medium" : "text-ink-2"}`}>
+            {money.value ? fmtAmount(money.value) : "-"}
           </div>
-          <div className="text-[10px] text-muted tabular-nums">{money.label}</div>
+          <div className="text-[11px] text-muted tabular-nums">{money.label}</div>
         </div>
       </button>
     );
   };
 
   const header = (text: string) => (
-    <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">{text}</div>
+    <div className="px-3 pt-2 pb-1 text-[12px] font-medium text-muted">{text}</div>
   );
 
   const more = (shown: number, total: number, onMore: () => void) =>
     total > shown ? (
       <button
         onClick={onMore}
-        className="w-full text-left px-3 py-1.5 text-[11px] text-accent hover:bg-surface-2 rounded-lg transition-colors"
+        className="w-full text-left px-3 py-1.5 text-[12px] text-accent hover:bg-surface-2 rounded-lg transition-colors duration-150"
       >
         Showing {shown} of {total}, show the rest
       </button>
@@ -469,7 +470,7 @@ export default function DealPicker({
         onKeyDown={onKeyDown}
         autoFocus={autoFocus}
         disabled={disabled}
-        placeholder={placeholder || "Search a deal, or type an amount…"}
+        placeholder={placeholder || "Search a deal, or type an amount..."}
         aria-label="Search deals"
         aria-expanded={open}
         className={inp}
@@ -484,7 +485,7 @@ export default function DealPicker({
           }
         >
           {nothing ? (
-            <div className="px-3 py-3 text-[11px] text-muted">
+            <div className="px-3 py-3 text-[12px] text-muted">
               No deals match{query.trim() ? ` "${query.trim()}"` : " yet"}.
             </div>
           ) : (
@@ -509,7 +510,7 @@ export default function DealPicker({
                   <button
                     onClick={() => setDoneOpen((v) => !v)}
                     aria-expanded={doneOpen}
-                    className="w-full flex items-center gap-1 px-3 pt-2 pb-1 text-[11px] font-medium text-muted hover:text-ink-2 transition-colors"
+                    className="w-full flex items-center gap-1 px-3 pt-2 pb-1 text-[12px] font-medium text-muted hover:text-ink-2 transition-colors duration-150"
                   >
                     {doneOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     Completed deals
@@ -537,10 +538,10 @@ export default function DealPicker({
     <div className="fixed inset-0 z-50 bg-surface flex flex-col" role="dialog" aria-label="Which deal is this payment for?">
       <div className="flex items-start gap-3 px-6 pt-5 pb-3 border-b border-line flex-shrink-0">
         <div className="min-w-0 flex-1">
-          <h2 className="text-[18px] font-semibold tracking-tight text-ink">Which deal is this payment for?</h2>
+          <h2 className="text-[18px] font-medium tracking-tight text-ink">Which deal is this payment for?</h2>
           {summary && <p className="text-[13px] text-muted mt-0.5 truncate">{summary}</p>}
         </div>
-        <button onClick={onClose} aria-label="Close" className="p-2 rounded-lg text-muted hover:text-ink hover:bg-surface-2 transition-colors">
+        <button onClick={onClose} aria-label="Close" className="p-2 rounded-lg text-muted hover:text-ink hover:bg-surface-2 transition-colors duration-150">
           <X size={18} />
         </button>
       </div>

@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { api, Client, RecurringInvoice, RecurringInvoiceInput, LineItem } from "../lib/api";
 import { fmtAmount, parseAmount } from "../lib/format";
 import NumberInput from "./NumberInput";
+import StatusPill from "./StatusPill";
 import { Plus, X, Trash2, Pause, Play, Edit2 } from "lucide-react";
 import { useSubmit } from "../lib/useSubmit";
 
-const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:border-accent transition-colors";
 
 export default function RecurringView() {
   const [templates, setTemplates] = useState<RecurringInvoice[]>([]);
@@ -87,56 +88,54 @@ export default function RecurringView() {
     <div>
       <div className="flex justify-between items-center mb-5">
         <div>
-          <p className="text-[12px] text-muted mt-0.5">{active.length} active, {paused.length} paused</p>
+          <p className="text-[13px] text-muted mt-0.5">{active.length} active, {paused.length} paused</p>
         </div>
         <button onClick={openCreate}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
+          className="ui-btn ui-btn-ink">
           <Plus size={14} /> New template
         </button>
       </div>
 
-      <div className="bg-surface border border-line rounded-xl overflow-x-auto">
+      <div className="overflow-x-auto">
         {templates.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-[14px] font-semibold text-ink mb-1">No recurring templates</p>
+            <p className="text-[14px] font-medium text-ink mb-1">No recurring templates</p>
             <p className="text-[12px] text-muted">Create one to auto-generate draft invoices on a schedule</p>
           </div>
         ) : (
-          <table className="min-w-full text-sm">
+          <table className="ui-table">
             <thead>
-              <tr className="border-b border-line-2">
-                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Template</th>
-                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Client</th>
-                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Frequency</th>
-                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Next due</th>
-                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Status</th>
-                <th className="px-4 py-3"></th>
+              <tr>
+                <th>Template</th>
+                <th>Client</th>
+                <th>Frequency</th>
+                <th>Next due</th>
+                <th>Status</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {templates.map((t) => (
-                <tr key={t.id} className="border-b border-line-2 last:border-0 hover:bg-surface-2/70 transition-colors">
-                  <td className="px-4 py-3 text-[13px] font-medium text-ink">{t.template_name}</td>
-                  <td className="px-4 py-3 text-[13px] text-ink-2">{t.client_name}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted capitalize">{t.frequency}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{t.is_active ? t.next_due_date.slice(0, 10) : "–"}</td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${t.is_active ? "bg-success-bg text-success-ink" : "bg-surface-3 text-muted"}`}>
-                      {t.is_active ? "Active" : "Paused"}
-                    </span>
+                <tr key={t.id}>
+                  <td className="font-medium text-ink">{t.template_name}</td>
+                  <td className="text-ink-2">{t.client_name}</td>
+                  <td className="text-muted capitalize">{t.frequency}</td>
+                  <td className="text-muted tabular-nums">{t.is_active ? t.next_due_date.slice(0, 10) : "Not scheduled"}</td>
+                  <td>
+                    <StatusPill tone={t.is_active ? "success" : "neutral"}>{t.is_active ? "Active" : "Paused"}</StatusPill>
                   </td>
-                  <td className="px-4 py-3 text-right space-x-0.5">
-                    <button onClick={() => openEdit(t)} title="Edit"
-                      className="text-faint hover:text-ink-2 p-1 rounded-md hover:bg-surface-3 transition-colors">
-                      <Edit2 size={13} />
+                  <td className="text-right whitespace-nowrap">
+                    <button onClick={() => openEdit(t)} title="Edit" aria-label="Edit template"
+                      className="ui-ib">
+                      <Edit2 size={14} />
                     </button>
                     <button onClick={() => toggle(t)} title={t.is_active ? "Pause" : "Resume"}
-                      className="text-faint hover:text-accent p-1 rounded-md hover:bg-accent/10 transition-colors">
-                      {t.is_active ? <Pause size={13} /> : <Play size={13} />}
+                      className="ui-ib">
+                      {t.is_active ? <Pause size={14} /> : <Play size={14} />}
                     </button>
                     <button onClick={() => deleteTemplate(t)} title="Delete"
-                      className="text-faint hover:text-danger-ink p-1 rounded-md hover:bg-danger-bg transition-colors">
-                      <Trash2 size={13} />
+                      className="ui-ib hover:!text-danger-ink">
+                      <Trash2 size={14} />
                     </button>
                   </td>
                 </tr>
@@ -150,7 +149,7 @@ export default function RecurringView() {
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setShowForm(false)}>
           <div className="bg-surface rounded-2xl shadow-xl w-[480px] max-w-[92vw] p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-[14px] font-semibold text-ink">{editing ? "Edit template" : "New template"}</h3>
+              <h3 className="text-[14px] font-medium text-ink">{editing ? "Edit template" : "New template"}</h3>
               <button onClick={() => setShowForm(false)} className="text-muted hover:text-ink-2"><X size={16} /></button>
             </div>
             <div className="space-y-3">
@@ -194,7 +193,7 @@ export default function RecurringView() {
                     </div>
                   ))}
                   <button onClick={() => setItems([...items, { description: "", qty: 1, rate: 0, amount: 0 }])}
-                    className="text-[11px] text-accent hover:text-accent-hover font-medium">
+                    className="text-[11px] text-ink hover:opacity-70 font-medium">
                     + Add line item
                   </button>
                 </div>
@@ -205,8 +204,8 @@ export default function RecurringView() {
               </div>
             </div>
             <div className="flex justify-end gap-2 mt-5">
-              <button onClick={() => setShowForm(false)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
-              <button onClick={save} disabled={busy || !clientId || !templateName.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
+              <button onClick={() => setShowForm(false)} className="ui-btn">Cancel</button>
+              <button onClick={save} disabled={busy || !clientId || !templateName.trim()} className="ui-btn ui-btn-ink disabled:opacity-40">
                 {editing ? "Save" : "Create"}
               </button>
             </div>

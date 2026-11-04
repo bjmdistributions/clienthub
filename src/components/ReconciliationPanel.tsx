@@ -217,22 +217,22 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-line-2 flex items-center justify-between gap-2">
-        <div className="text-[13px] font-semibold text-ink-2">Payments &amp; reconciliation</div>
+    <div className="border-t border-line">
+      <div className="py-3 flex items-center justify-between gap-2">
+        <div className="text-[14px] font-medium text-ink">Payments &amp; reconciliation</div>
         {fullyReconciled ? (
-          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
-            <CheckCircle2 size={13} /> Fully reconciled
+          <span className="flex items-center gap-1.5 text-[12px] font-medium text-success-ink">
+            <CheckCircle2 size={16} /> Fully reconciled
           </span>
         ) : (
-          <span className="flex items-center gap-1.5 text-[11px] text-muted">
-            <AlertTriangle size={12} className="text-warning-ink" />
+          <span className="flex items-center gap-1.5 text-[12px] text-muted">
+            <AlertTriangle size={16} className="text-warning-ink" />
             {!buyerComplete && !supplierComplete ? "Not yet reconciled" : !buyerComplete ? "Buyer payment incomplete" : !supplierComplete ? "Supplier payment incomplete" : "Shipping payment incomplete"}
           </span>
         )}
       </div>
 
-      <div className="divide-y divide-line-2">
+      <div className="divide-y divide-line">
         {/* Buyer payment (money-in) */}
         <LegBlock
           title="Buyer payment"
@@ -276,7 +276,7 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
             <div className="mt-2 text-[11.5px] text-muted">The goods cost comes from a buy in the Warehouse, so its supplier is paid on that buy, in Deal Flow, Inventory.</div>
           )}
           {buys.map((b) => (
-            <div key={b.id} className="mt-2 rounded-lg border border-line-2 px-3 py-2 space-y-2">
+            <div key={b.id} className="mt-2 border-t border-line pt-2 space-y-2">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <span className="min-w-0 text-[12px] text-ink-2 leading-snug">
                   The cost comes from the buy <span className="font-medium text-ink">{b.name}</span>, so it is paid there. Goods:{" "}
@@ -292,11 +292,11 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
                 </span>
                 {paying !== b.id && paying !== `${b.id}:ship` && (
                   <div className="flex-shrink-0 flex items-center gap-2">
-                    <button onClick={() => setPaying(b.id)} className="h-7 px-2.5 rounded-md border border-line text-[12px] font-medium text-ink-2 hover:border-line-3 inline-flex items-center gap-1">
+                    <button onClick={() => setPaying(b.id)} className="ui-btn ui-btn-sm">
                       <Plus size={12} /> Link a payment to the buy
                     </button>
                     {b.trucks === 0 && b.ship_total > 0.005 && b.ship_paid < b.ship_total - 0.5 && (
-                      <button onClick={() => setPaying(`${b.id}:ship`)} className="h-7 px-2.5 rounded-md border border-line text-[12px] font-medium text-ink-2 hover:border-line-3 inline-flex items-center gap-1">
+                      <button onClick={() => setPaying(`${b.id}:ship`)} className="ui-btn ui-btn-sm">
                         <Plus size={12} /> Link the shipping in
                       </button>
                     )}
@@ -422,18 +422,18 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
       </div>
 
       {/* Actual vs expected profit + complete-pairing breakdown */}
-      <div className="border-t border-line bg-surface-2/60">
-        <div className="px-4 py-3 flex items-end justify-between gap-4">
+      <div className="border-t border-line">
+        <div className="py-3 flex items-end justify-between gap-4">
           <div>
-            <div className="text-[11px] text-muted">Expected profit</div>
-            <div className="text-[18px] font-bold tabular-nums text-ink mt-0.5">{fmtAmount(expected)}</div>
+            <div className="ui-label">Expected profit</div>
+            <div className="text-[20px] font-medium tracking-[-0.4px] tabular-nums text-ink mt-0.5">{fmtAmount(expected)}</div>
           </div>
           <div className="text-right">
-            <div className="text-[11px] text-muted">Actual profit (from bank)</div>
+            <div className="ui-label">Actual profit (from bank)</div>
             {!anyPaired ? (
-              <div className="text-[18px] font-bold tabular-nums mt-0.5 text-faint">–</div>
+              <div className="text-[20px] font-medium tabular-nums mt-0.5 text-faint">None yet</div>
             ) : (
-              <div className={`text-[18px] font-bold tabular-nums mt-0.5 ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+              <div className={`text-[20px] font-medium tracking-[-0.4px] tabular-nums mt-0.5 ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
                 {actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}
               </div>
             )}
@@ -447,9 +447,9 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
 
         {/* Profit from what's linked — updates live as you pair, no button needed */}
         {anyPaired && recon && (
-          <div className="px-4 pb-4">
-            <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
-              <div className="text-[12px] font-medium text-muted mb-1">Profit from linked payments</div>
+          <div className="pb-4">
+            <div className="text-[13px] space-y-1.5 dash-load">
+              <div className="ui-label mb-1">Profit from linked payments</div>
               <div className="flex items-center justify-between">
                 <span className="text-ink-2">Paid by buyer</span>
                 <span className="tabular-nums text-success-ink">+{fmtAmount(recon.pieces.buyer_paired)}</span>
@@ -482,9 +482,9 @@ export default function ReconciliationPanel({ flow, onChange, reloadKey }: {
                   <span className="tabular-nums text-success-ink">+{fmtAmount(recon.pieces.refund_in)}</span>
                 </div>
               )}
-              <div className="flex items-center justify-between pt-1.5 border-t border-line-2">
-                <span className="font-semibold text-ink">Actual profit</span>
-                <span className={`font-bold tabular-nums ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+              <div className="flex items-center justify-between pt-1.5 border-t border-line">
+                <span className="font-medium text-ink">Actual profit</span>
+                <span className={`font-medium tabular-nums ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
                   {actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}
                 </span>
               </div>
@@ -572,14 +572,14 @@ function LegBlock({
   const state = mark?.view.state;
   const marked = state === "marked";
   return (
-    <div className="px-4 py-3">
+    <div className="py-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          {quiet ? null : marked ? <CheckCircle2 size={14} className="text-muted flex-shrink-0" />
+          {quiet ? null : marked ? <CheckCircle2 size={16} className="text-muted flex-shrink-0" />
             : complete
-            ? <CheckCircle2 size={14} className="text-success-ink flex-shrink-0" />
-            : <AlertTriangle size={14} className={`${state === "missing" ? "text-danger-ink" : "text-warning-ink"} flex-shrink-0`} />}
-          <span className="text-[13px] font-medium text-ink truncate">{title}</span>
+            ? <CheckCircle2 size={16} className="text-success-ink flex-shrink-0" />
+            : <AlertTriangle size={16} className={`${state === "missing" ? "text-danger-ink" : "text-warning-ink"} flex-shrink-0`} />}
+          <span className="text-[14px] font-medium text-ink truncate">{title}</span>
           {quiet && <span className="text-[11px] text-muted">Nothing to pair yet</span>}
           {marked && <span className="text-[11px] text-muted">No payment recorded</span>}
           {!paired && !quiet && !elsewhere && !marked && (
@@ -602,7 +602,7 @@ function LegBlock({
           {/* R-578: the reason for a short or missing payment is a button beside the others, not grey text under the leg. */}
           {mark && (state === "missing" || state === "part") && !marking && (
             <button onClick={() => { setMarking(true); setNote(""); }} disabled={busy}
-              className="h-7 px-2.5 rounded-md border border-line text-[12px] font-medium text-ink-2 hover:border-line-3 disabled:opacity-50">
+              className="ui-btn ui-btn-sm disabled:opacity-50">
               {state === "part" ? "Short: save a reason" : "No payment: save a reason"}
             </button>
           )}
@@ -622,9 +622,9 @@ function LegBlock({
         <div className="mt-2 flex items-center gap-2 flex-wrap">
           <input autoFocus value={note} onChange={(e) => setNote(e.target.value)} placeholder="Why, in a few words (shown on the deal)"
             onKeyDown={(e) => { if (e.key === "Enter" && note.trim()) { mark.onMark(note.trim()); setMarking(false); } if (e.key === "Escape") setMarking(false); }}
-            className="flex-1 min-w-[200px] border border-line px-2.5 h-8 rounded-lg text-[12px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40" />
+            className="flex-1 min-w-[200px] border border-line px-2.5 h-8 rounded-lg text-[12px] bg-surface focus:outline-none" />
           <button onClick={() => { mark.onMark(note.trim()); setMarking(false); }} disabled={busy || !note.trim()}
-            className="h-8 px-3 rounded-lg bg-accent text-on-accent text-[12px] font-medium disabled:opacity-50">Save</button>
+            className="ui-btn ui-btn-ink disabled:opacity-50">Save</button>
           <button onClick={() => setMarking(false)} className="h-8 px-2 text-[12px] text-muted hover:text-ink-2">Cancel</button>
         </div>
       )}
@@ -660,7 +660,7 @@ function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: st
   const linkNote = a.note?.trim() || "";
   const txnNote = a.txn_note?.trim() || "";
   return (
-    <div className="flex items-center gap-2 bg-surface-2 border border-line-2 rounded-lg px-3 py-2">
+    <div className="flex items-center gap-2 rounded-[10px] bg-surface-2 ring-1 ring-line px-3 py-2">
       <div className="min-w-0 flex-1">
         <div className="text-[12px] text-ink truncate flex items-center gap-1.5">
           <span className="truncate">{payer}</span>
@@ -691,7 +691,7 @@ function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: st
           </div>
         )}
       </div>
-      <span className={`text-[13px] font-semibold tabular-nums ${clr}`}>{sign}{fmtAmount(a.amount)}</span>
+      <span className={`text-[13px] font-medium tabular-nums ${clr}`}>{sign}{fmtAmount(a.amount)}</span>
       {sure && (
         <span className="flex items-center gap-1.5 flex-shrink-0 text-[11.5px]">
           <span className="text-muted">Off the buy, every order?</span>
@@ -704,9 +704,9 @@ function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: st
         onClick={() => (ofBuy && !sure ? setSure(true) : onUnpair(a.id))}
         disabled={busy}
         title={ofBuy ? "Take this payment off the buy: it comes off every order sold from it, not only this one" : "Unpair"}
-        className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-danger-ink hover:bg-danger-bg disabled:opacity-50 transition-colors flex-shrink-0"
+        className="ui-ib hover:!text-danger-ink disabled:opacity-50 flex-shrink-0"
       >
-        <Trash2 size={12} />
+        <Trash2 size={14} />
       </button>
     </div>
   );
@@ -732,7 +732,7 @@ function ManualLineForm({ leg, busy, defaultWho, onAdd, onCancel }: {
   const submit = () => { if (!invalid) onAdd(leg.role, val, date, who.trim(), note.trim()); };
 
   return (
-    <div className="mt-2 border border-line rounded-lg bg-surface-2/50 px-3 py-3 space-y-2.5">
+    <div className="mt-2 rounded-[10px] bg-surface-2 ring-1 ring-line px-3 py-3 space-y-2.5">
       <div className="text-[11.5px] text-muted">
         Records money that never showed on a statement. It counts toward this deal's actual
         profit and is marked as cash, not as a bank match.
@@ -776,14 +776,14 @@ function ManualLineForm({ leg, busy, defaultWho, onAdd, onCancel }: {
           type="button"
           disabled={busy || invalid}
           onClick={submit}
-          className="h-7 px-3 flex items-center gap-1 rounded-lg bg-accent text-on-accent text-[12px] font-semibold disabled:opacity-40 transition-colors"
+          className="ui-btn ui-btn-ink ui-btn-sm disabled:opacity-40"
         >
           <Plus size={12} /> Add {leg.direction === "in" ? "payment" : "payment out"}
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="h-7 px-2.5 flex items-center gap-1 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2 transition-colors"
+          className="ui-btn ui-btn-sm"
         >
           <X size={12} /> Cancel
         </button>
@@ -798,7 +798,7 @@ function ManualButton({ active, onOpen, onClose }: { active: boolean; onOpen: ()
     <button
       type="button"
       onClick={active ? onClose : onOpen}
-      className="h-7 px-2.5 flex items-center gap-1 rounded-lg border border-line text-[12px] font-medium text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"
+      className="ui-btn ui-btn-sm flex-shrink-0"
       title="Record cash or an offset that never appeared on the bank statement"
     >
       {active ? <X size={12} /> : <Plus size={12} />} By hand
@@ -813,7 +813,7 @@ function PairButton({ active, label, onOpen, onClose }: { active: boolean; label
       <button
         type="button"
         onClick={onClose}
-        className="h-7 px-2.5 flex items-center gap-1 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2 transition-colors flex-shrink-0"
+        className="ui-btn ui-btn-sm flex-shrink-0"
       >
         <X size={12} /> Cancel
       </button>
@@ -823,7 +823,7 @@ function PairButton({ active, label, onOpen, onClose }: { active: boolean; label
     <button
       type="button"
       onClick={onOpen}
-      className="h-7 px-2.5 flex items-center gap-1 rounded-lg bg-accent text-on-accent text-[12px] font-semibold transition-colors flex-shrink-0"
+      className="ui-btn ui-btn-ink ui-btn-sm flex-shrink-0"
     >
       <Plus size={12} /> {label}
     </button>
@@ -929,7 +929,7 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
         </div>
 
         {/* Filters */}
-        <div className="flex items-center gap-2 flex-wrap px-5 py-2.5 border-b border-line-2 bg-surface-2/40">
+        <div className="flex items-center gap-2 flex-wrap px-5 py-2.5 border-b border-line bg-surface-2/40">
           <div className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-line bg-surface flex-1 min-w-[220px]">
             <Search size={13} className="text-muted flex-shrink-0" />
             <input
@@ -976,9 +976,9 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
                 : "No transactions match these filters."}
             </div>
           ) : (
-            <table className="w-full text-[13px]">
+            <table className="ui-table ui-table-sm ui-table-click">
               <thead className="sticky top-0 bg-surface z-10">
-                <tr className="text-left border-b border-line">
+                <tr>
                   <th className="text-[11px] font-medium text-muted py-2 pl-5 pr-3 whitespace-nowrap">Date</th>
                   <th className="text-[11px] font-medium text-muted py-2 pr-3">Payee</th>
                   <th className="text-[11px] font-medium text-muted py-2 pr-3">Category</th>
@@ -995,19 +995,19 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
                     <tr
                       key={t.id}
                       onClick={() => pick(t)}
-                      className={`border-b border-line-2 cursor-pointer transition-colors ${active ? "bg-accent/10" : "hover:bg-surface-2"}`}
+                      aria-selected={active}
                     >
                       <td className="py-2 pl-5 pr-3 text-[12px] text-muted whitespace-nowrap tabular-nums">{fmtShortDate(t.posted_at)}</td>
                       <td className="py-2 pr-3 min-w-0">
                         <div className="text-[12.5px] text-ink truncate max-w-[380px] flex items-center gap-1.5">
                           <span className="truncate">{payer}</span>
-                          {matches(t, leg, flow) && <span className="text-[10px] text-accent font-semibold flex-shrink-0">match</span>}
+                          {matches(t, leg, flow) && <span className="text-[10px] text-ink font-semibold flex-shrink-0">match</span>}
                         </div>
                         {t.description?.trim() && t.counterparty_name?.trim() && (
                           <div className="text-[11px] text-muted truncate max-w-[380px]">{t.description}</div>
                         )}
                       </td>
-                      <td className="py-2 pr-3 text-[11.5px] text-muted truncate max-w-[140px]">{t.category || "–"}</td>
+                      <td className="py-2 pr-3 text-[11.5px] text-muted truncate max-w-[140px]">{t.category || "None"}</td>
                       <td className="py-2 pr-3 text-[11.5px] text-muted truncate max-w-[160px]">{t.account_id}</td>
                       <td className="py-2 pr-5 text-right whitespace-nowrap">
                         <div className={`text-[12.5px] font-semibold tabular-nums ${t.direction === "out" ? "text-danger-ink" : "text-success-ink"}`}>
@@ -1024,7 +1024,7 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
         </div>
 
         {/* Selected transaction → amount → add */}
-        <div className="border-t border-line px-5 py-3 bg-surface-2/40">
+        <div className="border-t border-line px-5 py-3">
           {!sel ? (
             <div className="text-[12px] text-muted">
               {txns === null ? "" : `${shown.length} transaction${shown.length === 1 ? "" : "s"}, pick one to pair it with this deal.`}
@@ -1061,7 +1061,7 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
                 type="button"
                 disabled={busy || invalid}
                 onClick={() => onPair(sel, leg, val)}
-                className="h-8 px-3.5 flex items-center gap-1 rounded-lg bg-accent text-on-accent text-[12.5px] font-semibold disabled:opacity-40 transition-colors"
+                className="ui-btn ui-btn-ink disabled:opacity-40"
               >
                 <Plus size={13} /> Add to deal
               </button>
@@ -1080,7 +1080,7 @@ function Chip({ active, label, onClick }: { active: boolean; label: string; onCl
       type="button"
       onClick={onClick}
       className={`h-8 px-2.5 rounded-lg border text-[12px] font-medium transition-colors ${
-        active ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"
+        active ? "border-accent bg-transparent text-ink" : "border-line text-muted hover:text-ink-2"
       }`}
     >
       {label}
@@ -1126,7 +1126,7 @@ function OverpayConfirm({ info, busy, onCancel, onConfirm }: {
           <button
             type="button"
             onClick={onCancel}
-            className="h-8 px-3 rounded-lg border border-line text-[12.5px] text-muted hover:text-ink-2 transition-colors"
+            className="ui-btn"
           >
             Cancel
           </button>
@@ -1134,7 +1134,7 @@ function OverpayConfirm({ info, busy, onCancel, onConfirm }: {
             type="button"
             disabled={busy}
             onClick={onConfirm}
-            className="h-8 px-3.5 rounded-lg bg-accent text-on-accent text-[12.5px] font-semibold disabled:opacity-40 transition-colors"
+            className="ui-btn ui-btn-ink disabled:opacity-40"
           >
             Yes, add the full {fmtAmount(amt)}
           </button>

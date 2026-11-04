@@ -26,14 +26,14 @@ export function ProfileCard({ title, icon, right, children }: {
   children: ReactNode;
 }) {
   return (
-    <section className="bg-surface border border-line rounded-2xl min-w-0">
-      <header className="flex items-center justify-between gap-3 px-5 pt-4 pb-3">
+    <section className="min-w-0 border-t border-line pt-4">
+      <header className="flex items-center justify-between gap-3 pb-3">
         <h3 className="flex items-center gap-2 min-w-0 text-[13px] font-semibold text-ink">
           {icon}<span className="truncate">{title}</span>
         </h3>
         {right}
       </header>
-      <div className="px-5 pb-5">{children}</div>
+      <div className="pb-5">{children}</div>
     </section>
   );
 }

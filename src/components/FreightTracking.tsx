@@ -126,7 +126,7 @@ function refsLine(s: Shipment): string {
 }
 
 function route(s: Shipment): string {
-  return s.origin || s.destination ? `${s.origin || "?"} → ${s.destination || "?"}` : "";
+  return s.origin || s.destination ? `${s.origin || "?"} to ${s.destination || "?"}` : "";
 }
 
 type Event = { at: string; status: string; location: string; note: string };
@@ -139,8 +139,8 @@ export function FreightChip({ dealFlowId }: { dealFlowId: string }) {
   const st = stageOf(s);
   return (
     <StatusPill tone={st.tone} title={[s.carrier, refsLine(s), route(s), s.last_update_at && `updated ${fmtWhen(s.last_update_at)}`].filter(Boolean).join(" · ")}>
-      <Truck size={10} className="mr-1" />{" "}
-      <span className={s.stage === "delivered" ? "font-semibold" : undefined}>{st.label}</span>
+      <Truck size={12} className="mr-1" />{" "}
+      <span>{st.label}</span>
       {mine.length > 1 ? ` +${mine.length - 1}` : ""}
     </StatusPill>
   );
@@ -167,9 +167,11 @@ export function FreightPanel({ dealFlowId, locked, onReload }: { dealFlowId: str
   };
 
   return (
-    <div className="border-t border-line px-5 py-3 space-y-2">
+    <div>
+      <div className="hsep" />
+      <div className="px-5 py-3.5 space-y-2.5">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[12.5px] font-medium text-ink-2 inline-flex items-center gap-1.5"><Truck size={13} /> Freight</span>
+        <span className="text-[14px] font-medium text-ink inline-flex items-center gap-1.5"><Truck size={16} /> Freight</span>
         {!locked && (
           <div className="flex items-center gap-1.5 ml-auto">
             <input
@@ -178,29 +180,30 @@ export function FreightPanel({ dealFlowId, locked, onReload }: { dealFlowId: str
               onKeyDown={(e) => { if (e.key === "Enter") attach(); }}
               placeholder="Priority1 BOL, PRO or pickup #"
               maxLength={40}
-              className="h-8 w-56 max-w-full px-2.5 border border-line rounded-lg text-[12px] bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+              className="h-8 w-56 max-w-full px-2.5 border border-line-3 rounded-lg text-[13px] bg-transparent text-ink placeholder-faint focus:outline-none focus:border-ink"
             />
             <button onClick={attach} disabled={busy || !ref.trim()}
-              className="h-8 px-3 rounded-lg text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50">
+              className="ui-btn ui-btn-sm">
               {busy ? "Saving…" : "Attach"}
             </button>
           </div>
         )}
       </div>
       {mine.length === 0 ? (
-        <p className="text-[12px] text-muted">
+        <p className="text-[13px] text-muted m-0">
           No shipment yet. Paste the BOL when you book with Priority1 (even after the email has come in) and this deal's pickup and delivery dates will follow Priority1. Without one, the dates you set stay.
         </p>
       ) : (
         <>
           {mine.map((s) => <ShipmentRow key={s.id} s={s} locked={locked} onReload={onReload} />)}
-          <p className="text-[11.5px] text-faint">
+          <p className="text-[12px] text-faint m-0">
             {mine.some((s) => s.bol)
               ? "Pickup and delivery dates on this deal follow Priority1's updates."
               : "Dates follow Priority1 once its first update with a BOL arrives."}
           </p>
         </>
       )}
+      </div>
     </div>
   );
 }
@@ -217,39 +220,39 @@ function ShipmentRow({ s, locked, onReload }: { s: Shipment; locked: boolean; on
   };
 
   return (
-    <div className="rounded-lg border border-line bg-surface-2/50 px-3 py-2">
-      <div className="flex items-center gap-2 flex-wrap text-[12px]">
+    <div className="rounded-lg px-2 py-2.5 transition-colors duration-[130ms] hover:bg-surface-2" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
+      <div className="flex items-center gap-2 flex-wrap text-[13px]">
         <StatusPill tone={st.tone}>{st.label}</StatusPill>
-        {s.carrier && <span className="text-ink-2 font-medium">{s.carrier}</span>}
+        {s.carrier && <span className="text-ink font-medium">{s.carrier}</span>}
         {refsLine(s) && <span className="text-muted tabular-nums">{refsLine(s)}</span>}
         {route(s) && <span className="text-muted min-w-0 truncate">{route(s)}</span>}
         <span className="ml-auto flex items-center gap-1 flex-shrink-0">
           {s.last_update_at && <span className="text-faint tabular-nums mr-1">Updated {fmtWhen(s.last_update_at)}</span>}
           {s.details_url && (
             <button onClick={() => api.openExternal(s.details_url).catch(() => {})} title="Open on Priority1"
-              className="p-1 rounded text-muted hover:text-ink hover:bg-surface-3"><ExternalLink size={13} /></button>
+              aria-label="Open on Priority1" className="ui-ib"><ExternalLink size={16} /></button>
           )}
           {events.length > 0 && (
             <button onClick={() => setOpen((v) => !v)} title={open ? "Hide updates" : "Show every update"}
-              className="p-1 rounded text-muted hover:text-ink hover:bg-surface-3">
-              <ChevronDown size={13} className={`transition-transform duration-[130ms] ${open ? "rotate-180" : ""}`} />
+              aria-label={open ? "Hide updates" : "Show every update"} aria-expanded={open} className="ui-ib">
+              <ChevronDown size={16} className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
             </button>
           )}
           {!locked && (
             <button onClick={detach} title="Detach from this deal"
-              className="p-1 rounded text-muted hover:text-danger-ink hover:bg-danger-bg"><X size={13} /></button>
+              aria-label="Detach from this deal" className="ui-ib"><X size={16} /></button>
           )}
         </span>
       </div>
       {(s.last_note || s.last_location) && (
-        <div className="text-[12px] text-muted mt-1">{[s.last_location, s.last_note].filter(Boolean).join(" · ")}</div>
+        <div className="text-[13px] text-muted mt-1">{[s.last_location, s.last_note].filter(Boolean).join(" · ")}</div>
       )}
       {open && (
-        <ol className="mt-2 space-y-1 border-l border-line pl-3">
+        <ol className="mt-3 space-y-1.5 pl-3.5 list-none m-0 animate-page-slide-in" style={{ boxShadow: "inset 1px 0 0 rgb(var(--c-line-3))" }}>
           {[...events].reverse().map((e, i) => (
-            <li key={i} className="text-[11.5px]">
+            <li key={i} className="text-[13px]">
               <span className="text-faint tabular-nums">{fmtWhen(e.at)}</span>
-              <span className="text-ink-2 font-medium ml-2">{e.status || "Update"}</span>
+              <span className="text-ink font-medium ml-2">{e.status || "Update"}</span>
               {(e.location || e.note) && <span className="text-muted ml-2">{[e.location, e.note].filter(Boolean).join(" · ")}</span>}
             </li>
           ))}
@@ -279,22 +282,22 @@ export function UnlinkedShipments({ onChange }: { onChange: () => void }) {
   };
 
   return (
-    <div className="rounded-xl border border-line bg-surface">
-      <div className="flex items-center gap-2 px-4 h-11">
-        <button onClick={() => setOpen((v) => !v)} className="flex items-center gap-2 text-[13px] font-medium text-ink-2">
-          <Truck size={14} />
+    <div>
+      <div className="flex items-center gap-2 px-2 h-12">
+        <button onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex items-center gap-2 text-[15px] font-medium text-ink">
+          <Truck size={16} />
           Shipments not on a deal
-          <span className="text-muted tabular-nums">{loose.length}</span>
-          {loose.length > 0 && <ChevronDown size={13} className={`text-muted transition-transform duration-[130ms] ${open ? "rotate-180" : ""}`} />}
+          <span className="text-[13px] text-muted tabular-nums">{loose.length}</span>
+          {loose.length > 0 && <ChevronDown size={16} className={`text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`} />}
         </button>
         <button onClick={scan} disabled={scanning}
           title="Look through the connected mailboxes for Priority1 tracking emails from the last 30 days"
-          className="ml-auto flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2 px-2.5 h-8 rounded-lg hover:bg-surface-3 disabled:opacity-50">
-          <Mail size={13} /> {scanning ? "Checking mail…" : "Check Priority1 mail"}
+          className="ui-btn ui-btn-sm ml-auto">
+          <Mail size={14} /> {scanning ? "Checking mail…" : "Check Priority1 mail"}
         </button>
       </div>
       {open && loose.length > 0 && (
-        <div className="border-t border-line divide-y divide-line">
+        <div className="animate-page-slide-in">
           {loose.map((s) => <LooseRow key={s.id} s={s} onChange={onChange} />)}
         </div>
       )}
@@ -327,33 +330,33 @@ function LooseRow({ s, onChange }: { s: Shipment; onChange: () => void }) {
   };
 
   return (
-    <div className="px-4 py-2.5 flex items-center gap-3 flex-wrap">
+    <div className="px-2 py-3 flex items-center gap-3 flex-wrap rounded-lg transition-colors duration-[130ms] hover:bg-surface-2" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap text-[12.5px]">
+        <div className="flex items-center gap-2 flex-wrap text-[14px]">
           <StatusPill tone={st.tone}>{st.label}</StatusPill>
-          <span className="text-ink-2 font-medium tabular-nums">{refsLine(s)}</span>
+          <span className="text-ink font-medium tabular-nums">{refsLine(s)}</span>
           {s.carrier && <span className="text-muted">{s.carrier}</span>}
         </div>
-        <div className="text-[11.5px] text-muted mt-0.5 truncate">
+        <div className="text-[13px] text-muted mt-0.5 truncate">
           {[route(s), s.last_update_at && `updated ${fmtWhen(s.last_update_at)}`].filter(Boolean).join(" · ")}
         </div>
       </div>
       <div className="flex items-center gap-1.5 flex-shrink-0">
         <div className="flex flex-col">
           <select value={pick} onChange={(e) => setPick(e.target.value)}
-            className="h-8 w-60 max-w-full px-2 border border-line rounded-lg text-[12px] bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40">
+            className="h-8 w-60 max-w-full px-2 border border-line-3 rounded-lg text-[13px] bg-transparent text-ink focus:outline-none focus:border-ink">
             <option value="">Choose a deal…</option>
             {options.map((o) => <option key={o.deal_flow_id} value={o.deal_flow_id}>{o.label || "Untitled deal"}</option>)}
           </select>
-          {chosen?.reason && <span className="text-[10.5px] text-faint mt-0.5">Suggested: {chosen.reason}</span>}
+          {chosen?.reason && <span className="text-[12px] text-faint mt-0.5">Suggested: {chosen.reason}</span>}
         </div>
         <button disabled={busy || !pick} onClick={() => act(() => api.linkShipment(s.id, pick), "Shipment attached")}
-          className="h-8 px-3 rounded-lg text-[12px] font-medium bg-accent hover:bg-accent-hover text-on-accent disabled:opacity-50">
+          className="ui-btn ui-btn-sm ui-btn-ink">
           Attach
         </button>
         <button disabled={busy} onClick={() => act(() => api.dismissShipment(s.id), "Hidden: it is not a deal")}
           title="Not a deal (a transfer between your own buildings, for example)"
-          className="h-8 px-2.5 rounded-lg text-[12px] text-muted hover:text-ink-2 hover:bg-surface-3">
+          className="ui-btn ui-btn-sm border-transparent text-muted">
           Not a deal
         </button>
       </div>

@@ -98,10 +98,10 @@ export function Seg<T extends string>({ value, options, onChange, size = "sm" }:
   value: T; options: { key: T; label: string }[]; onChange: (v: T) => void; size?: "sm" | "md";
 }) {
   return (
-    <div className="flex rounded-lg border border-line p-0.5 bg-surface-2 w-fit" role="tablist">
+    <div className="flex rounded-lg ring-1 ring-line p-0.5 bg-surface-2 w-fit" role="tablist">
       {options.map((o) => (
         <button key={o.key} role="tab" aria-selected={value === o.key} onClick={() => onChange(o.key)}
-          className={`px-3 whitespace-nowrap ${size === "md" ? "h-8 text-[13px]" : "h-7 text-[12px]"} rounded-md transition-colors ${value === o.key ? "bg-surface text-ink font-medium shadow-sm ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
+          className={`px-3 whitespace-nowrap ${size === "md" ? "h-[26px] text-[13px]" : "h-6 text-[12px]"} rounded-md transition-colors duration-150 ${value === o.key ? "bg-surface-3 text-ink font-medium" : "text-muted hover:text-ink"}`}>
           {o.label}
         </button>
       ))}
@@ -111,9 +111,9 @@ export function Seg<T extends string>({ value, options, onChange, size = "sm" }:
 
 function Tile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="glass rounded-2xl px-5 py-4 min-w-0">
+    <div className="px-1 py-3 min-w-0">
       <div className="text-[12px] text-muted">{label}</div>
-      <div className="text-[22px] font-semibold text-ink tracking-tight tabular-nums mt-0.5 truncate">{value}</div>
+      <div className="text-[24px] font-medium text-ink tracking-[-0.6px] tabular-nums mt-0.5 truncate">{value}</div>
       {sub && <div className="text-[12px] text-muted mt-0.5 truncate">{sub}</div>}
     </div>
   );
@@ -190,7 +190,7 @@ export default function ProductScreen({ item, importButtons, onBack, onEdit, onC
         <Tile label="Units on the shelf" value={n0(t.units)} sub={item.unit_price > 0 ? `${fmtAmount(t.units * item.unit_price)} at ${fmtAmount(item.unit_price)}` : undefined} />
         <Tile label="Boxes" value={n0(t.boxes)} sub={`${item.box_types.length} ${item.box_types.length === 1 ? "size" : "sizes"}`} />
         <Tile label={cap(plural(label))} value={n0(item.sections.filter((s) => sectionUnits(item.box_types, s) > 0).length)} sub={`of ${item.sections.length} with stock`} />
-        <Tile label="Pallets" value={t.pallets !== null ? t.pallets.toLocaleString("en-US", { maximumFractionDigits: 1 }) : "–"}
+        <Tile label="Pallets" value={t.pallets !== null ? t.pallets.toLocaleString("en-US", { maximumFractionDigits: 1 }) : "-"}
           sub={item.units_per_pallet > 0 ? `at ${n0(item.units_per_pallet)} a pallet` : "Set units per pallet"} />
       </div>
 
@@ -274,7 +274,7 @@ export function CountsGrid({ types, sections, label, editing, withNames, share, 
   share?: Record<string, number>; onChange?: (next: WhSection[]) => void; onRemove?: (id: string) => void;
 }) {
   const set = (id: string, patch: Partial<WhSection>) => onChange?.(sections.map((s) => (s.id === id ? { ...s, ...patch } : s)));
-  const cell = "w-[72px] border border-line px-2 h-8 rounded-md text-right tabular-nums text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent";
+  const cell = "w-[72px] border border-line px-2 h-8 rounded-md text-right tabular-nums text-[13px] text-ink focus:outline-none focus:border-ink";
   const tot = (tid: string) => sections.reduce((a, s) => a + (s.counts[tid] || 0), 0);
   return (
     <div className="overflow-x-auto">
@@ -499,7 +499,7 @@ function PickTab({ item, layouts, pick, setPick, onChanged }: {
                         onChange={(n) => setOne(s, null, n)} onStep={(d) => step(s, null, d)} />
                     </td>
                     <td className="py-2 pl-3 pr-5 text-right tabular-nums">
-                      {u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">–</span>}
+                      {u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">-</span>}
                     </td>
                   </tr>
                 );
@@ -664,7 +664,7 @@ function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; 
             <div className="flex items-center gap-1.5">
               {mode === "pallets" && <button onClick={() => setCount(Math.max(0, count - 1))} className="w-9 h-9 rounded-lg border border-line text-ink-2 hover:bg-surface-2 text-[16px]" aria-label="One less">−</button>}
               <NumberInput integer value={count || ""} onValue={(n) => setCount(Math.max(0, n))} placeholder="0" style={WH_INPUT_BG}
-                className={`${mode === "units" ? "w-32" : "w-20"} border border-line h-9 rounded-lg text-[15px] font-semibold text-ink text-center tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent`} />
+                className={`${mode === "units" ? "w-32" : "w-20"} border border-line h-9 rounded-lg text-[15px] font-semibold text-ink text-center tabular-nums focus:outline-none focus:border-ink`} />
               {mode === "pallets" && <button onClick={() => setCount(count + 1)} className="w-9 h-9 rounded-lg border border-line text-ink-2 hover:bg-surface-2 text-[16px]" aria-label="One more">+</button>}
             </div>
           </div>
@@ -680,14 +680,14 @@ function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; 
               <div>
                 <label className="block text-[12px] text-muted mb-1.5">{big.name} per pallet</label>
                 <NumberInput integer value={upp > 0 ? Math.round(upp / big.per_box) : ""} onValue={(n) => setUpp(Math.max(0, n) * big.per_box)} onBlur={saveUpp} placeholder="e.g. 21" style={WH_INPUT_BG}
-                  className="w-24 border border-line px-3 h-9 rounded-lg text-[13px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
+                  className="w-24 border border-line px-3 h-9 rounded-lg text-[13px] text-ink tabular-nums focus:outline-none focus:border-ink" />
                 {upp > 0 && <div className="text-[11px] text-muted mt-1 tabular-nums">about {n0(upp)} units a pallet</div>}
               </div>
             ) : (
               <div>
                 <label className="block text-[12px] text-muted mb-1.5">Units per pallet</label>
                 <NumberInput integer value={upp || ""} onValue={setUpp} onBlur={saveUpp} placeholder="e.g. 1,500" style={WH_INPUT_BG}
-                  className="w-28 border border-line px-3 h-9 rounded-lg text-[13px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
+                  className="w-28 border border-line px-3 h-9 rounded-lg text-[13px] text-ink tabular-nums focus:outline-none focus:border-ink" />
               </div>
             )
           ) : (
@@ -770,9 +770,9 @@ function PlanTab({ item, layouts, onChanged, onAdjust }: { item: WarehouseItem; 
                     <td className="py-2 pr-3 text-ink font-medium truncate max-w-[180px]" title={s.name}>{s.name}</td>
                     <td className="py-2 px-3 text-ink-2">
                       {u > 0 ? <>{describePick(types, plan.take[s.id] || {}, plan.loose[s.id] || 0)}{openTxt && <div className="text-[11.5px] text-muted">opens {openTxt}</div>}
-                        <WhereFrom item={item} layouts={layouts} sectionId={s.id} take={boxesLeaving(plan, s.id)} /></> : <span className="text-faint">–</span>}
+                        <WhereFrom item={item} layouts={layouts} sectionId={s.id} take={boxesLeaving(plan, s.id)} /></> : <span className="text-faint">-</span>}
                     </td>
-                    <td className="py-2 px-3 text-right tabular-nums">{u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">–</span>}</td>
+                    <td className="py-2 px-3 text-right tabular-nums">{u ? <span className="text-ink font-semibold">{n0(u)}</span> : <span className="text-faint">-</span>}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-ink-2">{u && grabUnits ? pct(u / grabUnits) : ""}</td>
                     <td className="py-2 px-3">
                       <div className="flex items-center gap-2">
@@ -970,7 +970,7 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
         {state && (
           <button onClick={() => take(g)} disabled={!!busy} aria-pressed={on} aria-label={on ? `Put back ${g.boxes} ${g.type_name} of ${g.name}` : `Grabbed ${g.boxes} ${g.type_name} of ${g.name}`}
             className={`w-6 h-6 flex-shrink-0 rounded-md border flex items-center justify-center transition-colors ${on ? "bg-accent border-accent text-on-accent" : "border-line-3 hover:border-accent"} ${busy === g.id ? "opacity-50" : ""}`}>
-            {on && <Check size={14} strokeWidth={3} />}
+            {on && <Check size={14} />}
           </button>
         )}
         <span className={`min-w-0 flex-1 text-[13px] ${on ? "text-muted line-through" : "text-ink"}`}>
@@ -1061,7 +1061,7 @@ function BuildCard({ item, layouts, plan, perPallet, onChanged, onBuild }: {
                   {state && (
                     <button onClick={() => take(l)} disabled={!!busy} aria-pressed={on} aria-label={`${on ? "Put back" : "Grabbed"} ${l.units} loose of ${l.name}`}
                       className={`w-6 h-6 flex-shrink-0 rounded-md border flex items-center justify-center ${on ? "bg-accent border-accent text-on-accent" : "border-line-3 hover:border-accent"}`}>
-                      {on && <Check size={14} strokeWidth={3} />}
+                      {on && <Check size={14} />}
                     </button>
                   )}
                   <span className={`text-[13px] ${on ? "text-muted line-through" : "text-ink"}`}><span className="font-medium">{l.units} loose</span> of {l.name} <span className="text-muted">· out of an open box, or open one</span></span>
@@ -1132,7 +1132,7 @@ function CountCheckCard({ item, layouts, onChanged }: { item: WarehouseItem; lay
             </thead>
             <tbody>
               {shown.map((t) => {
-                const rows = t.sizes.length ? t.sizes : [{ type_id: "", type_name: "–", stock: 0, onMaps: 0, diff: 0 }];
+                const rows = t.sizes.length ? t.sizes : [{ type_id: "", type_name: "-", stock: 0, onMaps: 0, diff: 0 }];
                 const why = t.places === 0 ? "Not on the map. Mark its pallets and enter their boxes."
                   : t.uncounted.length ? `No boxes entered on ${t.uncounted.slice(0, 3).join(", ")}${t.uncounted.length > 3 ? ` and ${t.uncounted.length - 3} more` : ""}.` : "";
                 const canMatch = check.matchable.some((m) => m.section_id === t.section_id);
@@ -1146,7 +1146,7 @@ function CountCheckCard({ item, layouts, onChanged }: { item: WarehouseItem; lay
                     <td className="py-2 px-3 text-ink-2">{x.type_name}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-ink">{n0(x.stock)}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-ink">{n0(x.onMaps)}</td>
-                    <td className={`py-2 px-3 text-right tabular-nums ${x.diff ? "text-warning-ink font-semibold" : "text-faint"}`}>{x.diff ? `${x.diff > 0 ? "+" : "−"}${n0(Math.abs(x.diff))}` : "–"}</td>
+                    <td className={`py-2 px-3 text-right tabular-nums ${x.diff ? "text-warning-ink font-semibold" : "text-faint"}`}>{x.diff ? `${x.diff > 0 ? "+" : "−"}${n0(Math.abs(x.diff))}` : "-"}</td>
                     {i === 0 && <td rowSpan={rows.length} className="py-2 pl-3 pr-5 text-right align-top">
                       {canMatch && <button onClick={() => matchTeams([t.section_id])} disabled={busy} className={WH_BTN_SECONDARY}>Use the pallets</button>}
                     </td>}

@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../lib/api";
-import { FileCheck2, Eraser, Loader2, FileDown } from "lucide-react";
+import { Eraser, Loader2, FileDown } from "lucide-react";
+import { Button, PageActions } from "./ui";
 import { toast } from "./Toast";
 
 const DEFAULT_BODY = `This letter confirms that {SELLER} agrees to sell and release a bulk closeout lot of branded merchandise to {BUYER}.
@@ -15,7 +16,7 @@ Once the transaction is completed, the buyer assumes full responsibility for the
 Please confirm your acceptance of these terms by signing below.`;
 
 const INPUT_CLASS =
-  "w-full border border-line px-3 h-10 rounded-lg text-[13.5px] text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "w-full border border-line-3 bg-transparent px-3 h-10 rounded-lg text-[13.5px] text-ink placeholder:text-faint focus:outline-none focus:border-ink transition-colors duration-150";
 
 export default function ReleaseLetterView() {
   const [buyerName, setBuyerName] = useState("");
@@ -94,23 +95,27 @@ export default function ReleaseLetterView() {
   };
 
   return (
-    <div className="p-6 max-w-[820px] space-y-5">
+    <div className="max-w-[820px] space-y-6">
+      <PageActions>
+        <Button variant="ink" onClick={download} disabled={working}
+          icon={working ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}>
+          {working ? "Saving..." : "Download PDF"}
+        </Button>
+      </PageActions>
+
       {/* Header */}
-      <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center text-accent flex-shrink-0 mt-0.5">
-          <FileCheck2 size={18} />
-        </div>
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-bold text-ink">Release letter</h2>
-          <p className="text-[12.5px] text-muted mt-0.5 leading-relaxed">
-            Fill in the deal, sign it, and download a merchandise release &amp; closeout
-            authorization letter on your own letterhead.
-          </p>
-        </div>
+      <div className="min-w-0">
+        <div className="text-[16px] font-medium text-ink">Release letter</div>
+        <p className="text-[13px] text-muted mt-0.5 leading-relaxed max-w-[640px]">
+          Fill in the deal, sign it, and download a merchandise release &amp; closeout
+          authorization letter on your own letterhead.
+        </p>
       </div>
 
+      <div className="hsep" />
+
       {/* Details */}
-      <div className="bg-surface border border-line rounded-xl p-5 space-y-4">
+      <div className="space-y-4">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="space-y-1.5 min-w-0">
             <label className="block text-[12px] font-medium text-muted">Buyer name</label>
@@ -118,7 +123,6 @@ export default function ReleaseLetterView() {
               value={buyerName}
               onChange={(e) => setBuyerName(e.target.value)}
               placeholder="Jane Doe"
-              style={{ background: "var(--t-input-bg)" }}
               className={INPUT_CLASS}
             />
           </div>
@@ -128,7 +132,6 @@ export default function ReleaseLetterView() {
               value={buyerCompany}
               onChange={(e) => setBuyerCompany(e.target.value)}
               placeholder="Acme Retail Co."
-              style={{ background: "var(--t-input-bg)" }}
               className={INPUT_CLASS}
             />
           </div>
@@ -138,7 +141,6 @@ export default function ReleaseLetterView() {
               type="date"
               value={letterDate}
               onChange={(e) => setLetterDate(e.target.value)}
-              style={{ background: "var(--t-input-bg)" }}
               className={INPUT_CLASS}
             />
           </div>
@@ -148,7 +150,6 @@ export default function ReleaseLetterView() {
               value={sellerName}
               onChange={(e) => setSellerName(e.target.value)}
               placeholder="Your name"
-              style={{ background: "var(--t-input-bg)" }}
               className={INPUT_CLASS}
             />
           </div>
@@ -160,17 +161,18 @@ export default function ReleaseLetterView() {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="1,200 units of assorted branded apparel"
-            style={{ background: "var(--t-input-bg)" }}
             className={INPUT_CLASS}
           />
         </div>
       </div>
 
+      <div className="hsep" />
+
       {/* Letter body */}
-      <div className="bg-surface border border-line rounded-xl p-5 space-y-2.5">
+      <div className="space-y-2.5">
         <div className="flex items-baseline justify-between gap-3 flex-wrap">
-          <label className="text-[12px] font-medium text-muted">Letter body</label>
-          <span className="text-[11.5px] text-faint">
+          <label className="text-[14px] font-medium text-ink">Letter body</label>
+          <span className="text-[12px] text-faint">
             {"{BUYER}"}, {"{SELLER}"} and {"{DESCRIPTION}"} are filled in from the fields above.
           </span>
         </div>
@@ -178,23 +180,26 @@ export default function ReleaseLetterView() {
           value={body}
           onChange={(e) => setBody(e.target.value)}
           rows={14}
-          style={{ background: "var(--t-input-bg)" }}
-          className="w-full border border-line px-3 py-2.5 rounded-lg text-[13px] text-ink leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-y"
+          className="w-full border border-line-3 bg-transparent px-3 py-2.5 rounded-lg text-[13px] text-ink leading-relaxed focus:outline-none focus:border-ink transition-colors duration-150 resize-y"
         />
       </div>
 
+      <div className="hsep" />
+
       {/* Signature */}
-      <div className="bg-surface border border-line rounded-xl p-5 space-y-2.5">
+      <div className="space-y-2.5">
         <div className="flex items-center justify-between gap-3">
-          <label className="text-[12px] font-medium text-muted">Signature</label>
+          <label className="text-[14px] font-medium text-ink">Signature</label>
           <button
             onClick={clearSignature}
             disabled={!hasSignature}
-            className="inline-flex items-center gap-1.5 border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="ui-btn ui-btn-sm"
           >
-            <Eraser size={13} /> Clear
+            <Eraser size={14} /> Clear
           </button>
         </div>
+        {/* The pad is always paper-coloured: the pen is dark ink and the PNG prints on a white page, so a themed
+            (dark) pad would hide the signature while it is drawn. */}
         <canvas
           ref={canvasRef}
           width={600}
@@ -212,27 +217,10 @@ export default function ReleaseLetterView() {
             strokeTo(e.touches[0].clientX, e.touches[0].clientY);
           }}
           onTouchEnd={() => (drawing.current = false)}
-          className="w-full h-[180px] rounded-lg border border-line-2 bg-white cursor-crosshair touch-none"
+          style={{ background: "rgb(250 250 249)" }}
+          className="w-full h-[180px] rounded-lg border border-line-3 cursor-crosshair touch-none"
         />
-        <p className="text-[11.5px] text-muted">Draw your signature above. It prints over the signature line.</p>
-      </div>
-
-      <div className="flex justify-end">
-        <button
-          onClick={download}
-          disabled={working}
-          className="inline-flex items-center justify-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-10 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {working ? (
-            <>
-              <Loader2 size={14} className="animate-spin" /> Saving…
-            </>
-          ) : (
-            <>
-              <FileDown size={14} /> Download PDF
-            </>
-          )}
-        </button>
+        <p className="text-[12px] text-muted">Draw your signature above. It prints over the signature line.</p>
       </div>
     </div>
   );

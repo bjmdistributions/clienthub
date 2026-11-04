@@ -118,7 +118,7 @@ describe("tabToShow", () => {
 
 describe("App.tsx wiring for tabToShow", () => {
   // The shell effect that applies it, cut out of the source so each check reads that effect and not a lookalike elsewhere.
-  const effect = appSource.slice(appSource.indexOf("// DG-03: the remembered screen"), appSource.indexOf("// A group is open when the user opened it"));
+  const effect = appSource.slice(appSource.indexOf("// DG-03: the remembered screen"), appSource.indexOf("// ── The sidebar (R-583)"));
 
   it("moves the main pane and the split pane to the Dashboard once the account's access is known", () => {
     expect(effect).toContain("tabToShow(tab, openable, \"dashboard\")");

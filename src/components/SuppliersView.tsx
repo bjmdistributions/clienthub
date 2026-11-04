@@ -1,9 +1,10 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { Fragment, ReactNode, useEffect, useMemo, useState } from "react";
 import { Archive, ArrowLeft, Package, Pencil, Plus, Save, Search, Trash2, ArrowUp, ArrowDown, User, CreditCard, CheckCircle2, History, StickyNote, Truck } from "lucide-react";
 import { api, Client, DealFlow, Invoice, PartyLink, Supplier, SupplierInput, SupplierPriceEntry, CounterpartyPaymentRow } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import SupplierDealsList from "./SupplierDealsList";
 import StatusPill from "./StatusPill";
+import { Button, PageActions } from "./ui";
 import { ProfileGrid, ProfileCard, Facts, Fact, KpiBand } from "./ProfileLayout";
 import PersonPayments from "./PersonPayments";
 import PersonPickerModal, { PersonRef } from "./PersonPicker";
@@ -27,9 +28,9 @@ const emptyInput: SupplierInput = {
 const SPEND_RANGES = [
   { label: "Any spend",       min: -Infinity, max: Infinity },
   { label: "None",            min: 0,         max: 0 },
-  { label: "$1 – $9.9k",      min: 1,         max: 9999 },
-  { label: "$10k – $49.9k",   min: 10000,     max: 49999 },
-  { label: "$50k – $199k",    min: 50000,     max: 199999 },
+  { label: "$1 to $9.9k",      min: 1,         max: 9999 },
+  { label: "$10k to $49.9k",   min: 10000,     max: 49999 },
+  { label: "$50k to $199k",    min: 50000,     max: 199999 },
   { label: "$200k+",          min: 200000,    max: Infinity },
 ];
 
@@ -39,8 +40,8 @@ const PROFIT_RANGES = [
   { label: "Any profit",      min: -Infinity, max: Infinity },
   { label: "At a loss",       min: -Infinity, max: -0.01 },
   { label: "None",            min: 0,         max: 0 },
-  { label: "$1 – $4.9k",      min: 1,         max: 4999 },
-  { label: "$5k – $19.9k",    min: 5000,      max: 19999 },
+  { label: "$1 to $4.9k",      min: 1,         max: 4999 },
+  { label: "$5k to $19.9k",    min: 5000,      max: 19999 },
   { label: "$20k+",           min: 20000,     max: Infinity },
 ];
 
@@ -57,8 +58,7 @@ const ACTIVITY = [
 
 type SortKey = "name" | "total_paid" | "total_profit" | "margin" | "deal_count" | "avg_deal_amount" | "last_deal_date" | "last_contact";
 
-const selectCls =
-  "border border-line h-8 px-2.5 rounded-lg text-[12px] text-ink-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+const selectCls = "ui-btn max-w-[190px]";
 
 /** Margin only exists once we've recorded revenue on their deals — 0 revenue is "—", not "0%". */
 const marginOf = (s: Supplier) => (s.total_revenue > 0 ? (s.total_profit / s.total_revenue) * 100 : null);
@@ -73,7 +73,7 @@ const parseDay = (d: string): Date => {
 };
 
 const shortDate = (d?: string | null) =>
-  d ? parseDay(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "–";
+  d ? parseDay(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "-";
 
 const daysSince = (d?: string | null) =>
   d ? (Date.now() - parseDay(d).getTime()) / 86400000 : Infinity;
@@ -443,7 +443,7 @@ export default function SuppliersView() {
             ) : null}
           />
         ) : (
-          <div className="bg-surface border border-line rounded-2xl max-w-[880px]">
+          <div className="max-w-[880px]">
             <div className="px-6 pt-5">
               <h2 className="text-[18px] font-semibold text-ink tracking-tight truncate">
                 {selected ? `Editing ${selected.name}` : "New supplier"}
@@ -511,47 +511,43 @@ export default function SuppliersView() {
     <div className="space-y-5">
 
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight truncate">Suppliers</h2>
-          <p className="text-[12px] text-muted mt-0.5">
-            Ranked by what you spend with them and what it earned.
-          </p>
-        </div>
-        <button
-          onClick={createNew}
-          className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
-        >
-          <Plus size={14} /> New supplier
-        </button>
-      </div>
+      <PageActions>
+        <Button variant="ink" icon={<Plus size={14} />} onClick={createNew}>New supplier</Button>
+      </PageActions>
+      <p className="text-[13px] text-muted -mt-1">
+        Ranked by what you spend with them and what it earned.
+      </p>
 
       {/* Summary — active suppliers only, so archiving actually changes the picture */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 xl:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] gap-x-6 gap-y-4 py-1">
         {[
           { label: "Spent with suppliers", value: fmtAmount(totals.spent) },
           { label: "Profit on their stock", value: fmtAmount(totals.profit) },
-          { label: "Blended margin", value: totals.rev > 0 ? `${((totals.profit / totals.rev) * 100).toFixed(1)}%` : "–" },
+          { label: "Blended margin", value: totals.rev > 0 ? `${((totals.profit / totals.rev) * 100).toFixed(1)}%` : "-" },
           { label: "Suppliers used", value: `${totals.used} of ${totals.count}` },
-        ].map((c) => (
-          <div key={c.label} className="bg-surface border border-line rounded-xl px-4 py-3 min-w-0">
-            <div className="text-[11.5px] text-muted truncate">{c.label}</div>
-            <div className="text-[19px] font-bold text-ink tabular-nums leading-tight mt-1 truncate">{c.value}</div>
-          </div>
+        ].map((c, i) => (
+          <Fragment key={c.label}>
+            {i > 0 && <div className="vsep hidden xl:block" />}
+            <div className="min-w-0">
+              <div className="ui-label truncate">{c.label}</div>
+              <div className="ui-fig mt-1 truncate">{c.value}</div>
+            </div>
+          </Fragment>
         ))}
       </div>
+      <div className="hsep" />
 
       {/* Search + filters, in the order the columns appear */}
       <div className="flex items-center gap-2 flex-wrap">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+        <label className="ui-search flex-1 min-w-[200px]">
+          <Search size={14} />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search suppliers, contacts, email or phone…"
-            className="w-full pl-8 pr-3 h-8 text-[13px] border border-line rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
+            placeholder="Search suppliers, contacts, email or phone"
+            aria-label="Search suppliers"
           />
-        </div>
+        </label>
 
         <select value={spendRange} onChange={(e) => setSpendRange(Number(e.target.value))} className={selectCls}>
           {SPEND_RANGES.map((r, i) => <option key={i} value={i}>{i === 0 ? r.label : `Spent ${r.label}`}</option>)}
@@ -572,41 +568,39 @@ export default function SuppliersView() {
         </select>
 
         {anyFilter && (
-          <button onClick={clearFilters} className="text-[12px] text-muted hover:text-ink-2 px-2 h-8 rounded-lg hover:bg-surface-3 transition-colors">
+          <button onClick={clearFilters} className="ui-link muted">
             Clear
           </button>
         )}
       </div>
 
-      <div className="text-[12px] text-muted">
+      <div className="ui-note">
         Showing {filtered.length} of {suppliers.length} suppliers
       </div>
 
       {/* Table */}
       {filtered.length === 0 ? (
-        <div className="text-center py-20 bg-surface border border-line rounded-xl">
-          <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
-            <Package size={18} className="text-faint" />
-          </div>
-          <p className="text-[14px] font-semibold text-ink-2">
+        <div className="text-center py-20">
+          <Package size={20} className="text-faint mx-auto mb-3" />
+          <p className="text-[14px] font-medium text-ink-2">
             {suppliers.length === 0 ? "No suppliers yet" : "No suppliers match these filters"}
           </p>
           {suppliers.length === 0 && (
             <>
               <p className="text-[12px] text-muted mt-1">Add your first supplier to get started</p>
-              <button onClick={createNew} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
-                + Add supplier
-              </button>
+              <Button className="mt-3" icon={<Plus size={14} />} onClick={createNew}>
+                Add supplier
+              </Button>
             </>
           )}
         </div>
       ) : (
-        <div className="bg-surface border border-line rounded-xl overflow-x-auto">
-          <table className="w-full min-w-[1040px] text-sm">
+        <div className="overflow-x-auto">
+          <table className="ui-table ui-table-click min-w-[1040px]">
             <thead>
-              <tr className="border-b border-line-2">
+              <tr>
                 <Th label="Supplier"  k="name"             sortKey={sortKey} asc={sortAsc} onSort={sortBy} align="left" />
-                <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Contact</th>
+                <th>Contact</th>
                 <Th label="Spent"     k="total_paid"       sortKey={sortKey} asc={sortAsc} onSort={sortBy} />
                 <Th label="Profit"    k="total_profit"     sortKey={sortKey} asc={sortAsc} onSort={sortBy} />
                 <Th label="Margin"    k="margin"           sortKey={sortKey} asc={sortAsc} onSort={sortBy} />
@@ -614,7 +608,7 @@ export default function SuppliersView() {
                 <Th label="Avg deal"  k="avg_deal_amount"  sortKey={sortKey} asc={sortAsc} onSort={sortBy} />
                 <Th label="Last deal" k="last_deal_date"   sortKey={sortKey} asc={sortAsc} onSort={sortBy} align="left" />
                 <Th label="Last contact" k="last_contact"  sortKey={sortKey} asc={sortAsc} onSort={sortBy} align="left" />
-                <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Payment</th>
+                <th>Payment</th>
               </tr>
             </thead>
             <tbody>
@@ -624,47 +618,40 @@ export default function SuppliersView() {
                   <tr
                     key={s.id}
                     onClick={() => openSupplier(s)}
-                    className="border-b border-line-2 last:border-0 hover:bg-surface-2/60 transition-colors cursor-pointer"
                   >
-                    <td className="px-5 py-3">
-                      <div className="text-[13px] font-medium text-ink truncate max-w-[220px]">{s.name}</div>
-                      {s.archived && <div className="text-[10px] text-warning-ink font-medium mt-0.5">Archived</div>}
+                    <td>
+                      <div className="text-[14px] font-medium text-ink truncate max-w-[220px]">{s.name}</div>
+                      {s.archived && <div className="mt-0.5"><StatusPill tone="warning">Archived</StatusPill></div>}
                     </td>
-                    <td className="px-5 py-3 text-[12px] text-muted truncate max-w-[160px]">{s.contact_name || "–"}</td>
-                    <td className="px-5 py-3 text-right text-[13px] font-semibold text-ink tabular-nums">
-                      {s.total_paid > 0 ? fmtAmount(s.total_paid) : "–"}
+                    <td className="text-muted truncate max-w-[160px]">{s.contact_name || "-"}</td>
+                    <td className="r font-medium text-ink">
+                      {s.total_paid > 0 ? fmtAmount(s.total_paid) : "-"}
                     </td>
-                    <td className={`px-5 py-3 text-right text-[13px] font-semibold tabular-nums ${
+                    <td className={`r font-medium ${
                       s.total_profit < 0 ? "text-danger-ink" : "text-ink"
                     }`}>
                       {s.total_profit !== 0
                         ? <>{s.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(s.total_profit))}</>
-                        : "–"}
+                        : "-"}
                     </td>
-                    <td className="px-5 py-3 text-right">
+                    <td className="r">
                       {m === null ? (
-                        <span className="text-[12px] text-faint">–</span>
+                        <span className="text-faint">-</span>
                       ) : (
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tabular-nums ${
-                          m >= 25 ? "bg-success-bg text-success-ink"
-                          : m >= 10 ? "bg-warning-bg text-warning-ink"
-                          : "bg-danger-bg text-danger-ink"
-                        }`}>
-                          {m.toFixed(1)}%
-                        </span>
+                        <StatusPill tone={m >= 25 ? "success" : m >= 10 ? "warning" : "danger"}>{m.toFixed(1)}%</StatusPill>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{s.deal_count || "–"}</td>
-                    <td className="px-5 py-3 text-right text-[13px] text-ink-2 tabular-nums">
-                      {s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "–"}
+                    <td className="text-center text-ink-2 tabular-nums">{s.deal_count || "-"}</td>
+                    <td className="r text-ink-2">
+                      {s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "-"}
                     </td>
-                    <td className="px-5 py-3 text-[12px] text-muted">{shortDate(s.last_deal_date)}</td>
-                    <td className="px-5 py-3 text-[12px] text-muted">
+                    <td className="text-muted whitespace-nowrap">{shortDate(s.last_deal_date)}</td>
+                    <td className="text-muted whitespace-nowrap">
                       {s.last_contact
                         ? `${s.last_contact_kind === "email_out" ? "Out" : "In"} · ${shortDate(s.last_contact)}`
-                        : "–"}
+                        : "-"}
                     </td>
-                    <td className="px-5 py-3 text-[12px] text-muted truncate max-w-[140px]">{s.payment_method || "–"}</td>
+                    <td className="text-muted truncate max-w-[140px]">{s.payment_method || "-"}</td>
                   </tr>
                 );
               })}
@@ -684,10 +671,10 @@ function Th({ label, k, sortKey, asc, onSort, align = "right" }: {
   const active = sortKey === k;
   const just = align === "left" ? "justify-start" : align === "center" ? "justify-center" : "justify-end";
   return (
-    <th className={`px-5 py-3 text-[12px] font-medium ${align === "left" ? "text-left" : align === "center" ? "text-center" : "text-right"}`}>
+    <th className={align === "left" ? "text-left" : align === "center" ? "text-center" : "text-right"}>
       <button
         onClick={() => onSort(k)}
-        className={`inline-flex items-center gap-1 w-full ${just} transition-colors ${active ? "text-ink-2" : "text-muted hover:text-ink-2"}`}
+        className={`inline-flex items-center gap-1 w-full ${just} transition-colors duration-150 ${active ? "text-ink" : "text-muted hover:text-ink"}`}
       >
         {label}
         {active && (asc ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}
@@ -717,10 +704,10 @@ function SupplierPage({ s, history, payments, deals, onReloadDeals, onEdit, onUn
   return (
     <>
       {/* Identity */}
-      <div className="bg-surface border border-line rounded-2xl p-6">
+      <div className="pb-6 border-b border-line">
         <div className="cd-head flex items-start justify-between gap-4">
           <div className="flex items-start gap-4 min-w-0">
-            <div className="w-14 h-14 rounded-2xl bg-surface-3 text-ink-2 flex items-center justify-center text-[18px] font-bold flex-shrink-0">{initials}</div>
+            <div className="w-12 h-12 rounded-full bg-surface-3 text-ink-2 flex items-center justify-center text-[16px] font-bold flex-shrink-0">{initials}</div>
             <div className="min-w-0">
               <h2 className="text-[20px] font-bold text-ink truncate">{s.name}</h2>
               <div className="flex items-center gap-x-3 gap-y-0.5 mt-1 flex-wrap text-[13px] text-muted">
@@ -751,16 +738,16 @@ function SupplierPage({ s, history, payments, deals, onReloadDeals, onEdit, onUn
       {/* Money first, every figure in one band */}
       <div className="mt-4">
         <KpiBand cols={7}>
-          <StatTile label="Spent with them" value={s.total_paid > 0 ? fmtAmount(s.total_paid) : "–"} tone="ink" />
+          <StatTile label="Spent with them" value={s.total_paid > 0 ? fmtAmount(s.total_paid) : "-"} tone="ink" />
           <StatTile label="Profit on their stock"
-            value={s.total_profit !== 0 ? `${s.total_profit < 0 ? "−" : ""}${fmtAmount(Math.abs(s.total_profit))}` : "–"}
+            value={s.total_profit !== 0 ? `${s.total_profit < 0 ? "−" : ""}${fmtAmount(Math.abs(s.total_profit))}` : "-"}
             tone={s.total_profit < 0 ? "danger" : s.total_profit > 0 ? "success" : "muted"} />
-          <StatTile label="Margin" value={m === null ? "–" : `${m.toFixed(1)}%`} tone={m === null ? "muted" : "ink"} />
+          <StatTile label="Margin" value={m === null ? "-" : `${m.toFixed(1)}%`} tone={m === null ? "muted" : "ink"} />
           <StatTile label="Deals" value={String(s.deal_count)} tone="ink" />
-          <StatTile label="Avg deal" value={s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "–"} tone="ink" />
+          <StatTile label="Avg deal" value={s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "-"} tone="ink" />
           <StatTile label="Last deal" value={shortDate(s.last_deal_date)} tone="muted" />
           <StatTile label="Last contact" tone="muted"
-            value={s.last_contact ? `${s.last_contact_kind === "email_out" ? "Out" : "In"} · ${shortDate(s.last_contact)}` : "–"} />
+            value={s.last_contact ? `${s.last_contact_kind === "email_out" ? "Out" : "In"} · ${shortDate(s.last_contact)}` : "-"} />
         </KpiBand>
       </div>
 
@@ -783,7 +770,7 @@ function SupplierPage({ s, history, payments, deals, onReloadDeals, onEdit, onUn
                 three and not two — one $279,500 supplier wire in this ledger is split
                 across deals belonging to four different clients. */}
             {/* PersonPayments carries its own "Bank payments" heading, so the card adds none. */}
-            <section className="bg-surface border border-line rounded-2xl p-5 min-w-0">
+            <section className="min-w-0">
               <PersonPayments
                 person={{ type: "supplier", id: s.id, name: s.name }}
                 payments={payments}

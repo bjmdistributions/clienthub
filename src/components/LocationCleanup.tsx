@@ -1,3 +1,4 @@
+import StatusPill from "./StatusPill";
 import { useEffect, useState } from "react";
 import { X, MapPin, AlertTriangle, Check, Loader2 } from "lucide-react";
 import { api, LotLocationGroup } from "../lib/api";
@@ -88,10 +89,10 @@ export default function LocationCleanup({ onClose, onDone }: { onClose: () => vo
 
   const badge = (c: LocationConfidence) =>
     c === "certain"
-      ? { cls: "text-success-ink bg-success-bg border-success-ink/20", label: "Clear" }
+      ? { cls: "success", label: "Clear" }
       : c === "assumed"
-      ? { cls: "text-warning-ink bg-warning-bg border-warning-ink/20", label: "Check this" }
-      : { cls: "text-danger-ink bg-danger-bg border-danger-ink/20", label: "Needs you" };
+      ? { cls: "warning", label: "Check this" }
+      : { cls: "danger", label: "Needs you" };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/40" onMouseDown={onClose}>
@@ -147,12 +148,12 @@ export default function LocationCleanup({ onClose, onDone }: { onClose: () => vo
                           {r.lotCount} lot{r.lotCount === 1 ? "" : "s"}
                         </span>
                       </div>
-                      <span className={`text-[10.5px] px-2 py-0.5 rounded-full border shrink-0 ${b.cls}`}>{b.label}</span>
+                      <StatusPill tone={b.cls as "success" | "warning" | "danger"}>{b.label}</StatusPill>
                     </div>
 
                     <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
                       <input
-                        className="border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+                        className="border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:border-ink"
                         value={r.city}
                         onChange={(e) => patch(i, { city: e.target.value })}
                         placeholder="City (optional)"

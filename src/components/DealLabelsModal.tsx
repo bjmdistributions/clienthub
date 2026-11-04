@@ -1,9 +1,11 @@
+import { Check, Loader2, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { X, Check, Search, Loader2 } from "lucide-react";
+
 import { api, DealLabel, DealLabelInput, DealLabelList, LabelFrom } from "../lib/api";
 import { fmtAmount, parseLocalDay } from "../lib/format";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
+import { Tabs } from "./ui";
 
 // R-402: where Jack gives every closed deal one category and one brand. What he sets is
 // stored on the deal (deal_flows.category / .brand) and teaches the guesses for every deal
@@ -101,32 +103,25 @@ export default function DealLabelsModal({ focus, onClose }: {
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/40" onClick={() => onClose(changed)} />
+      <div className="absolute inset-0 bg-black/40 animate-fade-in" onClick={() => onClose(changed)} />
 
-      <div className="relative w-[94vw] max-w-[1120px] max-h-[88vh] flex flex-col rounded-2xl bg-surface border border-line shadow-2xl overflow-hidden">
-        <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-line">
+      <div className="relative w-[94vw] max-w-[1120px] max-h-[88vh] flex flex-col rounded-2xl bg-surface ring-1 ring-line-3 shadow-2xl overflow-hidden animate-fade-up">
+        <div className="flex items-start justify-between gap-3 px-6 py-4">
           <div className="min-w-0">
-            <h3 className="text-[15px] font-semibold text-ink">Identify categories and brands</h3>
+            <h3 className="text-[16px] font-medium text-ink m-0">Identify categories and brands</h3>
             <p className="text-[12px] text-muted mt-0.5">
               One category and one brand for every closed deal. What you set here teaches the guesses for the rest.
             </p>
           </div>
-          <button onClick={() => onClose(changed)} aria-label="Close"
-            className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg hover:bg-surface-3 text-muted hover:text-ink-2 transition-colors">
+          <button onClick={() => onClose(changed)} aria-label="Close" className="ui-ib flex-shrink-0">
             <X size={16} />
           </button>
         </div>
+        <div className="hsep" />
 
-        <div className="flex flex-wrap items-center gap-2 px-6 py-3 border-b border-line-2">
-          <div className="flex items-center gap-1 bg-surface-2 rounded-lg p-0.5">
-            {FILTERS.map((f) => (
-              <button key={f.id} onClick={() => { setFilter(f.id); setShown(PAGE); }}
-                className={`px-2.5 h-7 rounded-md text-[12px] font-medium whitespace-nowrap transition-colors ${
-                  filter === f.id ? "bg-surface text-ink ring-1 ring-line" : "text-muted hover:text-ink-2"}`}>
-                {f.label} <span className="tabular-nums text-faint">{data ? count(f.id) : ""}</span>
-              </button>
-            ))}
-          </div>
+        <div className="flex flex-wrap items-center gap-2 px-6 py-3">
+          <Tabs label="Show" value={filter} onChange={(id) => { setFilter(id as Filter); setShown(PAGE); }}
+            tabs={FILTERS.map((f) => ({ id: f.id, label: f.label, count: data ? count(f.id) : undefined }))} />
           {only && (
             <button onClick={() => setOnly(null)}
               className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg ring-1 ring-line text-[12px] text-ink-2 hover:bg-surface-2">
@@ -138,14 +133,14 @@ export default function DealLabelsModal({ focus, onClose }: {
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
             <input value={q} onChange={(e) => { setQ(e.target.value); setShown(PAGE); }}
               placeholder="Search buyer, invoice or product"
-              className="w-full ring-1 ring-line bg-surface h-8 pl-8 pr-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40" />
+              className="w-full ring-1 ring-line bg-surface h-8 pl-8 pr-2 rounded-lg text-[12px] focus:outline-none focus:border-ink" />
           </div>
           <div className="flex-1" />
           {busy && <Loader2 size={14} className="animate-spin text-muted" />}
           {guesses.length > 0 && (
             <button disabled={busy}
               onClick={() => save(guesses, `Confirmed ${guesses.length} deal${guesses.length !== 1 ? "s" : ""}`)}
-              className="h-8 px-3 rounded-lg bg-accent text-on-accent text-[12px] font-medium disabled:opacity-40 hover:bg-accent-hover transition-colors">
+              className="ui-btn ui-btn-ink">
               Accept {guesses.length} guess{guesses.length !== 1 ? "es" : ""} shown
             </button>
           )}
@@ -163,7 +158,7 @@ export default function DealLabelsModal({ focus, onClose }: {
             </div>
           ) : (
             <div className="divide-y divide-line-2">
-              <div className="grid grid-cols-[minmax(0,1fr)_220px_200px] gap-4 px-6 py-2 sticky top-0 z-[1] bg-surface-2/80 backdrop-blur-sm text-[11px] font-medium text-muted">
+              <div className="grid grid-cols-[minmax(0,1fr)_220px_200px] gap-4 px-6 py-2 sticky top-0 z-[1] bg-surface-2/80 backdrop-blur-sm text-[12px] font-medium text-muted">
                 <div>Deal</div><div>Category</div><div>Brand</div>
               </div>
               {rows.slice(0, shown).map((d, i, list) => (
@@ -201,13 +196,13 @@ function Row({ d, next, onSave }: {
       <div className="min-w-0">
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="text-[13px] font-medium text-ink truncate">{d.buyer || "No buyer"}</span>
-          <span className="text-[11px] text-faint whitespace-nowrap">{d.number}{day ? ` · ${day}` : ""}</span>
+          <span className="text-[12px] text-faint whitespace-nowrap">{d.number}{day ? ` · ${day}` : ""}</span>
         </div>
         <div className="text-[12px] text-ink-2 mt-0.5 truncate" title={d.products.join("\n")}>
           {d.products.length ? d.products.slice(0, 2).join(", ") : "No product lines on the invoice"}
           {d.products.length > 2 ? `, and ${d.products.length - 2} more` : ""}
         </div>
-        <div className="text-[11px] text-muted mt-0.5 tabular-nums">
+        <div className="text-[12px] text-muted mt-0.5 tabular-nums">
           {fmtAmount(d.revenue)} revenue · {d.profit < 0 ? "−" + fmtAmount(Math.abs(d.profit)) : fmtAmount(d.profit)} profit
         </div>
       </div>
@@ -252,29 +247,29 @@ function LabelField({ deal, kind, value, from, why, list, empty, onSave, onNext 
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit(true); } }}
           onBlur={() => commit(false)}
-          className={`w-full min-w-0 ring-1 bg-surface h-8 px-2.5 rounded-lg text-[12.5px] focus:outline-none focus:ring-2 focus:ring-accent/40 ${
+          className={`w-full min-w-0 ring-1 bg-surface h-8 px-2.5 rounded-lg text-[12.5px] focus:outline-none focus:border-ink ${
             guessed && draft === current ? "ring-line/70 text-muted" : "ring-line text-ink"}`} />
         {guessed && (
           <button onClick={() => onSave(value)} title="Accept this guess" aria-label="Accept this guess"
-            className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg ring-1 ring-line text-success-ink hover:bg-success-bg disabled:opacity-40 transition-colors">
-            <Check size={14} />
+            className="ui-ib flex-shrink-0 !text-success-ink disabled:opacity-40">
+            <Check size={16} />
           </button>
         )}
       </div>
       <div className="flex items-center gap-1.5 mt-1 min-w-0">
         {from === "you" ? (
           <>
-            <span className="text-[11px] text-faint">Set by you</span>
+            <span className="text-[12px] text-faint">Set by you</span>
             <button onClick={() => onSave("", "Cleared. It will be guessed again.")}
-              className="text-[11px] text-muted hover:text-ink-2 hover:underline">Clear</button>
+              className="text-[12px] text-muted hover:text-ink-2 hover:underline">Clear</button>
           </>
         ) : guessed ? (
           <>
             <StatusPill tone="accent">Guessed</StatusPill>
-            <span className="text-[11px] text-faint truncate" title={why}>{why}</span>
+            <span className="text-[12px] text-faint truncate" title={why}>{why}</span>
           </>
         ) : (
-          <span className="text-[11px] text-faint">Nothing to go on yet</span>
+          <span className="text-[12px] text-faint">Nothing to go on yet</span>
         )}
       </div>
     </div>

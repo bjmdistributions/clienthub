@@ -69,14 +69,14 @@ export default function QuickLogModal({ onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="bg-surface rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.14),0_8px_24px_rgba(0,0,0,0.08),0_0_0_1px_rgba(0,0,0,0.04)] w-[500px] max-w-[92vw] max-h-[80vh] overflow-auto animate-fade-up"
+        className="bg-surface rounded-2xl shadow-xl w-[500px] max-w-[92vw] max-h-[80vh] overflow-auto animate-fade-up"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-line">
           <div className="flex items-center gap-2.5">
             <h3 className="text-[15px] font-semibold text-ink">Quick log</h3>
-            <span className="text-[10px] text-muted font-mono bg-surface-3 px-1.5 py-0.5 rounded-md">L</span>
+            <span className="text-[11px] text-muted bg-surface-3 px-1.5 py-0.5 rounded-md">L</span>
           </div>
           <button
             onClick={onClose}
@@ -100,7 +100,7 @@ export default function QuickLogModal({ onClose }: Props) {
               onKeyDown={handleKey}
             />
             {suggestions.length > 0 && !selected && (
-              <div className="absolute top-full left-0 right-0 bg-surface border border-line rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.08)] mt-1 z-10 max-h-44 overflow-auto">
+              <div className="absolute top-full left-0 right-0 bg-surface border border-line rounded-xl shadow-md mt-1 z-10 max-h-44 overflow-auto">
                 {suggestions.map((c) => (
                   <button
                     key={c.id}
@@ -155,7 +155,7 @@ export default function QuickLogModal({ onClose }: Props) {
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
               }}
             />
-            <div className="text-[10px] text-faint mt-1">Enter to submit · Shift+Enter for new line</div>
+            <div className="text-[11px] text-faint mt-1">Enter to submit · Shift+Enter for new line</div>
           </div>
 
           {/* Toast */}

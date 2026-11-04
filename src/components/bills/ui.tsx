@@ -1,17 +1,14 @@
-// R-449: the small pieces every Bills mode shares. Local to this screen on purpose: the cards,
-// tiles and palette hook other screens use are not exported, and the copies below are the
-// Brief and Dashboard card dialect (rounded-2xl, border-line, 13px semibold title).
+// R-449: the small pieces every Bills mode shares. Local to this screen on purpose.
+// R-583: the mockups' dialect. A Card is a titled section divided by the fading hairline (no box),
+// a Tile is a label and a 24px figure, and Seg is the shared Tabs track.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { fmtAmount } from "../../lib/format";
-import { initials, tintIndex } from "../../lib/billsFormat";
+import { initials } from "../../lib/billsFormat";
+import { Tabs } from "../ui";
 
-export const inp =
-  "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted " +
-  "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
-export const btn =
-  "border border-line text-ink-2 hover:bg-surface-2 px-2.5 h-8 rounded-lg text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap";
-export const pri =
-  "px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity inline-flex items-center gap-1.5 whitespace-nowrap";
+export const inp = "field-input w-full";
+export const btn = "ui-btn ui-btn-sm";
+export const pri = "ui-btn ui-btn-ink";
 
 /** Money with the minus in front of the dollar sign: fmtAmount alone writes "$-12.00". Less than
  *  half a cent, and negative zero (what negating a zero total gives), read as plain $0.00. */
@@ -24,11 +21,12 @@ export function Card({ title, sub, right, children, className = "" }: {
   title: string; sub?: string; right?: ReactNode; children: ReactNode; className?: string;
 }) {
   return (
-    <section className={`bg-surface border border-line rounded-2xl overflow-hidden min-w-0 ${className}`}>
-      <div className="px-5 py-3.5 border-b border-line-2 flex items-start justify-between gap-3 flex-wrap">
+    <section className={`min-w-0 ${className}`}>
+      <div className="hsep" />
+      <div className="pt-4 pb-2.5 flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink tracking-tight">{title}</h3>
-          {sub && <p className="text-[11px] text-muted mt-0.5">{sub}</p>}
+          <h3 className="m-0 text-[14px] font-medium text-ink">{title}</h3>
+          {sub && <p className="ui-note m-0 mt-0.5">{sub}</p>}
         </div>
         {right && <div className="min-w-0">{right}</div>}
       </div>
@@ -37,33 +35,26 @@ export function Card({ title, sub, right, children, className = "" }: {
   );
 }
 
-/** One cell of a band of figures. The card around the band owns the borders. */
+/** One figure of a band. The band lays tiles out with a vsep between them. */
 export function Tile({ label, value, sub, valueCls = "text-ink", className = "", action }: {
   label: string; value: string; sub?: string; valueCls?: string; className?: string; action?: ReactNode;
 }) {
   return (
-    <div className={`p-5 min-w-0 ${className}`}>
-      <div className="text-[12px] font-medium text-muted truncate">{label}</div>
-      <div className={`text-[19px] sm:text-[21px] 2xl:text-[24px] font-bold tabular-nums mt-1.5 leading-none tracking-tight truncate ${valueCls}`}>{value}</div>
-      {sub && <div className="text-[11px] text-faint mt-1.5 truncate">{sub}</div>}
+    <div className={`p-4 min-w-0 ${className}`}>
+      <div className="ui-label truncate">{label}</div>
+      <div className={`ui-fig mt-2 truncate ${valueCls}`}>{value}</div>
+      {sub && <div className="ui-note mt-1.5 truncate">{sub}</div>}
       {action && <div className="mt-2">{action}</div>}
     </div>
   );
 }
 
-/** The segmented control Brief uses for Today and This week. */
+/** The segmented control: the shared Tabs track. */
 export function Seg<T extends string>({ value, onChange, options }: {
   value: T; onChange: (v: T) => void; options: { value: T; label: string }[];
 }) {
   return (
-    <div className="flex items-center gap-0.5 bg-surface-2 border border-line rounded-lg p-0.5 max-w-full overflow-x-auto">
-      {options.map((o) => (
-        <button key={o.value} onClick={() => onChange(o.value)} aria-pressed={value === o.value}
-          className={`px-3 h-7 rounded-md text-[12px] font-medium whitespace-nowrap transition-colors duration-[130ms] ${value === o.value ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-          {o.label}
-        </button>
-      ))}
-    </div>
+    <Tabs value={value} onChange={(id) => onChange(id as T)} tabs={options.map((o) => ({ id: o.value, label: o.label }))} />
   );
 }
 
@@ -71,23 +62,21 @@ export function Seg<T extends string>({ value, onChange, options }: {
  *  can hold anything else, and an image address would make this window fetch it. */
 export const okLogo = (s?: string) => /^data:image\/(png|jpeg);base64,/.test(s || "");
 
-/** A bill's picture: its own logo, or its initials on a tint taken from the chart tokens so a
- *  bill keeps one colour on every screen. The tile sits on surface-2 with a ring, never a white
- *  box, so a transparent logo reads on the dark theme too. */
+/** A bill's picture: its own logo, or its initials on the ink, as in the mockups. A logo sits on
+ *  surface-2 with a ring, never a white box, so a transparent logo reads on the dark theme too. */
 export function BillLogo({ name, logo, size = 40 }: { name: string; logo?: string; size?: number }) {
   const box = { width: size, height: size };
   if (logo && okLogo(logo)) {
     return (
-      <span style={box} className="rounded-lg bg-surface-2 ring-1 ring-line flex items-center justify-center overflow-hidden flex-shrink-0">
+      <span style={box} className="rounded-full bg-surface-2 ring-1 ring-line flex items-center justify-center overflow-hidden flex-shrink-0">
         <img src={logo} alt="" draggable={false} className="w-full h-full object-contain p-[3px]" />
       </span>
     );
   }
-  const t = tintIndex(name);
   return (
     <span
-      style={{ ...box, fontSize: Math.max(10, Math.round(size * 0.36)), background: `rgb(var(--c-chart-${t}) / 0.16)`, boxShadow: `inset 0 0 0 1px rgb(var(--c-chart-${t}) / 0.3)` }}
-      className="rounded-lg flex items-center justify-center font-semibold text-ink-2 flex-shrink-0 select-none"
+      style={{ ...box, fontSize: Math.max(10, Math.round(size * 0.32)) }}
+      className="rounded-full flex items-center justify-center font-bold bg-ink text-surface flex-shrink-0 select-none"
       aria-hidden
     >
       {initials(name)}
@@ -118,11 +107,11 @@ export function useChartColors() {
   return useMemo(() => {
     void tick;
     return {
-      bills: rgb("--c-chart-1"),
-      other: rgb("--c-chart-2"),
+      bills: cssVar("--chart-hi"),
+      other: cssVar("--chart-line"),
       profit: rgb("--c-chart-profit"),
       loss: rgb("--c-chart-loss"),
-      grid: rgb("--c-line"),
+      grid: cssVar("--chart-grid"),
       axis: { fontSize: 10, fill: rgb("--c-muted") },
       tip: {
         contentStyle: {

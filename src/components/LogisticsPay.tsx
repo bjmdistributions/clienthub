@@ -11,6 +11,7 @@ import { lowersCounter, numberPreview, numberingProblem } from "../lib/logistics
 import type { PayBlock } from "../lib/logisticsBills";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
+import SharedSwitch from "./Switch";
 import { toast } from "./Toast";
 import { fmtDay } from "./LogisticsBookingForm";
 import { comingLabel, payLineWho } from "../lib/buyLoads";
@@ -22,8 +23,8 @@ import { comingLabel, payLineWho } from "../lib/buyLoads";
 // date and the server adds up what is due.
 
 const inp =
-  "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted " +
-  "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors disabled:opacity-60";
+  "border border-line-3 px-3 h-9 rounded-lg text-[14px] w-full bg-transparent text-ink placeholder-faint " +
+  "focus:outline-none focus:border-ink transition-colors disabled:opacity-60";
 const REFRESH_MS = 30_000;
 
 const METHODS = ["Zelle", "ACH", "Check", "Cash", "Other"];
@@ -72,8 +73,8 @@ export function LogisticsPayCell({ pay, big }: { pay: { amount: number; pending:
   if (pay.amount <= 0.005 && !pay.pending) return null;
   return (
     <div className={big ? "flex-1 min-w-[90px]" : ""}>
-      <div className={`${big ? "text-[12px] truncate" : "text-[11px]"} text-muted`}>Logistics pay</div>
-      <div className={`${big ? "text-[18px] font-bold mt-0.5" : "text-[13px] font-semibold"} text-ink-2 tabular-nums`}>
+      <div className={`${big ? "text-[12px] truncate" : "text-[12px]"} text-muted`}>Logistics pay</div>
+      <div className={`${big ? "text-[18px] font-medium mt-0.5" : "text-[14px] font-medium"} text-ink-2 tabular-nums`}>
         {pay.pending ? "Waiting on the freight amount" : fmtAmount(pay.amount)}
       </div>
     </div>
@@ -91,22 +92,17 @@ function useRefresh(load: () => void) {
 }
 
 function Switch({ on, onClick, label, disabled }: { on: boolean; onClick: () => void; label: string; disabled?: boolean }) {
-  return (
-    <button type="button" onClick={onClick} role="switch" aria-checked={on} aria-label={label} disabled={disabled}
-      className={`w-11 h-6 rounded-full relative transition-colors ring-1 flex-shrink-0 disabled:opacity-50 ${on ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
-      <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${on ? "bg-on-accent translate-x-[22px]" : "bg-surface translate-x-0.5"}`} />
-    </button>
-  );
+  return <SharedSwitch on={on} onToggle={onClick} label={label} disabled={disabled} />;
 }
 
 function Seg<T extends string>({ value, onChange, options }: {
   value: T; onChange: (v: T) => void; options: { value: T; label: string }[];
 }) {
   return (
-    <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-full">
+    <div className="flex items-center gap-1.5 w-full flex-wrap" role="group">
       {options.map((o) => (
-        <button key={o.value} type="button" onClick={() => onChange(o.value)}
-          className={`flex-1 inline-flex items-center justify-center h-8 rounded-md text-[12.5px] font-medium transition-colors whitespace-nowrap px-2 ${value === o.value ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+        <button key={o.value} type="button" aria-pressed={value === o.value} onClick={() => onChange(o.value)}
+          className={`ui-opt flex-1 whitespace-nowrap ${value === o.value ? "on" : ""}`}>
           {o.label}
         </button>
       ))}
@@ -117,9 +113,9 @@ function Seg<T extends string>({ value, onChange, options }: {
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div>
-      <label className="block text-[12px] font-medium text-muted mb-1.5">{label}</label>
+      <label className="block ui-label mb-1.5">{label}</label>
       {children}
-      {hint && <div className="text-[11.5px] text-muted mt-1">{hint}</div>}
+      {hint && <div className="text-[12px] text-faint mt-1.5 leading-[1.4]">{hint}</div>}
     </div>
   );
 }
@@ -155,8 +151,8 @@ export function LogisticsFreightSetting() {
   };
   if (on === null) {
     return err
-      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
-      : <div className="text-[12.5px] text-muted">Loading...</div>;
+      ? <div className="text-[13px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="ui-link">Try again</button></div>
+      : <div className="text-[13px] text-muted">Loading...</div>;
   }
   return (
     <div className="space-y-2">
@@ -167,7 +163,7 @@ export function LogisticsFreightSetting() {
         </div>
         <Switch on={on} onClick={flip} disabled={busy} label="We fill in the freight details before sending to logistics" />
       </div>
-      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
     </div>
   );
 }
@@ -193,8 +189,8 @@ export function LogisticsMayBookSetting() {
   };
   if (on === null) {
     return err
-      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
-      : <div className="text-[12.5px] text-muted">Loading...</div>;
+      ? <div className="text-[13px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="ui-link">Try again</button></div>
+      : <div className="text-[13px] text-muted">Loading...</div>;
   }
   return (
     <div className="space-y-2">
@@ -205,7 +201,7 @@ export function LogisticsMayBookSetting() {
         </div>
         <Switch on={on} onClick={flip} disabled={busy} label="Logistics can book a load without the team" />
       </div>
-      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
     </div>
   );
 }
@@ -231,8 +227,8 @@ export function LogisticsNoDealSetting() {
   };
   if (on === null) {
     return err
-      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
-      : <div className="text-[12.5px] text-muted">Loading...</div>;
+      ? <div className="text-[13px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="ui-link">Try again</button></div>
+      : <div className="text-[13px] text-muted">Loading...</div>;
   }
   return (
     <div className="space-y-2">
@@ -243,7 +239,7 @@ export function LogisticsNoDealSetting() {
         </div>
         <Switch on={on} onClick={flip} disabled={busy} label="Send loads without a deal" />
       </div>
-      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
     </div>
   );
 }
@@ -267,8 +263,8 @@ export function LogisticsNumberingSetting() {
   useEffect(() => { load(); }, [load]);
   if (!form || !base) {
     return err
-      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
-      : <div className="text-[12.5px] text-muted">Loading...</div>;
+      ? <div className="text-[13px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="ui-link">Try again</button></div>
+      : <div className="text-[13px] text-muted">Loading...</div>;
   }
   const set = (p: Partial<Form>) => { setForm({ ...form, ...p }); setErr(""); };
   const changed = JSON.stringify(form) !== JSON.stringify(base);
@@ -294,24 +290,24 @@ export function LogisticsNumberingSetting() {
       <div className="text-[12px] text-muted mt-0.5 mb-2">{hint}</div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-[12.5px] font-medium text-muted mb-1">Prefix</label>
+          <label className="block text-[13px] font-medium text-muted mb-1">Prefix</label>
           <input className={inp} value={prefix} onChange={(e) => onPrefix(e.target.value)} aria-label={`${title} prefix`} />
         </div>
         <div>
-          <label className="block text-[12.5px] font-medium text-muted mb-1">Next number</label>
+          <label className="block text-[13px] font-medium text-muted mb-1">Next number</label>
           <NumberInput integer className={inp} value={next} onValue={(n) => onNext(n)} aria-label={`${title} next number`} />
         </div>
       </div>
-      <p className="text-[11px] text-muted mt-2">The next one is <span className="tabular-nums font-semibold text-accent-hover">{numberPreview(prefix, next)}</span></p>
+      <p className="text-[12px] text-muted mt-2">The next one is <span className="tabular-nums font-medium text-ink">{numberPreview(prefix, next)}</span></p>
     </div>
   );
   return (
     <div className="space-y-4">
       {block("Load numbers", form.loadPrefix, form.loadNext, (v) => set({ loadPrefix: v }), (n) => set({ loadNext: n }), "Every load gets one when it is created. Search finds a load by it.")}
       {block("BOL numbers", form.bolPrefix, form.bolNext, (v) => set({ bolPrefix: v }), (n) => set({ bolNext: n }), "Every BOL we make gets one when it is saved.")}
-      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
       <button type="button" onClick={save} disabled={!changed || busy}
-        className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40">{busy ? "Saving..." : "Save"}</button>
+        className="ui-btn ui-btn-ink">{busy ? "Saving..." : "Save"}</button>
     </div>
   );
 }
@@ -334,8 +330,8 @@ export function LogisticsRateConSetting() {
   useEffect(() => { load(); }, [load]);
   if (!form || !base) {
     return err
-      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
-      : <div className="text-[12.5px] text-muted">Loading...</div>;
+      ? <div className="text-[13px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="ui-link">Try again</button></div>
+      : <div className="text-[13px] text-muted">Loading...</div>;
   }
   const set = (p: Partial<Form>) => { setForm({ ...form, ...p }); setErr(""); };
   const changed = form.email.trim() !== base.email || form.mc.trim() !== base.mc;
@@ -356,17 +352,17 @@ export function LogisticsRateConSetting() {
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-[12.5px] font-medium text-muted mb-1" htmlFor="rc-bills">Logistics email</label>
+          <label className="block text-[13px] font-medium text-muted mb-1" htmlFor="rc-bills">Logistics email</label>
           <input id="rc-bills" type="email" className={inp} value={form.email} maxLength={200} spellCheck={false} placeholder="logistics@yourcompany.com" onChange={(e) => set({ email: e.target.value })} />
         </div>
         <div>
-          <label className="block text-[12.5px] font-medium text-muted mb-1" htmlFor="rc-mc">MC number</label>
+          <label className="block text-[13px] font-medium text-muted mb-1" htmlFor="rc-mc">MC number</label>
           <input id="rc-mc" type="text" inputMode="numeric" className={inp} value={form.mc} maxLength={14} onChange={(e) => set({ mc: e.target.value })} />
         </div>
       </div>
-      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
       <button type="button" onClick={save} disabled={!changed || busy}
-        className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40">{busy ? "Saving..." : "Save"}</button>
+        className="ui-btn ui-btn-ink">{busy ? "Saving..." : "Save"}</button>
     </div>
   );
 }
@@ -388,8 +384,8 @@ export function LogisticsRoutesSetting() {
   useEffect(() => { load(); }, [load]);
   if (routeSet === null) {
     return err
-      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
-      : <div className="text-[12.5px] text-muted">Loading...</div>;
+      ? <div className="text-[13px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="ui-link">Try again</button></div>
+      : <div className="text-[13px] text-muted">Loading...</div>;
   }
   // Only the route key is sent, so saving here can never touch any other Logistics setting.
   const persist = async (value: string, done: string) => {
@@ -407,19 +403,19 @@ export function LogisticsRoutesSetting() {
         <div className="text-[12px] text-muted mt-0.5">Make a free key at openrouteservice.org: sign up, then copy the key from your dashboard. It stays on the server. The map itself needs no key.</div>
       </div>
       <div className="max-w-sm">
-        <label className="block text-[12.5px] font-medium text-muted mb-1" htmlFor="rt-key">Route key</label>
+        <label className="block text-[13px] font-medium text-muted mb-1" htmlFor="rt-key">Route key</label>
         <div className="flex items-center gap-2">
           <input id="rt-key" type="password" className={inp} value={routeKey} maxLength={200} spellCheck={false} autoComplete="new-password"
             placeholder={routeSet ? "Saved" : ""} onChange={(e) => { setRouteKey(e.target.value); setErr(""); }} />
           {routeSet && (
             <button type="button" disabled={busy} onClick={() => persist("", "Route key cleared")}
-              className="h-9 px-3 rounded-lg border border-line text-[12px] font-medium text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-40 flex-shrink-0">Clear</button>
+              className="ui-btn flex-shrink-0">Clear</button>
           )}
         </div>
       </div>
-      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
       <button type="button" onClick={() => persist(routeKey.trim(), "Saved")} disabled={!routeKey.trim() || busy}
-        className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40">{busy ? "Saving..." : "Save"}</button>
+        className="ui-btn ui-btn-ink">{busy ? "Saving..." : "Save"}</button>
     </div>
   );
 }
@@ -481,8 +477,8 @@ export function LogisticsPaySettingsForm() {
 
   if (!s) {
     return loadErr
-      ? <div className="text-[12.5px] text-warning-ink" role="alert">{loadErr} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
-      : <div className="text-[12.5px] text-muted">Loading...</div>;
+      ? <div className="text-[13px] text-warning-ink" role="alert">{loadErr} <button type="button" onClick={load} className="ui-link">Try again</button></div>
+      : <div className="text-[13px] text-muted">Loading...</div>;
   }
 
   return (
@@ -492,22 +488,23 @@ export function LogisticsPaySettingsForm() {
           const on = mode === c.mode;
           return (
             <button key={c.mode} type="button" role="radio" aria-checked={on} onClick={() => setMode(c.mode)}
-              className={`w-full text-left flex items-start gap-3 rounded-xl border px-4 py-3 transition-colors ${on ? "border-accent bg-accent/5" : "border-line hover:bg-surface-2/60"}`}>
-              <span className={`mt-0.5 w-4 h-4 rounded-full border flex-shrink-0 flex items-center justify-center ${on ? "border-accent" : "border-line-3"}`} aria-hidden>
-                {on && <span className="w-2 h-2 rounded-full bg-accent" />}
+              style={{ boxShadow: `inset 0 0 0 ${on ? 2 : 1}px rgb(var(${on ? "--c-ink" : "--c-line-3"}))` }}
+              className={`w-full text-left flex items-start gap-3 rounded-xl px-4 py-3 transition-[background-color,box-shadow] duration-[130ms] ${on ? "bg-surface-2" : "hover:bg-surface-2"}`}>
+              <span className={`mt-0.5 flex-shrink-0 w-4 ${on ? "text-ink" : "text-transparent"}`} aria-hidden>
+                <Check size={16} />
               </span>
               <span className="min-w-0">
-                <span className="block text-[13px] font-medium text-ink">{c.title}</span>
-                <span className="block text-[12px] text-muted mt-0.5">{c.hint}</span>
+                <span className="block text-[14px] font-medium text-ink">{c.title}</span>
+                <span className="block text-[13px] text-muted mt-0.5">{c.hint}</span>
               </span>
             </button>
           );
         })}
       </div>
 
-      {mode !== "off" && <div className="text-[11.5px] text-muted -mt-2">Changes apply to loads that have not been paid yet.</div>}
+      {mode !== "off" && <div className="text-[12px] text-muted -mt-2">Changes apply to loads that have not been paid yet.</div>}
 
-      <div className="rounded-xl border border-line bg-surface-2/50 px-4 py-3 space-y-3">
+      <div className="rounded-xl bg-surface-2 px-4 py-3.5 space-y-3">
         <div className="text-[13px] font-medium text-ink">Markup on freight</div>
         <p className="text-[12px] text-muted">
           {mode === "pay"
@@ -551,7 +548,7 @@ export function LogisticsPaySettingsForm() {
         </Field>
       </div>
 
-      <div className="rounded-xl border border-line bg-surface-2/50 px-4 py-3 space-y-3">
+      <div className="rounded-xl bg-surface-2 px-4 py-3.5 space-y-3">
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <div className="text-[13px] font-medium text-ink">I cover loads that lose money</div>
@@ -609,18 +606,18 @@ export function LogisticsPaySettingsForm() {
         </Field>
       </div>
 
-      <div className="rounded-xl border border-line bg-surface px-4 py-3 space-y-1">
+      <div className="rounded-xl bg-surface-2 px-4 py-3.5 space-y-1">
         <div className="text-[12px] font-medium text-muted">Example</div>
         {example.map((l) => <div key={l} className="text-[13px] text-ink tabular-nums">{l}</div>)}
-        {!s.cover_losses && <div className="text-[11.5px] text-muted pt-1">A negative amount comes off the next pay date.</div>}
+        {!s.cover_losses && <div className="text-[12px] text-muted pt-1">A negative amount comes off the next pay date.</div>}
       </div>
       </>)}
 
-      {err && <div className="text-[12.5px] text-danger-ink" role="alert">{err}</div>}
+      {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
       <div className="flex items-center gap-3">
         <button type="button" onClick={save} disabled={busy || !dirty}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-          <Check size={14} strokeWidth={2.5} /> {busy ? "Saving..." : "Save"}
+          className="ui-btn ui-btn-ink">
+          <Check size={14} /> {busy ? "Saving..." : "Save"}
         </button>
         <span className="text-[12px] text-muted">
           {dirty ? "Not saved yet." : s.updated_at ? `Saved${s.updated_by_name ? ` by ${s.updated_by_name}` : ""} ${fmtDay(s.updated_at.slice(0, 10))}.` : ""}
@@ -636,35 +633,35 @@ function LoadRow({ l }: { l: LogisticsPayTrackerLine }) {
   // A load that was paid and then lost its booking or its invoice is money taken back.
   if (l.dropped) {
     return (
-      <div className="py-2.5 text-[12.5px] min-w-0 flex items-baseline justify-between gap-3">
+      <div className="py-3 text-[14px] min-w-0 flex items-baseline justify-between gap-3" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
         <div className="min-w-0">
           <div className="text-ink font-medium truncate">{payLineWho(l)}</div>
-          <div className="text-[11px] text-muted truncate">{l.booking_codes.length > 0 ? `${l.booking_codes.join(", ")} · ` : ""}Taken back: booking cancelled or invoice voided</div>
+          <div className="text-[12px] text-muted truncate">{l.booking_codes.length > 0 ? `${l.booking_codes.join(", ")} · ` : ""}Taken back: booking cancelled or invoice voided</div>
         </div>
-        <div className="tabular-nums text-ink font-semibold flex-shrink-0">{signed(l.owed)}</div>
+        <div className="tabular-nums text-ink font-medium flex-shrink-0">{signed(l.owed)}</div>
       </div>
     );
   }
   // Two lines, so it reads at any width: who and what it pays, then how the pay was worked out.
   return (
-    <div className="py-2.5 text-[12.5px] min-w-0">
+    <div className="py-3 text-[14px] min-w-0" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
       <div className="flex items-baseline justify-between gap-3 min-w-0">
         <div className="min-w-0">
           <div className="text-ink font-medium truncate">{payLineWho(l)}</div>
-          <div className="text-[11px] text-muted truncate">{l.booking_codes.join(", ")} · earned {fmtDay(l.earned_on)}</div>
+          <div className="text-[12px] text-muted truncate">{l.booking_codes.join(", ")} · earned {fmtDay(l.earned_on)}</div>
         </div>
         <div className="text-right flex-shrink-0">
-          <div className="tabular-nums text-ink font-semibold">{l.pay == null ? "-" : signed(l.pay)}</div>
-          <div className="text-[11px] text-muted">{RULE_WORD[l.rule] ?? l.rule}</div>
+          <div className="tabular-nums text-ink font-medium">{l.pay == null ? "-" : signed(l.pay)}</div>
+          <div className="text-[12px] text-muted">{RULE_WORD[l.rule] ?? l.rule}</div>
         </div>
       </div>
       {freightUnknown(l) ? (
-        <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+        <div className="text-[12px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
           {l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>}
           <span className="text-muted">Carrier not paid yet</span>
         </div>
       ) : (
-        <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+        <div className="text-[12px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
           {!l.buy_name && <span>Charged {fmtAmount(l.charged)}</span>}
           {l.rule === "markup" && l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>}
           <span>Freight {fmtAmount(l.freight)} <span className="text-muted">{SOURCE_WORD[l.freight_source] ?? l.freight_source}</span></span>
@@ -684,19 +681,19 @@ function trackedTotals(t: LogisticsPayTracker) {
  *  what is left. No pay, no pay date. */
 function TrackedRow({ l }: { l: LogisticsPayTrackerLine }) {
   return (
-    <div className="py-2.5 text-[12.5px] min-w-0">
+    <div className="py-3 text-[14px] min-w-0" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
       <div className="flex items-baseline justify-between gap-3 min-w-0">
         <div className="min-w-0">
           <div className="text-ink font-medium truncate">{payLineWho(l)}</div>
-          <div className="text-[11px] text-muted truncate">{l.booking_codes.join(", ")} · earned {fmtDay(l.earned_on)}</div>
+          <div className="text-[12px] text-muted truncate">{l.booking_codes.join(", ")} · earned {fmtDay(l.earned_on)}</div>
         </div>
         <div className="text-right flex-shrink-0">
           {freightUnknown(l)
             ? <div className="text-[12px] text-muted">{l.markup != null ? "Carrier not paid yet" : "Waiting on the amount paid"}</div>
-            : <div className={`tabular-nums font-semibold ${l.surplus < 0 ? "text-danger-ink" : "text-ink"}`}>{signed(l.surplus)}</div>}
+            : <div className={`tabular-nums font-medium ${l.surplus < 0 ? "text-danger-ink" : "text-ink"}`}>{signed(l.surplus)}</div>}
         </div>
       </div>
-      <div className="text-[11.5px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+      <div className="text-[12px] text-ink-2 tabular-nums mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
         {freightUnknown(l)
           ? l.markup != null && <span>Markup {fmtAmount(l.markup)}</span>
           : <span>Charged {fmtAmount(l.charged)}</span>}
@@ -717,15 +714,15 @@ function TrackedPanel({ t }: { t: LogisticsPayTracker }) {
       <div className="min-w-0">
         <div className="text-[12px] font-medium text-muted">Shipping surplus, tracked</div>
         <div className="flex items-baseline gap-3 flex-wrap mt-1">
-          <span className={`text-[24px] font-bold tabular-nums leading-none ${tot.surplus < 0 ? "text-danger-ink" : "text-ink"}`}>{signed(tot.surplus)}</span>
+          <span className={`ui-fig ${tot.surplus < 0 ? "text-danger-ink" : "text-ink"}`}>{signed(tot.surplus)}</span>
           <span className="text-[13px] text-ink-2">on {tot.loads - tot.pending_loads} load{tot.loads - tot.pending_loads !== 1 ? "s" : ""}</span>
           {tot.pending_loads > 0 && <StatusPill tone="neutral">{tot.pending_loads} waiting on the amount paid</StatusPill>}
         </div>
-        <div className="text-[11.5px] text-muted mt-1.5 tabular-nums">Charged {fmtAmount(tot.charged)}, paid to carriers {fmtAmount(tot.freight)}</div>
+        <div className="text-[12px] text-muted mt-1.5 tabular-nums">Charged {fmtAmount(tot.charged)}, paid to carriers {fmtAmount(tot.freight)}</div>
       </div>
       {loads.length === 0
-        ? <div className="text-[12.5px] text-muted py-3 text-center border border-line rounded-xl">Nothing tracked yet. A load counts once its bank payment is linked.</div>
-        : <section className="border border-line rounded-xl px-4 divide-y divide-line">{loads.map((l) => <TrackedRow key={l.deal_flow_id} l={l} />)}</section>}
+        ? <div className="text-[14px] text-muted py-5 text-center">Nothing tracked yet. A load counts once its bank payment is linked.</div>
+        : <section>{loads.map((l) => <TrackedRow key={l.deal_flow_id} l={l} />)}</section>}
     </div>
   );
 }
@@ -770,11 +767,11 @@ export function LogisticsPayTrackerPanel() {
 
   if (!t) {
     return err
-      ? <div className="text-[12.5px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="underline font-medium">Try again</button></div>
-      : <div className="text-[12.5px] text-muted">Loading...</div>;
+      ? <div className="text-[13px] text-warning-ink" role="alert">{err} <button type="button" onClick={load} className="ui-link">Try again</button></div>
+      : <div className="text-[13px] text-muted">Loading...</div>;
   }
   if (!t.settings.enabled) {
-    return <div className="text-[12.5px] text-muted">Logistics pay is off. Turn it on under <strong>Splits</strong>.</div>;
+    return <div className="text-[13px] text-muted">Logistics pay is off. Turn it on under <strong>Splits</strong>.</div>;
   }
   if (t.mode === "track" || t.settings.surplus_mode === "track") return <TrackedPanel t={t} />;
 
@@ -790,11 +787,11 @@ export function LogisticsPayTrackerPanel() {
         <div className="min-w-0">
           <div className="text-[12px] font-medium text-muted">Next pay date{t.settings.payee_name ? `, ${t.settings.payee_name}` : ""}</div>
           <div className="flex items-baseline gap-3 flex-wrap mt-1">
-            <span className="text-[24px] font-bold tabular-nums text-ink leading-none">{fmtAmount(t.next_total)}</span>
+            <span className="ui-fig text-ink">{fmtAmount(t.next_total)}</span>
             <span className="text-[13px] text-ink-2">{t.next_pay_date ? fmtDay(t.next_pay_date) : "No pay date yet"}</span>
             {t.due_now_total > 0.005 && <StatusPill tone="warning">Due now {fmtAmount(t.due_now_total)}</StatusPill>}
           </div>
-          <div className="text-[11.5px] text-muted mt-1.5">{describeSchedule(t.settings, fmtDay)}</div>
+          <div className="text-[12px] text-muted mt-1.5">{describeSchedule(t.settings, fmtDay)}</div>
         </div>
         <div className="w-44">
           <label className="block text-[12px] font-medium text-muted mb-1.5">Paid with</label>
@@ -806,7 +803,7 @@ export function LogisticsPayTrackerPanel() {
       </div>
 
       {dates.length === 0 && pending.length === 0 && (
-        <div className="text-[12.5px] text-muted py-3 text-center border border-line rounded-xl">Nothing earned yet. A load counts once its freight is confirmed booked.</div>
+        <div className="text-[14px] text-muted py-5 text-center">Nothing earned yet. A load counts once its freight is confirmed booked.</div>
       )}
 
       {dates.map((d) => {
@@ -815,51 +812,53 @@ export function LogisticsPayTrackerPanel() {
         const shown = d.status === "paid" ? (paidLoads.length ? paidLoads : loads) : loads;
         const p = d.payout_id ? payouts.get(d.payout_id) : undefined;
         return (
-          <section key={d.pay_date} className="border border-line rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between gap-3 px-4 py-3 bg-surface-2/50 flex-wrap">
+          <section key={d.pay_date}>
+            <div className="hsep mb-3" />
+            <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[13.5px] font-semibold text-ink">{fmtDay(d.pay_date)}</span>
+                  <span className="text-[15px] font-medium text-ink">{fmtDay(d.pay_date)}</span>
                   <StatusPill tone={STATUS_TONE[d.status]}>{STATUS_WORD[d.status]}</StatusPill>
                 </div>
-                <div className="text-[11.5px] text-muted mt-0.5">
+                <div className="text-[12px] text-muted mt-0.5">
                   Loads earned {fmtDay(d.period_start)} to {fmtDay(d.period_end)}
                   {Math.abs(d.carried_in) > 0.005 ? ` · includes ${signed(d.carried_in)} carried from the last date` : ""}
                   {p ? ` · paid ${fmtDay(p.paid_at || p.created_at.slice(0, 10))}${p.method ? ` by ${p.method}` : ""}` : ""}
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-[15px] font-bold tabular-nums text-ink">{fmtAmount(d.total)}</span>
+                <span className="text-[16px] font-medium tabular-nums text-ink">{fmtAmount(d.total)}</span>
                 {d.status === "due" && d.total > 0.005 && d.pay_date === earliestUnpaid && (
                   <button type="button" onClick={() => record(d)} disabled={busy === d.pay_date}
-                    className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12.5px] font-medium disabled:opacity-40 transition-colors whitespace-nowrap">
+                    className="ui-btn ui-btn-sm ui-btn-ink whitespace-nowrap">
                     Record payment
                   </button>
                 )}
                 {d.status === "paid" && d.payout_id && (
                   <button type="button" onClick={() => undo(d)} disabled={busy === d.pay_date}
-                    className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 transition-colors">
+                    className="ui-btn ui-btn-sm">
                     Undo
                   </button>
                 )}
               </div>
             </div>
             {shown.length > 0 && (
-              <div className="px-4 divide-y divide-line">{shown.map((l) => <LoadRow key={l.deal_flow_id} l={l} />)}</div>
+              <div className="mt-2">{shown.map((l) => <LoadRow key={l.deal_flow_id} l={l} />)}</div>
             )}
           </section>
         );
       })}
 
       {pending.length > 0 && (
-        <section className="border border-line rounded-xl overflow-hidden">
-          <div className="px-4 py-3 bg-surface-2/50 flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-ink">Waiting on the freight amount</span>
+        <section>
+          <div className="hsep mb-3" />
+          <div className="flex items-center gap-2 pb-1">
+            <span className="text-[15px] font-medium text-ink">Waiting on the freight amount</span>
             <StatusPill tone="neutral">{pending.length}</StatusPill>
           </div>
-          <div className="divide-y divide-line">
+          <div>
             {pending.map((l) => (
-              <div key={l.deal_flow_id} className="px-4 py-2.5 flex items-baseline justify-between gap-3 text-[12.5px]">
+              <div key={l.deal_flow_id} className="py-3 flex items-baseline justify-between gap-3 text-[14px]" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
                 <span className="min-w-0 truncate text-ink-2">{payLineWho(l)} · {l.booking_codes.join(", ")}</span>
                 <span className="text-muted flex-shrink-0">Charged {fmtAmount(l.charged)}, not counted until the bank payment is linked</span>
               </div>
@@ -889,50 +888,56 @@ export function LogisticsPayBriefBlock({ t, from, onOpen }: { t: LogisticsPayTra
   const tracking = t.mode === "track" || t.settings.surplus_mode === "track";
   const figure = (value: number, label: string) => (
     <div className="px-5 py-4 min-w-0">
-      <div className={`text-[22px] font-bold leading-none tabular-nums ${value < -0.005 ? "text-danger-ink" : "text-ink"}`}>{signed(value)}</div>
-      <div className="text-[11px] text-muted mt-1 leading-tight">{label}</div>
+      <div className={`ui-fig ${value < -0.005 ? "text-danger-ink" : "text-ink"}`}>{signed(value)}</div>
+      <div className="text-[12px] text-muted mt-1 leading-tight">{label}</div>
     </div>
   );
   return (
-    <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-      <div className="px-5 py-3.5 border-b border-line-2 flex items-center justify-between gap-3">
+    <div>
+      <div className="px-5 py-3.5 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink tracking-tight">{tracking ? "Logistics" : "Logistics pay"}</h3>
-          <p className="text-[11px] text-muted mt-0.5 truncate">
+          <h3 className="m-0 text-[14px] font-medium text-ink">{tracking ? "Logistics" : "Logistics pay"}</h3>
+          <p className="text-[12px] text-muted mt-0.5 m-0 truncate">
             {tracking ? "Tracked, not paid" : `${t.settings.payee_name || "Logistics"} · ${describeSchedule(t.settings, fmtDay)}`}
           </p>
         </div>
         {!tracking && t.due_now_total > 0.005 && <StatusPill tone="warning">Due now {fmtAmount(t.due_now_total)}</StatusPill>}
       </div>
+      <div className="hsep" />
       {tracking ? (
-        <div className="grid grid-cols-3 divide-x divide-line-2">
+        <div className="grid grid-cols-[1fr_1px_1fr_1px_1fr]">
           {figure(billed, "charged this week")}
+          <div className="vsep" />
           {figure(carriers, "paid to carriers")}
+          <div className="vsep" />
           {figure(surplus, `surplus on ${known.length} load${known.length !== 1 ? "s" : ""}`)}
         </div>
       ) : (
-      <div className="grid grid-cols-2 divide-x divide-line-2">
+      <div className="grid grid-cols-[1fr_1px_1fr]">
         <div className="px-5 py-4 min-w-0">
-          <div className="text-[22px] font-bold text-ink leading-none tabular-nums">{fmtAmount(t.next_total)}</div>
-          <div className="text-[11px] text-muted mt-1 leading-tight">{t.next_pay_date ? `next pay, ${fmtDay(t.next_pay_date)}` : "next pay, no date yet"}</div>
+          <div className="ui-fig text-ink">{fmtAmount(t.next_total)}</div>
+          <div className="text-[12px] text-muted mt-1 leading-tight">{t.next_pay_date ? `next pay, ${fmtDay(t.next_pay_date)}` : "next pay, no date yet"}</div>
         </div>
+        <div className="vsep" />
         <div className="px-5 py-4 min-w-0">
-          <div className="text-[22px] font-bold text-ink leading-none tabular-nums">{fmtAmount(earned)}</div>
-          <div className="text-[11px] text-muted mt-1 leading-tight">earned this week on {week.length} load{week.length !== 1 ? "s" : ""}</div>
+          <div className="ui-fig text-ink">{fmtAmount(earned)}</div>
+          <div className="text-[12px] text-muted mt-1 leading-tight">earned this week on {week.length} load{week.length !== 1 ? "s" : ""}</div>
         </div>
       </div>
       )}
-      <div className="border-t border-line-2 px-5 py-2.5 text-[12px] text-ink-2 tabular-nums">
+      <div className="hsep" />
+      <div className="px-5 py-2.5 text-[13px] text-ink-2 tabular-nums">
         {tracking
           ? `Shipping surplus ${signed(surplus)} this week (tracked, not paid)`
           : `Shipping surplus ${signed(surplus)} this week, paid to ${t.settings.payee_name || "logistics"}`}
       </div>
-      <div className="border-t border-line-2 px-5 py-3 flex items-center justify-between gap-3">
-        <span className="text-[12px] text-ink-2">
+      <div className="hsep" />
+      <div className="px-5 py-3 flex items-center justify-between gap-3">
+        <span className="text-[13px] text-ink-2">
           {waiting > 0 ? `${waiting} load${waiting !== 1 ? "s" : ""} waiting on the freight amount` : "No loads waiting on an amount"}
         </span>
-        <button type="button" onClick={onOpen} className="flex items-center gap-1 text-[12px] text-accent font-medium">
-          Open the tracker <ChevronRight size={12} />
+        <button type="button" onClick={onOpen} className="ui-link">
+          Open the tracker <ChevronRight size={14} />
         </button>
       </div>
     </div>
@@ -960,52 +965,53 @@ export function YourPayCard() {
   const loads = m.loads ?? [];
   const dates = m.dates ?? [];
   return (
-    <section className="bg-surface border border-line rounded-xl overflow-hidden">
-      <div className="px-4 py-3.5 flex items-end justify-between gap-4 flex-wrap">
+    <section>
+      <div className="flex items-end justify-between gap-4 flex-wrap">
         <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold text-ink">Your pay</h3>
+          <h3 className="m-0 ui-label">Your pay</h3>
           <div className="flex items-baseline gap-3 flex-wrap mt-1.5">
-            <span className="text-[24px] font-bold tabular-nums text-ink leading-none">{fmtAmount(m.next_total ?? 0)}</span>
-            <span className="text-[13px] text-ink-2">{m.next_pay_date ? `on ${fmtDay(m.next_pay_date)}` : "No pay date yet"}</span>
+            <span className="ui-fig text-ink">{fmtAmount(m.next_total ?? 0)}</span>
+            <span className="text-[14px] text-muted">{m.next_pay_date ? `on ${fmtDay(m.next_pay_date)}` : "No pay date yet"}</span>
             {(m.due_now_total ?? 0) > 0.005 && <StatusPill tone="warning">Due now {fmtAmount(m.due_now_total ?? 0)}</StatusPill>}
           </div>
-          {m.method && <div className="text-[11.5px] text-muted mt-1.5">Paid by {m.method}</div>}
+          {m.method && <div className="text-[13px] text-muted mt-1.5">Paid by {m.method}</div>}
         </div>
         <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
-          className="flex items-center gap-1 text-[12.5px] text-ink-2 hover:text-ink font-medium">
-          <ChevronRight size={13} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} />
+          className="ui-link">
+          <ChevronRight size={16} className={`text-muted transition-transform duration-200 ${open ? "rotate-90" : ""}`} />
           {open ? "Hide the loads" : "Show the loads"}
         </button>
       </div>
       {open && (
-        <div className="border-t border-line">
-          {loads.length === 0 ? <div className="px-4 py-4 text-[12.5px] text-muted">No loads earned yet.</div> : (
-            <div className="divide-y divide-line">
+        <div className="mt-3.5 animate-page-slide-in">
+          <div className="hsep" />
+          {loads.length === 0 ? <div className="py-4 text-[14px] text-muted">No loads earned yet.</div> : (
+            <div>
               {loads.map((l) => {
                 // The server already leaves a name empty when his switch is off.
                 const route = [l.buy_name ? comingLabel(l.buy_name) : "", [l.pickup_name, l.delivery_name].filter(Boolean).join(" to ")].filter(Boolean).join(" · ");
                 return (
-                  <div key={l.code} className="px-4 py-2.5 flex items-center gap-3 min-w-0">
+                  <div key={l.code} className="px-2 py-3 flex items-center gap-3 min-w-0 rounded-lg transition-colors duration-[130ms] hover:bg-surface-2" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline gap-2 min-w-0">
-                        <span className="font-mono text-[12px] text-muted flex-shrink-0">{l.code}</span>
-                        {route && <span className="text-[13px] text-ink truncate min-w-0">{route}</span>}
+                      <div className="flex items-baseline gap-2.5 min-w-0">
+                        <span className="text-[14px] text-muted tabular-nums flex-shrink-0">{l.code}</span>
+                        {route && <span className="text-[14px] text-ink truncate min-w-0">{route}</span>}
                       </div>
-                      <div className="text-[11.5px] text-muted mt-0.5">Earned {fmtDay(l.earned_on)}{l.due_date && l.status !== "pending" ? `, pays ${fmtDay(l.due_date)}` : ""}</div>
+                      <div className="text-[13px] text-muted mt-0.5">Earned {fmtDay(l.earned_on)}{l.due_date && l.status !== "pending" ? `, pays ${fmtDay(l.due_date)}` : ""}</div>
                     </div>
                     <StatusPill tone={LOAD_TONE[l.status] ?? "neutral"}>{LOAD_WORD[l.status] ?? l.status}</StatusPill>
-                    <span className="text-[13px] font-semibold text-ink tabular-nums w-20 text-right">{l.status === "pending" ? "-" : fmtAmount(l.amount)}</span>
+                    <span className="text-[14px] font-medium text-ink tabular-nums w-20 text-right">{l.status === "pending" ? "-" : fmtAmount(l.amount)}</span>
                   </div>
                 );
               })}
             </div>
           )}
           {dates.length > 0 && (
-            <div className="border-t border-line px-4 py-3 space-y-1.5">
-              <div className="text-[12px] font-medium text-muted">Pay dates</div>
+            <div className="pt-3 space-y-1.5" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
+              <div className="ui-label">Pay dates</div>
               {dates.map((d) => (
-                <div key={d.pay_date} className="flex items-baseline justify-between gap-3 text-[12.5px]">
-                  <span className="text-ink-2">{fmtDay(d.pay_date)} <span className="text-muted">· {DATE_WORD[d.status] ?? d.status}{d.status === "paid" && d.paid_at ? ` ${fmtDay(d.paid_at)}` : ""}</span></span>
+                <div key={d.pay_date} className="flex items-baseline justify-between gap-3 text-[14px]">
+                  <span className="text-ink">{fmtDay(d.pay_date)} <span className="text-muted">· {DATE_WORD[d.status] ?? d.status}{d.status === "paid" && d.paid_at ? ` ${fmtDay(d.paid_at)}` : ""}</span></span>
                   <span className="tabular-nums text-ink font-medium">{fmtAmount(d.total)}</span>
                 </div>
               ))}
@@ -1042,25 +1048,25 @@ export function LogisticsPayBillsBlock({ block, onOpen }: { block: PayBlock; onO
     : { tone: "neutral" as const, word: "Coming up" };
   const bits = [block.payee, fmtDay(block.date), block.nothingOwed ? "" : `${block.loads} ${block.loads === 1 ? "load" : "loads"}`].filter(Boolean);
   return (
-    <section className="mb-5 bg-surface border border-line rounded-2xl overflow-hidden" aria-label="Logistics pay"
-      style={{ boxShadow: "inset 5px 0 0 rgb(var(--c-info))" }}>
-      <div className="px-4 py-3 flex items-center gap-3 flex-wrap min-w-0">
-        <span className="w-8 h-8 rounded-lg bg-info-bg text-info-ink flex items-center justify-center flex-shrink-0"><HandCoins size={16} /></span>
+    <section className="mb-5" aria-label="Logistics pay">
+      <div className="px-2 py-3 flex items-center gap-3.5 flex-wrap min-w-0">
+        <HandCoins size={18} className="text-muted flex-shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="text-[14px] font-semibold text-ink">Logistics pay</h3>
+            <h3 className="m-0 text-[15px] font-medium text-ink">Logistics pay</h3>
             <StatusPill tone={pill.tone}>{pill.word}</StatusPill>
           </div>
-          <div className="text-[12px] text-muted truncate">{bits.join(", ")}</div>
+          <div className="text-[13px] text-muted truncate">{bits.join(", ")}</div>
         </div>
-        <span className="text-[16px] font-semibold tabular-nums text-ink flex-shrink-0">{block.nothingOwed ? "Nothing owed yet" : fmtAmount(block.amount)}</span>
+        <span className="text-[16px] font-medium tabular-nums text-ink flex-shrink-0">{block.nothingOwed ? "Nothing owed yet" : fmtAmount(block.amount)}</span>
         {onOpen && (
           <button type="button" onClick={onOpen}
-            className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12.5px] font-medium whitespace-nowrap flex-shrink-0 inline-flex items-center gap-1">
-            See the week <ChevronRight size={13} />
+            className="ui-btn ui-btn-sm whitespace-nowrap flex-shrink-0">
+            See the week <ChevronRight size={14} />
           </button>
         )}
       </div>
+      <div className="hsep" />
     </section>
   );
 }

@@ -1,4 +1,7 @@
-/* ── Brand type: Satoshi — self-hosted ── */
+/* ── Brand type: Satoshi — self-hosted ──
+   R-583: two weights only, 400 and 500. Everything that asks for 600 to 900 (font-semibold, font-bold,
+   <strong>, headings) is served the 500 file, so a screen can never look heavier than the mockups and
+   the browser never fakes a bold. The 700 and 900 files stay in /public/fonts but nothing loads them. */
 @font-face {
   font-family: 'Satoshi'; font-weight: 400; font-style: normal; font-display: swap;
   src: url('/fonts/Satoshi-400.woff2') format('woff2');
@@ -8,12 +11,8 @@
   src: url('/fonts/Satoshi-500.woff2') format('woff2');
 }
 @font-face {
-  font-family: 'Satoshi'; font-weight: 600 700; font-style: normal; font-display: swap;
-  src: url('/fonts/Satoshi-700.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'Satoshi'; font-weight: 800 900; font-style: normal; font-display: swap;
-  src: url('/fonts/Satoshi-900.woff2') format('woff2');
+  font-family: 'Satoshi'; font-weight: 600 900; font-style: normal; font-display: swap;
+  src: url('/fonts/Satoshi-500.woff2') format('woff2');
 }
 
 @tailwind base;
@@ -21,30 +20,44 @@
 @tailwind utilities;
 
 
+/* ════════════════════════════════════════════════════════════════════════════════════════
+   R-583 PALETTE (the approved desktop mockups). One neutral family in every theme:
+     main panel   dark #0A0A0A   light #FFFFFF     (--t-bg, --c-surface)
+     sidebar      dark #111111   light #F5F5F4     (--c-side, bg-side)
+     raised/hover dark #171717   light #FAFAF9     (--c-surface-2)
+     chip         dark #262626   light #F2F2F1     (--c-surface-3)
+     ink / muted / faint   dark #FAFAFA #A1A1A1 #737373   light #0A0A0A #737373 #A3A3A3
+     hairline     dark rgba(255,255,255,.10)  light rgba(0,0,0,.08)   (--c-line, border-line)
+   Money in / paid is green, late / loss is red, a load on the road is teal (--c-chart-2), the deal's
+   current step is blue (--c-step-now), a warning is amber. Everything else is grey.
+   The default accent (Mono, which is on for everyone) is the ink: buttons are ink-filled.
+   Picking a colour in Settings > Appearance still replaces it (see the accent blocks below).
+   ════════════════════════════════════════════════════════════════════════════════════════ */
+
 /* ── Light theme tokens ───────────────────────────────────── */
 :root {
-  /* The sidebar rail is dark in every theme (it never inverts), so its colours are fixed and named
-     here once (R-511 DG-29). Labels used to sit at 2.1 to 3.7:1; these are 5.3:1 or better on the rail. */
-  --rail-bg-top: #161618;
-  --rail-bg-bottom: #0C0C0D;
-  --rail-ink: #FFFFFF;          /* the current item, the mark */
-  --rail-text: #A3A3B2;         /* nav labels, 7.5:1 */
-  --rail-text-bright: #C7C7D1;  /* a hovered row */
-  --rail-text-dim: #8A8A9A;     /* captions, the footer, 5.3:1 */
-  --rail-text-faint: #7A7A90;   /* icons beside unselected labels, never text */
-  --rail-hot: #FCD34D;          /* the Newsletter draft mark */
-  --rail-hot-bg: rgba(251,191,36,0.15);
-  --rail-hot-line: rgba(251,191,36,0.25);
-  --rail-badge: #DC2626;        /* an unread count */
-  --rail-badge-calm: #52525B;   /* R-571: a count where nothing is urgent, white on it 7.7:1 */
-  --rail-ok: #34D399;           /* the server light: connected */
-  --rail-bad: #F87171;          /* the server light: unreachable, or a failed sync */
+  /* The sidebar. It follows the theme now (it used to be dark in every theme); the names stay so
+     nothing that reads them breaks. --rail-ink is the current item, --rail-text a quiet row. */
+  --rail-bg-top: #F5F5F4;
+  --rail-bg-bottom: #F5F5F4;
+  --rail-ink: #0A0A0A;
+  --rail-text: #737373;
+  --rail-text-bright: #262626;
+  --rail-text-dim: #737373;
+  --rail-text-faint: #A3A3A3;
+  --rail-hot: #9A6A00;          /* the Newsletter draft mark */
+  --rail-hot-bg: rgba(154,106,0,0.10);
+  --rail-hot-line: rgba(154,106,0,0.22);
+  --rail-badge: #E7000B;        /* an unread count that needs you */
+  --rail-badge-calm: #737373;   /* R-571: a count where nothing is urgent */
+  --rail-ok: #009966;           /* the server light: connected */
+  --rail-bad: #E7000B;          /* the server light: unreachable, or a failed sync */
   --color-primary:        #FF6520;
   --color-primary-hover:  #F0570F;
   --color-primary-light:  #FFF3EB;
   --color-primary-glow:   rgba(255,101,32,0.18);
 
-  /* Accent palette — default: Ecliptr orange. Switched live by html[data-accent]
+  /* Accent palette — default: Ecliptr orange when Mono is off. Switched live by html[data-accent]
      (Settings → Appearance). Drives inline styles, gradients & effects. */
   --accent-50:   #FFF3EB;
   --accent-100:  #FFE3D1;
@@ -55,32 +68,33 @@
   --accent-glow: rgba(255,101,32,0.4);
   --accent-tint: rgba(255,101,32,0.16);
 
-  --color-success:        #059669;
-  --color-success-bg:     #ECFDF5;
-  --color-success-border: #A7F3D0;
-  --color-success-text:   #065F46;
-  --color-warning:        #D97706;
-  --color-warning-bg:     #FFFBEB;
-  --color-warning-border: #FDE68A;
-  --color-warning-text:   #92400E;
-  --color-error:          #DC2626;
-  --color-error-bg:       #FEF2F2;
-  --color-error-border:   #FECACA;
-  --color-error-text:     #991B1B;
+  --color-success:        #009966;
+  --color-success-bg:     #EBF7F3;
+  --color-success-border: #BFE6D8;
+  --color-success-text:   #009966;
+  --color-warning:        #9A6A00;
+  --color-warning-bg:     #F7F3EB;
+  --color-warning-border: #E8D9B5;
+  --color-warning-text:   #9A6A00;
+  --color-error:          #E7000B;
+  --color-error-bg:       #FDEBEB;
+  --color-error-border:   #F6C3C5;
+  --color-error-text:     #E7000B;
 
-  --color-bg:             #F4F3F1;
+  --color-bg:             #FFFFFF;
   --color-surface:        #FFFFFF;
-  --color-text-primary:   #0F1117;
-  --color-text-secondary: #6B7280;
-  --color-text-hint:      #9CA3AF;
-  --color-border:         #E5E7EB;
-  --color-border-light:   #F0F0F2;
+  --color-text-primary:   #0A0A0A;
+  --color-text-secondary: #737373;
+  --color-text-hint:      #A3A3A3;
+  --color-border:         #E0E0E0;
+  --color-border-light:   #EBEBEB;
 
-  --shadow-xs:    0 1px 2px rgba(0,0,0,0.04);
-  --shadow-card:  0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-panel: 0 4px 24px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04);
-  --shadow-modal: 0 32px 80px rgba(0,0,0,0.18), 0 8px 32px rgba(0,0,0,0.10);
-  --shadow-indigo: 0 4px 20px rgba(255,101,32,0.22), 0 1px 4px rgba(255,101,32,0.12);
+  /* Softer, fewer shadows: a hairline does the work a border and a shadow used to do together. */
+  --shadow-xs:    0 0 #0000;
+  --shadow-card:  0 0 #0000;
+  --shadow-panel: 0 0 0 1px rgba(0,0,0,0.08), 0 16px 32px -16px rgba(0,0,0,0.16);
+  --shadow-modal: 0 0 0 1px rgba(0,0,0,0.12), 0 32px 64px -20px rgba(0,0,0,0.30);
+  --shadow-indigo: 0 0 #0000;
 
   --radius-sm:   6px;
   --radius-md:   8px;
@@ -89,258 +103,227 @@
   --radius-2xl:  16px;
   --radius-full: 9999px;
 
-  /* ── Semantic surface / text / border tokens ──
-        Light = warm paper page (not stark white), white cards, deep ink. */
-  --t-bg:  #FAFAF9;
+  /* ── Semantic surface / text / border tokens (hex, for inline styles) ── */
+  --t-bg:  #FFFFFF;
   --t-s1:  #FFFFFF;
-  --t-s2:  #F6F6F3;
-  --t-s3:  #F0EFEC;
-  --t-tx1: #15171C;
-  --t-tx2: #3A3F49;
-  --t-tx3: #6B7078;
-  --t-tx4: #9CA0A8;
-  --t-b1:  #ECEBE7;
-  --t-b2:  #F4F3F0;
-  --t-b3:  #E2E1DC;
-  --t-input-bg:     #FFFFFF;
-  --t-input-border: #E2E1DC;
-  --t-input-focus:  #FBFBFA;
+  --t-s2:  #FAFAF9;
+  --t-s3:  #F2F2F1;
+  --t-tx1: #0A0A0A;
+  --t-tx2: #262626;
+  --t-tx3: #737373;
+  --t-tx4: #A3A3A3;
+  --t-b1:  #EBEBEB;
+  --t-b2:  #F2F2F2;
+  --t-b3:  #E0E0E0;
+  --t-input-bg:     transparent;
+  --t-input-border: #E0E0E0;
+  --t-input-focus:  transparent;
 
   /* ── Semantic color tokens (RGB triplets → Tailwind w/ alpha support).
-        Components use bg-surface / text-ink / border-line / bg-accent etc.,
-        which adapt automatically under html.dark. ── */
+        Components use bg-surface / text-ink / border-line / bg-accent etc. ── */
+  --c-side:         245 245 244;
   --c-surface:      255 255 255;
-  --c-surface-2:    246 246 243;
-  --c-surface-3:    240 239 236;
-  --c-ink:           21 23 28;
-  --c-ink-2:         58 63 73;
-  --c-muted:        107 112 120;
-  --c-faint:        156 160 168;
-  --c-line:         236 235 231;
-  --c-line-2:       244 243 240;
-  --c-line-3:       226 225 220;
+  --c-surface-2:    250 250 249;
+  --c-surface-3:    242 242 241;
+  --c-ink:           10 10 10;
+  --c-ink-2:         38 38 38;
+  --c-muted:        115 115 115;
+  --c-faint:        163 163 163;
+  /* The hairline (rgba(0,0,0,.08) on white) and its two neighbours. */
+  --c-line:         235 235 235;
+  --c-line-2:       242 242 242;
+  --c-line-3:       224 224 224;
   --c-accent: 255 101 32;
   --c-accent-hover: 240 87 15;
-  /* Foreground on the accent fill. Light theme accents are deep → white reads;
-     light accents (amber) override below. Dark/matte set near-black (pastel accents). */
+  /* Foreground on the accent fill. */
   --c-on-accent: 255 255 255;
-  /* Revenue on the analytics charts. Re-pointed at Apple's systemBlue (R-319) so the
-     whole data palette is one family; the token name stays so every existing reference
-     keeps working. Still not the brand accent (the chrome owns that and mono greys it
-     out) and still not a status colour, so it keeps its hue under mono. */
   --c-chart-revenue: 0 122 255;   /* systemBlue light #007AFF */
-  /* Categorical data palette — Apple system colours (R-319, replacing the hand-mixed
-     R-316 set Jack rejected: "the most puke looking not vibrant colors"). Six fixed
-     slots for NON-semantic series — client, category, supplier, band. Assigned in order,
-     never cycled; a seventh series folds into "Other". These are Apple's own published
-     light-mode values, used unmodified: no desaturation "for harmony", and no ochre,
-     olive, clay or mustard anywhere. Deliberately excludes the brand accent and the
-     green/red pair (those mean profit and loss and must keep meaning only that). */
+  /* Categorical data palette (R-319): six fixed slots for NON-semantic series. */
   --c-chart-1: 0 122 255;    /* systemBlue    #007AFF */
-  --c-chart-2: 48 176 199;   /* systemTeal    #30B0C7 */
-  --c-chart-2-ink: 0 113 164;   /* accessible teal #0071A4, for words in teal (R-487) */
+  --c-chart-2: 48 176 199;   /* systemTeal    #30B0C7  — a load on the road (bg-ship) */
+  --c-chart-2-ink: 14 124 140;  /* teal for words, #0E7C8C (the mockups' light teal) */
   --c-chart-3: 88 86 214;    /* systemIndigo  #5856D6 */
   --c-chart-4: 255 45 85;    /* systemPink    #FF2D55 */
   --c-chart-5: 175 82 222;   /* systemPurple  #AF52DE */
   --c-chart-6: 255 149 0;    /* systemOrange  #FF9500 */
-  /* Semantic data hues, same family (R-319). A FILL value is Apple's exact system
-     colour; the paired `-ink` is Apple's published accessible variant of the same hue,
-     because systemGreen on white is 2.2:1 and cannot carry 12.5px text. Fills go on
-     bars, lines, dots and swatches; inks go on figures and table cells. These are
-     page-scoped on purpose — the app-wide --c-success/--c-danger/--c-warning are
-     untouched so no other screen moves in this round. */
-  --c-chart-profit:      52 199 89;    /* systemGreen            #34C759 */
-  --c-chart-profit-ink:  36 138 61;    /* accessible green       #248A3D */
-  --c-chart-loss:       255 59 48;     /* systemRed              #FF3B30 */
-  --c-chart-loss-ink:   215 0 21;      /* accessible red         #D70015 */
-  --c-chart-caution:    255 149 0;     /* systemOrange           #FF9500 */
-  --c-chart-caution-ink: 201 52 0;     /* accessible orange      #C93400 */
-  --c-success:        5 150 105;
-  --c-success-bg:   236 253 245;
-  --c-success-ink:    6 95 70;
-  --c-warning:      217 119 6;
-  --c-warning-bg:   255 251 235;
-  --c-warning-ink:  146 64 14;
-  --c-danger:       220 38 38;
-  --c-danger-bg:    254 242 242;
-  --c-danger-ink:   153 27 27;
-  --c-info:          37 99 235;
-  --c-info-bg:      239 246 255;
-  --c-info-ink:      29 78 216;
-  /* R-480: the step a deal is on lights up Apple system blue in every theme, mono included, so it never reads like a
-     finished step (those fill with the accent, which is ink in mono). Same blue as the website's .stage-dot.active. */
+  /* Profit and loss are the mockups' green and red. Fill and ink are the same value in light. */
+  --c-chart-profit:       0 153 102;   /* #009966 */
+  --c-chart-profit-ink:   0 153 102;
+  --c-chart-loss:       231   0  11;   /* #E7000B */
+  --c-chart-loss-ink:   231   0  11;
+  --c-chart-caution:    154 106   0;   /* amber #9A6A00 */
+  --c-chart-caution-ink: 154 106  0;
+  --c-success:        0 153 102;
+  --c-success-bg:   235 247 243;
+  --c-success-ink:    0 153 102;
+  --c-warning:      154 106   0;
+  --c-warning-bg:   247 243 235;
+  --c-warning-ink:  154 106   0;
+  --c-danger:       231   0  11;
+  --c-danger-bg:    253 235 235;
+  --c-danger-ink:   231   0  11;
+  /* Info is grey now: "everything else grey". The step a deal is on keeps its blue (--c-step-now). */
+  --c-info:         115 115 115;
+  --c-info-bg:      242 242 241;
+  --c-info-ink:      64  64  64;
+  /* R-480: the step a deal is on lights up Apple system blue in every theme. */
   --c-step-now:        0 122 255;
   --c-on-step-now:   255 255 255;
-  /* The fill behind the white step number in StepBar: a shade deeper than --c-step-now so the 11px digit reaches 4.5:1
-     (white on 0 113 227 is 4.7:1; on 0 122 255 it is 4.0:1). One value for every theme: against the dark surface it
-     still reads as a shape. The dot, ring and tint stay on --c-step-now. */
   --c-step-now-fill:   0 113 227;
-  /* R-485: the Logistics map's pickup marker is a white dot with an ink ring and its arrows are white inside a blue ring, on
-     the light map and the dark one alike, so these two do not follow the theme the way --c-surface and --c-ink do. */
+  /* R-485: the Logistics map's markers do not follow the theme. */
   --c-map-paper:     255 255 255;
   --c-map-ink:        21 23 28;
+
+  /* ── Chart + motion tokens (MonoAreaChart, heat maps, gauges; hex/rgba for inline use) ── */
+  --ease: cubic-bezier(.23,1,.32,1);
+  --sep-0: rgba(0,0,0,.02);
+  --sep-1: rgba(0,0,0,.09);
+  --chart-line: #A3A3A3;       /* the series */
+  --chart-hi: #262626;         /* the lit part of the line, the gauge's filled ticks */
+  --chart-lo: #E5E5E5;         /* a track, the gauge's empty ticks */
+  --chart-grid: rgba(0,0,0,.05);
+  --chart-tip: #FFFFFF;
+  --chart-pill: #0A0A0A;
+  --chart-pill-ink: #FFFFFF;
+  --heat-0: #F0F0EF;
+  --heat-1: #D4D4D4;
+  --heat-2: #A3A3A3;
+  --heat-3: #262626;
+  /* The main panel's corner and the interior the shell paints (App.tsx) */
+  --panel-radius: 40px;
 }
 
-/* ── Dark theme tokens — MATTE BLACK (neutral zinc, no blue tint) ─ */
+/* ── Dark theme tokens — the mockups' near-black ─ */
 html.dark {
-  --color-bg:             #0A0A0B;
-  --color-surface:        #161618;
-  --color-text-primary:   #EDEDEF;
-  --color-text-secondary: #7C7C84;
-  --color-text-hint:      #56565E;
-  --color-border:         #29292E;
-  --color-border-light:   #1D1D20;
+  --rail-bg-top: #111111;
+  --rail-bg-bottom: #111111;
+  --rail-ink: #FAFAFA;
+  --rail-text: #A1A1A1;
+  --rail-text-bright: #D4D4D4;
+  --rail-text-dim: #A1A1A1;
+  --rail-text-faint: #737373;
+  --rail-hot: #E0A93B;
+  --rail-hot-bg: rgba(224,169,59,0.12);
+  --rail-hot-line: rgba(224,169,59,0.25);
+  --rail-badge: #FB2C36;
+  --rail-badge-calm: #737373;
+  --rail-ok: #00BC7D;
+  --rail-bad: #FF637E;
 
-  --shadow-xs:    0 1px 2px rgba(0,0,0,0.3);
-  --shadow-card:  0 1px 0 rgba(255,255,255,0.04);
-  --shadow-panel: 0 0 0 1px rgba(255,255,255,0.05), 0 8px 32px rgba(0,0,0,0.4);
-  --shadow-modal: 0 32px 80px rgba(0,0,0,0.6), 0 8px 32px rgba(0,0,0,0.4);
+  --color-success:        #00BC7D;
+  --color-success-bg:     #09231A;
+  --color-success-border: #0B3A2A;
+  --color-success-text:   #00BC7D;
+  --color-warning:        #E0A93B;
+  --color-warning-bg:     #281F11;
+  --color-warning-border: #4A3A18;
+  --color-warning-text:   #E0A93B;
+  --color-error:          #FB2C36;
+  --color-error-bg:       #2C0F10;
+  --color-error-border:   #55191C;
+  --color-error-text:     #FF637E;
 
-  /* Blue-cast near-black: page → surface → raised, ink #F2F4F8, cool hairlines. */
-  --t-bg:  #0B0D12;
-  --t-s1:  #12151C;
-  --t-s2:  #181C24;
-  --t-s3:  #1F242E;
-  --t-tx1: #F2F4F8;
-  --t-tx2: #BAC1CD;
-  --t-tx3: #7E8798;
-  --t-tx4: #566072;
-  --t-b1:  #232A36;
-  --t-b2:  #1A1F29;
-  --t-b3:  #323B4A;
-  --t-input-bg:     #181C24;
-  --t-input-border: #232A36;
-  --t-input-focus:  #1F242E;
+  --color-bg:             #0A0A0A;
+  --color-surface:        #0A0A0A;
+  --color-text-primary:   #FAFAFA;
+  --color-text-secondary: #A1A1A1;
+  --color-text-hint:      #737373;
+  --color-border:         #2F2F2F;
+  --color-border-light:   #232323;
 
-  /* Semantic tokens — blue-cast dark values */
-  --c-surface:       18 21 28;
-  --c-surface-2:     24 28 36;
-  --c-surface-3:     31 36 46;
-  --c-ink:          242 244 248;
-  --c-ink-2:        186 193 205;
-  --c-muted:        148 156 170;
-  --c-faint:        126 135 152;
-  --c-line:          35 42 54;
-  --c-line-2:        26 31 41;
-  --c-line-3:        50 59 74;
+  --shadow-xs:    0 0 #0000;
+  --shadow-card:  0 0 #0000;
+  --shadow-panel: 0 0 0 1px rgba(255,255,255,0.15), 0 24px 48px -16px rgba(0,0,0,0.55);
+  --shadow-modal: 0 0 0 1px rgba(255,255,255,0.15), 0 32px 64px -20px rgba(0,0,0,0.60);
+
+  --t-bg:  #0A0A0A;
+  --t-s1:  #0A0A0A;
+  --t-s2:  #171717;
+  --t-s3:  #262626;
+  --t-tx1: #FAFAFA;
+  --t-tx2: #D4D4D4;
+  --t-tx3: #A1A1A1;
+  --t-tx4: #737373;
+  --t-b1:  #232323;
+  --t-b2:  #191919;
+  --t-b3:  #2F2F2F;
+  --t-input-bg:     transparent;
+  --t-input-border: #2F2F2F;
+  --t-input-focus:  transparent;
+
+  --c-side:          17  17  17;
+  --c-surface:       10  10  10;
+  --c-surface-2:     23  23  23;
+  --c-surface-3:     38  38  38;
+  --c-ink:          250 250 250;
+  --c-ink-2:        212 212 212;
+  --c-muted:        161 161 161;
+  --c-faint:        115 115 115;
+  --c-line:          35  35  35;
+  --c-line-2:        25  25  25;
+  --c-line-3:        47  47  47;
   --c-accent: 255 138 71;
   --c-accent-hover: 255 164 92;
-  --c-on-accent: 12 15 22;
-  /* Apple's own DARK values, not the light ones lightened (R-319). */
-  --c-chart-revenue: 10 132 255;  /* systemBlue dark #0A84FF */
-  /* Dark steps of the categorical palette — Apple's published dark-mode system colours,
-     used unmodified. Absent from the matte blocks on purpose, exactly like
-     success/danger/chart-revenue: mono strips the accent, not meaning. */
-  --c-chart-1:  10 132 255;  /* systemBlue    #0A84FF */
-  --c-chart-2:  64 200 224;  /* systemTeal    #40C8E0 */
+  --c-on-accent: 10 10 10;
+  --c-chart-revenue: 10 132 255;
+  --c-chart-1:  10 132 255;
+  --c-chart-2:  64 200 224;  /* systemTeal dark #40C8E0 */
   --c-chart-2-ink: 64 200 224;
-  --c-chart-3:  94  92 230;  /* systemIndigo  #5E5CE6 */
-  --c-chart-4: 255  55  95;  /* systemPink    #FF375F */
-  --c-chart-5: 191  90 242;  /* systemPurple  #BF5AF2 */
-  --c-chart-6: 255 159  10;  /* systemOrange  #FF9F0A */
-  /* Semantic data hues, dark. On the near-black surface Apple's own system colours
-     already clear 8:1, so fill and ink only part for the accessible steps. */
-  --c-chart-profit:      48 209  88;   /* systemGreen dark       #30D158 */
-  --c-chart-profit-ink:  48 219  91;   /* accessible green dark  #30DB5B */
-  --c-chart-loss:       255  69  58;   /* systemRed dark         #FF453A */
-  --c-chart-loss-ink:   255 105  97;   /* accessible red dark    #FF6961 */
-  --c-chart-caution:    255 159  10;   /* systemOrange dark      #FF9F0A */
-  --c-chart-caution-ink: 255 179  64;  /* accessible orange dark #FFB340 */
-  /* Money-positive green: confident, not neon. */
-  --c-success:       62 199 133;
-  --c-success-bg:    16 42 32;
-  --c-success-ink:  138 224 179;
-  --c-warning:      251 191 36;
-  --c-warning-bg:    54 40 10;
-  --c-warning-ink:  253 230 138;
-  --c-danger:       248 113 113;
-  --c-danger-bg:     58 22 22;
-  --c-danger-ink:   252 165 165;
-  --c-info:          96 165 250;
-  --c-info-bg:       23 37 64;
-  --c-info-ink:     147 197 253;
+  --c-chart-3:  94  92 230;
+  --c-chart-4: 255  55  95;
+  --c-chart-5: 191  90 242;
+  --c-chart-6: 255 159  10;
+  --c-chart-profit:       0 188 125;   /* #00BC7D */
+  --c-chart-profit-ink:   0 188 125;
+  --c-chart-loss:       251  44  54;   /* #FB2C36 */
+  --c-chart-loss-ink:   255  99 126;   /* #FF637E, the text red on dark */
+  --c-chart-caution:    224 169  59;   /* amber #E0A93B */
+  --c-chart-caution-ink: 224 169  59;
+  --c-success:        0 188 125;
+  --c-success-bg:     9  35  26;
+  --c-success-ink:    0 188 125;
+  --c-warning:      224 169  59;
+  --c-warning-bg:    40  31  17;
+  --c-warning-ink:  224 169  59;
+  --c-danger:       251  44  54;
+  --c-danger-bg:     44  15  16;
+  --c-danger-ink:   255  99 126;
+  --c-info:         161 161 161;
+  --c-info-bg:       38  38  38;
+  --c-info-ink:     212 212 212;
   --c-step-now:       10 132 255;
+
+  --sep-0: rgba(255,255,255,.03);
+  --sep-1: rgba(255,255,255,.10);
+  --chart-line: #737373;
+  --chart-hi: #D4D4D4;
+  --chart-lo: #333333;
+  --chart-grid: rgba(255,255,255,.06);
+  --chart-tip: #0A0A0A;
+  --chart-pill: #FAFAFA;
+  --chart-pill-ink: #0A0A0A;
+  --heat-0: #1C1C1C;
+  --heat-1: #3A3A3A;
+  --heat-2: #737373;
+  --heat-3: #D4D4D4;
 }
 
-/* ── Mono (monochrome) theme — orthogonal to light/dark. It strips the accent
-      and goes grayscale. `.matte.dark` is the pure-black look (deepens
-      backgrounds/surfaces, flattens shadows). `.matte:not(.dark)` is the
-      inverted light-mono look (clean white surfaces, near-black ink). Accent
-      and — mostly — data colors stay put; only the chrome goes monochrome.
-      Minimal, sharp, not flashy. ── */
-html.matte.dark {
-  --color-bg:           #000000;
-  --color-surface:      #0A0A0C;
-  --color-border:       #1C1C20;
-  --color-border-light: #141417;
-
-  --shadow-xs:    0 1px 1px rgba(0,0,0,0.5);
-  --shadow-card:  0 0 0 1px rgba(255,255,255,0.03);
-  --shadow-panel: 0 0 0 1px rgba(255,255,255,0.05);
-  --shadow-modal: 0 24px 64px rgba(0,0,0,0.75), 0 0 0 1px rgba(255,255,255,0.06);
-
-  --t-bg:  #000000;
-  --t-s1:  #0A0A0C;
-  --t-s2:  #121214;
-  --t-s3:  #18181B;
-  --t-b1:  #1C1C20;
-  --t-b2:  #141417;
-  --t-b3:  #2A2A30;
-  --t-input-bg:     #0E0E10;
-  --t-input-border: #1C1C20;
-  --t-input-focus:  #161619;
-
-  --c-surface:    10 10 12;
-  --c-surface-2:  18 18 20;
-  --c-surface-3:  24 24 27;
-  --c-line:       28 28 32;
-  --c-line-2:     20 20 23;
-  --c-line-3:     42 42 48;
+/* ── Mono (monochrome) — orthogonal to light/dark, and ON by default (R-423). The surfaces above are
+      already the mockups' neutrals in every theme, so Mono now only decides the ACCENT: with no colour
+      picked it is the ink (near-white on dark, near-black on light), so a primary button is ink-filled.
+      A colour picked in Settings (html[data-accent]) wins over it, in Mono as everywhere else. ── */
+html.matte.dark:not([data-accent]) {
+  --c-accent: 250 250 250; --c-accent-hover: 212 212 212; --c-on-accent: 10 10 10;
+  --c-accent-fill: initial; --c-accent-fill-hover: initial; /* back to the accent itself */
+  --accent-50:#171717; --accent-100:#262626; --accent-400:#A1A1A1; --accent-500:#D4D4D4; --accent-600:#FAFAFA; --accent-700:#FFFFFF;
+  --accent-glow:rgba(255,255,255,.10); --accent-tint:rgba(255,255,255,.07);
+  --color-primary:#FAFAFA; --color-primary-hover:#D4D4D4; --color-primary-light:#262626; --color-primary-glow:rgba(255,255,255,.10);
 }
-
-/* Light-mono — inverted matte: near-white page, pure-white cards, near-black
-   ink, light-gray borders, no accent. The "just black and white" look. The
-   page sits a hair below the cards (page #F6 < card #FFF) and borders are a
-   touch darker so sections/rows read as distinct surfaces, not one flat sheet. */
-html.matte:not(.dark) {
-  --color-bg:             #F6F6F7;
-  --color-surface:        #FFFFFF;
-  --color-text-primary:   #0A0A0A;
-  --color-text-secondary: #52525B;
-  --color-text-hint:      #8A8A93;
-  --color-border:         #DADADE;
-  --color-border-light:   #ECECEE;
-
-  --shadow-xs:    0 1px 1px rgba(0,0,0,0.04);
-  --shadow-card:  0 0 0 1px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-panel: 0 0 0 1px rgba(0,0,0,0.07);
-  --shadow-modal: 0 24px 64px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.07);
-
-  --t-bg:  #F6F6F7;
-  --t-s1:  #FFFFFF;
-  --t-s2:  #F3F3F4;
-  --t-s3:  #EBEBED;
-  --t-tx1: #0A0A0A;
-  --t-tx2: #3F3F46;
-  --t-tx3: #71717A;
-  --t-tx4: #A1A1AA;
-  --t-b1:  #DADADE;
-  --t-b2:  #EAEAEC;
-  --t-b3:  #C8C8CE;
-  --t-input-bg:     #FFFFFF;
-  --t-input-border: #D4D4D8;
-  --t-input-focus:  #F6F6F7;
-
-  --c-surface:    255 255 255;
-  --c-surface-2:  243 243 244;
-  --c-surface-3:  235 235 237;
-  --c-ink:        10 10 10;
-  --c-ink-2:      63 63 70;
-  --c-muted:      113 113 122;
-  --c-faint:      161 161 170;
-  --c-line:       218 218 222;
-  --c-line-2:     234 234 236;
-  --c-line-3:     200 200 206;
+html.matte:not(.dark):not([data-accent]) {
+  --c-accent: 10 10 10; --c-accent-hover: 38 38 38; --c-on-accent: 255 255 255;
+  --accent-50:#F5F5F4; --accent-100:#E5E5E5; --accent-400:#737373; --accent-500:#404040; --accent-600:#262626; --accent-700:#0A0A0A;
+  --accent-glow:rgba(0,0,0,.12); --accent-tint:rgba(0,0,0,.06);
+  --color-primary:#0A0A0A; --color-primary-hover:#262626; --color-primary-light:#F5F5F4; --color-primary-glow:rgba(0,0,0,.12);
 }
 
 /* ── Smooth theme transition (applied momentarily on toggle) ── */
@@ -368,15 +351,14 @@ body {
 }
 
 /* ── Scrollbar ────────────────────────────────────────────── */
-::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar        { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track  { background: transparent; }
-::-webkit-scrollbar-thumb  { background: linear-gradient(180deg, var(--accent-400), var(--accent-600)); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, var(--accent-500), var(--accent-700)); }
+::-webkit-scrollbar-thumb  { background: rgb(var(--c-line-3)); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--c-faint)); background-clip: padding-box; }
 
-::selection { background: var(--accent-100); color: var(--accent-700); }
-html.dark ::selection { background: var(--accent-glow); color: var(--accent-100); }
+::selection { background: rgb(var(--c-ink) / 0.16); color: inherit; }
 
-:focus-visible { outline: 2px solid var(--accent-600); outline-offset: 2px; }
+:focus-visible { outline: 2px solid rgb(var(--c-ink) / 0.5); outline-offset: 2px; }
 :focus:not(:focus-visible) { outline: none; }
 
 .font-mono, code, pre {
@@ -395,13 +377,13 @@ html.dark ::selection { background: var(--accent-glow); color: var(--accent-100)
   border-radius: 8px;
   background: var(--t-input-bg);
   color: var(--t-tx1);
-  transition: border-color 0.15s, box-shadow 0.2s, background 0.15s;
+  transition: border-color 0.15s var(--ease);
 }
+.field-input::placeholder { color: var(--t-tx4); }
 .field-input:focus {
   outline: none;
-  border-color: var(--accent-400);
+  border-color: var(--t-tx1);
   background: var(--t-input-focus);
-  box-shadow: 0 0 0 3px var(--accent-glow), 0 1px 3px rgba(0,0,0,0.06);
 }
 textarea.field-input { height: auto; padding-top: 8px; padding-bottom: 8px; }
 
@@ -410,7 +392,6 @@ textarea.field-input { height: auto; padding-top: 8px; padding-bottom: 8px; }
   background: var(--t-s1);
   border: 1px solid var(--t-b1);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-xs);
 }
 
 /* Gradient border card */
@@ -437,8 +418,7 @@ textarea.field-input { height: auto; padding-top: 8px; padding-bottom: 8px; }
   transition: transform 0.2s cubic-bezier(0.16,1,0.3,1), box-shadow 0.2s cubic-bezier(0.16,1,0.3,1);
 }
 .hover-lift:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.09), 0 2px 8px rgba(0,0,0,0.05);
+  background-color: rgb(var(--c-surface-2));
 }
 
 /* ── Button feedback ──────────────────────────────────────── */
@@ -517,9 +497,9 @@ button:not(:disabled):active { opacity: 0.78; transition: opacity 60ms; }
   left: 0;
   width: 2.5px;
   height: 20px;
-  background: linear-gradient(180deg, var(--accent-400), var(--accent-600));
+  background: rgb(var(--c-ink));
   border-radius: 0 3px 3px 0;
-  box-shadow: 0 0 8px var(--accent-glow);
+  box-shadow: none;
   transition: top 0.22s cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: none;
 }
@@ -528,10 +508,11 @@ button:not(:disabled):active { opacity: 0.78; transition: opacity 60ms; }
    dark rail it reads as a shadow instead of a glow. Same escape hatch as
    .rail-spine further down: force it back to a white glow in light-mono only;
    dark-mono's glow is already white and needs no override. */
-html.matte:not(.dark) .nav-indicator { box-shadow: 0 0 8px rgba(255,255,255,0.18); }
+html.matte:not(.dark) .nav-indicator { box-shadow: none; }
 
 /* ── Page transition ──────────────────────────────────────── */
-.page-enter { animation: page-slide-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) both; }
+/* backwards, not both: a kept transform would make every position:fixed overlay inside the page sit relative to the page, not the window. */
+.page-enter { animation: page-slide-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
 
 /* ── Tier value odometer (R-252: money/frequency column toggle spins the digits) ──
    Each digit is a 1em window over a 20-cell strip (0-9 twice). The transform/transition
@@ -572,7 +553,7 @@ button:not(:disabled):active { transform: translateY(0.5px) scale(0.985); }
 /* Smooth motion on cards + a reusable hover-lift for clickable cards/rows */
 .card { transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.18s cubic-bezier(0.16,1,0.3,1); }
 .lift { transition: transform 0.18s cubic-bezier(0.16,1,0.3,1), box-shadow 0.18s ease, border-color 0.18s ease; }
-.lift:hover { transform: translateY(-2px); box-shadow: var(--shadow-panel); }
+.lift:hover { background-color: rgb(var(--c-surface-2)); }
 /* Inputs ease into focus */
 input, select, textarea { transition: border-color 0.14s ease, box-shadow 0.18s ease, background-color 0.14s ease; }
 
@@ -611,7 +592,7 @@ input, select, textarea { transition: border-color 0.14s ease, box-shadow 0.18s 
    --c-accent-fill (tailwind.config.js). Orange is the default, so no data-accent. Eclipse
    already had white on a deep enough fill; amber keeps dark text in both themes by design.
    Mono resets all of this - its blocks below come later at equal or higher specificity. */
-html.dark:not([data-accent]) { --c-on-accent: 255 255 255; --c-accent-fill: 255 101 32; --c-accent-fill-hover: 240 87 15; }
+html.dark:not(.matte):not([data-accent]) { --c-on-accent: 255 255 255; --c-accent-fill: 255 101 32; --c-accent-fill-hover: 240 87 15; }
 
 /* Blue — the pre-orange default, kept as an explicit option. */
 html[data-accent="blue"] { --c-accent:37 99 235; --c-accent-hover:29 78 216;
@@ -663,56 +644,21 @@ html[data-accent="slate"] { --c-accent:51 65 85; --c-accent-hover:30 41 59;
   --accent-glow:rgba(51,65,85,.38); --accent-tint:rgba(51,65,85,.16); --shadow-indigo:0 4px 20px rgba(51,65,85,.22),0 1px 4px rgba(51,65,85,.12); }
 html.dark[data-accent="slate"] { --c-accent:203 213 225; --c-accent-hover:226 232 240; }
 
-/* ── Mono = monochrome. Forces the accent to grey regardless of the selected color
-   (placed after the data-accent blocks + uses [data-accent] specificity so it always
-   wins). Applies in BOTH light and dark mono. Semantic success/warning/danger stay —
-   color only when it's useful. Dark-mono → near-white accent on black; light-mono →
-   near-black accent on white. (R-507 tried a teal highlight here and it came back out:
-   mono's chrome stays grey, teal is for meaning.) ── */
-html.matte.dark, html.matte.dark[data-accent] {
-  --c-accent: 232 232 236; --c-accent-hover: 200 200 206; --c-on-accent: 17 17 19;
-  --c-accent-fill: initial; --c-accent-fill-hover: initial; /* back to the accent itself */
-  --accent-50:#161618; --accent-100:#202024; --accent-400:#8A8A92; --accent-500:#C8C8CE; --accent-600:#E8E8EC; --accent-700:#F4F4F6;
-  --accent-glow:rgba(255,255,255,.10); --accent-tint:rgba(255,255,255,.07);
-  --color-primary:#E8E8EC; --color-primary-hover:#C8C8CE; --color-primary-light:#202024; --color-primary-glow:rgba(255,255,255,.10);
-}
-html.matte:not(.dark), html.matte:not(.dark)[data-accent] {
-  --c-accent: 24 24 27; --c-accent-hover: 39 39 42; --c-on-accent: 255 255 255;
-  --accent-50:#F4F4F5; --accent-100:#E4E4E7; --accent-400:#71717A; --accent-500:#3F3F46; --accent-600:#27272A; --accent-700:#18181B;
-  --accent-glow:rgba(0,0,0,.14); --accent-tint:rgba(0,0,0,.06);
-  --color-primary:#18181B; --color-primary-hover:#27272A; --color-primary-light:#F4F4F5; --color-primary-glow:rgba(0,0,0,.12);
-}
-
 /* ── Accent-aware active state (Settings nav rail, theme toggle).
       These are app chrome, so they follow the accent. The icon/text
       shade lightens in dark mode for legibility on the matte bg.    */
-.accent-active        { background: var(--accent-tint); color: var(--accent-700); }
-.accent-active-bd     { border-color: var(--accent-glow) !important; }
-.accent-active-ic     { color: var(--accent-600); }
-html.dark .accent-active    { color: var(--accent-400); }
-html.dark .accent-active-ic { color: var(--accent-400); }
+.accent-active        { background: rgb(var(--c-surface-3)); color: rgb(var(--c-ink)); }
+.accent-active-bd     { border-color: rgb(var(--c-line-3)) !important; }
+.accent-active-ic     { color: rgb(var(--c-ink)); }
 /* Mono: keep active chrome crisp. --accent-700 resolves near-white in dark-mono
    and near-black in light-mono, so this reads well on either background. The
    html.dark rule above would otherwise apply mono's accent-400 (a muddy mid-grey). */
-html.matte .accent-active    { color: var(--accent-700); }
-html.matte .accent-active-ic { color: var(--accent-600); }
 
 /* ── Collapsed rail (R-224) ───────────────────────────────────────────────────
-   The sidebar paints its own dark gradient and never follows the light/dark base,
-   so everything here has to read on a dark ground in every theme. --accent-tint is
-   the trap: it is rgba(0,0,0,.06) in light-mono, which DARKENS the active row on a
-   dark rail instead of lifting it. Layer it over an invariant white wash so the
-   active state survives, and let the accent add colour where there is one. */
-.rail-active {
-  background:
-    linear-gradient(90deg, rgba(255,255,255,0.07) 0%, transparent 100%),
-    linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%);
-}
-/* The spine that groups a section's screens under their parent row. Accent where
-   there is one; in mono --accent-400 is a mid-grey barely separable from the rail,
-   so fall back to white-alpha (same escape hatch as .accent-active above). */
-.rail-spine { background: var(--accent-400); }
-html.matte .rail-spine { background: rgba(255,255,255,0.18); }
+   R-583: the sidebar follows the theme now (#111111 dark, #F5F5F4 light), so the active row is the
+   mockups' chip and the spine is a hairline. */
+.rail-active { background: rgb(var(--c-surface-3)); }
+.rail-spine { background: rgb(var(--c-line-3)); }
 
 /* ════════════════════════════════════════════════════════════
    SPLIT-SCREEN PANES — container queries
@@ -751,20 +697,20 @@ html.dark .min-h-full { background-color: var(--t-bg); }
 
 /* Surfaces */
 html.dark .bg-white    { background-color: var(--t-s1) !important; }
-html.dark .bg-white\/95 { background-color: rgba(21,21,30,0.95) !important; }
-html.dark .bg-white\/80 { background-color: rgba(21,21,30,0.80) !important; }
-html.dark .bg-white\/70 { background-color: rgba(21,21,30,0.70) !important; }
-html.dark .bg-white\/60 { background-color: rgba(21,21,30,0.60) !important; }
-html.dark .bg-white\/50 { background-color: rgba(21,21,30,0.50) !important; }
-html.dark .bg-white\/40 { background-color: rgba(21,21,30,0.40) !important; }
+html.dark .bg-white\/95 { background-color: rgba(10,10,10,0.95) !important; }
+html.dark .bg-white\/80 { background-color: rgba(10,10,10,0.80) !important; }
+html.dark .bg-white\/70 { background-color: rgba(10,10,10,0.70) !important; }
+html.dark .bg-white\/60 { background-color: rgba(10,10,10,0.60) !important; }
+html.dark .bg-white\/50 { background-color: rgba(10,10,10,0.50) !important; }
+html.dark .bg-white\/40 { background-color: rgba(10,10,10,0.40) !important; }
 html.dark .bg-gray-50  { background-color: var(--t-s2) !important; }
 html.dark .bg-gray-100 { background-color: var(--t-s3) !important; }
-html.dark .bg-gray-200 { background-color: #2E2E42 !important; }
+html.dark .bg-gray-200 { background-color: #303030 !important; }
 
 /* Hover surfaces */
 html.dark .hover\:bg-gray-50:hover       { background-color: var(--t-s2) !important; }
-html.dark .hover\:bg-gray-50\/70:hover   { background-color: rgba(29,29,40,0.7) !important; }
-html.dark .hover\:bg-gray-50\/80:hover   { background-color: rgba(29,29,40,0.8) !important; }
+html.dark .hover\:bg-gray-50\/70:hover   { background-color: rgba(23,23,23,0.7) !important; }
+html.dark .hover\:bg-gray-50\/80:hover   { background-color: rgba(23,23,23,0.8) !important; }
 html.dark .hover\:bg-gray-100:hover      { background-color: var(--t-s3) !important; }
 
 /* Text */
@@ -836,21 +782,21 @@ html.dark .border-orange-100,
 html.dark .border-orange-200  { border-color: rgba(249,115,22,0.25)  !important; }
 
 /* ── Semantic text overrides (lighter shades for dark bg) ─── */
-html.dark .text-emerald-400                     { color: #34D399 !important; }
+html.dark .text-emerald-400                     { color: #00BC7D !important; }
 html.dark .text-emerald-500,
 html.dark .text-emerald-600,
-html.dark .text-emerald-700                     { color: #34D399 !important; }
-html.dark .text-emerald-800                     { color: #6EE7B7 !important; }
+html.dark .text-emerald-700                     { color: #00BC7D !important; }
+html.dark .text-emerald-800                     { color: #00BC7D !important; }
 html.dark .text-red-400,
 html.dark .text-red-500,
 html.dark .text-red-600,
-html.dark .text-red-700                         { color: #F87171 !important; }
+html.dark .text-red-700                         { color: #FF637E !important; }
 html.dark .text-amber-400,
 html.dark .text-amber-500,
 html.dark .text-amber-600,
-html.dark .text-amber-700                       { color: #FCD34D !important; }
-html.dark .text-amber-800                       { color: #FDE68A !important; }
-html.dark .text-amber-300                       { color: #FDE68A !important; }
+html.dark .text-amber-700                       { color: #E0A93B !important; }
+html.dark .text-amber-800                       { color: #E0A93B !important; }
+html.dark .text-amber-300                       { color: #E0A93B !important; }
 html.dark .text-blue-700,
 html.dark .text-blue-800                        { color: #93C5FD !important; }
 html.dark .text-indigo-400,
@@ -898,8 +844,8 @@ html.dark textarea {
 html.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus,
 html.dark textarea:focus {
   background-color: var(--t-input-focus) !important;
-  border-color: #34D399 !important;
-  box-shadow: 0 0 0 3px rgba(16,185,129,0.14) !important;
+  border-color: var(--t-tx1) !important;
+  box-shadow: none !important;
 }
 
 /* ── Placeholder ─────────────────────────────────────────── */
@@ -920,57 +866,18 @@ html.dark select option {
 /* ── Opacity-variant surface overrides (bg-gray-50/40 etc) ──
    Tailwind opacity-modified classes generate different CSS class
    names that are not caught by the solid bg-gray-50 override.   */
-html.dark .bg-gray-50\/40  { background-color: rgba(29,29,40,0.4)  !important; }
-html.dark .bg-gray-50\/50  { background-color: rgba(29,29,40,0.5)  !important; }
-html.dark .bg-gray-50\/60  { background-color: rgba(29,29,40,0.6)  !important; }
-html.dark .bg-gray-50\/70  { background-color: rgba(29,29,40,0.7)  !important; }
-html.dark .bg-gray-50\/80  { background-color: rgba(29,29,40,0.8)  !important; }
-html.dark .hover\:bg-gray-50\/40:hover { background-color: rgba(29,29,40,0.4) !important; }
-html.dark .hover\:bg-gray-50\/50:hover { background-color: rgba(29,29,40,0.5) !important; }
-html.dark .hover\:bg-gray-50\/60:hover { background-color: rgba(29,29,40,0.6) !important; }
+html.dark .bg-gray-50\/40  { background-color: rgba(23,23,23,0.4)  !important; }
+html.dark .bg-gray-50\/50  { background-color: rgba(23,23,23,0.5)  !important; }
+html.dark .bg-gray-50\/60  { background-color: rgba(23,23,23,0.6)  !important; }
+html.dark .bg-gray-50\/70  { background-color: rgba(23,23,23,0.7)  !important; }
+html.dark .bg-gray-50\/80  { background-color: rgba(23,23,23,0.8)  !important; }
+html.dark .hover\:bg-gray-50\/40:hover { background-color: rgba(23,23,23,0.4) !important; }
+html.dark .hover\:bg-gray-50\/50:hover { background-color: rgba(23,23,23,0.5) !important; }
+html.dark .hover\:bg-gray-50\/60:hover { background-color: rgba(23,23,23,0.6) !important; }
 
 /* ── Custom bg colors used inline ───────────────────────── */
 html.dark .bg-\[#FAFAF9\] { background-color: var(--t-s2) !important; }
 html.dark .bg-\[#FAFAFE\] { background-color: var(--t-s2) !important; }
-
-/* ── Tier badge dark mode overrides ─────────────────────── */
-html.dark [data-tier="P"] {
-  background: linear-gradient(135deg, rgba(139,92,246,0.24) 0%, rgba(167,139,250,0.12) 50%, rgba(139,92,246,0.24) 100%) !important;
-  border-color: rgba(167,139,250,0.5) !important;
-  color: #C4B5FD !important;
-  box-shadow: 0 0 18px rgba(139,92,246,0.4), inset 0 1px 0 rgba(167,139,250,0.1) !important;
-}
-html.dark [data-tier="S"] {
-  background: linear-gradient(135deg, rgba(14,165,233,0.2) 0%, rgba(56,189,248,0.1) 50%, rgba(14,165,233,0.2) 100%) !important;
-  border-color: rgba(56,189,248,0.45) !important;
-  color: #38BDF8 !important;
-  box-shadow: 0 0 14px rgba(56,189,248,0.3), inset 0 1px 0 rgba(56,189,248,0.08) !important;
-}
-html.dark [data-tier="A"] {
-  background: linear-gradient(135deg, rgba(234,179,8,0.2) 0%, rgba(253,224,71,0.1) 50%, rgba(234,179,8,0.18) 100%) !important;
-  border-color: rgba(234,179,8,0.45) !important;
-  color: #FDE047 !important;
-  box-shadow: 0 0 12px rgba(234,179,8,0.28) !important;
-}
-html.dark [data-tier="B"] {
-  background: linear-gradient(135deg, rgba(148,163,184,0.15) 0%, rgba(100,116,139,0.08) 100%) !important;
-  border-color: rgba(148,163,184,0.35) !important;
-  color: #CBD5E1 !important;
-  box-shadow: none !important;
-}
-html.dark [data-tier="C"] {
-  background: linear-gradient(135deg, rgba(234,88,12,0.15) 0%, rgba(249,115,22,0.08) 100%) !important;
-  border-color: rgba(249,115,22,0.35) !important;
-  color: #FB923C !important;
-  box-shadow: none !important;
-}
-html.dark [data-tier="Prospect"],
-html.dark [data-tier="New"] {
-  background: rgba(29,29,40,0.8) !important;
-  border-color: rgba(44,44,62,0.8) !important;
-  color: var(--t-tx3) !important;
-  box-shadow: none !important;
-}
 
 /* ── pre / code blocks ───────────────────────────────────── */
 html.dark pre { color: var(--t-tx2) !important; }
@@ -999,8 +906,8 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   /* Kept faint and off the tier hues (no violet, no teal) so no wash reads as a dot colour. */
   background:
     radial-gradient(42% 52% at 18% 24%, rgba(255,101,32,0.08), transparent 70%),
-    radial-gradient(52% 52% at 70% 88%, rgba(60,90,160,0.10), transparent 72%);
-  filter: blur(34px);
+    radial-gradient(52% 52% at 70% 88%, rgba(255,255,255,0.04), transparent 72%);
+  filter: none;
 }
 .globe-starfield {
   position: absolute; top: 0; left: 0;
@@ -1023,7 +930,7 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
 .globe-root .float-tooltip-kap {
   padding: 8px 10px; border-radius: 10px;
   background: rgba(8, 10, 22, 0.95);
-  border: 1px solid rgba(165, 180, 252, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
   font: 12px 'Satoshi', system-ui, sans-serif; color: #E7ECF6;
 }
@@ -1038,21 +945,21 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   width: 280px; overflow-y: auto; overscroll-behavior: contain;
   padding: 12px;
   background: rgba(9, 11, 23, 0.9);
-  border: 1px solid rgba(165, 180, 252, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 14px;
   font-size: 12.5px; color: #E7ECF6;
-  scrollbar-width: thin; scrollbar-color: rgba(165, 180, 252, 0.22) transparent;
+  scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
 }
 .globe-rail.floating { box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55); }
 .globe-rail-toggle { position: absolute; top: 18px; left: 18px; z-index: 8; }
 .globe-rail-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-.globe-rail-section { padding: 12px 2px 12px; border-top: 1px solid rgba(165, 180, 252, 0.1); }
+.globe-rail-section { padding: 12px 2px 12px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
 .globe-rail-label { font-size: 11.5px; font-weight: 500; color: #7E8798; margin-bottom: 7px; }
 .globe-rail-empty { font-size: 11.5px; color: #7E8798; padding: 6px 2px; }
 
 .globe-seg {
   display: inline-flex; padding: 3px; gap: 2px; border-radius: 9px;
-  background: rgba(165, 180, 252, 0.07);
+  background: rgba(255, 255, 255, 0.07);
 }
 .globe-seg.full { display: flex; }
 .globe-seg button {
@@ -1062,24 +969,24 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   transition: background 130ms ease-out, color 130ms ease-out;
 }
 .globe-seg button:hover { color: #E7ECF6; }
-.globe-seg button.on { color: #F2F4F8; background: rgba(255, 101, 32, 0.26); }
+.globe-seg button.on { color: #F2F4F8; background: rgba(255, 255, 255, 0.16); }
 
 .globe-rail-search { position: relative; margin-bottom: 4px; }
 .globe-rail-search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #6B7488; pointer-events: none; }
 .globe-rail-search input {
   width: 100%; height: 34px; padding: 0 10px 0 30px; border-radius: 9px;
   font-size: 12.5px; color: #F2F4F8;
-  background: rgba(165, 180, 252, 0.07); border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.07); border: 1px solid transparent;
   outline: none; transition: border-color 130ms ease-out;
 }
-.globe-rail-search input:focus { border-color: rgba(255, 164, 92, 0.55); }
+.globe-rail-search input:focus { border-color: rgba(255, 255, 255, 0.45); }
 .globe-rail-search input::placeholder { color: #6B7488; }
 .globe-rail-results { margin: 4px 0 8px; }
 .globe-rail-result {
   width: 100%; display: flex; align-items: center; gap: 9px; padding: 6px 8px;
   border-radius: 8px; text-align: left; transition: background 130ms ease-out;
 }
-.globe-rail-result.on { background: rgba(165, 180, 252, 0.1); }
+.globe-rail-result.on { background: rgba(255, 255, 255, 0.1); }
 
 .globe-swatch { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1.5px rgba(6, 8, 18, 0.9); }
 .globe-legend-row {
@@ -1087,51 +994,51 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   padding: 5px 6px; border-radius: 7px; font-size: 12.5px; color: #E7ECF6;
   transition: background 130ms ease-out, opacity 130ms ease-out;
 }
-.globe-legend-row:not(.static):hover { background: rgba(165, 180, 252, 0.08); }
+.globe-legend-row:not(.static):hover { background: rgba(255, 255, 255, 0.08); }
 .globe-legend-row.off { opacity: 0.38; }
 .globe-legend-row.static { padding: 3px 6px; font-size: 12px; color: #A9B1C6; }
 .globe-check { display: flex; align-items: center; gap: 8px; padding: 6px 6px 2px; font-size: 12.5px; color: #E7ECF6; cursor: pointer; }
-.globe-check input { accent-color: var(--accent-500); }
+.globe-check input { accent-color: #FAFAFA; }
 .globe-select {
   width: 100%; min-width: 0; height: 30px; padding: 0 8px; border-radius: 8px;
   font-size: 12px; color: #E7ECF6;
-  background: rgba(165, 180, 252, 0.07); border: 1px solid rgba(165, 180, 252, 0.12);
+  background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.12);
   outline: none;
 }
 .globe-select option { background: #0b0e1c; color: #E7ECF6; }
 .globe-chip-on {
   display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px;
   border-radius: 999px; font-size: 11.5px; color: #F2F4F8;
-  background: rgba(255, 101, 32, 0.22); border: 1px solid rgba(255, 164, 92, 0.35);
+  background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.25);
 }
 
 .globe-coverage { font-size: 12.5px; color: #E7ECF6; }
-.globe-coverage-bar { height: 3px; margin-top: 7px; border-radius: 3px; background: rgba(165, 180, 252, 0.1); overflow: hidden; }
-.globe-coverage-bar span { display: block; height: 100%; border-radius: 3px; background: var(--accent-500); }
+.globe-coverage-bar { height: 3px; margin-top: 7px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+.globe-coverage-bar span { display: block; height: 100%; border-radius: 3px; background: #FAFAFA; }
 .globe-link {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 12px; font-weight: 500; color: #F2F4F8;
   transition: color 130ms ease-out;
 }
-.globe-link:hover { color: var(--accent-400); }
+.globe-link:hover { color: #FAFAFA; }
 .globe-icon-btn {
   width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 7px; color: #A9B1C6; background: rgba(165, 180, 252, 0.07);
+  border-radius: 7px; color: #A9B1C6; background: rgba(255, 255, 255, 0.07);
   transition: background 130ms ease-out, color 130ms ease-out;
 }
-.globe-icon-btn:hover { color: #F2F4F8; background: rgba(255, 101, 32, 0.18); }
+.globe-icon-btn:hover { color: #F2F4F8; background: rgba(255, 255, 255, 0.10); }
 .globe-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .globe-region-row { width: 100%; display: block; padding: 5px 6px; border-radius: 7px; font-size: 12.5px; color: #E7ECF6; transition: background 130ms ease-out; }
-.globe-region-row:hover { background: rgba(165, 180, 252, 0.08); }
-.globe-region-row.on { background: rgba(255, 101, 32, 0.16); }
-.globe-region-bar { display: block; height: 3px; margin-top: 4px; border-radius: 3px; background: rgba(165, 180, 252, 0.08); overflow: hidden; }
-.globe-region-bar span { display: block; height: 100%; border-radius: 3px; background: rgba(124, 142, 220, 0.8); }
+.globe-region-row:hover { background: rgba(255, 255, 255, 0.08); }
+.globe-region-row.on { background: rgba(255, 255, 255, 0.10); }
+.globe-region-bar { display: block; height: 3px; margin-top: 4px; border-radius: 3px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.globe-region-bar span { display: block; height: 100%; border-radius: 3px; background: rgba(255, 255, 255, 0.8); }
 
 .globe-note { font-size: 11px; line-height: 1.45; color: #7E8798; }
 
 /* ── Client panel pieces ─────────────────────────────────── */
-.globe-figures { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; border-radius: 11px; background: rgba(165, 180, 252, 0.06); }
+.globe-figures { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; border-radius: 11px; background: rgba(255, 255, 255, 0.06); }
 .globe-fig-label { font-size: 11px; color: #7E8798; margin-bottom: 2px; }
 .globe-fig { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
 .globe-fig.small { font-size: 14px; font-weight: 500; color: #A9B1C6; padding-top: 4px; }
@@ -1142,7 +1049,7 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
 .globe-primary {
   width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;
   height: 34px; border-radius: 9px; font-size: 12.5px; font-weight: 500;
-  color: var(--accent-400); background: var(--accent-tint); border: 1px solid var(--accent-glow);
+  color: #FAFAFA; background: var(--accent-tint); border: 1px solid var(--accent-glow);
   transition: background 130ms ease-out;
 }
 .globe-primary:hover { background: var(--accent-glow); }
@@ -1153,11 +1060,11 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
 .globe-map { position: absolute; inset: 24px 24px 56px; user-select: none; }
 .globe-map svg { width: 100%; height: 100%; display: block; }
 .globe-map-region {
-  stroke: rgba(165, 180, 252, 0.22); stroke-width: 0.7; vector-effect: non-scaling-stroke;
+  stroke: rgba(255, 255, 255, 0.22); stroke-width: 0.7; vector-effect: non-scaling-stroke;
   transition: fill 130ms ease-out;
 }
 .globe-map-region:hover { stroke: rgba(242, 244, 248, 0.7); }
-.globe-map-region.on { stroke: var(--accent-400); stroke-width: 1.6; }
+.globe-map-region.on { stroke: #FAFAFA; stroke-width: 1.6; }
 .globe-map-mark { cursor: pointer; }
 /* One small shadow for the whole layer (not a glow per mark). */
 .globe-map-marks { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55)); }
@@ -1167,13 +1074,13 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
 }
 .globe-map-ramp { width: 90px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, rgba(124,142,220,0.14), rgba(124,142,220,0.64)); }
 .globe-map-outside { margin-left: 10px; color: #F2F4F8; font-weight: 500; transition: color 130ms ease-out; }
-.globe-map-outside:hover { color: var(--accent-400); }
+.globe-map-outside:hover { color: #FAFAFA; }
 .globe-map-zoom { position: absolute; right: 0; top: 0; display: flex; flex-direction: column; gap: 6px; }
 .globe-map-tip {
   position: absolute; z-index: 20; pointer-events: none;
   display: flex; flex-direction: column; gap: 1px; max-width: 240px;
   padding: 8px 10px; border-radius: 10px;
-  background: rgba(8, 10, 22, 0.95); border: 1px solid rgba(165, 180, 252, 0.2);
+  background: rgba(8, 10, 22, 0.95); border: 1px solid rgba(255, 255, 255, 0.2);
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
   font-size: 11px; color: #7E8798;
 }
@@ -1260,33 +1167,14 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   color: #F2F4F8;
 }
 
-/* ── Life: page atmosphere — a whisper of accent light + film grain ─────────
-   Static and GPU-cheap. Both pseudo layers are pointer-transparent; the grain
-   is a tiled SVG feTurbulence data-URI at ~2% opacity. */
-.page-atmosphere {
-  position: relative;
-  isolation: isolate;
-}
-.page-atmosphere::before {
-  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
-  background: radial-gradient(58% 42% at 50% -6%, rgb(var(--c-accent) / 0.05), transparent 72%);
-}
-.page-atmosphere::after {
-  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
-  opacity: 0.02;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-/* Dashboard gets a slightly stronger eclipse-glow header wash. */
-.dashboard-glow::before {
-  background:
-    radial-gradient(52% 34% at 50% -4%, rgb(var(--c-accent) / 0.10), transparent 70%),
-    radial-gradient(30% 22% at 78% -2%, rgb(var(--c-accent) / 0.05), transparent 70%);
-}
+/* ── Page atmosphere (retired in R-583): no accent wash, no film grain. The class stays so screens that
+   still carry it render the same flat panel. ── */
+.page-atmosphere { position: relative; isolation: isolate; }
+.dashboard-glow::before { content: none; }
 
 /* Visible, on-brand focus rings (keyboard nav) without hunting per element. */
 :where(button, a, input, select, textarea, [role="switch"]):focus-visible {
-  outline: 2px solid rgb(var(--c-accent) / 0.55);
+  outline: 2px solid rgb(var(--c-ink) / 0.5);
   outline-offset: 1px;
   border-radius: 6px;
 }
@@ -1297,58 +1185,13 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
 @keyframes dashLoadIn { from { opacity: 0; transform: translateY(6px); } }
 @media (prefers-reduced-motion: reduce) { .dash-load { animation: none; } .dash-load:hover { transform: none; } }
 
-/* ── Liquid glass (R-319) ───────────────────────────────────────────────────
-   Apple's material language, as ONE recipe: a translucent layer that samples
-   what is behind it, a specular hairline along the top edge, depth from a soft
-   wide shadow instead of a hard 1px border, and a generous radius.
-
-   Where it may go: section shells, the KPI band, small stat tiles.
-   Where it may NOT go: behind a chart's plotting area or a dense table. Blur
-   under data costs legibility and costs paint time — charts and tables sit on
-   the solid --c-surface. This is why <Card> is solid by default and glass is
-   opt-in rather than the other way round.
-
-   The top highlight is the part that makes it read as glass rather than as a
-   flat tint, so it is not optional. */
-.glass {
-  background: rgb(var(--c-surface) / 0.70);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  backdrop-filter: blur(20px) saturate(180%);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.55),
-    0 1px 2px rgb(0 0 0 / 0.04),
-    0 8px 30px rgb(0 0 0 / 0.07);
-}
-html.dark .glass {
-  background: rgb(var(--c-surface) / 0.55);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.10),
-    0 1px 2px rgb(0 0 0 / 0.30),
-    0 12px 40px rgb(0 0 0 / 0.45);
-}
-/* Matte/mono keeps the depth but drops the translucency — that look is flat by
-   definition and a blurred pure-black surface just reads as noise. */
-html.matte .glass {
+/* ── Glass (R-583): the liquid-glass recipe is retired. The class stays, as a solid surface with a
+   hairline, so screens that still carry it render flat like the mockups. ── */
+.glass, html.dark .glass, html.matte .glass {
   background: rgb(var(--c-surface));
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-}
-
-/* A page that becomes unreadable for someone who turned translucency (or motion)
-   off is not Apple-grade. Both fall back to the solid surface token. */
-@media (prefers-reduced-transparency: reduce) {
-  .glass, html.dark .glass {
-    background: rgb(var(--c-surface));
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .glass, html.dark .glass {
-    background: rgb(var(--c-surface));
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
+  box-shadow: 0 0 0 1px rgb(var(--c-line));
 }
 
 /* Glass needs something behind it to sample. The pane already carries
@@ -1362,9 +1205,7 @@ html.matte .glass {
 .analytics-stage::before {
   content: ""; position: absolute; inset: -80px 0 auto; height: 620px;
   pointer-events: none; z-index: -1;
-  background:
-    radial-gradient(46% 38% at 18% 0%, rgb(var(--c-chart-1) / 0.07), transparent 70%),
-    radial-gradient(40% 34% at 82% 6%, rgb(var(--c-chart-5) / 0.06), transparent 72%);
+  background: none;
 }
 @media (prefers-reduced-transparency: reduce) {
   .analytics-stage::before { display: none; }
@@ -1387,3 +1228,138 @@ html.matte .glass {
 .freight-map .maplibregl-ctrl-attrib a { color: rgb(var(--c-ink-2)); }
 html.dark .freight-map .maplibregl-ctrl-icon,
 html.dark .freight-map .maplibregl-ctrl-attrib-button { filter: invert(1); }
+
+/* ════════════════════════════════════════════════════════════════════════════════════════
+   R-583 SHARED CLASSES — the few the mockups repeat everywhere. Components in src/components/ui
+   use them; screens may use them directly. Colours come from the tokens above, never from hex.
+   ════════════════════════════════════════════════════════════════════════════════════════ */
+
+/* Every lucide icon is 1.75 stroke. A CSS declaration beats the stroke-width attribute, so this
+   holds even where a screen still passes strokeWidth={2}. */
+svg.lucide { stroke-width: 1.75; }
+
+b, strong, h1, h2, h3, h4, h5, h6 { font-weight: 500; }
+
+/* The fading hairlines. .hsep divides stacked sections, .vsep divides columns (give it a flex or
+   grid cell; it stretches to the row's height). Use these instead of a bordered box. */
+.hsep { height: 1px; flex: none; background: linear-gradient(to right, var(--sep-0), var(--sep-1), var(--sep-0)); }
+.vsep { width: 1px; flex: none; align-self: stretch; background: linear-gradient(to bottom, var(--sep-0), var(--sep-1), var(--sep-0)); }
+
+/* Labels and figures */
+.ui-label { font-size: 12px; font-weight: 500; color: rgb(var(--c-muted)); }
+.ui-note  { font-size: 12px; color: rgb(var(--c-muted)); }
+.ui-fig   { font-size: 24px; font-weight: 500; letter-spacing: -0.6px; line-height: 32px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ui-delta { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.ui-delta.up   { color: rgb(var(--c-success-ink)); }
+.ui-delta.down { color: rgb(var(--c-danger-ink)); }
+.ui-kv { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; line-height: 20px; padding: 6px 0; }
+.ui-kv > :first-child { color: rgb(var(--c-muted)); }
+.ui-kv > :last-child  { font-variant-numeric: tabular-nums; }
+
+/* Buttons: outline by default, .ui-btn-ink for the one primary action on a screen. */
+.ui-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 32px; padding: 0 12px;
+  border: 1px solid rgb(var(--c-line-3)); border-radius: 8px;
+  background: transparent; color: rgb(var(--c-ink));
+  font-family: inherit; font-size: 13px; font-weight: 500; white-space: nowrap; cursor: pointer;
+  transition: background-color .15s var(--ease), border-color .15s var(--ease), filter .15s var(--ease), opacity .15s var(--ease);
+}
+.ui-btn:hover:not(:disabled) { background: rgb(var(--c-surface-2)); }
+.ui-btn:disabled { opacity: .45; cursor: default; }
+.ui-btn-sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+.ui-btn-ink { background: rgb(var(--c-accent-fill, var(--c-accent))); border-color: rgb(var(--c-accent-fill, var(--c-accent))); color: rgb(var(--c-on-accent)); }
+.ui-btn-ink:hover:not(:disabled) { background: rgb(var(--c-accent-fill-hover, var(--c-accent-hover))); border-color: rgb(var(--c-accent-fill-hover, var(--c-accent-hover))); }
+.ui-btn-soft { border-color: transparent; background: rgb(var(--c-surface-3)); }
+.ui-btn-soft:hover:not(:disabled) { background: rgb(var(--c-surface-3)); filter: brightness(1.12); }
+.ui-btn-danger { color: rgb(var(--c-danger-ink)); border-color: rgb(var(--c-danger) / 0.4); }
+.ui-btn-danger:hover:not(:disabled) { background: rgb(var(--c-danger-bg)); }
+.ui-btn-block { width: 100%; }
+/* A bare icon button (28px) and a text link that reads as a link. */
+.ui-ib { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 8px; background: transparent; color: rgb(var(--c-muted)); cursor: pointer; transition: background-color .15s var(--ease), color .15s var(--ease); }
+.ui-ib:hover:not(:disabled) { background: rgb(var(--c-surface-3)); color: rgb(var(--c-ink)); }
+.ui-link { display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; padding: 0; font-family: inherit; font-size: 13px; font-weight: 500; color: rgb(var(--c-ink)); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; transition: opacity .15s var(--ease); }
+.ui-link:hover { opacity: .7; }
+.ui-link.muted { color: rgb(var(--c-muted)); font-weight: 400; }
+/* The header search box: icon + input in one outlined 32px box. */
+.ui-search { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 1px solid rgb(var(--c-line-3)); border-radius: 8px; color: rgb(var(--c-muted)); transition: border-color .15s var(--ease); }
+.ui-search:focus-within { border-color: rgb(var(--c-ink)); }
+.ui-search input { border: 0 !important; box-shadow: none !important; background: transparent !important; outline: none; font-family: inherit; font-size: 13px; color: rgb(var(--c-ink)); width: 210px; min-width: 0; }
+.ui-search input::placeholder { color: rgb(var(--c-faint)); }
+/* A segmented option (filters, ranges): outlined, the chosen one ink-filled. */
+.ui-opt { height: 30px; padding: 0 12px; border: 1px solid rgb(var(--c-line-3)); border-radius: 8px; background: transparent; font-family: inherit; font-size: 13px; font-weight: 500; color: rgb(var(--c-muted)); cursor: pointer; transition: background-color .15s var(--ease), color .15s var(--ease); }
+.ui-opt:hover { color: rgb(var(--c-ink)); }
+.ui-opt.on { background: rgb(var(--c-ink)); border-color: rgb(var(--c-ink)); color: rgb(var(--c-surface)); }
+
+/* Tabs (components/ui/Tabs.tsx): a chip track with a thumb that glides to the active tab. */
+.ui-tabs { position: relative; display: flex; gap: 4px; padding: 3px; border-radius: 10px; background: rgb(var(--c-surface-2)); box-shadow: inset 0 0 0 1px rgb(var(--c-line)); width: max-content; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.ui-tabs::-webkit-scrollbar { display: none; }
+.ui-tab-thumb { position: absolute; top: 3px; bottom: 3px; left: 0; border-radius: 8px; background: rgb(var(--c-surface-3)); pointer-events: none; opacity: 0; transition: transform .22s var(--ease), width .22s var(--ease), opacity .15s var(--ease); }
+.ui-tab-thumb.ready { opacity: 1; }
+.ui-tab-thumb.still { transition: none; }
+.ui-tab { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; font-family: inherit; font-size: 13px; font-weight: 500; color: rgb(var(--c-muted)); white-space: nowrap; cursor: pointer; transition: color .15s var(--ease); }
+.ui-tab:hover:not(:disabled) { color: rgb(var(--c-ink)); }
+.ui-tab[aria-selected="true"] { color: rgb(var(--c-ink)); }
+.ui-tab:disabled { opacity: .45; cursor: default; }
+/* A count on a tab or nav row: a small chip with the number. Red text only while it is urgent. */
+.ui-count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: rgb(var(--c-surface-3)); color: rgb(var(--c-ink)); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1; }
+.ui-count.urgent { color: rgb(var(--c-danger-ink)); }
+.ui-count.draft  { color: rgb(var(--c-warning-ink)); }
+.ui-count.calm   { color: rgb(var(--c-muted)); }
+
+/* Tables: header 12px muted, rows 14px, a hairline between rows, a faint fill on hover.
+   Add .ui-table-click when rows open something; mark the open row with aria-selected="true". */
+.ui-table { width: 100%; border-collapse: collapse; }
+.ui-table th { text-align: left; font-size: 12px; font-weight: 500; color: rgb(var(--c-muted)); padding: 8px 12px; white-space: nowrap; }
+.ui-table td { font-size: 14px; padding: 12px; vertical-align: middle; box-shadow: inset 0 1px 0 rgb(var(--c-line)); transition: background-color .15s var(--ease); }
+.ui-table tbody tr:hover td { background: rgb(var(--c-surface-2)); }
+.ui-table tbody tr[aria-selected="true"] td { background: rgb(var(--c-surface-2)); }
+.ui-table-click tbody tr { cursor: pointer; }
+.ui-table .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ui-table-sm td { font-size: 13px; padding: 10px 12px; }
+
+/* Settings-style rows (DesktopSettings): title with a grey sub line on the left, the control on the
+   right, a hairline between rows. Components: Section and Row in components/ui/Section.tsx. */
+.ui-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; min-height: 56px; padding: 10px 0; }
+.ui-row + .ui-row { box-shadow: inset 0 1px 0 rgb(var(--c-line)); }
+.ui-row-text { flex: 1; min-width: 200px; }
+.ui-row-title { display: block; font-size: 14px; font-weight: 500; }
+.ui-row-sub { display: block; margin-top: 2px; font-size: 13px; line-height: 1.4; color: rgb(var(--c-muted)); }
+.ui-row-click { cursor: pointer; }
+
+/* Floating layers: a menu / popover, a scrim and a right-hand drawer. Toggle .open. */
+@keyframes ui-pop-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: none; } }
+.ui-pop { position: absolute; z-index: 30; min-width: 220px; max-height: 320px; overflow-y: auto; padding: 6px; border-radius: 12px; background: rgb(var(--c-surface)); box-shadow: var(--shadow-panel); animation: ui-pop-in .16s var(--ease) both; }
+.ui-pop-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 32px; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; font-family: inherit; font-size: 13px; font-weight: 500; color: rgb(var(--c-ink)); text-align: left; cursor: pointer; transition: background-color .12s var(--ease); }
+.ui-pop-item:hover { background: rgb(var(--c-surface-3)); }
+.ui-pop-item .sub { font-size: 12px; font-weight: 400; color: rgb(var(--c-muted)); }
+.ui-scrim { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none; transition: opacity .2s var(--ease); }
+.ui-scrim.open { opacity: 1; pointer-events: auto; }
+.ui-drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 50; width: 600px; max-width: 100%; overflow-y: auto; background: rgb(var(--c-surface)); box-shadow: -1px 0 0 rgb(var(--c-line-3)), -24px 0 48px -16px rgba(0,0,0,.45); transform: translateX(104%); visibility: hidden; transition: transform .26s var(--ease), visibility 0s linear .26s; }
+.ui-drawer.open { transform: none; visibility: visible; transition-delay: 0s; }
+.ui-drawer-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 18px 24px; background: rgb(var(--c-surface)); box-shadow: inset 0 -1px 0 rgb(var(--c-line)); }
+.ui-drawer-body { padding: 20px 24px 40px; }
+
+/* MonoAreaChart (components/ui/MonoAreaChart.tsx) */
+.mc-box { position: relative; cursor: crosshair; touch-action: none; }
+.mc-cursor { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; background: linear-gradient(to bottom, transparent, var(--chart-line) 18%, var(--chart-line) 82%, transparent); transition: opacity .2s var(--ease); }
+.mc-dot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 999px; background: var(--chart-line); box-shadow: 0 0 0 4px color-mix(in srgb, var(--chart-line) 30%, transparent), 0 0 0 1.5px rgb(var(--c-surface)); pointer-events: none; transition: opacity .2s var(--ease); }
+.mc-tip { position: absolute; pointer-events: none; min-width: 150px; padding: 8px 10px; border-radius: 8px; background: var(--chart-tip); box-shadow: 0 0 0 1px rgb(var(--c-line)), 0 10px 30px -10px rgba(0,0,0,.5); font-size: 12px; transition: opacity .2s var(--ease); }
+.mc-pill { position: absolute; bottom: -2px; transform: translateX(-50%); padding: 3px 9px; border-radius: 999px; overflow: hidden; background: var(--chart-pill); color: var(--chart-pill-ink); font-size: 12px; font-weight: 500; white-space: nowrap; pointer-events: none; transition: opacity .2s var(--ease); }
+.mc-base { transition: opacity .25s var(--ease); }
+.mc-rollbox { overflow: hidden; height: 16px; }
+.mc-roll { display: inline-block; }
+@keyframes mcUpA { from { transform: translateY(100%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes mcUpB { from { transform: translateY(100%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes mcDnA { from { transform: translateY(-100%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes mcDnB { from { transform: translateY(-100%); opacity: 0; } to { transform: none; opacity: 1; } }
+.mc-roll.rUpA { animation: mcUpA .22s var(--ease) both; }
+.mc-roll.rUpB { animation: mcUpB .22s var(--ease) both; }
+.mc-roll.rDnA { animation: mcDnA .22s var(--ease) both; }
+.mc-roll.rDnB { animation: mcDnB .22s var(--ease) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-btn, .ui-tab, .ui-tab-thumb, .ui-pop, .ui-pop-item, .ui-scrim, .ui-drawer, .ui-table td,
+  .mc-cursor, .mc-dot, .mc-tip, .mc-pill, .mc-base { transition: none !important; animation: none !important; }
+  .mc-roll { animation: none !important; }
+}

@@ -749,7 +749,7 @@ function MapEditor({ layout, layouts, items, dirty, onSaved, onEdit, onRemove, o
                   commit(cells, { ...shape, short_names });
                 }}
                 onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                style={WH_INPUT_BG} className="w-[62px] flex-shrink-0 border border-line h-7 px-1.5 rounded-md text-[12px] text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                style={WH_INPUT_BG} className="w-[62px] flex-shrink-0 border border-line h-7 px-1.5 rounded-md text-[12px] text-ink placeholder:text-faint focus:outline-none focus:border-ink" />
             </div>
           ))}
           {focus && <button onClick={() => setFocus(null)} className="text-[12px] text-accent hover:text-accent-hover mt-1 px-2">Show everything</button>}
@@ -1064,7 +1064,7 @@ function PalletBoxes({ item, sectionId, layouts, label, stock, onSave, compact =
             <span className="flex items-center gap-1 flex-shrink-0">
               {!compact && <button onClick={() => step(t.id, -1)} disabled={!(boxes[t.id] > 0)} className="w-7 h-7 rounded-md border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-35" aria-label={`One less ${t.name}`}>−</button>}
               <NumberInput integer value={boxes[t.id] || ""} placeholder="0" onValue={(n) => set(t.id, n)} aria-label={`${t.name} on this ${compact ? "level" : "pallet"}`}
-                style={WH_INPUT_BG} className={`${compact ? "w-12" : "w-14"} border border-line h-7 px-1.5 rounded-md text-[12.5px] text-right tabular-nums text-ink focus:outline-none focus:ring-2 focus:ring-accent/40`} />
+                style={WH_INPUT_BG} className={`${compact ? "w-12" : "w-14"} border border-line h-7 px-1.5 rounded-md text-[12.5px] text-right tabular-nums text-ink focus:outline-none focus:border-ink`} />
               {!compact && <button onClick={() => step(t.id, 1)} className="w-7 h-7 rounded-md border border-line text-ink-2 hover:bg-surface-2" aria-label={`One more ${t.name}`}>+</button>}
             </span>
           </div>

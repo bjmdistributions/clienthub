@@ -2,7 +2,7 @@ import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, us
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
   Building2, RefreshCw, RotateCcw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle, Download,
-  Eye, EyeOff, Maximize2,
+  Eye, EyeOff, Maximize2, SlidersHorizontal,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, CheckAccount, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
@@ -24,6 +24,7 @@ import NearDuplicates from "./NearDuplicates";
 import RetractedRows from "./RetractedRows";
 import BankHealthStrip from "./BankHealthStrip";
 import Switch from "./Switch";
+import { Button, Kpi, PageActions, Row, Tabs } from "./ui";
 import { parseAmount } from "../lib/format";
 import { alreadyTied, tieAmount } from "../lib/tieAmount";
 
@@ -247,13 +248,13 @@ function CategoryPicker({ value, onChange, usual, variant = "row", placeholder =
         aria-expanded={open}
         onClick={toggle}
         className={variant === "field"
-          ? "w-full flex items-center justify-between gap-2 h-9 px-3 rounded-lg border border-line bg-surface text-[13px] text-ink-2 hover:border-line-3 focus:outline-none focus:ring-2 focus:ring-accent/40"
-          : `inline-flex items-center gap-1.5 h-8 pl-2.5 pr-2 rounded-lg border text-[12px] max-w-[190px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors ${
-              value ? "bg-surface border-line text-ink-2 hover:border-line-3" : "bg-accent/5 border-accent/40 text-accent font-semibold hover:bg-accent/10"
+          ? "w-full flex items-center justify-between gap-2 h-9 px-3 rounded-lg border border-line bg-surface text-[13px] text-ink-2 hover:border-line-3 focus:outline-none"
+          : `inline-flex items-center gap-1.5 h-8 pl-2.5 pr-2 rounded-lg border text-[12px] max-w-[190px] focus:outline-none transition-colors ${
+              value ? "bg-surface border-line text-ink-2 hover:border-line-3" : "bg-transparent border-ink text-ink font-medium"
             }`}
       >
         <span className="truncate">{label || (variant === "field" ? "Uncategorized" : placeholder)}</span>
-        <ChevronDown size={12} className={`flex-shrink-0 ${value ? "text-faint" : "text-accent"}`} />
+        <ChevronDown size={12} className={`flex-shrink-0 ${value ? "text-faint" : "text-ink"}`} />
       </button>
       {open && (
         <div
@@ -275,7 +276,7 @@ function CategoryPicker({ value, onChange, usual, variant = "row", placeholder =
               }}
               placeholder="Type to find a category"
               aria-label="Find a category"
-              className="w-full h-8 px-2.5 rounded-lg bg-surface-2 border border-line text-[12.5px] text-ink placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="w-full h-8 px-2.5 rounded-lg bg-surface-2 border border-line text-[12.5px] text-ink placeholder:text-muted focus:outline-none"
             />
           </div>
           <div className="max-h-[260px] overflow-y-auto py-1">
@@ -299,7 +300,7 @@ function CategoryPicker({ value, onChange, usual, variant = "row", placeholder =
                     }`}
                   >
                     <span className="truncate">{c.label}</span>
-                    {c.value === value && <Check size={12} className="text-accent flex-shrink-0" />}
+                    {c.value === value && <Check size={12} className="text-ink flex-shrink-0" />}
                   </button>
                 </Fragment>
               );
@@ -401,7 +402,7 @@ function MoreRows({ onVisible, colSpan, remaining }: { onVisible: () => void; co
   }, [onVisible]);
   // The button is the same action by hand, for a window where the observer does not run.
   const button = (
-    <button onClick={onVisible} className="text-[12px] font-medium text-accent hover:text-accent-hover">
+    <button onClick={onVisible} className="text-[12px] font-medium text-ink hover:opacity-70">
       Show {Math.min(ROW_STEP, remaining)} more of {remaining}
     </button>
   );
@@ -546,7 +547,7 @@ function ShippingSplitChip({ t, split, busy, onConfirm }: {
       onClick={(e) => { e.stopPropagation(); onConfirm(t, split); }}
       disabled={busy}
       title={title}
-      className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors whitespace-nowrap flex-shrink-0"
+      className="ui-btn ui-btn-sm disabled:opacity-50 whitespace-nowrap flex-shrink-0"
     >
       {busy ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
       Split across {split.parts.length} loads as shipping
@@ -580,11 +581,11 @@ function DealLinkChip({ t, dealById, compact, onOpen }: {
         return `${d ? matchLabel(d) : "Deal"}: ${mine.map((l) => `${LINK_ROLE[l.role] || l.role} ${fmtAmount(l.amount)}`).join(", ")}`;
       }).join("\n")
     : "Linked to a deal";
-  const icon = full ? <Check size={compact ? 11 : 14} strokeWidth={2.5} /> : <Link2 size={compact ? 10 : 13} />;
+  const icon = full ? <Check size={compact ? 11 : 14} strokeWidth={1.75} /> : <Link2 size={compact ? 10 : 13} />;
   const tone = full
     ? "bg-success-bg/60 border-success/35 hover:bg-success-bg hover:border-success/60"
     : "bg-surface-2 border-line hover:border-line-3";
-  const iconTone = full ? "bg-success/15 text-success-ink" : "bg-accent/10 text-accent";
+  const iconTone = full ? "text-success-ink" : "text-ink";
   const bar = (
     <span className="h-1 w-10 flex-shrink-0 rounded-full bg-line overflow-hidden">
       <span className="block h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
@@ -801,7 +802,7 @@ const wireDetail = (t: BankTxn): { label: string; value: string }[] => {
 const personTypeLabel = (t: string) => (t === "supplier" ? "Supplier" : "Client");
 
 const inp =
-  "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:border-accent transition-colors";
 
 // Collapse duplicate deal_flow rows for one invoice to the single highest-stage
 // survivor — the same row Deal Flow shows — so an allocation (single OR bulk) can
@@ -2739,7 +2740,7 @@ export default function FinancialsView() {
   const dealById = useMemo(() => new Map(deals.map((d) => [d.id, d])), [deals]);
 
   const railClass = (t: BankTxn) => {
-    if (t.allocated > 0.0001 && t.unallocated > 0.0001) return "border-l-2 border-accent/40";
+    if (t.allocated > 0.0001 && t.unallocated > 0.0001) return "border-l-2 border-line-3";
     if (needsADeal(t)) return "border-l-2 border-accent";
     return "border-l-2 border-transparent";
   };
@@ -3086,13 +3087,13 @@ export default function FinancialsView() {
   // carries the one-click "Tie it". A bare accent "match" in this cell said less, had
   // no action attached, and read as a typo rather than an affordance.
   const dealCell = (t: BankTxn) => {
-    if (t.counterparty_type === "loan") return <span className="text-muted">–</span>;
+    if (t.counterparty_type === "loan") return <span className="text-muted">None</span>;
     if (t.allocated > 0.0001) return <DealLinkChip t={t} dealById={dealById} compact onOpen={() => toggleRow(t)} />;
     return (
       <button
         onClick={(e) => { e.stopPropagation(); toggleRow(t); }}
         title="Pick a deal to tie this payment to"
-        className="inline-flex items-center gap-1.5 h-7 px-2 rounded-lg border border-line text-[12px] text-ink-2 font-medium hover:bg-surface-2 hover:border-line-3 transition-colors whitespace-nowrap"
+        className="ui-btn ui-btn-sm whitespace-nowrap"
       >
         <Link2 size={11} /> Link a deal
       </button>
@@ -3107,9 +3108,9 @@ export default function FinancialsView() {
   // only one row is ever expanded at a time).
   const renderTxnTable = (rows: BankTxn[]) => (
         <div className="overflow-x-auto">
-          <table className="w-full text-[13px] min-w-[560px]">
+          <table className="ui-table min-w-[560px] [&_td]:!align-top">
             <thead>
-              <tr className="text-left border-b border-line">
+              <tr>
                 <th className="py-2 pr-2 w-8">
                   <input
                     type="checkbox"
@@ -3143,7 +3144,7 @@ export default function FinancialsView() {
             <tbody>
               {rows.slice(0, rowLimit).map((t) => {
                 const payee = t.counterparty_name?.trim();
-                const mainLabel = payee || t.description || "–";
+                const mainLabel = payee || t.description || "No description";
                 const memo = payee ? t.description : "";
                 // The obvious-deal suggestion. Hidden while the row is expanded — the
                 // full allocate panel is already open there.
@@ -3156,9 +3157,8 @@ export default function FinancialsView() {
                   <tr
                     data-txn-id={t.id}
                     onClick={() => toggleRow(t)}
-                    className={`${offer ? "" : "border-b border-line-2"} cursor-pointer transition-colors ${
-                      selected.has(t.id) || openId === t.id ? "bg-surface-2" : "hover:bg-surface-2"
-                    }`}
+                    aria-selected={selected.has(t.id) || openId === t.id}
+                    className="cursor-pointer"
                   >
                     <td className="py-3 pr-2 align-top" onClick={(e) => e.stopPropagation()}>
                       <input
@@ -3171,8 +3171,8 @@ export default function FinancialsView() {
                     </td>
                     <td className="py-3 align-top">
                       {t.direction === "in"
-                        ? <ArrowDownLeft size={15} className="text-success-ink" strokeWidth={2} />
-                        : <ArrowUpRight size={15} className="text-danger-ink" strokeWidth={2} />}
+                        ? <ArrowDownLeft size={15} className="text-success-ink" strokeWidth={1.75} />
+                        : <ArrowUpRight size={15} className="text-danger-ink" strokeWidth={1.75} />}
                     </td>
                     <td className="py-3 pr-3 tabular-nums text-muted whitespace-nowrap align-top">
                       <div>{(t.posted_at || "").slice(0, 10)}</div>
@@ -3193,7 +3193,7 @@ export default function FinancialsView() {
                             if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
                             else if (e.key === "Escape") { e.preventDefault(); payeeCancelRef.current = true; e.currentTarget.blur(); }
                           }}
-                          className="w-full min-w-0 bg-surface border border-line rounded px-1.5 py-0.5 text-[13px] font-semibold text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+                          className="w-full min-w-0 bg-surface border border-line rounded px-1.5 py-0.5 text-[13px] font-semibold text-ink focus:outline-none"
                         />
                       ) : (
                         <div className="flex items-center gap-1.5 min-w-0">
@@ -3257,7 +3257,7 @@ export default function FinancialsView() {
                                 onClick={() => tagPerson(t, { type: psug.type, id: psug.id, name: psug.name })}
                                 disabled={personBusy === t.id}
                                 title={`Link this payment to ${psug.name}: ${psug.reason}`}
-                                className="min-w-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-accent/40 bg-accent/5 text-accent text-[11px] font-medium hover:bg-accent/10 disabled:opacity-50 transition-colors"
+                                className="min-w-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-line-3 bg-transparent text-ink text-[11px] font-medium hover:bg-surface-3 disabled:opacity-50 transition-colors"
                               >
                                 {personBusy === t.id
                                   ? <Loader2 size={10} className="animate-spin flex-shrink-0" />
@@ -3286,7 +3286,7 @@ export default function FinancialsView() {
                       {linkOfferFor === t.id && !linked && (
                         <button
                           onClick={(e) => { e.stopPropagation(); setPersonPickerFor(t.id); }}
-                          className="mt-0.5 block text-[11px] text-accent hover:text-accent-hover text-left transition-colors"
+                          className="mt-0.5 block text-[11px] text-ink hover:opacity-70 text-left transition-colors"
                         >
                           Renaming only changed the label. Link this to a person too?
                         </button>
@@ -3301,10 +3301,10 @@ export default function FinancialsView() {
                             value={t.category || ""}
                             aria-label="Category"
                             onChange={(e) => saveReview(t, { category: e.target.value })}
-                            className={`appearance-none h-7 pl-2 pr-6 rounded-md border text-[12px] cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors ${
+                            className={`appearance-none h-7 pl-2 pr-6 rounded-md border text-[12px] cursor-pointer focus:outline-none transition-colors ${
                               t.category
                                 ? "bg-transparent border-line text-ink-2 hover:border-line-3"
-                                : "bg-accent/5 border-accent/40 text-accent font-semibold hover:bg-accent/10"
+                                : "bg-transparent border-ink text-ink font-medium"
                             }`}
                           >
                             <option value="">Set category</option>
@@ -3312,7 +3312,7 @@ export default function FinancialsView() {
                           </select>
                           <ChevronDown
                             size={12}
-                            className={`pointer-events-none absolute right-1.5 ${t.category ? "text-faint" : "text-accent"}`}
+                            className={`pointer-events-none absolute right-1.5 ${t.category ? "text-faint" : "text-ink"}`}
                           />
                         </span>
                       )}
@@ -3330,12 +3330,12 @@ export default function FinancialsView() {
                           aria-label="Payment method"
                           title={mr.state === "unclassified" ? "No payment method could be read from the memo" : `${methodLabel(mr.method)}: ${mr.reason}`}
                           onChange={(e) => setMethod(t, e.target.value as BankMethod | "")}
-                          className={`appearance-none h-7 pl-2 pr-6 rounded-md border text-[12px] cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors ${
+                          className={`appearance-none h-7 pl-2 pr-6 rounded-md border text-[12px] cursor-pointer focus:outline-none transition-colors ${
                             mr.state === "certain"
                               ? "bg-transparent border-line text-ink-2 hover:border-line-3"
                               : mr.state === "likely"
                                 ? "bg-transparent border-line-2 text-muted hover:border-line-3"
-                                : "bg-accent/5 border-accent/40 text-accent font-semibold hover:bg-accent/10"
+                                : "bg-transparent border-ink text-ink font-medium"
                           }`}
                         >
                           <option value="">
@@ -3347,7 +3347,7 @@ export default function FinancialsView() {
                         </select>
                         <ChevronDown
                           size={12}
-                          className={`pointer-events-none absolute right-1.5 ${mr.state === "unclassified" ? "text-accent" : "text-faint"}`}
+                          className={`pointer-events-none absolute right-1.5 ${mr.state === "unclassified" ? "text-ink" : "text-faint"}`}
                         />
                       </span>
                     </td>
@@ -3362,10 +3362,10 @@ export default function FinancialsView() {
                         className={`h-7 px-2.5 rounded-md inline-flex items-center gap-1 justify-center border text-[11.5px] font-semibold transition-colors whitespace-nowrap ${
                           t.reviewed
                             ? "bg-ink border-ink text-surface"
-                            : "border-accent/40 bg-accent/5 text-accent hover:bg-accent/10"
+                            : "border-line-3 bg-transparent text-ink hover:bg-surface-3"
                         }`}
                       >
-                        <Check size={11} strokeWidth={2.4} /> {t.reviewed ? "Booked" : "Book"}
+                        <Check size={11} strokeWidth={1.75} /> {t.reviewed ? "Booked" : "Book"}
                       </button>
                     </td>
                   </tr>
@@ -3376,7 +3376,7 @@ export default function FinancialsView() {
                       rows that will actually change, so the number offered is the
                       number that moves. */}
                   {methodOffer?.txnId === t.id && (
-                    <tr className={`border-b border-line-2 ${selected.has(t.id) ? "bg-surface-2" : ""}`}>
+                    <tr className="[&_td]:!shadow-none [&_td]:!pt-0" aria-selected={selected.has(t.id)}>
                       <td colSpan={3} />
                       <td colSpan={6} className="pb-3 pr-3 align-top">
                         <div className="flex items-center gap-2 flex-wrap min-w-0" onClick={(e) => e.stopPropagation()}>
@@ -3388,7 +3388,7 @@ export default function FinancialsView() {
                           <button
                             onClick={applyMethodToPayee}
                             disabled={methodBusy}
-                            className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0"
+                            className="flex items-center gap-1 h-6 px-2 rounded-md border border-line-3 bg-transparent text-ink text-[11.5px] font-semibold hover:bg-surface-3 disabled:opacity-50 transition-colors flex-shrink-0"
                           >
                             {methodBusy ? <Loader2 size={11} className="animate-spin" /> : <Wand2 size={11} />}
                             Set them all to {methodLabel(methodOffer.method).toLowerCase()}
@@ -3406,7 +3406,7 @@ export default function FinancialsView() {
                   )}
 
                   {offer && (
-                    <tr className={`border-b border-line-2 ${selected.has(t.id) ? "bg-surface-2" : ""}`}>
+                    <tr className="[&_td]:!shadow-none [&_td]:!pt-0" aria-selected={selected.has(t.id)}>
                       <td colSpan={3} />
                       <td colSpan={6} className="pb-3 pr-3 align-top">
                         <div className="flex items-center gap-2 flex-wrap min-w-0">
@@ -3419,7 +3419,7 @@ export default function FinancialsView() {
                               onClick={(e) => { e.stopPropagation(); tieMatch(t, c.deal, c.candidate); }}
                               disabled={tyingId === t.id}
                               title={`Tie to ${dealLabel(c.deal)} as ${tieWord(candRole(c.candidate), t.direction)}: ${c.reason}`}
-                              className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0 max-w-[280px]"
+                              className="flex items-center gap-1 h-6 px-2 rounded-md border border-line-3 bg-transparent text-ink text-[11.5px] font-semibold hover:bg-surface-3 disabled:opacity-50 transition-colors flex-shrink-0 max-w-[280px]"
                             >
                               {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
                               <span className="truncate">
@@ -3445,7 +3445,7 @@ export default function FinancialsView() {
 
                   {/* R-400: one carrier charge that covers several loads */}
                   {splitFor(t) && (
-                    <tr className={`border-b border-line-2 ${selected.has(t.id) ? "bg-surface-2" : ""}`}>
+                    <tr className="[&_td]:!shadow-none [&_td]:!pt-0" aria-selected={selected.has(t.id)}>
                       <td colSpan={3} />
                       <td colSpan={6} className="pb-3 pr-3 align-top">
                         <div className="flex items-center gap-2 flex-wrap min-w-0">
@@ -3467,7 +3467,7 @@ export default function FinancialsView() {
               No transactions match these filters
               <button
                 onClick={clearFilters}
-                className="block mx-auto mt-2 text-[12px] font-medium text-accent hover:text-accent-hover"
+                className="block mx-auto mt-2 text-[12px] font-medium text-ink hover:opacity-70"
               >
                 Clear filters
               </button>
@@ -3505,7 +3505,7 @@ export default function FinancialsView() {
   // loss and hides the real cause. Shared by the To-book and Ledger surfaces.
   const errorState = (
     <div className="text-center py-20">
-      <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+      <div className="flex items-center justify-center mx-auto mb-3 text-faint">
         <AlertTriangle size={18} className="text-danger-ink" />
       </div>
       <p className="text-[14px] font-semibold text-ink-2">Could not load your transactions</p>
@@ -3513,7 +3513,7 @@ export default function FinancialsView() {
       <p className="text-[11.5px] text-faint mt-1">Nothing has been changed or lost. This is a read that failed.</p>
       <button
         onClick={() => { setLoading(true); loadAll(); }}
-        className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
+        className="mt-3 text-[12px] font-medium text-ink hover:opacity-70"
       >
         Try again
       </button>
@@ -3523,7 +3523,7 @@ export default function FinancialsView() {
   // First run: the right door is the bank feed, not a statement upload.
   const firstRunState = (
     <div className="text-center py-20">
-      <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+      <div className="flex items-center justify-center mx-auto mb-3 text-faint">
         <Landmark size={18} className="text-faint" />
       </div>
       <p className="text-[14px] font-semibold text-ink-2">No transactions yet</p>
@@ -3532,7 +3532,7 @@ export default function FinancialsView() {
           ? "Nothing has arrived from your bank yet"
           : "Connect your bank for a live feed, or import a statement"}
       </p>
-      <button onClick={() => setTab("setup")} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
+      <button onClick={() => setTab("setup")} className="mt-3 text-[12px] font-medium text-ink hover:opacity-70">
         {plaidItems.length > 0 ? "Open setup" : "Connect your bank"}
       </button>
     </div>
@@ -3540,78 +3540,72 @@ export default function FinancialsView() {
 
   return (
     <div className="space-y-5">
-      {/* Header */}
-      <div className="min-w-0 flex items-end justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <h2 className="text-[19px] font-semibold text-ink tracking-tight truncate">Financials</h2>
-            <AccountantChanges />
-          </div>
-          <p className="text-[12px] text-muted mt-0.5">
-            {tab === "tobook" ? "Book the money that came in and went out"
-              : tab === "ledger" ? "Everything ever: search, filter, drill in"
-              : tab === "cash" ? "Free cash, reserves and loans"
-              : "Bank connections, statement imports and cleanup tools"}
-          </p>
-        </div>
-        <div className="flex items-center gap-3 flex-shrink-0">
-          {plaidItems.length > 0 && tab !== "tobook" && (
-            // Honest wording: the bank feed is pulled on a 10-minute timer by this
-            // device (main.rs), plus the doorbell when Plaid has news. "Auto-syncing" read as live.
-            <span className="text-[11.5px] text-muted whitespace-nowrap">
-              {lastBankSync ? `Bank checked ${agoText(lastBankSync)}` : "Bank feed checked every 10 minutes"}
-            </span>
-          )}
-          {tab !== "tobook" && (
-            <button
-              onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
-              title="Record a cash movement, reachable from any tab"
-              className="text-[12px] text-muted hover:text-ink-2 flex items-center gap-1.5 whitespace-nowrap"
-            >
-              <Plus size={13} />
-              Record cash
-            </button>
-          )}
-          <button
-            onClick={refreshScreen}
-            disabled={refreshing}
-            title="Re-read transactions, deals and loans on this device. Does not contact your bank. Use Sync bank for that."
-            className="text-[12px] text-muted hover:text-ink-2 disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
+      {/* R-583: the shell draws the title and the section tabs; the buttons go in its slot. */}
+      <PageActions>
+        {plaidItems.length > 0 && tab !== "tobook" && (
+          // Honest wording: the bank feed is pulled on a 10-minute timer by this
+          // device (main.rs), plus the doorbell when Plaid has news. "Auto-syncing" read as live.
+          <span className="ui-note whitespace-nowrap mr-1">
+            {lastBankSync ? `Bank checked ${agoText(lastBankSync)}` : "Bank feed checked every 10 minutes"}
+          </span>
+        )}
+        <Button
+          icon={<RotateCcw size={14} className={refreshing ? "animate-spin" : ""} />}
+          onClick={refreshScreen}
+          disabled={refreshing}
+          title="Re-read transactions, deals and loans on this device. Does not contact your bank. Use Sync bank for that."
+        >
+          Reload
+        </Button>
+        {tab === "check" && (
+          <Button icon={<RefreshCw size={14} />} onClick={loadCheckBooks} title="Read the statements and the ledger again">
+            Check again
+          </Button>
+        )}
+        {tab !== "setup" && (
+          <Button
+            icon={<Landmark size={14} />}
+            onClick={() => setTab("setup")}
+            title="Bank connections, statement imports and cleanup tools"
           >
-            <RotateCcw size={13} className={refreshing ? "animate-spin" : ""} />
-            Reload
-          </button>
-        </div>
-      </div>
+            Import and bank
+          </Button>
+        )}
+        {tab !== "tobook" && (
+          <Button
+            variant="ink"
+            icon={<Plus size={14} />}
+            onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
+            title="Record a cash movement, reachable from any tab"
+          >
+            Record cash
+          </Button>
+        )}
+      </PageActions>
 
-      {/* Surface nav — To book is the daily queue and opens first; its count is
-          the one number that says whether there is work to do. */}
-      <div className="flex items-center gap-5 border-b border-line">
-        {([
-          ["tobook", "To book"],
-          ["tieout", "Tie out"],
-          ["ledger", "Ledger"],
-          ["cash", "Cash"],
-          ["check", "Check books"],
-          ["report", "Tax report"],
-          ["setup", "Setup"],
-        ] as const).map(([v, label]) => (
-          <button
-            key={v}
-            onClick={() => setTab(v)}
-            className={`-mb-px pb-2 text-[13px] border-b-2 transition-colors ${
-              tab === v ? "text-ink font-semibold border-ink" : "text-muted border-transparent hover:text-ink-2"
-            }`}
-          >
-            {label}
-            {v === "tobook" && toBookStats.count > 0 && (
-              <span className="ml-1.5 font-normal text-muted tabular-nums">{toBookStats.count}</span>
-            )}
-            {v === "tieout" && tieOut.length - tieOutHiddenCount > 0 && (
-              <span className="ml-1.5 font-normal text-muted tabular-nums">{tieOut.length - tieOutHiddenCount}</span>
-            )}
-          </button>
-        ))}
+      {/* Surface nav: To book is the daily queue and opens first; its count is
+          the one number that says whether there is work to do. Cash is two tabs
+          here (Free cash, Loans) over the same cashTab state as before. */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <Tabs
+          label="Financials"
+          value={tab === "cash" ? cashTab : tab}
+          onChange={(v) => {
+            if (v === "freecash" || v === "loans") { setCashTab(v); setTab("cash"); }
+            else setTab(v as typeof tab);
+          }}
+          tabs={[
+            { id: "tobook", label: "To book", count: toBookStats.count > 0 ? toBookStats.count : undefined },
+            { id: "tieout", label: "Tie out", count: tieOut.length - tieOutHiddenCount > 0 ? tieOut.length - tieOutHiddenCount : undefined },
+            { id: "ledger", label: "Ledger" },
+            { id: "check", label: "Check books" },
+            { id: "freecash", label: "Free cash" },
+            { id: "loans", label: "Loans" },
+            { id: "report", label: "Tax report" },
+            { id: "setup", label: "Setup" },
+          ]}
+        />
+        <AccountantChanges />
       </div>
 
       {/* Cash — free cash and loans together; the best-designed screens stay as they are. */}
@@ -3624,19 +3618,6 @@ export default function FinancialsView() {
       )}
       {tab === "cash" && (
         <div className="space-y-4">
-          <div className="flex items-center gap-1">
-            {([["freecash", "Free cash"], ["loans", "Loans"]] as const).map(([v, label]) => (
-              <button
-                key={v}
-                onClick={() => setCashTab(v)}
-                className={`px-3 h-8 rounded-lg text-[12.5px] font-medium transition-colors ${
-                  cashTab === v ? "bg-surface-2 text-ink border border-line" : "text-muted hover:text-ink-2"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
           {cashTab === "freecash"
             ? <FreeCashView onCheckBooks={() => setTab("check")} />
             : <LoansView />}
@@ -3648,45 +3629,42 @@ export default function FinancialsView() {
           other than bank_txn, so this figure and the Ledger's totals can never
           silently drift apart. */}
       {tab === "report" && (
-        <div className="space-y-5">
+        <div className="space-y-6">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-2.5">
               <span className="text-[13px] text-muted">Tax year</span>
               <select
                 value={pnlYear}
                 onChange={(e) => setPnlYear(Number(e.target.value))}
-                className="h-8 px-2.5 rounded-lg text-[13px] border border-line bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+                className="ui-btn cursor-pointer"
               >
                 {taxYears.map((y) => <option key={y} value={y}>{y}</option>)}
               </select>
             </div>
-            <button
-              onClick={handleExportPnl}
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-line text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 hover:border-line-3 transition-colors"
-            >
-              <Download size={13} /> Export CSV
-            </button>
+            <Button onClick={handleExportPnl} icon={<Download size={14} />}>Export CSV</Button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="border border-line rounded-xl p-4">
-              <div className="text-[12px] text-muted">Net income (P&L)</div>
-              <div className={`text-[22px] font-semibold tabular-nums ${pnlReport.netIncome >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)] gap-x-6 gap-y-4">
+            <div>
+              <div className="ui-label">Net income (P&L)</div>
+              <div className={`ui-fig ${pnlReport.netIncome >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
                 {fmtAmount(pnlReport.netIncome)}
               </div>
-              <div className="text-[11.5px] text-muted mt-0.5">Income, cost of goods and expenses; refunds and discounts subtracted in full</div>
+              <div className="ui-note mt-0.5">Income, cost of goods and expenses; refunds and discounts subtracted in full</div>
             </div>
-            <div className="border border-line rounded-xl p-4">
-              <div className="text-[12px] text-muted">All bank activity this year</div>
-              <div className="text-[22px] font-semibold tabular-nums text-ink">{fmtAmount(pnlReport.grandTotal)}</div>
-              <div className="text-[11.5px] text-muted mt-0.5">Every dollar in or out, same total as the Ledger for this year</div>
+            <div className="vsep hidden md:block" />
+            <div>
+              <div className="ui-label">All bank activity this year</div>
+              <div className="ui-fig text-ink">{fmtAmount(pnlReport.grandTotal)}</div>
+              <div className="ui-note mt-0.5">Every dollar in or out, same total as the Ledger for this year</div>
             </div>
           </div>
+          <div className="hsep" />
 
           {pnlReport.uncategorized.length > 0 && (
-            <div className="flex items-start gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
-              <AlertTriangle size={15} className="text-warning-ink flex-shrink-0 mt-0.5" />
-              <p className="text-[12px] text-ink-2 flex-1 min-w-0 leading-relaxed">
+            <div className="flex items-start gap-2.5 min-w-0">
+              <AlertTriangle size={16} className="text-warning-ink flex-shrink-0 mt-0.5" />
+              <p className="text-[13px] text-ink-2 flex-1 min-w-0 leading-relaxed">
                 <span className="font-medium text-ink tabular-nums">{fmtAmount(pnlReport.uncategorizedNet)}</span> across{" "}
                 {pnlReport.uncategorized.length} categor{pnlReport.uncategorized.length === 1 ? "y" : "ies"} in {pnlYear} has no
                 category and is <span className="font-medium">not counted</span> in net income above. Categorize it in the
@@ -3698,30 +3676,30 @@ export default function FinancialsView() {
           {pnlReport.groups.map((g) => {
             const excluded = g.group === "Transfers, owner & assets";
             return (
-              <div key={g.group} className="border border-line rounded-xl overflow-hidden">
-                <div className="flex items-center justify-between px-4 py-2.5 bg-surface-2 border-b border-line">
+              <div key={g.group}>
+                <div className="flex items-center justify-between py-2">
                   <div>
-                    <span className="text-[13px] font-semibold text-ink">{g.group}</span>
-                    {excluded && <span className="ml-2 text-[11px] text-muted">Not profit or loss, shown for the record</span>}
+                    <span className="text-[14px] font-medium text-ink">{g.group}</span>
+                    {excluded && <span className="ml-2 ui-note">Not profit or loss, shown for the record</span>}
                   </div>
-                  <span className={`text-[13px] font-semibold tabular-nums ${g.net >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(g.net)}</span>
+                  <span className={`text-[14px] font-medium tabular-nums ${g.net >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(g.net)}</span>
                 </div>
                 {g.categories.length === 0 ? (
-                  <div className="px-4 py-3 text-[12.5px] text-muted">Nothing this year</div>
+                  <div className="py-3 text-[13px] text-muted border-t border-line">Nothing this year</div>
                 ) : (
-                  <table className="w-full text-[12.5px]">
+                  <table className="ui-table ui-table-sm">
                     <tbody>
                       {g.categories.map((c) => {
                         const passthrough = g.group === "Taxes & licences" && TAX_PASSTHROUGH_CATS.includes(c.value);
                         return (
-                          <tr key={c.value} className="border-b border-line last:border-0">
-                            <td className="px-4 py-2 text-ink-2">
+                          <tr key={c.value}>
+                            <td className="text-ink-2">
                               {c.label}
-                              {passthrough && <span className="ml-1.5 text-[11px] text-muted">Not profit or loss</span>}
+                              {passthrough && <span className="ml-1.5 ui-note">Not profit or loss</span>}
                             </td>
-                            <td className="px-4 py-2 text-right tabular-nums text-success-ink">{c.in > 0 ? fmtAmount(c.in) : ""}</td>
-                            <td className="px-4 py-2 text-right tabular-nums text-danger-ink">{c.out > 0 ? fmtAmount(c.out) : ""}</td>
-                            <td className="px-4 py-2 text-right tabular-nums text-ink font-medium">{fmtAmount(c.net)}</td>
+                            <td className="r text-success-ink">{c.in > 0 ? fmtAmount(c.in) : ""}</td>
+                            <td className="r text-danger-ink">{c.out > 0 ? fmtAmount(c.out) : ""}</td>
+                            <td className="r text-ink font-medium">{fmtAmount(c.net)}</td>
                           </tr>
                         );
                       })}
@@ -3745,7 +3723,7 @@ export default function FinancialsView() {
       {tab === "tobook" && (
         <div className="min-w-0 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-[14px] text-ink min-w-0">
-            <span className="font-semibold tabular-nums">
+            <span className="font-medium tabular-nums">
               {toBookStats.count === 0 ? "Nothing to book" : `${toBookStats.count} to book`}
             </span>
             {toBookStats.needsDealAmt > 0.005 && (
@@ -3758,27 +3736,27 @@ export default function FinancialsView() {
                 carries no chip for the same reason a genuinely unmatched row
                 does, and only one of those two is worth investigating. */}
             {suggScope.truncated && (
-              <div className="text-[11.5px] text-muted mt-0.5">
+              <div className="ui-note mt-0.5">
                 Suggestions cover the newest <span className="tabular-nums">{suggScope.scanned}</span> of{" "}
                 <span className="tabular-nums">{suggScope.eligible}</span> unbooked transactions. Older rows weren't scored.
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <div className="flex items-center gap-1.5 min-w-[190px] bg-surface-2 border border-line rounded-lg px-2.5 h-9">
-              <Search size={13} className="text-muted flex-shrink-0" />
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className="ui-search min-w-[190px]">
+              <Search size={14} />
               <input
                 value={toBookSearch}
                 onChange={(e) => setToBookSearch(e.target.value)}
-                placeholder="Search payee, memo, exact amount…"
-                className="w-full bg-transparent text-[13px] text-ink placeholder:text-muted focus:outline-none"
+                placeholder="Search payee, memo, exact amount"
+                aria-label="Search the queue"
               />
-            </div>
+            </label>
             {accounts.length > 1 && (
               <select
                 value={toBookAcct}
                 onChange={(e) => setToBookAcct(e.target.value)}
-                className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+                className="ui-btn cursor-pointer"
               >
                 <option value="all">All accounts</option>
                 {accounts.map((a) => (
@@ -3786,31 +3764,23 @@ export default function FinancialsView() {
                 ))}
               </select>
             )}
-            {/* R-288 phase 4 — the queue's maintenance, where the queue is. These used to be
+            {/* R-288 phase 4: the queue's maintenance, where the queue is. These used to be
                 split between here and Setup for a historical reason, not a daily one. */}
             <span className="relative flex-shrink-0">
-              <button
+              <Button
                 onClick={() => setToolsOpen((v) => !v)}
                 aria-haspopup="menu"
                 aria-expanded={toolsOpen}
-                className={`flex items-center gap-1.5 px-3.5 h-9 rounded-lg text-[13px] font-medium transition-colors ${
-                  missingLinks.length > 0
-                    ? "border border-accent/40 bg-accent/5 text-accent hover:bg-accent/10"
-                    : "border border-line text-ink-2 hover:bg-surface-2"
-                }`}
+                icon={<Wand2 size={14} />}
               >
-                <Wand2 size={14} /> Tools
-                {missingLinks.length > 0 && (
-                  <span className="tabular-nums text-[11.5px] px-1.5 rounded-md bg-accent text-on-accent ring-1 ring-accent/40">
-                    {missingLinks.length}
-                  </span>
-                )}
+                Tools
+                {missingLinks.length > 0 && <span className="ui-count urgent">{missingLinks.length}</span>}
                 <ChevronDown size={12} />
-              </button>
+              </Button>
               {toolsOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setToolsOpen(false)} />
-                  <div role="menu" className="absolute right-0 top-full mt-1.5 z-50 w-[300px] bg-surface border border-line rounded-xl shadow-xl py-1.5">
+                  <div role="menu" className="ui-pop absolute right-0 top-full mt-1.5 z-50 w-[300px]">
                     {[
                       { label: "Find missing links", hint: missingLinks.length > 0 ? `${missingLinks.length} completed deal${missingLinks.length === 1 ? "" : "s"} with payments never linked` : "Completed deals whose payments were never linked", run: openMissingLinks },
                       { label: "Clean up duplicates", hint: "The same transaction on the books more than once", run: () => previewDedupe(false) },
@@ -3820,33 +3790,33 @@ export default function FinancialsView() {
                         key={it.label}
                         role="menuitem"
                         onClick={() => { setToolsOpen(false); it.run(); }}
-                        className="w-full text-left px-3.5 py-2 hover:bg-surface-2 transition-colors"
+                        className="ui-pop-item flex-col !items-start gap-0"
                       >
-                        <div className="text-[12.5px] font-medium text-ink">{it.label}</div>
-                        <div className="text-[11px] text-muted">{it.hint}</div>
+                        <span className="text-[13px] font-medium text-ink">{it.label}</span>
+                        <span className="ui-note">{it.hint}</span>
                       </button>
                     ))}
                   </div>
                 </>
               )}
             </span>
-            <button
+            <Button
+              icon={<Plus size={14} />}
               onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
-              className="flex-shrink-0 flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"
             >
-              <Plus size={14} /> Record cash
-            </button>
+              Record cash
+            </Button>
             {plaidItems.length > 0 && (
-              <button
+              <Button
+                variant="ink"
                 onClick={() => syncPlaid("sync")}
                 disabled={plaidSyncing}
                 title="Pull new transactions from your connected banks now"
-                className="flex-shrink-0 flex items-center gap-1.5 px-3.5 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                icon={<RefreshCw size={14} className={plaidSyncing ? "animate-spin" : ""} />}
               >
-                <RefreshCw size={13} className={plaidSyncing ? "animate-spin" : ""} />
-                {plaidSyncing ? "Syncing…" : "Sync bank"}
-                {lastBankSync && !plaidSyncing && <span className="text-[11px] text-muted font-normal">· {agoText(lastBankSync)}</span>}
-              </button>
+                {plaidSyncing ? "Syncing" : "Sync bank"}
+                {lastBankSync && !plaidSyncing && <span className="opacity-70 font-normal">{agoText(lastBankSync)}</span>}
+              </Button>
             )}
           </div>
         </div>
@@ -3897,8 +3867,8 @@ export default function FinancialsView() {
                                 <div className="min-w-0 flex-1" title={c.reason}>
                                   <div className="text-[12px] text-ink-2 truncate flex items-center gap-1.5">
                                     {txn && (txn.direction === "in"
-                                      ? <ArrowDownLeft size={11} className="text-success-ink flex-shrink-0" strokeWidth={2} />
-                                      : <ArrowUpRight size={11} className="text-danger-ink flex-shrink-0" strokeWidth={2} />)}
+                                      ? <ArrowDownLeft size={11} className="text-success-ink flex-shrink-0" strokeWidth={1.75} />
+                                      : <ArrowUpRight size={11} className="text-danger-ink flex-shrink-0" strokeWidth={1.75} />)}
                                     <span className="tabular-nums flex-shrink-0">{txn ? fmtAmount(txn.amount) : ""}</span>
                                     <span className="truncate">{txn ? (txn.counterparty_name || txn.description) : c.txn_id}</span>
                                   </div>
@@ -3911,7 +3881,7 @@ export default function FinancialsView() {
                                 <button
                                   onClick={() => attachMissing(c)}
                                   disabled={attachBusy !== null}
-                                  className="flex-shrink-0 flex items-center gap-1 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors"
+                                  className="ui-btn ui-btn-sm flex-shrink-0 disabled:opacity-50"
                                 >
                                   {attachBusy === c.txn_id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />} Attach
                                 </button>
@@ -3944,7 +3914,7 @@ export default function FinancialsView() {
             onClick={() => previewDedupe(false)}
             disabled={dedupeRunning || bulkBusy}
             title="Find transactions imported more than once (e.g. the same bank connected on two devices) and remove the extra copies."
-            className="mr-auto flex items-center gap-1.5 px-3 h-9 border border-accent/40 bg-accent/5 text-accent rounded-lg text-[13px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors"
+            className="ui-btn mr-auto disabled:opacity-50"
           >
             {dedupeRunning && !dedupe ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} Clean up duplicates
           </button>
@@ -3952,7 +3922,7 @@ export default function FinancialsView() {
             onClick={clearStatementImports}
             disabled={clearing || bulkBusy}
             title="Delete transactions imported from statement files, keeps the live bank feed"
-            className="flex items-center gap-1.5 px-3 h-9 border border-line text-muted rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/30 hover:bg-danger-bg disabled:opacity-50 transition-colors"
+            className="ui-btn disabled:opacity-50"
           >
             {clearing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Remove statement imports
           </button>
@@ -3964,7 +3934,7 @@ export default function FinancialsView() {
           <button
             onClick={aiCategorize}
             disabled={aiBusy}
-            className="flex items-center gap-1.5 px-3 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+            className="ui-btn disabled:opacity-50"
           >
             {aiBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Auto-categorize with AI
           </button>
@@ -3976,7 +3946,7 @@ export default function FinancialsView() {
               value={accountId}
               onChange={(e) => setAccountId(e.target.value)}
               list="fin-import-accounts"
-              className="border border-line px-2.5 h-9 rounded-lg text-[13px] w-56 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="border border-line px-2.5 h-9 rounded-lg text-[13px] w-56 bg-surface focus:outline-none"
             />
             <datalist id="fin-import-accounts">
               {accounts.map((a) => <option key={a} value={a} />)}
@@ -3988,14 +3958,14 @@ export default function FinancialsView() {
           <button
             onClick={pickAndPreview}
             disabled={bulkBusy || previewing}
-            className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+            className="ui-btn ui-btn-ink disabled:opacity-50"
           >
             {bulkBusy || previewing ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Import statement
           </button>
           <button
             onClick={pickAndPreviewAi}
             disabled={aiExtracting || bulkBusy}
-            className="flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+            className="ui-btn disabled:opacity-50"
           >
             {aiExtracting || bulkBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Smart import (AI)
           </button>
@@ -4029,11 +3999,11 @@ export default function FinancialsView() {
                     <div className="grid grid-cols-3 gap-2">
                       <div className="rounded-xl border border-line bg-surface-2/40 px-3 py-2.5">
                         <div className="text-[11px] text-muted">Total</div>
-                        <div className="text-[18px] font-semibold text-ink tabular-nums">{dedupe.total_transactions ?? "–"}</div>
+                        <div className="text-[18px] font-semibold text-ink tabular-nums">{dedupe.total_transactions ?? "None"}</div>
                       </div>
-                      <div className="rounded-xl border border-accent/30 bg-accent/5 px-3 py-2.5">
+                      <div className="rounded-xl border border-line-3 bg-transparent px-3 py-2.5">
                         <div className="text-[11px] text-muted">Auto-remove</div>
-                        <div className="text-[18px] font-semibold text-accent tabular-nums">{dedupe.auto_remove ?? 0}</div>
+                        <div className="text-[18px] font-semibold text-ink tabular-nums">{dedupe.auto_remove ?? 0}</div>
                       </div>
                       <div className="rounded-xl border border-line bg-surface-2/40 px-3 py-2.5">
                         <div className="text-[11px] text-muted">To review</div>
@@ -4044,9 +4014,9 @@ export default function FinancialsView() {
                     {/* One account under two names (a re-link's new last-4, or a bank rename) — the reason already-booked
                         transactions kept re-appearing as "needs booking". */}
                     {(dedupe.account_merges?.length || 0) > 0 && (
-                      <div className="rounded-xl border border-accent/40 bg-accent/5 px-3.5 py-3">
+                      <div className="rounded-xl border border-line-3 bg-transparent px-3.5 py-3">
                         <div className="text-[12.5px] font-semibold text-ink flex items-center gap-1.5">
-                          <Landmark size={14} className="text-accent" /> Same account under two names
+                          <Landmark size={14} className="text-ink" /> Same account under two names
                         </div>
                         <p className="text-[11.5px] text-muted leading-relaxed mt-1">
                           The bank renamed or reconnected these accounts, so the same transactions came in twice. They'll be combined under the current name, keeping everything you've booked.
@@ -4095,7 +4065,7 @@ export default function FinancialsView() {
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
                                 {g.kind === "same reference" && <span className="text-[10px] text-muted bg-surface-2 border border-line rounded px-1.5 py-0.5">{g.date_moved ? "date moved" : "same reference"}</span>}
-                                {g.cross_account && <span className="text-[10px] text-accent bg-accent/10 border border-accent/30 rounded px-1.5 py-0.5">merged acct</span>}
+                                {g.cross_account && <span className="text-[10px] text-ink bg-transparent border border-line-3 rounded px-1.5 py-0.5">merged acct</span>}
                                 <span className={`tabular-nums font-medium ${g.direction === "in" ? "text-success-ink" : "text-ink-2"}`}>{g.direction === "in" ? "+" : "−"}${g.amount.toFixed(2)}</span>
                                 <span className="text-[10px] text-muted bg-surface-2 border border-line rounded px-1.5 py-0.5">−{(g.remove?.length || 1)}</span>
                               </div>
@@ -4128,12 +4098,12 @@ export default function FinancialsView() {
 
               <div className="px-5 py-4 border-t border-line flex items-center justify-end gap-2">
                 {dedupeDone ? (
-                  <button onClick={() => setDedupe(null)} className="h-9 px-4 rounded-lg text-[13px] font-medium bg-accent text-on-accent hover:bg-accent-hover transition-colors">Done</button>
+                  <button onClick={() => setDedupe(null)} className="ui-btn ui-btn-ink">Done</button>
                 ) : (
                   <>
-                    <button onClick={() => setDedupe(null)} disabled={dedupeRunning} className="h-9 px-4 rounded-lg text-[13px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-40 transition-colors">Cancel</button>
+                    <button onClick={() => setDedupe(null)} disabled={dedupeRunning} className="ui-btn disabled:opacity-40">Cancel</button>
                     <button onClick={executeDedupe} disabled={dedupeRunning || ((dedupe.auto_remove || 0) === 0 && !(dedupe.account_merges?.length))}
-                      className="flex items-center gap-1.5 h-9 px-4 rounded-lg text-[13px] font-medium bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-40 transition-colors">
+                      className="ui-btn ui-btn-ink disabled:opacity-40">
                       {dedupeRunning ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} {(dedupe.auto_remove || 0) === 0 && dedupe.account_merges?.length ? "Combine accounts" : <>Remove {dedupe.auto_remove || 0} duplicate{(dedupe.auto_remove || 0) === 1 ? "" : "s"}</>}
                     </button>
                   </>
@@ -4160,29 +4130,29 @@ export default function FinancialsView() {
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
                     <input inputMode="decimal" value={cashAmount} onChange={(e) => setCashAmount(e.target.value)} placeholder="0"
-                      className="w-full bg-surface-2 border border-line rounded-lg h-9 pl-6 pr-2.5 text-[13.5px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                      className="w-full bg-surface-2 border border-line rounded-lg h-9 pl-6 pr-2.5 text-[13.5px] text-ink tabular-nums focus:outline-none" />
                   </div>
                 </label>
                 <label className="block">
                   <span className="block text-[12px] font-medium text-ink-2 mb-1">Date</span>
                   <input type="date" value={cashDate} onChange={(e) => setCashDate(e.target.value)}
-                    className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                    className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none" />
                 </label>
                 <label className="block">
                   <span className="block text-[12px] font-medium text-ink-2 mb-1">Who (optional)</span>
                   <input value={cashCp} onChange={(e) => setCashCp(e.target.value)} placeholder="Buyer / supplier name"
-                    className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                    className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none" />
                 </label>
                 <label className="block">
                   <span className="block text-[12px] font-medium text-ink-2 mb-1">Note (optional)</span>
                   <input value={cashNote} onChange={(e) => setCashNote(e.target.value)} placeholder="e.g. cash pickup"
-                    className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                    className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none" />
                 </label>
                 <p className="text-[11px] text-muted">Saved as a cash transaction, then link it to deals below. It tracks how much is left of the original.</p>
               </div>
               <div className="px-5 py-4 border-t border-line flex justify-end gap-2">
-                <button onClick={() => setCashOpen(false)} className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
-                <button onClick={recordCash} disabled={cashSaving} className="px-5 h-9 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[13px] font-medium disabled:opacity-50">
+                <button onClick={() => setCashOpen(false)} className="ui-btn">Cancel</button>
+                <button onClick={recordCash} disabled={cashSaving} className="ui-btn ui-btn-ink disabled:opacity-50">
                   {cashSaving ? "Saving…" : "Record"}
                 </button>
               </div>
@@ -4200,9 +4170,9 @@ export default function FinancialsView() {
 
       {/* Bank feed (Plaid) — live transactions straight from the bank */}
       {tab === "setup" && (
-      <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+      <div className="border-t border-line pt-4 space-y-3">
         <div className="flex items-center gap-2 min-w-0">
-          <Building2 size={15} className="text-muted flex-shrink-0" strokeWidth={1.8} />
+          <Building2 size={15} className="text-muted flex-shrink-0" strokeWidth={1.75} />
           <div className="text-[13px] font-semibold text-ink">Bank feed (Plaid)</div>
           {plaidItems.length > 0 && (
             <>
@@ -4213,7 +4183,7 @@ export default function FinancialsView() {
                     onClick={() => syncPlaid("refresh")}
                     disabled={plaidSyncing}
                     title="Ask your bank for today's latest activity, then sync."
-                    className="flex items-center gap-1.5 h-8 px-2.5 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                    className="ui-btn disabled:opacity-50"
                   >
                     {plaidSyncing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Refresh
                   </button>
@@ -4303,7 +4273,7 @@ export default function FinancialsView() {
                   <button
                     onClick={savePlaidKeys}
                     disabled={plaidSavingKeys}
-                    className="flex items-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+                    className="ui-btn ui-btn-ink disabled:opacity-50"
                   >
                     {plaidSavingKeys ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save keys
                   </button>
@@ -4311,7 +4281,7 @@ export default function FinancialsView() {
                     <button
                       onClick={testPlaidKeys}
                       disabled={plaidTesting}
-                      className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                      className="ui-btn disabled:opacity-50"
                     >
                       {plaidTesting ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />} Test connection
                     </button>
@@ -4333,7 +4303,7 @@ export default function FinancialsView() {
               <button
                 onClick={connectBank}
                 disabled={plaidConnecting}
-                className="flex items-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+                className="ui-btn ui-btn-ink disabled:opacity-50"
               >
                 {plaidConnecting ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Connect a bank
               </button>
@@ -4343,7 +4313,7 @@ export default function FinancialsView() {
                     onClick={() => syncPlaid("refresh")}
                     disabled={plaidSyncing}
                     title="Ask your bank for the very latest activity (today's wires and spending), then sync. Use this when something you just did isn't showing yet."
-                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                    className="ui-btn disabled:opacity-50"
                   >
                     {plaidSyncing ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />} Refresh from bank
                   </button>
@@ -4351,7 +4321,7 @@ export default function FinancialsView() {
                     onClick={() => syncPlaid()}
                     disabled={plaidSyncing}
                     title="Pull the latest transactions Plaid has already fetched."
-                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                    className="ui-btn disabled:opacity-50"
                   >
                     {plaidSyncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sync now
                   </button>
@@ -4359,7 +4329,7 @@ export default function FinancialsView() {
                     onClick={() => syncPlaid("full")}
                     disabled={plaidSyncing}
                     title="Reset each bank's sync position and re-pull all transactions from the start. Use if transactions are missing."
-                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                    className="ui-btn disabled:opacity-50"
                   >
                     <RotateCcw size={14} /> Re-pull all
                   </button>
@@ -4367,7 +4337,7 @@ export default function FinancialsView() {
                     onClick={clearAndRepull}
                     disabled={plaidSyncing}
                     title="Delete every bank transaction (and its tags/allocations) and re-pull fresh. Use after removing a wrong account."
-                    className="flex items-center gap-1.5 h-9 px-3 ml-auto border border-danger-ink/25 text-danger-ink/80 rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/40 hover:bg-danger-bg disabled:opacity-50 transition-colors"
+                    className="ui-btn ui-btn-danger ml-auto disabled:opacity-50"
                   >
                     <Trash2 size={14} /> Clear all & re-pull
                   </button>
@@ -4385,7 +4355,7 @@ export default function FinancialsView() {
 
             {/* Safety backup — an independent, append-only copy of every bank transaction in
                 a Google Sheet you own, so you always have a readable record outside the app. */}
-            <div className="rounded-xl border border-line bg-surface-2/30 p-3.5 space-y-2.5">
+            <div className="border-t border-line pt-3.5 space-y-2.5">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-[13px] font-semibold text-ink flex items-center gap-1.5"><ShieldCheck size={14} className="text-success-ink" /> Backup to Google Sheet</div>
@@ -4397,7 +4367,7 @@ export default function FinancialsView() {
                   onClick={runBackupNow}
                   disabled={backupBusy || !backupUrl.trim()}
                   title={backupUrl.trim() ? "Append any new transactions to the sheet now" : "Add your Google Sheet link first"}
-                  className="flex items-center gap-1.5 h-9 px-3 shrink-0 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                  className="ui-btn shrink-0 disabled:opacity-50"
                 >
                   {backupBusy ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />} Back up now
                 </button>
@@ -4422,14 +4392,14 @@ export default function FinancialsView() {
 
             {plaidConnecting && (
               <div className="flex items-center gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
-                <Loader2 size={15} className="animate-spin text-accent flex-shrink-0" />
+                <Loader2 size={15} className="animate-spin text-ink flex-shrink-0" />
                 <p className="text-[12px] text-ink-2 flex-1 min-w-0">
                   Finish connecting your bank in the browser window that just opened, then come back here. It syncs
                   automatically.
                 </p>
                 <button
                   onClick={cancelConnect}
-                  className="flex-shrink-0 h-9 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
+                  className="ui-btn flex-shrink-0"
                 >
                   Cancel
                 </button>
@@ -4438,7 +4408,7 @@ export default function FinancialsView() {
 
             {plaidPreparing && !plaidConnecting && (
               <div className="flex items-center gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
-                <Loader2 size={15} className="animate-spin text-accent flex-shrink-0" />
+                <Loader2 size={15} className="animate-spin text-ink flex-shrink-0" />
                 <p className="text-[12px] text-ink-2 flex-1 min-w-0">
                   Plaid is preparing your transactions. This can take a minute. They'll appear here automatically, or
                   use Sync now to check again.
@@ -4540,7 +4510,7 @@ export default function FinancialsView() {
                   </div>
                   <button
                     onClick={() => setSyncSkips(null)}
-                    className="flex-shrink-0 h-7 px-2 border border-line text-muted hover:bg-surface-2 rounded-md text-[11px] transition-colors"
+                    className="ui-btn ui-btn-sm flex-shrink-0"
                   >
                     Dismiss
                   </button>
@@ -4570,7 +4540,7 @@ export default function FinancialsView() {
               <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">
                 {plaidItems.map((it) => (
                   <div key={it.id} className="flex items-center gap-3 px-3 py-2 min-w-0">
-                    <Landmark size={14} className="text-muted flex-shrink-0" strokeWidth={1.8} />
+                    <Landmark size={14} className="text-muted flex-shrink-0" strokeWidth={1.75} />
                     <div className="min-w-0 flex-1">
                       <div className="text-[12px] font-medium text-ink truncate">{it.institution}</div>
                       <div className="text-[11px] text-muted tabular-nums">
@@ -4606,7 +4576,7 @@ export default function FinancialsView() {
 
       {/* Import preview / confirm card */}
       {tab === "setup" && preview && (
-        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+        <div className="border-t border-line pt-4 space-y-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="text-[13px] text-ink">
               Detected <span className="font-semibold">{preview.format.toUpperCase()}</span> ·{" "}
@@ -4625,13 +4595,13 @@ export default function FinancialsView() {
               <button
                 onClick={doImport}
                 disabled={importing}
-                className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+                className="ui-btn ui-btn-ink disabled:opacity-50"
               >
                 {importing ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Import
               </button>
               <button
                 onClick={() => { setPreview(null); setPreviewPath(null); }}
-                className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
+                className="ui-btn"
               >
                 Cancel
               </button>
@@ -4672,7 +4642,7 @@ export default function FinancialsView() {
 
       {/* AI import preview / confirm card */}
       {tab === "setup" && aiPreview && (
-        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+        <div className="border-t border-line pt-4 space-y-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="text-[13px] text-ink">
               Extracted <span className="tabular-nums font-semibold">{aiPreview.total}</span> transaction{aiPreview.total !== 1 ? "s" : ""}
@@ -4687,13 +4657,13 @@ export default function FinancialsView() {
               <button
                 onClick={doImportAi}
                 disabled={aiImporting}
-                className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+                className="ui-btn ui-btn-ink disabled:opacity-50"
               >
                 {aiImporting ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Import
               </button>
               <button
                 onClick={() => { setAiPreview(null); setAiPreviewPath(null); }}
-                className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
+                className="ui-btn"
               >
                 Cancel
               </button>
@@ -4715,7 +4685,7 @@ export default function FinancialsView() {
                   <tr key={i}>
                     <td className="px-3 py-2 tabular-nums text-muted whitespace-nowrap">{(r.date || "").slice(0, 10)}</td>
                     <td className="px-3 py-2 text-ink-2 max-w-0 truncate"><span className="truncate block">{r.description}</span></td>
-                    <td className="px-3 py-2 text-muted whitespace-nowrap">{r.category || "–"}</td>
+                    <td className="px-3 py-2 text-muted whitespace-nowrap">{r.category || "None"}</td>
                     <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${r.direction === "in" ? "text-success-ink" : "text-ink"}`}>
                       {r.direction === "in" ? "+" : "-"}{fmtAmount(r.amount)}
                     </td>
@@ -4729,20 +4699,20 @@ export default function FinancialsView() {
 
       {/* Summary — a quiet figures strip, not stat cards */}
       {tab === "ledger" && txns.length > 0 && (
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[12px] border-b border-line pb-3">
-          <span className="text-muted">Transactions <span className="text-ink font-medium tabular-nums">{rangeSummary.total}</span></span>
-          <span className="text-muted">Reviewed <span className="text-ink font-medium tabular-nums">{rangeSummary.reviewed}/{rangeSummary.total}</span></span>
-          <span className="text-muted">Money in <span className="text-success-ink font-medium tabular-nums">{fmtAmount(rangeSummary.sumIn)}</span></span>
-          <span className="text-muted">Money out <span className="text-danger-ink font-medium tabular-nums">{fmtAmount(rangeSummary.sumOut)}</span></span>
-          <span className="text-muted">Uncategorized <span className={`font-medium tabular-nums ${rangeSummary.unclassified > 0 ? "text-ink" : "text-muted"}`}>{rangeSummary.unclassified}</span></span>
-          <span className="text-muted">Needs a deal <span className={`font-medium tabular-nums ${rangeSummary.needsDeal > 0 ? "text-ink" : "text-muted"}`}>{rangeSummary.needsDeal}</span></span>
+        <div className="grid grid-cols-2 lg:grid-cols-4 2xl:grid-cols-7">
+          <Kpi label="Transactions" value={rangeSummary.total} />
+          <Kpi label="Reviewed" value={`${rangeSummary.reviewed}/${rangeSummary.total}`} />
+          <Kpi label="Money in" value={rangeSummary.sumIn} format={fmtAmount} className="text-success-ink" />
+          <Kpi label="Money out" value={rangeSummary.sumOut} format={fmtAmount} />
+          <Kpi label="Uncategorized" value={rangeSummary.unclassified} className={rangeSummary.unclassified > 0 ? "" : "text-muted"} />
+          <Kpi label="Needs a deal" value={rangeSummary.needsDeal} className={rangeSummary.needsDeal > 0 ? "" : "text-muted"} />
           {rangeSummary.shippingOut > 0 && (
             <button
               onClick={() => { setTab("ledger"); setCatFilter("shipping"); }}
               title="Every transaction categorised as shipping and freight"
-              className="text-muted hover:text-ink-2 transition-colors"
+              className="text-left rounded-lg hover:bg-surface-2 transition-colors duration-150"
             >
-              Shipping <span className="text-ink font-medium tabular-nums">{fmtAmount(rangeSummary.shippingOut)}</span>
+              <Kpi label="Shipping" value={rangeSummary.shippingOut} format={fmtAmount} />
             </button>
           )}
         </div>
@@ -4750,52 +4720,43 @@ export default function FinancialsView() {
 
       {/* Ledger toolbar — scope (left) + search & filters (right) */}
       {tab === "ledger" && (
-      <div className="border-t border-b border-line flex items-center gap-x-5 gap-y-2 py-2.5 flex-wrap">
-        <div className="flex items-center gap-5">
-          {([["all", "All"], ["todo", "To book"], ["booked", "Booked"]] as const).map(([v, label]) => (
-            <button
-              key={v}
-              onClick={() => setQueue(v)}
-              className={`text-[13px] transition-colors ${queue === v ? "text-ink font-semibold" : "text-muted hover:text-ink-2"}`}
-            >
-              {label}
-              <span className="ml-1.5 font-normal text-muted tabular-nums">
-                {v === "all" ? rangeSummary.total : v === "todo" ? rangeSummary.total - rangeSummary.reviewed : rangeSummary.reviewed}
-              </span>
-            </button>
-          ))}
-        </div>
+      <div className="flex items-center gap-x-4 gap-y-2 flex-wrap">
+        <Tabs
+          label="Scope"
+          value={queue}
+          onChange={(v) => setQueue(v as typeof queue)}
+          tabs={[
+            { id: "all", label: "All", count: rangeSummary.total },
+            { id: "todo", label: "To book", count: rangeSummary.total - rangeSummary.reviewed },
+            { id: "booked", label: "Booked", count: rangeSummary.reviewed },
+          ]}
+        />
 
-        <div className="ml-auto flex items-center gap-x-4 gap-y-2 flex-wrap">
+        <div className="ml-auto flex items-center gap-x-3 gap-y-2 flex-wrap">
           {!splitView && (
-            <div className="flex items-center gap-1.5 min-w-[190px] bg-surface-2 border border-line rounded-lg px-2.5 h-8">
-              <Search size={13} className="text-muted flex-shrink-0" />
+            <label className="ui-search">
+              <Search size={14} />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search payee, memo, exact amount…"
-                className="w-full bg-transparent text-[13px] text-ink placeholder:text-muted focus:outline-none"
+                placeholder="Search payee, memo, exact amount"
+                aria-label="Search the ledger"
               />
-            </div>
+            </label>
           )}
           {!splitView && (
-            <div className="flex items-center gap-3">
-              {(["all", "in", "out"] as const).map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setDirFilter(f)}
-                  className={`text-[12px] transition-colors ${dirFilter === f ? "text-ink font-semibold" : "text-muted hover:text-ink-2"}`}
-                >
-                  {f === "all" ? "All" : f === "in" ? "In" : "Out"}
-                </button>
-              ))}
-            </div>
+            <Tabs
+              label="Direction"
+              value={dirFilter}
+              onChange={(v) => setDirFilter(v as typeof dirFilter)}
+              tabs={[{ id: "all", label: "All" }, { id: "in", label: "In" }, { id: "out", label: "Out" }]}
+            />
           )}
           <select
             value={taxYearValue}
             onChange={(e) => pickTaxYear(e.target.value)}
             aria-label="Tax year"
-            className="bg-surface-2 border border-line text-[12px] font-medium text-ink hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+            className="ui-btn cursor-pointer"
           >
             {taxYears.map((y) => (
               <option key={y} value={String(y)}>Tax year {y}</option>
@@ -4807,22 +4768,16 @@ export default function FinancialsView() {
               wrapping row read as a form, not a ledger; every active filter still shows
               as a chip beside the button, so nothing narrows the list out of sight. */}
           <span className="relative">
-            <button
+            <Button
               onClick={() => setFiltersOpen((v) => !v)}
               aria-haspopup="dialog"
               aria-expanded={filtersOpen}
-              className={`flex items-center gap-1.5 px-3 h-8 rounded-lg text-[12.5px] font-medium transition-colors ${
-                ledgerChips.length > 0
-                  ? "border border-accent/40 bg-accent/5 text-accent hover:bg-accent/10"
-                  : "border border-line text-ink-2 hover:bg-surface-2"
-              }`}
+              icon={<SlidersHorizontal size={14} />}
             >
               Filters
-              {ledgerChips.length > 0 && (
-                <span className="tabular-nums text-[11px] px-1.5 rounded-md bg-accent text-on-accent ring-1 ring-accent/40">{ledgerChips.length}</span>
-              )}
+              {ledgerChips.length > 0 && <span className="ui-count">{ledgerChips.length}</span>}
               <ChevronDown size={12} />
-            </button>
+            </Button>
             {filtersOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setFiltersOpen(false)} />
@@ -4830,12 +4785,12 @@ export default function FinancialsView() {
                   role="dialog"
                   aria-label="Ledger filters"
                   onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setFiltersOpen(false); } }}
-                  className="absolute right-0 top-full mt-1.5 z-50 w-[min(340px,calc(100vw-2rem))] bg-surface border border-line rounded-xl shadow-xl p-3.5 space-y-3"
+                  className="ui-pop !right-0 !left-auto top-full mt-1.5 z-50 w-[min(340px,calc(100vw-2rem))] !p-3.5 space-y-3"
                 >
                   {accounts.length > 0 && (
                     <label className="block">
                       <span className="block text-[11.5px] font-medium text-muted mb-1">Account</span>
-                      <select value={acctFilter} onChange={(e) => setAcctFilter(e.target.value)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                      <select value={acctFilter} onChange={(e) => setAcctFilter(e.target.value)} className="ui-btn w-full cursor-pointer">
                         <option value="all">All accounts</option>
                         {accounts.map((a) => (
                           <option key={a} value={a}>{a}</option>
@@ -4845,7 +4800,7 @@ export default function FinancialsView() {
                   )}
                   <label className="block">
                     <span className="block text-[11.5px] font-medium text-muted mb-1">Category</span>
-                    <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                    <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)} className="ui-btn w-full cursor-pointer">
                       <option value="all">All categories</option>
                       <CategoryOptions />
                     </select>
@@ -4855,7 +4810,7 @@ export default function FinancialsView() {
                       anything is hidden — not only after. */}
                   <label className="block">
                     <span className="block text-[11.5px] font-medium text-muted mb-1">Payment method</span>
-                    <select value={methodFilter} onChange={(e) => setMethodFilter(e.target.value as any)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                    <select value={methodFilter} onChange={(e) => setMethodFilter(e.target.value as any)} className="ui-btn w-full cursor-pointer">
                       <option value="all">All methods</option>
                       {METHODS.filter((m) => (methodCounts.total[m.value] || 0) > 0 || methodFilter === m.value).map((m) => (
                         <option key={m.value} value={m.value}>{m.label} · {methodCounts.total[m.value] || 0}</option>
@@ -4867,7 +4822,7 @@ export default function FinancialsView() {
                       Financials" lands. */}
                   <label className="block">
                     <span className="block text-[11.5px] font-medium text-muted mb-1">Person</span>
-                    <select value={personFilter} onChange={(e) => setPersonFilter(e.target.value)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                    <select value={personFilter} onChange={(e) => setPersonFilter(e.target.value)} className="ui-btn w-full cursor-pointer">
                       <option value="all">Anyone</option>
                       <option value="linked">Linked to someone · {peopleInLedger.linked}</option>
                       <option value="none">Not linked · {peopleInLedger.unlinked}</option>
@@ -4884,7 +4839,7 @@ export default function FinancialsView() {
                   </label>
                   <label className="block">
                     <span className="block text-[11.5px] font-medium text-muted mb-1">Status</span>
-                    <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className="w-full bg-surface-2 border border-line text-[12.5px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40">
+                    <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className="ui-btn w-full cursor-pointer">
                       <option value="all">All statuses</option>
                       <option value="unclassified">Uncategorized</option>
                       <option value="unallocated_in">Needs a deal (in)</option>
@@ -4896,13 +4851,13 @@ export default function FinancialsView() {
                       year on the bar to Custom. */}
                   <div>
                     <span className="block text-[11.5px] font-medium text-muted mb-1">Dates</span>
-                    <div className="flex items-center gap-1.5 text-[12px] text-muted bg-surface-2 border border-line rounded-lg px-2.5 h-9">
+                    <div className="ui-search w-full">
                       <input
                         type="date"
                         value={fromDate}
                         aria-label="From"
                         onChange={(e) => setFromDate(e.target.value)}
-                        className="min-w-0 flex-1 bg-transparent text-[12px] text-ink-2 rounded focus:outline-none focus:ring-2 focus:ring-accent/40 [color-scheme:light] dark:[color-scheme:dark]"
+                        className="min-w-0 flex-1 bg-transparent text-[12px] text-ink-2 rounded focus:outline-none [color-scheme:light] dark:[color-scheme:dark]"
                       />
                       <span>to</span>
                       <input
@@ -4910,22 +4865,22 @@ export default function FinancialsView() {
                         value={toDate}
                         aria-label="To"
                         onChange={(e) => setToDate(e.target.value)}
-                        className="min-w-0 flex-1 bg-transparent text-[12px] text-ink-2 rounded focus:outline-none focus:ring-2 focus:ring-accent/40 [color-scheme:light] dark:[color-scheme:dark]"
+                        className="min-w-0 flex-1 bg-transparent text-[12px] text-ink-2 rounded focus:outline-none [color-scheme:light] dark:[color-scheme:dark]"
                       />
                     </div>
                   </div>
-                  <label className="flex items-center justify-between gap-3 pt-1 cursor-pointer">
+                  <div className="flex items-center justify-between gap-3 pt-1">
                     <span>
-                      <span className="block text-[12.5px] font-medium text-ink-2">Split money in and out</span>
-                      <span className="block text-[11px] text-muted">Side by side, each with its own search, for reconciling a refund</span>
+                      <span className="block text-[13px] font-medium text-ink">Split money in and out</span>
+                      <span className="block ui-note">Side by side, each with its own search, for reconciling a refund</span>
                     </span>
-                    <input type="checkbox" checked={splitView} onChange={() => setSplitView((v) => !v)} className="accent-accent flex-shrink-0" />
-                  </label>
+                    <Switch on={splitView} onToggle={() => setSplitView((v) => !v)} label="Split money in and out" />
+                  </div>
                   <div className="flex items-center justify-between pt-2 border-t border-line">
-                    <button onClick={() => { clearFilters(); setFiltersOpen(false); }} className="text-[12px] font-medium text-muted hover:text-ink-2">
+                    <button onClick={() => { clearFilters(); setFiltersOpen(false); }} className="ui-link muted">
                       Clear all
                     </button>
-                    <button onClick={() => setFiltersOpen(false)} className="h-8 px-3.5 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12.5px] font-semibold">
+                    <button onClick={() => setFiltersOpen(false)} className="ui-btn ui-btn-ink">
                       Done
                     </button>
                   </div>
@@ -4938,9 +4893,9 @@ export default function FinancialsView() {
           <button
             onClick={handleExportLedger}
             title="Download these transactions as a CSV: one row each, with category, linked deals and notes"
-            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-line text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 hover:border-line-3 transition-colors"
+            className="ui-btn"
           >
-            <Download size={13} /> Export CSV
+            <Download size={14} /> Export CSV
           </button>
         </div>
         {ledgerChips.length > 0 && (
@@ -4950,7 +4905,7 @@ export default function FinancialsView() {
                 key={c.key}
                 onClick={c.clear}
                 title="Remove this filter"
-                className="inline-flex items-center gap-1 h-6 pl-2 pr-1.5 rounded-md border border-line bg-surface-2 text-[11.5px] text-ink-2 hover:border-line-3 max-w-[260px]"
+                className="inline-flex items-center gap-1.5 h-6 pl-2.5 pr-1.5 rounded-full bg-surface-3 text-[12px] font-medium text-ink hover:brightness-110 transition-[filter] duration-150 max-w-[260px]"
               >
                 <span className="truncate">{c.label}</span>
                 <X size={11} className="text-muted flex-shrink-0" />
@@ -4988,7 +4943,7 @@ export default function FinancialsView() {
               </span>
               <button
                 onClick={() => setMethodFilter("unclassified")}
-                className="font-medium text-accent hover:text-accent-hover transition-colors"
+                className="font-medium text-ink hover:opacity-70 transition-colors"
               >
                 Show them
               </button>
@@ -5037,7 +4992,7 @@ export default function FinancialsView() {
               value={bulkCat}
               onChange={(e) => setBulkCat(e.target.value)}
               disabled={bulkActionBusy}
-              className="h-8 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50"
+              className="h-8 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none disabled:opacity-50"
             >
               <option value="">Set category…</option>
               <CategoryOptions includeUncat={false} />
@@ -5062,7 +5017,7 @@ export default function FinancialsView() {
           <button
             onClick={() => bulkSetReviewed(true)}
             disabled={bulkActionBusy}
-            className="font-medium text-accent hover:text-accent-hover disabled:opacity-50 transition-colors"
+            className="font-medium text-ink hover:opacity-70 disabled:opacity-50 transition-colors"
           >
             Book
           </button>
@@ -5096,13 +5051,13 @@ export default function FinancialsView() {
           allocation state, the subline says what the row needs, and the obvious
           match is one click. */}
       {tab === "tobook" && !loading && !loadError && autoBooked.length > 0 && (
-        <div className="bg-surface border border-line rounded-xl overflow-hidden">
+        <div className="border-t border-line">
           <button
             onClick={() => setAutoBookedOpen((v) => !v)}
             className="w-full px-4 py-2.5 flex items-center gap-2 text-left hover:bg-surface-2 transition-colors"
           >
             {autoBookedOpen ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
-            <Wand2 size={13} className="text-accent" />
+            <Wand2 size={13} className="text-ink" />
             <span className="text-[12.5px] font-semibold text-ink">Booked for you</span>
             <span className="text-[12px] text-muted min-w-0 truncate">
               · <span className="tabular-nums">{autoBooked.length}</span> in the last two weeks, each the way you've booked it at least five times before
@@ -5124,7 +5079,7 @@ export default function FinancialsView() {
                   <button
                     onClick={() => undoAuto(t)}
                     disabled={undoingAuto === t.id}
-                    className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors whitespace-nowrap"
+                    className="ui-btn ui-btn-sm disabled:opacity-50 whitespace-nowrap"
                   >
                     {undoingAuto === t.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />} Undo
                   </button>
@@ -5140,7 +5095,7 @@ export default function FinancialsView() {
         : txns.length === 0 ? firstRunState
         : toBookRows.length === 0 ? (
           <div className="text-center py-20">
-            <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+            <div className="flex items-center justify-center mx-auto mb-3 text-faint">
               <Check size={18} className="text-success-ink" />
             </div>
             <p className="text-[14px] font-semibold text-ink-2">
@@ -5156,7 +5111,7 @@ export default function FinancialsView() {
             {(toBookSearch.trim() !== "" || toBookAcct !== "all") && (
               <button
                 onClick={() => { setToBookSearch(""); setToBookAcct("all"); }}
-                className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
+                className="mt-3 text-[12px] font-medium text-ink hover:opacity-70"
               >
                 Clear search
               </button>
@@ -5165,16 +5120,16 @@ export default function FinancialsView() {
         ) : (
           <div className="space-y-5">
             {toBookVisible.groups.map((g) => (
-              <div key={g.date} className="bg-surface border border-line rounded-xl overflow-hidden">
-                <div className="px-4 py-2 bg-surface-2/60 border-b border-line text-[11.5px] font-semibold text-ink-2">
+              <div key={g.date}>
+                <div className="px-3 py-2 text-[12px] font-medium text-muted">
                   {g.pending ? (
-                    <>Pending at the bank <span className="font-normal text-muted">· these usually post in 1–3 days. Booking one now is fine: the booking carries over when it posts.</span></>
+                    <>Pending at the bank <span className="font-normal text-muted">· these usually post in 1 to 3 days. Booking one now is fine: the booking carries over when it posts.</span></>
                   ) : dayHeading(g.date)}
                 </div>
                 <div className="divide-y divide-line-2">
                   {g.rows.map((t) => {
                     const payee = t.counterparty_name?.trim();
-                    const mainLabel = payee || t.description || "–";
+                    const mainLabel = payee || t.description || "No description";
                     const memo = payee ? t.description : "";
                     // The offer stays visible while the drawer is open (R-204):
                     // it used to vanish the moment you opened the full picker,
@@ -5204,13 +5159,13 @@ export default function FinancialsView() {
                             className="align-middle accent-accent flex-shrink-0"
                           />
                           {t.direction === "in"
-                            ? <ArrowDownLeft size={15} className="text-success-ink flex-shrink-0" strokeWidth={2} />
-                            : <ArrowUpRight size={15} className="text-danger-ink flex-shrink-0" strokeWidth={2} />}
+                            ? <ArrowDownLeft size={15} className="text-success-ink flex-shrink-0" strokeWidth={1.75} />
+                            : <ArrowUpRight size={15} className="text-danger-ink flex-shrink-0" strokeWidth={1.75} />}
                           <div className="min-w-0 flex-1 basis-full lg:basis-auto order-1 lg:order-none">
                             <div className="flex items-center gap-1.5 min-w-0">
                               <span className="text-[13px] font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
                               {t.pending && (
-                                <StatusPill title="Your bank hasn't posted this yet. It usually posts in 1–3 days; a booking made now carries over when it posts.">
+                                <StatusPill title="Your bank hasn't posted this yet. It usually posts in 1 to 3 days; a booking made now carries over when it posts.">
                                   {g.pending ? `Pending · ${dayHeading((t.posted_at || "").slice(0, 10))}` : "Pending"}
                                 </StatusPill>
                               )}
@@ -5227,7 +5182,7 @@ export default function FinancialsView() {
                                 onClick={(e) => { e.stopPropagation(); takeOver(t, s); }}
                                 disabled={takingOver === t.id}
                                 title={`You booked ${fmtAmount(s.from_amount)} "${s.from_description}" on ${s.from_date}${s.from_category ? ` as ${catLabel(s.from_category)}` : ""}${s.from_pending ? " while it was pending" : "; your bank has since retracted that copy"}. Take over moves that booking and any deal link onto this row and removes the old copy (backed up).`}
-                                className="mt-1 mr-1 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-medium hover:bg-accent/10 disabled:opacity-50 transition-colors max-w-full"
+                                className="mt-1 mr-1 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-line-3 bg-transparent text-ink text-[11.5px] font-medium hover:bg-surface-3 disabled:opacity-50 transition-colors max-w-full"
                               >
                                 {takingOver === t.id ? <Loader2 size={10} className="animate-spin flex-shrink-0" /> : <RotateCcw size={10} className="flex-shrink-0" />}
                                 <span className="truncate">
@@ -5242,7 +5197,7 @@ export default function FinancialsView() {
                                 <button
                                   onClick={(e) => { e.stopPropagation(); saveReview(t, { category: sg.cat }); }}
                                   title={`Booked as ${catLabel(sg.cat)} ${sg.count} time${sg.count === 1 ? "" : "s"} before, click to apply`}
-                                  className="mt-1 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-medium hover:bg-accent/10 transition-colors max-w-full"
+                                  className="mt-1 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-line-3 bg-transparent text-ink text-[11.5px] font-medium hover:bg-surface-3 transition-colors max-w-full"
                                 >
                                   <Wand2 size={10} className="flex-shrink-0" />
                                   <span className="truncate">Usually {catLabel(sg.cat)}</span>
@@ -5284,7 +5239,7 @@ export default function FinancialsView() {
                                     onClick={() => tieMatch(t, c.deal, c.candidate)}
                                     disabled={tyingId === t.id}
                                     title={`Tie to ${dealLabel(c.deal)} as ${tieWord(candRole(c.candidate), t.direction)}: ${c.reason}`}
-                                    className={`inline-flex items-center gap-1.5 px-2.5 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors whitespace-nowrap ${
+                                    className={`inline-flex items-center gap-1.5 px-2.5 rounded-lg border border-line-3 bg-transparent text-ink text-[12px] font-semibold hover:bg-surface-3 disabled:opacity-50 transition-colors whitespace-nowrap ${
                                       offer.choices.length > 1 ? "h-7" : "h-8"
                                     }`}
                                   >
@@ -5313,7 +5268,7 @@ export default function FinancialsView() {
                               <button
                                 onClick={() => toggleRow(t)}
                                 title="Pick a deal to tie this payment to"
-                                className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-line text-[12px] text-ink-2 font-medium hover:bg-surface-2 hover:border-line-3 transition-colors whitespace-nowrap"
+                                className="ui-btn whitespace-nowrap"
                               >
                                 <Link2 size={11} /> Link deal
                               </button>
@@ -5329,13 +5284,13 @@ export default function FinancialsView() {
                             <button
                               onClick={() => bookRow(t)}
                               title={armedBook === t.id ? "This is deal money with no deal linked. Click again to book it anyway." : "Mark this transaction booked"}
-                              className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold transition-colors whitespace-nowrap ${
+                              className={`ui-btn whitespace-nowrap ${
                                 armedBook === t.id
-                                  ? "bg-warning-bg border border-warning/40 text-warning-ink hover:bg-warning-bg/80"
-                                  : "bg-accent hover:bg-accent-hover text-on-accent"
+                                  ? "!bg-warning-bg !border-warning/40 !text-warning-ink"
+                                  : "ui-btn-ink"
                               }`}
                             >
-                              <Check size={12} strokeWidth={2.4} /> {armedBook === t.id ? "No deal, book anyway?" : "Book"}
+                              <Check size={12} strokeWidth={1.75} /> {armedBook === t.id ? "No deal, book anyway?" : "Book"}
                             </button>
                           </span>
                         </div>
@@ -5355,9 +5310,9 @@ export default function FinancialsView() {
           green when its statement is in, the difference is zero and nothing is flagged. */}
       {tab === "check" && (
         checkBooksError ? (
-          <div className="border border-danger-line bg-danger-bg/40 rounded-xl p-4 text-[12.5px] text-ink-2">
-            Could not check the books: {checkBooksError}
-            <button onClick={loadCheckBooks} className="ml-2 font-medium text-accent hover:text-accent-hover">Try again</button>
+          <div className="py-4 text-[13px] text-ink-2 border-y border-line max-w-[760px]">
+            <span className="text-danger-ink">Could not check the books:</span> {checkBooksError}
+            <button onClick={loadCheckBooks} className="ml-2 font-medium text-ink hover:opacity-70">Try again</button>
           </div>
         ) : checkBooks === null ? skeletonRows
         : checkBooks.length === 0 ? (
@@ -5366,35 +5321,50 @@ export default function FinancialsView() {
             <p className="text-[12px] text-muted mt-1">Connect a bank or import a statement under Setup.</p>
           </div>
         ) : (
-          <div className="space-y-5">
-            <p className="text-[12px] text-muted">
+          <div className="space-y-6 max-w-[1120px]">
+            <p className="text-[13px] text-muted max-w-[780px] leading-relaxed">
               A month is proven when its statement is imported and the statement's net (ending less beginning) equals the ledger's rows for the period.
               A difference means a row is missing (negative) or doubled (positive) in your records. Possible duplicates and withdrawn rows are resolved under To book.
             </p>
+            {(() => {
+              const isOk = (p: CheckAccount["periods"][number]) => !!p.statement && Math.abs(p.difference ?? 0) < 0.005 && p.duplicates === 0 && p.withdrawn === 0;
+              const allPeriods = checkBooks.flatMap((a) => a.periods);
+              const proven = allPeriods.filter(isOk).length;
+              const look = allPeriods.length - proven;
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_1px_minmax(0,1fr)] max-w-[760px]">
+                  <Kpi label="Accounts checked" value={checkBooks.length} />
+                  <div className="vsep hidden sm:block" />
+                  <Kpi label="Months proven" value={proven} className="text-success-ink" caption={`of ${allPeriods.length}`} />
+                  <div className="vsep hidden sm:block" />
+                  <Kpi label="Months to look at" value={look} className={look > 0 ? "text-warning-ink" : ""} caption={look > 0 ? "A statement, a difference or a flag" : "Nothing to look at"} />
+                </div>
+              );
+            })()}
             {checkBooks.map((a) => {
               const clean = a.periods.every((p) => p.statement && Math.abs(p.difference ?? 0) < 0.005 && p.duplicates === 0 && p.withdrawn === 0);
               return (
-                <div key={a.account} className="bg-surface border border-line rounded-xl overflow-hidden">
-                  <div className="px-4 py-3 bg-surface-2/60 border-b border-line flex items-baseline justify-between gap-3 flex-wrap">
+                <section key={a.account} aria-label={a.account}>
+                  <div className="pb-2.5 flex items-start justify-between gap-3 flex-wrap">
                     <div className="min-w-0">
-                      <div className="text-[13px] font-semibold text-ink truncate">{a.account}</div>
+                      <div className="text-[15px] font-medium text-ink truncate">{a.account}</div>
                       {a.recon ? (
-                        <div className="text-[11.5px] text-muted">
+                        <div className="text-[13px] text-muted mt-0.5">
                           Bank balance {fmtAmount(a.recon.bank_balance)} · ledger net {fmtAmount(a.recon.ledger_net)} over {a.recon.txn_count} rows
                           {a.recon.baseline != null && Math.abs(a.recon.drift) > 0.005
                             ? <span className="text-danger-ink"> · off by {fmtAmount(a.recon.drift)} since last checked</span>
                             : a.recon.baseline != null ? <span className="text-success-ink"> · agrees with the bank</span> : null}
                         </div>
                       ) : (
-                        <div className="text-[11.5px] text-muted">Not a connected bank account: only its statements can prove it.</div>
+                        <div className="text-[13px] text-muted mt-0.5">Not a connected bank account: only its statements can prove it.</div>
                       )}
                     </div>
                     <StatusPill tone={clean ? "success" : "warning"}>{clean ? "Every month proven" : `${a.periods.filter((p) => !(p.statement && Math.abs(p.difference ?? 0) < 0.005 && p.duplicates === 0 && p.withdrawn === 0)).length} to look at`}</StatusPill>
                   </div>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-[12px]">
+                    <table className="ui-table ui-table-sm min-w-[900px]">
                       <thead>
-                        <tr className="text-left text-muted border-b border-line-2">
+                        <tr>
                           <th className="font-medium px-3 py-2 whitespace-nowrap">Period</th>
                           <th className="font-medium px-3 py-2 whitespace-nowrap">Statement</th>
                           <th className="font-medium px-3 py-2 text-right whitespace-nowrap">Statement net</th>
@@ -5404,23 +5374,23 @@ export default function FinancialsView() {
                           <th className="px-3 py-2" />
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-line-2">
+                      <tbody>
                         {a.periods.map((p) => {
                           const ok = !!p.statement && Math.abs(p.difference ?? 0) < 0.005 && p.duplicates === 0 && p.withdrawn === 0;
                           const label = p.start.slice(0, 7) === p.end.slice(0, 7) && p.start.endsWith("-01")
                             ? monthHeading(p.start.slice(0, 7)) : `${p.start} to ${p.end}`;
                           return (
-                            <tr key={p.start + p.end} className={ok ? "" : "bg-warning-bg/40"}>
+                            <tr key={p.start + p.end}>
                               <td className="px-3 py-2 whitespace-nowrap text-ink">{label}</td>
                               <td className="px-3 py-2 whitespace-nowrap">
                                 {p.statement
                                   ? <span className="text-ink-2" title={p.statement.file_name}>Posted · {p.statement.rows} rows</span>
-                                  : <button onClick={() => { setAccountId(a.account); setTab("setup"); }} className="font-medium text-accent hover:text-accent-hover">No statement · Import</button>}
+                                  : <button onClick={() => { setAccountId(a.account); setTab("setup"); }} className="font-medium text-ink hover:opacity-70">No statement · Import</button>}
                               </td>
-                              <td className="px-3 py-2 text-right tabular-nums text-ink-2 whitespace-nowrap">{p.statement ? fmtAmount(p.statement.net) : "–"}</td>
+                              <td className="px-3 py-2 text-right tabular-nums text-ink-2 whitespace-nowrap">{p.statement ? fmtAmount(p.statement.net) : "None"}</td>
                               <td className="px-3 py-2 text-right tabular-nums text-ink-2 whitespace-nowrap">{fmtAmount(p.ledger_net)} <span className="text-faint">· {p.ledger_rows}</span></td>
                               <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap font-medium ${p.difference == null ? "text-faint" : Math.abs(p.difference) < 0.005 ? "text-success-ink" : "text-danger-ink"}`}>
-                                {p.difference == null ? "–" : Math.abs(p.difference) < 0.005 ? "0.00" : `${p.difference > 0 ? "+" : ""}${fmtAmount(p.difference)}`}
+                                {p.difference == null ? "None" : Math.abs(p.difference) < 0.005 ? "0.00" : `${p.difference > 0 ? "+" : ""}${fmtAmount(p.difference)}`}
                               </td>
                               <td className="px-3 py-2 whitespace-nowrap">
                                 <span className="inline-flex items-center gap-1 flex-nowrap">
@@ -5430,7 +5400,7 @@ export default function FinancialsView() {
                                 </span>
                               </td>
                               <td className="px-3 py-2 text-right whitespace-nowrap">
-                                <button onClick={() => openLedgerOn(a.account, p.start, p.end)} className="text-[11.5px] font-medium text-accent hover:text-accent-hover">Open ledger</button>
+                                <button onClick={() => openLedgerOn(a.account, p.start, p.end)} className="text-[11.5px] font-medium text-ink hover:opacity-70">Open ledger</button>
                               </td>
                             </tr>
                           );
@@ -5438,7 +5408,7 @@ export default function FinancialsView() {
                       </tbody>
                     </table>
                   </div>
-                </div>
+                </section>
               );
             })}
           </div>
@@ -5453,38 +5423,34 @@ export default function FinancialsView() {
         : loadError ? errorState
         : (
           <div className="space-y-4">
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-wrap">
               {(["wire", "zelle", "rtp", "cash"] as const).map((k) => (
                 <button
                   key={k}
                   onClick={() => toggleTieOutKind(k)}
-                  className={`h-8 px-3 rounded-lg text-[12.5px] font-medium border transition-colors ${
-                    tieOutKinds.has(k) ? "bg-surface-2 text-ink border-line" : "text-muted border-transparent hover:text-ink-2"
-                  }`}
+                  className={`ui-opt ${tieOutKinds.has(k) ? "on" : ""}`}
+                  aria-pressed={tieOutKinds.has(k)}
                 >
                   {KIND_LABEL[k]}
                 </button>
               ))}
-              <span className="w-px h-5 bg-line mx-1" />
+              <span className="vsep h-5 mx-1" />
               {([["all", "Both"], ["in", "In"], ["out", "Out"]] as const).map(([v, label]) => (
                 <button
                   key={v}
                   onClick={() => setTieOutDir(v)}
-                  className={`h-8 px-3 rounded-lg text-[12.5px] font-medium border transition-colors ${
-                    tieOutDir === v ? "bg-surface-2 text-ink border-line" : "text-muted border-transparent hover:text-ink-2"
-                  }`}
+                  className={`ui-opt ${tieOutDir === v ? "on" : ""}`}
+                  aria-pressed={tieOutDir === v}
                 >
                   {label}
                 </button>
               ))}
               {(tieOutHiddenCount > 0 || tieOutShowHidden) && (
                 <>
-                  <span className="w-px h-5 bg-line mx-1" />
+                  <span className="vsep h-5 mx-1" />
                   <button
                     onClick={() => setTieOutShowHidden((v) => !v)}
-                    className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12.5px] font-medium border transition-colors ${
-                      tieOutShowHidden ? "bg-surface-2 text-ink border-line" : "text-muted border-transparent hover:text-ink-2"
-                    }`}
+                    className={`ui-opt inline-flex items-center gap-1.5 ${tieOutShowHidden ? "on" : ""}`}
                   >
                     <EyeOff size={12} /> Hidden <span className="tabular-nums">{tieOutHiddenCount}</span>
                   </button>
@@ -5492,14 +5458,14 @@ export default function FinancialsView() {
               )}
             </div>
 
-            <div className="text-[12px] text-muted">
+            <div className="ui-note">
               {tieOutFiltered.length} {tieOutShowHidden ? "hidden " : ""}movement{tieOutFiltered.length === 1 ? "" : "s"} · {fmtAmount(tieOutStats.sumIn)} in · {fmtAmount(tieOutStats.sumOut)} out {tieOutShowHidden ? "untied, kept off the list" : "still untied"}
             </div>
 
             {tieOutLoading && tieOut.length === 0 ? skeletonRows
             : tieOutFiltered.length === 0 ? (
               <div className="text-center py-20">
-                <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+                <div className="flex items-center justify-center mx-auto mb-3 text-faint">
                   <Check size={18} className="text-success-ink" />
                 </div>
                 <p className="text-[14px] font-semibold text-ink-2">
@@ -5511,32 +5477,32 @@ export default function FinancialsView() {
             ) : (
               <div className="space-y-5">
                 {tieOutGroups.map((g) => (
-                  <div key={g.month} className="bg-surface border border-line rounded-xl overflow-hidden">
-                    <div className="px-4 py-2 bg-surface-2/60 border-b border-line text-[11.5px] font-semibold text-ink-2">
+                  <div key={g.month}>
+                    <div className="px-3 py-2 text-[12px] font-medium text-muted">
                       {monthHeading(g.month)}
                     </div>
-                    <div className="divide-y divide-line-2">
+                    <div className="divide-y divide-line">
                       {g.rows.map((t) => {
                         const payee = t.counterparty_name?.trim();
-                        const mainLabel = payee || t.description || "–";
+                        const mainLabel = payee || t.description || "No description";
                         const memo = payee ? t.description : "";
                         const sug = serverSugg.get(t.id)?.[0];
                         return (
                           <div key={t.id} className="pl-3 pr-3 py-3">
                             <div className="flex items-center gap-3 min-w-0 flex-wrap lg:flex-nowrap">
                               {t.direction === "in"
-                                ? <ArrowDownLeft size={15} className="text-success-ink flex-shrink-0" strokeWidth={2} />
-                                : <ArrowUpRight size={15} className="text-danger-ink flex-shrink-0" strokeWidth={2} />}
+                                ? <ArrowDownLeft size={15} className="text-success-ink flex-shrink-0" strokeWidth={1.75} />
+                                : <ArrowUpRight size={15} className="text-danger-ink flex-shrink-0" strokeWidth={1.75} />}
                               <div className="min-w-0 flex-1 basis-full lg:basis-auto order-1 lg:order-none">
                                 <div className="flex items-center gap-1.5 min-w-0">
-                                  <span className="text-[13px] font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
+                                  <span className="text-[14px] font-medium text-ink truncate" title={mainLabel}>{mainLabel}</span>
                                   <StatusPill>{KIND_LABEL[t.kind]}</StatusPill>
                                 </div>
                                 <div className="text-[11.5px] text-muted truncate">
                                   {(t.posted_at || "").slice(0, 10)}{t.account_id ? ` · ${t.account_id}` : ""}
                                   {memo ? <span className="text-faint"> · {memo}</span> : null}
                                   {sug?.invoice_number && (
-                                    <span className="text-accent"> · Suggested: {sug.invoice_number}</span>
+                                    <span className="text-ink"> · Suggested: {sug.invoice_number}</span>
                                   )}
                                 </div>
                               </div>
@@ -5558,7 +5524,7 @@ export default function FinancialsView() {
                                 <button
                                   onClick={() => tieOutBookDeal(t)}
                                   title="Tie this movement to a deal"
-                                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-semibold transition-colors whitespace-nowrap"
+                                  className="ui-btn ui-btn-ink whitespace-nowrap"
                                 >
                                   <Link2 size={11} /> Tie to a deal
                                 </button>
@@ -5567,7 +5533,7 @@ export default function FinancialsView() {
                                 <button
                                   onClick={() => tieOutSetHidden(t, !t.hidden)}
                                   title={t.hidden ? "Put it back on the Tie out list" : "Take it off the Tie out list. Changes no figure."}
-                                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-line text-ink-2 hover:bg-surface-2 text-[12px] font-medium transition-colors whitespace-nowrap"
+                                  className="ui-btn whitespace-nowrap"
                                 >
                                   {t.hidden ? <><Eye size={11} /> Show again</> : <><EyeOff size={11} /> Hide</>}
                                 </button>
@@ -5660,28 +5626,21 @@ export default function FinancialsView() {
 
       {/* R-288 phase 3 — booking from history, switched here. */}
       {tab === "setup" && autoBookOn !== null && (
-        <div className="bg-surface border border-line rounded-xl px-4 py-3 flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="text-[13px] font-semibold text-ink flex items-center gap-1.5"><Wand2 size={14} className="text-accent" /> Book repeat expenses automatically</div>
-            <p className="text-[11.5px] text-muted leading-relaxed mt-0.5">
-              After each bank sync, a transaction is booked when you've booked the same payee the same way at least five times, 95% of the time or more.
-              Never money that belongs to a deal, never a pending charge, never a transfer, Zelle or check. Everything booked this way is listed under "Booked for you" on To book, where you can undo it. Applies on every device.
-            </p>
-          </div>
-          <button
-            role="switch"
-            aria-checked={autoBookOn}
-            aria-label="Book repeat expenses automatically"
-            onClick={async () => {
+        <Row
+          title="Book repeat expenses automatically"
+          sub={<>After each bank sync, a transaction is booked when you've booked the same payee the same way at least five times, 95% of the time or more.
+              Never money that belongs to a deal, never a pending charge, never a transfer, Zelle or check. Everything booked this way is listed under "Booked for you" on To book, where you can undo it. Applies on every device.</>}
+        >
+          <Switch
+            on={autoBookOn}
+            label="Book repeat expenses automatically"
+            onToggle={async () => {
               const next = !autoBookOn;
               try { await api.setAutoBookEnabled(next); setAutoBookOn(next); }
               catch (e: any) { toast(errText(e), "error"); }
             }}
-            className={`relative flex-shrink-0 w-10 h-6 rounded-full border transition-colors ${autoBookOn ? "bg-accent border-accent" : "bg-surface-3 border-line"}`}
-          >
-            <span className={`absolute top-[2px] w-[18px] h-[18px] rounded-full bg-surface shadow transition-all ${autoBookOn ? "left-[18px]" : "left-[2px]"}`} />
-          </button>
-        </div>
+          />
+        </Row>
       )}
 
       {/* Auto-tag rules — managed from Setup, next to the tools that act on them */}
@@ -5729,7 +5688,7 @@ export default function FinancialsView() {
                       if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
                       else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); payeeCancelRef.current = true; e.currentTarget.blur(); }
                     }}
-                    className="w-full min-w-0 bg-surface border border-line rounded px-1.5 py-0.5 text-[16px] font-semibold text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+                    className="w-full min-w-0 bg-surface border border-line rounded px-1.5 py-0.5 text-[16px] font-semibold text-ink focus:outline-none"
                   />
                 ) : (
                   <div className="flex items-center gap-1.5 min-w-0">
@@ -5810,7 +5769,7 @@ export default function FinancialsView() {
                       <span className="text-[11px] text-muted">{personTypeLabel(linked.type)}</span>
                       <button
                         onClick={() => setPersonPickerFor(openTxn.id)}
-                        className="ml-auto text-[12px] font-medium text-accent hover:text-accent-hover transition-colors"
+                        className="ml-auto text-[12px] font-medium text-ink hover:opacity-70 transition-colors"
                       >
                         Change
                       </button>
@@ -5821,7 +5780,7 @@ export default function FinancialsView() {
                         <button
                           onClick={() => tagPerson(openTxn, { type: psug.type, id: psug.id, name: psug.name })}
                           disabled={personBusy === openTxn.id}
-                          className="w-full flex items-center gap-2 h-9 px-3 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[13px] font-medium hover:bg-accent/10 disabled:opacity-50 transition-colors text-left"
+                          className="w-full flex items-center gap-2 h-9 px-3 rounded-lg border border-line-3 bg-transparent text-ink text-[13px] font-medium hover:bg-surface-3 disabled:opacity-50 transition-colors text-left"
                         >
                           {personBusy === openTxn.id
                             ? <Loader2 size={13} className="animate-spin flex-shrink-0" />
@@ -5832,7 +5791,7 @@ export default function FinancialsView() {
                       )}
                       <button
                         onClick={() => setPersonPickerFor(openTxn.id)}
-                        className="text-[12px] font-medium text-accent hover:text-accent-hover transition-colors"
+                        className="text-[12px] font-medium text-ink hover:opacity-70 transition-colors"
                       >
                         {psug ? "Choose someone else" : "Choose a person"}
                       </button>
@@ -5880,7 +5839,7 @@ export default function FinancialsView() {
                     <button
                       onClick={applyMethodToPayee}
                       disabled={methodBusy}
-                      className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[12px] font-medium hover:bg-accent/10 disabled:opacity-50 transition-colors max-w-full"
+                      className="ui-btn ui-btn-sm disabled:opacity-50 max-w-full"
                     >
                       {methodBusy ? <Loader2 size={11} className="animate-spin flex-shrink-0" /> : <Wand2 size={11} className="flex-shrink-0" />}
                       <span className="truncate">
@@ -5922,7 +5881,7 @@ export default function FinancialsView() {
                   return sg ? (
                     <button
                       onClick={(e) => { e.preventDefault(); saveReview(openTxn, { category: sg.cat }); }}
-                      className="mt-1.5 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[12px] font-medium hover:bg-accent/10 transition-colors max-w-full"
+                      className="ui-btn ui-btn-sm mt-1.5 max-w-full"
                     >
                       <Wand2 size={11} className="flex-shrink-0" />
                       <span className="truncate">
@@ -6087,7 +6046,7 @@ function TxnNote({ txn, saveReview }: {
           }
         }}
         onBlur={() => { if (dirtyRef.current) doSave(valueRef.current.trim()); }}
-        className="border border-line px-2.5 py-2 rounded-lg text-[13px] w-full bg-surface text-ink-2 resize-y focus:outline-none focus:ring-2 focus:ring-accent/40"
+        className="border border-line px-2.5 py-2 rounded-lg text-[13px] w-full bg-surface text-ink-2 resize-y focus:outline-none"
       />
       <div className="h-5 mt-1">
         {dirty ? (
@@ -6095,7 +6054,7 @@ function TxnNote({ txn, saveReview }: {
             type="button"
             onClick={() => doSave(value.trim())}
             disabled={saving}
-            className="text-[11.5px] font-semibold text-accent hover:text-accent-hover disabled:opacity-50"
+            className="text-[11.5px] font-semibold text-ink hover:opacity-70 disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save note"}
           </button>
@@ -6225,7 +6184,7 @@ function BulkAllocateModal({
               >
                 <div className="text-[13px] font-medium text-ink truncate">{loanLabel(l)}</div>
                 <div className="text-[11px] text-muted truncate tabular-nums">
-                  {l.lender || "–"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
+                  {l.lender || "No lender"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
                 </div>
               </button>
             ))
@@ -6363,7 +6322,7 @@ function AllocationPanel(props: {
           <button
             onClick={alwaysTag}
             title="Remember this booking, applies to every matching unbooked transaction now, and to future ones as they arrive. Synced to your other devices."
-            className="flex-shrink-0 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 transition-colors"
+            className="ui-btn ui-btn-sm flex-shrink-0"
           >
             Remember
           </button>
@@ -6382,7 +6341,7 @@ function AllocationPanel(props: {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
+    <div className="border-t border-line pt-4 space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="text-[13px] text-ink-2 min-w-0">
           {txn.direction === "in" ? "Receipt" : "Payment"} of{" "}
@@ -6407,7 +6366,7 @@ function AllocationPanel(props: {
           {isLoanTagged && (
             <div className="border border-line-2 rounded-lg overflow-hidden">
               <div className="flex items-center gap-3 px-3 py-2">
-                <Landmark size={14} className="text-muted flex-shrink-0" strokeWidth={1.8} />
+                <Landmark size={14} className="text-muted flex-shrink-0" strokeWidth={1.75} />
                 <div className="min-w-0 flex-1">
                   <div className="text-[12px] font-medium text-ink truncate">{txn.counterparty_name || "Loan"}</div>
                   <div className="text-[11px] text-muted">{loanTagLabel(txn.direction)}</div>
@@ -6498,7 +6457,7 @@ function AllocationPanel(props: {
               <button
                 type="button"
                 onClick={() => setPickerPage(true)}
-                className="mt-1.5 inline-flex items-center gap-1.5 text-[12.5px] font-medium text-accent hover:text-accent-hover transition-colors"
+                className="mt-1.5 inline-flex items-center gap-1.5 text-[12.5px] font-medium text-ink hover:opacity-70 transition-colors"
               >
                 <Maximize2 size={13} /> Open the full list, with each deal's items
               </button>
@@ -6527,7 +6486,7 @@ function AllocationPanel(props: {
               onChange={(e) => setRole(e.target.value)}
               aria-label="What this money is"
               title={ROLES.find((r) => r.value === role)?.hint || ""}
-              className="sm:col-span-4 border border-line px-2.5 h-9 rounded-lg text-[13px] w-full bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="sm:col-span-4 border border-line px-2.5 h-9 rounded-lg text-[13px] w-full bg-surface text-ink-2 focus:outline-none"
             >
               {rolesFor(txn.direction).map((r) => (
                 <option key={r.value} value={r.value}>{r.label}</option>
@@ -6536,7 +6495,7 @@ function AllocationPanel(props: {
             <button
               onClick={onSubmit}
               disabled={busy || !selectedDeal}
-              className="sm:col-span-12 flex items-center justify-center gap-1.5 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              className="ui-btn ui-btn-ink sm:col-span-12 disabled:opacity-50"
             >
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Link
             </button>
@@ -6553,7 +6512,7 @@ function AllocationPanel(props: {
           {fromBuy && role === "supplier_payment" && (
             <div className="flex items-center justify-between gap-3 flex-wrap rounded-lg border border-warning/30 bg-warning-bg px-3 py-2 text-[12px] text-warning-ink">
               <span className="min-w-0 leading-relaxed">This sale's goods cost comes from a buy in the Warehouse. Link the payment to the buy, which spreads it over every order, or it counts twice.</span>
-              <button onClick={toBuy} className="flex-shrink-0 h-7 px-2.5 rounded-md bg-accent text-on-accent text-[12px] font-medium hover:bg-accent-hover">Link it to the buy</button>
+              <button onClick={toBuy} className="ui-btn ui-btn-ink ui-btn-sm flex-shrink-0">Link it to the buy</button>
             </div>
           )}
           {/* Split one payment across multiple deals — allocate a partial amount to
@@ -6582,7 +6541,7 @@ function AllocationPanel(props: {
             {txn.direction === "in" && (
               <button
                 onClick={() => (showNewDeal ? setShowNewDeal(false) : openNewDeal())}
-                className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
+                className="ui-btn"
               >
                 <Plus size={13} /> New deal from this transaction
               </button>
@@ -6614,7 +6573,7 @@ function AllocationPanel(props: {
                     >
                       <div className="text-[12px] font-medium text-ink truncate">{loanLabel(l)}</div>
                       <div className="text-[11px] text-muted truncate tabular-nums">
-                        {l.lender || "–"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
+                        {l.lender || "No lender"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
                       </div>
                     </button>
                   ))}
@@ -6627,7 +6586,7 @@ function AllocationPanel(props: {
             <button
               onClick={onSubmit}
               disabled={busy || !selectedLoan}
-              className="sm:col-span-2 flex items-center justify-center gap-1.5 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              className="ui-btn ui-btn-ink sm:col-span-2 disabled:opacity-50"
             >
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Landmark size={14} />} Tag to loan
             </button>
@@ -6652,7 +6611,7 @@ function AllocationPanel(props: {
 
       {/* Create a deal retroactively from this transaction */}
       {showNewDeal && (
-        <div className="border border-line rounded-xl p-3.5 space-y-3 bg-surface-2/40">
+        <div className="border-t border-line pt-3.5 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div className="text-[12px] font-medium text-ink">Create a deal from this transaction</div>
             <button
@@ -6686,7 +6645,7 @@ function AllocationPanel(props: {
             <button
               onClick={submitNewDeal}
               disabled={newDealBusy}
-              className="flex items-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              className="ui-btn ui-btn-ink disabled:opacity-50"
             >
               {newDealBusy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Create deal
             </button>
@@ -6735,7 +6694,7 @@ function RulesCard({
         </button>
         <button
           onClick={onApply}
-          className="text-[12px] font-medium text-accent hover:text-accent-hover transition-colors"
+          className="text-[12px] font-medium text-ink hover:opacity-70 transition-colors"
         >
           Apply rules now
         </button>
@@ -6773,7 +6732,7 @@ function RulesCard({
                       : "Auto-book is OFF. Matched transactions are pre-filled but wait in To book. Click to book them automatically."}
                     className={`flex-shrink-0 h-6 px-2 rounded-md border text-[11px] font-semibold transition-colors ${
                       r.auto_book
-                        ? "border-accent/40 bg-accent/10 text-accent"
+                        ? "border-line-3 bg-transparent text-ink"
                         : "border-line text-muted hover:text-ink-2 hover:border-line-3"
                     }`}
                   >
@@ -6803,7 +6762,7 @@ function RulesCard({
               value={dir}
               onChange={(e) => setDir(e.target.value)}
               title="Which direction this rule applies to"
-              className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none"
             >
               <option value="">Any direction</option>
               <option value="in">Money in</option>
@@ -6812,13 +6771,13 @@ function RulesCard({
             <select
               value={cat}
               onChange={(e) => setCat(e.target.value)}
-              className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none"
             >
               <CategoryOptions />
             </select>
             <button
               onClick={add}
-              className="flex items-center gap-1.5 h-9 px-3 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[12px] font-medium transition-colors"
+              className="ui-btn ui-btn-ink"
             >
               <Plus size={13} /> Add rule
             </button>

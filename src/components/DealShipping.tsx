@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, FileText, Paperclip, Plus, Truck, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+
 import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightBookingPatch, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
 import { canAttachPayments, canChangePaidOn, canRecordOn, carrierByName, laneEnds } from "../lib/logisticsCarriers";
@@ -29,7 +30,7 @@ import LogisticsBookingForm, {
 
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted " +
-  "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "focus:outline-none focus:border-ink transition-colors duration-150";
 
 const day = (v?: string | null) => (v || "").trim();
 const fmtSigned = (n: number) => `${n < -0.005 ? "-" : ""}${fmtAmount(Math.abs(n))}`;
@@ -37,7 +38,7 @@ const fmtSigned = (n: number) => `${n < -0.005 ? "-" : ""}${fmtAmount(Math.abs(n
 function Row({ label, value, sub }: { label: string; value: ReactNode; sub?: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3 text-[12.5px]">
-      <span className="text-muted">{label}{sub ? <span className="block text-[11px] text-faint">{sub}</span> : null}</span>
+      <span className="text-muted">{label}{sub ? <span className="block text-[12px] text-faint">{sub}</span> : null}</span>
       <span className="text-ink font-medium tabular-nums">{value}</span>
     </div>
   );
@@ -77,7 +78,7 @@ function CatchUpFields({ value, onChange, onOpenCarrier }: {
             const on = value.step === s.value;
             return (
               <button key={s.value} type="button" aria-pressed={on} onClick={() => onChange({ step: s.value, day: "" })}
-                className={`h-8 px-3 rounded-lg border text-[12px] transition-colors ${on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+                className={`h-8 px-3 rounded-lg border text-[12px] transition-colors duration-150 ${on ? "border-ink bg-surface-3 text-ink font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
                 {s.label}
               </button>
             );
@@ -93,7 +94,7 @@ function CatchUpFields({ value, onChange, onOpenCarrier }: {
               const on = value.day === v;
               return (
                 <button key={label} type="button" aria-pressed={on} onClick={() => onChange({ day: on ? "" : v })}
-                  className={`h-8 px-3 rounded-lg border text-[12px] transition-colors ${on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+                  className={`h-8 px-3 rounded-lg border text-[12px] transition-colors duration-150 ${on ? "border-ink bg-surface-3 text-ink font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
                   {label}
                 </button>
               );
@@ -101,7 +102,7 @@ function CatchUpFields({ value, onChange, onOpenCarrier }: {
             <input type="date" className={`${inp} w-auto`} aria-label={dayLabel(value.step)} value={value.day}
               max={value.step === "booked" ? undefined : today} onChange={(e) => onChange({ day: e.target.value })} />
           </div>
-          <div className="text-[11px] text-muted">The day moves the deal's own dates.</div>
+          <div className="text-[12px] text-muted">The day moves the deal's own dates.</div>
         </div>
       )}
       <div className="space-y-2">
@@ -109,7 +110,7 @@ function CatchUpFields({ value, onChange, onOpenCarrier }: {
         <CarrierPicker value={value.carrier} carrierId={value.carrierId} carriers={dir.list} canEdit={false}
           onType={setCarrier} onPick={(c) => onChange({ carrier: c.name, carrierId: c.id })} onSave={() => {}} onOpen={onOpenCarrier} />
         {value.carrier.trim() && !value.carrierId && dir.list && (
-          <div className="text-[11px] text-muted">Pick a saved carrier so its payment terms apply.</div>
+          <div className="text-[12px] text-muted">Pick a saved carrier so its payment terms apply.</div>
         )}
         <div className="grid grid-cols-2 gap-3">
           <div className="min-w-0">
@@ -122,11 +123,11 @@ function CatchUpFields({ value, onChange, onOpenCarrier }: {
           </div>
         </div>
       </div>
-      <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${value.own ? "border-accent/40 bg-accent/5" : "border-line hover:bg-surface-2"}`}>
+      <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors duration-150 ${value.own ? "border-line-3 bg-surface-2" : "border-line hover:bg-surface-2"}`}>
         <input type="checkbox" checked={value.own} onChange={(e) => onChange({ own: e.target.checked })} className="w-4 h-4 mt-0.5 accent-accent" />
         <span className="min-w-0">
           <span className="block text-[13px] font-medium text-ink">We pay the shipping ourselves</span>
-          <span className="block text-[11.5px] text-muted">The customer is not charged for it. Set this now: it cannot be set once the load is booked.</span>
+          <span className="block text-[12px] text-muted">The customer is not charged for it. Set this now: it cannot be set once the load is booked.</span>
         </span>
       </label>
     </div>
@@ -137,7 +138,7 @@ function CatchUpFields({ value, onChange, onOpenCarrier }: {
  *  load without them and says so; this says it before. */
 function AddressNote({ value }: { value: string }) {
   const note = addressNote(value);
-  return note ? <div className="text-[11px] text-muted">{note}</div> : null;
+  return note ? <div className="text-[12px] text-muted">{note}</div> : null;
 }
 
 /** Today, Tomorrow or a date. A second click on the chip that is on clears it. */
@@ -150,7 +151,7 @@ export function DayChips({ label, value, onChange }: { label: string; value: str
         const on = value === v;
         return (
           <button key={word} type="button" aria-pressed={on} onClick={() => onChange(on ? "" : v)}
-            className={`h-8 px-3 rounded-lg border text-[12px] transition-colors ${on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+            className={`h-8 px-3 rounded-lg border text-[12px] transition-colors duration-150 ${on ? "border-ink bg-surface-3 text-ink font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
             {word}
           </button>
         );
@@ -265,7 +266,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
       >
         <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
           <div className="min-w-0">
-            <h2 className="text-[16px] font-semibold text-ink">{moving ? "Already moving" : "Send to logistics"}</h2>
+            <h2 className="text-[16px] font-medium text-ink">{moving ? "Already moving" : "Send to logistics"}</h2>
             <p className="text-[12px] text-muted mt-0.5">
               {flow.invoice_number ? `${flow.invoice_number}. ` : ""}{moving ? "Send this deal to Logistics at the step the load is already at." : byTeam ? "Fill in the freight and ask for a quote. You send it to book from the load once it is on the invoice and the customer has paid." : "Ask for a quote. Logistics fills in the rest."}
             </p>
@@ -278,24 +279,24 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
               {billed != null && (
                 <div className={`rounded-lg border px-3 py-2 text-[13px] ${billed > 0.005 ? "bg-surface-2 border-line" : "bg-warning-bg border-warning/30 text-warning-ink"}`}>
                   {billed > 0.005
-                    ? <><span className="text-muted">Charged to the customer for shipping</span>{" "}<span className="font-semibold text-ink tabular-nums">{fmtAmount(billed)}</span></>
+                    ? <><span className="text-muted">Charged to the customer for shipping</span>{" "}<span className="font-medium text-ink tabular-nums">{fmtAmount(billed)}</span></>
                     : "The invoice has no shipping line."}
                 </div>
               )}
               {moving && <CatchUpFields value={cu} onChange={setCatchUp} onOpenCarrier={setCarrierId} />}
               {!moving && (
               <>
-              <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${urgent ? "border-danger-ink/30 bg-danger-bg" : "border-line hover:bg-surface-2"}`}>
+              <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors duration-150 ${urgent ? "border-danger-ink/30 bg-danger-bg" : "border-line hover:bg-surface-2"}`}>
                 <input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} className="w-4 h-4 mt-0.5 accent-danger" />
                 <span className="min-w-0">
                   <span className={`block text-[13px] font-medium ${urgent ? "text-danger-ink" : "text-ink"}`}>Urgent</span>
-                  <span className="block text-[11.5px] text-muted">It goes to the top of their list in red, and they get a notice that says urgent.</span>
+                  <span className="block text-[12px] text-muted">It goes to the top of their list in red, and they get a notice that says urgent.</span>
                 </span>
               </label>
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">When it needs picking up (required)</div>
                 <DayChips label="Pickup day" value={when.date} onChange={(v) => setWhen((w) => ({ ...w, date: v }))} />
-                <div className="text-[11px] text-muted">The day moves the deal's pickup date.</div>
+                <div className="text-[12px] text-muted">The day moves the deal's pickup date.</div>
               </div>
               </>
               )}
@@ -323,7 +324,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-[12px] font-medium text-ink-2">Pickup {i + 2}</div>
                     <button type="button" onClick={() => setStops((l) => l.filter((_, j) => j !== i))}
-                      className="text-[11.5px] text-muted hover:text-danger-ink px-1.5 h-6 rounded-md hover:bg-danger-bg transition-colors">Remove</button>
+                      className="text-[12px] text-muted hover:text-danger-ink px-1.5 h-6 rounded-md hover:bg-danger-bg transition-colors duration-150">Remove</button>
                   </div>
                   <input className={inp} placeholder="Name" aria-label={`Pickup ${i + 2} name`} value={x.name} onChange={(e) => setStop(i, { name: e.target.value })} />
                   <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
@@ -335,7 +336,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
               ))}
               {stops.length < 9 && (
                 <button type="button" onClick={addStop}
-                  className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2.5 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors">
+                  className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2.5 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors duration-150">
                   <Plus size={13} /> Add a pickup
                 </button>
               )}
@@ -387,7 +388,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
               <div>
                 <label className="block text-[12px] font-medium text-ink-2 mb-1">Note for logistics</label>
                 <textarea
-                  className="border border-line px-3 py-2 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted resize-y min-h-[72px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+                  className="border border-line px-3 py-2 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted resize-y min-h-[72px] focus:outline-none focus:border-ink"
                   placeholder="Like: needs to go out today, call the dock first" value={note} onChange={(e) => setNote(e.target.value)} />
               </div>
               <div className="space-y-2">
@@ -398,7 +399,7 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
                       <div key={i} className="flex items-center gap-2 px-3 py-1.5 text-[12.5px] min-w-0">
                         <FileText size={13} className="text-muted flex-shrink-0" />
                         <span className="truncate min-w-0 flex-1 text-ink">{f.name}</span>
-                        <span className="text-[11px] text-muted flex-shrink-0">{fileSize(f.size)}</span>
+                        <span className="text-[12px] text-muted flex-shrink-0">{fileSize(f.size)}</span>
                         <button type="button" onClick={() => setFiles((l) => l.filter((_, j) => j !== i))} title="Take it off"
                           className="p-1 rounded-md text-muted hover:text-danger-ink hover:bg-danger-bg flex-shrink-0"><X size={12} /></button>
                       </div>
@@ -411,13 +412,13 @@ function SendSheet({ flow, billed, moving, onClose, onSent }: {
           )}
         </div>
         {/* R-479: the one thing to remember after a catch-up. The shipping leg stays 0 until the carrier's payment is linked. */}
-        {moving && <div className="px-5 py-2 text-[11.5px] text-muted border-t border-line">Link the carrier's payment once it goes out; until then this deal's profit leaves out the shipping.</div>}
+        {moving && <div className="px-5 py-2 text-[12px] text-muted border-t border-line">Link the carrier's payment once it goes out; until then this deal's profit leaves out the shipping.</div>}
         {/* Outside the scrolling body, so a refusal is never hidden below the fields. */}
         {err && <div className="px-5 py-2 text-[12px] text-danger-ink border-t border-line" role="alert">{err}</div>}
         <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
           <button onClick={onClose} className="px-4 h-9 rounded-lg text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
           <button onClick={send} disabled={busy || pre === null}
-            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
+            className="ui-btn ui-btn-ink">
             {busy ? (moving ? "Moving..." : "Sending...") : moving ? "Move to Logistics" : "Ask for a quote"}
           </button>
         </div>
@@ -437,7 +438,7 @@ export function MoveToLogistics({ flow, onMoved }: { flow: DealFlow; onMoved: (m
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap transition-colors">
+        className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap transition-colors duration-150">
         <Truck size={13} /> Move to Logistics
       </button>
       {open && (
@@ -496,8 +497,8 @@ function TypedFreightRow({ flow, p, struck, locked, onChanged }: {
         <NumberInput className={inp} aria-label="Amount" placeholder="0.00" value={amt} onValue={(_n, raw) => setAmt(raw)} />
         <div className="flex items-center gap-2">
           <button type="button" onClick={save} disabled={busy}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40">
-            <Check size={12} strokeWidth={2.5} /> Save
+            className="ui-btn ui-btn-ink">
+            <Check size={12} /> Save
           </button>
           <button type="button" onClick={() => { setEditing(false); setName(p.supplier_name); setAmt(String(p.amount)); }}
             className="px-3 h-8 rounded-lg text-[12px] text-ink-2 hover:bg-surface-3">Cancel</button>
@@ -509,11 +510,11 @@ function TypedFreightRow({ flow, p, struck, locked, onChanged }: {
     <div className="flex items-start justify-between gap-3 text-[12.5px]">
       <div className="min-w-0">
         <div className={`truncate ${struck || p.kept ? "text-faint line-through" : "text-ink-2"}`}>{p.supplier_name || "Freight"}</div>
-        {p.kept && <div className="text-[11px] text-muted">Kept: didn't pay, not counted</div>}
+        {p.kept && <div className="text-[12px] text-muted">Kept: didn't pay, not counted</div>}
         {!locked && (
           <div className="flex items-center gap-2.5 mt-0.5">
-            <button type="button" onClick={() => setEditing(true)} disabled={busy} className="text-[11px] text-muted hover:text-ink-2 disabled:opacity-40">Edit</button>
-            <button type="button" onClick={remove} disabled={busy} className="text-[11px] text-muted hover:text-danger-ink disabled:opacity-40">Remove</button>
+            <button type="button" onClick={() => setEditing(true)} disabled={busy} className="text-[12px] text-muted hover:text-ink-2 disabled:opacity-40">Edit</button>
+            <button type="button" onClick={remove} disabled={busy} className="text-[12px] text-muted hover:text-danger-ink disabled:opacity-40">Remove</button>
           </div>
         )}
       </div>
@@ -649,7 +650,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
     return (
       <button
         key={b.id} type="button" onClick={() => openBooking(b)}
-        className={`w-full text-left bg-surface border border-line rounded-xl px-4 py-3 hover:border-accent/40 transition-colors min-w-0 ${b.status === "cancelled" ? "opacity-60" : ""}`}
+        className={`w-full text-left py-1 hover:border-line-3 transition-colors duration-150 min-w-0 ${b.status === "cancelled" ? "opacity-60" : ""}`}
       >
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="tabular-nums text-[12px] text-muted">{loadNumber(b)}</span>
@@ -658,7 +659,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
           {pickupNumberUnconfirmed(b, localDay()) && <PickupNumberPill />}
           {needsAmount(b) && <AmountNeededPill />}
           {who && <span className="text-[13px] font-medium text-ink truncate min-w-0">{who}</span>}
-          {nFiles > 0 && <span className="ml-auto inline-flex items-center gap-0.5 text-[11.5px] text-muted"><Paperclip size={11} />{nFiles} {nFiles === 1 ? "file" : "files"}</span>}
+          {nFiles > 0 && <span className="ml-auto inline-flex items-center gap-0.5 text-[12px] text-muted"><Paperclip size={11} />{nFiles} {nFiles === 1 ? "file" : "files"}</span>}
         </div>
         {b.status !== "cancelled" && (
           <div className="mt-1.5"><LoadTrackerCompact stages={loadProgress(withDealFacts(b, { invoiceSent, dealPaid }), true)} /></div>
@@ -668,7 +669,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
         {b.status === "quote" && <div className="text-[12px] text-muted mt-1">Waiting for logistics to quote it.</div>}
         {quoteStage && isDealPaid(b, dealPaid) && <div className="text-[12px] text-success-ink mt-1">{PAID_BANNER}</div>}
         {money && <div className="text-[12px] text-ink-2 mt-0.5 tabular-nums">{money}</div>}
-        {b.updated_by_name && <div className="text-[11px] text-muted mt-1">Updated by {b.updated_by_name} {fmtDay(b.updated_at)}</div>}
+        {b.updated_by_name && <div className="text-[12px] text-muted mt-1">Updated by {b.updated_by_name} {fmtDay(b.updated_at)}</div>}
       </button>
     );
   };
@@ -711,7 +712,7 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
                 </button>
               )}
               <button type="button" onClick={() => setSending(true)}
-                className="flex items-center gap-1.5 px-3 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium whitespace-nowrap">
+                className="ui-btn ui-btn-ink">
                 <Truck size={13} /> Send to logistics
               </button>
             </div>
@@ -797,8 +798,8 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
       {onAdvance && (
         <div className="flex items-center justify-end pt-1">
           <button type="button" onClick={onAdvance}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
-            Continue to link financials <Check size={14} strokeWidth={2.5} />
+            className="ui-btn ui-btn-ink">
+            Continue to link financials <Check size={14} />
           </button>
         </div>
       )}

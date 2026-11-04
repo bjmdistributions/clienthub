@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 // One pill for every status / flag / source tag in the app.
 //
 // It exists because the same markup was hand-rolled ~44 times across ~20 files and drifted
-// every time: uppercase micro-labels (a standing veto), 8px/9px text (11px is the floor since R-511), and — the defect that
-// prompted it — no whitespace-nowrap, so a chip inside a narrow table cell wrapped its own
+// every time: uppercase micro-labels (a standing veto), 8px/9px text (11px is the floor since R-511), and, the defect that
+// prompted it, no whitespace-nowrap, so a chip inside a narrow table cell wrapped its own
 // label into a two-line box and stacked. Route new status tags through here rather than
 // writing the span again.
 //
@@ -13,15 +13,17 @@ import type { ReactNode } from "react";
 type Tone = "accent" | "danger" | "warning" | "success" | "neutral" | "shipping" | "step";
 
 const TONES: Record<Tone, string> = {
-  accent:  "text-accent-hover bg-accent/10 border-accent/25",
-  danger:  "text-danger-ink bg-danger-bg border-danger-ink/20",
-  warning: "text-warning-ink bg-warning-bg border-warning/30",
-  success: "text-success-ink bg-success-bg border-success/25",
-  neutral: "text-muted bg-surface-2 border-line",
+  // R-583: the mockups' badge. A chip fill in every tone and a coloured WORD only where the colour means
+  // something (paid, late, a warning, on the road, the step a thing is on). No border, no tinted box.
+  accent:  "border-transparent text-accent-hover bg-surface-3",
+  danger:  "border-transparent text-danger-ink bg-surface-3",
+  warning: "border-transparent text-warning-ink bg-surface-3",
+  success: "border-transparent text-success-ink bg-surface-3",
+  neutral: "border-transparent text-muted bg-surface-3",
   // R-507 / R-511: teal is the shipping colour (Booked, On the way) and blue is the step a thing is on
   // (a quote asked or given). Both are meaning colours, so they hold under mono as well.
-  shipping: "text-ship-ink bg-ship/10 border-ship/30",
-  step:     "text-step-now bg-step-now/10 border-step-now/25",
+  shipping: "border-transparent text-ship-ink bg-surface-3",
+  step:     "border-transparent text-step-now bg-surface-3",
 };
 
 interface StatusPillProps {
@@ -45,7 +47,7 @@ export default function StatusPill({ children, tone = "neutral", className, titl
   return (
     <span
       title={title}
-      className={`inline-flex items-center whitespace-nowrap flex-shrink-0 rounded border font-medium leading-none ${size === "md" ? "px-2.5 py-1 text-[12.5px]" : "px-2 py-0.5 text-[11px]"} ${cls}`}
+      className={`inline-flex items-center whitespace-nowrap flex-shrink-0 rounded-full border font-medium leading-none ${size === "md" ? "px-2.5 py-[5px] text-[13px]" : "px-2 py-[4px] text-[12px]"} ${cls}`}
     >
       {children}
     </span>

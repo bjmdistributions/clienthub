@@ -45,29 +45,26 @@ export default function UpdateNotification() {
   return (
     <div className="fixed bottom-5 right-5 z-50 w-[340px] max-w-[calc(100vw-2.5rem)] rounded-2xl border border-line bg-surface p-4 shadow-xl" role="status">
       <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full" style={{ background: "var(--accent-600)" }}>
-          <Download size={16} className="text-on-accent" />
-        </div>
+        <Download size={18} className="mt-0.5 flex-shrink-0 text-ink" />
         <div className="min-w-0">
           <p className="text-[14px] font-semibold text-ink">
             {error ? `Ecliptr ${u.version} is available` : `Ecliptr ${u.version} is ready`}
           </p>
-          <p className="mt-0.5 text-[12px] leading-snug" style={{ color: error ? "var(--danger, #ef4444)" : "var(--t-tx3)" }}>
+          <p className="mt-0.5 text-[12px] leading-snug" style={{ color: error ? "rgb(var(--c-danger-ink))" : "var(--t-tx3)" }}>
             {error ? friendlyError(error) : installing ? "Restarting…" : mayAutoInstall(readAttempts(), u.version) ? "It installs the next time you open Ecliptr." : "Restart now to install it."}
           </p>
         </div>
       </div>
       <div className="mt-3 flex items-center justify-end gap-2">
         {!installing && (
-          <button onClick={handleLater} className="h-8 rounded-lg px-3 text-[12px] font-medium text-ink-2 transition-colors hover:bg-surface-2">
+          <button onClick={handleLater} className="ui-btn ui-btn-sm">
             Later
           </button>
         )}
         <button
           onClick={error ? openDownload : () => installNow()}
           disabled={installing}
-          className="flex h-8 items-center gap-1.5 rounded-lg px-4 text-[12px] font-semibold text-on-accent transition-all disabled:opacity-50"
-          style={{ background: "var(--accent-600)" }}
+          className="ui-btn ui-btn-sm ui-btn-ink"
         >
           {error ? "Download update" : installing ? "Restarting…" : "Restart now"}
         </button>

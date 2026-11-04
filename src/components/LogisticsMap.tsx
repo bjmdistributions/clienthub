@@ -9,6 +9,7 @@ import {
   laneSummary, lineStyle, loadLine, loadsOnOrBefore, mapMarkers, mapProblem, markerRadius, parseMapRange, partialPath, pluralLoads,
   replayDay, replayPlan, replayProgress, SCRIPT_FAILED, sliderDays, sliderReadout, stepOfDay, subLine, waitingForRouteKey, type LatLng,
 } from "../lib/freightMap";
+import { Button, Tabs } from "./ui";
 import { mix, recolor, type Rgb, type StyleJson } from "../lib/freightMapStyle";
 
 // R-485: the map of delivered freight. Each delivered load is drawn as the road route the server found between its
@@ -506,72 +507,62 @@ function LogisticsMap({ me }: { me: Me | null | undefined }) {
   return (
     <div className="space-y-5 min-w-0">
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2 flex-wrap" role="group" aria-label="How far back">
-          {MAP_RANGES.map((r) => (
-            <button key={r.key} type="button" aria-pressed={range === r.key} onClick={() => pickRange(r.key)}
-              className={`h-9 px-4 rounded-full border text-[15px] whitespace-nowrap transition-colors duration-[130ms] ${range === r.key ? "border-step-now bg-step-now/10 text-ink font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
-              {r.label}
-            </button>
-          ))}
-        </div>
-        <button type="button" disabled={!canReplay} onClick={() => (playing ? stopReplay() : startReplay())}
-          className="inline-flex items-center gap-2 h-9 px-4 rounded-lg border border-line bg-surface text-[15px] font-medium text-ink hover:bg-surface-2 transition-colors duration-[130ms] disabled:opacity-40 disabled:hover:bg-surface">
-          {playing ? <Pause size={16} /> : <Play size={16} />}{playing ? "Pause" : "Replay"}
-        </button>
+        <Tabs label="How far back" value={range} onChange={(r) => pickRange(r as FreightMapRange)} tabs={MAP_RANGES.map((r) => ({ id: r.key, label: r.label }))} />
+        <Button disabled={!canReplay} onClick={() => (playing ? stopReplay() : startReplay())} icon={playing ? <Pause size={14} /> : <Play size={14} />}>
+          {playing ? "Pause" : "Replay"}
+        </Button>
       </div>
 
       {error && (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning-bg px-4 py-3 text-[15px] text-warning-ink" role="alert">
+        <div className="flex items-center justify-between gap-3 rounded-xl bg-warning-bg px-4 py-3 text-[15px] text-warning-ink" role="alert">
           <span className="min-w-0 break-words">{error}</span>
-          <button type="button" onClick={() => { setError(""); setRetry((n) => n + 1); }} className="font-medium underline flex-shrink-0">Try again</button>
+          <button type="button" onClick={() => { setError(""); setRetry((n) => n + 1); }} className="ui-link flex-shrink-0">Try again</button>
         </div>
       )}
 
       {data ? (
         <div className={`min-w-0 transition-opacity duration-[130ms] ${stale ? "opacity-60" : ""}`} aria-busy={stale}>
-          <h2 className="text-[30px] leading-tight font-semibold text-ink tracking-tight tabular-nums">{headline(loads.length)}</h2>
-          <p className="text-[17px] text-ink-2 mt-1">{subLine(loads, res?.range ?? range)}</p>
+          <h2 className="m-0 text-[24px] leading-8 font-medium text-ink tabular-nums" style={{ letterSpacing: "-0.6px" }}>{headline(loads.length)}</h2>
+          <p className="m-0 text-[16px] text-muted mt-1">{subLine(loads, res?.range ?? range)}</p>
         </div>
       ) : !error ? (
         <div className="space-y-2" aria-busy="true">
-          <div className="h-9 w-64 bg-surface-2 rounded-md animate-pulse" />
+          <div className="h-8 w-64 bg-surface-2 rounded-md animate-pulse" />
           <div className="h-5 w-80 max-w-full bg-surface-2 rounded-md animate-pulse" />
         </div>
       ) : null}
 
       {problem && !problem.blocks && !problem.onMap && (
-        <div className="rounded-xl border border-warning/30 bg-warning-bg px-4 py-3 text-[15px] text-warning-ink" role="status">{problem.text}</div>
+        <div className="rounded-xl bg-warning-bg px-4 py-3 text-[15px] text-warning-ink" role="status">{problem.text}</div>
       )}
 
       {showMap ? (
         <div className="relative min-w-0">
-          <div ref={setMapEl} className="freight-map h-[560px] max-h-[75vh] w-full rounded-xl border border-line overflow-hidden bg-surface-2" aria-label="Map of delivered freight" />
+          <div ref={setMapEl} className="freight-map h-[560px] max-h-[75vh] w-full rounded-2xl overflow-hidden bg-surface-2" style={{ boxShadow: "inset 0 0 0 1px rgb(var(--c-line))" }} aria-label="Map of delivered freight" />
           {problem?.onMap && (
             <div className="absolute left-4 right-16 top-4 flex justify-center pointer-events-none">
-              <div className="pointer-events-auto max-w-lg rounded-xl border border-line bg-surface px-5 py-4 text-center shadow-lg" role="status">
-                <p className="text-[17px] text-ink">{problem.text}</p>
+              <div className="pointer-events-auto max-w-lg rounded-xl bg-surface px-5 py-4 text-center shadow-lg" role="status">
+                <p className="m-0 text-[16px] text-ink">{problem.text}</p>
                 {admin && (
-                  <button type="button" onClick={openLogisticsSettings}
-                    className="mt-3 bg-accent hover:bg-accent-hover text-on-accent px-5 h-10 rounded-lg text-[15px] font-medium transition-colors">Open settings</button>
+                  <Button variant="ink" onClick={openLogisticsSettings} className="mt-3">Open settings</Button>
                 )}
               </div>
             </div>
           )}
         </div>
       ) : data && problem ? (
-        <div className="rounded-xl border border-line bg-surface-2 min-h-[240px] px-6 py-10 flex flex-col items-center justify-center gap-4 text-center">
-          <p className="text-[17px] text-ink-2 max-w-md">{problem.text}</p>
+        <div className="rounded-2xl bg-surface-2 min-h-[240px] px-6 py-10 flex flex-col items-center justify-center gap-4 text-center">
+          <p className="m-0 text-[16px] text-muted max-w-md">{problem.text}</p>
           {scriptFailed && loads.length > 0 && (
-            <button type="button" onClick={() => { setScriptFailed(false); setScriptTry((n) => n + 1); }}
-              className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-10 rounded-lg text-[15px] font-medium transition-colors">Try again</button>
+            <Button variant="ink" onClick={() => { setScriptFailed(false); setScriptTry((n) => n + 1); }}>Try again</Button>
           )}
         </div>
       ) : !error ? (
-        <div className="h-[560px] max-h-[75vh] rounded-xl bg-surface-2 animate-pulse" />
+        <div className="h-[560px] max-h-[75vh] rounded-2xl bg-surface-2 animate-pulse" />
       ) : null}
 
       {data && loads.length > 0 && (
-        <div className="space-y-4">
+        <div>
           {showMap && (
             <div className="flex items-center gap-4">
               <input
@@ -579,39 +570,42 @@ function LogisticsMap({ me }: { me: Me | null | undefined }) {
                 aria-label="Show loads delivered up to" aria-valuetext={sliderReadout(at, today)}
                 onChange={(e) => { if (playing) stopReplay(); setAt(dayAtStep(days, Number(e.target.value))); }}
                 className="flex-1 min-w-0 h-6 cursor-pointer disabled:cursor-default"
-                style={{ accentColor: "rgb(var(--c-step-now))" }}
+                style={{ accentColor: "rgb(var(--c-chart-2))" }}
               />
-              <span className="text-[17px] font-medium text-ink tabular-nums w-28 text-right flex-shrink-0">{sliderReadout(at, today)}</span>
+              <span className="text-[16px] font-medium text-ink tabular-nums w-28 text-right flex-shrink-0">{sliderReadout(at, today)}</span>
             </div>
           )}
 
-          {pickedLane ? (
-            <div aria-live="polite">
-              <div className="text-[19px] font-semibold text-ink">{pickedLane.name}</div>
-              <div className="text-[17px] text-ink-2 mt-0.5">{laneSummary(pickedLane, today)}</div>
-              <ul className="mt-2 space-y-1">
-                {pickedLane.loads.map((l) => <li key={l.id} className="text-[17px] text-ink tabular-nums">{loadLine(l, today)}</li>)}
-              </ul>
-            </div>
-          ) : (
-            <p className="text-[17px] text-muted">{NOTHING_PICKED}</p>
-          )}
+          <div className="mt-[18px] min-h-[96px]" aria-live="polite">
+            {pickedLane ? (
+              <div className="animate-page-slide-in">
+                <div className="text-[19px] font-medium text-ink">{pickedLane.name}</div>
+                <div className="text-[16px] text-muted mt-0.5">{laneSummary(pickedLane, today)}</div>
+                <ul className="mt-2 space-y-1 list-none p-0 m-0">
+                  {pickedLane.loads.map((l) => <li key={l.id} className="text-[16px] text-ink tabular-nums">{loadLine(l, today)}</li>)}
+                </ul>
+              </div>
+            ) : (
+              <p className="m-0 text-[16px] text-muted">{NOTHING_PICKED}</p>
+            )}
+          </div>
 
-          <section className="bg-surface border border-line rounded-xl overflow-hidden divide-y divide-line">
+          <div className="mt-3.5">
             {lanes.map((l) => {
               const note = laneNote(l);
               return (
                 <button key={l.key} type="button" aria-pressed={sel === l.key} onClick={() => setSelected((cur) => (cur === l.key ? null : l.key))}
-                  className={`w-full text-left flex items-baseline justify-between gap-4 px-4 py-3 transition-colors duration-[130ms] ${sel === l.key ? "bg-step-now/10" : "hover:bg-surface-2/60"}`}>
+                  style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}
+                  className={`w-full text-left flex items-baseline justify-between gap-4 px-3 py-3.5 rounded-lg transition-colors duration-[130ms] ${sel === l.key ? "bg-surface-2" : "hover:bg-surface-2"}`}>
                   <span className="min-w-0">
-                    <span className={`block text-[17px] text-ink ${sel === l.key ? "font-medium" : ""}`}>{l.name}</span>
-                    {note && <span className="block text-[17px] text-muted">{note}</span>}
+                    <span className={`block text-[16px] text-ink ${sel === l.key ? "font-medium" : ""}`}>{l.name}</span>
+                    {note && <span className="block text-[16px] text-muted">{note}</span>}
                   </span>
-                  <span className="text-[17px] text-ink-2 tabular-nums whitespace-nowrap flex-shrink-0">{pluralLoads(l.count)}</span>
+                  <span className="text-[16px] text-muted tabular-nums whitespace-nowrap flex-shrink-0">{pluralLoads(l.count)}</span>
                 </button>
               );
             })}
-          </section>
+          </div>
         </div>
       )}
     </div>

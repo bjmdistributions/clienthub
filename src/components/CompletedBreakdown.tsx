@@ -1,5 +1,6 @@
+import { Check, Pencil, RotateCcw, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { RotateCcw, Trash2, Pencil, Check, X } from "lucide-react";
+
 import { api, DealFlow, SupplierPayment, SupplierPaymentInput, isResoldLine } from "../lib/api";
 import { fmtAmount, primarySupplierLabel, localDay } from "../lib/format";
 import { toast } from "./Toast";
@@ -10,8 +11,8 @@ import ResoldNote from "./ResoldNote";
 
 // Shared field styling (matches DealFlowView's `inp` focus pattern).
 const fieldCls =
-  "border border-line rounded-lg bg-surface text-[13px] tabular-nums " +
-  "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "border border-line-3 rounded-lg bg-transparent text-[13px] tabular-nums " +
+  "focus:outline-none focus:border-ink transition-colors duration-150";
 
 // ─── Completed deal full breakdown ────────────────────────────────────────
 // Shared by DealFlowView's completed list and the supplier deal history.
@@ -119,25 +120,32 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
     setSaving(false);
   };
 
+  const stat = (label: string, value: string, clr: string) => (
+    <div className="min-w-0">
+      <div className="ui-label">{label}</div>
+      <div className={`text-[20px] font-medium tabular-nums tracking-tight mt-1 ${clr}`}>{value}</div>
+    </div>
+  );
+
   return (
-    <div className="space-y-4">
-      {/* Buyer → supplier + editable closing date */}
+    <div className="space-y-5">
+      {/* Buyer and supplier + editable closing date */}
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 min-w-0">
+        <div className="flex flex-wrap items-baseline gap-x-8 gap-y-1 min-w-0">
           <div className="min-w-0">
-            <div className="text-[11px] text-muted">Buyer</div>
-            <div className="text-[13px] text-ink font-medium truncate">{flow.client_name || "–"}</div>
+            <div className="ui-label">Buyer</div>
+            <div className="text-[14px] text-ink font-medium truncate mt-0.5">{flow.client_name || "-"}</div>
           </div>
           {supplierLabel && (
             <div className="min-w-0">
-              <div className="text-[11px] text-muted">Supplier</div>
-              <div className="text-[13px] text-ink-2 truncate">{supplierLabel}</div>
+              <div className="ui-label">Supplier</div>
+              <div className="text-[14px] text-ink-2 truncate mt-0.5">{supplierLabel}</div>
             </div>
           )}
         </div>
         <div className="flex items-end gap-2">
           <div>
-            <div className="text-[11px] text-muted mb-1">Closing date</div>
+            <div className="ui-label mb-1">Closing date</div>
             <input
               type="date"
               max={today}
@@ -152,207 +160,194 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
               type="button"
               onClick={handleSaveDate}
               disabled={saving}
-              className="h-8 px-3 rounded-lg bg-accent text-on-accent text-[12px] font-semibold disabled:opacity-50 transition-colors"
+              className="ui-btn ui-btn-ink ui-btn-sm"
             >
               Save
             </button>
           )}
         </div>
       </div>
+      <p className="ui-note -mt-3">Change the closing date to backlog a sale into the right month or week for the reports.</p>
 
-      {/* Payout routing — flip past deals onto (or off) the configured split */}
-      <div className="space-y-1">
-        <div className="text-[11px] text-muted">Where does this deal's profit go?</div>
-        <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5">
-          <button type="button" disabled={saving} onClick={() => setIncluded(true)}
-            className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+      {/* Payout routing: flip past deals onto (or off) the configured split */}
+      <div className="space-y-1.5">
+        <div className="ui-label">Where does this deal's profit go?</div>
+        <div className="flex items-center gap-2">
+          <button type="button" disabled={saving} onClick={() => setIncluded(true)} aria-pressed={payoutIncluded}
+            className={`ui-opt ${payoutIncluded ? "on" : ""}`}>
             Apply profit split
           </button>
-          <button type="button" disabled={saving} onClick={() => setIncluded(false)}
-            className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${!payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+          <button type="button" disabled={saving} onClick={() => setIncluded(false)} aria-pressed={!payoutIncluded}
+            className={`ui-opt ${!payoutIncluded ? "on" : ""}`}>
             Business keeps 100%
           </button>
         </div>
       </div>
 
-      {/* P&L summary — reflects linked payments once any are paired */}
+      <div className="hsep" />
+
+      {/* P&L summary: reflects linked payments once any are paired */}
       <div>
-        <div className="text-[11px] text-muted mb-2">
-          {fromPayments ? "Profit & loss: from linked payments" : "Profit & loss: projected (no payments linked yet)"}
+        <div className="ui-label mb-2">
+          {fromPayments ? "Profit and loss, from linked payments" : "Profit and loss, projected (no payments linked yet)"}
         </div>
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-          {[
-            { label: "Revenue",     value: fmtAmount(revenue), clr: "text-ink" },
-            { label: "Total costs", value: fmtAmount(costs),   clr: "text-ink" },
-            {
-              label: profit >= 0 ? "Profit" : "Loss",
-              value: fmtAmount(Math.abs(profit)),
-              clr:   profit >= 0 ? "text-success-ink" : "text-danger-ink",
-            },
-            {
-              label: "Margin",
-              value: margin === null ? "–" : `${margin.toFixed(1)}%`,
-              clr:   margin === null ? "text-faint"
-                   : margin >= 20   ? "text-success-ink"
-                   : margin >= 10   ? "text-warning-ink"
-                   : "text-danger-ink",
-            },
-          ].map((item) => (
-            <div key={item.label} className="bg-surface border border-line rounded-xl px-4 py-3">
-              <div className="text-[12px] font-medium text-muted">{item.label}</div>
-              <div className={`text-[18px] font-bold tabular-nums mt-1 ${item.clr}`}>{item.value}</div>
-            </div>
-          ))}
+        <div className="grid grid-cols-2 xl:grid-cols-[1fr_1px_1fr_1px_1fr_1px_1fr] gap-x-4 gap-y-3">
+          {stat("Revenue", fmtAmount(revenue), "text-ink")}
+          <div className="vsep hidden xl:block" />
+          {stat("Total costs", fmtAmount(costs), "text-ink")}
+          <div className="vsep hidden xl:block" />
+          {stat(profit >= 0 ? "Profit" : "Loss", fmtAmount(Math.abs(profit)), profit >= 0 ? "text-success-ink" : "text-danger-ink")}
+          <div className="vsep hidden xl:block" />
+          {stat("Margin", margin === null ? "-" : `${margin.toFixed(1)}%`,
+            margin === null ? "text-faint" : margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink")}
         </div>
       </div>
 
-      {/* Products sold — what was on the invoice */}
-      <div className="bg-surface border border-line rounded-xl overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-line-2">
-          <SectionLabel>Products sold{invMeta?.number ? ` · ${invMeta.number}` : ""}</SectionLabel>
-        </div>
+      <div className="hsep" />
+
+      {/* Products sold: what was on the invoice */}
+      <div>
+        <SectionLabel>Products sold{invMeta?.number ? ` · ${invMeta.number}` : ""}</SectionLabel>
         {items.length > 0 ? (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-[12px]">
+              <table className="ui-table ui-table-sm">
                 <thead>
-                  <tr className="text-muted">
-                    <th className="text-left font-semibold px-4 py-2">Description</th>
-                    <th className="text-right font-semibold px-2 py-2 w-12">Qty</th>
-                    <th className="text-right font-semibold px-2 py-2 w-20">Rate</th>
-                    <th className="text-right font-semibold px-4 py-2 w-24">Amount</th>
+                  <tr>
+                    <th>Description</th>
+                    <th className="r w-16">Qty</th>
+                    <th className="r w-24">Rate</th>
+                    <th className="r w-28">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
                   {items.map((it, i) => (
-                    <tr key={i} className="border-t border-line-2">
-                      <td className="px-4 py-1.5 text-ink-2">{it.description}</td>
-                      <td className="px-2 py-1.5 text-right tabular-nums text-muted">{it.qty}</td>
-                      <td className="px-2 py-1.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>
-                      <td className="px-4 py-1.5 text-right tabular-nums font-medium text-ink">{fmtAmount(it.amount)}</td>
+                    <tr key={i}>
+                      <td className="text-ink-2">{it.description}</td>
+                      <td className="r text-muted">{it.qty}</td>
+                      <td className="r text-muted">{fmtAmount(it.rate)}</td>
+                      <td className="r font-medium text-ink">{fmtAmount(it.amount)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             {invMeta && (
-              <div className="px-4 py-2.5 border-t border-line space-y-0.5 text-[12px] bg-surface-2/60">
+              <div className="pt-2 space-y-0.5 text-[13px] border-t border-line">
                 <div className="flex justify-between text-muted"><span>Subtotal</span><span className="tabular-nums">{fmtAmount(invMeta.subtotal)}</span></div>
                 <div className="flex justify-between text-muted"><span>Tax</span><span className="tabular-nums">{fmtAmount(invMeta.tax)}</span></div>
-                <div className="flex justify-between font-semibold text-ink"><span>Total</span><span className="tabular-nums">{fmtAmount(invMeta.total)}</span></div>
+                <div className="flex justify-between font-medium text-ink"><span>Total</span><span className="tabular-nums">{fmtAmount(invMeta.total)}</span></div>
               </div>
             )}
           </>
         ) : (
-          <div className="px-4 py-3 text-[12px] text-muted">No line items on this invoice</div>
+          <div className="py-2 text-[13px] text-muted">No line items on this invoice</div>
         )}
       </div>
 
-      {/* Supplier breakdown — amounts editable in place */}
+      {/* Supplier breakdown: amounts editable in place */}
       {payments.length > 0 && (
-        <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-line-2">
+        <>
+          <div className="hsep" />
+          <div>
             <SectionLabel>Supplier payments</SectionLabel>
-          </div>
-          <div className="divide-y divide-line-2">
-            {payments.map((p) => (
-              <div key={p.id} className="flex items-center gap-3 px-4 py-3">
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] text-ink font-medium truncate">{p.supplier_name}</div>
-                  {p.quantity != null && p.unit_price != null && (
-                    <div className="text-[11px] text-muted tabular-nums">
-                      {p.quantity} × {fmtAmount(p.unit_price)}
+            <div>
+              {payments.map((p) => (
+                <div key={p.id} className="flex items-center gap-3 py-2.5 border-t border-line first:border-t-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] text-ink font-medium truncate">{p.supplier_name}</div>
+                    {p.quantity != null && p.unit_price != null && (
+                      <div className="text-[12px] text-muted tabular-nums">
+                        {p.quantity} × {fmtAmount(p.unit_price)}
+                      </div>
+                    )}
+                    {flow.shipping_mode && p.category === "freight" && (
+                      <div className="text-[12px] text-muted">Replaced by the logistics booking, not counted</div>
+                    )}
+                    {p.notes && <ResoldNote note={p.notes} />}
+                  </div>
+                  {editId === p.id ? (
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        autoFocus
+                        value={editAmt}
+                        disabled={saving}
+                        onChange={(e) => setEditAmt(e.target.value)}
+                        className={`${fieldCls} w-24 px-2 h-8 text-right`}
+                      />
+                      <button type="button" onClick={() => saveEdit(p)} disabled={saving} title="Save" aria-label="Save"
+                        className="ui-ib hover:!text-success-ink disabled:opacity-50">
+                        <Check size={16} />
+                      </button>
+                      <button type="button" onClick={cancelEdit} disabled={saving} title="Cancel" aria-label="Cancel"
+                        className="ui-ib disabled:opacity-50">
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className={`text-[13px] font-medium tabular-nums ${flow.shipping_mode && p.category === "freight" ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</span>
+                      {/* A partner line's amount is worked out from its split, so it is not retyped here. */}
+                      {!isResoldLine(p) && !p.split && (
+                        <button type="button" onClick={() => startEdit(p)} disabled={saving} title="Edit cost" aria-label="Edit cost"
+                          className="ui-ib">
+                          <Pencil size={16} />
+                        </button>
+                      )}
                     </div>
                   )}
-                  {flow.shipping_mode && p.category === "freight" && (
-                    <div className="text-[10.5px] text-muted">Replaced by the logistics booking, not counted</div>
-                  )}
-                  {p.notes && <ResoldNote note={p.notes} />}
                 </div>
-                {editId === p.id ? (
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      autoFocus
-                      value={editAmt}
-                      disabled={saving}
-                      onChange={(e) => setEditAmt(e.target.value)}
-                      className={`${fieldCls} w-24 px-2 h-8 text-right`}
-                    />
-                    <button type="button" onClick={() => saveEdit(p)} disabled={saving} title="Save"
-                      className="h-8 w-8 flex items-center justify-center rounded-lg bg-accent text-on-accent disabled:opacity-50 transition-colors">
-                      <Check size={13} />
-                    </button>
-                    <button type="button" onClick={cancelEdit} disabled={saving} title="Cancel"
-                      className="h-8 w-8 flex items-center justify-center rounded-lg border border-line text-muted hover:text-ink-2 transition-colors">
-                      <X size={13} />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className={`text-[13px] font-semibold tabular-nums ${flow.shipping_mode && p.category === "freight" ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</span>
-                    {/* A partner line's amount is worked out from its split, so it is not retyped here. */}
-                    {!isResoldLine(p) && !p.split && (
-                      <button type="button" onClick={() => startEdit(p)} disabled={saving} title="Edit cost"
-                        className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors">
-                        <Pencil size={12} />
-                      </button>
-                    )}
-                  </div>
-                )}
+              ))}
+              <div className="flex justify-between items-center py-2 border-t border-line">
+                <span className="text-[12px] text-muted">Total supplier cost</span>
+                <span className="text-[13px] font-medium text-ink tabular-nums">
+                  {/* With a recorded shipping leg, the goods are what the record holds less that leg, so the rows add up */}
+                  {fmtAmount(flow.shipping_cost != null ? flow.total_cost - flow.shipping_cost : flow.total_supplier_cost)}
+                </span>
               </div>
-            ))}
-            <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
-              <span className="text-[11px] text-muted font-medium">Total supplier cost</span>
-              <span className="text-[12px] font-bold text-ink tabular-nums">
-                {/* With a recorded shipping leg, the goods are what the record holds less that leg, so the rows add up */}
-                {fmtAmount(flow.shipping_cost != null ? flow.total_cost - flow.shipping_cost : flow.total_supplier_cost)}
-              </span>
-            </div>
-            {/* R-400: shipping is its own leg of the recorded cost */}
-            <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
-              <span className="text-[11px] text-muted font-medium">Shipping</span>
-              <span className="text-[12px] font-bold text-ink tabular-nums">
-                {fmtAmount(flow.shipping_cost ?? 0)}
-              </span>
-            </div>
-            <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
-              <span className="text-[11px] text-muted font-medium">Total cost recorded</span>
-              <span className="text-[12px] font-bold text-ink tabular-nums">
-                {fmtAmount(flow.total_cost)}
-              </span>
+              {/* R-400: shipping is its own leg of the recorded cost */}
+              <div className="flex justify-between items-center py-2">
+                <span className="text-[12px] text-muted">Shipping</span>
+                <span className="text-[13px] font-medium text-ink tabular-nums">
+                  {fmtAmount(flow.shipping_cost ?? 0)}
+                </span>
+              </div>
+              <div className="flex justify-between items-center py-2">
+                <span className="text-[12px] text-muted">Total cost recorded</span>
+                <span className="text-[13px] font-medium text-ink tabular-nums">
+                  {fmtAmount(flow.total_cost)}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
+        </>
       )}
+
+      <div className="hsep" />
 
       {/* Payout, lead rep & refunds (refund-aware owner split) */}
       <RefundPanel dealFlowId={flow.id} refreshKey={flow.updated_at} />
 
+      <div className="hsep" />
+
       {/* Pair real bank transactions to the deal's money legs → actual profit */}
       <ReconciliationPanel flow={flow} reloadKey={moneyRev} onChange={() => { setMoneyRev((n) => n + 1); onReload(); }} />
+
+      <div className="hsep" />
 
       {/* Full refund workflow: received money, owed, refund payments, remaining */}
       <RefundWorkspace dealFlowId={flow.id} reloadKey={moneyRev} onChange={() => { setMoneyRev((n) => n + 1); onReload(); }} />
 
       {/* Actions */}
-      <div className="flex items-center gap-3 pt-1">
-        <button
-          onClick={handleReopen}
-          disabled={saving}
-          className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
-                     px-3 h-8 border border-line rounded-lg hover:bg-surface-2 transition-colors"
-        >
-          <RotateCcw size={12} /> Reopen
+      <div className="hsep" />
+      <div className="flex items-center gap-3">
+        <button onClick={handleReopen} disabled={saving} className="ui-btn ui-btn-sm">
+          <RotateCcw size={14} /> Reopen
         </button>
-        <button
-          onClick={handleDelete}
-          disabled={saving}
-          className="flex items-center gap-1.5 text-[12px] text-danger-ink hover:text-danger-ink
-                     px-3 h-8 border border-danger rounded-lg hover:bg-danger-bg transition-colors ml-auto"
-        >
-          <Trash2 size={12} /> Delete
+        <button onClick={handleDelete} disabled={saving} className="ui-btn ui-btn-sm ui-btn-danger ml-auto">
+          <Trash2 size={14} /> Delete
         </button>
       </div>
     </div>
@@ -362,7 +357,7 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
 // ─── Shared helpers ───────────────────────────────────────────────────────
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[13px] font-semibold text-ink-2 mb-0.5">
+    <div className="text-[14px] font-medium text-ink mb-1">
       {children}
     </div>
   );

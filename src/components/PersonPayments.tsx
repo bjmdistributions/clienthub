@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import StatusPill from "./StatusPill";
 import { ArrowRight, X, UserCog } from "lucide-react";
 import { api, CounterpartyPaymentRow } from "../lib/api";
 import { fmtAmount } from "../lib/format";
@@ -208,7 +209,7 @@ const openFinancials = (person?: { type: "client" | "supplier"; id: string }) =>
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "financials" }));
 };
 
-const linkCls = "inline-flex items-center gap-1.5 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors";
+const linkCls = "inline-flex items-center gap-1.5 text-[12px] font-medium text-ink hover:opacity-70 transition-colors";
 
 export default function PersonPayments({ person, payments, onUntag, people, onChanged }: {
   person: { type: "client" | "supplier"; id: string; name: string };
@@ -344,15 +345,15 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
       "A payment split across deals says how much of it landed on theirs; the total counts the whole payment.",
   ].filter(Boolean).join(" ");
 
-  const heading = <p className="text-[12.5px] font-medium text-muted">Bank payments</p>;
+  const heading = <p className="text-[14px] font-medium text-ink">Bank payments</p>;
 
   if (payments.length === 0) {
     return (
       <div className="space-y-2">
         {heading}
-        <div className="bg-surface-2 border border-line rounded-lg px-3 py-3">
-          <p className="text-[12px] text-ink-2">No bank payment is linked to {person.name} yet.</p>
-          <p className="text-[11.5px] text-faint mt-1 leading-relaxed">
+        <div className="border-y border-line py-3">
+          <p className="text-[13px] text-ink-2">No bank payment is linked to {person.name} yet.</p>
+          <p className="ui-note mt-1 leading-relaxed">
             Two things put one here: booking a transaction to one of their deals, or linking a
             transaction straight to them in Financials. Neither has happened for them yet.
           </p>
@@ -376,7 +377,7 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
             value={method}
             onChange={(e) => setMethod(e.target.value as any)}
             aria-label="Payment method"
-            className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+            className="ui-btn ui-btn-sm cursor-pointer"
           >
             <option value="all">All methods</option>
             {methodOptions.map((m) => (
@@ -394,7 +395,7 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
           `rail`, and a method the bank itself supplied — and a caption has to be
           true for every row it counts. */}
       {method !== "all" && (
-        <p className="text-[11.5px] text-muted leading-relaxed">
+        <p className="ui-note leading-relaxed">
           {method === "unclassified" ? (
             <>
               <span className="text-ink font-medium tabular-nums">{counts.unclassified}</span>{" "}
@@ -407,7 +408,7 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
               you confirmed, <span className="tabular-nums">{(counts.total[method] || 0) - (counts.confirmed[method] || 0)}</span>{" "}
               not confirmed.{" "}
               <span className="tabular-nums">{counts.unclassified}</span> could not be read and are not in this list.{" "}
-              <button onClick={() => setMethod("unclassified")} className="font-medium text-accent hover:text-accent-hover transition-colors">
+              <button onClick={() => setMethod("unclassified")} className="font-medium text-ink hover:opacity-70 transition-colors">
                 Show them
               </button>
             </>
@@ -433,7 +434,7 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
           this person that the money itself says belongs to another deal — so it
           appears when it exists and stays out of the way when it does not. */}
       {elsewhere.length > 0 && (
-        <div className="pt-3 mt-3 border-t border-line-2">
+        <div className="pt-3 mt-3 border-t border-line">
           <Group
             title="Booked to someone else's deal, worth a look"
             caption={`Filed under ${person.name}, but booked to a deal that does not list them. One of the two is wrong: either the payment belongs to somebody else (change who it is filed under), or the deal is missing them. It counts on that deal. None of it counts here.`}
@@ -449,7 +450,7 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
         </div>
       )}
 
-      <div className="pt-3 mt-3 border-t border-line-2">
+      <div className="pt-3 mt-3 border-t border-line">
         <Group
           title="Tagged to them only"
           caption="Says whose money it is. It is not booked to any deal, so no deal counts it."
@@ -514,35 +515,35 @@ function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRo
   return (
     <div>
       <div className="flex items-baseline justify-between gap-3 flex-wrap mb-1.5">
-        <span className="text-[12.5px] font-semibold text-ink">{title}</span>
-        <span className="text-[11.5px] text-muted tabular-nums">{totalsLabel(t)}</span>
+        <span className="text-[14px] font-medium text-ink">{title}</span>
+        <span className="ui-note tabular-nums">{totalsLabel(t)}</span>
       </div>
       {/* An empty group has no claim to make — the caption is now assembled from
           the roles actually present, so it can legitimately come back blank. */}
-      {caption && <p className="text-[11px] text-faint mb-1.5 leading-relaxed">{caption}</p>}
+      {caption && <p className="ui-note mb-1.5 leading-relaxed">{caption}</p>}
       {rows.length === 0 ? (
-        <p className="text-[11.5px] text-faint bg-surface-2 border border-line rounded-lg px-3 py-2.5">{empty}</p>
+        <p className="ui-note border-y border-line py-2.5">{empty}</p>
       ) : (
-        <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden max-h-[360px] overflow-y-auto">
+        <div className="border-y border-line divide-y divide-line max-h-[360px] overflow-y-auto">
           {rows.map(({ r, m }) => (
             <div key={r.txn_id} className={`flex items-start justify-between gap-3 px-3 py-2.5 ${busyTxn === r.txn_id ? "opacity-50" : ""}`}>
               <div className="min-w-0">
-                <div className="text-[12px] text-ink-2 truncate" title={r.description || undefined}>
+                <div className="text-[13px] text-ink truncate" title={r.description || undefined}>
                   {r.description || r.counterparty_name || "Bank transaction"}
                   {showTaggedBadge && r.tagged && (
-                    <span className="ml-1.5 inline-block align-middle text-[9.5px] font-semibold text-accent border border-accent/30 bg-accent/5 rounded px-1 py-px">Tagged</span>
+                    <span className="ml-1.5 inline-block align-middle"><StatusPill tone="neutral">Tagged</StatusPill></span>
                   )}
                   {r.tagged && (
                     <button
                       onClick={() => onUntag(r.txn_id)}
                       title="Remove this link. The payment itself stays exactly as it is"
-                      className="ml-1 inline-flex align-middle items-center justify-center w-4 h-4 rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors"
+                      className="ml-1 inline-flex align-middle items-center justify-center w-5 h-5 rounded text-faint hover:text-ink hover:bg-surface-3 transition-colors duration-150"
                     >
-                      <X size={10} />
+                      <X size={12} />
                     </button>
                   )}
                 </div>
-                <div className="text-[11px] text-muted tabular-nums">
+                <div className="ui-note tabular-nums">
                   {dayLabel(r.posted_at)}
                   {r.invoice_number ? ` · #${r.invoice_number}` : ""}
                   {/* Only when it is not the side this profile is obviously on —
@@ -560,7 +561,7 @@ function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRo
                     disabled={busyTxn === r.txn_id}
                     aria-label="Payment method"
                     title={r.confirmed_method ? "You confirmed this method" : m.reason || "Set the payment method"}
-                    className={`bg-transparent border-none p-0 text-[11px] cursor-pointer focus:outline-none focus:ring-1 focus:ring-accent/40 rounded ${
+                    className={`bg-transparent border-none p-0 text-[11px] cursor-pointer focus:outline-none rounded ${
                       r.confirmed_method ? "text-muted" : "text-faint italic"
                     }`}
                   >
@@ -572,7 +573,7 @@ function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRo
                 </div>
               </div>
               <div className="flex-shrink-0 text-right">
-                <div className={`text-[12.5px] font-semibold tabular-nums ${r.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                <div className={`text-[13px] font-medium tabular-nums ${r.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
                   {r.direction === "in" ? "+" : "−"}{fmtAmount(r.amount)}
                 </div>
                 <div className="flex items-center justify-end gap-0.5 mt-1">
@@ -582,18 +583,18 @@ function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRo
                       disabled={busyTxn === r.txn_id}
                       title="File this payment under someone else"
                       aria-label="File this payment under someone else"
-                      className="w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                      className="ui-ib !w-6 !h-6 disabled:opacity-50"
                     >
-                      <UserCog size={11} />
+                      <UserCog size={14} />
                     </button>
                   )}
                   <button
                     onClick={() => openTxn(r.txn_id)}
                     title="Open this transaction in Financials"
                     aria-label="Open this transaction in Financials"
-                    className="w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors"
+                    className="ui-ib !w-6 !h-6"
                   >
-                    <ArrowRight size={11} />
+                    <ArrowRight size={14} />
                   </button>
                 </div>
               </div>

@@ -10,7 +10,7 @@
 // 216 is the expanded sidebar, so a pane N px wide gets the layout a full window whose content
 // pane is N px wide gets (desktop-responsive-rule in the vault). Twins sit where the originals
 // sat, so a later breakpoint still wins over an earlier one.
-const SIDEBAR = 216;
+const SIDEBAR = 256;
 const MIN_WIDTH = /^\(min-width:\s*(\d+)px\)$/;
 // :where() adds no specificity, so a fenced rule wins and loses exactly as it did before.
 const FENCE = ":where(:not(.pane-container *))";

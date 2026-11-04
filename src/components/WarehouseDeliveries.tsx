@@ -245,7 +245,7 @@ function PhotoView({ l, onClose }: { l: LoadLine; onClose: () => void }) {
   }, [onClose]);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6" onClick={onClose}>
-      <div className={`${WH_CARD} p-3 w-full max-w-[640px]`} onClick={(e) => e.stopPropagation()}>
+      <div className={`${WH_CARD} bg-surface p-3 w-full max-w-[640px]`} onClick={(e) => e.stopPropagation()}>
         <img src={picSrc(base, l.image, v)} alt={lineTitle(l)} className="w-full max-h-[70vh] object-contain rounded-md bg-surface-2" />
         <div className="flex items-start justify-between gap-3 mt-3">
           <div className="min-w-0">
@@ -863,7 +863,7 @@ function CaseEditor({ draft, setDraft, lines, idx, counts, cases, saved, onSave,
       <div className="relative mt-3 max-w-[560px]">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={draft.blocks.length ? "Another style: type a style, colour or name" : (draft.kind === "loose" ? "What is loose on the pallet" : "What is in the box") + ": type a style, colour or name"} style={WH_INPUT_BG} className={`${WH_INPUT} pl-9`} />
-        {q.trim() && <div className={`${WH_CARD} absolute z-10 left-0 right-0 mt-1 max-h-[420px] overflow-auto shadow-[0_8px_24px_rgba(0,0,0,0.12)]`}>
+        {q.trim() && <div className={`${WH_CARD} bg-surface absolute z-10 left-0 right-0 mt-1 max-h-[420px] overflow-auto shadow-[0_8px_24px_rgba(0,0,0,0.12)]`}>
           {hits.map((l) => (
             <button key={l.id} onClick={() => add(l.id)} className="w-full text-left px-3 py-2 hover:bg-surface-2 border-b border-line last:border-b-0 flex items-center justify-between gap-3">
               <span className="min-w-0 flex items-center gap-3"><Thumb l={l} size={44} /><span className="min-w-0"><span className="text-[13px] font-medium text-ink">{lineTitle(l)}</span><span className="block text-[12px] text-muted truncate">{[l.brand, l.group, lineDesc(l)].filter(Boolean).join(" · ")}</span></span></span>
@@ -1251,7 +1251,7 @@ function SellView({ d, lines, merge, live, buy }: { d: LoadDetail; lines: LoadLi
           </div>
         </div>
       )}
-      <div className={`${WH_CARD} p-3.5 mb-3 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-10`}>
+      <div className={`${WH_CARD} bg-surface p-3.5 mb-3 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-10`}>
         <div>
           <div className="text-[14px] text-ink tabular-nums"><span className="font-semibold">{n0(totalPairs)}</span> pairs picked <span className="text-muted text-[12.5px]">· {many(totalStyles, "style", "styles")}</span></div>
           <div className="text-[12px] text-muted tabular-nums">{n0(d.stock.left)} of {n0(d.stock.received)} pairs in boxes left to sell{d.stock.unnamed > 0 ? ` · ${n0(d.stock.unnamed)} sold with no style named` : ""}</div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, LeadClick, LeadDashboardStats, OrUnavailable, isUnavailable } from "../lib/api";
-import { X, MessageCircle } from "lucide-react";
+import { X } from "lucide-react";
 
 function fmtWhen(iso: string): string {
   const d = new Date(iso);
@@ -39,12 +39,12 @@ export default function OrganicLeadsModal({ onClose }: { onClose: () => void }) 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
       <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
+        <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line-2">
           <div>
-            <h2 className="text-[16px] font-semibold text-ink">Organic leads</h2>
+            <h2 className="text-[16px] font-medium text-ink">Organic leads</h2>
             <p className="text-[12px] text-muted mt-0.5">WhatsApp clicks from your storefront.</p>
           </div>
-          <button onClick={onClose} className="text-muted hover:text-ink transition-colors p-1 -mr-1 -mt-1"><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close" className="ui-ib -mr-1 -mt-1"><X size={18} /></button>
         </div>
 
         <div className="px-5 py-4 border-b border-line-2">
@@ -53,37 +53,36 @@ export default function OrganicLeadsModal({ onClose }: { onClose: () => void }) 
           ) : (
             <div className="grid grid-cols-3 gap-3">
               <div>
-                <div className="text-[20px] font-bold text-ink tabular-nums leading-none">{organic?.total ?? 0}</div>
-                <div className="text-[11.5px] text-muted mt-1">Total</div>
+                <div className="ui-fig">{organic?.total ?? 0}</div>
+                <div className="ui-label mt-1">Total</div>
               </div>
               <div>
-                <div className="text-[20px] font-bold text-ink tabular-nums leading-none">{organic?.last_30d ?? 0}</div>
-                <div className="text-[11.5px] text-muted mt-1">Last 30 days</div>
+                <div className="ui-fig">{organic?.last_30d ?? 0}</div>
+                <div className="ui-label mt-1">Last 30 days</div>
               </div>
               <div>
-                <div className="text-[20px] font-bold text-ink tabular-nums leading-none">{organic?.today ?? 0}</div>
-                <div className="text-[11.5px] text-muted mt-1">Today</div>
+                <div className="ui-fig">{organic?.today ?? 0}</div>
+                <div className="ui-label mt-1">Today</div>
               </div>
             </div>
           )}
         </div>
 
         <div className="overflow-y-auto flex-1 px-5 py-4">
-          <div className="text-[12.5px] font-medium text-muted mb-2.5">By lot</div>
+          <div className="ui-label mb-1">By lot</div>
           {clicksUnavailable ? (
             <div className="text-[13px] text-muted text-center py-6">Unavailable</div>
           ) : groups.length === 0 ? (
             <div className="text-[13px] text-muted text-center py-6">No clicks yet.</div>
           ) : (
-            <div className="space-y-2">
+            <div>
               {groups.map((g) => (
-                <div key={g.lotName} className="flex items-center gap-3 bg-surface-2 border border-line rounded-lg px-3.5 py-2.5">
-                  <span className="w-7 h-7 rounded-md bg-surface text-ink-2 border border-line-2 flex items-center justify-center flex-shrink-0"><MessageCircle size={13} /></span>
+                <div key={g.lotName} className="flex items-center gap-3 py-2.5 shadow-[inset_0_1px_0_rgb(var(--c-line))]">
                   <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-ink truncate">{g.lotName}</div>
-                    <div className="text-[11px] text-muted">Last click {fmtWhen(g.latest)}</div>
+                    <div className="text-[14px] font-medium text-ink truncate">{g.lotName}</div>
+                    <div className="ui-note">Last click {fmtWhen(g.latest)}</div>
                   </div>
-                  <div className="text-[13px] font-semibold text-ink tabular-nums flex-shrink-0">{g.count}</div>
+                  <div className="text-[14px] font-medium text-ink tabular-nums flex-shrink-0">{g.count}</div>
                 </div>
               ))}
             </div>

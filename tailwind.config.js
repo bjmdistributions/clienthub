@@ -20,8 +20,20 @@ export default {
           hover:   'rgb(var(--c-accent-fill-hover, var(--c-accent-hover)) / <alpha-value>)',
         },
       },
+      // R-583: softer, fewer shadows. Every shadow-* utility reads the theme tokens (index.css), so a
+      // card is a hairline and only a floating layer (menu, modal, drawer) gets depth.
+      boxShadow: {
+        sm:      'var(--shadow-xs)',
+        DEFAULT: 'var(--shadow-card)',
+        md:      'var(--shadow-panel)',
+        lg:      'var(--shadow-panel)',
+        xl:      'var(--shadow-modal)',
+        '2xl':   'var(--shadow-modal)',
+      },
       colors: {
         // Semantic brand palette — adapts to html.dark via CSS variables.
+        // R-583: bg-side is the sidebar (#111111 dark, #F5F5F4 light); the main panel is bg-surface.
+        side:        'rgb(var(--c-side) / <alpha-value>)',
         surface:     'rgb(var(--c-surface) / <alpha-value>)',
         'surface-2': 'rgb(var(--c-surface-2) / <alpha-value>)',
         'surface-3': 'rgb(var(--c-surface-3) / <alpha-value>)',
@@ -123,7 +135,7 @@ export default {
         "scale-in":       "scale-in 0.22s cubic-bezier(0.16, 1, 0.3, 1)",
         "shimmer":        "shimmer 1.8s linear infinite",
         "count-pulse":    "count-pulse 0.6s ease-in-out",
-        "page-slide-in":  "page-slide-in 0.24s cubic-bezier(0.16,1,0.3,1) both",
+        "page-slide-in":  "page-slide-in 0.24s cubic-bezier(0.16,1,0.3,1) backwards",
         "number-pop":     "number-pop 0.4s cubic-bezier(0.16,1,0.3,1) both",
         "glow-pulse":     "glow-pulse 2.5s ease-in-out infinite",
         "spin-slow":      "spin-slow 3s linear infinite",

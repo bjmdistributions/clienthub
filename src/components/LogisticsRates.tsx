@@ -14,7 +14,7 @@ import { LogisticsModal, modalPrimary } from "./LogisticsCarriers";
 /** A carrier name that opens the carrier card when the load named one. */
 function CarrierName({ id, name, onOpen }: { id: string; name: string; onOpen: (id: string) => void }) {
   return id
-    ? <button type="button" onClick={() => onOpen(id)} className="font-medium text-accent hover:underline">{name}</button>
+    ? <button type="button" onClick={() => onOpen(id)} className="ui-link">{name}</button>
     : <span className="font-medium text-ink">{name}</span>;
 }
 
@@ -39,35 +39,35 @@ export function RateCard({ by, onOpenCarrier }: { by: By | null; onOpenCarrier: 
 
   // No lane yet, or the server cannot say (an older server, or a refusal): the card stays out of the way.
   if (!by || r === "none") return null;
-  if (r === null) return <div className="rounded-xl border border-line bg-surface-2/50 px-3.5 py-2.5 text-[12.5px] text-muted">Looking up this lane...</div>;
+  if (r === null) return <div className="rounded-xl bg-surface-2 px-4 py-3 text-[14px] text-muted">Looking up this lane...</div>;
 
   const last = lastRate(r);
   return (
     <>
-      <div className="rounded-xl border border-line bg-surface-2/50 px-3.5 py-2.5 flex items-start justify-between gap-3" role="status" aria-label="Rate on this lane">
-        <div className="text-[13px] text-ink-2 min-w-0 break-words">
+      <div className="rounded-xl bg-surface-2 px-4 py-3 flex items-start justify-between gap-3 animate-page-slide-in" role="status" aria-label="Rate on this lane">
+        <div className="text-[14px] text-ink min-w-0 break-words">
           {last ? <>{last.lead} <CarrierName id={last.carrierId} name={last.carrier} onOpen={onOpenCarrier} /> {last.tail}</> : "No past loads on this lane yet."}
         </div>
         {r.matches.length > 0 && (
-          <button type="button" onClick={() => setAll(true)} className="text-[12.5px] text-accent font-medium hover:underline whitespace-nowrap flex-shrink-0">See all rates</button>
+          <button type="button" onClick={() => setAll(true)} className="ui-link whitespace-nowrap flex-shrink-0">See all rates</button>
         )}
       </div>
       {all && (
         <LogisticsModal title="Rates on this lane" sub={[r.lane.from, r.lane.to].filter(Boolean).join(" to ") || undefined} wide onClose={() => setAll(false)}
           footer={<button onClick={() => setAll(false)} className={modalPrimary}>Close</button>}>
-          <div className="rounded-lg border border-line divide-y divide-line">
+          <div>
             {r.matches.map((m) => {
               const rate = rateOf(m);
               return (
-                <div key={m.booking_id} className="flex items-center gap-3 px-3 py-2 text-[12.5px] min-w-0">
-                  <span className="font-mono text-ink-2 flex-shrink-0">{m.load_number}</span>
+                <div key={m.booking_id} className="flex items-center gap-3 px-2 py-2.5 text-[14px] min-w-0" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
+                  <span className="text-muted tabular-nums flex-shrink-0">{m.load_number}</span>
                   <span className="text-muted flex-shrink-0">{fmtDayLabel(m.day)}</span>
                   <span className="min-w-0 flex-1 truncate">
                     <CarrierName id={m.carrier_id} name={m.carrier || "Carrier not named"} onOpen={onOpenCarrier} />
                     {m.equipment && <span className="text-muted">{" "}{m.equipment}</span>}
                   </span>
                   {!m.exact && <StatusPill tone="neutral">Same states</StatusPill>}
-                  {rate != null && <span className="tabular-nums text-ink flex-shrink-0">{fmtAmount(rate)}</span>}
+                  {rate != null && <span className="tabular-nums font-medium text-ink flex-shrink-0">{fmtAmount(rate)}</span>}
                 </div>
               );
             })}

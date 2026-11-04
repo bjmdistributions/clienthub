@@ -16,6 +16,7 @@ import { fmtAmount, localDay, parseAmount, parseLocalDay } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
+import { Button, PageActions, Tabs } from "./ui";
 import NumberInput from "./NumberInput";
 import {
   ArrowLeft,
@@ -91,7 +92,7 @@ export default function ShowPackingView({ me }: { me?: Me | null }) {
 
   if (addon === undefined) {
     return (
-      <div className="p-6 flex items-center gap-2 text-[13px] text-muted">
+      <div className="flex items-center gap-2 text-[13px] text-muted">
         <Loader2 size={15} className="animate-spin" /> Loading…
       </div>
     );
@@ -99,8 +100,8 @@ export default function ShowPackingView({ me }: { me?: Me | null }) {
 
   if (addon === null) {
     return (
-      <div className="p-6 max-w-[560px]">
-        <div className="bg-surface border border-line rounded-xl p-6 text-[13px] text-muted">
+      <div className="max-w-[560px]">
+        <div className="py-6 text-[13px] text-muted">
           Couldn't reach the server to check Show packing. Connect this computer to your
           Ecliptr server (Settings → Sync) and try again.
         </div>
@@ -111,12 +112,10 @@ export default function ShowPackingView({ me }: { me?: Me | null }) {
   if (!addon.enabled) {
     if (!isAdmin(me)) {
       return (
-        <div className="p-6 max-w-[560px]">
-          <div className="bg-surface border border-line rounded-xl p-8 flex flex-col items-center text-center">
-            <div className="w-11 h-11 rounded-xl bg-surface-2 flex items-center justify-center text-muted mb-3">
-              <PackageCheck size={18} />
-            </div>
-            <h2 className="text-[16px] font-bold text-ink">Show packing</h2>
+        <div className="max-w-[560px]">
+          <div className="py-8 flex flex-col items-center text-center">
+            <PackageCheck size={18} className="text-muted mb-3" />
+            <h2 className="text-[16px] font-medium text-ink">Show packing</h2>
             <p className="text-[12.5px] text-muted mt-1.5 max-w-sm leading-relaxed">
               Ask an admin to turn on show packing in this view.
             </p>
@@ -203,20 +202,10 @@ function SetupWizard({ initialConfig, onActivated }: { initialConfig: ShowAddonC
   };
 
   return (
-    <div className="p-6 max-w-[560px]">
-      <div className="flex items-start gap-3 mb-5">
-        <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center text-accent flex-shrink-0 mt-0.5">
-          <PackageCheck size={18} />
-        </div>
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-bold text-ink">Show packing</h2>
-          <p className="text-[12.5px] text-muted mt-0.5 leading-relaxed">
-            Step {step} of 3
-          </p>
-        </div>
-      </div>
+    <div className="max-w-[560px]">
+      <p className="text-[13px] text-muted mb-5">Set up show packing. Step {step} of 3.</p>
 
-      <div className="bg-surface border border-line rounded-xl p-5 space-y-4">
+      <div className="space-y-4">
         {step === 1 && (
           <>
             <p className="text-[13px] text-ink leading-relaxed">
@@ -263,14 +252,14 @@ function SetupWizard({ initialConfig, onActivated }: { initialConfig: ShowAddonC
               onChange={(e) => setName(e.target.value)}
               placeholder="Show name"
               style={{ background: "var(--t-input-bg)" }}
-              className="w-full border border-line px-3 h-10 rounded-lg text-[13.5px] text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+              className="w-full border border-line px-3 h-10 rounded-lg text-[13.5px] text-ink placeholder:text-faint focus:outline-none focus:border-ink transition-colors"
             />
             <input
               type="date"
               value={date}
               onChange={(e) => setDate(e.target.value)}
               style={{ background: "var(--t-input-bg)" }}
-              className="w-full border border-line px-3 h-10 rounded-lg text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+              className="w-full border border-line px-3 h-10 rounded-lg text-[13.5px] text-ink focus:outline-none focus:border-ink transition-colors"
             />
             <button
               onClick={createFirstShow}
@@ -294,7 +283,7 @@ function FeeField({ label, value, onValue }: { label: string; value: number; onV
         value={value}
         onValue={onValue}
         style={{ background: "var(--t-input-bg)" }}
-        className="w-full border border-line px-2.5 h-9 rounded-lg text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+        className="w-full border border-line px-2.5 h-9 rounded-lg text-[13px] text-ink focus:outline-none focus:border-ink transition-colors"
       />
     </div>
   );
@@ -332,29 +321,14 @@ function ShowListScreen({
   };
 
   return (
-    <div className="p-6 max-w-[960px] space-y-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center text-accent flex-shrink-0 mt-0.5">
-            <PackageCheck size={18} />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-[18px] font-bold text-ink">Show packing</h2>
-            <p className="text-[12.5px] text-muted mt-0.5 leading-relaxed">
-              Buyer boxes for your live shows.
-            </p>
-          </div>
-        </div>
-        <button
-          onClick={() => setCreating((c) => !c)}
-          className="inline-flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3.5 h-9 rounded-lg text-[13px] font-medium transition-colors flex-shrink-0"
-        >
-          <Plus size={14} /> New show
-        </button>
-      </div>
+    <div className="max-w-[960px] space-y-5">
+      <PageActions>
+        <Button variant="ink" icon={<Plus size={14} />} onClick={() => setCreating((c) => !c)}>New show</Button>
+      </PageActions>
+      <p className="text-[13px] text-muted">Buyer boxes for your live shows.</p>
 
       {creating && (
-        <div className="bg-surface border border-line rounded-xl p-4 flex flex-col sm:flex-row gap-2.5">
+        <div className="py-3 flex flex-col sm:flex-row gap-2.5 border-y border-line">
           <input
             type="text"
             autoFocus
@@ -364,19 +338,19 @@ function ShowListScreen({
             disabled={saving}
             placeholder="Show name"
             style={{ background: "var(--t-input-bg)" }}
-            className="flex-1 border border-line px-3 h-9 rounded-lg text-[13px] text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors disabled:opacity-60"
+            className="flex-1 border border-line px-3 h-9 rounded-lg text-[13px] text-ink placeholder:text-faint focus:outline-none focus:border-ink transition-colors disabled:opacity-60"
           />
           <input
             type="date"
             value={date}
             onChange={(e) => setDate(e.target.value)}
             style={{ background: "var(--t-input-bg)" }}
-            className="border border-line px-3 h-9 rounded-lg text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+            className="border border-line px-3 h-9 rounded-lg text-[13px] text-ink focus:outline-none focus:border-ink transition-colors"
           />
           <button
             onClick={create}
             disabled={saving || !name.trim()}
-            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50 flex-shrink-0"
+            className="ui-btn ui-btn-ink flex-shrink-0"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : "Create"}
           </button>
@@ -386,20 +360,20 @@ function ShowListScreen({
       {shows === null ? (
         <div className="flex items-center gap-2 text-[13px] text-muted"><Loader2 size={14} className="animate-spin" /> Loading…</div>
       ) : shows.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-line-3 bg-surface px-6 py-10 text-center text-[13px] text-muted">
+        <div className="rounded-xl border border-dashed border-line-3 px-6 py-10 text-center text-[13px] text-muted">
           No shows yet.
         </div>
       ) : (
-        <div className="space-y-2.5">
+        <div className="divide-y divide-line border-t border-line">
           {shows.map((s) => (
             <button
               key={s.id}
               onClick={() => onOpen(s.id)}
-              className="w-full text-left bg-surface border border-line rounded-xl px-4 py-3.5 hover:border-line-3 transition-colors flex items-center gap-4 flex-wrap"
+              className="w-full text-left px-3 py-3.5 hover:bg-surface-2 transition-colors duration-150 flex items-center gap-4 flex-wrap"
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[14px] font-semibold text-ink truncate">{s.name}</span>
+                  <span className="text-[14px] font-medium text-ink truncate">{s.name}</span>
                   <StatusPill tone={showTone(s.status)}>{s.status}</StatusPill>
                 </div>
                 <div className="text-[11.5px] text-muted mt-0.5">{fmtShowDate(s.show_date)}</div>
@@ -421,8 +395,8 @@ function ShowListScreen({
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="text-right">
-      <div className="font-semibold tabular-nums">{value}</div>
-      <div className="text-[10px] text-muted">{label}</div>
+      <div className="font-medium tabular-nums">{value}</div>
+      <div className="text-[11px] text-muted">{label}</div>
     </div>
   );
 }
@@ -444,7 +418,7 @@ function ShowDetailScreen({
 
   if (!detail) {
     return (
-      <div className="p-6 flex items-center gap-2 text-[13px] text-muted">
+      <div className="flex items-center gap-2 text-[13px] text-muted">
         <Loader2 size={15} className="animate-spin" /> Loading…
       </div>
     );
@@ -453,29 +427,20 @@ function ShowDetailScreen({
   const { show } = detail;
 
   return (
-    <div className="p-6 max-w-[1100px] space-y-4">
+    <div className="max-w-[1100px] space-y-4">
       <div className="flex items-center gap-3 flex-wrap">
         <button onClick={onBack} className="text-muted hover:text-ink transition-colors flex-shrink-0" title="Back to shows">
           <ArrowLeft size={18} />
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="text-[16px] font-bold text-ink truncate">{show.name}</h2>
+            <h2 className="text-[16px] font-medium text-ink truncate">{show.name}</h2>
             <StatusPill tone={showTone(show.status)}>{show.status}</StatusPill>
           </div>
           <div className="text-[11.5px] text-muted mt-0.5">{fmtShowDate(show.show_date)}</div>
         </div>
-        <div className="flex gap-1 bg-surface-2 rounded-lg p-1 border border-line-2 flex-shrink-0">
-          {([["prep", "Prep"], ["live", "Live"], ["results", "Pack & results"]] as [SubTab, string][]).map(([id, label]) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className={`text-[12.5px] px-3 h-8 rounded-md transition-colors ${tab === id ? "bg-accent text-on-accent" : "text-ink-2 hover:text-accent"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <Tabs label="Show" value={tab} onChange={(id) => setTab(id as SubTab)}
+          tabs={([["prep", "Prep"], ["live", "Live"], ["results", "Pack & results"]] as [SubTab, string][]).map(([id, label]) => ({ id, label }))} />
       </div>
 
       {tab === "prep" && <PrepTab detail={detail} onChanged={onChanged} />}
@@ -700,7 +665,7 @@ function PrepTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () => v
                       key={`${item.id}-title`}
                       defaultValue={item.title}
                       onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== item.title) saveField(item, { title: v }); }}
-                      className="w-full bg-transparent focus:outline-none focus:ring-1 focus:ring-accent/40 rounded px-1 -mx-1"
+                      className="w-full bg-transparent focus:outline-none focus:border-ink rounded px-1 -mx-1"
                     />
                   </td>
                   <td className="px-3 py-1.5 w-24">
@@ -708,7 +673,7 @@ function PrepTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () => v
                       key={`${item.id}-cost`}
                       defaultValue={item.unit_cost}
                       onBlur={(e) => { const n = parseAmount(e.target.value, item.unit_cost); if (n !== item.unit_cost) saveField(item, { unit_cost: n }); }}
-                      className="w-full bg-transparent focus:outline-none focus:ring-1 focus:ring-accent/40 rounded px-1 -mx-1 tabular-nums"
+                      className="w-full bg-transparent focus:outline-none focus:border-ink rounded px-1 -mx-1 tabular-nums"
                     />
                   </td>
                   <td className="px-3 py-1.5 w-28">
@@ -716,7 +681,7 @@ function PrepTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () => v
                       key={`${item.id}-start`}
                       defaultValue={item.start_price ?? ""}
                       onBlur={(e) => { const n = parseAmount(e.target.value, 0); if (n !== (item.start_price ?? 0)) saveField(item, { start_price: n }); }}
-                      className="w-full bg-transparent focus:outline-none focus:ring-1 focus:ring-accent/40 rounded px-1 -mx-1 tabular-nums"
+                      className="w-full bg-transparent focus:outline-none focus:border-ink rounded px-1 -mx-1 tabular-nums"
                     />
                   </td>
                   <td className="px-3 py-1.5"><StatusPill tone={itemTone(item.status)}>{item.status}</StatusPill></td>
@@ -934,7 +899,7 @@ function LiveTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () => v
             onKeyDown={(e) => { if (e.key === "Enter") buyerRef.current?.focus(); }}
             placeholder={current ? `#${current.item_number}` : "Item #"}
             style={{ background: "var(--t-input-bg)" }}
-            className="w-24 border border-line px-3 h-11 rounded-lg text-[15px] text-ink tabular-nums placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors disabled:opacity-60"
+            className="w-24 border border-line px-3 h-11 rounded-lg text-[15px] text-ink tabular-nums placeholder:text-faint focus:outline-none focus:border-ink transition-colors disabled:opacity-60"
           />
           <input
             ref={buyerRef}
@@ -944,7 +909,7 @@ function LiveTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () => v
             onKeyDown={(e) => { if (e.key === "Enter") doSell(false); }}
             placeholder="Buyer's Whatnot username"
             style={{ background: "var(--t-input-bg)" }}
-            className="flex-1 min-w-0 border border-line px-3 h-11 rounded-lg text-[15px] text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors disabled:opacity-60"
+            className="flex-1 min-w-0 border border-line px-3 h-11 rounded-lg text-[15px] text-ink placeholder:text-faint focus:outline-none focus:border-ink transition-colors disabled:opacity-60"
           />
           <button
             onClick={() => doSell(false)}

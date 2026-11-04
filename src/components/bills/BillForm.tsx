@@ -142,35 +142,35 @@ export default function BillForm({ bill, seed, onClose, onSaved }: {
       {/* No click-away or Escape: this form is long, and a stray click should not lose it. */}
       <div className="bg-surface border border-line rounded-2xl w-full max-w-xl p-5 max-h-[90vh] overflow-auto">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-[15px] font-semibold text-ink">{bill ? "Edit bill" : "Add a bill"}</h3>
+          <h3 className="text-[16px] font-medium text-ink m-0">{bill ? "Edit bill" : "Add a bill"}</h3>
           <button onClick={onClose} className="text-muted hover:text-ink p-0.5" aria-label="Close"><X size={15} /></button>
         </div>
 
         <div className="space-y-4">
           <label className="block">
-            <span className="text-[12px] text-muted">Name</span>
+            <span className="ui-label">Name</span>
             <input className={inp} value={d.name} onChange={(e) => set({ name: e.target.value })} placeholder="Warehouse rent" autoFocus />
           </label>
 
           <div>
             <label className="block">
-              <span className="text-[12px] text-muted">Shows in the bank as</span>
+              <span className="ui-label">Shows in the bank as</span>
               <input className={inp} value={d.payee_match} onChange={(e) => set({ payee_match: e.target.value })}
                 placeholder={d.name ? `Defaults to ${d.name}` : "Words from the payee, like oak street"} />
             </label>
-            <p className="text-[11px] text-muted mt-1">Every word you type has to appear in the payee or description of the payment.</p>
+            <p className="ui-note mt-1">Every word you type has to appear in the payee or description of the payment.</p>
             <Preview text={text} pv={pv} busy={pvBusy} />
           </div>
 
           <div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <label className="block">
-                <span className="text-[12px] text-muted">Amount</span>
+                <span className="ui-label">Amount</span>
                 <NumberInput className={inp + (d.varies ? " opacity-50" : "")} value={d.varies ? "" : d.amount || ""} disabled={d.varies}
                   placeholder={d.varies ? "Varies" : "2,400.00"} onValue={(n) => set({ amount: n })} />
               </label>
               <label className="block">
-                <span className="text-[12px] text-muted">Close enough, within</span>
+                <span className="ui-label">Close enough, within</span>
                 <div className="relative">
                   <NumberInput className={inp + " pr-8" + (d.varies ? " opacity-50" : "")} value={d.tolerance_pct} disabled={d.varies}
                     onValue={(n) => set({ tolerance_pct: n })} />
@@ -186,20 +186,20 @@ export default function BillForm({ bill, seed, onClose, onSaved }: {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block">
-              <span className="text-[12px] text-muted">How often</span>
+              <span className="ui-label">How often</span>
               <select className={inp} value={d.cadence} onChange={(e) => set({ cadence: e.target.value as Cadence })}>
                 {CADENCE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </label>
             <label className="block">
-              <span className="text-[12px] text-muted">First due date</span>
+              <span className="ui-label">First due date</span>
               <input type="date" className={inp} value={d.anchor_date} onChange={(e) => set({ anchor_date: e.target.value })} />
             </label>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block">
-              <span className="text-[12px] text-muted">Category</span>
+              <span className="ui-label">Category</span>
               <select className={inp} value={d.category} onChange={(e) => set({ category: e.target.value })}>
                 <option value="">No category</option>
                 {options.extra && <option value={options.extra}>{catLabel(options.extra)}</option>}
@@ -211,7 +211,7 @@ export default function BillForm({ bill, seed, onClose, onSaved }: {
               </select>
             </label>
             <label className="block">
-              <span className="text-[12px] text-muted">Paid by</span>
+              <span className="ui-label">Paid by</span>
               <select className={inp} value={d.method} onChange={(e) => set({ method: e.target.value })}>
                 {METHOD_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -219,42 +219,42 @@ export default function BillForm({ bill, seed, onClose, onSaved }: {
           </div>
 
           <div>
-            <span className="text-[12px] text-muted">Website</span>
+            <span className="ui-label">Website</span>
             <div className="flex gap-2 mt-0.5">
               <input className={inp} value={d.website} onChange={(e) => set({ website: e.target.value })} placeholder="oakstreet.example.com" />
-              <button type="button" onClick={useIcon} disabled={!d.website.trim() || logoBusy} className={btn + " h-9"}>
-                <Globe size={13} /> Use the website's icon
+              <button type="button" onClick={useIcon} disabled={!d.website.trim() || logoBusy} className="ui-btn">
+                <Globe size={14} /> Use the website's icon
               </button>
             </div>
           </div>
 
           <div>
-            <span className="text-[12px] text-muted">Logo</span>
+            <span className="ui-label">Logo</span>
             <div className="flex items-center gap-3 mt-1">
               <BillLogo name={d.name || "Bill"} logo={d.logo} size={56} />
               <div className="flex items-center gap-2 flex-wrap">
                 <label className={btn + " cursor-pointer " + (logoBusy ? "opacity-50 pointer-events-none" : "")}>
-                  <Upload size={12} /> {logoBusy ? "Working" : "Upload a logo"}
+                  <Upload size={14} /> {logoBusy ? "Working" : "Upload a logo"}
                   <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pickFile} />
                 </label>
                 {d.logo && <button type="button" onClick={() => set({ logo: "" })} className="text-[12px] text-muted hover:text-danger-ink">Remove</button>}
               </div>
             </div>
-            {logoErr ? <p className="text-[11.5px] text-danger-ink mt-1.5">{logoErr}</p>
-              : !d.logo && <p className="text-[11px] text-muted mt-1.5">Without a logo the bill shows its initials.</p>}
+            {logoErr ? <p className="text-[12px] text-danger-ink mt-1.5">{logoErr}</p>
+              : !d.logo && <p className="ui-note mt-1.5">Without a logo the bill shows its initials.</p>}
           </div>
 
           <label className="block">
-            <span className="text-[12px] text-muted">Notes</span>
+            <span className="ui-label">Notes</span>
             <textarea className={inp + " h-20 py-2 resize-y"} value={d.notes} onChange={(e) => set({ notes: e.target.value })}
               placeholder="Account number, who to call, when the lease ends." />
           </label>
         </div>
 
-        {error && <div className="mt-4 text-[12.5px] text-danger-ink bg-danger-bg border border-danger-ink/20 rounded-lg px-3 py-2">{error}</div>}
+        {error && <div className="mt-4 text-[12.5px] text-danger-ink border-y border-line py-2.5">{error}</div>}
 
         <div className="flex justify-end gap-2 mt-5">
-          <button onClick={onClose} className={btn + " h-9"}>Cancel</button>
+          <button onClick={onClose} className="ui-btn">Cancel</button>
           <button onClick={submit} disabled={busy} className={pri}>{busy ? "Saving" : bill ? "Save changes" : "Add bill"}</button>
         </div>
       </div>
@@ -265,7 +265,7 @@ export default function BillForm({ bill, seed, onClose, onSaved }: {
 function Preview({ text, pv, busy }: { text: string; pv: { count: number; txns: PreviewTxn[] } | null; busy: boolean }) {
   if (!text) return null;
   return (
-    <div className="mt-2 border border-line-2 rounded-lg bg-surface-2/50">
+    <div className="mt-2 rounded-[10px] bg-surface-2 ring-1 ring-line">
       <div className="px-3 py-2 text-[12px] text-ink-2">
         {pv == null
           ? (busy ? "Checking your bank..." : "Could not check the bank just now.")
@@ -274,7 +274,7 @@ function Preview({ text, pv, busy }: { text: string; pv: { count: number; txns: 
             : `Matches ${pv.count} payment${pv.count === 1 ? "" : "s"}`}
       </div>
       {pv && pv.txns.length > 0 && (
-        <div className="divide-y divide-line-2 border-t border-line-2">
+        <div className="divide-y divide-line border-t border-line">
           {pv.txns.map((t) => (
             <div key={t.id} className="flex items-center gap-3 px-3 py-1.5 text-[12px] min-w-0">
               <span className="text-muted w-14 flex-shrink-0 tabular-nums">{shortDay(t.posted_at.slice(0, 10))}</span>

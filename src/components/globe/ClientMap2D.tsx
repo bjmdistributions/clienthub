@@ -212,7 +212,7 @@ export default function ClientMap2D({ scope, places, regions, lens, today, showM
 
       <div className="globe-map-legend">
         <span>{byProfit ? "Less profit" : "Fewer clients"}</span>
-        <span className="globe-map-ramp" />
+        <span className="inline-block w-[90px] h-1.5 rounded-[3px]" style={{ background: "linear-gradient(90deg, rgba(250,250,250,0.10), rgba(250,250,250,0.62))" }} />
         <span>More</span>
         {scope === "us" && outside > 0 && (
           <button onClick={() => onScope("world")} className="globe-map-outside">
@@ -222,9 +222,9 @@ export default function ClientMap2D({ scope, places, regions, lens, today, showM
       </div>
 
       <div className="globe-map-zoom">
-        <button className="globe-ctrl-btn" aria-label="Zoom in" title="Zoom in" onClick={() => zoomAt(1.5, cx, cy)}><Plus size={15} /></button>
-        <button className="globe-ctrl-btn" aria-label="Zoom out" title="Zoom out" onClick={() => zoomAt(1 / 1.5, cx, cy)}><Minus size={15} /></button>
-        <button className="globe-ctrl-btn" aria-label="Show the whole map" title="Show the whole map" onClick={() => setView({ k: 1, x: 0, y: 0 })}><Maximize2 size={14} /></button>
+        <button className={MAP_BTN} aria-label="Zoom in" title="Zoom in" onClick={() => zoomAt(1.5, cx, cy)}><Plus size={15} /></button>
+        <button className={MAP_BTN} aria-label="Zoom out" title="Zoom out" onClick={() => zoomAt(1 / 1.5, cx, cy)}><Minus size={15} /></button>
+        <button className={MAP_BTN} aria-label="Show the whole map" title="Show the whole map" onClick={() => setView({ k: 1, x: 0, y: 0 })}><Maximize2 size={14} /></button>
       </div>
 
       {tip && (
@@ -236,6 +236,11 @@ export default function ClientMap2D({ scope, places, regions, lens, today, showM
     </div>
   );
 }
+
+// The flat map sits on the globe stage, which is a night sky in both themes, so its buttons keep one set of colours.
+const MAP_BTN =
+  "grid place-items-center w-8 h-8 rounded-lg ring-1 ring-[rgba(250,250,250,0.18)] bg-[rgba(10,10,10,0.78)] text-[rgba(250,250,250,0.8)] " +
+  "transition-colors duration-[130ms] hover:bg-[rgba(250,250,250,0.14)] hover:text-[rgb(250,250,250)]";
 
 function markLines(g: Group, showMoney: boolean): string[] {
   const lines = [g.label];

@@ -10,7 +10,7 @@ import { PayAsk, paidToast } from "./BuyPanel";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 
-const field = "border border-line px-2.5 h-9 rounded-lg text-[13px] w-full bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40";
+const field = "field-input h-9 w-full text-[13px]";
 
 export default function FinancialsBuyTarget({ txn, preselect, onDone }: { txn: BankTxn; preselect?: string; onDone: () => void }) {
   const [buys, setBuys] = useState<BuyChoice[] | null>(null);
@@ -55,21 +55,21 @@ export default function FinancialsBuyTarget({ txn, preselect, onDone }: { txn: B
   return (
     <div className="space-y-2">
       {picked ? (
-        <div className="flex items-center justify-between gap-3 border border-line-2 rounded-lg px-3 py-2">
+        <div className="flex items-center justify-between gap-3 rounded-[10px] ring-1 ring-line px-3 py-2">
           <BuyLine b={picked} kind={kind} />
-          <button onClick={() => setPicked(null)} className="flex-shrink-0 text-[12px] text-accent hover:text-accent-hover">Change</button>
+          <button onClick={() => setPicked(null)} className="flex-shrink-0 text-[12px] text-ink hover:opacity-70">Change</button>
         </div>
       ) : (
         <>
           <div className="relative">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a buy by its name or supplier" className={`${field} pl-8`} />
           </div>
-          <div className="max-h-60 overflow-y-auto border border-line-2 rounded-lg divide-y divide-line-2">
+          <div className="max-h-60 overflow-y-auto rounded-[10px] ring-1 ring-line divide-y divide-line">
             {buys === null ? <p className="text-[12px] text-muted px-3 py-2">Loading…</p>
               : shown.length === 0 ? <p className="text-[12px] text-muted px-3 py-2">{q ? "No buy matches that." : "No buys yet. Record one on a Warehouse product, or start one in Deal Flow, Inventory."}</p>
               : shown.map((b) => (
-                <button key={b.id} onClick={() => setPicked(b)} className="w-full text-left px-3 py-2 hover:bg-surface-2/60">
+                <button key={b.id} onClick={() => setPicked(b)} className="w-full text-left px-3 py-2 hover:bg-surface-2 transition-colors duration-150">
                   <BuyLine b={b} kind={kind} />
                 </button>
               ))}
@@ -82,12 +82,12 @@ export default function FinancialsBuyTarget({ txn, preselect, onDone }: { txn: B
           <option value="ship">Paid for the shipping in</option>
         </select>
         <button onClick={link} disabled={busy || !picked || shipByTruck || room <= 0}
-          className="sm:col-span-4 flex items-center justify-center gap-1.5 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors">
+          className="ui-btn ui-btn-ink sm:col-span-4 disabled:opacity-50">
           {busy ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Link to the buy
         </button>
       </div>
-      {shipByTruck && <p className="text-[11.5px] text-muted">This buy comes in on its own trucks, so a carrier payment is tied to its truck in Logistics, Pay carriers.</p>}
-      {!shipByTruck && <p className="text-[11.5px] text-muted">The buy spreads it over every order sold from it, as each one's cost, and holds the rest until the stock sells.</p>}
+      {shipByTruck && <p className="ui-note">This buy comes in on its own trucks, so a carrier payment is tied to its truck in Logistics, Pay carriers.</p>}
+      {!shipByTruck && <p className="ui-note">The buy spreads it over every order sold from it, as each one's cost, and holds the rest until the stock sells.</p>}
       {asking && <PayAsk choice={asking} busy={busy} onTake={(t) => send(t, t === "all")} onCancel={() => setAsking(null)} />}
     </div>
   );

@@ -5,6 +5,7 @@ import { api, type ApprovalRequest } from "../lib/api";
 import { localDay } from "../lib/format";
 import { renewalLine, renewalTitle, renewalsOf, sinceRenewed } from "../lib/renewals";
 import { toast } from "./Toast";
+import { PageActions } from "./ui";
 
 // R-466: the storefront listings that have gone five days without a renewal, one compact row each. Renew keeps
 // a listing live, Mark sold takes it off the storefront, Renew all does every one after a confirm. These are the
@@ -14,8 +15,8 @@ import { toast } from "./Toast";
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const changed = () => window.dispatchEvent(new CustomEvent("approvals-changed"));
 
-const ghost = "border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium transition-colors disabled:opacity-50 whitespace-nowrap";
-const solid = "bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium transition-colors disabled:opacity-50 whitespace-nowrap";
+const ghost = "ui-btn ui-btn-sm";
+const solid = "ui-btn ui-btn-sm ui-btn-ink";
 
 export default function RenewalsView() {
   const [items, setItems] = useState<ApprovalRequest[] | null>(null);
@@ -81,36 +82,33 @@ export default function RenewalsView() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto min-w-0">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Renewals</h2>
-          <p className="text-[12px] text-muted mt-0.5">
-            {items === null ? "Looking..." : list.length === 0 ? "Listings that go five days without a renewal show up here." : `${renewalLine(list.length)}. Renew a listing to keep it live, or mark it sold.`}
-          </p>
-        </div>
+    <div className="max-w-3xl min-w-0">
+      <PageActions>
         {list.length > 0 && (
-          <button onClick={renewAll} disabled={busy !== ""} className={solid + " inline-flex items-center gap-1.5"}>
-            <RefreshCw size={13} className={busy === "all" ? "animate-spin" : ""} /> Renew all
+          <button onClick={renewAll} disabled={busy !== ""} className={solid}>
+            <RefreshCw size={14} className={busy === "all" ? "animate-spin" : ""} /> Renew all
           </button>
         )}
-      </div>
+      </PageActions>
+      <p className="text-[13px] text-muted mb-5">
+        {items === null ? "Looking..." : list.length === 0 ? "Listings that go five days without a renewal show up here." : `${renewalLine(list.length)}. Renew a listing to keep it live, or mark it sold.`}
+      </p>
 
       {error && (
-        <div className="mb-4 flex items-center justify-between gap-3 text-[13px] text-danger-ink bg-danger-bg border border-danger-ink/20 rounded-lg px-3 py-2" role="alert">
+        <div className="mb-4 flex items-center justify-between gap-3 text-[13px] text-danger-ink bg-danger-bg rounded-lg px-3 py-2" role="alert">
           <span className="min-w-0">{error}</span>
           <button onClick={load} className={ghost}>Try again</button>
         </div>
       )}
 
       {items !== null && list.length === 0 ? (
-        <div className="bg-surface border border-line rounded-2xl py-12 text-center text-[13px] text-muted">Nothing to renew.</div>
+        <div className="py-16 text-center text-[13px] text-muted">Nothing to renew.</div>
       ) : items !== null && (
-        <div className="bg-surface border border-line rounded-2xl divide-y divide-line-2 overflow-hidden">
+        <div className="divide-y divide-line border-t border-line">
           {list.map((a) => (
-            <div key={a.id} className="flex items-center gap-3 px-4 py-2.5 min-w-0">
+            <div key={a.id} className="flex items-center gap-3 px-3 py-3 min-w-0 hover:bg-surface-2 transition-colors duration-150">
               <div className="min-w-0 flex-1">
-                <div className="text-[13.5px] font-medium text-ink truncate" title={renewalTitle(a)}>{renewalTitle(a)}</div>
+                <div className="text-[14px] font-medium text-ink truncate" title={renewalTitle(a)}>{renewalTitle(a)}</div>
                 <div className="text-[11.5px] text-muted truncate">{sinceRenewed(a.entity_id ? renewed.get(a.entity_id) : null, a.created_at, today)}</div>
               </div>
               <div className="flex gap-2 flex-shrink-0">

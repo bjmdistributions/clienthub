@@ -112,15 +112,15 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
     load();
   };
 
-  const broken = health ? health.banks.filter((b) => b.error) : [];
+  const broken = health ? (health.banks ?? []).filter((b) => b.error) : [];
   const warnings = health ? health.warnings : [];
   if (broken.length === 0 && warnings.length === 0 && over.length === 0) return null;
 
   return (
-    <div className="border border-line-2 rounded-lg divide-y divide-line-2 min-w-0">
+    <div className="rounded-xl ring-1 ring-line divide-y divide-line min-w-0">
       {broken.map((b) => (
         <div key={b.id} className="flex items-start gap-2.5 px-3.5 py-3 min-w-0">
-          <AlertTriangle size={15} className={`${b.needs_login ? "text-danger-ink" : "text-warning-ink"} flex-shrink-0 mt-0.5`} />
+          <AlertTriangle size={16} strokeWidth={1.75} className={`${b.needs_login ? "text-danger-ink" : "text-warning-ink"} flex-shrink-0 mt-0.5`} />
           <div className="min-w-0 flex-1 text-[13px] leading-relaxed">
             {b.needs_login ? (
               <>
@@ -139,7 +139,7 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
             <button
               onClick={() => signIn(b)}
               disabled={signingIn !== null}
-              className="flex-shrink-0 flex items-center gap-1.5 h-8 px-3 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[12.5px] font-medium disabled:opacity-60 transition-colors"
+              className="ui-btn ui-btn-ink ui-btn-sm flex-shrink-0 disabled:opacity-60"
             >
               {signingIn === b.id && <Loader2 size={13} className="animate-spin" />}
               Sign in to {b.institution || "the bank"}
@@ -153,15 +153,15 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
             onClick={() => setOverOpen((o) => !o)}
             className="flex items-center gap-1.5 min-w-0 w-full text-left text-[13px] text-ink hover:text-ink-2"
           >
-            {overOpen ? <ChevronDown size={14} className="text-muted flex-shrink-0" /> : <ChevronRight size={14} className="text-muted flex-shrink-0" />}
+            {overOpen ? <ChevronDown size={14} strokeWidth={1.75} className="text-muted flex-shrink-0" /> : <ChevronRight size={14} strokeWidth={1.75} className="text-muted flex-shrink-0" />}
             <span className="font-medium tabular-nums">{over.length}</span>
             <span className="truncate">bank {over.length === 1 ? "row is" : "rows are"} booked for more than the bank says</span>
           </button>
           {overOpen && (
-            <div className="mt-2 flex flex-col divide-y divide-line-2 pl-5">
+            <div className="mt-2 flex flex-col divide-y divide-line pl-5">
               {over.map((t) => (
                 <div key={t.id} className="flex items-center gap-3 py-2 min-w-0">
-                  <div className="min-w-0 flex-1 text-[12.5px] leading-relaxed">
+                  <div className="min-w-0 flex-1 text-[13px] leading-relaxed">
                     <div className="text-ink truncate">{t.name || "Bank row"} <span className="text-muted">({t.posted_at.slice(0, 10)})</span></div>
                     <div className="text-ink-2">
                       Booked <span className="tabular-nums">{fmtAmount(t.booked)}</span> on a <span className="tabular-nums">{fmtAmount(t.amount)}</span> row
@@ -171,8 +171,7 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
                   <button
                     onClick={() => trim(t)}
                     disabled={trimming !== null}
-                    className={`flex-shrink-0 h-8 px-3 rounded-lg text-[12.5px] font-medium transition-colors disabled:opacity-60 ${
-                      armed === t.id ? "bg-accent hover:bg-accent-hover text-on-accent" : "border border-line text-ink-2 hover:bg-surface-2"}`}
+                    className={`ui-btn ui-btn-sm flex-shrink-0 disabled:opacity-60 ${armed === t.id ? "ui-btn-ink" : ""}`}
                   >
                     {trimming === t.id ? <Loader2 size={13} className="animate-spin" /> : armed === t.id ? `Take ${fmtAmount(t.excess)} off?` : `Trim to ${fmtAmount(t.amount)}`}
                   </button>
@@ -189,13 +188,13 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
               onClick={() => setOpen((o) => !o)}
               className="flex items-center gap-1.5 min-w-0 flex-1 text-left text-[13px] text-ink hover:text-ink-2"
             >
-              {open ? <ChevronDown size={14} className="text-muted flex-shrink-0" /> : <ChevronRight size={14} className="text-muted flex-shrink-0" />}
+              {open ? <ChevronDown size={14} strokeWidth={1.75} className="text-muted flex-shrink-0" /> : <ChevronRight size={14} strokeWidth={1.75} className="text-muted flex-shrink-0" />}
               <span className="font-medium tabular-nums">{warnings.length}</span>
               <span className="truncate">{warnings.length === 1 ? "thing" : "things"} from your bank to look at</span>
             </button>
             <button
               onClick={dismiss}
-              className="flex-shrink-0 h-7 px-2.5 border border-line text-muted hover:bg-surface-2 rounded-md text-[12px] transition-colors"
+              className="ui-btn ui-btn-sm flex-shrink-0"
             >
               Dismiss
             </button>
@@ -203,7 +202,7 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
           {open && (
             <ul className="mt-2 flex flex-col gap-1.5 pl-5">
               {warnings.map((w, i) => (
-                <li key={`${w.kind}-${i}`} className="text-[12.5px] leading-relaxed min-w-0">
+                <li key={`${w.kind}-${i}`} className="text-[13px] leading-relaxed min-w-0">
                   <span className="text-ink-2">{WARNING_LEAD[w.kind] || "From the bank"}:</span>{" "}
                   <span className="text-ink break-words">{w.text}</span>
                   <span className="text-muted"> ({when(w.at)})</span>

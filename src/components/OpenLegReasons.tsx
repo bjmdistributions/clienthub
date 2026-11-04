@@ -39,15 +39,15 @@ export default function OpenLegReasons({ flow, legs, keys, onSaved }: {
             <input value={why[k] || ""} onChange={(e) => setWhy((w) => ({ ...w, [k]: e.target.value }))}
               onKeyDown={(e) => { if (e.key === "Enter") void save(k); }}
               placeholder={legs[k].state === "part" ? "Why it is short, e.g. carrier paid next week" : "Why there is no payment, e.g. paid in cash"}
-              className="flex-1 min-w-0 border border-line px-2.5 h-8 rounded-lg text-[12px] text-ink bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40" />
+              className="flex-1 min-w-0 border border-line px-2.5 h-8 rounded-lg text-[12px] text-ink bg-surface focus:outline-none focus:border-ink" />
             <button onClick={() => void save(k)} disabled={busy || !(why[k] || "").trim()}
-              className="flex-shrink-0 h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+              className="ui-btn ui-btn-ink">
               Save reason
             </button>
           </div>
         </div>
       ))}
-      <div className="text-[11.5px] text-ink-2">Or link the rest in Link financials. A reason lets the deal complete with what is linked.</div>
+      <div className="text-[12px] text-ink-2">Or link the rest in Link financials. A reason lets the deal complete with what is linked.</div>
     </div>
   );
 }

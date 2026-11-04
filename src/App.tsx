@@ -1,60 +1,15 @@
-import { useEffect, useLayoutEffect, useState, useRef, lazy, Suspense } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, useRef, lazy, Suspense } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  Users,
-  FileText,
-  Mail,
-  Settings as SettingsIcon,
-  LayoutDashboard,
-  RefreshCw, RotateCw, LogOut, PhoneCall,
+  Users, House, Repeat, Package, Truck, DollarSign, ChartColumn, Ellipsis, SlidersHorizontal,
+  RefreshCw, LogOut,
   PanelLeftClose, PanelLeftOpen,
-  Briefcase,
-  BarChart3,
-  Layers,
-  DoorOpen,
-  GitBranch,
-  Package,
-  Sun,
-  Moon,
-  Globe,
-  StickyNote,
-  FolderLock,
-  Grid3X3,
-  Bot,
-  ChevronRight,
-  Columns2,
-  X,
-  Wifi,
-  WifiOff,
-  FileSignature,
-  Bell,
-  ClipboardCheck,
-  ClipboardList,
-  Building2,
-  ShieldAlert,
-  Wallet,
-  Banknote,
-  Landmark,
-  Archive as ArchiveIcon,
-  CopyPlus,
-  FileCheck2,
-  Receipt,
-  ShoppingCart,
-  Boxes,
-  PackageCheck,
-  Warehouse as WarehouseIcon,
-  Newspaper,
-  Search,
-  MoreHorizontal,
-  Pin,
-  Truck,
-  CalendarClock,
-  ScrollText,
+  Sun, Moon,
+  Columns2, X, Wifi, WifiOff, Bell, Search, Pin,
+  type LucideIcon,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
-import ReceivablesView from "./components/ReceivablesView";
-import PayablesView from "./components/PayablesView";
 import QuotesView from "./components/QuotesView";
 import EmailView from "./components/EmailView";
 import DealFlowView from "./components/DealFlowView";
@@ -104,6 +59,12 @@ import { bellCountOf, bellTitle, bellUrgentOf, canSeeTeamNotices } from "./lib/n
 import { confirmLeaveUnsaved } from "./lib/unsavedWork";
 import { tabSwitchAction, tabToShow } from "./lib/tabSwitch";
 import { useNotices } from "./lib/useNotices";
+import {
+  SECTIONS, ALL_TABS, landingTab, sectionOfTab, shellDrawsHeader, visibleTabs,
+  type SectionDef, type SectionId, type TabDef, type TabId,
+} from "./lib/sections";
+import Tabs, { type TabItem } from "./components/ui/Tabs";
+import { PageSlotContext } from "./components/ui/PageHeader";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
 // never opens them. Globe is the expensive one — it is the only importer of
@@ -148,7 +109,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "coldcalls" | "inventory" | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "purchaseorder" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup" | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety" | "settings";
+type Tab = TabId;
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -175,11 +136,16 @@ const NAV_COLLAPSE_AT = 1240;
 /** Per-device: "0" disables the automatic collapse below NAV_COLLAPSE_AT entirely. */
 const NAV_AUTO_KEY = "clienthub_nav_auto";
 
-/** Collapsed rail: the pinned band, in NAV order. Editable per device; the rail
+/** Collapsed rail: the pinned band, in section order. Editable per device; the rail
  *  never reorders it on its own, because at this width the row's position is the
  *  only thing about it that survives a glance. */
-const RAIL_PINS_KEY = "clienthub_rail_pins";
-const DEFAULT_PINS = ["dashboard", "dealflow", "clients", "suppliers", "inventory", "invoices", "financials"];
+// R-583: pins are section ids now (the rail has a row per section), so they live under a new key; an old
+// list of screen ids would match nothing. Everyone starts with every section pinned except More.
+const RAIL_PINS_KEY = "clienthub_rail_pins_r583";
+const DEFAULT_PINS: string[] = ["home", "deals", "clients", "inventory", "logistics", "money", "insights"];
+
+/** The screen last used in each section, so a click on the section returns to it. */
+const SECTION_LAST_KEY = "clienthub_section_last";
 
 /** Collapsed rail row heights, in px, kept here because the fit calculation below
  *  has to agree with the markup exactly - a rail that miscounts either scrolls
@@ -195,8 +161,77 @@ const RAIL_SEP = 13;   // h-[11px] + the 2px space-y gap
 
 /** Shared class for the account flyout's rows. */
 const RAIL_MENU_ROW =
-  "w-full flex items-center gap-2.5 px-2.5 h-8 rounded-lg text-[13px] tracking-tight " +
-  "text-[color:var(--rail-text-dim)] hover:text-white hover:bg-white/[0.06] transition-colors";
+  "w-full flex items-center gap-2.5 px-2.5 h-8 rounded-lg text-[13px] font-medium " +
+  "text-muted hover:text-ink hover:bg-surface-3 transition-colors";
+
+/** The icon of each sidebar section. Plain lucide, 16px, never inside a tile. */
+const SECTION_ICONS: Record<SectionId, LucideIcon> = {
+  home: House,
+  deals: Repeat,
+  clients: Users,
+  inventory: Package,
+  logistics: Truck,
+  money: DollarSign,
+  insights: ChartColumn,
+  more: Ellipsis,
+  settings: SlidersHorizontal,
+};
+
+/** Collapsed rail: the open section lists at most this many of its screens (always including the one on
+ *  screen). The rail may not scroll, and Deals alone has ten. The rest are in the tab bar and All screens. */
+const RAIL_KIDS_MAX = 6;
+
+/** A window of at most `max` screens that always contains `activeId`, centred on it where it can be. */
+function kidWindow(list: TabDef[], activeId: string, max: number): TabDef[] {
+  if (list.length <= max) return list;
+  const at = Math.max(0, list.findIndex((t) => t.id === activeId));
+  const start = Math.min(Math.max(0, at - Math.floor(max / 2)), list.length - max);
+  return list.slice(start, start + max);
+}
+
+/** The shell's frame around a screen (R-583). Every screen sits in the main panel's 32px padding. When its
+ *  section groups several screens the frame also draws the header: the section's name, a slot on the right
+ *  that the screen fills through <PageActions>, and the section's screens as tabs. Globe is the one screen
+ *  that bleeds to the panel's edges (it still gets the header). It is a component of its own, outside App,
+ *  so its slot element and the tab bar's gliding thumb survive a tab change instead of remounting. */
+function SectionFrame({ title, items, value, onSelect, shell, bleed, children }: {
+  title: string;
+  items: TabItem[];
+  value: string;
+  onSelect: (id: string) => void;
+  shell: boolean;
+  bleed: boolean;
+  children: React.ReactNode;
+}) {
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  const ctx = useMemo(() => ({ shell, el: slot }), [shell, slot]);
+  const header = shell ? (
+    <header className={bleed ? "" : "mb-6"}>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <h1 className="m-0 text-[20px] font-medium leading-7 text-ink">{title}</h1>
+        <div ref={setSlot} className="flex flex-wrap items-center justify-end gap-2" />
+      </div>
+      {items.length > 1 && <Tabs tabs={items} value={value} onChange={onSelect} label={title} />}
+    </header>
+  ) : null;
+  return (
+    <PageSlotContext.Provider value={ctx}>
+      {bleed ? (
+        <div className="h-full flex flex-col">
+          {header && <div className="px-8 pt-8 pb-4 flex-shrink-0">{header}</div>}
+          <div className="flex-1 min-h-0 relative">{children}</div>
+        </div>
+      ) : (
+        <div className="px-8 pt-8 pb-10">
+          <div className="max-w-[1600px] mx-auto">
+            {header}
+            {children}
+          </div>
+        </div>
+      )}
+    </PageSlotContext.Provider>
+  );
+}
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() => {
@@ -214,6 +249,9 @@ export default function App() {
   // first render's setTab, so it cannot read `tab` from its own closure; this ref is kept current instead.
   const tabRef = useRef<Tab>(tab);
   useEffect(() => { tabRef.current = tab; }, [tab]);
+  const lastInSection = useRef<Record<string, string>>((() => {
+    try { const v = JSON.parse(localStorage.getItem(SECTION_LAST_KEY) || "{}"); return v && typeof v === "object" ? v : {}; } catch { return {}; }
+  })());
   const setTab = (t: Tab, handoff = false) => {
     // DG-02: a click on the screen already open keeps it as it is (no remount, nothing asked); only a menu closes.
     // A handoff (a navigate-tab event, or the onNavigate prop of Dashboard, Quotes and Manifest, which stash a value
@@ -227,6 +265,11 @@ export default function App() {
     setPageKey(k => k + 1);
     setFlyout(null);
     localStorage.setItem("clienthub_last_tab", t);
+    const sec = sectionOfTab(t);
+    if (sec) {
+      lastInSection.current = { ...lastInSection.current, [sec.id]: t };
+      try { localStorage.setItem(SECTION_LAST_KEY, JSON.stringify(lastInSection.current)); } catch { /* a blocked store only forgets which screen was last */ }
+    }
   };
   /** Anchor a flyout beside the button that opened it. */
   const openFlyout = (id: string, e: React.MouseEvent) => {
@@ -244,21 +287,8 @@ export default function App() {
     const max = window.innerHeight - el.offsetHeight - 8;
     if (flyout.top > max) setFlyout({ ...flyout, top: Math.max(8, max) });
   }, [flyout]);
-  // Which expandable nav groups the user has manually opened (the active group is
-  // always shown regardless). Persisted so the tree restores on relaunch.
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("clienthub_nav_open") || "[]")); }
-    catch { return new Set(); }
-  });
-  const toggleGroup = (gid: string) => setOpenGroups((prev) => {
-    const next = new Set(prev);
-    next.has(gid) ? next.delete(gid) : next.add(gid);
-    localStorage.setItem("clienthub_nav_open", JSON.stringify([...next]));
-    return next;
-  });
-
   // Collapsed rail: which top-level screens hold a permanent row. Stored rather than
-  // derived so a NAV reorder cannot silently change what someone pinned; an id that no
+  // derived so a reorder of the sections cannot silently change what someone pinned; an id that no
   // longer exists simply matches nothing when the rail is built.
   // An empty ARRAY is a real answer - "I unpinned everything" - and must not fall back
   // to the defaults, or unpinning the last row undoes itself on the next launch. Only
@@ -550,7 +580,6 @@ export default function App() {
   // R-571: the count is red while something urgent waits (money in today, an overdue bill or carrier, the pay day,
   // an urgent load), and a calm grey when everything on it can wait.
   const bellUrgent = logisticsOnly ? notices.logisticsUrgent : bellUrgentOf(notices.team);
-  const bellBadge = bellUrgent ? "bg-[color:var(--rail-badge)]" : "bg-[color:var(--rail-badge-calm)]";
 
   useEffect(() => {
     api.getOrganizationName().then((n) => setOrgName((n || "").trim())).catch(() => {});
@@ -622,10 +651,7 @@ export default function App() {
     return () => window.removeEventListener("share-whatsapp", handler);
   }, []);
 
-  // Sliding nav indicator
   const navRef = useRef<HTMLElement>(null);
-  const [indicatorStyle, setIndicatorStyle] = useState({ top: 0, opacity: 0 });
-  const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   // How much room the nav actually has. The nav is flex-1 in a fixed-height column,
   // so this changes with the window and not with the rows - which is exactly what the
   // rail's fit calculation needs: the space available, independent of what is in it.
@@ -651,45 +677,6 @@ export default function App() {
     window.addEventListener("resize", read);
     return () => { window.removeEventListener("resize", read); ro.disconnect(); };
   }, [me, onboarded, navCollapsed]);
-
-  useLayoutEffect(() => {
-    const measure = () => {
-      // The rail renders a row for the active child too (R-224), so the parent
-      // fallback is no longer the common case - it now only covers a tab reached
-      // without a rail row at all: the split-view picker, the command palette, a
-      // navigate-tab event, or a stored last-tab the current role cannot see.
-      const btn = buttonRefs.current[tab] ?? (parentOfActive ? buttonRefs.current[parentOfActive] : null);
-      const nav = navRef.current;
-      // Utility rows live outside the <nav> but still register a ref, so a naive
-      // measure puts the bar below the nav's own box - hide it instead of lying.
-      if (!btn || !nav || !nav.contains(btn)) { setIndicatorStyle((s) => ({ ...s, opacity: 0 })); return; }
-      const navRect = nav.getBoundingClientRect();
-      const btnRect = btn.getBoundingClientRect();
-      // The indicator is absolute INSIDE the scrolling nav, so it scrolls with the rows;
-      // the rects are viewport-relative, so add back how far the nav is scrolled or the
-      // bar lands that many pixels above the row (Analytics showing on Brief).
-      setIndicatorStyle({
-        top: btnRect.top - navRect.top + nav.scrollTop + btnRect.height / 2 - 10,
-        opacity: 1,
-      });
-    };
-    measure();
-    // The old [tab]-only effect measured once and never recomputed, so the bar
-    // stayed on the previously-measured tab when the nav layout shifted (window
-    // resize, tab list add/remove, fonts settling). Recompute on those too.
-    const nav = navRef.current;
-    const ro = nav ? new ResizeObserver(measure) : null;
-    if (nav && ro) ro.observe(nav);
-    window.addEventListener("resize", measure);
-    return () => { window.removeEventListener("resize", measure); ro?.disconnect(); };
-    // parentOfActive is derived from tab alone, so [tab] already re-runs this; it is
-    // declared further down the body and cannot go in the array without a TDZ throw.
-    // The rest are here because a rail row can appear or disappear while `tab` does
-    // not change - a count crossing zero, the fit calculation shedding a row, the
-    // rail opening or closing - and the ResizeObserver above cannot see it: the nav
-    // is flex-1, so its own box never moves when its contents do.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, navCollapsed, navH, apTotal, draftCount, billsOverdue, railPins]);
 
   const pollNet = () => {
     api.netsyncStatus()
@@ -822,66 +809,6 @@ export default function App() {
   const netColor = netOk ? "var(--rail-ok)" : net?.auth === "auth_lost" && !syncFailed ? "var(--rail-hot)" : "var(--rail-bad)";
   const netTitle = `Server: ${netWord}${net?.last_pull_at ? `, last pull ${new Date(net.last_pull_at).toLocaleTimeString()}` : ""}`;
 
-  // Consolidated sidebar: workflow mains, each expandable to reveal its sub-items
-  // (Jack's "drop down on a main category"), plus a bottom utility zone. Every id
-  // still maps to a real view in paneContent — nothing was dropped, only regrouped.
-  type NavKid = { id: Tab; label: string; icon: any };
-  type NavNode = NavKid & { children?: NavKid[] };
-  // Ordered by daily flow: overview → who you deal with → what you stock/analyze →
-  // pipeline → the documents that close a deal → money → outreach → insight. Dashboard
-  // stays pinned on top; Quote sits directly under Invoice.
-  const NAV: NavNode[] = [
-    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "clients", label: "Clients", icon: Users, children: [
-      { id: "checkup", label: "Checkup", icon: ClipboardCheck },
-      { id: "tiers",   label: "Tiers",   icon: Layers },
-      { id: "approvals", label: "Notifications", icon: Bell },
-      { id: "portals", label: "Customer portals", icon: DoorOpen },
-    ] },
-    { id: "suppliers", label: "Suppliers", icon: Package, children: [
-      { id: "coldcalls", label: "Cold calls", icon: PhoneCall }, // R-546
-    ] },
-    { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
-      { id: "warehouse", label: "Warehouse", icon: WarehouseIcon },
-      { id: "renewals", label: "Renewals", icon: RotateCw },
-      { id: "lotengine", label: "Lot engine", icon: Boxes },
-      { id: "showpacking", label: "Show packing", icon: PackageCheck },
-      { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
-    ] },
-    { id: "manifest", label: "Manifest analyzer", icon: ClipboardList },
-    { id: "dealflow", label: "Deal Flow", icon: GitBranch, children: [
-      { id: "logistics", label: "Logistics", icon: Truck },
-      { id: "bols", label: "BOLs", icon: ScrollText },
-    ] },
-    { id: "invoices", label: "Invoice", icon: FileText, children: [
-      { id: "completed",  label: "Completed",  icon: Briefcase },
-      { id: "receivables", label: "Receivables", icon: Wallet },
-      { id: "payables",   label: "Payables",   icon: Banknote },
-    ] },
-    { id: "quotes", label: "Quote", icon: FileSignature, children: [
-      { id: "releaseletter", label: "Release letter", icon: FileCheck2 },
-      { id: "clientreceipt", label: "Client receipt", icon: Receipt },
-      { id: "purchaseorder", label: "Purchase order", icon: ShoppingCart },
-    ] },
-    { id: "financials", label: "Financials", icon: Landmark, children: [
-      { id: "bills", label: "Bills", icon: CalendarClock },
-    ] },
-    { id: "newsletter", label: "Newsletter", icon: Mail },
-    { id: "brief", label: "Brief", icon: Newspaper },
-    { id: "analytics", label: "Analytics", icon: BarChart3, children: [
-      { id: "automation", label: "Automation", icon: Bot },
-      { id: "globe",      label: "Globe",      icon: Globe },
-    ] },
-  ];
-  const UTILITY: NavKid[] = [
-    { id: "notes",    label: "Notes",    icon: StickyNote },
-    { id: "documents", label: "Documents", icon: FolderLock },
-    { id: "archive",  label: "Archive",  icon: ArchiveIcon },
-    { id: "platform", label: "Platform", icon: Building2 },
-    { id: "datasafety", label: "Data safety", icon: ShieldAlert },
-    { id: "settings", label: "Settings", icon: SettingsIcon },
-  ];
-
   // Same per-id gating as before (parents, children, and utility items alike).
   const visible = (id: Tab): boolean =>
     // R-400: a Logistics-only account sees its own screen and Settings (appearance and
@@ -916,12 +843,8 @@ export default function App() {
   // deps []) always gates against the current role rather than the one at mount.
   useEffect(() => { visibleRef.current = visible; });
 
-  // Flat list of every visible destination (mains + sub-items + utility) — used by
-  // the split-view picker, which needs one flat menu rather than the grouped tree.
-  const flatTabs: NavKid[] = [
-    ...NAV.flatMap((n) => [{ id: n.id, label: n.label, icon: n.icon } as NavKid, ...(n.children || [])]),
-    ...UTILITY,
-  ].filter((t) => visible(t.id));
+  // Flat list of every visible destination, used by the remembered-screen check below.
+  const flatTabs: TabDef[] = ALL_TABS.filter((t) => visible(t.id));
 
   // DG-03: the remembered screen (and the split pane's) is read off this device's disk, which belongs to no one person.
   // A role that cannot open it, a role changed since, or an id that no longer exists would paint an empty pane with no
@@ -940,147 +863,116 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me, logisticsOnly, accessSettled, tab, splitTab]);
 
-  // A group is open when the user opened it, or the active tab lives inside it.
-  const parentOfActive = NAV.find((n) => n.children?.some((c) => c.id === tab))?.id ?? null;
-  const isGroupOpen = (n: NavNode) => openGroups.has(n.id) || parentOfActive === n.id || tab === n.id;
+  // ── The sidebar (R-583) ──────────────────────────────────────────────────────────────────────────
+  // Nine sections (lib/sections.ts), one row each. A section's screens are the tab bar the shell draws
+  // above the page (SectionFrame below), so the sidebar no longer carries a tree. Everything that used
+  // to hang off a nav row still does: a screen's count moves onto its section row and its tab, the
+  // visible() gate decides which rows and tabs exist, and a click on a section opens the screen last
+  // used in it (or the first one this account may open).
 
-  // One nav row: a leaf main or an indented sub-item. Group parents pair this with a
-  // sibling chevron button (see the render below) rather than nesting one.
-  const navButton = (item: NavKid, isChild: boolean) => {
-    const Icon = item.icon;
-    const active = tab === item.id;
-    return (
-      <button
-        key={item.id}
-        ref={(el) => { buttonRefs.current[item.id] = el; }}
-        onClick={() => setTab(item.id)}
-        title={navCollapsed ? item.label : undefined}
-        className={`relative w-full flex items-center gap-2.5 ${
-          navCollapsed ? "justify-center px-0" : isChild ? "pl-8 pr-2" : "px-2.5"
-        } ${navCollapsed ? "h-8" : "h-9"} rounded-lg text-[13px] tracking-tight transition-all duration-150 ${
-          active ? "text-white font-medium" : "text-[color:var(--rail-text)] hover:text-white/80"
-        }`}
-        style={active ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
-      >
-        <Icon size={isChild && !navCollapsed ? 13 : 15} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
-        {!navCollapsed && item.label}
-        {item.id === "newsletter" && draftCount > 0 && (
-          navCollapsed
-            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full" style={{ background: "var(--rail-hot)" }} />
-            : <span className="ml-auto text-[10px] font-bold rounded-full px-1.5 leading-5"
-                style={{ background: "var(--rail-hot-bg)", color: "var(--rail-hot)", border: "1px solid var(--rail-hot-line)" }}>
-                {draftCount}
-              </span>
-        )}
-        {item.id === "approvals" && apTotal > 0 && (
-          navCollapsed
-            ? <span className={`absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full ${bellBadge}`} />
-            : <span className={`ml-auto min-w-[16px] h-4 px-1 rounded-full ${bellBadge} text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center`}>
-                {apTotal > 9 ? "9+" : apTotal}
-              </span>
-        )}
-        {item.id === "bills" && billsOverdue > 0 && (
-          navCollapsed
-            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-[color:var(--rail-badge)]" />
-            : <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center">
-                {billsOverdue > 9 ? "9+" : billsOverdue}
-              </span>
-        )}
-        {/* Bills is the only child of Financials, so while that group is closed its overdue count
-            shows on the parent row (left of the chevron). Open the group and the child carries it. */}
-        {!navCollapsed && item.id === "financials" && !isGroupOpen(item as NavNode) && billsOverdue > 0 && visible("bills") && (
-          <span className="ml-auto mr-6 min-w-[16px] h-4 px-1 rounded-full bg-[color:var(--rail-badge)] text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center">
-            {billsOverdue > 9 ? "9+" : billsOverdue}
-          </span>
-        )}
-      </button>
-    );
+  type CountTone = "urgent" | "calm" | "draft";
+  /** The number a screen carries (unread, overdue, drafts), or null. Gated like the screen itself. */
+  const tabCount = (id: Tab): { n: number; tone: CountTone } | null => {
+    if (!visible(id)) return null;
+    if (id === "approvals") return apTotal > 0 ? { n: apTotal, tone: bellUrgent ? "urgent" : "calm" } : null;
+    if (id === "newsletter") return draftCount > 0 ? { n: draftCount, tone: "draft" } : null;
+    if (id === "bills") return billsOverdue > 0 ? { n: billsOverdue, tone: "urgent" } : null;
+    return null;
   };
-
-  // ── The collapsed rail (R-224) ────────────────────────────────────────────────
-  // It stopped being a narrower copy of the sidebar. Open, the sidebar's job is to
-  // show the whole map; closed, its job is to keep you oriented and let you move
-  // fast inside the section you are already in. So: every row carries its name, the
-  // current section opens INLINE rather than in a flyout, and nothing scrolls.
-
-  /** The count a row should display, or 0. A parent surfaces its badged child's
-   *  count only while that child is not itself on screen underneath it - otherwise
-   *  the same number would appear twice, one row above the other. */
-  const railCount = (n: NavNode, expanded: boolean): number => {
-    if (n.id === "newsletter") return visible("newsletter") ? draftCount : 0;
-    if (n.id === "approvals") return visible("approvals") ? apTotal : 0;
-    if (n.id === "bills") return visible("bills") ? billsOverdue : 0;
-    if (!expanded && n.children?.some((c) => c.id === "approvals") && visible("approvals")) return apTotal;
-    if (!expanded && n.children?.some((c) => c.id === "bills") && visible("bills")) return billsOverdue;
-    return 0;
+  /** A section row carries the sum of its screens' counts; red text while any of them is urgent. */
+  const sectionCount = (s: SectionDef): { n: number; tone: CountTone } | null => {
+    let n = 0;
+    let tone: CountTone | null = null;
+    for (const t of s.tabs) {
+      const c = tabCount(t.id);
+      if (!c) continue;
+      n += c.n;
+      tone = tone === "urgent" || c.tone === "urgent" ? "urgent" : tone === "calm" || c.tone === "calm" ? "calm" : "draft";
+    }
+    return n > 0 ? { n, tone: tone || "calm" } : null;
   };
-
-  /** The count pill, top-right of a rail row. A numeral, never a dot in front of a
-   *  label. Both counts clamp at 9+ - the expanded sidebar leaves draftCount
-   *  uncapped, but a three-digit pill does not fit a 96px row. */
-  const railBadge = (id: string, n: number) =>
-    n > 0 ? (
+  const sectionShown = (s: SectionDef) => landingTab(s, visible) !== null;
+  const currentSection = sectionOfTab(tab);
+  const countChip = (c: { n: number; tone: CountTone } | null, small = false) =>
+    c ? (
       <span
-        className={`absolute top-1 right-1.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold leading-[15px] text-center ${
-          id === "newsletter" ? "" : `${id === "approvals" ? bellBadge : "bg-[color:var(--rail-badge)]"} text-[color:var(--rail-ink)]`
-        }`}
-        style={id === "newsletter"
-          ? { background: "var(--rail-hot-bg)", color: "var(--rail-hot)", border: "1px solid var(--rail-hot-line)" }
-          : undefined}
+        className={`ui-count ${c.tone} flex-shrink-0`}
+        style={small ? { minWidth: 16, height: 16, padding: "0 4px", fontSize: 10 } : undefined}
       >
-        {n > 9 ? "9+" : n}
+        {c.n > (small ? 9 : 99) ? (small ? "9+" : "99+") : c.n}
       </span>
     ) : null;
 
-  /** A top-level rail row: icon above its own name. At 96px the caption is what
-   *  makes the row readable, so it is #8A8A9A rather than the sidebar's dimmer
-   *  #6B6B7A - 9.5px text needs the contrast. */
-  const railRow = (item: NavKid, count: number) => {
-    const Icon = item.icon;
-    const active = tab === item.id;
+  /** A click on a section opens the screen last used in it. */
+  const openSection = (s: SectionDef) => {
+    const to = landingTab(s, visible, lastInSection.current[s.id]);
+    if (to) setTab(to);
+  };
+
+  // One row of the open sidebar, as in the Home mockup: 40px, icon and name, a chip for the number.
+  const navItem = (s: SectionDef) => {
+    const Icon = SECTION_ICONS[s.id];
+    const active = currentSection?.id === s.id;
     return (
       <button
-        key={item.id}
-        ref={(el) => { buttonRefs.current[item.id] = el; }}
-        onClick={() => setTab(item.id)}
-        title={item.label}
-        className={`relative w-full flex flex-col items-center justify-center gap-[3px] h-[44px] px-1 rounded-lg transition-colors duration-150 ${
-          active ? "text-white rail-active" : "text-[color:var(--rail-text-dim)] hover:text-white/85 hover:bg-white/[0.06]"
+        key={s.id}
+        onClick={() => openSection(s)}
+        aria-current={active ? "page" : undefined}
+        className={`w-full flex items-center gap-2.5 h-10 px-[11px] rounded-lg text-[14px] font-medium tracking-[0.025em] text-left transition-colors duration-150 ${
+          active ? "text-ink bg-surface-3" : "text-muted hover:text-ink hover:bg-surface-2"
         }`}
       >
-        <Icon size={16} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
-        <span className="max-w-full truncate text-[9.5px] font-semibold leading-none tracking-tight">{item.label}</span>
-        {railBadge(item.id, count)}
+        <Icon size={16} className="flex-shrink-0" />
+        <span className="flex-1 truncate">{s.label}</span>
+        {countChip(sectionCount(s))}
       </button>
     );
   };
 
-  /** A screen inside the open section. Text only - at 96px an icon would cost the
-   *  label the room it needs, and the spine beside it already says these belong to
-   *  the row above. */
-  const railKid = (item: NavKid, count: number) => {
-    const active = tab === item.id;
+  // ── The collapsed rail (R-224) ────────────────────────────────────────────────────────────────────
+  // It is not a narrower copy of the sidebar. Open, the sidebar shows the whole map; closed, it keeps you
+  // oriented and lets you move fast inside the section you are already in. So every row carries its name,
+  // the current section opens INLINE rather than in a flyout, and nothing scrolls.
+
+  /** A top-level rail row: icon above its own name. */
+  const railRow = (key: string, label: string, Icon: any, active: boolean, count: { n: number; tone: CountTone } | null, onClick: () => void) => (
+    <button
+      key={key}
+      onClick={onClick}
+      title={label}
+      aria-current={active ? "page" : undefined}
+      className={`relative w-full flex flex-col items-center justify-center gap-[3px] h-[44px] px-1 rounded-lg transition-colors duration-150 ${
+        active ? "text-ink rail-active" : "text-muted hover:text-ink hover:bg-surface-2"
+      }`}
+    >
+      <Icon size={16} />
+      <span className="max-w-full truncate text-[10px] font-medium leading-none">{label}</span>
+      {count && <span className="absolute top-0.5 right-1">{countChip(count, true)}</span>}
+    </button>
+  );
+
+  /** A screen inside the open section. Text only: at 96px an icon would cost the label its room, and the
+   *  spine beside it already says these belong to the row above. */
+  const railKid = (t: { id: Tab; label: string }) => {
+    const active = tab === t.id;
+    const c = tabCount(t.id);
     return (
       <button
-        key={item.id}
-        ref={(el) => { buttonRefs.current[item.id] = el; }}
-        onClick={() => setTab(item.id)}
-        title={item.label}
-        className={`relative w-full flex items-center h-[24px] pl-[7px] pr-1.5 rounded-md text-[10px] font-medium tracking-tight transition-colors duration-150 ${
-          active ? "text-white rail-active" : "text-[color:var(--rail-text-dim)] hover:text-white/85 hover:bg-white/[0.06]"
+        key={t.id}
+        onClick={() => setTab(t.id)}
+        title={t.label}
+        aria-current={active ? "page" : undefined}
+        className={`relative w-full flex items-center h-[24px] pl-[7px] pr-1.5 rounded-md text-[10.5px] font-medium transition-colors duration-150 ${
+          active ? "text-ink rail-active" : "text-muted hover:text-ink hover:bg-surface-2"
         }`}
       >
-        <span className="truncate">{item.label}</span>
-        {count > 0 && (
-          <span className="ml-auto pl-1 text-[9px] font-bold tabular-nums" style={{ color: item.id === "newsletter" ? "var(--rail-hot)" : "#F87171" }}>
-            {count > 9 ? "9+" : count}
-          </span>
-        )}
+        <span className="truncate">{t.label}</span>
+        {c && <span className="ml-auto pl-1 flex-shrink-0">{countChip(c, true)}</span>}
       </button>
     );
   };
 
-  /** A rail row that is not a destination - Search and All screens. */
+  /** A rail row that is not a destination: Search and All screens. */
   const railAction = (key: string, label: string, Icon: any, onClick: (e: React.MouseEvent) => void, open?: boolean) => (
     <button
       key={key}
@@ -1088,65 +980,46 @@ export default function App() {
       title={label}
       aria-expanded={open}
       className={`relative w-full flex flex-col items-center justify-center gap-[3px] h-[44px] px-1 rounded-lg transition-colors duration-150 ${
-        open ? "text-white rail-active" : "text-[color:var(--rail-text-dim)] hover:text-white/85 hover:bg-white/[0.06]"
+        open ? "text-ink rail-active" : "text-muted hover:text-ink hover:bg-surface-2"
       }`}
     >
-      <Icon size={16} strokeWidth={1.6} />
-      <span className="max-w-full truncate text-[9.5px] font-semibold leading-none tracking-tight">{label}</span>
+      <Icon size={16} />
+      <span className="max-w-full truncate text-[10px] font-medium leading-none">{label}</span>
     </button>
   );
 
-  /** Which top-level rows the rail shows, and how tall they come out.
+  /** Which section rows the rail shows, and how tall they come out.
    *
-   *  Three reasons earn a row: it is the section you are standing in, it is pinned, or
-   *  it is carrying work that is waiting. That is also the order they survive in when
-   *  the window is too short to hold them all - the rail may not scroll, so something
-   *  has to go, and it goes to All screens rather than below the fold. A pin outranks a
-   *  count because a pin is a choice you made and a count is the app being helpful; on
-   *  a 600px window that means the newsletter's draft count can be trimmed away while
-   *  Dashboard stays, which is the right way round.
-   *
-   *  Whatever survives is drawn in NAV order regardless, so a row arriving or leaving
-   *  never reshuffles the ones around it. */
+   *  Three reasons earn a row: it is the section you are standing in, it is pinned, or it is carrying work
+   *  that is waiting. That is also the order they survive in when the window is too short to hold them all:
+   *  the rail may not scroll, so something has to go, and it goes to All screens rather than below the fold.
+   *  A pin outranks a count because a pin is a choice you made and a count is the app being helpful.
+   *  Whatever survives is drawn in section order regardless, so a row arriving or leaving never reshuffles
+   *  the ones around it. The open section lists at most RAIL_KIDS_MAX of its screens (always including the
+   *  one you are on); the rest are one click away in the tab bar and in All screens. */
   const railPlan = (() => {
-    // Membership alone is not enough - parentOfActive carries no gating, so a role
-    // that cannot see Analytics would otherwise get an Analytics row from standing
-    // on Globe, and clicking it lands on a screen paneContent renders regardless.
-    const sectionId: string | null =
-      parentOfActive && visible(parentOfActive as Tab) ? parentOfActive
-      : NAV.some((n) => n.id === tab) && visible(tab) ? tab
-      : null;
+    const sectionId: SectionId | null =
+      currentSection && currentSection.id !== "settings" && sectionShown(currentSection) ? currentSection.id : null;
 
-    type Row = { node: NavNode; kids: NavKid[]; rank: number; at: number; h: number };
+    type Row = { section: SectionDef; kids: TabDef[]; rank: number; at: number; h: number };
     const rows: Row[] = [];
-    NAV.forEach((node, at) => {
-      // A pin the role cannot see renders nothing. The expanded sidebar promotes such
-      // a parent's children to top level, but the rail must not: its rows are a chosen
-      // subset, and promoting into it produced the same screen twice whenever the
-      // promoted child was also the one you were standing on. Those children are still
-      // in All screens, and the orphan row below still says where you are.
-      if (!visible(node.id)) return;
-      const isSection = node.id === sectionId;
-      const pinned = railPins.includes(node.id);
-      const counted = railCount(node, isSection) > 0;
+    SECTIONS.filter((s) => s.id !== "settings").forEach((section, at) => {
+      if (!sectionShown(section)) return;
+      const isSection = section.id === sectionId;
+      const pinned = railPins.includes(section.id);
+      const counted = !!sectionCount(section);
       if (!isSection && !pinned && !counted) return;
-      const kids = isSection ? (node.children || []).filter((c) => visible(c.id)) : [];
+      const open = visibleTabs(section, visible);
+      const kids = isSection && open.length > 1 ? kidWindow(open, tab, RAIL_KIDS_MAX) : [];
       rows.push({
-        node, kids, at,
+        section, kids, at,
         rank: isSection ? 0 : pinned ? 1 : 2,
         h: RAIL_ROW + (kids.length ? kids.length * RAIL_KID + 8 : 0),
       });
     });
 
-    // The section you are on is a child whose parent your role cannot see. Give it a
-    // row of its own rather than leaving the rail unable to say where you are.
-    const orphan: NavKid | null =
-      !sectionId && parentOfActive && !visible(parentOfActive as Tab) && visible(tab)
-        ? (NAV.find((n) => n.id === parentOfActive)?.children || []).find((c) => c.id === tab) ?? null
-        : null;
-
     // Search + All screens + their two rules, plus the nav's own py-2.
-    const chrome = RAIL_ROW * 2 + RAIL_SEP * 2 + 16 + (orphan ? RAIL_ROW : 0);
+    const chrome = RAIL_ROW * 2 + RAIL_SEP * 2 + 16;
     // navH is 0 only before the nav has been measured at all. Show everything then;
     // the layout effect corrects it on the next frame.
     let budget = navH > 0 ? navH - chrome : Number.POSITIVE_INFINITY;
@@ -1154,110 +1027,85 @@ export default function App() {
     const keep = new Set<string>();
     let full = false;
     for (const r of [...rows].sort((a, b) => a.rank - b.rank || a.at - b.at)) {
-      // The section always gets its row - a rail that cannot say where you are is the
-      // fault this whole redesign exists to fix, so it is never the thing that goes.
-      if (r.rank === 0) { budget -= r.h; keep.add(r.node.id); continue; }
-      // Once one row does not fit, everything below it in priority goes too. Skipping
-      // only the ones that happen to be too tall would let a lower-priority row jump
-      // over a higher one as the window resizes, which is the reshuffling this design
-      // forbids.
+      // The section you are in always gets its row: a rail that cannot say where you are is the fault
+      // R-224 exists to fix, so it is never the thing that goes.
+      if (r.rank === 0) { budget -= r.h; keep.add(r.section.id); continue; }
+      // Once one row does not fit, everything below it in priority goes too. Skipping only the ones that
+      // happen to be too tall would let a lower-priority row jump over a higher one as the window resizes.
       if (full || budget - r.h < 0) { full = true; continue; }
       budget -= r.h;
-      keep.add(r.node.id);
+      keep.add(r.section.id);
     }
-    return { rows: rows.filter((r) => keep.has(r.node.id)), orphan, sectionId };
+    return { rows: rows.filter((r) => keep.has(r.section.id)), sectionId };
   })();
 
   // One labelled row inside a flyout.
-  const flyoutRow = (item: NavKid, badge?: number) => {
-    const Icon = item.icon;
+  const flyoutRow = (item: { id: Tab; label: string }, indent: boolean) => {
     const active = tab === item.id;
     return (
       <button
         key={item.id}
         onClick={() => setTab(item.id)}
-        className={`w-full flex items-center gap-2.5 px-2.5 h-8 rounded-lg text-[13px] tracking-tight transition-colors ${
-          active ? "text-white font-medium" : "text-[color:var(--rail-text-dim)] hover:text-white hover:bg-white/[0.06]"
+        className={`w-full flex items-center gap-2.5 ${indent ? "pl-6 pr-9" : "px-2.5 pr-9"} h-8 rounded-lg text-[13px] font-medium transition-colors ${
+          active ? "text-ink bg-surface-3" : "text-muted hover:text-ink hover:bg-surface-3"
         }`}
-        style={active ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
       >
-        <Icon size={14} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
         <span className="truncate">{item.label}</span>
-        {badge ? (
-          // Newsletter drafts are amber everywhere else in the shell and approvals are
-          // red; this row had only ever carried approvals, so a bare red pill was right
-          // until All screens started passing draftCount through it.
-          <span
-            className={`ml-auto min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold leading-4 text-center ${
-              item.id === "newsletter" ? "" : `${item.id === "approvals" ? bellBadge : "bg-[color:var(--rail-badge)]"} text-[color:var(--rail-ink)]`
-            }`}
-            style={item.id === "newsletter"
-              ? { background: "var(--rail-hot-bg)", color: "var(--rail-hot)", border: "1px solid var(--rail-hot-line)" }
-              : undefined}
-          >
-            {badge > 9 ? "9+" : badge}
-          </span>
-        ) : null}
+        <span className="ml-auto flex-shrink-0">{countChip(tabCount(item.id), true)}</span>
       </button>
     );
   };
 
   // Background per tab (globe is full-bleed dark); shared by single + split panes.
-  const paneBg = (t: Tab) => (t === "globe" ? "#0a0a14" : "var(--t-bg)");
+  const paneBg = (_t: Tab) => "var(--t-bg)";
 
-  // Renders a tab's content without the outer scroll/background chrome, so it
-  // can be dropped into either the single main area or a split pane.
+  // Renders a tab's content without the outer scroll/background chrome, so it can be dropped into either the
+  // single main area or a split pane. The padding and the section header around it come from SectionFrame
+  // (R-583), so a screen draws neither an outer page padding nor its own copy of its section's tabs.
   const paneContent = (t: Tab) => {
     if (!visible(t)) return null;
-    if (t === "dashboard") return <Suspense fallback={paneFallback}><DashboardView onNavigate={(to) => setTab(to, true)} me={me} /></Suspense>;
     if (t === "globe") return <Suspense fallback={globeFallback}><GlobeView me={me} /></Suspense>;
-    if (t === "notes") return <NotesView me={me?.display_name || ""} />;
-    if (t === "approvals") return <ApprovalsView me={me} notices={notices} />;
-    if (t === "checkup") return <CheckupView />;
     return (
-      <div className="p-7">
-        <div className="max-w-[1280px] mx-auto">
-          {/* Wraps the whole column rather than the lazy screens individually:
-              the padding and width are already on screen, so only the content
-              area swaps, and any screen made lazy later is covered too. */}
-          <Suspense fallback={paneFallback}>
-            {t === "clients"    && <ClientsView />}
-            {t === "invoices"   && <InvoicesView />}
-            {t === "archive"    && <ArchiveView />}
-            {t === "documents"  && <DocumentsView />}
-            {t === "receivables" && <ReceivablesView />}
-            {t === "payables"   && <PayablesView />}
-            {t === "quotes"     && <QuotesView onNavigate={(to) => setTab(to, true)} />}
-            {t === "releaseletter" && <ReleaseLetterView />}
-            {t === "purchaseorder" && <PurchaseOrderView />}
-            {t === "clientreceipt" && <ClientStatementView />}
-            {t === "dealflow"   && <DealFlowView />}
-            {t === "logistics"  && <LogisticsView me={me} />}
-            {t === "bols"       && <BolsView me={me} />}
-            {t === "suppliers"  && <SuppliersView />}
-            {t === "inventory"  && <InventoryView />}
-            {t === "warehouse"  && <WarehouseView />}
-            {t === "renewals"   && <RenewalsView />}
-            {t === "coldcalls"  && <ColdCallsView />}
-            {t === "manifest"   && <ManifestView onNavigate={(to) => setTab(to, true)} />}
-            {t === "lotengine"  && <LotEngineView me={me} />}
-            {t === "showpacking" && <ShowPackingView me={me} />}
-            {t === "sheetcopy"  && <SheetCopyView />}
-            {t === "financials" && <FinancialsView />}
-            {t === "bills"      && <BillsView me={me} />}
-            {t === "completed"  && <CloseoutView />}
-            {t === "analytics"  && <AnalyticsView />}
-            {t === "tiers"      && <TiersView />}
-            {t === "portals"    && <CustomerPortalsView me={me} />}
-            {t === "automation" && <AutomationLogView />}
-            {t === "brief"      && <BriefView me={me} currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
-            {t === "newsletter" && <EmailView />}
-            {t === "settings"   && <SettingsView me={me} />}
-            {t === "platform"   && <PlatformView />}
-            {t === "datasafety" && <DataSafetyView />}
-          </Suspense>
-        </div>
-      </div>
+      // Wraps the whole column rather than the lazy screens individually: the padding and header are
+      // already on screen, so only the content area swaps, and any screen made lazy later is covered too.
+      <Suspense fallback={paneFallback}>
+        {t === "dashboard"  && <DashboardView onNavigate={(to) => setTab(to, true)} me={me} />}
+        {t === "notes"      && <NotesView me={me?.display_name || ""} />}
+        {t === "approvals"  && <ApprovalsView me={me} notices={notices} />}
+        {t === "checkup"    && <CheckupView />}
+        {t === "clients"    && <ClientsView />}
+        {t === "invoices"   && <InvoicesView />}
+        {t === "archive"    && <ArchiveView />}
+        {t === "documents"  && <DocumentsView />}
+        {t === "quotes"     && <QuotesView onNavigate={(to) => setTab(to, true)} />}
+        {t === "releaseletter" && <ReleaseLetterView />}
+        {t === "purchaseorder" && <PurchaseOrderView />}
+        {t === "clientreceipt" && <ClientStatementView />}
+        {t === "dealflow"   && <DealFlowView />}
+        {t === "logistics"  && <LogisticsView me={me} />}
+        {t === "bols"       && <BolsView me={me} />}
+        {t === "suppliers"  && <SuppliersView />}
+        {t === "inventory"  && <InventoryView />}
+        {t === "warehouse"  && <WarehouseView />}
+        {t === "renewals"   && <RenewalsView />}
+        {t === "coldcalls"  && <ColdCallsView />}
+        {t === "manifest"   && <ManifestView onNavigate={(to) => setTab(to, true)} />}
+        {t === "lotengine"  && <LotEngineView me={me} />}
+        {t === "showpacking" && <ShowPackingView me={me} />}
+        {t === "sheetcopy"  && <SheetCopyView />}
+        {t === "financials" && <FinancialsView />}
+        {t === "bills"      && <BillsView me={me} />}
+        {t === "completed"  && <CloseoutView />}
+        {t === "analytics"  && <AnalyticsView />}
+        {t === "tiers"      && <TiersView />}
+        {t === "portals"    && <CustomerPortalsView me={me} />}
+        {t === "automation" && <AutomationLogView />}
+        {t === "brief"      && <BriefView me={me} currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
+        {t === "newsletter" && <EmailView />}
+        {t === "settings"   && <SettingsView me={me} />}
+        {t === "platform"   && <PlatformView />}
+        {t === "datasafety" && <DataSafetyView />}
+      </Suspense>
     );
   };
 
@@ -1265,7 +1113,8 @@ export default function App() {
   // down. Keyed on the screen id, so opening another screen mounts a fresh boundary. Back to Dashboard moves
   // this pane (the main one, or the split one) to the Dashboard. It is not offered on the Dashboard itself (a
   // split pane already on it would not change state, so the button would do nothing) or to a Logistics-only
-  // account (the lock above sends it straight back to the screen that crashed).
+  // account (the lock above sends it straight back to the screen that crashed). The section's header is
+  // outside the boundary, so a screen that crashes still leaves its tabs to move to another.
   const guardedPane = (t: Tab, onBack: () => void) => (
     <PaneBoundary key={t} onBack={t === "dashboard" || logisticsOnly ? undefined : onBack}>{paneContent(t)}</PaneBoundary>
   );
@@ -1278,185 +1127,149 @@ export default function App() {
   if (onboarded === null) return null; // resolving onboarding status for this account
   if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
 
-  // Bell, dark mode and split view. They have their own strip under the brand row when
-  // the sidebar is open and move into the account menu when it is collapsed - split view
-  // has no other entry point anywhere in the app, so dropping them from the rail would
-  // strand it. They used to be crammed into the brand row itself alongside the collapse
-  // control: four icons wedged against the wordmark, which is why the row now carries
-  // the brand alone.
+  // Bell, dark mode and split view. They sit in a row of icon buttons at the foot of the open sidebar and
+  // move into the account menu when it is collapsed: split view has no other entry point anywhere in the
+  // app, so dropping them from the rail would strand it.
   const shellButtons = (
     <>
-        {/* Notification bell: the team's notices (admins, deal and book viewers), or for a Logistics-only
-            account the loads waiting on a quote or a booking. */}
-        {bellShown && (
-          <button
-            onClick={() => setTab(bellTab)}
-            title={logisticsOnly && bellCount > 0 ? `${bellCount} to quote or book` : bellTitle(bellCount)}
-            className="relative w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-            style={{ color: tab === bellTab ? "var(--accent-400)" : "var(--rail-text-faint)" }}
-            onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== bellTab) e.currentTarget.style.color = "var(--accent-400)"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = tab === bellTab ? "var(--accent-400)" : "var(--rail-text-faint)"; }}
-          >
-            <Bell size={13} strokeWidth={2} />
-            {bellCount > 0 && (
-              <span className={`absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full ${bellBadge} text-[color:var(--rail-ink)] text-[10px] font-bold leading-[15px] text-center`}>
-                {bellCount > 9 ? "9+" : bellCount}
-              </span>
-            )}
-          </button>
-        )}
-
-        {/* Dark mode toggle — flips the base only; Mono (if on) is preserved
-            since it's now orthogonal to light/dark. */}
+      {/* Notification bell: the team's notices (admins, deal and book viewers), or for a Logistics-only
+          account the loads waiting on a quote or a booking. */}
+      {bellShown && (
         <button
-          onClick={() => setDark(d => !d)}
-          title={dark ? "Switch to light mode" : "Switch to dark mode"}
-          className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-          style={{ color: dark ? "var(--rail-hot)" : "var(--rail-text-faint)" }}
-          onMouseEnter={e => {
-            e.currentTarget.style.background = "rgba(255,255,255,0.08)";
-            e.currentTarget.style.color = dark ? "#FDE68A" : "var(--accent-400)";
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.background = "";
-            e.currentTarget.style.color = dark ? "var(--rail-hot)" : "var(--rail-text-faint)";
-          }}
+          onClick={() => setTab(bellTab)}
+          title={logisticsOnly && bellCount > 0 ? `${bellCount} to quote or book` : bellTitle(bellCount)}
+          aria-label="Notifications"
+          className={`ui-ib relative ${tab === bellTab ? "!text-ink !bg-surface-3" : ""}`}
         >
-          {dark
-            ? <Sun size={13} strokeWidth={2} />
-            : <Moon size={13} strokeWidth={2} />
-          }
+          <Bell size={15} />
+          {bellCount > 0 && (
+            <span className="absolute -top-1.5 -right-1.5">{countChip({ n: bellCount, tone: bellUrgent ? "urgent" : "calm" }, true)}</span>
+          )}
         </button>
+      )}
 
-        {/* Split-view toggle */}
-        {!logisticsOnly && <button
+      {/* Dark mode toggle: flips the base only; Mono (if on) is preserved since it is orthogonal. */}
+      <button
+        onClick={() => setDark(d => !d)}
+        title={dark ? "Switch to light mode" : "Switch to dark mode"}
+        aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
+        className="ui-ib"
+      >
+        {dark ? <Sun size={15} /> : <Moon size={15} />}
+      </button>
+
+      {/* Split-view toggle */}
+      {!logisticsOnly && (
+        <button
           onClick={toggleSplit}
           title={splitTab ? "Close split view" : "Open split view (two tabs side by side)"}
-          className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-          style={{ color: splitTab ? "var(--accent-400)" : "var(--rail-text-faint)" }}
-          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (!splitTab) e.currentTarget.style.color = "var(--accent-400)"; }}
-          onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = splitTab ? "var(--accent-400)" : "var(--rail-text-faint)"; }}
+          aria-label={splitTab ? "Close split view" : "Open split view"}
+          className={`ui-ib ${splitTab ? "!text-ink !bg-surface-3" : ""}`}
         >
-          <Columns2 size={13} strokeWidth={2} />
-        </button>}
+          <Columns2 size={15} />
+        </button>
+      )}
     </>
   );
 
-  return (
-    <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
-      {/* Sidebar */}
-      <aside className={`${navCollapsed ? "w-[96px]" : "w-[216px]"} flex flex-col flex-shrink-0 relative transition-[width] motion-reduce:transition-none`} style={{
-        background: "linear-gradient(180deg, var(--rail-bg-top) 0%, var(--rail-bg-bottom) 100%)",
-        borderRight: "1px solid rgba(255,255,255,0.05)",
-      }}>
-        {/* Brand. The mark, and the org name when there is room for it - nothing else in
-            either state. The rail toggle is NOT here: collapsed, it used to be an icon
-            pinned beside the logo, which is the arrangement Jack rejected. It lives at the
-            bottom of the footer in both states now, so it is always in the same place. */}
-        <div className={`h-[54px] ${navCollapsed ? "px-0 justify-center" : "px-4"} flex items-center gap-2.5 flex-shrink-0`} style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
-          <img src="/ecliptr-mark.svg" alt="Ecliptr" className={`${navCollapsed ? "h-6 w-6" : "h-6 w-6"} flex-shrink-0`} />
-          {!navCollapsed && (
-            <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "Ecliptr"}</h1>
-          )}
-        </div>
+  /** A screen inside its section's frame: the shell's header (section name, actions slot, tab bar) when the
+   *  section groups several screens, the padding every screen sits in, and the page itself. */
+  const frame = (t: Tab, onSelect: (id: Tab) => void, content: React.ReactNode) => {
+    const sec = sectionOfTab(t);
+    const items: TabItem[] = sec
+      ? visibleTabs(sec, visible).map((d) => {
+          const c = tabCount(d.id);
+          return { id: d.id, label: d.label, count: c?.n, countTone: c?.tone };
+        })
+      : [];
+    return (
+      <SectionFrame
+        key={sec?.id ?? "none"}
+        title={sec?.label ?? ""}
+        items={items}
+        value={t}
+        onSelect={(id) => onSelect(id as Tab)}
+        shell={shellDrawsHeader(t)}
+        bleed={t === "globe"}
+      >
+        {content}
+      </SectionFrame>
+    );
+  };
 
-        {/* Shell strip. The three app-wide toggles, on their own line under the brand
-            rather than on the main content header - they belong to the shell, not to
-            whatever screen happens to be open. Centred, so the row reads as one group
-            sitting under the mark rather than three icons left over from the brand row.
-            Expanded only; collapsed they are in the account flyout, since a 96px rail has
-            no room for a toolbar. */}
-        {!navCollapsed && (
-          <div className="px-3 py-1.5 flex items-center justify-center gap-2 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
-            {shellButtons}
+  const settingsSection = SECTIONS.find((s) => s.id === "settings")!;
+
+  return (
+    <div className="flex h-screen bg-side text-ink">
+      {/* Sidebar */}
+      <aside className={`${navCollapsed ? "w-[96px] px-1.5 py-2" : "w-[256px] p-4"} flex flex-col flex-shrink-0 relative transition-[width] motion-reduce:transition-none`}>
+        {/* Brand. The mark and the name, then (open only) the organisation as the mockup's outlined box.
+            The rail toggle is NOT here: it lives at the bottom of the footer in both states, so it is
+            always in the same place. */}
+        {navCollapsed ? (
+          <div className="h-[46px] flex items-center justify-center flex-shrink-0">
+            <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-6 w-6 flex-shrink-0" />
           </div>
+        ) : (
+          <>
+            <div className="flex items-center gap-2 h-10 px-2 flex-shrink-0">
+              <img src="/ecliptr-mark.svg" alt="" className="h-5 w-5 flex-shrink-0" />
+              <span className="text-[14px] font-medium text-ink">Ecliptr</span>
+            </div>
+            {orgName ? (
+              <div className="flex items-center gap-2.5 h-12 px-[11px] mt-1 mb-5 rounded-lg border border-line bg-surface-2 flex-shrink-0" title={orgName}>
+                <span className="w-6 h-6 rounded-full grid place-items-center text-[11px] font-medium bg-ink text-surface flex-shrink-0">
+                  {orgName.trim().charAt(0).toUpperCase()}
+                </span>
+                <span className="flex-1 min-w-0 truncate text-[14px] font-medium">{orgName}</span>
+              </div>
+            ) : <div className="h-4 flex-shrink-0" />}
+          </>
         )}
 
         {/* Nav */}
         <nav
           ref={navRef}
-          className={`flex-1 ${navCollapsed ? "px-1.5 py-2 overflow-hidden" : "px-2.5 py-3 overflow-y-auto"} space-y-0.5 relative`}
+          aria-label="Sections"
+          className={`flex-1 min-h-0 flex flex-col gap-0.5 ${navCollapsed ? "py-1 overflow-hidden" : "overflow-y-auto"}`}
         >
-          {/* Sliding indicator */}
-          <div
-            className="nav-indicator"
-            style={{ top: indicatorStyle.top, opacity: indicatorStyle.opacity }}
-          />
-
           {navCollapsed ? (
             <>
               {!logisticsOnly && railAction("__search", "Search", Search, () => { setFlyout(null); setPaletteOpen(true); })}
-              {!logisticsOnly && <div className="h-[11px] mx-1 flex items-center" aria-hidden><div className="w-full" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }} /></div>}
+              {!logisticsOnly && <div className="h-[11px] mx-1 flex items-center" aria-hidden><div className="w-full border-t border-line" /></div>}
 
-              {/* Standing on a screen whose parent this role cannot see. */}
-              {railPlan.orphan && railRow(railPlan.orphan, railCount(railPlan.orphan, false))}
-
-              {railPlan.rows.map(({ node, kids }) => (
-                <div key={node.id} className="space-y-0.5">
-                  {railRow(node, railCount(node, node.id === railPlan.sectionId))}
+              {railPlan.rows.map(({ section, kids }) => (
+                <div key={section.id} className="space-y-0.5">
+                  {railRow(section.id, section.label, SECTION_ICONS[section.id], section.id === railPlan.sectionId, sectionCount(section), () => openSection(section))}
                   {kids.length > 0 && (
                     <div className="relative pl-[9px] mt-[3px] mb-[5px] space-y-0.5">
                       <span className="rail-spine absolute left-[3px] top-0.5 bottom-0.5 w-[1.5px] rounded-full" aria-hidden />
-                      {kids.map((c) => railKid(c, railCount(c, false)))}
+                      {kids.map((c) => railKid(c))}
                     </div>
                   )}
                 </div>
               ))}
 
-              <div className="h-[11px] mx-1 flex items-center" aria-hidden><div className="w-full" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }} /></div>
-              {railAction("__all", "All screens", MoreHorizontal, (e) => openFlyout("__all", e), flyout?.id === "__all")}
+              <div className="h-[11px] mx-1 flex items-center" aria-hidden><div className="w-full border-t border-line" /></div>
+              {railAction("__all", "All screens", Ellipsis, (e) => openFlyout("__all", e), flyout?.id === "__all")}
             </>
-          ) : NAV.map((node) => {
-            const kids = (node.children || []).filter((c) => visible(c.id));
-            // Parent gated out: don't strand independently-visible children (e.g.
-            // null-perm Automation/Globe under Analytics) — promote them to top level.
-            if (!visible(node.id)) {
-              return kids.length
-                ? <div key={node.id} className="space-y-0.5">{kids.map((c) => navButton(c, false))}</div>
-                : null;
-            }
-            if (kids.length === 0) return navButton(node, false);
-            const open = isGroupOpen(node);
-            return (
-              <div key={node.id} className="space-y-0.5">
-                <div className="relative">
-                  {navButton(node, false)}
-                  {/* Sibling (not nested) chevron so it stays valid, focusable HTML. */}
-                  <button
-                    type="button"
-                    aria-label={open ? `Collapse ${node.label}` : `Expand ${node.label}`}
-                    onClick={() => toggleGroup(node.id)}
-                    className="absolute top-0 right-1 h-9 w-7 flex items-center justify-center rounded-md hover:bg-white/10 transition-colors"
-                  >
-                    <ChevronRight size={13} style={{ color: "var(--rail-text)", transform: open ? "rotate(90deg)" : "none", transition: "transform 150ms ease" }} />
-                  </button>
-                </div>
-                {open && kids.map((c) => navButton(c, true))}
-              </div>
-            );
-          })}
-
+          ) : (
+            SECTIONS.filter((s) => s.id !== "more" && s.id !== "settings" && sectionShown(s)).map(navItem)
+          )}
         </nav>
 
-        {/* Utility zone — configuration & housekeeping, set apart from the workflow
-            mains. Pinned outside the scroller: these are the ones you reach for when
-            you are lost, and they were the first to fall below the fold.
-            Collapsed it is Settings alone: five stacked labelled rows would be ~230px
-            of chrome that cannot shrink, and on the 600px minimum window that is the
-            difference between the rail fitting and the rail scrolling. The other four
-            are one click away in All screens, which lists every screen this role can
-            reach. */}
-        <div className={`${navCollapsed ? "px-1.5" : "px-2.5"} py-2 space-y-0.5 flex-shrink-0`} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+        {/* More and Settings sit under the nav, pinned outside its scroller: they are the ones you reach
+            for when you are lost. Collapsed it is Settings alone: the rest are one click away in All
+            screens, which lists every screen this role can reach. */}
+        <div className="flex-shrink-0 pt-2 space-y-0.5">
           {navCollapsed
-            ? UTILITY.filter((u) => u.id === "settings" && visible(u.id)).map((u) => railRow(u, 0))
-            : UTILITY.filter((u) => visible(u.id)).map((u) => navButton(u, false))}
+            ? (sectionShown(settingsSection) ? railRow(settingsSection.id, settingsSection.label, SECTION_ICONS.settings, currentSection?.id === "settings", null, () => openSection(settingsSection)) : null)
+            : SECTIONS.filter((s) => (s.id === "more" || s.id === "settings") && sectionShown(s)).map(navItem)}
         </div>
 
-        {/* Status footer. Collapsed this is a compact strip: an older rail stacked bell,
-            dark mode, split view, feedback and sign out into a ~230px column that ate the
-            nav's room. They live in the account menu instead, which matters more now the
-            rail is forbidden to scroll - see railPlan's budget. */}
-        <div className={`${navCollapsed ? "px-1.5" : "px-3"} py-3 flex-shrink-0`} style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
+        {/* Status footer. Collapsed this is a compact strip: bell, dark mode, split view and sign out live
+            in the account menu, which matters because the rail is forbidden to scroll. */}
+        <div className={`flex-shrink-0 ${navCollapsed ? "pt-2" : "pt-3"}`}>
           {navCollapsed ? (
             <div className="flex flex-col items-center gap-1.5">
               <span className="py-0.5" title={netTitle} style={{ color: netColor }}>
@@ -1466,135 +1279,105 @@ export default function App() {
                 onClick={handleSync}
                 disabled={syncing}
                 title={`Sync · ${lastSync ? new Date(lastSync).toLocaleTimeString() : "never"}`}
-                className="w-7 h-7 rounded-md flex items-center justify-center transition-colors disabled:opacity-50"
-                style={{ color: "var(--rail-text-faint)" }}
-                onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
-                onMouseLeave={e => (e.currentTarget.style.background = "")}
+                aria-label="Sync now"
+                className="ui-ib disabled:opacity-50"
               >
-                <RefreshCw size={12} className={syncing ? "animate-spin" : ""} />
+                <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
               </button>}
               <button
                 onClick={(e) => openFlyout("__account", e)}
                 title={me?.display_name || "Account"}
                 aria-label="Account menu"
                 aria-expanded={flyout?.id === "__account"}
-                className="relative w-7 h-7 rounded-md flex items-center justify-center transition-colors"
+                className="relative w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:bg-surface-2"
               >
                 {me?.avatar
-                  ? <img src={me.avatar} alt="" className="w-6 h-6 rounded-md object-cover" />
-                  : <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white"
-                      style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
+                  ? <img src={me.avatar} alt="" className="w-7 h-7 rounded-full object-cover" />
+                  : <span className="w-7 h-7 rounded-full grid place-items-center text-[11px] font-medium bg-ink text-surface">
                       {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
-                    </div>}
+                    </span>}
                 {bellShown && bellCount > 0 && (
-                  <span className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full ${bellBadge}`} style={{ border: "1px solid #101011" }} />
+                  <span className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-[rgb(var(--c-side))] ${bellUrgent ? "bg-danger" : "bg-faint"}`} />
                 )}
               </button>
-              {/* The only way back out of the rail, and it sits in the same corner as the
-                  collapse control does when the sidebar is open. It must never move into
-                  the nav: that is scrollable, and a short window once put it hundreds of
-                  pixels below the fold with no other exit. */}
+              {/* The only way back out of the rail, and it sits in the same corner as the collapse control
+                  does when the sidebar is open. It must never move into the nav: that clips, and a short
+                  window once put it out of reach with no other exit. */}
               <button
                 onClick={toggleNav}
                 title="Expand sidebar (Cmd/Ctrl + B)"
                 aria-label="Expand sidebar"
-                className="w-7 h-7 rounded-md flex items-center justify-center transition-colors"
-                style={{ color: "var(--rail-text-faint)" }}
-                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "var(--accent-400)"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--rail-text-faint)"; }}
+                className="ui-ib"
               >
-                <PanelLeftOpen size={13} strokeWidth={2} />
+                <PanelLeftOpen size={15} />
               </button>
             </div>
           ) : (
-            <div className="space-y-1">
-              {!logisticsOnly && <div className="flex items-center justify-between px-1.5 py-0.5" title={netTitle}>
-                <span className="flex items-center gap-2 text-[11px]" style={{ color: "var(--rail-text-dim)" }}>
-                  <span style={{ color: netColor }}>{netOk ? <Wifi size={11} /> : <WifiOff size={11} />}</span>
+            <div className="space-y-0.5">
+              {!logisticsOnly && <div className="flex items-center justify-between px-[11px] h-7 text-[12px] text-muted" title={netTitle}>
+                <span className="flex items-center gap-2">
+                  <span style={{ color: netColor }}>{netOk ? <Wifi size={12} /> : <WifiOff size={12} />}</span>
                   Server
                 </span>
-                <span className="text-[11px] font-medium" style={{ color: netColor }}>{netWord}</span>
+                <span className="font-medium" style={{ color: netColor }}>{netWord}</span>
               </div>}
               {!logisticsOnly && <button
                 onClick={handleSync}
                 disabled={syncing}
-                className="w-full flex items-center justify-between px-1.5 py-1.5 rounded-md text-[11px] transition-colors disabled:opacity-50"
-                style={{ color: "var(--rail-text-dim)" }}
-                onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
-                onMouseLeave={e => (e.currentTarget.style.background = "")}
+                className="w-full flex items-center justify-between px-[11px] h-7 rounded-lg text-[12px] text-muted hover:text-ink hover:bg-surface-2 transition-colors disabled:opacity-50"
               >
-                <span className="flex items-center gap-1.5">
-                  <RefreshCw size={11} className={syncing ? "animate-spin" : ""} />
+                <span className="flex items-center gap-2">
+                  <RefreshCw size={12} className={syncing ? "animate-spin" : ""} />
                   Sync
                 </span>
                 <span className="tabular-nums">
-                  {lastSync ? new Date(lastSync).toLocaleTimeString() : "–"}
+                  {lastSync ? new Date(lastSync).toLocaleTimeString() : "never"}
                 </span>
               </button>}
 
-              {/* Signed-in user, then the two session controls: collapse the rail and sign
-                  out. Feedback used to hold the left slot; it has a Settings section of
-                  its own now, which is where a form with three fields belonged all along. */}
-              <div className="flex items-center gap-2 px-1.5 pt-2 mt-1" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
+              {/* Signed-in user, then the row of shell buttons: bell, dark mode, split view, collapse the
+                  rail, sign out. Feedback has a Settings section of its own. */}
+              <div className="flex items-center gap-2.5 px-[11px] pt-3">
                 {me?.avatar
-                  ? <img src={me.avatar} alt="" className="w-6 h-6 rounded-md object-cover flex-shrink-0" />
-                  : <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
-                      style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
+                  ? <img src={me.avatar} alt="" className="w-7 h-7 rounded-full object-cover flex-shrink-0" />
+                  : <span className="w-7 h-7 rounded-full grid place-items-center text-[11px] font-medium bg-ink text-surface flex-shrink-0">
                       {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
-                    </div>}
+                    </span>}
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] font-medium truncate" style={{ color: "var(--rail-text-bright)" }}>{me?.display_name}</div>
-                  <div className="text-[10px] truncate" style={{ color: "var(--rail-text-dim)" }}>{me?.role_name}</div>
+                  <div className="text-[13px] font-medium truncate">{me?.display_name}</div>
+                  <div className="text-[12px] text-muted truncate">{me?.role_name}</div>
                 </div>
+              </div>
+              <div className="flex items-center gap-1 px-1.5 pt-2">
+                {shellButtons}
+                <span className="flex-1" />
                 <button
                   onClick={toggleNav}
                   title="Collapse sidebar (Cmd/Ctrl + B)"
                   aria-label="Collapse sidebar"
-                  className="p-1.5 rounded-md transition-colors flex-shrink-0"
-                  style={{ color: "var(--rail-text-faint)" }}
-                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "var(--accent-400)"; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--rail-text-faint)"; }}
+                  className="ui-ib"
                 >
-                  <PanelLeftClose size={13} strokeWidth={2} />
+                  <PanelLeftClose size={15} />
                 </button>
                 <button
                   onClick={() => setSignOutArm((v) => !v)}
                   title="Sign out"
+                  aria-label="Sign out"
                   aria-expanded={signOutArm}
-                  className="p-1.5 rounded-md transition-colors flex-shrink-0"
-                  style={{ color: signOutArm ? "#F87171" : "var(--rail-text-faint)", background: signOutArm ? "rgba(248,113,113,0.14)" : "" }}
-                  onMouseEnter={e => { if (!signOutArm) { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "#F87171"; } }}
-                  onMouseLeave={e => { if (!signOutArm) { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--rail-text-faint)"; } }}
+                  className={`ui-ib ${signOutArm ? "!text-danger-ink !bg-danger-bg" : ""}`}
                 >
-                  <LogOut size={13} />
+                  <LogOut size={15} />
                 </button>
               </div>
 
-              {/* Step two. Signing out is not destructive, but it is a re-auth away from
-                  everything, and the button now lives one icon from the collapse control
-                  you press all day - so it asks. */}
+              {/* Step two. Signing out is not destructive, but it is a re-auth away from everything, and the
+                  button sits one icon from the collapse control you press all day, so it asks. */}
               {signOutArm && (
-                <div className="px-1.5 pt-2 mt-1 space-y-1.5" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
-                  <div className="text-[11px]" style={{ color: "var(--rail-text-bright)" }}>Sign out of {orgName || "Ecliptr"}?</div>
+                <div className="px-[11px] pt-3 space-y-2">
+                  <div className="text-[12px] text-ink">Sign out of {orgName || "Ecliptr"}?</div>
                   <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={signOut}
-                      className="flex-1 h-7 rounded-md text-[11px] font-medium transition-colors"
-                      style={{ background: "rgba(248,113,113,0.16)", color: "#F87171" }}
-                      onMouseEnter={e => (e.currentTarget.style.background = "rgba(248,113,113,0.26)")}
-                      onMouseLeave={e => (e.currentTarget.style.background = "rgba(248,113,113,0.16)")}
-                    >
-                      Sign out
-                    </button>
-                    <button
-                      onClick={() => setSignOutArm(false)}
-                      className="flex-1 h-7 rounded-md text-[11px] transition-colors"
-                      style={{ background: "rgba(255,255,255,0.06)", color: "var(--rail-text-bright)" }}
-                      onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.11)")}
-                      onMouseLeave={e => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
-                    >
-                      Cancel
-                    </button>
+                    <button onClick={signOut} className="ui-btn ui-btn-sm ui-btn-danger flex-1">Sign out</button>
+                    <button onClick={() => setSignOutArm(false)} className="ui-btn ui-btn-sm flex-1">Cancel</button>
                   </div>
                 </div>
               )}
@@ -1602,87 +1385,88 @@ export default function App() {
           )}
         </div>
 
-        {/* Rail flyouts. Two of them now: the account menu behind the footer avatar,
-            and All screens. The per-group flyouts are gone — the section you are in
-            opens inline in the rail instead, which is the whole point of R-224.
-            Fixed rather than absolute so the rail cannot clip them, over a backdrop
-            that closes on any outside click. `left` is the rail width plus a 6px gap;
-            there is no shared constant for it, so it moves when the rail moves. */}
+        {/* Rail flyouts. Two of them: the account menu behind the footer avatar, and All screens. The
+            section you are in opens inline in the rail instead. Fixed rather than absolute so the rail
+            cannot clip them, over a backdrop that closes on any outside click. `left` is the rail width
+            plus a gap; there is no shared constant for it, so it moves when the rail moves. */}
         {navCollapsed && flyout && (
           <>
             <div className="fixed inset-0 z-40" onClick={() => setFlyout(null)} />
             <div
               ref={flyRef}
-              className="fixed z-50 w-[186px] p-1 rounded-xl"
-              style={{
-                left: 102, top: flyout.top,
-                background: "#17171A",
-                border: "1px solid rgba(255,255,255,0.09)",
-                boxShadow: "0 14px 36px rgba(0,0,0,0.55)",
-              }}
+              className="fixed z-50 w-[204px] p-1 rounded-xl bg-surface"
+              style={{ left: 102, top: flyout.top, boxShadow: "var(--shadow-panel)" }}
             >
               {flyout.id === "__account" ? (
                 <>
-                  <div className="px-2.5 pt-1.5 pb-2 mb-1" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-                    <div className="text-[12px] font-medium truncate" style={{ color: "var(--rail-text-bright)" }}>{me?.display_name}</div>
-                    <div className="text-[10px] truncate" style={{ color: "var(--rail-text-dim)" }}>{me?.role_name}</div>
+                  <div className="px-2.5 pt-1.5 pb-2 mb-1 border-b border-line">
+                    <div className="text-[13px] font-medium truncate">{me?.display_name}</div>
+                    <div className="text-[12px] text-muted truncate">{me?.role_name}</div>
                   </div>
                   {bellShown && (
                     <button onClick={() => setTab(bellTab)} className={RAIL_MENU_ROW}>
-                      <Bell size={14} strokeWidth={1.7} />
+                      <Bell size={14} />
                       <span>Notifications</span>
-                      {bellCount > 0 && (
-                        <span className={`ml-auto min-w-[16px] h-4 px-1 rounded-full ${bellBadge} text-[color:var(--rail-ink)] text-[10px] font-bold leading-4 text-center`}>
-                          {bellCount > 9 ? "9+" : bellCount}
-                        </span>
-                      )}
+                      <span className="ml-auto">{countChip(bellCount > 0 ? { n: bellCount, tone: bellUrgent ? "urgent" : "calm" } : null, true)}</span>
                     </button>
                   )}
                   <button onClick={() => { setDark(d => !d); setFlyout(null); }} className={RAIL_MENU_ROW}>
-                    {dark ? <Sun size={14} strokeWidth={1.7} /> : <Moon size={14} strokeWidth={1.7} />}
+                    {dark ? <Sun size={14} /> : <Moon size={14} />}
                     <span>{dark ? "Light mode" : "Dark mode"}</span>
                   </button>
                   {!logisticsOnly && <button onClick={() => { toggleSplit(); setFlyout(null); }} className={RAIL_MENU_ROW}>
-                    <Columns2 size={14} strokeWidth={1.7} />
+                    <Columns2 size={14} />
                     <span>{splitTab ? "Close split view" : "Split view"}</span>
                   </button>}
-                  {/* Two-step here too, in the one row the menu has room for: the first
-                      click relabels it, the second signs out. */}
+                  {/* Two-step here too, in the one row the menu has room for: the first click relabels
+                      it, the second signs out. */}
                   <button
                     onClick={() => { if (signOutArm) { setFlyout(null); signOut(); } else setSignOutArm(true); }}
-                    className={RAIL_MENU_ROW}
-                    style={signOutArm ? { color: "#F87171" } : undefined}
+                    className={`${RAIL_MENU_ROW} ${signOutArm ? "!text-danger-ink" : ""}`}
                   >
-                    <LogOut size={14} strokeWidth={1.7} />
+                    <LogOut size={14} />
                     <span>{signOutArm ? "Confirm sign out" : "Sign out"}</span>
                   </button>
                 </>
               ) : flyout.id === "__all" ? (
-                // Everything this role can reach, including the screens the rail is
-                // not currently showing. flatTabs is the only list already filtered by
-                // visible(), so it is the one that cannot leak a screen the sidebar
-                // hides. It scrolls: 29 rows do not fit any window.
+                // Everything this role can reach, including the screens the rail is not currently showing,
+                // grouped by section. visible() is what filters it, so it cannot leak a screen the sidebar
+                // hides. It scrolls: 39 rows do not fit any window. A pin keeps a section's row on the rail.
                 <div className="max-h-[60vh] overflow-y-auto">
-                  {flatTabs.map((t) => (
-                    <div key={t.id} className="relative group/allrow">
-                      {flyoutRow(t, t.id === "approvals" ? apTotal : t.id === "newsletter" ? draftCount : t.id === "bills" ? billsOverdue : undefined)}
-                      {NAV.some((n) => n.id === t.id) && (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); toggleRailPin(t.id); }}
-                          title={railPins.includes(t.id) ? `Unpin ${t.label} from the rail` : `Pin ${t.label} to the rail`}
-                          aria-label={railPins.includes(t.id) ? `Unpin ${t.label}` : `Pin ${t.label}`}
-                          className={`absolute top-1 right-1 h-6 w-6 flex items-center justify-center rounded-md transition-colors ${
-                            railPins.includes(t.id)
-                              ? "text-[color:var(--rail-text-bright)] hover:bg-white/[0.1]"
-                              : "opacity-0 group-hover/allrow:opacity-100 text-[color:var(--rail-text-faint)] hover:text-white hover:bg-white/[0.1]"
-                          }`}
-                        >
-                          <Pin size={12} strokeWidth={1.9} style={railPins.includes(t.id) ? { fill: "currentColor" } : undefined} />
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                  {SECTIONS.filter(sectionShown).map((s) => {
+                    const open = visibleTabs(s, visible);
+                    const pinned = railPins.includes(s.id);
+                    return (
+                      <div key={s.id} className="relative group/allrow">
+                        {open.length === 1
+                          ? flyoutRow({ id: open[0].id, label: s.label }, false)
+                          : (
+                            <button
+                              onClick={() => openSection(s)}
+                              className="w-full flex items-center h-8 px-2.5 pr-9 rounded-lg text-[12px] font-medium text-faint hover:text-ink hover:bg-surface-3 text-left transition-colors"
+                            >
+                              {s.label}
+                            </button>
+                          )}
+                        {s.id !== "settings" && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); toggleRailPin(s.id); }}
+                            title={pinned ? `Unpin ${s.label} from the rail` : `Pin ${s.label} to the rail`}
+                            aria-label={pinned ? `Unpin ${s.label}` : `Pin ${s.label}`}
+                            className={`absolute top-1 right-1 h-6 w-6 flex items-center justify-center rounded-md transition-colors ${
+                              pinned
+                                ? "text-ink hover:bg-surface-3"
+                                : "opacity-0 group-hover/allrow:opacity-100 focus:opacity-100 text-faint hover:text-ink hover:bg-surface-3"
+                            }`}
+                          >
+                            <Pin size={12} style={pinned ? { fill: "currentColor" } : undefined} />
+                          </button>
+                        )}
+                        {open.length > 1 && open.map((t) => flyoutRow(t, true))}
+                      </div>
+                    );
+                  })}
                 </div>
               ) : null}
             </div>
@@ -1692,63 +1476,68 @@ export default function App() {
       </aside>
 
 
-      {/* Main */}
-      <main className="flex-1 overflow-hidden relative">
+      {/* Main: the panel, 32px of padding and a 40px top-left corner (the padding lives in SectionFrame). */}
+      <main className="flex-1 min-w-0 overflow-hidden relative bg-surface rounded-tl-[40px]">
         {splitTab ? (
           <div ref={splitRowRef} className="flex h-full">
             {/* Left pane — driven by the sidebar nav */}
             <section className="min-w-0 overflow-auto pane-container" style={{ width: `${splitRatio * 100}%`, background: paneBg(tab) }}>
               {tab !== "globe" && <UpdateNotification />}
-              <div key={`l-${pageKey}`} className="page-enter h-full">{guardedPane(tab, () => setTab("dashboard"))}</div>
+              {frame(tab, (id) => setTab(id), (
+                <div key={`l-${pageKey}`} className={`page-enter ${tab === "globe" ? "h-full" : ""}`}>{guardedPane(tab, () => setTab("dashboard"))}</div>
+              ))}
             </section>
 
             {/* Draggable divider */}
             <div
               onMouseDown={startSplitDrag}
-              className="w-1.5 flex-shrink-0 cursor-col-resize relative group"
-              style={{ background: "var(--t-b1)" }}
+              className="w-1.5 flex-shrink-0 cursor-col-resize relative group bg-surface-2"
               title="Drag to resize"
             >
-              <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-[var(--accent-glow)] transition-colors" />
+              <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-ink/10 transition-colors" />
             </div>
 
             {/* Right pane — independent tab picker */}
             <section className="flex-1 min-w-0 overflow-auto relative pane-container" style={{ background: paneBg(splitTab) }}>
-              <div className="sticky top-0 z-20 flex items-center gap-2 px-3 h-10 flex-shrink-0"
-                style={{ background: "var(--t-s1)", borderBottom: "1px solid var(--t-b1)" }}>
-                <Columns2 size={12} style={{ color: "var(--t-tx4)" }} />
-                <span className="text-[10px] font-semibold" style={{ color: "var(--t-tx4)" }}>Split</span>
+              <div className="sticky top-0 z-20 flex items-center gap-2 px-3 h-10 flex-shrink-0 bg-surface border-b border-line">
+                <Columns2 size={13} className="text-faint" />
+                <span className="text-[12px] text-faint">Split</span>
                 <select
                   value={splitTab}
                   onChange={(e) => setSplit(e.target.value as Tab)}
-                  className="text-[12px] rounded-md px-2 h-7"
-                  style={{ background: "var(--t-input-bg)", color: "var(--t-tx1)", border: "1px solid var(--t-b1)" }}
+                  className="text-[12px] rounded-md px-2 h-7 bg-surface text-ink border border-line-3"
                 >
-                  {flatTabs.filter((t) => t.id !== "globe").map((t) => (
-                    <option key={t.id} value={t.id}>{t.label}</option>
+                  {SECTIONS.filter(sectionShown).map((s) => (
+                    <optgroup key={s.id} label={s.label}>
+                      {visibleTabs(s, visible).filter((t) => t.id !== "globe").map((t) => (
+                        <option key={t.id} value={t.id}>{t.label}</option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
                 <button
                   onClick={() => setSplit(null)}
-                  className="ml-auto w-7 h-7 flex items-center justify-center rounded-md transition-colors"
-                  style={{ color: "var(--t-tx3)" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--t-s3)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "")}
+                  className="ui-ib ml-auto"
                   title="Close split view"
+                  aria-label="Close split view"
                 >
                   <X size={14} />
                 </button>
               </div>
-              <div key={`r-${splitTab}`} className="page-enter">{guardedPane(splitTab, () => setSplit("dashboard"))}</div>
+              {frame(splitTab, (id) => setSplit(id), (
+                <div key={`r-${splitTab}`} className="page-enter">{guardedPane(splitTab, () => setSplit("dashboard"))}</div>
+              ))}
             </section>
           </div>
         ) : (
-          <div className={tab === "globe" ? "h-full overflow-hidden" : "h-full overflow-auto page-atmosphere"} style={{ background: paneBg(tab) }}>
+          <div className={tab === "globe" ? "h-full overflow-hidden" : "h-full overflow-auto"} style={{ background: paneBg(tab) }}>
             {/* Outside the keyed page, as in split view: a tab click must not remount it (R-409). */}
             {tab !== "globe" && <UpdateNotification />}
-            <div key={pageKey} className="page-enter h-full">
-              {guardedPane(tab, () => setTab("dashboard"))}
-            </div>
+            {frame(tab, (id) => setTab(id), (
+              <div key={pageKey} className={`page-enter ${tab === "globe" ? "h-full" : ""}`}>
+                {guardedPane(tab, () => setTab("dashboard"))}
+              </div>
+            ))}
           </div>
         )}
       </main>
@@ -1776,4 +1565,3 @@ export default function App() {
     </div>
   );
 }
-

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Check, Copy, X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload, Send } from "lucide-react";
+import { ArrowLeft, Check, Circle, Copy, X, Plus, Trash2, ExternalLink, Lock, FileText, Download, Upload, Send } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api, type FreightBooking, type FreightBookingPatch, type FreightFile, type FreightFileKind, type FreightInvoiceLine,
@@ -35,6 +35,7 @@ import { CarrierFactsList, CarrierFillButton, CarrierHost, CarrierPicker, useCar
 import { RateCard } from "./LogisticsRates";
 import { PaidButtons, PaidSummary, usePaidControls, type PayTarget } from "./LogisticsPayCarriers";
 import { LoadTracker } from "./LoadTracker";
+import { Tabs } from "./ui";
 import NumberInput from "./NumberInput";
 import { toast } from "./Toast";
 
@@ -120,14 +121,15 @@ export function FileDrop({ onFiles, busy, hint, prompt = "a BOL, rate confirmati
       onDragOver={(e) => { e.preventDefault(); setOver(true); }}
       onDragLeave={() => setOver(false)}
       onDrop={(e) => { e.preventDefault(); setOver(false); const l = keepSmall(Array.from(e.dataTransfer.files)); if (l.length) onFiles(l); }}
-      className={`rounded-xl border border-dashed px-4 py-4 text-center transition-colors ${over ? "border-accent bg-accent/10" : "border-line bg-surface-2/50"}`}
+      style={{ boxShadow: `inset 0 0 0 1px rgb(var(${over ? "--c-ink" : "--c-line-3"}))` }}
+      className={`rounded-xl px-4 py-4 text-center transition-[background-color,box-shadow] duration-[130ms] ${over ? "bg-surface-3" : "hover:bg-surface-2"}`}
     >
       <Upload size={16} className="mx-auto text-muted mb-1" />
-      <div className="text-[12.5px] text-ink-2">
+      <div className="text-[14px] font-medium text-ink">
         {busy ? "Adding..." : <>Drop {prompt} here, or{" "}
-          <button type="button" onClick={() => input.current?.click()} className="text-accent font-medium hover:underline">choose files</button></>}
+          <button type="button" onClick={() => input.current?.click()} className="ui-link">choose files</button></>}
       </div>
-      {hint && <div className="text-[11px] text-muted mt-0.5">{hint}</div>}
+      {hint && <div className="text-[12px] text-muted mt-0.5">{hint}</div>}
       <input ref={input} type="file" multiple className="hidden"
         onChange={(e) => { const l = keepSmall(Array.from(e.target.files ?? [])); e.target.value = ""; if (l.length) onFiles(l); }} />
     </div>
@@ -194,32 +196,32 @@ export function PaperworkZones({ booking, kinds, onBooking }: { booking: Freight
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       {kinds.map((kind) => {
         const mine = files.filter((f) => fileKind(f) === kind);
         return (
           <section key={kind} className="space-y-2" aria-label={fileKindLabel(kind)}>
             <div className="flex items-center gap-2">
-              <h5 className="text-[12.5px] font-semibold text-ink">{fileKindLabel(kind)}</h5>
+              <h5 className="m-0 text-[14px] font-medium text-ink">{fileKindLabel(kind)}</h5>
               {kind !== "other" && <StatusPill tone={mine.length ? "success" : "neutral"}>{mine.length ? "On file" : "Missing"}</StatusPill>}
             </div>
             {mine.length > 0 && (
-              <div className="rounded-lg border border-line divide-y divide-line">
+              <div>
                 {mine.map((f) => (
-                  <div key={f.id} className="flex items-center gap-2 px-3 py-2 min-w-0">
-                    <FileText size={14} className="text-muted flex-shrink-0" />
+                  <div key={f.id} className="flex items-center gap-3 px-2 py-2.5 min-w-0 rounded-lg transition-colors duration-[130ms] hover:bg-surface-2" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
+                    <FileText size={16} className="text-muted flex-shrink-0" />
                     <button type="button" onClick={() => open(f)} className="min-w-0 flex-1 text-left">
-                      <div className="text-[13px] text-ink truncate hover:underline">{f.name}</div>
-                      <div className="text-[11px] text-muted truncate">{[fileSize(f.size), f.by, fmtDay(f.at)].filter(Boolean).join(", ")}</div>
+                      <div className="text-[14px] text-ink truncate">{f.name}</div>
+                      <div className="text-[12px] text-muted truncate mt-0.5">{[fileSize(f.size), f.by, fmtDay(f.at)].filter(Boolean).join(", ")}</div>
                     </button>
                     <select aria-label={`What ${f.name} is`} value={fileKind(f)} onChange={(e) => setKind(f, e.target.value as FreightFileKind)}
-                      className="h-8 rounded-lg border border-line bg-surface text-[12px] text-ink-2 px-1.5 flex-shrink-0 max-w-[132px]">
+                      className="h-[30px] rounded-lg border border-line-3 bg-transparent text-[13px] text-ink px-1.5 flex-shrink-0 w-[140px]">
                       {FILE_KINDS.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
                     </select>
-                    <button type="button" onClick={() => save(f)} title="Save a copy"
-                      className="p-1.5 rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><Download size={14} /></button>
-                    <button type="button" onClick={() => remove(f)} title="Remove"
-                      className="p-1.5 rounded-lg text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors flex-shrink-0"><Trash2 size={14} /></button>
+                    <button type="button" onClick={() => save(f)} title="Save a copy" aria-label={`Save a copy of ${f.name}`}
+                      className="ui-ib flex-shrink-0"><Download size={16} /></button>
+                    <button type="button" onClick={() => remove(f)} title="Remove" aria-label={`Remove ${f.name}`}
+                      className="ui-ib flex-shrink-0"><Trash2 size={16} /></button>
                   </div>
                 ))}
               </div>
@@ -231,7 +233,7 @@ export function PaperworkZones({ booking, kinds, onBooking }: { booking: Freight
         );
       })}
       {preview && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-6" onClick={() => setPreview(null)}>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-6 animate-fade-in" onClick={() => setPreview(null)}>
           {preview.mime === "application/pdf"
             ? <iframe src={preview.url} title={preview.name} className="w-full max-w-[900px] h-full rounded-lg bg-surface" />
             : <img src={preview.url} alt={preview.name} className="max-w-full max-h-full rounded-lg shadow-xl" />}
@@ -311,11 +313,11 @@ export { useNetsyncApplied };
 // ─── the form ─────────────────────────────────────────────────────────────
 
 export const inp =
-  "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted " +
-  "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors disabled:opacity-60";
+  "border border-line-3 px-3 h-9 rounded-lg text-[14px] w-full bg-transparent text-ink placeholder-faint " +
+  "focus:outline-none focus:border-ink transition-colors disabled:opacity-60";
 export const area =
-  "border border-line px-3 py-2 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted resize-y min-h-[64px] " +
-  "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  "border border-line-3 px-3 py-2  rounded-lg text-[14px] w-full bg-transparent text-ink placeholder-faint resize-y min-h-[64px] " +
+  "focus:outline-none focus:border-ink transition-colors";
 
 // R-522: the service choices. A load saved with an older one keeps it and still shows it (the select adds it back).
 const SERVICES = ["", "LTL", "FTL", "Partial", "Expedite"];
@@ -343,7 +345,7 @@ function TimeBox({ value, initial, onValue, onBad, className }: {
       <input className={`${className}${bad ? " border-danger-ink" : ""}`} type="text" inputMode="numeric" placeholder="1430" value={text}
         onChange={(e) => { const t = e.target.value; setText(t); const v = milTime(t); setBad(v === null); onBad(v === null ? t : null); if (v !== null && v !== value) onValue(v); }}
         onBlur={() => { const v = milTime(text); if (v) setText(timeWord(v)); }} />
-      {bad && <span className="block text-[11.5px] text-danger-ink mt-1">Type the time as 1430 or 2:30 pm.</span>}
+      {bad && <span className="block text-[12px] text-danger-ink mt-1">Type the time as 1430 or 2:30 pm.</span>}
     </>
   );
 }
@@ -386,14 +388,14 @@ export function AccessorialsField({ value, onChange }: { value: string; onChange
     emit(known.includes(a) ? known.filter((x) => x !== a) : ACCESSORIALS.filter((x) => known.includes(x) || x === a), text);
   return (
     <div>
-      <div className="text-[12px] font-medium text-muted mb-1.5">Accessorials</div>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="ui-label mb-2">Accessorials</div>
+      <div className="flex flex-wrap gap-2">
         {ACCESSORIALS.map((a) => {
           const on = chosen.includes(a);
           return (
             <button key={a} type="button" aria-pressed={on} onClick={() => toggle(a)}
-              className={`h-8 px-2.5 rounded-lg border text-[12px] whitespace-nowrap transition-colors ${
-                on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-muted hover:text-ink-2 hover:bg-surface-2"}`}>
+              className={`h-8 px-3 rounded-lg text-[13px] font-medium whitespace-nowrap transition-colors duration-[130ms] ${
+                on ? "bg-ink text-surface" : "border border-line-3 text-muted hover:text-ink hover:bg-surface-2"}`}>
               {a}
             </button>
           );
@@ -470,29 +472,45 @@ const moneyValue = (raw: string): number | null => {
 export function Field({ label, hint, children, wide }: { label: string; hint?: string; children: ReactNode; wide?: boolean }) {
   return (
     <div className={`min-w-0 ${wide ? "col-span-full" : ""}`}>
-      <label className="block text-[13px] font-medium text-muted mb-1">{label}</label>
+      <label className="block ui-label mb-1.5">{label}</label>
       {children}
-      {hint && <div className="text-[12px] text-muted mt-1">{hint}</div>}
+      {hint && <div className="text-[12px] text-faint mt-1.5 leading-[1.4]">{hint}</div>}
     </div>
   );
 }
 
 export function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="space-y-3">
-      <h4 className="text-[14px] font-semibold text-ink">{title}</h4>
+    <section className="space-y-3.5">
+      <h4 className="m-0 text-[16px] font-medium text-ink">{title}</h4>
       {children}
     </section>
   );
 }
 
+/** R-583: a block of the load page: the fading hairline, then a 16px heading and what belongs to it. */
+function Block({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+  return (
+    <div>
+      <div className="hsep" />
+      <section className="pt-5 space-y-3.5">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <h3 className="m-0 text-[16px] font-medium text-ink">{title}</h3>
+          {actions}
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+
 /** A place that is read-only here: what the viewer may see of it, and why the rest is missing. */
 function Place({ name, address, canNames, canAddr }: { name: string; address: string; canNames: boolean; canAddr: boolean }) {
-  const hidden = <span className="inline-flex items-center gap-1 text-muted"><Lock size={11} />Hidden by your permissions</span>;
+  const hidden = <span className="inline-flex items-center gap-1.5 text-muted"><Lock size={14} />Hidden by your permissions</span>;
   return (
-    <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[13px] space-y-0.5">
+    <div className="text-[14px] leading-5 min-w-0">
       <div className="text-ink font-medium break-words">{canNames ? (name || "-") : hidden}</div>
-      <div className="text-ink-2 break-words">{canAddr ? (address || "-") : hidden}</div>
+      <div className="text-muted break-words">{canAddr ? (address || "-") : hidden}</div>
     </div>
   );
 }
@@ -501,12 +519,12 @@ function Place({ name, address, canNames, canAddr }: { name: string; address: st
 function ConfirmCheck({ checked, onChange, hasNumber, stamp }: { checked: boolean; onChange: (v: boolean) => void; hasNumber: boolean; stamp: string }) {
   return (
     <div className="col-span-full min-w-0">
-      <label className={`flex items-start gap-2 text-[13px] ${hasNumber ? "text-ink cursor-pointer" : "text-muted"}`}>
-        <input type="checkbox" checked={checked} disabled={!hasNumber} onChange={(e) => onChange(e.target.checked)} className="w-4 h-4 mt-0.5 accent-accent" />
+      <label className={`flex items-start gap-2 text-[14px] ${hasNumber ? "text-ink cursor-pointer" : "text-muted"}`}>
+        <input type="checkbox" checked={checked} disabled={!hasNumber} onChange={(e) => onChange(e.target.checked)} className="w-4 h-4 mt-0.5 accent-ink" />
         <span>Driver has the pickup number, confirmed with the warehouse</span>
       </label>
-      {checked && stamp && <div className="text-[11px] text-muted mt-1 ml-6">{stamp}</div>}
-      {!hasNumber && <div className="text-[11px] text-muted mt-1 ml-6">Add the pickup number first.</div>}
+      {checked && stamp && <div className="text-[12px] text-muted mt-1 ml-6">{stamp}</div>}
+      {!hasNumber && <div className="text-[12px] text-muted mt-1 ml-6">Add the pickup number first.</div>}
     </div>
   );
 }
@@ -536,26 +554,26 @@ function InvoiceLineSheet({ booking, initial, onClose, onDone }: {
     catch (e) { setErr(String(e)); setBusy(false); }
   };
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4 animate-fade-in" onClick={onClose}>
       <div role="dialog" aria-modal="true" aria-label="Put on the invoice"
-        className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-start justify-between px-5 pt-5 pb-3 border-b border-line">
+        className="bg-surface ring-1 ring-line-3 rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-scale-in" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between px-5 pt-5 pb-3">
           <div className="min-w-0">
-            <h2 className="text-[15px] font-semibold text-ink">Put on the invoice</h2>
-            <p className="text-[12px] text-muted mt-0.5">{booking.deal?.invoice_number ? `${booking.deal.invoice_number}. ` : ""}It becomes the shipping line. You review and send the invoice yourself.</p>
+            <h2 className="m-0 text-[16px] font-medium text-ink">Put on the invoice</h2>
+            <p className="text-[13px] text-muted mt-0.5">{booking.deal?.invoice_number ? `${booking.deal.invoice_number}. ` : ""}It becomes the shipping line. You review and send the invoice yourself.</p>
           </div>
-          <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
+          <button onClick={onClose} title="Close" aria-label="Close" className="ui-ib flex-shrink-0"><X size={16} /></button>
         </div>
         <div className="px-5 py-4 space-y-3">
           <Field label="Shipping amount" hint={problem ?? (booking.quote_amount != null ? `Logistics quoted ${fmtAmount(booking.quote_amount)}. Change it if the invoice should say something else.` : undefined)}>
             <NumberInput className={inp} value={amount} placeholder="0.00" onValue={(_n, raw) => setAmount(raw)} />
           </Field>
-          {err && <div className="text-[12px] text-danger-ink" role="alert">{err}</div>}
+          {err && <div className="text-[13px] text-danger-ink" role="alert">{err}</div>}
         </div>
-        <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
-          <button onClick={onClose} className="px-4 h-9 rounded-lg text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
+        <div className="px-5 py-3.5 flex justify-end gap-2">
+          <button onClick={onClose} className="ui-btn border-transparent">Cancel</button>
           <button onClick={go} disabled={busy}
-            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">
+            className="ui-btn ui-btn-ink whitespace-nowrap">
             {busy ? "Putting it on..." : "Put on the invoice"}
           </button>
         </div>
@@ -581,8 +599,8 @@ const pastQuote = (status: string): boolean => statusRank(status) >= statusRank(
 
 /** Two columns from about 760 px of page (the sidebar is 216), one below. */
 const g2 = "grid grid-cols-1 min-[976px]:grid-cols-2 gap-3";
-const btnPrimary = "bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap";
-const btnGhost = "px-3 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-40 whitespace-nowrap";
+const btnPrimary = "ui-btn ui-btn-ink whitespace-nowrap";
+const btnGhost = "ui-btn whitespace-nowrap";
 
 /** R-558: the first thing on a load: everything a carrier needs, as one message, and Copy. Read from what is saved. */
 function BookingMessage({ booking }: { booking: FreightBooking }) {
@@ -590,18 +608,18 @@ function BookingMessage({ booking }: { booking: FreightBooking }) {
   if (!text) return null;
   const copy = async () => { if (await copyText(text)) toast("Copied"); else toast(COPY_FAILED, "error"); };
   return (
-    <div className="rounded-xl border border-line bg-surface-2 px-4 py-3.5">
-      <div className="flex items-start justify-between gap-3">
+    <section aria-label="Booking details">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <div className="text-[14px] font-semibold text-ink">Booking details</div>
-          <div className="text-[12px] text-muted mt-0.5">Copy it and send it out to get the truck booked.</div>
+          <h3 className="m-0 text-[16px] font-medium text-ink">Booking details</h3>
+          <div className="text-[13px] text-muted mt-0.5">Copy it and send it out to get the truck booked.</div>
         </div>
-        <button type="button" onClick={copy} className={`flex items-center gap-1.5 flex-shrink-0 ${btnPrimary}`}>
+        <button type="button" onClick={copy} className={`flex-shrink-0 ${btnPrimary}`}>
           <Copy size={14} /> Copy
         </button>
       </div>
-      <div className="mt-3 whitespace-pre-wrap break-words text-[14px] leading-[1.55] text-ink select-text">{text}</div>
-    </div>
+      <div className="mt-3.5 rounded-xl bg-surface-2 px-[18px] py-4 whitespace-pre-wrap break-words text-[14px] leading-[1.6] text-ink select-text">{text}</div>
+    </section>
   );
 }
 
@@ -627,19 +645,19 @@ function ActualDaysSheet({ to, askPickup, askDelivery, pickup0, delivery0, picke
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const day = "border border-line px-3 h-11 rounded-lg text-[15px] w-full bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  const day = "border border-line-3 px-3 h-11 rounded-lg text-[15px] w-full bg-transparent text-ink focus:outline-none focus:border-ink transition-colors";
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4 animate-fade-in" onClick={onClose}>
       <form role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => { e.preventDefault(); if (ready) onDone({ ...(askPickup && pickup ? { picked_up_at: pickup } : {}), ...(askDelivery && delivery ? { delivered_at: delivery } : {}) }); }}
-        className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
-        <div className="flex items-start justify-between px-5 pt-5 pb-3 border-b border-line">
+        className="bg-surface ring-1 ring-line-3 rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-scale-in">
+        <div className="flex items-start justify-between px-5 pt-5 pb-3">
           <div className="min-w-0">
-            <h2 className="text-[17px] font-semibold text-ink">{title}</h2>
+            <h2 className="m-0 text-[17px] font-medium text-ink">{title}</h2>
             <p className="text-[14px] text-muted mt-0.5">Pick the real day, even if it was a while ago.</p>
             <p className="text-[14px] text-muted mt-0.5">Leave a day empty if you do not know it.</p>
           </div>
-          <button type="button" onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
+          <button type="button" onClick={onClose} title="Close" aria-label="Close" className="ui-ib flex-shrink-0"><X size={16} /></button>
         </div>
         <div className="px-5 py-4 space-y-4">
           {askPickup && (
@@ -656,26 +674,26 @@ function ActualDaysSheet({ to, askPickup, askDelivery, pickup0, delivery0, picke
           )}
           {problem && <div className="text-[14px] text-danger-ink" role="alert">{problem}</div>}
         </div>
-        <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
-          <button type="button" onClick={onClose} className="px-4 h-10 rounded-lg text-[14px] text-ink-2 hover:bg-surface-2">Cancel</button>
+        <div className="px-5 py-3.5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="ui-btn border-transparent">Cancel</button>
           <button type="submit" disabled={!ready}
-            className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-10 rounded-lg text-[14px] font-medium disabled:opacity-40 whitespace-nowrap">OK</button>
+            className="ui-btn ui-btn-ink whitespace-nowrap">OK</button>
         </div>
       </form>
     </div>
   );
 }
 
-/** One fact of the flow on the Invoice section: a tick or an empty ring, the fact in words, and what can be done about it. */
+/** One fact of the flow on the Invoice section: a check or an open circle, the fact in words, and what can be done about it. */
 function FlowRow({ done, title, children, actions }: { done: boolean; title: string; children: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-line bg-surface px-4 py-3 min-w-0">
-      <span className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${done ? "bg-success text-surface" : "border border-line-3 text-faint"}`} aria-hidden>
-        {done && <Check size={12} strokeWidth={3} />}
+    <div className="flex items-start gap-3.5 py-3.5 min-w-0" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
+      <span className={`flex pt-0.5 flex-shrink-0 ${done ? "text-success-ink" : "text-faint"}`} aria-hidden>
+        {done ? <Check size={18} /> : <Circle size={18} />}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium text-ink">{title}</div>
-        <div className="text-[12.5px] text-ink-2 mt-0.5 break-words">{children}</div>
+        <div className="text-[14px] font-medium text-ink">{title}</div>
+        <div className="text-[13px] text-muted mt-0.5 break-words leading-[1.4]">{children}</div>
         {actions && <div className="flex items-center gap-2 flex-wrap mt-2.5">{actions}</div>}
       </div>
     </div>
@@ -686,9 +704,9 @@ function FlowRow({ done, title, children, actions }: { done: boolean; title: str
 function Figure({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="min-w-0">
-      <dt className="text-[11.5px] text-muted">{label}</dt>
-      <dd className="text-[14px] font-semibold text-ink tabular-nums break-words">{value}</dd>
-      {sub && <dd className="text-[11px] text-muted">{sub}</dd>}
+      <dt className="ui-label">{label}</dt>
+      <dd className="m-0 mt-0.5 text-[16px] font-medium text-ink tabular-nums break-words">{value}</dd>
+      {sub && <dd className="m-0 text-[12px] text-muted">{sub}</dd>}
     </div>
   );
 }
@@ -949,7 +967,7 @@ export default function LogisticsBookingForm({
   const reloadLoad = async () => {
     try { takeServerCopy(await api.logistics.get(booking.id)); } catch (e) { toast(String(e), "error"); }
   };
-  const payFor: PayTarget = { bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost, linked: paidStateOf(booking) === "part" ? booking.paid_amount : null, buy: !!booking.buy };
+  const payFor: PayTarget = { standalone: !!booking.standalone, bookingId: booking.id, label: `${booking.carrier || "Carrier"}, ${loadNumber(booking)}`, rate: booking.quoted_cost, linked: paidStateOf(booking) === "part" ? booking.paid_amount : null, buy: !!booking.buy };
 
   // ── the gate (R-464) ────────────────────────────────────────────────────
   const gate = bookGate(factsOf(booking, {}, known));
@@ -1051,7 +1069,7 @@ export default function LogisticsBookingForm({
   const placeBlock = (p: "pickup" | "delivery") => {
     const names = booking.can_see_names, addrs = booking.can_see_addresses;
     if (!names && !addrs) return <Place name="" address="" canNames={false} canAddr={false} />;
-    const hidden = <p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={11} />Hidden by your permissions</p>;
+    const hidden = <p className="text-[13px] text-muted inline-flex items-center gap-1.5 h-9 m-0"><Lock size={14} />Hidden by your permissions</p>;
     return (
       <div className={g2}>
         {names ? t(`${p}_name`, "Name") : <Field label="Name">{hidden}</Field>}
@@ -1091,20 +1109,20 @@ export default function LogisticsBookingForm({
 
   const freightFields = freightLocked ? (
     <>
-      <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Filled in by your team</p>
-      <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px]">
+      <p className="text-[12px] text-muted inline-flex items-center gap-1.5"><Lock size={14} />Filled in by your team</p>
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-xl bg-surface-2 px-4 py-3 text-[14px]">
         {([
           ["Pallets", draft.pallets], ["Pieces", draft.pieces], ["Pallet dimensions (L x W x H in)", draft.dimensions], ["Weight (lbs)", draft.weight_lbs],
           ["Freight class", draft.freight_class], ["Description of goods", draft.commodity],
         ] as const).map(([label, v]) => (
           <div key={label} className="min-w-0">
-            <dt className="text-[11.5px] text-muted">{label}</dt>
-            <dd className="text-ink break-words">{v.trim() || "-"}</dd>
+            <dt className="ui-label">{label}</dt>
+            <dd className="m-0 text-ink break-words">{v.trim() || "-"}</dd>
           </div>
         ))}
         <div className="col-span-2 min-w-0">
-          <dt className="text-[11.5px] text-muted">Accessorials</dt>
-          <dd className="text-ink break-words">{draft.accessorials.trim() || "-"}</dd>
+          <dt className="ui-label">Accessorials</dt>
+          <dd className="m-0 text-ink break-words">{draft.accessorials.trim() || "-"}</dd>
         </div>
       </dl>
     </>
@@ -1134,8 +1152,8 @@ export default function LogisticsBookingForm({
   const nameRead = (name: string) => (
     <Field label="Name">
       {booking.can_see_names
-        ? <p className="py-2 text-[13px] text-ink break-words">{name || "-"}</p>
-        : <p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={11} />Hidden by your permissions</p>}
+        ? <p className="py-2 m-0 text-[14px] text-ink break-words">{name || "-"}</p>
+        : <p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={14} />Hidden by your permissions</p>}
     </Field>
   );
   const routePlace = (p: "pickup" | "delivery") => {
@@ -1150,13 +1168,13 @@ export default function LogisticsBookingForm({
   };
   const contactLine = (contact: string, phone: string) => {
     const c = [contact.trim(), phone.trim()].filter(Boolean).join(", ");
-    return c ? <p className="text-[12px] text-muted break-words">{c}</p> : null;
+    return c ? <p className="text-[14px] text-muted break-words m-0 mt-1">{c}</p> : null;
   };
   const placeRead = (name: string, address: string) =>
     <Place name={name} address={address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />;
-  const routeLabelText = (text: string) => <div className="text-[12px] font-medium text-ink-2 mb-1.5">{text}</div>;
+  const routeLabelText = (text: string) => <div className="ui-label mb-1">{text}</div>;
   const routeSection = (
-    <Section title="Pickup and delivery">
+    <Block title="Pickup and delivery">
       <div className="space-y-4">
         <div className="min-w-0">
           {routeLabelText(draft.stops.length ? "Pickup 1" : "Pickup")}
@@ -1174,16 +1192,16 @@ export default function LogisticsBookingForm({
             {contactLine(x.contact, x.phone)}
             {routeStopEdit && (
               <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: d.stops.filter((_, j) => j !== i) }))}
-                className="mt-1 flex items-center gap-1 text-[12px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 h-8 rounded-lg transition-colors">
-                <Trash2 size={12} /> Remove pickup {i + 2}
+                className="ui-btn ui-btn-sm mt-2">
+                <Trash2 size={14} /> Remove pickup {i + 2}
               </button>
             )}
           </div>
         ))}
         {routeStopEdit && draft.stops.length < 9 && (
           <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: [...d.stops, blankStop()] }))}
-            className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors">
-            <Plus size={13} /> Add a pickup
+            className="ui-btn ui-btn-sm">
+            <Plus size={14} /> Add a pickup
           </button>
         )}
         <div className="min-w-0">
@@ -1192,7 +1210,7 @@ export default function LogisticsBookingForm({
           {contactLine(draft.delivery_contact, draft.delivery_phone)}
         </div>
       </div>
-    </Section>
+    </Block>
   );
 
   /** R-521: the logistics person's way past a team that forgot to send a quoted load to book: Book anyway, while the owner
@@ -1203,9 +1221,9 @@ export default function LogisticsBookingForm({
     await save({ status: "requested", override: true });
   };
   const teamBar = canSkipTeam && (
-    <div className="rounded-xl border border-line bg-surface-2/50 px-4 py-3 space-y-2">
-      <div className="text-[13px] font-medium text-ink">With the team</div>
-      <p className="text-[12.5px] text-ink-2">Waiting on your team to send this load to book.</p>
+    <div className="rounded-xl bg-surface-2 px-4 py-3.5 space-y-2">
+      <div className="text-[14px] font-medium text-ink">With the team</div>
+      <p className="text-[13px] text-muted m-0">Waiting on your team to send this load to book.</p>
       <button type="button" onClick={teamSkip} disabled={saving} className={btnPrimary}>Book anyway</button>
     </div>
   );
@@ -1217,16 +1235,16 @@ export default function LogisticsBookingForm({
       {routeSection}
       <RateCard by={{ bookingId: booking.id }} onOpenCarrier={(id) => setCarrierHost({ id })} />
 
-      <Section title="Freight">
+      <Block title="Freight">
         {freightFields}
         <Field label="Equipment">
           <EquipmentSelect value={draft.equipment} onChange={(v) => set("equipment", v)} />
         </Field>
-      </Section>
+      </Block>
 
-      <Section title="Quote">
+      <Block title="Quote">
         {noMoney ? (
-          <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Quote amounts are hidden by your permissions.</p>
+          <p className="text-[12px] text-muted inline-flex items-center gap-1.5"><Lock size={14} />Quote amounts are hidden by your permissions.</p>
         ) : (
           <>
             <div className={g2}>
@@ -1242,31 +1260,31 @@ export default function LogisticsBookingForm({
               </Field>
             </div>
             {preview
-              ? <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[13px] text-ink tabular-nums" role="status">Markup {fmtAmount(preview.markup)}, quote {fmtAmount(preview.quote)}</div>
-              : <p className="text-[12px] text-muted">Add the carrier cost to see the quote.</p>}
+              ? <div className="rounded-xl bg-surface-2 px-4 py-2.5 text-[14px] text-ink tabular-nums" role="status">Markup {fmtAmount(preview.markup)}, quote {fmtAmount(preview.quote)}</div>
+              : <p className="text-[13px] text-muted m-0">Add the carrier cost to see the quote.</p>}
             <Field label="Quote note">
               <textarea className={area} value={draft.quote_note} onChange={(e) => set("quote_note", e.target.value)} placeholder="Anything the team should know about this quote" />
             </Field>
             {booking.quote_amount != null && booking.quote_cost == null && (
-              <p className="text-[12px] text-muted">
+              <p className="text-[13px] text-muted m-0">
                 Quoted at {fmtAmount(booking.quote_amount)}, from before the carrier cost and the markup were kept. Add the carrier cost to build it again.
               </p>
             )}
             {booking.quoted_at && (
-              <p className="text-[12px] text-muted">
+              <p className="text-[13px] text-muted m-0">
                 Quoted{booking.quoted_by_name ? ` by ${booking.quoted_by_name}` : ""} on {fmtDay(booking.quoted_at)}
                 {booking.quote_amount != null ? ` at ${fmtAmount(booking.quote_amount)}` : ""}.
                 {booking.markup_by_name && booking.markup_pct != null ? ` Markup of ${booking.markup_pct}% set by ${booking.markup_by_name}${booking.markup_at ? ` on ${fmtDay(booking.markup_at)}` : ""}.` : ""}
               </p>
             )}
             {booking.quote_invoiced_at && (
-              <p className="text-[12px] text-success-ink">
+              <p className="text-[13px] text-success-ink m-0">
                 On the invoice{booking.quote_invoiced_amount != null ? ` at ${fmtAmount(booking.quote_invoiced_amount)}` : ""} since {fmtDay(booking.quote_invoiced_at)}.
               </p>
             )}
             {/* R-465: the team always sees what the carrier cost, what was added, what the customer is quoted and what it really cost. */}
             {full && (
-              <dl className="grid grid-cols-2 min-[976px]:grid-cols-3 gap-x-4 gap-y-3 rounded-lg bg-surface-2 border border-line px-3 py-3" aria-label="Cost and markup">
+              <dl className="grid grid-cols-2 min-[976px]:grid-cols-3 gap-x-4 gap-y-3 rounded-xl bg-surface-2 px-4 py-3.5" aria-label="Cost and markup">
                 <Figure label="Carrier cost" value={booking.quote_cost != null ? fmtAmount(booking.quote_cost) : "-"} />
                 <Figure label="Markup" value={booking.markup_amount != null ? fmtAmount(booking.markup_amount) : "-"} sub={booking.markup_pct != null ? `${booking.markup_pct}%` : undefined} />
                 <Figure label="Quote" value={booking.quote_amount != null ? fmtAmount(booking.quote_amount) : "-"} />
@@ -1281,58 +1299,61 @@ export default function LogisticsBookingForm({
           <div className="flex items-center gap-2 flex-wrap">
             {!noMoney && <button type="button" onClick={() => save({ withQuote: true })} disabled={saving} className={btnPrimary}>Submit quote</button>}
             {full && !ownLoad && booking.quote_amount != null && (
-              <button type="button" onClick={() => setStep("invoice")} className="text-[12.5px] text-accent font-medium hover:underline whitespace-nowrap">Next: the invoice</button>
+              <button type="button" onClick={() => setStep("invoice")} className="ui-link whitespace-nowrap">Next: the invoice</button>
             )}
           </div>
         )}
         {atQuote && full && booking.status === "quote" && booking.quote_amount == null && (
-          <p className="text-[12px] text-muted">Waiting for logistics to quote it. You can fill in the booking details on the Book step meanwhile. They are stored here and not sent.</p>
+          <p className="text-[13px] text-muted m-0">Waiting for logistics to quote it. You can fill in the booking details on the Book step meanwhile. They are stored here and not sent.</p>
         )}
-      </Section>
+      </Block>
 
-      <Section title="Files">
+      <Block title="Files">
         <PaperworkZones booking={booking} kinds={["other"]} onBooking={takeServerCopy} />
-      </Section>
+      </Block>
     </div>
   );
 
   /** The four things before a load goes to book, and the button. Only the team sends a load to book, and only while it is a quote. */
   const sendBar = full && atQuote && (
-    <div className="rounded-xl border border-line bg-surface-2/50 px-4 py-3 space-y-3">
-      <div className="text-[13px] font-medium text-ink">Send to book</div>
-      <ul className="space-y-1.5 list-none m-0 p-0">
+    <div>
+      <div className="hsep" />
+      <section className="pt-5 space-y-3.5">
+      <h3 className="m-0 text-[16px] font-medium text-ink">Send to book</h3>
+      <ul className="space-y-1 list-none m-0 p-0">
         {GATE_ITEMS.filter((g) => !ownLoad || g.key === "quote").map((g) => {
           const ok = !gate.missing.includes(g.key);
           return (
-            <li key={g.key} className={`flex items-center gap-2 text-[12.5px] ${ok ? "text-ink-2" : "text-muted"}`}>
-              <span className={`w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 ${ok ? "bg-success text-surface" : "border border-line-3"}`} aria-hidden>
-                {ok && <Check size={10} strokeWidth={3} />}
+            <li key={g.key} className={`flex items-center gap-2.5 text-[14px] py-1 ${ok ? "text-ink" : "text-muted"}`}>
+              <span className={`flex flex-shrink-0 ${ok ? "text-success-ink" : "text-faint"}`} aria-hidden>
+                {ok ? <Check size={16} /> : <Circle size={16} />}
               </span>
               <span>{g.text}</span>
             </li>
           );
         })}
       </ul>
-      {!gate.ok && <p className="text-[12px] text-muted">{gate.reason}</p>}
-      <div className="flex items-center gap-2 flex-wrap">
+      {!gate.ok && <p className="text-[13px] text-muted m-0">{gate.reason}</p>}
+      <div className="flex items-center gap-2.5 flex-wrap pt-1">
         <button type="button" onClick={sendToBook} disabled={!gate.ok || saving}
-          className={`${btnPrimary} flex items-center gap-1.5`}>
-          <Send size={13} /> {gate.button}
+          className={btnPrimary}>
+          <Send size={14} /> {gate.button}
         </button>
         {gate.canOverride && (
           <button type="button" onClick={bookAnyway} disabled={saving} className={btnGhost}>{BOOK_ANYWAY}</button>
         )}
         {!gate.ok && (
-          <button type="button" onClick={reloadLoad} className="text-[12px] text-muted hover:text-ink-2 underline whitespace-nowrap">Check again</button>
+          <button type="button" onClick={reloadLoad} className="ui-link muted whitespace-nowrap">Check again</button>
         )}
       </div>
+      </section>
     </div>
   );
 
   const invoiceStep = (
     <div className="space-y-6">
-      <Section title="Shipping on the invoice">
-        <div className="space-y-2.5">
+      <Block title="Shipping on the invoice">
+        <div className="[&>*:first-child]:!shadow-none">
           <FlowRow done={booking.shipping_charge === "own" || booking.shipping_charge === "invoice" || !!(booking.quote_invoiced_at ?? "").trim()} title="Who pays for the shipping"
             actions={atQuote && !noMoney ? (
               <>
@@ -1356,7 +1377,7 @@ export default function LogisticsBookingForm({
           </FlowRow>
 
           {onInvoice && (
-            <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink" role="status">
+            <div className="rounded-xl bg-surface-2 px-4 py-3 text-[14px] text-ink animate-page-slide-in" role="status">
               On invoice {onInvoice.invoice_number}. Review and send it.
             </div>
           )}
@@ -1378,7 +1399,7 @@ export default function LogisticsBookingForm({
                 : "The customer has not paid yet."}
           </FlowRow>
         </div>
-      </Section>
+      </Block>
       {sendBar}
     </div>
   );
@@ -1387,11 +1408,11 @@ export default function LogisticsBookingForm({
     <div className="space-y-6">
       {teamBar}
       {atQuote && (
-        <p className="text-[12px] text-muted">
+        <p className="text-[13px] text-muted m-0">
           {full ? "Fill in the booking details any time. They are stored here and sent to logistics when you send the load to book." : "Your team sends the load to book. You can still fix an address or add details here."}
         </p>
       )}
-      <Section title={draft.stops.length ? "Pickup 1" : "Pickup"}>
+      <Block title={draft.stops.length ? "Pickup 1" : "Pickup"}>
         {placeBlock("pickup")}
         <div className={g2}>
           {t("pickup_contact", "Contact")}
@@ -1409,10 +1430,10 @@ export default function LogisticsBookingForm({
             <textarea className={area} value={draft.pickup_notes} onChange={(e) => set("pickup_notes", e.target.value)} />
           </Field>
         </div>
-      </Section>
+      </Block>
 
       {draft.stops.map((x, i) => (
-        <Section key={i} title={`Pickup ${i + 2}`}>
+        <Block key={i} title={`Pickup ${i + 2}`}>
           {stopEdit ? (
             <div className={g2}>
               {stopInput(i, "name", "Name")}
@@ -1438,20 +1459,20 @@ export default function LogisticsBookingForm({
           </div>
           {stopEdit && (
             <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: d.stops.filter((_, j) => j !== i) }))}
-              className="flex items-center gap-1 text-[12px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 h-8 rounded-lg transition-colors">
-              <Trash2 size={12} /> Remove pickup {i + 2}
+              className="ui-btn ui-btn-sm">
+              <Trash2 size={14} /> Remove pickup {i + 2}
             </button>
           )}
-        </Section>
+        </Block>
       ))}
       {stopEdit && draft.stops.length < 9 && (
         <button type="button" onClick={() => setDraft((d) => ({ ...d, stops: [...d.stops, blankStop()] }))}
-          className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors">
-          <Plus size={13} /> Add a pickup
+          className="ui-btn ui-btn-sm">
+          <Plus size={14} /> Add a pickup
         </button>
       )}
 
-      <Section title="Delivery">
+      <Block title="Delivery">
         {placeBlock("delivery")}
         <div className={g2}>
           {t("delivery_contact", "Contact")}
@@ -1464,9 +1485,9 @@ export default function LogisticsBookingForm({
             <textarea className={area} value={draft.delivery_notes} onChange={(e) => set("delivery_notes", e.target.value)} />
           </Field>
         </div>
-      </Section>
+      </Block>
 
-      <Section title="Carrier">
+      <Block title="Carrier">
         <RateCard by={{ bookingId: booking.id }} onOpenCarrier={(id) => setCarrierHost({ id })} />
         <div className={g2}>
           <Field label="Carrier">
@@ -1476,7 +1497,7 @@ export default function LogisticsBookingForm({
           </Field>
           {savedCarrier && <div className="col-span-full min-w-0"><CarrierFactsList carrier={savedCarrier} /></div>}
           {noMoney ? (
-            <Field label="Carrier rate"><p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={11} />Hidden by your permissions</p></Field>
+            <Field label="Carrier rate"><p className="text-[12px] text-muted inline-flex items-center gap-1 h-9"><Lock size={14} />Hidden by your permissions</p></Field>
           ) : (
             <Field label="Carrier rate" hint={rateErr ?? "What the carrier is expected to charge."}>
               <NumberInput className={inp} value={draft.rate} placeholder="0.00" onValue={(_n, raw) => set("rate", raw)} />
@@ -1501,11 +1522,11 @@ export default function LogisticsBookingForm({
           {t("truck_number", "Truck number")}
           {t("trailer_number", "Trailer number")}
         </div>
-      </Section>
+      </Block>
 
-      <Section title="Notes">
+      <Block title="Notes">
         <textarea className={area} value={draft.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Anything else worth writing down" />
-      </Section>
+      </Block>
 
       {sendBar}
     </div>
@@ -1513,16 +1534,16 @@ export default function LogisticsBookingForm({
 
   const pickupStep = (
     <div className="space-y-6">
-      <Section title="Pickup">
+      <Block title="Pickup">
         <Place name={draft.pickup_name} address={draft.pickup_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
         <div className="grid grid-cols-2 gap-x-3 gap-y-4">
           <div className="min-w-0 space-y-3">
-            <div className="text-[12px] font-medium text-ink-2">Appointment</div>
+            <div className="text-[13px] font-medium text-ink">Appointment</div>
             {t("pickup_date", "Date", { type: "date", hint: dateHint("pickup") })}
             {t("pickup_appt_time", "Time", { type: "time" })}
           </div>
           <div className="min-w-0 space-y-3">
-            <div className="text-[12px] font-medium text-ink-2">Actual</div>
+            <div className="text-[13px] font-medium text-ink">Actual</div>
             <Field label="Date" hint="Filling this in moves the load to On the way.">
               <input className={inp} type="date" value={draft.picked_up_at} max={localDay()} disabled={dayLocked} onChange={(e) => setActual("picked_up_at", e.target.value)} />
             </Field>
@@ -1530,25 +1551,25 @@ export default function LogisticsBookingForm({
           </div>
         </div>
         {draft.stops.length > 0 && (
-          <p className="text-[12px] text-muted">Pickup times for the other {draft.stops.length === 1 ? "stop" : "stops"} are on the Book step.</p>
+          <p className="text-[13px] text-muted m-0">Pickup times for the other {draft.stops.length === 1 ? "stop" : "stops"} are on the Book step.</p>
         )}
-      </Section>
+      </Block>
     </div>
   );
 
   const deliveryStep = (
     <div className="space-y-6">
-      <Section title="Delivery">
+      <Block title="Delivery">
         <Place name={draft.delivery_name} address={draft.delivery_address} canNames={booking.can_see_names} canAddr={booking.can_see_addresses} />
         <div className="grid grid-cols-2 gap-x-3 gap-y-4">
           <div className="min-w-0 space-y-3">
-            <div className="text-[12px] font-medium text-ink-2">ETA or appointment</div>
+            <div className="text-[13px] font-medium text-ink">ETA or appointment</div>
             {t("delivery_date", "Date", { type: "date", hint: dateHint("delivery") })}
             {t("delivery_appt_time", "Time", { type: "time" })}
             {t("delivery_window", "Window", { placeholder: "Around 2 pm" })}
           </div>
           <div className="min-w-0 space-y-3">
-            <div className="text-[12px] font-medium text-ink-2">Actual</div>
+            <div className="text-[13px] font-medium text-ink">Actual</div>
             <Field label="Date" hint="Filling this in moves the load to Delivered.">
               <input className={inp} type="date" value={draft.delivered_at} max={localDay()} disabled={dayLocked} onChange={(e) => setActual("delivered_at", e.target.value)} />
             </Field>
@@ -1558,17 +1579,17 @@ export default function LogisticsBookingForm({
         <Field label="Delivery notes">
           <textarea className={area} value={draft.delivery_notes} onChange={(e) => set("delivery_notes", e.target.value)} />
         </Field>
-      </Section>
-      <Section title="Paperwork">
+      </Block>
+      <Block title="Paperwork">
         <PaperworkZones booking={booking} kinds={["pod"]} onBooking={takeServerCopy} />
-      </Section>
+      </Block>
       {track && (
-        <Section title="Tracking">
-          <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[12.5px] text-ink-2">
+        <Block title="Tracking">
+          <div className="rounded-xl bg-surface-2 px-4 py-2.5 text-[14px] text-ink-2">
             {[track.carrier, track.status || track.stage, track.last_location].filter(Boolean).join(", ") || "Waiting for the carrier's first update"}
             {track.last_update_at ? <span className="text-muted">{" "}(updated {fmtDay(track.last_update_at)})</span> : null}
           </div>
-        </Section>
+        </Block>
       )}
     </div>
   );
@@ -1576,30 +1597,30 @@ export default function LogisticsBookingForm({
   /** R-470: the load's payment in words. Everyone who can open the load reads it; only the team gets the buttons. */
   const paymentRow = (
     <div className="min-w-0">
-      <dt className="text-[11.5px] text-muted">Payment</dt>
+      <dt className="ui-label">Payment</dt>
       <dd><PaidSummary b={{ ...booking, pay_due_date: draft.pay_due_date }} today={localDay()} /></dd>
     </div>
   );
 
   const payStep = (
     <div className="space-y-6">
-      <Section title="Paperwork">
+      <Block title="Paperwork">
         <PaperworkZones booking={booking} kinds={["bol", "pod", "carrier_invoice", "other"]} onBooking={takeServerCopy} />
-      </Section>
+      </Block>
 
-      <Section title="Carrier payment">
+      <Block title="Carrier payment">
         {booking.shipping_billed != null && (
-          <div className="rounded-lg bg-surface-2 border border-line px-3 py-2 text-[13px]">
+          <div className="rounded-xl bg-surface-2 px-4 py-2.5 text-[14px]">
             <span className="text-muted">Charged to the customer for shipping:</span>{" "}
-            <span className="font-semibold text-ink tabular-nums">{fmtAmount(booking.shipping_billed)}</span>
+            <span className="font-medium text-ink tabular-nums">{fmtAmount(booking.shipping_billed)}</span>
             {(booking.trucks_on_deal ?? 0) > 1 && (
-              <div className="text-[11.5px] text-muted mt-0.5">for the {booking.trucks_on_deal} trucks on this shipment</div>
+              <div className="text-[12px] text-muted mt-0.5">for the {booking.trucks_on_deal} trucks on this shipment</div>
             )}
           </div>
         )}
         {noMoney ? (
           <>
-            <p className="text-[12px] text-muted inline-flex items-center gap-1"><Lock size={11} />Shipping amounts are hidden by your permissions.</p>
+            <p className="text-[12px] text-muted inline-flex items-center gap-1.5"><Lock size={14} />Shipping amounts are hidden by your permissions.</p>
           </>
         ) : (
           <>
@@ -1611,14 +1632,14 @@ export default function LogisticsBookingForm({
                 ? t("pay_due_date", "Pay due date", { type: "date", hint: "When the carrier has to be paid." })
                 : <Field label="Pay due date" hint="It starts when the carrier invoice is attached."><div className="h-9 flex items-center text-[13px] text-muted">No due date yet</div></Field>}
             </div>
-            <dl className="rounded-lg bg-surface-2 border border-line px-3 py-2.5 text-[13px] space-y-2">
+            <dl className="rounded-xl bg-surface-2 px-4 py-3 text-[14px] space-y-2">
               <div className="min-w-0">
-                <dt className="text-[11.5px] text-muted">How the carrier gets paid</dt>
+                <dt className="ui-label">How the carrier gets paid</dt>
                 <dd className="text-ink break-words flex items-center gap-2 flex-wrap">
                   <span>{payMethodLabel(booking.carrier_pay_method) || booking.carrier_pay_method || "-"}</span>
                   {booking.carrier_id
-                    ? canEditCarrier && <button type="button" onClick={() => setCarrierHost({ id: booking.carrier_id, edit: true })} className="text-[12px] text-accent font-medium hover:underline">Edit carrier</button>
-                    : <span className="text-[12px] text-muted">Pick the carrier on the Book step.</span>}
+                    ? canEditCarrier && <button type="button" onClick={() => setCarrierHost({ id: booking.carrier_id, edit: true })} className="ui-link">Edit carrier</button>
+                    : <span className="text-[13px] text-muted">Pick the carrier on the Book step.</span>}
                 </dd>
               </div>
               {paymentRow}
@@ -1626,21 +1647,21 @@ export default function LogisticsBookingForm({
             <PaidButtons state={paidStateOf(booking)} bankLinked={booking.bank_linked} amount={booking.paid_amount} canLink={canLink} canChange={canChangePaid} target={payFor} controls={paidControls} />
           </>
         )}
-      </Section>
+      </Block>
 
       {((booking.bols?.length ?? 0) > 0 || canEditCarrier) && (
-        <Section title="BOLs for this load">
+        <Block title="BOLs for this load">
           <div className="flex items-center gap-1.5 flex-wrap">
             {(booking.bols ?? []).map((x) => (
               <button key={x.id} type="button" onClick={() => leaveFor(() => openLogisticsHit({ kind: "BOL", id: x.id }))} title="Open this BOL"
-                className="px-2.5 h-8 rounded-lg border border-line text-[12.5px] font-mono text-ink-2 hover:bg-surface-2 hover:text-ink transition-colors">{x.number}</button>
+                className="ui-btn ui-btn-sm tabular-nums">{x.number}</button>
             ))}
             {canEditCarrier && (
               <button type="button" onClick={() => leaveFor(() => startBolFromLoad(booking.id))}
-                className="px-3 h-8 rounded-lg border border-line text-[12.5px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Make a BOL from this load</button>
+                className="ui-btn ui-btn-sm whitespace-nowrap">Make a BOL from this load</button>
             )}
           </div>
-        </Section>
+        </Block>
       )}
     </div>
   );
@@ -1658,135 +1679,126 @@ export default function LogisticsBookingForm({
         role="dialog" aria-modal="true" aria-label={`Booking ${loadNumber(booking)}`}
         className={`${host ? "absolute" : "fixed"} inset-0 z-40 bg-surface flex flex-col animate-fade-in`}
       >
-        <div className="border-b border-line px-6 pt-3 pb-3 flex-shrink-0">
-          <div className="max-w-[1120px] mx-auto w-full space-y-2.5">
-            <button type="button" onClick={tryClose}
-              className="flex items-center gap-1.5 -ml-2 px-2 h-8 rounded-lg text-[12.5px] text-ink-2 hover:text-ink hover:bg-surface-2 transition-colors">
-              <ArrowLeft size={14} /> Back to loads
-            </button>
-            <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div ref={body} className="flex-1 min-h-0 overflow-y-auto">
+          <div className="max-w-[1120px] mx-auto w-full px-8 pt-8 pb-6">
+            <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 mb-[18px]">
+              <button type="button" onClick={tryClose} className="ui-btn">
+                <ArrowLeft size={14} /> Back to loads
+              </button>
+              <span className="text-[14px] text-muted">Logistics, Loads, {loadNumber(booking)}</span>
+            </div>
+            <header className="flex items-start justify-between gap-3.5 flex-wrap">
               <div className="min-w-0">
-                <h3 className="text-[22px] font-semibold text-ink font-mono tracking-tight">{loadNumber(booking)}</h3>
-                {route && <div className="text-[13px] text-ink-2 truncate mt-0.5">{route}</div>}
+                <h1 className="m-0 text-[20px] font-medium leading-7 text-ink tabular-nums">{loadNumber(booking)}</h1>
+                {route && <div className="text-[16px] text-ink mt-1">{route}</div>}
+                {full && booking.deal && (
+                  <div className="text-[14px] text-muted mt-1.5 min-w-0">
+                    {booking.deal.invoice_number || "Deal"}{booking.deal.client_name ? ` for ${booking.deal.client_name}` : ""}
+                    {!booking.standalone && !booking.buy && (
+                      <button type="button" onClick={openDeal} className="ui-link muted ml-2.5">Open the deal</button>
+                    )}
+                  </div>
+                )}
+                {booking.buy && (
+                  <div className="text-[14px] text-muted mt-1.5 min-w-0">
+                    {full
+                      ? <button type="button" onClick={openBuy} title="Open the buy in Deal Flow, Inventory"
+                          className="ui-link text-left">{buyLabelOf(booking)}</button>
+                      : <span className="text-ink">{buyLabelOf(booking)}</span>}
+                  </div>
+                )}
               </div>
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-3 flex-wrap">
                 <FreightStatusPill status={draft.status} logistics={lg} />
                 {isHot(booking) && <UrgentPill />}
                 {unconfirmed && <PickupNumberPill />}
-                <label className="flex items-center gap-1.5 text-[12.5px] text-ink cursor-pointer whitespace-nowrap ml-2">
-                  <input type="checkbox" checked={draft.urgent} onChange={(e) => set("urgent", e.target.checked)} className="w-4 h-4 accent-danger" />
+                <label className="flex items-center gap-2 text-[13px] text-ink cursor-pointer whitespace-nowrap">
+                  <input type="checkbox" checked={draft.urgent} onChange={(e) => set("urgent", e.target.checked)} className="w-4 h-4 accent-ink" />
                   Urgent
                 </label>
                 <select aria-label="Status" value={draft.status} onChange={(e) => pickStatus(e.target.value as FreightStatus)}
-                  className="h-8 rounded-lg border border-line bg-surface text-[12.5px] text-ink px-2 focus:outline-none focus:ring-2 focus:ring-accent/40">
+                  className="h-[34px] w-[150px] rounded-[10px] border border-line-3 bg-transparent text-[13px] text-ink px-2 focus:outline-none focus:border-ink">
                   {STATUS_ORDER.map((s) => <option key={s} value={s} disabled={s !== draft.status && !statusAllowed(s, booking.status, dealEdit, booking.logistics_may_book !== false)}>{statusWord(s, lg)}</option>)}
                 </select>
               </div>
-            </div>
-            {dayLocked && <p className="text-[13px] text-ink-2 text-right" role="status">{QUOTE_STAGE_DAYS}</p>}
-            {/* R-475: the rate confirmation, at the top in the colour of how complete it is (from what is saved: the PDF prints that). */}
-            <div role="status" className={`flex items-center gap-3 rounded-xl border px-3.5 py-2.5 ${rateConReady ? "bg-success-bg border-success/30" : "bg-warning-bg border-warning/30"}`}>
-              <FileText size={18} className={`flex-shrink-0 ${rateConReady ? "text-success-ink" : "text-warning-ink"}`} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">
+            </header>
+            {dayLocked && <p className="text-[13px] text-muted text-right mt-2 mb-0" role="status">{QUOTE_STAGE_DAYS}</p>}
+
+            {/* R-475: the rate confirmation, at the top; ready or not complete (from what is saved: the PDF prints that). */}
+            <div role="status" className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 rounded-xl bg-surface-2 px-4 py-3 mt-[18px]">
+              <FileText size={18} className="flex-shrink-0 text-muted" />
+              <div className="min-w-[240px] flex-1">
+                <div className="flex items-center gap-2 text-[14px] font-medium text-ink">
                   Rate confirmation <StatusPill tone={rateConReady ? "success" : "warning"}>{rateConReady ? "Ready" : "Not complete"}</StatusPill>
                 </div>
-                <div className={`text-[12px] mt-0.5 ${rateConReady ? "text-success-ink" : "text-warning-ink"}`}>{rateConLine(rateConGaps)}</div>
+                <div className="text-[13px] mt-0.5 text-muted">{rateConLine(rateConGaps)}</div>
               </div>
               <button type="button" onClick={exportRateCon} disabled={rateBusy} title="A PDF for the carrier: this load, the rate and where to send freight bills"
-                className={`flex items-center gap-1.5 flex-shrink-0 ${btnPrimary}`}>
+                className={`flex-shrink-0 ${btnPrimary}`}>
                 <FileText size={14} /> {rateBusy ? "Making the PDF..." : "Export PDF"}
               </button>
             </div>
-          </div>
-        </div>
 
-        <div className="border-b border-line flex-shrink-0 px-4">
-          <div className="max-w-[1120px] mx-auto w-full">
-            <LoadTracker stages={stages} onGo={goStage} />
-          </div>
-        </div>
+            <div className="mt-3.5">
+              <LoadTracker stages={stages} onGo={goStage} />
+            </div>
 
-        <div className="border-b border-line flex-shrink-0 px-6">
-          <div role="tablist" aria-label="Sections" className="max-w-[1120px] mx-auto w-full flex items-center gap-1 overflow-x-auto">
-            {sections.map((s) => (
-              <button key={s.key} type="button" role="tab" aria-selected={here === s.key} onClick={() => setStep(s.key)}
-                className={`h-10 px-3.5 text-[13px] whitespace-nowrap border-b-2 -mb-px transition-colors ${
-                  here === s.key ? "border-accent text-ink font-medium" : "border-transparent text-muted hover:text-ink-2"}`}>
-                {s.label}
-              </button>
-            ))}
-          </div>
-        </div>
+            <div className="mt-4">
+              <Tabs label="Sections" value={here} onChange={(k) => setStep(k as LoadSection)} tabs={sections.map((s) => ({ id: s.key, label: s.label }))} />
+            </div>
 
-        <div ref={body} className="flex-1 min-h-0 overflow-y-auto">
-          <div className="max-w-[1120px] mx-auto w-full px-6 py-5 space-y-6">
-            <BookingMessage booking={booking} />
-            {full && atQuote && paid && !ownLoad && (
-              <div className="rounded-xl bg-success-bg border border-success/30 px-4 py-3 text-[13px] text-success-ink" role="status">{PAID_BANNER}</div>
-            )}
+            <div className="max-w-[1000px] pt-[22px] pb-6 space-y-6">
+              <BookingMessage booking={booking} />
+              {full && atQuote && paid && !ownLoad && (
+                <div className="text-[14px] text-success-ink" role="status">{PAID_BANNER}</div>
+              )}
 
-            {full && booking.deal && (
-              <div className="text-[12.5px] text-ink-2 min-w-0">
-                <span className="font-medium text-ink">{booking.deal.invoice_number || "Deal"}</span>
-                {booking.deal.client_name ? <span className="text-muted">{" "}for {booking.deal.client_name}</span> : null}
-              </div>
-            )}
-            {booking.buy && (
-              <div className="text-[12.5px] text-ink-2 min-w-0">
-                {full
-                  ? <button type="button" onClick={openBuy} title="Open the buy in Deal Flow, Inventory"
-                      className="font-medium text-ink hover:text-accent-hover hover:underline text-left">{buyLabelOf(booking)}</button>
-                  : <span className="font-medium text-ink">{buyLabelOf(booking)}</span>}
-              </div>
-            )}
-
-            {isHot(booking) && (
-              <div className="rounded-xl bg-danger-bg border border-danger/30 px-4 py-3 text-[13px] text-danger-ink" role="status">
-                <span className="font-semibold">Urgent.</span> {booking.status === "quote" ? "Quote this one first." : "Book this truck first."}
-                {booking.pickup_date && <> Pickup {booking.pickup_date === localDay() ? "today" : fmtDay(booking.pickup_date)}{booking.pickup_window ? `, ${booking.pickup_window}` : ""}.</>}
-              </div>
-            )}
-
-            {booking.request_note.trim() && (
-              <div className="rounded-xl bg-accent/10 border border-accent/25 px-4 py-3">
-                <div className="text-[12px] font-medium text-accent-hover mb-1">
-                  Note{booking.created_by_name ? ` from ${booking.created_by_name}` : " with the request"}
+              {isHot(booking) && (
+                <div className="rounded-xl bg-surface-2 px-4 py-3 text-[14px] text-ink" role="status">
+                  <span className="font-medium text-danger-ink">Urgent.</span> {booking.status === "quote" ? "Quote this one first." : "Book this truck first."}
+                  {booking.pickup_date && <> Pickup {booking.pickup_date === localDay() ? "today" : fmtDay(booking.pickup_date)}{booking.pickup_window ? `, ${booking.pickup_window}` : ""}.</>}
                 </div>
-                <div className="text-[13px] text-ink whitespace-pre-wrap break-words">{booking.request_note}</div>
+              )}
+
+              {booking.request_note.trim() && (
+                <div className="rounded-xl px-4 py-3.5" style={{ boxShadow: "inset 3px 0 0 rgb(var(--c-line-3)), 0 0 0 1px rgb(var(--c-line))" }}>
+                  <div className="ui-label mb-1">
+                    Note{booking.created_by_name ? ` from ${booking.created_by_name}` : " with the request"}
+                  </div>
+                  <div className="text-[14px] leading-[1.5] text-ink whitespace-pre-wrap break-words">{booking.request_note}</div>
+                </div>
+              )}
+
+              <div key={here} className="animate-page-slide-in">{stepBody[here]}</div>
+
+              <div className="text-[12px] text-muted">
+                {booking.updated_by_name ? `Last changed by ${booking.updated_by_name}` : booking.created_by_name ? `Sent by ${booking.created_by_name}` : ""}
+                {booking.updated_at ? ` ${fmtDay(booking.updated_at)}` : ""}
               </div>
-            )}
-
-            {stepBody[here]}
-
-            <div className="text-[11.5px] text-muted">
-              {booking.updated_by_name ? `Last changed by ${booking.updated_by_name}` : booking.created_by_name ? `Sent by ${booking.created_by_name}` : ""}
-              {booking.updated_at ? ` ${fmtDay(booking.updated_at)}` : ""}
             </div>
           </div>
         </div>
 
         {/* Pinned: save never scrolls away. */}
-        <div className="border-t border-line bg-surface px-6 py-3 flex-shrink-0">
+        <div className="bg-surface px-8 py-3.5 flex-shrink-0" style={{ boxShadow: "inset 0 1px 0 rgb(var(--c-line))" }}>
           <div className="max-w-[1120px] mx-auto w-full space-y-2">
-            {error && <div className="text-[12px] text-danger-ink" role="alert">{error}</div>}
+            {error && <div className="text-[13px] text-danger-ink" role="alert">{error}</div>}
             <div className="flex items-center gap-2 flex-wrap">
               {/* While the team fills the freight in, the team adds the trucks (the logistics person could not fill a new one). */}
               {!freightLocked && (dealEdit || !isQuoteStage(booking.status)) && (
-              <button type="button" onClick={addTruck}
-                className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors">
-                <Plus size={13} /> Add another truck
+              <button type="button" onClick={addTruck} className="ui-btn ui-btn-sm border-transparent text-muted">
+                <Plus size={14} /> Add another truck
               </button>
               )}
               {full && (
                 <>
                   {!booking.standalone && <button type="button" onClick={buying ? openBuy : openDeal}
-                    className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2 h-8 rounded-lg hover:bg-surface-2 transition-colors">
-                    <ExternalLink size={12} /> {buying ? "Open the buy" : "Open the deal"}
+                    className="ui-btn ui-btn-sm border-transparent text-muted">
+                    <ExternalLink size={14} /> {buying ? "Open the buy" : "Open the deal"}
                   </button>}
                   <button type="button" onClick={remove}
-                    className="flex items-center gap-1 text-[12px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 h-8 rounded-lg transition-colors">
-                    <Trash2 size={12} /> Remove booking
+                    className="ui-btn ui-btn-sm border-transparent text-muted hover:!text-danger-ink">
+                    <Trash2 size={14} /> Remove booking
                   </button>
                 </>
               )}

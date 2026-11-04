@@ -110,7 +110,7 @@ export default function AccountantChanges() {
                   <button
                     onClick={markSeen}
                     disabled={marking}
-                    className="text-[12px] font-medium text-accent hover:text-accent-hover disabled:opacity-50 transition-colors duration-[130ms] whitespace-nowrap"
+                    className="text-[12px] font-medium text-ink hover:opacity-70 disabled:opacity-50 transition-colors duration-[130ms] whitespace-nowrap"
                   >
                     Mark all as seen
                   </button>
@@ -132,7 +132,7 @@ export default function AccountantChanges() {
                   return (
                     <div
                       key={c.id}
-                      className={`rounded-lg border border-line px-3 py-2.5 min-w-0 ${unseen ? "bg-accent/5" : ""}`}
+                      className={`rounded-lg border border-line px-3 py-2.5 min-w-0 ${unseen ? "bg-transparent" : ""}`}
                     >
                       <div className="flex items-center justify-between gap-2 min-w-0">
                         <span className={`text-[12.5px] truncate ${unseen ? "font-semibold text-ink" : "text-ink-2"}`}>

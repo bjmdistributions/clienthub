@@ -24,7 +24,8 @@ import BillDetail from "./bills/BillDetail";
 import BillForm from "./bills/BillForm";
 import SpendingMode from "./bills/SpendingMode";
 import TrueProfitMode from "./bills/TrueProfitMode";
-import { Seg, btn, pri } from "./bills/ui";
+import { Seg, btn } from "./bills/ui";
+import { Button, PageActions } from "./ui";
 
 type Mode = "bills" | "spending" | "profit";
 
@@ -148,18 +149,15 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
 
   return (
     <div className="min-w-0">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-        <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Bills</h2>
-          <p className="text-[12px] text-muted mt-0.5">{SUB[mode]}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <Seg value={mode} onChange={setPick} options={hideProfit ? MODES.filter((m) => m.value !== "profit") : MODES} />
-          <button onClick={load} className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-[13px] text-ink-2 border border-line hover:bg-surface-2 transition-colors duration-[130ms]">
-            <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
-          </button>
-          {admin && mode === "bills" && <button onClick={() => setForm({})} className={pri}><Plus size={14} /> Add a bill</button>}
-        </div>
+      {/* R-583: the shell draws the title and the section tabs; the buttons go in its slot. */}
+      <PageActions>
+        <Button onClick={load} icon={<RefreshCw size={14} className={loading ? "animate-spin" : ""} />}>Refresh</Button>
+        {admin && mode === "bills" && <Button variant="ink" onClick={() => setForm({})} icon={<Plus size={14} />}>Add a bill</Button>}
+      </PageActions>
+
+      <div className="mb-4">
+        <Seg value={mode} onChange={setPick} options={hideProfit ? MODES.filter((m) => m.value !== "profit") : MODES} />
+        <p className="text-[13px] text-muted mt-3">{SUB[mode]}</p>
       </div>
 
       {/* R-459: the carriers the team owes, above the recurring bills. Nothing shows when no one is owed. */}
@@ -167,9 +165,9 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
       {mode === "bills" && <CarriersToPaySection canPay={canPay} data={carriers.data} />}
 
       {mode !== "bills" && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-5">
           <Seg value={period} onChange={setPeriod} options={PERIODS.map((p) => ({ value: p.kind, label: p.label }))} />
-          <span className="text-[12px] text-muted">
+          <span className="text-[13px] text-muted">
             {rangeText(range.from, range.to)}
             {mode === "spending" && resp ? `, compared with ${rangeText(resp.prev_from, resp.prev_to)}` : ""}
           </span>
@@ -177,7 +175,7 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
       )}
 
       {error && (
-        <div className="mb-4 flex items-center justify-between gap-3 text-[13px] text-danger-ink bg-danger-bg border border-danger-ink/20 rounded-lg px-3 py-2">
+        <div className="mb-4 flex items-center justify-between gap-3 text-[13px] text-danger-ink border-y border-line py-2.5">
           <span className="min-w-0">{error}</span>
           <button onClick={load} className={btn}>Try again</button>
         </div>
@@ -186,9 +184,9 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
       {data === null ? (
         error ? null : (
           <div className="space-y-4">
-            <div className="h-24 bg-surface-2 rounded-2xl animate-pulse" />
+            <div className="h-24 bg-surface-2 rounded-xl animate-pulse" />
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {[0, 1, 2].map((i) => <div key={i} className="h-44 bg-surface-2 rounded-2xl animate-pulse" />)}
+              {[0, 1, 2].map((i) => <div key={i} className="h-44 bg-surface-2 rounded-xl animate-pulse" />)}
             </div>
           </div>
         )
@@ -197,18 +195,18 @@ export default function BillsView({ me }: { me: Me | null | undefined }) {
           onTrack={track} onIgnore={ignore} onRestore={restore} />
       ) : !resp ? (
         sp.error ? (
-          <div className="flex items-center justify-between gap-3 text-[13px] text-danger-ink bg-danger-bg border border-danger-ink/20 rounded-lg px-3 py-2">
+          <div className="flex items-center justify-between gap-3 text-[13px] text-danger-ink border-y border-line py-2.5">
             <span className="min-w-0">{sp.error}</span>
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="h-24 bg-surface-2 rounded-2xl animate-pulse" />
-            <div className="h-72 bg-surface-2 rounded-2xl animate-pulse" />
+            <div className="h-24 bg-surface-2 rounded-xl animate-pulse" />
+            <div className="h-72 bg-surface-2 rounded-xl animate-pulse" />
           </div>
         )
       ) : (
         <div className={`transition-opacity duration-[130ms] ${sp.busy ? "opacity-60" : ""}`}>
-          {sp.error && <div className="mb-4 text-[13px] text-danger-ink bg-danger-bg border border-danger-ink/20 rounded-lg px-3 py-2">{sp.error}</div>}
+          {sp.error && <div className="mb-4 text-[13px] text-danger-ink border-y border-line py-2.5">{sp.error}</div>}
           {mode === "profit" && resp.profit ? <TrueProfitMode profit={resp.profit} /> : <SpendingMode resp={resp} bills={data.bills} />}
         </div>
       )}

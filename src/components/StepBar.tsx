@@ -41,7 +41,7 @@ export default function StepBar<K extends string>({ steps, current, done, flash,
               <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold ${flash === s.key ? "df-pop " : ""}${
                 isCur ? "bg-step-now-fill text-on-step-now" : isDone ? "bg-accent text-on-accent" : "bg-surface-3 text-faint"
               }`}>
-                {isDone ? <Check size={13} strokeWidth={2.6} /> : i + 1}
+                {isDone ? <Check size={13} /> : i + 1}
               </span>
               {/* R-400: six steps no longer fit a card beside a 216px sidebar below 1280px, so the
                   steps that are not open keep their number and lose the word until there is room. */}
