@@ -3764,6 +3764,8 @@ export interface FreightBooking {
   deal: { id: string; invoice_number: string; client_name: string; stage: string } | null;
   /** R-551: the buy this truck brings in (its name is the product's, never its money), null on a deal's load. `deal` is null then. */
   buy?: { id: string; name: string; truck_no: number; trucks: number; supplier_name: string } | null;
+  /** R-584: a load sent with no deal and no buy (New load). Paid by us, no invoice or customer to wait for. Absent on an older server. */
+  standalone?: boolean;
 }
 /** R-458: one file on a booking. The bytes stay on the server, sealed. */
 export interface FreightFile { id: string; name: string; mime: string; size: number; by: string; at: string; kind?: FreightFileKind }
@@ -3807,6 +3809,8 @@ export interface LogisticsSettings {
   freight_by_team: boolean;
   /** R-521: logistics may book a load the team has not sent. On by default; absent on an older server. */
   logistics_may_book?: boolean;
+  /** R-584: the team may send a load with no deal (New load on Logistics). Off by default; absent on an older server. */
+  loads_without_deal?: boolean;
   /** R-459: load and BOL numbering, like the invoice numbers. Absent on an older server. */
   load_prefix?: string; load_next_number?: number; bol_prefix?: string; bol_next_number?: number;
   /** R-475: what a rate confirmation prints: where carriers send freight bills (blank: the company email) and our MC
@@ -4577,7 +4581,8 @@ export const api = {
       const q: string[] = [];
       if (opts?.includeDone) q.push("include_done=1");
       if (opts?.dealFlowId) q.push(`deal_flow_id=${encodeURIComponent(opts.dealFlowId)}`);
-      return logisticsRequest<{ bookings: FreightBooking[]; completed?: LogisticsCompletion[] }>("GET", `/api/logistics/bookings${q.length ? `?${q.join("&")}` : ""}`);
+      // R-584: `can_send_load` says this person may use New load (the setting is on and they may send a deal).
+      return logisticsRequest<{ bookings: FreightBooking[]; completed?: LogisticsCompletion[]; can_send_load?: boolean }>("GET", `/api/logistics/bookings${q.length ? `?${q.join("&")}` : ""}`);
     },
     get: (id: string) => logisticsRequest<FreightBooking>("GET", `/api/logistics/bookings/${encodeURIComponent(id)}`),
     prefill: (dealFlowId: string) =>
@@ -4586,6 +4591,9 @@ export const api = {
     prefillBuy: (buyId: string) => logisticsRequest<BuyPrefill>("GET", `/api/logistics/prefill-buy/${encodeURIComponent(buyId)}`),
     createForBuy: (buyId: string, trucks: number, fields: FreightBookingPatch) =>
       logisticsRequest<{ bookings: FreightBooking[] }>("POST", "/api/logistics/bookings", { today: localDay(), buy_id: buyId, trucks, ...fields }),
+    /** R-584: New load, a quote for a load with no deal behind it. Needs deal edit access and the org's setting on. */
+    createLoad: (fields: FreightBookingPatch) =>
+      logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { today: localDay(), ...fields }),
     /** "Send to logistics": needs deal edit access. Names and addresses left out are prefilled. */
     create: (dealFlowId: string, fields: FreightBookingPatch) =>
       logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { today: localDay(), deal_flow_id: dealFlowId, ...fields }),

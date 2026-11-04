@@ -120,7 +120,7 @@ import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
 import NumberInput from "./NumberInput";
-import { LogisticsFreightSetting, LogisticsMayBookSetting, LogisticsNumberingSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel, LogisticsRateConSetting, LogisticsRoutesSetting } from "./LogisticsPay";
+import { LogisticsFreightSetting, LogisticsMayBookSetting, LogisticsNoDealSetting, LogisticsNumberingSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel, LogisticsRateConSetting, LogisticsRoutesSetting } from "./LogisticsPay";
 import { PayoutsLedgerPanel, PayRulesPanel, ruleLabel } from "./PayoutLedger";
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
@@ -389,6 +389,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "splits", card: "Pay rules", label: "Rep pay", kw: "commission profit percent gross percent fixed dollar pay type" },
   { tab: "splits", card: "Logistics", label: "Logistics freight details", kw: "we fill in pallets weight dimensions accessorials before sending to logistics freight" },
   { tab: "splits", card: "Logistics", label: "Road routes key for the freight map", kw: "openrouteservice route key routes api delivered loads road routes logistics map free" },
+  { tab: "splits", card: "Logistics", label: "Send loads without a deal", kw: "new load no deal no invoice quote only shipping logistics portal standalone" },
   { tab: "splits", card: "Logistics", label: "Load and BOL numbers", kw: "load number prefix next number bill of lading bol numbering reference" },
   { tab: "splits", card: "Logistics pay", label: "Logistics pay", kw: "shipping profit share freight surplus loss pay date weekly biweekly monthly zelle track brief off" },
   { tab: "splits", card: "Profit split", label: "Profit split", kw: "owners business partners share percentage" },
@@ -5476,6 +5477,7 @@ function SplitsTab() {
       <SettingCard icon={Truck} title="Logistics" purpose="Who fills in the pallets, weight, dimensions and accessorials before a deal is sent to the logistics person, how load and BOL numbers are made, what a rate confirmation prints, and the free route key for the delivered-freight map.">
         <LogisticsFreightSetting />
         <div className="border-t border-line mt-4 pt-4"><LogisticsMayBookSetting /></div>
+        <div className="border-t border-line mt-4 pt-4"><LogisticsNoDealSetting /></div>
         <div className="border-t border-line mt-4 pt-4"><LogisticsNumberingSetting /></div>
         <div className="border-t border-line mt-4 pt-4"><LogisticsRateConSetting /></div>
         <div className="border-t border-line mt-4 pt-4"><LogisticsRoutesSetting /></div>

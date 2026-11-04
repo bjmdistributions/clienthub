@@ -21,6 +21,7 @@ import { LogisticsWeekView } from "./LogisticsWeek";
 import { CarriersView } from "./LogisticsCarriers";
 import { PayCarriersView } from "./LogisticsPayCarriers";
 import { toast } from "./Toast";
+import BuySendSheet from "./BuySendSheet";
 import LogisticsBookingForm, {
   FreightStatusPill, PickupNumberPill, UrgentPill, routeLabel, timingLine, useNetsyncApplied,
 } from "./LogisticsBookingForm";
@@ -197,6 +198,9 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
   // A snapshot, not a pointer into `rows`: a background refresh must never replace what the
   // open form is holding while someone is typing into it.
   const [open, setOpen] = useState<FreightBooking | null>(null);
+  // R-584: New load, a load with no deal, while the setting is on and this person may send a deal.
+  const [canSend, setCanSend] = useState(false);
+  const [sending, setSending] = useState(false);
   const [openStep, setOpenStep] = useState<LoadStep | undefined>(undefined);
 
   const load = useCallback(async () => {
@@ -204,6 +208,7 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
       const r = await api.logistics.list();
       setRows(r.bookings);
       setCompleted(r.completed ?? []);
+      setCanSend(r.can_send_load === true);
       setError("");
     } catch (e) {
       setError(String(e));
@@ -309,6 +314,12 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
           </p>
           </>)}
         </div>
+        {view === "bookings" && canSend && (
+          <button type="button" onClick={() => setSending(true)}
+            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap flex-shrink-0">
+            New load
+          </button>
+        )}
         {view === "bookings" && !(canMap && mode === "map") && <div className="relative w-full max-w-[280px] min-w-[200px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
           <input
@@ -408,6 +419,8 @@ export default function LogisticsView({ me }: { me: Me | null | undefined }) {
       </section>
 
       </>)}
+
+      {sending && <BuySendSheet buy={null} live={0} onClose={() => setSending(false)} onSent={() => { setSending(false); load(); }} />}
 
       {open && (
         <LogisticsBookingForm

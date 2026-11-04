@@ -14,6 +14,7 @@ import { toast } from "./Toast";
 // here while our side does that (R-415); and it asks how many trucks bring it in (1 to 6) and the day they deliver. Each truck
 // is a quote of its own on the server. The server must know the buy first, so the buy is pushed and waited for before the
 // trucks are asked for, and the ask is tried once more when the server says it has not got the buy yet.
+// R-584: with no buy it is New load on Logistics: one load with no deal, nothing prefilled, the places typed here.
 
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted " +
@@ -28,9 +29,9 @@ function AddressNote({ value }: { value: string }) {
 }
 
 export default function BuySendSheet({ buy, live, onClose, onSent }: {
-  buy: { id: string; name: string }; live: number; onClose: () => void; onSent: (made: FreightBooking[]) => void;
+  buy: { id: string; name: string } | null; live: number; onClose: () => void; onSent: (made: FreightBooking[]) => void;
 }) {
-  const [ready, setReady] = useState(false);
+  const [ready, setReady] = useState(!buy);
   const [err, setErr] = useState("");
   const [trucks, setTrucks] = useState(1);
   const [day, setDay] = useState("");
@@ -54,6 +55,7 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
 
   // The buy may have been made a moment ago on this computer: push it, then ask the server where the trucks go.
   useEffect(() => {
+    if (!buy) return;
     let dead = false;
     (async () => {
       await api.pushAndWait().catch(() => {});
@@ -66,7 +68,7 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
       if (!dead) setReady(true);
     })();
     return () => { dead = true; };
-  }, [buy.id]);
+  }, [buy?.id]);
 
   const send = async () => {
     const gap = sendMissing({
@@ -76,7 +78,7 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
     }, byTeam);
     if (gap) { setErr(gap); return; }
     setBusy(true); setErr("");
-    const ask = () => api.logistics.createForBuy(buy.id, trucks, {
+    const fields = {
       urgent, delivery_date: day,
       pickup_name: pickup.name, pickup_address: pickup.address, pickup_phone: pickup.phone.trim(),
       pickup_date: pickup.date, pickup_window: pickup.window.trim(), pickup_notes: bolNote(bolTo),
@@ -84,8 +86,16 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
       delivery_window: delivery.window.trim(), delivery_notes: delivery.notes.trim(),
       pallets: freight.pallets.trim(), weight_lbs: freight.weight_lbs.trim(), dimensions: freight.dimensions.trim(), equipment: freight.equipment,
       request_note: note.trim(),
-    });
+    };
     try {
+      if (!buy) {
+        await api.logistics.createLoad(fields);
+        toast("Quote asked");
+        onSent([]);
+        setBusy(false);
+        return;
+      }
+      const ask = () => api.logistics.createForBuy(buy.id, trucks, fields);
       await api.pushAndWait().catch(() => {});
       let r;
       try { r = await ask(); }
@@ -104,13 +114,14 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
   const chip = (on: boolean) => `h-8 px-3 rounded-lg border text-[12px] transition-colors ${on ? "border-accent bg-accent/10 text-accent font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`;
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="Send to logistics"
+      <div role="dialog" aria-modal="true" aria-label={buy ? "Send to logistics" : "New load"}
         className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-lg max-h-[88vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
           <div className="min-w-0">
-            <h2 className="text-[16px] font-semibold text-ink">Send to logistics</h2>
+            <h2 className="text-[16px] font-semibold text-ink">{buy ? "Send to logistics" : "New load"}</h2>
             <p className="text-[12px] text-muted mt-0.5">
-              {buy.name}. {live > 0 ? "More trucks for this buy. " : ""}Logistics quotes each truck, and what it costs shows on the buy as soon as it is quoted.
+              {buy ? <>{buy.name}. {live > 0 ? "More trucks for this buy. " : ""}Logistics quotes each truck, and what it costs shows on the buy as soon as it is quoted.</>
+                : "Ask your logistics person for a quote. Once it is quoted, send the load to book from its page."}
             </p>
           </div>
           <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
@@ -118,14 +129,14 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
         <div className="px-5 py-4 space-y-4 overflow-y-auto">
           {!ready ? <div className="text-[12.5px] text-muted">Loading...</div> : (
             <>
-              <div className="space-y-2">
+              {buy && <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">How many trucks</div>
                 <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="How many trucks">
                   {[1, 2, 3, 4, 5, 6].map((n) => (
                     <button key={n} type="button" aria-pressed={trucks === n} onClick={() => setTrucks(n)} className={`${chip(trucks === n)} w-9 px-0`}>{n}</button>
                   ))}
                 </div>
-              </div>
+              </div>}
               <div className="space-y-2">
                 <div className="text-[12px] font-medium text-ink-2">Deliver on (required)</div>
                 <div className="flex items-center gap-1.5 flex-wrap">
@@ -165,7 +176,7 @@ export default function BuySendSheet({ buy, live, onClose, onSent }: {
                 <input className={inp} placeholder="For the driver, like: call 15 minutes out" aria-label="Delivery note" value={delivery.notes} onChange={(e) => setDelivery({ ...delivery, notes: e.target.value })} />
               </div>
               <div className="space-y-2">
-                <div className="text-[12px] font-medium text-ink-2">Freight on each truck</div>
+                <div className="text-[12px] font-medium text-ink-2">{buy ? "Freight on each truck" : "Freight"}</div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="min-w-0">
                     <label className="block text-[12px] text-muted mb-1">Pallets{byTeam ? " (required)" : ""}</label>
