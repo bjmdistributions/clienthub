@@ -3816,8 +3816,10 @@ export type FreightBookingPatch = Partial<Omit<FreightBooking,
   "markup_amount" | "markup_by_name" | "markup_at" | "markup_default_pct" | "markup_editable" | "can_set_markup"
 >> & {
   today?: string;
-  /** R-470: the only payment write left is taking back a typed payment that was never linked to the bank. */
-  paid_amount?: null;
+  /** R-470: the only payment write left is taking back a typed payment that was never linked to the bank.
+   *  R-588: and the team marking a load with no deal paid (the server refuses an amount on any other load). */
+  paid_amount?: number | null;
+  paid_at?: string; paid_method?: string; paid_note?: string;
   /** R-459: tick or untick the pickup-number check. */
   pickup_number_confirmed?: boolean;
   /** R-464: "own" = we pay this shipping ourselves, "" = charge the customer instead. "invoice" is set only by the invoice-line route. */
@@ -3909,6 +3911,8 @@ export interface RatesResponse { lane: { from: string; to: string }; last: RateM
 /** R-459: one load in Pay carriers (and the Bills section). */
 export interface CarrierPayRow {
   booking_id: string; load_number: string; deal_flow_id: string; deal_label: string; route: string;
+  /** R-588: a load with no deal and no buy, paid by recording it (Mark paid). Absent on an older server. */
+  standalone?: boolean;
   carrier: string; carrier_id: string; pay_method: CarrierPayMethod; pay_details: string;
   rate: number | null; quote_amount: number | null; pay_due_date: string; days_until: number | null; overdue: boolean;
   status: FreightStatus; delivered_at: string; paperwork: { bol: boolean; pod: boolean; carrier_invoice: boolean };
