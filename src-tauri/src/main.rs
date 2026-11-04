@@ -39,6 +39,7 @@ mod oauth_flow;
 mod plaid;
 mod client_statement;
 mod release_letter;
+mod purchase_order;
 mod sheet_clone;
 mod sheet_writeback;
 mod bank_backup;
@@ -842,6 +843,7 @@ fn main() {
             get_quote_numbering_config,
             save_quote_numbering_config,
             release_letter::generate_release_letter,
+            purchase_order::generate_purchase_order,
             // Client statement / receipt (R-190)
             client_statement::client_statement_data,
             client_statement::generate_client_statement,
