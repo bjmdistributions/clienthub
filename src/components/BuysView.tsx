@@ -3,47 +3,37 @@
 // from the same warehouse rows, so the two can never disagree with the Warehouse itself.
 // Opening one shows its buy and every order taken from it (BuyPanel); Open in the Warehouse goes
 // to where its orders are picked and sent to invoices.
-// R-551: Deal Flow's Inventory also starts a buy (New buy) before its stock is here, and lists the buys still On the way above
-// the stock. They never go in the pipeline: a buy is a reader, not a deal.
+// R-596: the buys started before their stock is here (New buy, On the way) moved to Purchases, where a buy is a purchase order.
+// Deal Flow's Inventory keeps one line that goes there. A buy is never in the pipeline: it is a reader, not a deal.
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowLeft, ChevronRight, Plus, Warehouse } from "lucide-react";
-import { api, type ComingBuy, type StockWithBuy } from "../lib/api";
+import { ArrowLeft, ChevronRight, Warehouse } from "lucide-react";
+import { api, type StockWithBuy } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { OPEN_BUY_KEY, openManifestForBuy, perUnit } from "../lib/buyLoads";
+import { perUnit } from "../lib/buyLoads";
 import { canSeePayments } from "../lib/dealPayments";
 import { useSessionMe } from "../lib/useSessionMe";
-import BuyPanel, { NewBuyForm } from "./BuyPanel";
-import ComingBuys from "./ComingBuys";
+import BuyPanel from "./BuyPanel";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 import { WAREHOUSE_OPEN_KEY } from "../lib/warehouse";
-import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, n0 } from "./warehouseUi";
+import { WH_BTN_SECONDARY, WH_CARD, n0 } from "./warehouseUi";
 
 export function openInWarehouse(s: { kind: "item" | "load"; id: string }) {
   try { localStorage.setItem(WAREHOUSE_OPEN_KEY, JSON.stringify(s)); } catch { /* ignore */ }
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "warehouse" }));
 }
 
-/** What is open: a product or delivery with its buy, or a buy by itself (one still on the way has no stock to open it by). */
-type Open = StockWithBuy | { kind: "buy"; id: string; name: string };
+/** What is open: a product or delivery with its buy. */
+type Open = StockWithBuy;
 
 export default function BuysView({ search = "", compact = false }: { search?: string; compact?: boolean }) {
   const me = useSessionMe();
   const numbers = canSeePayments(me);
   const [stock, setStock] = useState<StockWithBuy[] | null>(null);
-  const [coming, setComing] = useState<ComingBuy[]>([]);
   const [open, setOpen] = useState<Open | null>(null);
-  const [creating, setCreating] = useState(false);
-  // R-551: another screen asked for one buy (a truck in Logistics, the Warehouse): read once, on arriving.
-  useEffect(() => {
-    try {
-      const want = localStorage.getItem(OPEN_BUY_KEY);
-      if (want) { localStorage.removeItem(OPEN_BUY_KEY); setOpen({ kind: "buy", id: want, name: "" }); }
-    } catch { /* ignore */ }
-  }, []);
 
-  const load = useCallback(() => api.listWarehouseBuys().then((r) => { setStock(r.stock); setComing(r.coming ?? []); }).catch((e) => { toast(`Couldn't load the stock: ${e}`, "error"); setStock([]); }), []);
+  const load = useCallback(() => api.listWarehouseBuys().then((r) => { setStock(r.stock); }).catch((e) => { toast(`Couldn't load the stock: ${e}`, "error"); setStock([]); }), []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     let un: (() => void) | undefined;
@@ -51,34 +41,18 @@ export default function BuysView({ search = "", compact = false }: { search?: st
     return () => un?.();
   }, [load]);
 
-  if (creating) {
-    return (
-      <div className="space-y-4">
-        <button onClick={() => setCreating(false)} className="inline-flex items-center gap-1.5 text-[12.5px] text-muted hover:text-ink-2">
-          <ArrowLeft size={13} /> All stock
-        </button>
-        <NewBuyForm onCancel={() => setCreating(false)} onSaved={(d) => { setCreating(false); setOpen({ kind: "buy", id: d.buy.id, name: d.buy.name }); load(); }} />
-      </div>
-    );
-  }
-
   if (open) {
-    const stockOpen = open.kind !== "buy" ? open : null;
+    const stockOpen = open;
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <button onClick={() => { setOpen(null); load(); }} className="inline-flex items-center gap-1.5 text-[12.5px] text-muted hover:text-ink-2">
             <ArrowLeft size={13} /> All stock
           </button>
-          {stockOpen && <button onClick={() => openInWarehouse(stockOpen)} className={WH_BTN_SECONDARY}><Warehouse size={13} /> Open in the Warehouse</button>}
+          <button onClick={() => openInWarehouse(stockOpen)} className={WH_BTN_SECONDARY}><Warehouse size={13} /> Open in the Warehouse</button>
         </div>
-        {stockOpen ? (
-          <BuyPanel itemId={stockOpen.kind === "item" ? stockOpen.id : undefined} loadId={stockOpen.kind === "load" ? stockOpen.id : undefined}
-            stockName={stockOpen.name} unit={stockOpen.unit} defaultUnits={stockOpen.left} onChanged={load} />
-        ) : (
-          <BuyPanel buyId={open.id} stockName={open.name} onChanged={load} onAddManifest={openManifestForBuy}
-            onOpenWarehouse={(d) => openInWarehouse({ kind: d.buy.load_id ? "load" : "item", id: d.buy.load_id || d.buy.item_id })} />
-        )}
+        <BuyPanel itemId={stockOpen.kind === "item" ? stockOpen.id : undefined} loadId={stockOpen.kind === "load" ? stockOpen.id : undefined}
+          stockName={stockOpen.name} unit={stockOpen.unit} defaultUnits={stockOpen.left} onChanged={load} />
       </div>
     );
   }
@@ -86,31 +60,26 @@ export default function BuysView({ search = "", compact = false }: { search?: st
   if (stock === null) return <div className="text-[13px] text-muted py-10 text-center">Loading…</div>;
   const words = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = stock.filter((s) => words.every((w) => `${s.name} ${s.buy?.supplier_name ?? ""} ${s.buy?.name ?? ""}`.toLowerCase().includes(w)));
-  const coming_ = compact ? [] : coming.filter((c) => words.every((w) => `${c.name} ${c.supplier_name}`.toLowerCase().includes(w)));
-  const newBuy = !compact && (
-    <div className="flex items-center justify-between gap-3 flex-wrap">
-      <p className="text-[13px] text-muted max-w-[640px]">Buying a load in? Start it here before it arrives, send it to logistics, and add its manifest when it is unloaded.</p>
-      <button onClick={() => setCreating(true)} className={WH_BTN_PRIMARY}><Plus size={14} /> New buy</button>
-    </div>
+  const toPurchases = !compact && (
+    <p className="text-[13px] text-muted">
+      Buying stock in? Start it, send it to logistics and see what is owed back in{" "}
+      <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "purchases" }))}
+        className="text-accent-hover hover:underline">Purchases</button>.
+    </p>
   );
-  const onTheWay = <ComingBuys items={coming_} numbers={numbers} onOpen={(b) => setOpen({ kind: "buy", id: b.id, name: b.name })} />;
   if (shown.length === 0) {
     return (
       <div className="space-y-4">
-        {newBuy}
-        {onTheWay}
-        {(compact || coming_.length === 0 || !search) && (
-          <div className={`${WH_CARD} py-14 text-center text-[13px] text-muted`}>
-            {search ? "No stock matches your search." : "Nothing in the Warehouse yet. Import a sheet there and it shows here."}
-          </div>
-        )}
+        {toPurchases}
+        <div className={`${WH_CARD} py-14 text-center text-[13px] text-muted`}>
+          {search ? "No stock matches your search." : "Nothing in the Warehouse yet. Import a sheet there and it shows here."}
+        </div>
       </div>
     );
   }
   return (
     <div className="space-y-4">
-      {newBuy}
-      {onTheWay}
+      {toPurchases}
       <div>
         {!compact && (
           <p className="pb-3 text-[13px] text-muted">

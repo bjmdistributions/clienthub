@@ -11,11 +11,14 @@ const truck = (over: Partial<TruckRow> = {}): TruckRow => ({
 const detail = (over: { buy?: Partial<BuyDetail["buy"]>; rollup?: Partial<BuyDetail["rollup"]>; trucks?: TruckRow[]; cost?: Partial<BuyDetail["truck_cost"]> } = {}): BuyDetail => ({
   buy: {
     id: "buy_1", item_id: "", load_id: "", stock_name: "", name: "Sample hats", supplier_id: "", supplier_name: "Sample Supplier", units_bought: 0,
-    goods_total: 1000, ship_total: 0, ship_typed: 0, markup_total: 0, notes: "", archived: false, on_the_way: true, created_at: "", updated_at: "", ...over.buy,
+    goods_total: 1000, ship_total: 0, ship_typed: 0, markup_total: 0, notes: "", archived: false, on_the_way: true, created_at: "", updated_at: "",
+    invoice_no: "", invoice_date: "", lines: [], units_received: null, received_at: "", refund_owed_typed: null, manifest_name: "", from_deal_id: "", state: "ordered", ...over.buy,
   },
   rollup: {
     bought: 0, sold: 0, left: 0, goods_total: 1000, ship_total: 0, unit_cost: 0, goods_paid: 0, ship_paid: 0, cost_sold: 0, sales: 0, received: 0, other_cost: 0,
-    refunds: 0, made_on_sold: 0, made_so_far: 0, sold_out: false, oversold: false, markup_total: 0, load_cost: 1000, cost_on_hand: 1000, markup_sold: 0, ...over.rollup,
+    refunds: 0, made_on_sold: 0, made_so_far: 0, sold_out: false, oversold: false, markup_total: 0, load_cost: 1000, cost_on_hand: 1000, markup_sold: 0,
+    units_ordered: 0, units_received: null, short: 0, refund_owed: 0, refund_owed_typed: null, refund_received: 0, refund_counted: 0, refund_left: 0,
+    goods_net: 1000, spent: 0, owed_supplier: 1000, cost_projected: false, state: "ordered", ...over.rollup,
   },
   unit_goods: 0, unit_ship: 0, unit_markup: 0, trucks: over.trucks ?? [], truck_cost: { live: (over.trucks ?? []).length, priced: 0, paid: 0, carrier: 0, markup: 0, ...over.cost },
   orders: [], payments: [], missing: [], in_step: true,

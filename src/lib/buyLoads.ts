@@ -8,13 +8,13 @@ import type { BuyDetail, FreightStatus, TruckRow } from "./api";
 import { fmtAmount, isShippingLine } from "./format";
 import { dayAndTime } from "./logisticsLoad";
 
-/** A person asked for one buy (Logistics, the Warehouse): Deal Flow's Inventory opens on it. */
+/** A person asked for one buy (Logistics, the Warehouse): Purchases opens on it (R-596; it was Deal Flow's Inventory). */
 export const OPEN_BUY_KEY = "dealflow_open_buy";
 
-/** Go to a buy in Deal Flow > Inventory. */
+/** Go to a buy in Purchases. */
 export function openBuyInDealFlow(id: string): void {
   try { localStorage.setItem(OPEN_BUY_KEY, id); } catch { /* ignore */ }
-  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "purchases" }));
 }
 
 /** Add the manifest on a buy still on the way: the Warehouse opens the one import for it (read once, on arriving). */

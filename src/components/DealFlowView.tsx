@@ -24,6 +24,7 @@ import Switch from "./Switch";
 import { Button, Kpi, PageActions, Tabs, useCountUp } from "./ui";
 import { unitFigures, unitGap } from "../lib/dealUnits";
 import BuysView from "./BuysView";
+import TurnIntoPurchase from "./TurnIntoPurchase";
 import { openLoadInLogistics } from "./LogisticsPayCarriers";
 import { dealMatchesQuery } from "../lib/logisticsSearch";
 import { canPayCarriers } from "../lib/logisticsCarriers";
@@ -1452,6 +1453,7 @@ function DealFlowCard({
             {/* Row actions */}
             <div className="hsep mt-5" />
             <div className="flex justify-end gap-1.5 pt-3">
+              <TurnIntoPurchase flow={flow} onReload={onReload} />
               <button
                 onClick={async (e) => {
                   e.stopPropagation();

@@ -68,7 +68,10 @@ const POLL_SECS: u64 = 20;
 /// refreshes `warehouse_cases` and `warehouse_loads` for their new columns (`unmatched_json`, the units
 /// scanned into a box and not matched yet, and `unit`), so a desktop that updates after boxes were
 /// scanned on the phone shows what is waiting in them.
-const HEAL_GENERATION: &str = "18";
+/// "19" is the same kind of pass for the R-596 columns on `warehouse_buys` (the invoice, the units counted in
+/// and the day, the refund owed, the manifest name, the deal a buy came from), so a desktop that updates after
+/// a purchase order was made on the phone shows it whole.
+const HEAL_GENERATION: &str = "19";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -77,7 +80,7 @@ const HEAL_GENERATION: &str = "18";
 /// `warehouse_load_pallets`, whose new columns are written on the phone. Generation "15" (R-568) adds
 /// `warehouse_loads` (its `unit`); `warehouse_cases` gained `unmatched_json`. Empty for a generation that
 /// only widens the tables.
-const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings", "warehouse_cases", "warehouse_load_pallets", "warehouse_loads"];
+const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings", "warehouse_cases", "warehouse_load_pallets", "warehouse_loads", "warehouse_buys"];
 
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
 /// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`
@@ -3244,7 +3247,7 @@ mod r400_sync_tests {
     /// R-590: the bank feed owners restore and apply, so every computer agrees which one imports an account.
     #[test]
     fn r590_the_bank_feed_owners_sync() {
-        assert_eq!(HEAL_GENERATION, "18", "generation 18 adds bank_feed (R-590)");
+        assert!(HEAL_GENERATION.parse::<u32>().unwrap() >= 18, "generation 18 adds bank_feed (R-590)");
         assert!(SNAPSHOT_TABLES.contains(&"bank_feed"));
         assert!(crate::sync::is_synced_table("bank_feed"));
     }

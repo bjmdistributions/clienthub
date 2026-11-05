@@ -349,7 +349,7 @@ const ROLES: { value: string; label: string; hint?: string }[] = [
 const roleLabel = (v: string) => ROLES.find((r) => r.value === v)?.label ?? v;
 // R-552: a buy's bookings (buy_core: notes `Buy: ` on an order's deal, `Held as stock: ` on the buy itself).
 const BUY_NOTE = "Buy: ";
-const HELD = /^Held as stock(?:, shipping in)?: /;
+const HELD = /^Held as stock(?:, shipping in|, refund)?: /;
 const heldOnBuy = (note?: string | null) => (HELD.test(note || "") ? (note || "").replace(HELD, "") : "");
 const isBuyBooking = (a: { id: string; note?: string | null }) =>
   a.id.startsWith("alloc_") && (HELD.test(a.note || "") || (a.note || "").startsWith(BUY_NOTE));
@@ -6441,8 +6441,7 @@ function AllocationPanel(props: {
 
       {/* Where this transaction belongs */}
       <div className="flex gap-1 flex-wrap">
-        {([["deal", "Deal"], ["loan", "Loan"], ["expense", "Expense / income"], ["buy", "Inventory buy"]] as const)
-          .filter(([v]) => v !== "buy" || txn.direction === "out")
+        {([["deal", "Deal"], ["loan", "Loan"], ["expense", "Expense / income"], ["buy", txn.direction === "in" ? "Refund from supplier" : "Inventory buy"]] as const)
           .map(([v, label]) => (
           <button
             key={v}
@@ -6622,7 +6621,7 @@ function AllocationPanel(props: {
         </>
       )}
 
-      {targetType === "buy" && txn.direction === "out" && (
+      {targetType === "buy" && (txn.direction === "out" || txn.direction === "in") && (
         <FinancialsBuyTarget key={`${txn.id}:${buyPre ?? ""}`} txn={txn} preselect={buyPre} onDone={onBuyLinked} />
       )}
 

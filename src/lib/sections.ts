@@ -8,7 +8,7 @@
 
 export type TabId =
   | "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "coldcalls" | "inventory"
-  | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices"
+  | "warehouse" | "purchases" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices"
   | "quotes" | "releaseletter" | "clientreceipt" | "purchaseorder" | "newsletter" | "analytics"
   | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup"
   | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety"
@@ -46,6 +46,7 @@ export const SECTIONS: SectionDef[] = [
   ] },
   { id: "inventory", label: "Inventory", tabs: [
     { id: "inventory", label: "Inventory" },
+    { id: "purchases", label: "Purchases" },
     { id: "warehouse", label: "Warehouse" },
     { id: "suppliers", label: "Suppliers" },
     { id: "coldcalls", label: "Cold calls" },

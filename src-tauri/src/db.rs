@@ -2811,4 +2811,25 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        126,
+        // R-596: a buy becomes a purchase order. The supplier's invoice (number, date, lines as JSON), the units
+        // actually counted in and the day (NULL means not counted yet), a refund owed typed over the worked out
+        // one (NULL means worked out from the short), the file name of an attached manifest (nothing is imported),
+        // and, for a buy made from a deal flow, that deal and a copy of its money rows for Undo. Written by the
+        // buy routes and the server conversion. Synced like the rest of the row (heal generation 19 restores them
+        // on a device that already holds the rows) and mirrored in clienthub-api schema.sql and its sync.rs ALTER
+        // list, which must be deployed first. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        ALTER TABLE warehouse_buys ADD COLUMN invoice_no TEXT NOT NULL DEFAULT '';
+        ALTER TABLE warehouse_buys ADD COLUMN invoice_date TEXT NOT NULL DEFAULT '';
+        ALTER TABLE warehouse_buys ADD COLUMN lines_json TEXT NOT NULL DEFAULT '';
+        ALTER TABLE warehouse_buys ADD COLUMN units_received INTEGER;
+        ALTER TABLE warehouse_buys ADD COLUMN received_at TEXT NOT NULL DEFAULT '';
+        ALTER TABLE warehouse_buys ADD COLUMN refund_owed REAL;
+        ALTER TABLE warehouse_buys ADD COLUMN manifest_name TEXT NOT NULL DEFAULT '';
+        ALTER TABLE warehouse_buys ADD COLUMN from_deal_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE warehouse_buys ADD COLUMN from_deal_json TEXT NOT NULL DEFAULT '';
+        "#,
+    ),
 ];

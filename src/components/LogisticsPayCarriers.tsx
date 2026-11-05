@@ -354,7 +354,7 @@ function Who({ r, onOpen }: { r: CarrierPayRow; onOpen: () => void }) {
         {r.route}{r.route && r.deal_label ? " · " : ""}
         {/* R-551: a truck that brings a buy in reads "Coming in: <name>", and opens the buy where a deal's label would open its deal. */}
         {r.buy_id && r.deal_label
-          ? <button type="button" onClick={() => openBuyInDealFlow(r.buy_id!)} title="Open the buy in Deal Flow, Inventory" className="hover:text-ink hover:underline">{r.deal_label}</button>
+          ? <button type="button" onClick={() => openBuyInDealFlow(r.buy_id!)} title="Open the order in Purchases" className="hover:text-ink hover:underline">{r.deal_label}</button>
           : r.deal_label}
       </div>
     </div>
