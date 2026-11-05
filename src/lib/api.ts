@@ -1138,6 +1138,22 @@ function payoutsRequest<T>(method: string, path: string, body?: unknown): Promis
 const enc = encodeURIComponent;
 
 /** A recipient's cut across the brief periods (empty list when unconfigured). */
+/** R-618: one connected account on Balances and tax (`bank_balances`). A card's balance is what is owed. */
+export interface BankBalance {
+  key: string;
+  institution: string;
+  name: string;
+  mask: string;
+  type: string;
+  subtype: string;
+  balance: number;
+  available: number | null;
+  label: string;
+  /** The books check: how far the ledger is from the bank on this account; null when it is not checked. */
+  drift: number | null;
+  ledger_rows: number;
+}
+
 /** R-617: the tax set-aside month by month, on the deals that closed (GET /api/payouts/tax-months). */
 export interface TaxMonth {
   month: string;
@@ -4674,6 +4690,8 @@ export const api = {
   /// Does the ledger still tie out to the bank? Pass `rebaseline` to accept the
   /// current figures as correct after a deliberate change (cleanup, re-pull).
   reconcileAccounts: (rebaseline = false) => invoke<ReconAccount[]>("reconcile_accounts", { rebaseline }),
+  /** R-618: every connected account with its balance and books check. */
+  bankBalances: () => invoke<{ accounts: BankBalance[]; last_sync: string | null; reserve_key: string }>("bank_balances"),
   // R-579: every account, period by period: statement posted, statement net against ledger net, duplicates, withdrawn.
   checkBooks: () => invoke<CheckAccount[]>("check_books"),
   convergeIntegrityItem: (kind: IntegrityItem["kind"], id: string) =>

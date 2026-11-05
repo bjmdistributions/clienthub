@@ -23571,8 +23571,14 @@ fn publish_balance_and_health() {
     // R-587: the last Check against bank, so the phone shows it and pushes a difference.
     let bank_check: Value = conn.query_row("SELECT value FROM settings WHERE key='bank_check'", [], |r| r.get::<_, String>(0))
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
+    // R-618: every account's balance and books check for the phone's Balances and tax. Names, last four and amounts
+    // only; the key (a bank identifier) stays here.
+    let accounts: Value = Value::Array(bank_balances_list(&conn).into_iter().map(|mut a| {
+        if let Some(o) = a.as_object_mut() { o.remove("key"); o.remove("label"); }
+        a
+    }).collect());
     drop(conn);
-    tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks, reserve, bank_check).await; });
+    tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks, reserve, bank_check, accounts).await; });
 }
 
 /// R-518: pull when the window comes to the front and this device has not pulled for five minutes, so a PC that
@@ -23825,6 +23831,63 @@ fn plaid_reserve_candidates(conn: &rusqlite::Connection) -> Vec<Value> {
         }
     }
     out
+}
+
+/// R-618: every connected account with its live balance and the books check, for Balances and tax (desktop) and,
+/// published, the phone. One row per account (`plaid_account_key`, the same identity the balance sum de-duplicates
+/// with). `label` is the name the importer writes on its ledger rows (through the alias map); `drift` is
+/// `reconcile_accounts`' figure for that label (read only, no baseline written), None for an account the check does
+/// not cover (loans, investments). A card's balance is what is owed, as Plaid gives it.
+pub(crate) fn bank_balances_list(conn: &rusqlite::Connection) -> Vec<Value> {
+    let aliases = account_alias_map();
+    let checks: std::collections::HashMap<String, (f64, i64)> = reconcile_accounts_inner(conn, false)
+        .map(|(rows, _)| rows.into_iter().map(|r| (r.account, (r.drift, r.txn_count))).collect())
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT COALESCE(institution,''), accounts_json FROM plaid_items ORDER BY created_at")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    let r2 = |x: f64| (x * 100.0).round() / 100.0;
+    for (institution, aj) in rows {
+        let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
+        for a in &accts {
+            let key = plaid_account_key(a);
+            if !seen.insert(key.clone()) { continue; }
+            let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let raw_name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
+            let raw = if mask.is_empty() { raw_name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", raw_name, mask) };
+            let label = aliases.get(&raw).cloned().unwrap_or(raw);
+            let bal = a.get("balances");
+            let check = if kind == "depository" || kind == "credit" { checks.get(&label).copied() } else { None };
+            out.push(json!({
+                "key": key,
+                "institution": institution,
+                "name": a.get("official_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(if raw_name.is_empty() { "Account" } else { raw_name }),
+                "mask": mask,
+                "type": kind,
+                "subtype": a.get("subtype").and_then(|v| v.as_str()).unwrap_or(""),
+                "balance": r2(bal.and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0)),
+                "available": bal.and_then(|b| b.get("available")).and_then(|v| v.as_f64()).map(r2),
+                "label": label,
+                "drift": check.map(|c| c.0),
+                "ledger_rows": check.map(|c| c.1).unwrap_or(0),
+            }));
+        }
+    }
+    out
+}
+
+/// R-618: Balances and tax's accounts, with when the banks were last pulled.
+#[tauri::command]
+pub async fn bank_balances() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let accounts = bank_balances_list(&conn);
+    let last_sync: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='plaid_last_sync'", [], |r| r.get(0)).ok();
+    Ok(json!({ "accounts": accounts, "last_sync": last_sync, "reserve_key": reserve_account_key(&conn) }))
 }
 
 #[tauri::command]

@@ -903,6 +903,7 @@ fn main() {
             converge_integrity_item,
             list_stranded_writes,
             reconcile_accounts,
+            bank_balances,
             resync_all_completed_deals,
             set_deal_link_na,
             set_refund_done,

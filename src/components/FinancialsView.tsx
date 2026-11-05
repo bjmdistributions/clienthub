@@ -20,7 +20,7 @@ import { toast } from "./Toast";
 import PersonPickerModal, { PersonRef, personKey } from "./PersonPicker";
 import DealPicker, { DealPickerPage } from "./DealPicker";
 import FinancialsBuyTarget from "./FinancialsBuyTarget";
-import FreeCashView from "./FreeCashView";
+import BalancesAndTax from "./BalancesAndTax";
 import LoansView from "./LoansView";
 import AccountantChanges from "./AccountantChanges";
 import NearDuplicates from "./NearDuplicates";
@@ -869,7 +869,8 @@ export default function FinancialsView() {
   // R-188: which tax year the P&L report shows. Defaults to the current Central
   // calendar year, same "today" helper the rest of this screen uses (R-159).
   const [pnlYear, setPnlYear] = useState(() => Number(localDay().slice(0, 4)));
-  const [cashTab, setCashTab] = useState<"freecash" | "loans">("freecash");
+  // R-618: Free cash is gone (its tax and accounts moved to Balances and tax); Cash is Loans.
+  const [cashTab, setCashTab] = useState<"loans">("loans");
   const [aiBusy, setAiBusy]   = useState(false);
   const [newDealBusy, setNewDealBusy] = useState(false);
   // Record-cash modal (a manual cash txn that then allocates across deals).
@@ -3552,7 +3553,7 @@ export default function FinancialsView() {
           label="Financials"
           value={tab === "cash" ? cashTab : tab}
           onChange={(v) => {
-            if (v === "freecash" || v === "loans") { setCashTab(v); setTab("cash"); }
+            if (v === "loans") { setCashTab(v); setTab("cash"); }
             else setTab(v as typeof tab);
           }}
           tabs={[
@@ -3560,9 +3561,8 @@ export default function FinancialsView() {
             { id: "tieout", label: "Tie out", count: tieOut.length - tieOutHiddenCount > 0 ? tieOut.length - tieOutHiddenCount : undefined },
             { id: "ledger", label: "Ledger" },
             { id: "check", label: "Check books" },
-            { id: "freecash", label: "Free cash" },
             { id: "loans", label: "Loans" },
-            { id: "report", label: "Tax report" },
+            { id: "report", label: "Balances and tax" },
             { id: "setup", label: "Setup" },
           ]}
         />
@@ -3580,9 +3580,7 @@ export default function FinancialsView() {
       {(tab === "tobook" || tab === "ledger") && <MovedBookings rows={moved} />}
       {tab === "cash" && (
         <div className="space-y-4">
-          {cashTab === "freecash"
-            ? <FreeCashView onCheckBooks={() => setTab("check")} />
-            : <LoansView />}
+          <LoansView />
         </div>
       )}
 
@@ -3590,8 +3588,10 @@ export default function FinancialsView() {
           accounts as the Ledger's category picker; nothing here reads any table
           other than bank_txn, so this figure and the Ledger's totals can never
           silently drift apart. */}
+      {tab === "report" && <BalancesAndTax onCheckBooks={() => setTab("check")} />}
       {tab === "report" && (
-        <div className="space-y-6">
+        <div className="space-y-6 border-t border-line pt-6">
+          <h3 className="text-[15px] font-medium text-ink">Tax report</h3>
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-2.5">
               <span className="text-[13px] text-muted">Tax year</span>

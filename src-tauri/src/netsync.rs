@@ -418,13 +418,14 @@ pub async fn publish_bank_balance(bank: f64, card: f64) {
 /// body, so a server that predates the health keys stores the balance as before and ignores the rest.
 /// R-529: with the reserve account ({designated, linked, parked, label}) for the phone's Free cash; a server older than
 /// deploy-249 ignores the key.
-pub async fn publish_bank_balance_and_health(bank: f64, card: f64, last_sync: Option<String>, banks: Vec<serde_json::Value>, reserve: serde_json::Value, bank_check: serde_json::Value) {
+/// R-618: with every account's balance and books check (`accounts`); a server older than deploy-315 ignores the key.
+pub async fn publish_bank_balance_and_health(bank: f64, card: f64, last_sync: Option<String>, banks: Vec<serde_json::Value>, reserve: serde_json::Value, bank_check: serde_json::Value, accounts: serde_json::Value) {
     let cfg = match config() { Some(c) => c, None => return };
     let url = format!("{}/api/bank-balance", cfg.url.trim_end_matches('/'));
     let _ = http()
         .post(&url)
         .bearer_auth(&cfg.token)
-        .json(&serde_json::json!({ "bank_balance": bank, "card_balance": card, "pulled_at": last_sync, "banks": banks, "reserve": reserve, "bank_check": bank_check }))
+        .json(&serde_json::json!({ "bank_balance": bank, "card_balance": card, "pulled_at": last_sync, "banks": banks, "reserve": reserve, "bank_check": bank_check, "accounts": accounts }))
         .send()
         .await;
 }
