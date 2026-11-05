@@ -1094,6 +1094,7 @@ fn main() {
             cancel_call_request,
             reschedule_call_request,
             archive_call_request,
+            call_mark_urgent,
             list_lead_notifications,
             ack_lead_notification,
             show_desktop_notification,

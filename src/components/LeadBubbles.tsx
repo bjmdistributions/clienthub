@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, Client, LeadDashboardStats, OrUnavailable, isUnavailable } from "../lib/api";
+import { CALL_OPEN_KEY } from "../lib/notices";
 import { UserPlus, PhoneCall, Radar } from "lucide-react";
 import StatusPill from "./StatusPill";
 import CustomerRequestsModal from "./CustomerRequestsModal";
@@ -24,8 +25,26 @@ export default function LeadBubbles({ pendingApprovals, onApprovalsChanged }: {
   const [stats, setStats] = useState<OrUnavailable<LeadDashboardStats> | null>(null);
   const [open, setOpen] = useState<Sub>(null);
 
-  const loadStats = () => { api.leadDashboardStats().then(setStats); };
+  const [urgentCalls, setUrgentCalls] = useState(0);
+  const [focusCall, setFocusCall] = useState<string | null>(null);
+  const loadStats = () => {
+    api.leadDashboardStats().then(setStats);
+    // R-594: how many waiting requests were asked for urgently.
+    api.listCallRequests(false).then((r) => setUrgentCalls(isUnavailable(r) ? 0 : r.filter((c) => c.status === "pending" && c.urgent).length));
+  };
   useEffect(() => { loadStats(); }, []);
+  // R-594: a call notification stashes the call and asks for this; Booked calls opens on that call.
+  useEffect(() => {
+    const take = () => {
+      try {
+        const id = localStorage.getItem(CALL_OPEN_KEY);
+        if (id) { localStorage.removeItem(CALL_OPEN_KEY); setFocusCall(id.trim()); setOpen("calls"); }
+      } catch { /* storage blocked: Booked calls just stays shut */ }
+    };
+    take();
+    window.addEventListener("calls-open", take);
+    return () => window.removeEventListener("calls-open", take);
+  }, []);
 
   const statsUnavailable = stats !== null && isUnavailable(stats);
   const loaded = stats !== null && !isUnavailable(stats);
@@ -59,6 +78,9 @@ export default function LeadBubbles({ pendingApprovals, onApprovalsChanged }: {
               <>
                 <div className="ui-fig">{pendingCalls}</div>
                 <div className="ui-label">Booked calls</div>
+                {urgentCalls > 0 && (
+                  <div className="mt-1.5"><StatusPill tone="danger">{urgentCalls} urgent</StatusPill></div>
+                )}
                 {nextCall && (
                   <div className="flex items-center gap-1.5 mt-1.5 min-w-0">
                     <StatusPill tone="success">Next</StatusPill>
@@ -99,7 +121,7 @@ export default function LeadBubbles({ pendingApprovals, onApprovalsChanged }: {
         />
       )}
       {open === "calls" && (
-        <BookedCallsModal onClose={() => setOpen(null)} onChanged={loadStats} />
+        <BookedCallsModal onClose={() => { setOpen(null); setFocusCall(null); }} onChanged={loadStats} focusId={focusCall} />
       )}
       {open === "leads" && (
         <OrganicLeadsModal onClose={() => setOpen(null)} />

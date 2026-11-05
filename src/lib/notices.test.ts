@@ -65,13 +65,49 @@ describe("the list of team notices", () => {
   });
 });
 
+describe("R-594: call requests", () => {
+  const call = (kind: string, over: Partial<LeadNotification> = {}) =>
+    note("c1", kind, { title: kind === "call_urgent" ? "Urgent call request: Pat Rivera" : "Call request: Pat Rivera", entity_id: "call-1", created_at: hoursAgo(1), ...over });
+  const day = localDay(new Date(NOW));
+  it("each reads its name under its own label, in the Calls group, and opens that call", () => {
+    const a = noticeRow(call("call_request"))!, u = noticeRow(call("call_urgent"))!;
+    expect([a.group, a.label, a.subject, a.urgency]).toEqual(["calls", "Call request", "Pat Rivera", "needs"]);
+    expect([u.group, u.label, u.subject, u.urgency]).toEqual(["calls", "Urgent call", "Pat Rivera", "overdue"]);
+    expect(noticeTarget(call("call_request"))).toEqual({ to: "call", id: "call-1" });
+    expect(noticeTarget(call("call_urgent"))).toEqual({ to: "call", id: "call-1" });
+    expect(noticeTarget(call("call_urgent", { entity_id: null }))).toBeNull();
+  });
+  it("urgent is the urgent tier and a plain request is normal, as on the phone and in push.rs", () => {
+    expect(tierOf(noticeRow(call("call_urgent"))!, day)).toBe("urgent");
+    expect(tierOf(noticeRow(call("call_request"))!, day)).toBe("normal");
+  });
+  it("only an admin sees or opens them", () => {
+    const list = [call("call_request"), call("call_urgent")];
+    expect(teamNoticesOf(list, false)).toHaveLength(0);
+    expect(teamNoticesOf(list, true).map((n) => n.kind)).toEqual(["call_urgent"]);
+    expect(leadNoticesOf(list, true).map((n) => n.kind)).toEqual(["call_request"]);
+    expect(leadNoticesOf(list, false)).toHaveLength(0);
+    expect(canOpenTarget({ to: "call", id: "x" }, { permissions: ["*"] } as never)).toBe(true);
+    expect(canOpenTarget({ to: "call", id: "x" }, { permissions: ["clients:view", "financials:view"] } as never)).toBe(false);
+  });
+  it("an urgent one raises an operating-system alert and counts on the bell; a plain one counts but does not alert", () => {
+    expect(ALERT_NOTICE_KINDS).toContain("call_urgent");
+    expect(ALERT_NOTICE_KINDS).not.toContain("call_request");
+    expect(planTeamRaise([call("call_urgent")], [], NOW).raise).toHaveLength(1);
+    expect(planTeamRaise([call("call_request")], [], NOW).raise).toHaveLength(0);
+    expect(bellCountOf({ pendingCustomers: 0, requests: [], notices: [{ kind: "call_urgent" }, { kind: "call_request" }] })).toBe(2);
+    expect(bellUrgentOf([{ kind: "call_urgent", status: "unread" }], day)).toBe(true);
+    expect(bellUrgentOf([{ kind: "call_request", status: "unread" }], day)).toBe(false);
+  });
+});
+
 describe("the pay-day notice (R-464)", () => {
   const payDay = (id: string, over: Partial<LeadNotification> = {}) =>
     note(id, "logistics_pay_due", { title: "Pay Sam Rivera today", body: "2 loads. Open it to record the payment.", payload_json: '{"pay_date":"2026-10-09"}', ...over });
 
   it("is one of the team kinds, and the only admin kind", () => {
     expect(TEAM_NOTICE_KINDS).toContain("logistics_pay_due");
-    expect([...ADMIN_NOTICE_KINDS]).toEqual(["logistics_pay_due"]);
+    expect([...ADMIN_NOTICE_KINDS]).toEqual(["logistics_pay_due", "call_urgent"]);
   });
   it("an admin sees it in the list, newest first among the rest", () => {
     const list = [note("a", "carrier_due", { created_at: hoursAgo(5) }), payDay("p", { created_at: hoursAgo(1) }), note("b", "bill_due", { created_at: hoursAgo(3) })];
@@ -363,7 +399,6 @@ describe("each kind's group, label and urgency", () => {
     expect([un?.group, un?.label, un?.urgency, un?.subject]).toEqual(["requests", "Unsubscribed", "info", "pat@example.test"]);
   });
   it("kinds this screen does not list are not rows", () => {
-    expect(noticeRow(note("x", "call_request"))).toBeNull();
     expect(noticeRow(note("x", "system"))).toBeNull();
     expect(requestRow({ id: "a", kind: "client_add", summary: "New client", created_at: "" })).toBeNull();
     expect(requestRow({ id: "a", kind: "listing_stale", summary: "Renew or mark sold: Box lot", created_at: "" })).toBeNull();
@@ -496,7 +531,7 @@ describe("the order of the screen", () => {
       row({ key: "unsub", group: "requests", kind: "unsubscribe", urgency: "info" }),
     ];
     expect(groupRows(rows).map((g) => g.group)).toEqual(["logistics", "customers", "leads", "bills", "requests"]);
-    expect(GROUP_ORDER).toEqual(["bills", "logistics", "bank", "customers", "requests", "leads"]);
+    expect(GROUP_ORDER).toEqual(["bills", "logistics", "bank", "customers", "requests", "leads", "calls"]);
   });
   it("a group with nothing in it is left out, and the input is not reordered", () => {
     const rows = [row({ key: "b", urgency: "info", kind: "bill_paid" }), row({ key: "a", urgency: "overdue", kind: "bill_overdue" })];
@@ -530,9 +565,9 @@ describe("the order of the screen", () => {
 
 describe("the colour of a row's when", () => {
   it("an overdue row's when is written in the label's colour, and no other row's is", () => {
-    for (const k of [...TEAM_NOTICE_KINDS, "supply_lead", "supplier_profile"]) {
+    for (const k of [...TEAM_NOTICE_KINDS, "supply_lead", "supplier_profile", "call_request"]) {
       const r = noticeRow(note("x", k))!;
-      expect(whenWearsUrgency(r), k).toBe(k === "bill_overdue" || k === "carrier_overdue");
+      expect(whenWearsUrgency(r), k).toBe(k === "bill_overdue" || k === "carrier_overdue" || k === "call_urgent");
     }
     expect(whenWearsUrgency(customerRow({ id: "c", name: "A" }))).toBe(false);
     for (const k of ["client_delete", "unsubscribe"]) expect(whenWearsUrgency(requestRow({ id: "a", kind: k, summary: "", created_at: "" })!), k).toBe(false);
@@ -568,7 +603,7 @@ describe("the bell counts only what needs you", () => {
   });
   it("leaves out a paid bill, supplier details, an unsubscribe and anything already read", () => {
     const requests = [{ kind: "unsubscribe" }, { kind: "unsubscribe" }, { kind: "client_add" }];
-    const notices = [unread("bill_paid"), unread("supplier_profile"), unread("bill_due", "acknowledged"), unread("supply_lead", "acknowledged"), unread("call_request")];
+    const notices = [unread("bill_paid"), unread("supplier_profile"), unread("bill_due", "acknowledged"), unread("supply_lead", "acknowledged"), unread("call_request", "acknowledged"), unread("call_urgent", "acknowledged")];
     expect(bellCountOf({ pendingCustomers: 0, requests, notices })).toBe(0);
   });
   it("forty listings to renew add one, not forty", () => {
@@ -579,7 +614,7 @@ describe("the bell counts only what needs you", () => {
     expect(bellCountOf({ pendingCustomers: 0, requests: [], notices: [] })).toBe(0);
   });
   it("counts exactly the rows the screen marks red or amber, whichever source they came from", () => {
-    for (const k of [...TEAM_NOTICE_KINDS, "supply_lead", "supplier_profile"]) {
+    for (const k of [...TEAM_NOTICE_KINDS, "supply_lead", "supplier_profile", "call_request"]) {
       const needs = noticeRow(note("x", k))!.urgency !== "info";
       expect(bellCountOf({ pendingCustomers: 0, requests: [], notices: [unread(k)] }), k).toBe(needs ? 1 : 0);
     }

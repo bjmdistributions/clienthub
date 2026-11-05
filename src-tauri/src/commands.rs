@@ -10904,6 +10904,11 @@ pub struct CallRequest {
     pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// R-594: asked for urgently by the caller or marked so by staff. A server that predates it sends neither field.
+    #[serde(default)]
+    pub urgent: bool,
+    #[serde(default)]
+    pub urgent_by: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -11050,10 +11055,11 @@ mod lead_shape_tests {
     fn calls_object_shape_flattens_pending_first() {
         let row = |id: &str, st: &str| json!({"id":id,"org_id":"o","client_id":null,"name":"n","email":null,"phone":null,
             "company":null,"best_time":null,"questions":null,"status":st,"scheduled_at":null,"confirmed_at":null,
-            "confirmation_sent_via":null,"archived":false,"created_at":"t","updated_at":"t"});
+            "confirmation_sent_via":null,"archived":false,"created_at":"t","updated_at":"t","urgent":true,"urgent_by":"caller"});
         let r: CallsResponse = serde_json::from_value(json!({"pending":[row("a","pending")],"confirmed":[row("b","confirmed")]})).unwrap();
         let all: Vec<CallRequest> = r.pending.into_iter().chain(r.confirmed).collect();
         assert_eq!(all.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert!(all[0].urgent && all[0].urgent_by.as_deref() == Some("caller"));
     }
 }
 
@@ -11159,6 +11165,21 @@ pub async fn reschedule_call_request(id: String, scheduled_at: String) -> Result
         return Err(format!("Couldn't reschedule the call ({}).", resp.status()));
     }
     Ok(())
+}
+
+/// R-594: mark a call urgent (or not). The server answers with the updated call row.
+#[tauri::command]
+pub async fn call_mark_urgent(id: String, urgent: bool) -> Result<CallRequest, String> {
+    let (base, token) = leads_server()?;
+    let resp = inbox_http()?
+        .post(format!("{base}/api/calls/{id}/urgent"))
+        .bearer_auth(&token)
+        .json(&json!({ "urgent": urgent }))
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't change the call ({}).", resp.status()));
+    }
+    resp.json::<CallRequest>().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -6,7 +6,7 @@ import { Inbox, X, Store, Reply } from "lucide-react";
 import StatusPill from "./StatusPill";
 import { openLoadInLogistics } from "./LogisticsPayCarriers";
 import {
-  BILL_OPEN_KEY, canOpenTarget, canSeeGroup, compareRows, customerRow, groupRows, moneyTone, noticeRow, noticeTarget, requestRow, tierOf, whenWearsUrgency, whenWords,
+  BILL_OPEN_KEY, CALL_OPEN_KEY, canOpenTarget, canSeeGroup, compareRows, customerRow, groupRows, moneyTone, noticeRow, noticeTarget, requestRow, tierOf, whenWearsUrgency, whenWords,
   type NoticeGroup, type NoticeRow, type NoticeTarget, type Urgency,
 } from "../lib/notices";
 import type { NoticeState } from "../lib/useNotices";
@@ -84,6 +84,12 @@ function openTarget(t: NoticeTarget) {
   if (t.to === "load") { openLoadInLogistics(t.id, t.step); return; }
   if (t.to === "logistics") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "logistics" })); return; }
   if (t.to === "bank") { window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "financials" })); return; }
+  if (t.to === "call") {
+    try { localStorage.setItem(CALL_OPEN_KEY, t.id); } catch { /* storage blocked: Clients just opens */ }
+    window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "clients" }));
+    setTimeout(() => window.dispatchEvent(new CustomEvent("calls-open")), 100);
+    return;
+  }
   if (t.to === "deal") {
     try { localStorage.setItem("dealflow_invoice_filter", t.invoice); } catch { /* storage blocked: Deal Flow just opens */ }
     window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
@@ -108,7 +114,7 @@ const BTN_SOLID = "ui-btn ui-btn-ink";
 const BTN_LINE = "ui-btn";
 // The buttons keep one width inside a group, so the "when" column lines up whichever buttons a row has.
 // One width for every group (the widest, Approve and Reject), so the when column is one straight line down the screen.
-const BUTTONS_W: Record<NoticeGroup, string> = { bills: "w-[172px]", logistics: "w-[172px]", bank: "w-[172px]", leads: "w-[172px]", customers: "w-[172px]", requests: "w-[172px]" };
+const BUTTONS_W: Record<NoticeGroup, string> = { bills: "w-[172px]", logistics: "w-[172px]", bank: "w-[172px]", leads: "w-[172px]", customers: "w-[172px]", requests: "w-[172px]", calls: "w-[172px]" };
 
 /** A row plus whatever it was made from, so its buttons know what to act on. */
 type Item = NoticeRow & { n?: LeadNotification; c?: Client; a?: ApprovalRequest };
@@ -235,7 +241,7 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
     if (!customersFailed) for (const c of pending) rows.push({ ...customerRow(c), c });
     if (!requestsFailed) for (const a of items) { const r = requestRow(a); if (r) rows.push({ ...r, a }); }
     const failed: NoticeGroup[] = [
-      ...(noticesFailed ? (["bills", "logistics", "leads"] as const).filter((g) => canSeeGroup(g, me)) : []),
+      ...(noticesFailed ? (["bills", "logistics", "leads", "calls"] as const).filter((g) => canSeeGroup(g, me)) : []),
       ...(customersFailed ? (["customers"] as const) : []),
       ...(requestsFailed ? (["requests"] as const) : []),
     ];

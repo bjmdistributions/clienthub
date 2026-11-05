@@ -15,13 +15,13 @@ import { isRenewal } from "./renewals";
 
 // ─── the team's notices ───────────────────────────────────────────────────
 
-export const TEAM_NOTICE_KINDS = ["logistics_quote", "carrier_due", "carrier_overdue", "bill_due", "bill_overdue", "bill_paid", "logistics_pay_due", "logistics_bol", "bank_txn", "deal_complete"] as const;
+export const TEAM_NOTICE_KINDS = ["logistics_quote", "carrier_due", "carrier_overdue", "bill_due", "bill_overdue", "bill_paid", "logistics_pay_due", "logistics_bol", "bank_txn", "deal_complete", "call_urgent"] as const;
 export type TeamNoticeKind = (typeof TEAM_NOTICE_KINDS)[number];
 export const isTeamNoticeKind = (k: string): k is TeamNoticeKind => (TEAM_NOTICE_KINDS as readonly string[]).includes(k);
 
 /** R-464: the kinds only an admin sees. "Pay <payee> today" is raised on the morning of a logistics pay date
  *  and is the owner's to act on; the server hides it from everyone else and this list does too. */
-export const ADMIN_NOTICE_KINDS = ["logistics_pay_due"] as const;
+export const ADMIN_NOTICE_KINDS = ["logistics_pay_due", "call_urgent"] as const;
 const isAdminKind = (k: string): boolean => (ADMIN_NOTICE_KINDS as readonly string[]).includes(k);
 
 /** Who sees the bell with these notices: an admin (as always), or anyone who sees deals or the books. A
@@ -46,9 +46,11 @@ export function teamNoticesOf(list: readonly LeadNotification[] | null | undefin
     .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
 }
 
-/** R-477: the supplier leads and supplier details the server keeps with the notices. Admins only. */
+/** R-477: the supplier leads and supplier details the server keeps with the notices. Admins only. R-594 adds the call requests (see isLeadNoticeKind). */
 export const LEAD_NOTICE_KINDS = ["supply_lead", "supplier_profile"] as const;
-const isLeadNoticeKind = (k: string): boolean => (LEAD_NOTICE_KINDS as readonly string[]).includes(k);
+/** R-594: a call request is kept with the leads too (admins only, counts on the bell, no operating-system alert, like a new
+ *  lead); an urgent one is a team kind that does alert. */
+const isLeadNoticeKind = (k: string): boolean => (LEAD_NOTICE_KINDS as readonly string[]).includes(k) || k === "call_request";
 
 /** The unread supplier leads and supplier details, newest first. Only an admin has them. */
 export function leadNoticesOf(list: readonly LeadNotification[] | null | undefined, admin = false): LeadNotification[] {
@@ -60,7 +62,7 @@ export function leadNoticesOf(list: readonly LeadNotification[] | null | undefin
 
 /** R-477: the server's notices that ask something of you. They count on the bell. A paid bill and a supplier's
  *  details only tell you something. */
-export const NEEDS_YOU_NOTICE_KINDS = ["bill_due", "bill_overdue", "carrier_due", "carrier_overdue", "logistics_quote", "logistics_pay_due"] as const;
+export const NEEDS_YOU_NOTICE_KINDS = ["bill_due", "bill_overdue", "carrier_due", "carrier_overdue", "logistics_quote", "logistics_pay_due", "call_urgent"] as const;
 export const isNeedsYouKind = (k: string): boolean => (NEEDS_YOU_NOTICE_KINDS as readonly string[]).includes(k);
 
 /** R-478: the notices that raise an operating-system alert but do not count on the bell. A BOL uploaded to a load is
@@ -77,7 +79,9 @@ export type NoticeTarget =
   /** R-493: a new bank row opens Financials, where it is booked. */
   | { to: "bank" }
   /** R-496: a completed deal opens Deal Flow on its invoice number. */
-  | { to: "deal"; invoice: string };
+  | { to: "deal"; invoice: string }
+  /** R-594: a call request opens Booked calls (on Clients) on that call. */
+  | { to: "call"; id: string };
 
 const payloadOf = (n: Pick<LeadNotification, "payload_json">): Record<string, unknown> => {
   try {
@@ -91,7 +95,7 @@ const idIn = (o: Record<string, unknown>, key: string): string => (typeof o[key]
  *  step (where the paperwork is), a bill notice the Bills screen (on the bill when the payload names one), a
  *  pay-day notice the logistics pay tracker. A notice whose payload names no load falls back to the screen that
  *  holds it. */
-export function noticeTarget(n: Pick<LeadNotification, "kind" | "payload_json">): NoticeTarget | null {
+export function noticeTarget(n: Pick<LeadNotification, "kind" | "payload_json"> & { entity_id?: string | null }): NoticeTarget | null {
   const p = payloadOf(n);
   const load = idIn(p, "booking_id");
   switch (n.kind) {
@@ -117,6 +121,9 @@ export function noticeTarget(n: Pick<LeadNotification, "kind" | "payload_json">)
       const invoice = idIn(p, "invoice_number");
       return invoice ? { to: "deal", invoice } : null;
     }
+    case "call_request":
+    case "call_urgent":
+      return n.entity_id ? { to: "call", id: n.entity_id } : null;
     default:
       return null;
   }
@@ -134,10 +141,13 @@ export const NOTICE_KIND_LABEL: Record<TeamNoticeKind, string> = {
   logistics_bol: "BOL uploaded",
   bank_txn: "Bank",
   deal_complete: "Deal completed",
+  call_urgent: "Urgent call",
 };
 
 /** The Bills screen opens a bill from another screen the same stash-then-switch way Invoices does. */
 export const BILL_OPEN_KEY = "bills_open_id";
+/** R-594: Clients opens Booked calls on this call when a call notice asks for it, the same stash-then-switch way. */
+export const CALL_OPEN_KEY = "calls_open_id";
 /** R-464: Settings opens on this Team sub-screen when another screen asks for the pay tracker. */
 export const PAY_TRACKER_KEY = "settings_team_sub";
 export const PAY_TRACKER_SUB = "payouts";
@@ -147,6 +157,7 @@ export function canOpenTarget(t: NoticeTarget | null, me: Perms | null | undefin
   if (!t || !me) return false;
   if (t.to === "bill" || t.to === "bank") return isAdmin(me) || can(me, "financials:view");
   if (t.to === "deal") return isAdmin(me) || can(me, "deal_flow:view");
+  if (t.to === "call") return isAdmin(me);
   return canViewLogistics(me);
 }
 
@@ -319,18 +330,18 @@ export function planDone(completed: readonly LogisticsCompletion[], seen: readon
 
 // ─── R-477: the Notifications screen, in groups, most urgent first ────────
 
-export type NoticeGroup = "bills" | "logistics" | "bank" | "customers" | "requests" | "leads";
+export type NoticeGroup = "bills" | "logistics" | "bank" | "customers" | "requests" | "leads" | "calls";
 /** The fixed order groups keep when nothing else separates them. */
-export const GROUP_ORDER: readonly NoticeGroup[] = ["bills", "logistics", "bank", "customers", "requests", "leads"];
+export const GROUP_ORDER: readonly NoticeGroup[] = ["bills", "logistics", "bank", "customers", "requests", "leads", "calls"];
 export const GROUP_LABEL: Record<NoticeGroup, string> = {
-  bills: "Bills", logistics: "Logistics", bank: "Money", customers: "Customers", requests: "Team requests", leads: "Supplier leads",
+  bills: "Bills", logistics: "Logistics", bank: "Money", customers: "Customers", requests: "Team requests", leads: "Supplier leads", calls: "Calls",
 };
 
 /** Overdue (red), needs you or is due soon (amber), for your information (grey). */
 export type Urgency = "overdue" | "needs" | "info";
 const URGENCY_RANK: Record<Urgency, number> = { overdue: 0, needs: 1, info: 2 };
 
-export type RowKind = TeamNoticeKind | "supply_lead" | "supplier_profile" | "pending_customer" | "client_delete" | "unsubscribe" | "lot_feed_new" | "lot_feed_repeat";
+export type RowKind = TeamNoticeKind | "call_request" | "supply_lead" | "supplier_profile" | "pending_customer" | "client_delete" | "unsubscribe" | "lot_feed_new" | "lot_feed_repeat";
 
 /** R-559: the two requests the Muse upload raises. A deal Muse sent while approval is on, and a
  *  deal it sent that is already listed. Both are answered on the request; the server does the work. */
@@ -353,6 +364,8 @@ const ROW_INFO: Record<RowKind, { group: NoticeGroup; label: string; urgency: Ur
   unsubscribe: { group: "requests", label: "Unsubscribed", urgency: "info" },
   lot_feed_new: { group: "requests", label: "New from Muse", urgency: "needs" },
   lot_feed_repeat: { group: "requests", label: "Already listed", urgency: "needs" },
+  call_request: { group: "calls", label: "Call request", urgency: "needs" },
+  call_urgent: { group: "calls", label: NOTICE_KIND_LABEL.call_urgent, urgency: "overdue" },
   supply_lead: { group: "leads", label: "New lead", urgency: "needs" },
   supplier_profile: { group: "leads", label: "Supplier details", urgency: "info" },
 };
@@ -389,7 +402,7 @@ export function dueDayOf(n: Pick<LeadNotification, "kind" | "entity_id" | "due_d
   return DAY_RE.test(day) ? day : "";
 }
 
-/** A server notice as a row, or null for a kind this screen does not list (a call request, a system note). */
+/** A server notice as a row, or null for a kind this screen does not list (a system note). */
 export function noticeRow(n: LeadNotification): NoticeRow | null {
   const kind: string = n.kind;
   if (!isTeamNoticeKind(kind) && !isLeadNoticeKind(kind)) return null;
@@ -403,6 +416,11 @@ export function noticeRow(n: LeadNotification): NoticeRow | null {
   // R-496: a completed deal reads its invoice number under "Deal completed".
   if (kind === "deal_complete") {
     return { key: `n:${n.id}`, ...ROW_INFO.deal_complete, kind, subject: idIn(payloadOf(n), "invoice_number") || text(n.body), dueDay: "", createdAt: n.created_at || "" };
+  }
+  // R-594: the server's title reads "Call request: <name>" or "Urgent call request: <name>"; the label already says which.
+  if (kind === "call_request" || kind === "call_urgent") {
+    const name = text(n.title).replace(/^(urgent )?call request:\s*/i, "");
+    return { key: `n:${n.id}`, ...ROW_INFO[kind], kind, subject: name || text(n.title), dueDay: "", createdAt: n.created_at || "" };
   }
   return {
     key: `n:${n.id}`, ...ROW_INFO[kind as RowKind], kind: kind as RowKind,
@@ -504,7 +522,7 @@ export const whenWearsUrgency = (r: Pick<NoticeRow, "urgency">): boolean => r.ur
  *  push.rs (level_for_notification, bank_messages) and the phone's ntTier (www/app.js) hold the same rule: change
  *  the three together. Only the day differs: a push is sent the moment the money moves, a row stays urgent that day. */
 export type Tier = "urgent" | "normal" | "quiet";
-const URGENT_KINDS: readonly string[] = ["bill_overdue", "carrier_overdue", "logistics_pay_due"];
+const URGENT_KINDS: readonly string[] = ["bill_overdue", "carrier_overdue", "logistics_pay_due", "call_urgent"];
 const QUIET_KINDS: readonly string[] = ["bill_paid", "logistics_bol", "supplier_profile", "unsubscribe"];
 export function tierOf(r: Pick<NoticeRow, "kind" | "createdAt" | "moneyIn">, today: string): Tier {
   if (URGENT_KINDS.includes(r.kind)) return "urgent";
@@ -529,7 +547,7 @@ export function bellCountOf(a: {
   notices: readonly NoticeLike[];
 }, today: string = localDay()): number {
   const waiting = a.notices.filter((n) => n.status !== "acknowledged"
-    && (n.kind === "supply_lead" || isNeedsYouKind(n.kind) || (n.kind === "bank_txn" && noticeTier(n, today) === "urgent"))).length;
+    && (n.kind === "supply_lead" || n.kind === "call_request" || isNeedsYouKind(n.kind) || (n.kind === "bank_txn" && noticeTier(n, today) === "urgent"))).length;
   const deletions = a.requests.filter((r) => r.kind === "client_delete" || isFeedKind(r.kind)).length;
   return a.pendingCustomers + deletions + (a.requests.some(isRenewal) ? 1 : 0) + waiting;
 }

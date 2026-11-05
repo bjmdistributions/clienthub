@@ -3,6 +3,7 @@ import { api, CallRequest, OrUnavailable, isUnavailable } from "../lib/api";
 import { X } from "lucide-react";
 import StatusPill from "./StatusPill";
 import { Button } from "./ui";
+import { toast } from "./Toast";
 
 function fmtWhen(iso: string): string {
   const d = new Date(iso);
@@ -103,8 +104,23 @@ function TypedConfirmStep({ kind, call, rescheduleAt, setRescheduleAt, onBack, o
   );
 }
 
-function PendingCallRow({ call, onAccept, onDecline }: {
+// R-594: a call someone asked for urgently, by the caller's tick on the website or a teammate's Mark urgent.
+const urgentFirst = (a: CallRequest, b: CallRequest): number => Number(!!b.urgent) - Number(!!a.urgent);
+const urgentWho = (c: CallRequest): string => (c.urgent_by === "caller" ? "Asked for by the caller" : c.urgent_by ? `Marked by ${c.urgent_by}` : "");
+const HIGHLIGHT = "bg-surface-2";
+
+function UrgentPill({ call }: { call: CallRequest }) {
+  return call.urgent ? <StatusPill tone="danger" title={urgentWho(call) || undefined}>Urgent</StatusPill> : null;
+}
+
+function UrgentButton({ call, onUrgent }: { call: CallRequest; onUrgent: (c: CallRequest) => void }) {
+  return <Button size="sm" onClick={() => onUrgent(call)}>{call.urgent ? "Not urgent" : "Mark urgent"}</Button>;
+}
+
+function PendingCallRow({ call, highlight, onAccept, onDecline, onUrgent }: {
   call: CallRequest;
+  highlight: boolean;
+  onUrgent: (c: CallRequest) => void;
   onAccept: (id: string, scheduledAt: string, sendEmail: boolean) => Promise<void>;
   onDecline: (id: string) => Promise<void>;
 }) {
@@ -120,10 +136,13 @@ function PendingCallRow({ call, onAccept, onDecline }: {
   };
 
   return (
-    <div className="px-5 py-3.5">
+    <div id={`call-${call.id}`} className={`px-5 py-3.5 ${highlight ? HIGHLIGHT : ""}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[13.5px] font-medium text-ink truncate">{call.name}{call.company ? ` · ${call.company}` : ""}</div>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-[13.5px] font-medium text-ink truncate">{call.name}{call.company ? ` · ${call.company}` : ""}</span>
+            <UrgentPill call={call} />
+          </div>
           <div className="text-[12px] text-muted mt-0.5 truncate">{[call.phone, call.email].filter(Boolean).join(" · ")}</div>
           {call.best_time && <div className="text-[12px] text-faint mt-1">Best time: {call.best_time}</div>}
           {call.questions && <div className="text-[12px] text-ink-2 mt-1.5 whitespace-pre-wrap">{call.questions}</div>}
@@ -131,6 +150,7 @@ function PendingCallRow({ call, onAccept, onDecline }: {
         {!accepting && (
           <div className="flex gap-1.5 flex-shrink-0">
             <Button variant="ink" size="sm" onClick={() => setAccepting(true)}>Accept</Button>
+            <UrgentButton call={call} onUrgent={onUrgent} />
             <Button size="sm" onClick={() => onDecline(call.id)}>Decline</Button>
           </div>
         )}
@@ -159,13 +179,16 @@ function PendingCallRow({ call, onAccept, onDecline }: {
   );
 }
 
-function ConfirmedCallRow({ call, onAction }: { call: CallRequest; onAction: (kind: ActionKind, call: CallRequest) => void }) {
+function ConfirmedCallRow({ call, highlight, onAction, onUrgent }: {
+  call: CallRequest; highlight: boolean; onAction: (kind: ActionKind, call: CallRequest) => void; onUrgent: (c: CallRequest) => void;
+}) {
   return (
-    <div className="px-5 py-3.5 flex items-start justify-between gap-3">
+    <div id={`call-${call.id}`} className={`px-5 py-3.5 flex items-start justify-between gap-3 ${highlight ? HIGHLIGHT : ""}`}>
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[13.5px] font-medium text-ink truncate">{call.name}{call.company ? ` · ${call.company}` : ""}</span>
           <StatusPill tone="success">Confirmed</StatusPill>
+          <UrgentPill call={call} />
         </div>
         <div className="text-[12px] text-ink-2 mt-1 tabular-nums">{call.scheduled_at ? fmtWhen(call.scheduled_at) : "-"}</div>
         {call.confirmation_sent_via && (
@@ -174,7 +197,8 @@ function ConfirmedCallRow({ call, onAction }: { call: CallRequest; onAction: (ki
           </div>
         )}
       </div>
-      <div className="flex gap-1.5 flex-shrink-0">
+      <div className="flex gap-1.5 flex-shrink-0 flex-wrap justify-end">
+        <UrgentButton call={call} onUrgent={onUrgent} />
         <Button size="sm" onClick={() => onAction("reschedule", call)}>Reschedule</Button>
         <Button size="sm" onClick={() => onAction("cancel", call)}>Cancel</Button>
         <Button size="sm" onClick={() => onAction("archive", call)}>Archive</Button>
@@ -186,10 +210,15 @@ function ConfirmedCallRow({ call, onAction }: { call: CallRequest; onAction: (ki
 // The "Booked calls" bubble's sub-view. Pending requests accept/decline inline;
 // confirmed calls carry date/time and how the confirmation went out, with
 // Cancel/Reschedule/Archive gated behind the two-step confirm.
-export default function BookedCallsModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+export default function BookedCallsModal({ onClose, onChanged, focusId }: { onClose: () => void; onChanged: () => void; focusId?: string | null }) {
   const [calls, setCalls] = useState<OrUnavailable<CallRequest[]> | null>(null);
   const load = () => { api.listCallRequests(false).then(setCalls); };
   useEffect(() => { load(); }, []);
+  // R-594: a call notification opens this on its call: scrolled to it and shaded.
+  useEffect(() => {
+    if (!focusId || !calls || isUnavailable(calls)) return;
+    document.getElementById(`call-${focusId}`)?.scrollIntoView({ block: "center" });
+  }, [focusId, calls]);
 
   const [action, setAction] = useState<{ kind: ActionKind; call: CallRequest } | null>(null);
   const [step, setStep] = useState<1 | 2>(1);
@@ -207,6 +236,11 @@ export default function BookedCallsModal({ onClose, onChanged }: { onClose: () =
 
   const doAccept = async (id: string, scheduledAt: string, sendEmail: boolean) => {
     await api.confirmCallRequest(id, scheduledAt, sendEmail);
+    load(); onChanged();
+  };
+  const doUrgent = async (c: CallRequest) => {
+    const r = await api.markCallUrgent(c.id, !c.urgent);
+    if (isUnavailable(r)) toast("Couldn't change the call. Try again in a moment.", "error");
     load(); onChanged();
   };
   const doDecline = async (id: string) => { await api.cancelCallRequest(id); load(); onChanged(); };
@@ -227,8 +261,8 @@ export default function BookedCallsModal({ onClose, onChanged }: { onClose: () =
 
   const unavailable = calls !== null && isUnavailable(calls);
   const list = calls !== null && !isUnavailable(calls) ? calls : [];
-  const pendingCalls = list.filter((c) => c.status === "pending");
-  const confirmedCalls = list.filter((c) => c.status === "confirmed");
+  const pendingCalls = list.filter((c) => c.status === "pending").sort(urgentFirst);
+  const confirmedCalls = list.filter((c) => c.status === "confirmed").sort(urgentFirst);
   const otherCalls = list.filter((c) => c.status === "cancelled" || c.status === "declined");
 
   return (
@@ -255,7 +289,7 @@ export default function BookedCallsModal({ onClose, onChanged }: { onClose: () =
                 <div>
                   <div className="px-5 pt-4 pb-1.5 text-[12.5px] font-medium text-muted">Pending</div>
                   <div className="divide-y divide-line-2">
-                    {pendingCalls.map((c) => <PendingCallRow key={c.id} call={c} onAccept={doAccept} onDecline={doDecline} />)}
+                    {pendingCalls.map((c) => <PendingCallRow key={c.id} call={c} highlight={c.id === focusId} onAccept={doAccept} onDecline={doDecline} onUrgent={doUrgent} />)}
                   </div>
                 </div>
               )}
@@ -263,7 +297,7 @@ export default function BookedCallsModal({ onClose, onChanged }: { onClose: () =
                 <div>
                   <div className="px-5 pt-4 pb-1.5 text-[12.5px] font-medium text-muted">Confirmed</div>
                   <div className="divide-y divide-line-2">
-                    {confirmedCalls.map((c) => <ConfirmedCallRow key={c.id} call={c} onAction={openAction} />)}
+                    {confirmedCalls.map((c) => <ConfirmedCallRow key={c.id} call={c} highlight={c.id === focusId} onAction={openAction} onUrgent={doUrgent} />)}
                   </div>
                 </div>
               )}

@@ -4188,7 +4188,7 @@ function CalendarTab() {
         <SectionLabel>Company calendar</SectionLabel>
         <p className="text-[13px] text-muted mt-1 leading-relaxed">
           Ecliptr writes its dates into two calendars in your company Google account.{" "}<strong className="text-ink-2">Ecliptr</strong> has
-          bills due, carriers to pay, the logistics pay day, invoices due and every pickup and delivery.{" "}
+          bills due, carriers to pay, the logistics pay day, invoices due, every pickup and delivery, and your booked calls, which show in red with a reminder 15 minutes before.{" "}
           <strong className="text-ink-2">Ecliptr Logistics</strong> has the pickups and deliveries only, with no money on it.
           It updates every two minutes. Change a date in Ecliptr, not in Google: a change made in Google is written over the next time that item changes.
         </p>

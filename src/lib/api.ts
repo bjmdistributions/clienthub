@@ -318,12 +318,16 @@ export interface CallRequest {
   archived: boolean;
   created_at: string;
   updated_at: string;
+  /** R-594: asked for urgently by the caller (website tick) or marked so by staff. Absent from a server that predates it. */
+  urgent?: boolean;
+  /** "caller" or the staff member's name. */
+  urgent_by?: string | null;
 }
 export interface LeadNotification {
   id: string;
   org_id: string;
   /** R-460: the last eight are the team's logistics and bill notices (see lib/notices.ts). */
-  kind: "supply_lead" | "supplier_profile" | "call_request" | "system"
+  kind: "supply_lead" | "supplier_profile" | "call_request" | "call_urgent" | "system"
     | "logistics_quote" | "carrier_due" | "carrier_overdue" | "bill_due" | "bill_overdue" | "bill_paid" | "logistics_pay_due" | "logistics_bol"
     // R-493: a new bank row a Plaid sync brought in (title "New deposit" or "New charge", body the amount).
     | "bank_txn"
@@ -4898,6 +4902,8 @@ export const api = {
   rescheduleCallRequest: (id: string, scheduledAt: string) =>
     safe(invoke<void>("reschedule_call_request", { id, scheduledAt })),
   archiveCallRequest: (id: string) => safe(invoke<void>("archive_call_request", { id })),
+  /** R-594: mark a call urgent or not; answers the updated call. */
+  markCallUrgent: (id: string, urgent: boolean) => safe(invoke<CallRequest>("call_mark_urgent", { id, urgent })),
   listLeadNotifications: (kind?: string, status?: string) =>
     safe(invoke<LeadNotification[]>("list_lead_notifications", { kind, status })),
   ackLeadNotification: (id: string) => safe(invoke<void>("ack_lead_notification", { id })),
