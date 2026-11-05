@@ -112,54 +112,6 @@ export function SupplierField({ name, saved, onChange }: {
   );
 }
 
-/** R-551: start a buy before its stock is here: what it is, who from, what you pay for the load, and how many if you know. */
-export function NewBuyForm({ onSaved, onCancel }: { onSaved: (d: BuyDetail) => void; onCancel: () => void }) {
-  const [name, setName] = useState("");
-  const [supplier, setSupplier] = useState("");
-  const [supplierId, setSupplierId] = useState("");
-  const [total, setTotal] = useState<number>(0);
-  const [units, setUnits] = useState<number>(0);
-  const [busy, setBusy] = useState(false);
-  const save = async () => {
-    if (!name.trim()) { toast("Say what it is.", "error"); return; }
-    setBusy(true);
-    try {
-      onSaved(await api.createWarehouseBuy({ name: name.trim(), supplier_name: supplier.trim(), supplier_id: supplierId || undefined, goods_total: total, units_bought: units > 0 ? units : 0 }));
-    } catch (e) { toast(String(e), "error"); setBusy(false); }
-  };
-  return (
-    <div className={`${WH_CARD} p-5 space-y-5 max-w-[720px]`}>
-      <div>
-        <h3 className="text-[15px] font-semibold text-ink">New buy</h3>
-        <p className="text-[12.5px] text-muted mt-1 leading-relaxed">
-          Start it before the stock is here. Send it to logistics to bring it in, then add its manifest when it arrives: the delivery it makes becomes this buy's stock.
-        </p>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <label className="block">
-          <span className="text-[12px] font-medium text-ink-2">What it is</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="Like: Nike shoes, 110 pallets" className={`${WH_INPUT} mt-1`} style={WH_INPUT_BG} />
-        </label>
-        <SupplierField name={supplier} onChange={(n, i) => { setSupplier(n); setSupplierId(i); }} />
-        <label className="block">
-          <span className="text-[12px] font-medium text-ink-2">What you pay for the load</span>
-          <NumberInput value={total} onValue={setTotal} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
-          <span className="block text-[11.5px] text-muted mt-1">The total for the goods, without the shipping.</span>
-        </label>
-        <label className="block">
-          <span className="text-[12px] font-medium text-ink-2">How many (if you know)</span>
-          <NumberInput integer value={units || ""} onValue={setUnits} className={`${WH_INPUT} mt-1 tabular-nums`} style={WH_INPUT_BG} />
-          <span className="block text-[11.5px] text-muted mt-1">Leave it empty and the manifest fills it in.</span>
-        </label>
-      </div>
-      <div className="flex items-center justify-end gap-2 border-t border-line pt-4">
-        <button onClick={onCancel} disabled={busy} className={WH_BTN_SECONDARY}>Cancel</button>
-        <button onClick={save} disabled={busy} className={WH_BTN_PRIMARY}>{busy ? "Saving…" : "Save the buy"}</button>
-      </div>
-    </div>
-  );
-}
-
 function BuyForm({ unit, stockName, defaultUnits, detail, onSave, onCancel }: {
   unit: Unit; stockName: string; defaultUnits: number; detail: BuyDetail | null;
   onSave: (input: BuyInput) => Promise<void>; onCancel?: () => void;
@@ -265,12 +217,12 @@ function BuyForm({ unit, stockName, defaultUnits, detail, onSave, onCancel }: {
 
 // ─── A recorded buy ──────────────────────────────────────────────────────────────
 
-function Tile({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "good" | "bad" }) {
+export function Tile({ label, value, sub, tone, faded }: { label: string; value: string; sub?: string; tone?: "good" | "bad"; /** R-596: a figure that still leans on money not in yet. */ faded?: boolean }) {
   const clr = tone === "good" ? "text-success-ink" : tone === "bad" ? "text-danger-ink" : "text-ink";
   return (
     <div className={`${WH_CARD} px-4 py-3 min-w-0`}>
       <div className="text-[12px] font-medium text-muted">{label}</div>
-      <div className={`text-[20px] font-bold tabular-nums mt-0.5 ${clr}`}>{value}</div>
+      <div className={`text-[20px] font-bold tabular-nums mt-0.5 ${clr} ${faded ? "opacity-50" : ""}`}>{value}</div>
       {sub && <div className="text-[11.5px] text-muted mt-0.5 leading-snug">{sub}</div>}
     </div>
   );
@@ -438,7 +390,7 @@ function BuyView({ d, unit, numbers, onEdit, onChanged, onReload, onRemoved, onA
   );
 }
 
-function Notice({ tone, children, action }: { tone: "warning"; children: ReactNode; action?: ReactNode }) {
+export function Notice({ tone, children, action }: { tone: "warning"; children: ReactNode; action?: ReactNode }) {
   return (
     <div className={`flex items-center justify-between gap-3 flex-wrap rounded-xl border px-4 py-3 text-[12.5px] ${tone === "warning" ? "border-warning/30 bg-warning-bg text-warning-ink" : ""}`}>
       <span className="min-w-0 leading-relaxed">{children}</span>
@@ -447,7 +399,7 @@ function Notice({ tone, children, action }: { tone: "warning"; children: ReactNo
   );
 }
 
-function OrderRow({ o, d, unit, numbers, busy, run }: {
+export function OrderRow({ o, d, unit, numbers, busy, run }: {
   o: BuyOrder; d: BuyDetail; unit: Unit; numbers: boolean; busy: string | null; run: (k: string, f: () => Promise<BuyDetail | void>) => Promise<void>;
 }) {
   // R-576: the deal carries a different figure from the buy's (a line removed or changed by hand, or not written yet).
@@ -504,7 +456,7 @@ function OrderRow({ o, d, unit, numbers, busy, run }: {
 
 /** R-576: where every dollar of the load sits, to the cent: on each sold order's deal, or on the stock still here. His
  *  logistics markup is named on its own line and is in none of the figures above it. */
-function MoneyPicture({ d, unit }: { d: BuyDetail; unit: Unit }) {
+export function MoneyPicture({ d, unit }: { d: BuyDetail; unit: Unit }) {
   const r = d.rollup;
   const live = d.orders.filter((o) => !o.undone);
   const onDeals = live.filter((o) => !o.own_cost).reduce((a, o) => a + o.goods + o.ship, 0);
@@ -545,7 +497,7 @@ function MoneyPicture({ d, unit }: { d: BuyDetail; unit: Unit }) {
   );
 }
 
-function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k: string, f: () => Promise<BuyDetail | void>) => Promise<void> }) {
+export function Payments({ d, busy, run }: { d: BuyDetail; busy: string | null; run: (k: string, f: () => Promise<BuyDetail | void>) => Promise<void> }) {
   const [adding, setAdding] = useState<BuyKind | null>(null);
   const r = d.rollup;
   // R-551: a bank row a truck's carrier was paid with is shown (and taken off) on that truck, in Shipping in.
@@ -641,15 +593,24 @@ export function PayPicker({ kind, buy, onDone, onCancel }: {
   const [date, setDate] = useState(localDay());
   const [busy, setBusy] = useState(false);
   const [asking, setAsking] = useState<{ key: string; choice: Extract<PayChoice, { kind: "ask" }>; o: PayWith } | null>(null);
-  useEffect(() => { api.unallocatedBankTxns(undefined, true).then((r) => setRows(r.money_out.filter((t) => t.unallocated > 0.005))).catch(() => setRows([])); }, []);
+  // R-596: a refund is money that came in; goods and shipping are money that went out.
+  const refund = kind === "refund";
+  useEffect(() => { api.unallocatedBankTxns(undefined, true).then((r) => setRows((refund ? r.money_in : r.money_out).filter((t) => t.unallocated > 0.005))).catch(() => setRows([])); }, [refund]);
   const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = supplierFirst(rows || [], buy.supplier).filter((t) => rowMatches(words, t)).slice(0, 50);
   const send = async (o: PayWith, take?: BuyTake, raised = false) => {
     setBusy(true);
-    try { const d = await api.payWarehouseBuy(buy.id, kind, { ...o, take }); paidToast(d, kind, raised); onDone(d); }
+    try {
+      const d = await api.payWarehouseBuy(buy.id, kind, { ...o, take });
+      if (refund) toast(`Booked. ${fmtAmount(d.rollup.refund_received)} of the refund has come in, ${fmtAmount(d.rollup.refund_left)} is still owed.`);
+      else paidToast(d, kind, raised);
+      onDone(d);
+    }
     catch (e) { toast(String(e), "error"); setBusy(false); }
   };
   const pick = (key: string, room: number, o: PayWith) => {
+    // A refund books all the row has free, even past what is owed, so there is nothing to ask.
+    if (refund) { if (room <= 0.005) { toast("That payment is already booked in full in Financials. Take it off there first.", "error"); return; } send(o); return; }
     const c = payChoice(buy.total, buy.paid, room);
     if (c.kind === "none") { toast("That payment is already booked in full in Financials. Take it off there first.", "error"); return; }
     if (c.kind === "ask") { setAsking({ key, choice: c, o }); return; }
@@ -662,7 +623,7 @@ export function PayPicker({ kind, buy, onDone, onCancel }: {
     <div className="border border-line rounded-lg p-3 space-y-2">
       <div className="flex items-center gap-2">
         <button onClick={() => { setCash(false); setAsking(null); }} aria-pressed={!cash} className={`text-[12px] px-2.5 h-7 rounded-md ${!cash ? "bg-surface-2 text-ink font-medium" : "text-muted"}`}>A bank payment</button>
-        <button onClick={() => { setCash(true); setAsking(null); }} aria-pressed={cash} className={`text-[12px] px-2.5 h-7 rounded-md ${cash ? "bg-surface-2 text-ink font-medium" : "text-muted"}`}>Paid in cash</button>
+        {!refund && <button onClick={() => { setCash(true); setAsking(null); }} aria-pressed={cash} className={`text-[12px] px-2.5 h-7 rounded-md ${cash ? "bg-surface-2 text-ink font-medium" : "text-muted"}`}>Paid in cash</button>}
         <button onClick={onCancel} aria-label="Close" className="ml-auto text-faint hover:text-ink-2"><X size={14} /></button>
       </div>
       {cash ? (
@@ -684,7 +645,7 @@ export function PayPicker({ kind, buy, onDone, onCancel }: {
           </div>
           <div className="max-h-72 overflow-y-auto space-y-1">
             {rows === null ? <p className="text-[12px] text-muted py-2">Loading…</p>
-              : shown.length === 0 ? <p className="text-[12px] text-muted py-2">No money out that is not booked yet{q ? " matches that" : ""}.</p>
+              : shown.length === 0 ? <p className="text-[12px] text-muted py-2">No money {refund ? "in" : "out"} that is not booked yet{q ? " matches that" : ""}.</p>
               : shown.map((t) => (
                 <div key={t.id} className="space-y-1">
                   <button disabled={busy} onClick={() => pick(t.id, t.unallocated, { txnId: t.id })}
@@ -705,7 +666,7 @@ export function PayPicker({ kind, buy, onDone, onCancel }: {
   );
 }
 
-function RemoveBuy({ id, onRemoved }: { id: string; onRemoved: () => void }) {
+export function RemoveBuy({ id, onRemoved }: { id: string; onRemoved: () => void }) {
   const [sure, setSure] = useState(false);
   return (
     <div className="flex justify-end">

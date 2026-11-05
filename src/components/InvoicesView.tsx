@@ -1,6 +1,6 @@
 import { Check, CreditCard, Download, Edit2, ExternalLink, FileDown, type LucideIcon, MoreVertical, Plus, RotateCcw, Search, Send, Trash2, X, XCircle } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow, type BuyBrief } from "../lib/api";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow, type BuyBrief, type PurchaseRow } from "../lib/api";
 import { canSeePayments } from "../lib/dealPayments";
 import { chargingOf, invoiceCost, invoiceCostLines } from "../lib/buyLoads";
 import { useSessionMe } from "../lib/useSessionMe";
@@ -679,7 +679,24 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
     api.warehouseBuyFor({ itemId: buyItem || undefined, loadId: buyLoad || undefined }).then((r) => setBuy(r.buy)).catch(() => setBuy(null));
   }, [buyItem, buyLoad]);
   const builtCount = !initial && prefill?.built ? (prefill.lines || []).reduce((a, l) => a + Math.max(0, Math.round(l.qty || 0)), 0) : 0;
-  const buyCount = buyLoad ? dlPairs : whUnits > 0 ? whUnits : builtCount;
+  // R-596: an invoice can sell from a purchase order with no stock in the warehouse. Choosing one and how many gives the sale
+  // its cost each (the goods and shipping in, less the refund counted) and the profit, and the order takes the count on save.
+  const [orders, setOrders] = useState<PurchaseRow[]>([]);
+  const [poId, setPoId] = useState("");
+  const [poCount, setPoCount] = useState(0);
+  const noStock = !initial && !buyItem && !buyLoad;
+  useEffect(() => {
+    if (!noStock) return;
+    api.listWarehouseBuys().then((r) => setOrders((r.purchases ?? []).filter((p) => p.on_the_way && p.rollup.left > 0))).catch(() => setOrders([]));
+  }, [noStock]);
+  const po = orders.find((o) => o.id === poId) ?? null;
+  useEffect(() => {
+    if (!poId) { if (noStock) setBuy(null); return; }
+    api.getWarehouseBuy(poId)
+      .then((d) => setBuy({ id: d.buy.id, name: d.buy.name, units_bought: d.rollup.bought, sold: d.rollup.sold, unit_goods: d.unit_goods, unit_ship: d.unit_ship, unit_markup: d.unit_markup }))
+      .catch(() => setBuy(null));
+  }, [poId, noStock]);
+  const buyCount = poId ? poCount : buyLoad ? dlPairs : whUnits > 0 ? whUnits : builtCount;
   const buyGoods = buyCost ?? (buy ? Math.round(buyCount * buy.unit_goods * 100) / 100 : 0);
   // R-551: the cost each (goods and shipping in; R-576: never his markup), what the order costs, and the profit against what the lines charge
   // (shipping lines left out: that truck's cost is not known yet), live as the lines change. Never on the PDF.
@@ -796,6 +813,10 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
 
   const submit = async () => {
     if (items.length === 0) return;
+    if (poId && po) {
+      if (!(poCount > 0)) { toast("Say how many are sold from the purchase order.", "error"); return; }
+      if (poCount > po.rollup.left + 1e-9) { toast(`Only ${Math.round(po.rollup.left).toLocaleString("en-US")} are left on that purchase order.`, "error"); return; }
+    }
     setSubmitting(true);
     try {
       let cid = clientId;
@@ -860,9 +881,10 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
               toast(`Invoice created, but the pairs have not left the delivery yet (${e}). Open the delivery, Sell, to finish.`, "error");
             });
         }
+        if (poId) taken = poCount;
         if (buy && taken > 0) {
           await api.addWarehouseBuyOrder(buy.id, invId, taken, buyCost)
-            .catch((e: any) => toast(`Invoice created, but its cost did not reach the deal (${e}). The stock's Buy tab can add it.`, "error"));
+            .catch((e: any) => toast(`Invoice created, but its cost did not reach the deal (${e}). ${poId ? "Open the order in Purchases and add it there." : "The stock's Buy tab can add it."}`, "error"));
         }
         // R-348: the pallets that were built go onto this order, each with its label and link.
         if (prefill?.pallets && prefill.pallets.pallets.length) {
@@ -1018,7 +1040,32 @@ function InvoiceForm({ clients, initial, prefill, onClose }: { clients: Client[]
         </div>
       )}
 
-      {!initial && (buyItem || buyLoad) && buyCount > 0 && (
+      {noStock && orders.length > 0 && (
+        <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl text-[13px] text-ink">
+          <div className="flex items-end gap-3 flex-wrap">
+            <label className="block min-w-0">
+              <span className="block text-[12.5px] font-medium text-muted mb-1">From purchase order</span>
+              <select value={poId} onChange={(e) => { setPoId(e.target.value); setPoCount(0); setBuyCost(null); setTypingCost(false); }} aria-label="From purchase order"
+                className="h-9 px-2 border border-line rounded-lg text-[13px] bg-surface max-w-[360px]">
+                <option value="">None, nothing sold from an order</option>
+                {orders.map((o) => (
+                  <option key={o.id} value={o.id}>{[o.supplier_name || o.name, o.buy.invoice_no, `${Math.round(o.rollup.left).toLocaleString("en-US")} left`].filter(Boolean).join(", ")}</option>
+                ))}
+              </select>
+            </label>
+            {poId && (
+              <label className="block">
+                <span className="block text-[12.5px] font-medium text-muted mb-1">How many</span>
+                <NumberInput integer value={poCount || ""} onValue={setPoCount}
+                  className="w-28 h-9 px-2 border border-line rounded-lg text-[13px] tabular-nums bg-surface focus:outline-none focus:border-ink" />
+              </label>
+            )}
+          </div>
+          {!poId && <p className="text-[12.5px] text-muted mt-2">Selling stock you bought on a purchase order? Choose it and how many, and this sale gets its cost each and its profit.</p>}
+        </div>
+      )}
+
+      {!initial && (buyItem || buyLoad || poId) && buyCount > 0 && (
         <div className="mb-5 p-4 bg-surface-2 border border-line rounded-xl text-[13px] text-ink">
           {!buy ? (
             <>No buy is recorded for this stock, so no cost goes on this order's deal. <span className="text-muted">Record what you paid on its Buy tab in the Warehouse.</span></>

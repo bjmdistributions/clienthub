@@ -65,11 +65,21 @@ struct BuyRow {
     archived: bool,
     created_at: String,
     updated_at: String,
+    /// R-596: the purchase order's own facts. `units_received` / `refund_owed` None are "not counted yet" / "worked out".
+    invoice_no: String,
+    invoice_date: String,
+    lines_json: String,
+    units_received: Option<f64>,
+    received_at: String,
+    refund_owed: Option<f64>,
+    manifest_name: String,
+    from_deal_id: String,
 }
 
 const BUY_COLS: &str = "id, COALESCE(item_id,''), COALESCE(load_id,''), COALESCE(name,''), COALESCE(supplier_id,''), \
     COALESCE(supplier_name,''), COALESCE(units_bought,0), COALESCE(goods_total,0), COALESCE(ship_total,0), COALESCE(notes,''), \
-    COALESCE(archived,0), created_at, updated_at";
+    COALESCE(archived,0), created_at, updated_at, COALESCE(invoice_no,''), COALESCE(invoice_date,''), COALESCE(lines_json,''), \
+    units_received, COALESCE(received_at,''), refund_owed, COALESCE(manifest_name,''), COALESCE(from_deal_id,'')";
 
 fn map_buy(r: &rusqlite::Row) -> rusqlite::Result<BuyRow> {
     Ok(BuyRow {
@@ -86,7 +96,22 @@ fn map_buy(r: &rusqlite::Row) -> rusqlite::Result<BuyRow> {
         archived: r.get::<_, i64>(10)? != 0,
         created_at: r.get(11)?,
         updated_at: r.get(12)?,
+        invoice_no: r.get(13)?,
+        invoice_date: r.get(14)?,
+        lines_json: r.get(15)?,
+        units_received: r.get(16)?,
+        received_at: r.get(17)?,
+        refund_owed: r.get(18)?,
+        manifest_name: r.get(19)?,
+        from_deal_id: r.get(20)?,
     })
+}
+
+impl BuyRow {
+    /// R-596: what arrived against what was ordered, and the refund owed for the short.
+    fn receipt(&self) -> core::Receipt {
+        core::Receipt::new(self.units, self.goods, self.units_received, self.refund_owed)
+    }
 }
 
 fn buy(c: &rusqlite::Connection, id: &str) -> Result<BuyRow, String> {
@@ -218,7 +243,8 @@ fn truck_cost_of(trucks: &[TruckFull]) -> core::TruckCost {
 
 /// The buy's totals: its goods, its shipping in (the trucks once it has one) and his markup on them.
 fn totals_of(b: &BuyRow, tc: &core::TruckCost) -> core::Totals {
-    core::Totals { units: b.units, goods: b.goods, ship: core::ship_in(b.ship, tc), markup: tc.markup }
+    // R-596: the units that count are the ones received once they are counted.
+    core::Totals { units: b.receipt().basis, goods: b.goods, ship: core::ship_in(b.ship, tc), markup: tc.markup }
 }
 
 /// The trucks as the screens list them (`TruckRow`): the removed ones left out, `truck_no` the place among the live ones (0 for
@@ -305,7 +331,19 @@ fn kind_of(a: &Alloc) -> Kind {
         "fee" => Kind::Ship,
         "supplier_payment" if a.note.ends_with(", shipping in") => Kind::Ship,
         "supplier_payment" => Kind::Goods,
+        // R-596: money in from the supplier for units that never came.
+        "refund_in" => Kind::Refund,
         _ => core::held_kind(&a.note),
+    }
+}
+
+/// Why a bank row already used one way on a buy cannot be used another way.
+fn kind_clash(have: Kind, want: Kind) -> &'static str {
+    match (have, want) {
+        (Kind::Goods, Kind::Ship) => "That bank row already pays the goods on this buy. Take it off first to use it for the shipping in.",
+        (Kind::Ship, Kind::Goods) => "That bank row already pays the shipping in on this buy. Take it off first to use it for the goods.",
+        (Kind::Refund, _) => "That bank row already counts as a refund on this buy. Take it off first to use it another way.",
+        _ => "That bank row already pays this buy. Take it off first to use it as a refund.",
     }
 }
 
@@ -572,11 +610,7 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
     if let Some((t, k)) = link {
         if let Some(have) = kinds.get(t) {
             if *have != k {
-                return Err(match have {
-                    Kind::Goods => "That bank row already pays the goods on this buy. Take it off first to use it for the shipping in.",
-                    Kind::Ship => "That bank row already pays the shipping in on this buy. Take it off first to use it for the goods.",
-                }
-                .into());
+                return Err(kind_clash(*have, k).into());
             }
         }
         kinds.insert(t.to_string(), k);
@@ -616,7 +650,7 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
             core::RowIn { txn_id: id.clone(), kind: *k, room, posted_at: i.posted_at.clone() }
         })
         .collect();
-    let plan = core::plan(&t, &ins, &rins);
+    let plan = core::plan_with(&t, &ins, &rins, &b.receipt());
     let mut wants = Vec::new();
     for p in &plan.orders {
         let Some(d) = deal_of_order.get(&p.id) else { continue };
@@ -625,6 +659,10 @@ fn work(c: &rusqlite::Connection, buy_id: &str, link: Option<(&str, Kind)>, unli
         }
         for s in &p.ship_slices {
             wants.push(Want { deal: d.clone(), txn_id: s.txn_id.clone(), role: "supplier_payment", amount: s.amount, note: core::ship_note(&b.name) });
+        }
+        // R-596: the supplier's refund, each order's share of it, lowers that deal's cost.
+        for s in &p.refund_slices {
+            wants.push(Want { deal: d.clone(), txn_id: s.txn_id.clone(), role: "refund_in", amount: s.amount, note: core::refund_note(&b.name) });
         }
     }
     for h in &plan.held {
@@ -675,7 +713,9 @@ fn wanted_lines(b: &BuyRow, p: &core::OrderPlan) -> Vec<SupplierPayment> {
     // landed cost a unit and the buyer's own shipping is never touched. Both legs' bank rows book as
     // `supplier_payment` on the deal, so the line and its links agree. Paid follows the supplier: the carrier
     // is followed on its truck.
-    let landed = core::r2(p.goods + p.ship);
+    // R-596: the goods less the refund still to come (owed, not yet booked), so an owed refund lowers the cost
+    // now; a refund already booked is a `refund_in` on the deal, which the deal takes off itself.
+    let landed = core::r2(p.line_goods + p.ship);
     if landed > core::CENT {
         v.push(line(core::goods_line_id(&p.id), landed, p.count, p.goods_paid, &p.goods_paid_at, "supplier", (&b.supplier_name, supplier_id), core::goods_note(&b.name)));
     }
@@ -890,7 +930,7 @@ fn order_money(c: &rusqlite::Connection, deal: &str, plan: &core::OrderPlan) -> 
     let complete = df.stage == "complete";
     let sales = if complete && df.gross_revenue > 0.0 { df.gross_revenue } else { df.invoice_total };
     let deal_cost = if complete { df.total_cost } else { df.projected_cost };
-    let ours = if plan.own_cost { 0.0 } else { plan.goods + plan.ship };
+    let ours = if plan.own_cost { 0.0 } else { plan.goods_net + plan.ship };
     let own_cost: f64 = if plan.own_cost {
         df.supplier_payments.iter().filter(|p| p.category.as_deref().unwrap_or("supplier") == "supplier" && !p.kept).map(|p| p.amount).sum()
     } else {
@@ -902,9 +942,15 @@ fn order_money(c: &rusqlite::Connection, deal: &str, plan: &core::OrderPlan) -> 
 fn detail(c: &rusqlite::Connection, id: &str) -> Result<Value, String> {
     let w = work(c, id, None, None)?;
     let t = w.t.clone();
-    let (left, stock_name) = stock_left(c, &w.b);
+    let (mut left, stock_name) = stock_left(c, &w.b);
+    // R-596: a purchase order with no stock has left what it counted in less what its orders took.
+    if w.b.item_id.is_empty() && w.b.load_id.is_empty() {
+        left = (w.t.units - w.plan.sold).max(0.0);
+    }
     let money: Vec<core::OrderMoney> = w.plan.orders.iter().filter_map(|p| w.deal_of_order.get(&p.id).map(|d| order_money(c, d, p))).collect();
-    let roll = core::rollup(&t, &w.plan, &money, left);
+    let mut roll = core::rollup(&t, &w.plan, &money, left);
+    roll.state = core::po_state(w.b.units_received.is_some(), roll.refund_left, roll.owed_supplier, w.tc.live > 0).to_string();
+    let lines: Vec<core::InvoiceLine> = core::parse_lines(&w.b.lines_json).unwrap_or_default();
     let orders_json: Vec<Value> = w
         .ords
         .iter()
@@ -933,6 +979,7 @@ fn detail(c: &rusqlite::Connection, id: &str) -> Result<Value, String> {
                 "id": o.id, "invoice_id": o.invoice_id, "number": number, "client": client, "stage": stage, "voided": voided,
                 "count": o.count, "undone": o.undone, "own_cost": o.own_cost, "typed": o.goods_typed.is_some(), "deal_flow_id": deal,
                 "goods": p.map(|p| p.goods).unwrap_or(0.0), "ship": p.map(|p| p.ship).unwrap_or(0.0), "markup": p.map(|p| p.markup).unwrap_or(0.0),
+                "goods_net": p.map(|p| p.goods_net).unwrap_or(0.0), "refund": p.map(|p| p.refund).unwrap_or(0.0),
                 "goods_paid": p.map(|p| p.goods_paid).unwrap_or(false), "ship_paid": p.map(|p| p.ship_paid).unwrap_or(false),
                 "past_bought": p.map(|p| p.past_bought).unwrap_or(false),
                 "cost": f.map(|f| f.cost).unwrap_or(0.0), "sales": f.map(|f| f.sales).unwrap_or(0.0),
@@ -967,6 +1014,9 @@ fn detail(c: &rusqlite::Connection, id: &str) -> Result<Value, String> {
             "goods_total": w.b.goods, "ship_total": w.t.ship, "ship_typed": w.b.ship, "markup_total": w.t.markup, "notes": w.b.notes,
             "archived": w.b.archived, "on_the_way": w.b.item_id.is_empty() && w.b.load_id.is_empty(),
             "created_at": w.b.created_at, "updated_at": w.b.updated_at,
+            "invoice_no": w.b.invoice_no, "invoice_date": w.b.invoice_date, "lines": lines, "units_received": w.b.units_received.map(|n| n.round() as i64),
+            "received_at": w.b.received_at, "refund_owed_typed": w.b.refund_owed, "manifest_name": w.b.manifest_name,
+            "from_deal_id": w.b.from_deal_id, "state": roll.state,
         },
         "rollup": roll,
         "unit_goods": w.plan.unit_goods, "unit_ship": w.plan.unit_ship, "unit_markup": w.plan.unit_markup,
@@ -1045,7 +1095,22 @@ pub async fn list_warehouse_buys() -> Result<Value, String> {
             })
         })
         .collect();
-    Ok(json!({ "stock": stock, "coming": coming }))
+    // R-596: every buy that is not removed, newest first: the Purchases section.
+    let purchases: Vec<Value> = buys
+        .iter()
+        .filter_map(|b| {
+            detail(&c, &b.id).ok().map(|d| {
+                json!({
+                    "id": b.id, "name": b.name, "supplier_id": b.supplier_id, "supplier_name": b.supplier_name,
+                    "item_id": b.item_id, "load_id": b.load_id, "on_the_way": b.item_id.is_empty() && b.load_id.is_empty(),
+                    "buy": d["buy"].clone(), "rollup": d["rollup"].clone(), "truck_cost": d["truck_cost"].clone(),
+                    "orders": d["orders"].as_array().map(|a| a.iter().filter(|o| !o["undone"].as_bool().unwrap_or(false)).count()).unwrap_or(0),
+                    "in_step": d["in_step"].clone(),
+                })
+            })
+        })
+        .collect();
+    Ok(json!({ "stock": stock, "coming": coming, "purchases": purchases }))
 }
 
 /// The live buy on a product or a delivery, for the invoice form's cost line.
@@ -1053,12 +1118,11 @@ pub async fn list_warehouse_buys() -> Result<Value, String> {
 pub async fn warehouse_buy_for(item_id: Option<String>, load_id: Option<String>) -> Result<Value, String> {
     let c = conn()?;
     let Some(b) = buy_for(&c, item_id.as_deref().unwrap_or(""), load_id.as_deref().unwrap_or("")) else { return Ok(json!({ "buy": null })) };
-    let units = b.units.max(0.0);
     let sold = core::total(orders(&c, &b.id).iter().filter(|o| !o.undone).map(|o| o.count));
-    let tc = truck_cost_of(&trucks_of(&c, &b.id));
-    let ship = core::ship_in(b.ship, &tc);
-    let (ug, us, um) = if units > 0.0 { (b.goods / units, ship / units, tc.markup / units) } else { (0.0, 0.0, 0.0) };
-    Ok(json!({ "buy": { "id": b.id, "name": b.name, "units_bought": b.units, "sold": sold, "unit_goods": ug, "unit_ship": us, "unit_markup": um } }))
+    let w = work(&c, &b.id, None, None)?;
+    // R-596: the units that count are the ones received once counted, and a unit's goods are net of the refund counted.
+    Ok(json!({ "buy": { "id": b.id, "name": b.name, "units_bought": w.t.units, "units_ordered": b.units, "sold": sold,
+                        "unit_goods": w.plan.unit_goods, "unit_ship": w.plan.unit_ship, "unit_markup": w.plan.unit_markup } }))
 }
 
 /// R-552: every live buy a payment can be tied to, with what each leg cost and what is booked on it: Financials' Inventory
@@ -1093,6 +1157,8 @@ pub async fn warehouse_buy_choices(deal_flow_id: Option<String>) -> Result<Value
                 "id": w.b.id, "name": w.b.name, "supplier_name": w.b.supplier_name, "stock_name": stock_name,
                 "on_the_way": w.b.item_id.is_empty() && w.b.load_id.is_empty(), "trucks": w.tc.live,
                 "goods_total": w.t.goods, "goods_paid": w.plan.goods_paid, "ship_total": w.t.ship, "ship_paid": w.plan.ship_paid,
+                // R-596: the refund owed and the part of it that came in, for a money in row's Refund from supplier.
+                "refund_owed": w.plan.receipt.owed, "refund_received": w.plan.refund_received, "invoice_no": w.b.invoice_no,
             })
         })
         .collect();
@@ -1104,7 +1170,7 @@ pub async fn get_warehouse_buy(id: String) -> Result<Value, String> {
     detail(&*conn()?, &id)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct BuyInput {
     #[serde(default)]
     pub item_id: Option<String>,
@@ -1124,6 +1190,116 @@ pub struct BuyInput {
     pub ship_total: Option<f64>,
     #[serde(default)]
     pub notes: Option<String>,
+    /// R-596: the supplier's invoice number and date.
+    #[serde(default)]
+    pub invoice_no: Option<String>,
+    #[serde(default)]
+    pub invoice_date: Option<String>,
+    /// The invoice as lines `[{what, qty, price}]`; they make the total and the units. `[]` clears them.
+    #[serde(default)]
+    pub lines: Option<Vec<Value>>,
+    /// Units counted in: a number sets it (with `received_at`), `null` goes back to not counted, absent keeps it.
+    #[serde(default, deserialize_with = "some_or_null")]
+    pub units_received: Option<Option<f64>>,
+    #[serde(default)]
+    pub received_at: Option<String>,
+    /// The refund owed typed over the worked-out one: a number sets it, `null` goes back to worked out, absent keeps it.
+    #[serde(default, deserialize_with = "some_or_null")]
+    pub refund_owed: Option<Option<f64>>,
+    #[serde(default)]
+    pub manifest_name: Option<String>,
+}
+
+fn some_or_null<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<f64>>, D::Error> {
+    Ok(Some(Option::<f64>::deserialize(d)?))
+}
+
+fn is_day(s: &str) -> bool {
+    s.len() == 10 && chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+}
+
+/// R-596: the purchase order's own columns from a request, checked, and the (units, goods) its invoice lines make when it
+/// has lines (stored ones stand while the request sends none). `cur` is the buy being changed. The day units were counted
+/// in is asked for, never made up here.
+fn po_fields(req: &BuyInput, cur: Option<&BuyRow>) -> Result<(Map<String, Value>, Option<(f64, f64)>), String> {
+    let mut cols = Map::new();
+    let mut totals = None;
+    if let Some(n) = req.invoice_no.as_deref() {
+        cols.insert("invoice_no".into(), json!(n.trim()));
+    }
+    if let Some(d) = req.invoice_date.as_deref().map(str::trim) {
+        if !d.is_empty() && !is_day(d) {
+            return Err("Enter the invoice date as a day.".into());
+        }
+        cols.insert("invoice_date".into(), json!(d));
+    }
+    match req.lines.as_ref() {
+        Some(a) if a.is_empty() => {
+            cols.insert("lines_json".into(), json!(""));
+        }
+        Some(a) => {
+            let parsed = core::parse_lines(&Value::Array(a.clone()).to_string())?;
+            totals = Some(core::lines_totals(&parsed));
+            cols.insert("lines_json".into(), json!(serde_json::to_string(&parsed).map_err(|e| e.to_string())?));
+        }
+        None => {
+            // Review R-596 #3: stored lines made the total and the count when they were sent; a later edit never
+            // works them out again (a payment may have raised the total since), and while lines stand a typed
+            // total or count that differs is refused rather than quietly dropped.
+            if let Some(c) = cur.filter(|c| !c.lines_json.is_empty()) {
+                let differs = |sent: Option<f64>, have: f64| sent.map_or(false, |x| (x - have).abs() > core::CENT);
+                if differs(req.goods_total, c.goods) || differs(req.units_bought, c.units) {
+                    return Err("This order's total comes from its lines. Change the lines instead.".into());
+                }
+            }
+        }
+    }
+    let day_in = req.received_at.as_deref().map(str::trim);
+    if let Some(d) = day_in {
+        if !d.is_empty() && !is_day(d) {
+            return Err("Enter the day it was counted as a day.".into());
+        }
+    }
+    let new_rx = match req.units_received {
+        Some(Some(n)) => {
+            if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+                return Err("Enter how many arrived as a whole number.".into());
+            }
+            cols.insert("units_received".into(), json!(n as i64));
+            Some(n)
+        }
+        Some(None) => {
+            cols.insert("units_received".into(), Value::Null);
+            cols.insert("received_at".into(), json!(""));
+            None
+        }
+        None => cur.and_then(|c| c.units_received),
+    };
+    if new_rx.is_some() {
+        let day = day_in.filter(|d| !d.is_empty()).map(str::to_string).or_else(|| cur.map(|c| c.received_at.clone()).filter(|d| !d.is_empty()));
+        match day {
+            Some(d) => {
+                cols.insert("received_at".into(), json!(d));
+            }
+            None => return Err("Say the day it was counted.".into()),
+        }
+    }
+    match req.refund_owed {
+        Some(Some(x)) => {
+            if !x.is_finite() || x < 0.0 {
+                return Err("Enter the refund owed as a number.".into());
+            }
+            cols.insert("refund_owed".into(), json!(core::r2(x)));
+        }
+        Some(None) => {
+            cols.insert("refund_owed".into(), Value::Null);
+        }
+        None => {}
+    }
+    if let Some(m) = req.manifest_name.as_deref() {
+        cols.insert("manifest_name".into(), json!(m.trim()));
+    }
+    Ok((cols, totals))
 }
 
 /// `allow_unknown_units`: a buy still on the way (no stock yet) may leave how many were bought as 0, which the stock fills in
@@ -1178,8 +1354,12 @@ fn new_order(buy_id: &str, invoice_id: &str, count: f64, goods_typed: Option<f64
 /// is a buy still on the way: it needs a name, and how many were bought may be left 0 until its stock is attached.
 #[tauri::command]
 pub async fn create_warehouse_buy(input: BuyInput) -> Result<Value, String> {
+    let (extra, from_lines) = po_fields(&input, None)?;
     let (item_id, load_id) = (input.item_id.unwrap_or_default(), input.load_id.unwrap_or_default());
-    let (units, goods, ship) = (input.units_bought.unwrap_or(0.0), core::r2(input.goods_total.unwrap_or(0.0)), core::r2(input.ship_total.unwrap_or(0.0)));
+    let (mut units, mut goods, ship) = (input.units_bought.unwrap_or(0.0), core::r2(input.goods_total.unwrap_or(0.0)), core::r2(input.ship_total.unwrap_or(0.0)));
+    if let Some((u, g)) = from_lines {
+        (units, goods) = (u, g);
+    }
     if !item_id.is_empty() && !load_id.is_empty() {
         return Err("Choose the product or the delivery this buy is for.".into());
     }
@@ -1206,6 +1386,7 @@ pub async fn create_warehouse_buy(input: BuyInput) -> Result<Value, String> {
         cols.insert("created_by".into(), json!(by));
         cols.insert("created_at".into(), json!(t));
         cols.insert("updated_at".into(), json!(t));
+        cols.extend(extra);
         put(BUYS, &id, cols, true)?;
         apply(&id, None, None)?;
         return detail(&*conn()?, &id);
@@ -1224,6 +1405,8 @@ pub async fn create_warehouse_buy(input: BuyInput) -> Result<Value, String> {
         let probe = BuyRow {
             id: String::new(), item_id: item_id.clone(), load_id: load_id.clone(), name: String::new(), supplier_id: String::new(),
             supplier_name: String::new(), units, goods, ship, notes: String::new(), archived: false, created_at: String::new(), updated_at: String::new(),
+            invoice_no: String::new(), invoice_date: String::new(), lines_json: String::new(), units_received: None, received_at: String::new(),
+            refund_owed: None, manifest_name: String::new(), from_deal_id: String::new(),
         };
         let cs: Vec<(Candidate, bool)> = candidates(&c, &probe, &[]).into_iter().map(|m| { let own = has_own_cost(&c, &m.invoice_id); (m, own) }).collect();
         (name, cs)
@@ -1245,6 +1428,7 @@ pub async fn create_warehouse_buy(input: BuyInput) -> Result<Value, String> {
     cols.insert("created_by".into(), json!(by));
     cols.insert("created_at".into(), json!(t));
     cols.insert("updated_at".into(), json!(t));
+    cols.extend(extra);
     put(BUYS, &id, cols, true)?;
     for (m, own) in cands {
         new_order(&id, &m.invoice_id, m.count, None, own, &m.at)?;
@@ -1255,15 +1439,30 @@ pub async fn create_warehouse_buy(input: BuyInput) -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn update_warehouse_buy(id: String, input: BuyInput) -> Result<Value, String> {
-    let (b, live_trucks) = {
+    let (b, live_trucks, sold) = {
         let c = conn()?;
         let b = buy(&c, &id)?;
         let live = trucks_of(&c, &id).iter().filter(|t| t.truck_in().live()).count();
-        (b, live)
+        let sold = orders(&c, &id).iter().filter(|o| !o.undone).fold(0.0_f64, |a, o| a + o.count.max(0.0));
+        (b, live, sold)
     };
-    let units = input.units_bought.unwrap_or(b.units);
-    let goods = core::r2(input.goods_total.unwrap_or(b.goods));
+    let mut units = input.units_bought.unwrap_or(b.units);
+    let mut goods = core::r2(input.goods_total.unwrap_or(b.goods));
     let ship = core::r2(input.ship_total.unwrap_or(b.ship));
+    // R-596: invoice lines, stored or sent, make the total and the units.
+    let (extra, from_lines) = po_fields(&input, Some(&b))?;
+    if let Some((u, g)) = from_lines {
+        (units, goods) = (u, g);
+    }
+    // Review R-596 #2: never count in (or buy) fewer than are already sold from it, or the later sales lose their cost.
+    let rx = match extra.get("units_received") {
+        Some(v) => v.as_f64(),
+        None => b.units_received,
+    };
+    let (basis, was) = (rx.unwrap_or(units), b.units_received.unwrap_or(b.units));
+    if basis + core::CENT < sold && basis + core::CENT < was {
+        return Err(format!("{} are already sold from this order. Put an order back first.", sold as i64));
+    }
     // R-551: a buy with no stock yet may leave how many were bought at 0, and once it has stock it must be more.
     check_money(units, goods, ship, b.item_id.is_empty() && b.load_id.is_empty())?;
     // R-551: while the buy has a truck its shipping in is what the trucks cost, so a different typed figure has no effect.
@@ -1290,6 +1489,7 @@ pub async fn update_warehouse_buy(id: String, input: BuyInput) -> Result<Value, 
     if let Some(n) = input.notes {
         cols.insert("notes".into(), json!(n));
     }
+    cols.extend(extra);
     cols.insert("updated_at".into(), json!(now()));
     put(BUYS, &id, cols, false)?;
     apply(&id, None, None)?;
@@ -1376,6 +1576,9 @@ pub async fn archive_warehouse_buy(id: String) -> Result<(), String> {
         if w.ords.iter().any(|o| !o.undone) || !w.owned.is_empty() {
             return Err("This buy has orders or a payment on it. Put the orders back and take the payments off first.".into());
         }
+        if !w.b.from_deal_id.is_empty() {
+            return Err("This order was moved from a deal. Undo the move first, so the deal comes back.".into());
+        }
     }
     let t = now();
     let mut cols = Map::new();
@@ -1408,6 +1611,10 @@ pub async fn pay_warehouse_buy(
     if kind == Kind::Ship && live_trucks > 0 {
         return Err("Tie the carrier payment to its truck.".into());
     }
+    // R-596: a refund is money that came in on a bank row; there is no cash refund.
+    if kind == Kind::Refund && txn_id.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        return Err("Choose the bank row the refund came in on.".into());
+    }
     // R-552: what the payment has free, worked out before anything is written, so a refusal leaves no cash row behind.
     let txn_id = txn_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     let room = match (&txn_id, cash_amount) {
@@ -1416,14 +1623,13 @@ pub async fn pay_warehouse_buy(
             let (dir, amount): (String, f64) = c
                 .query_row("SELECT COALESCE(direction,''), COALESCE(amount,0) FROM bank_txn WHERE id=?1", [t], |r| Ok((r.get(0)?, r.get(1)?)))
                 .map_err(|_| "That bank row is no longer here.".to_string())?;
-            if dir != "out" {
-                return Err("Choose money that went out, not money that came in.".into());
+            if let Some(m) = core::pay_direction_error(kind, &dir) {
+                return Err(m.into());
             }
             if let Some(a) = owned_allocs(&c, &id).into_iter().find(|a| &a.txn_id == t) {
                 return Err(match kind_of(&a) {
                     k if k == kind => core::PAY_ALREADY_HERE,
-                    Kind::Goods => "That bank row already pays the goods on this buy. Take it off first to use it for the shipping in.",
-                    Kind::Ship => "That bank row already pays the shipping in on this buy. Take it off first to use it for the goods.",
+                    k => kind_clash(k, kind),
                 }
                 .into());
             }
@@ -1433,18 +1639,27 @@ pub async fn pay_warehouse_buy(
         _ => return Err("Choose the bank row that paid it, or enter the cash paid.".into()),
     };
     // R-552: it books in full or says why. No cost typed, or Book all of it: what the buy cost rises to what was paid.
-    let w = work(&*conn()?, &id, None, None)?;
-    let (total, paid) = match kind {
-        Kind::Goods => (w.t.goods, w.plan.goods_paid),
-        Kind::Ship => (w.t.ship, w.plan.ship_paid),
+    let raise = if kind == Kind::Refund {
+        // R-596: a refund books all the row has free, past what is owed too (it then counts as received).
+        if core::r2(room) <= core::CENT {
+            return Err(core::PAY_NO_ROOM.into());
+        }
+        None
+    } else {
+        let w = work(&*conn()?, &id, None, None)?;
+        let (total, paid) = match kind {
+            Kind::Goods => (w.t.goods, w.plan.goods_paid),
+            _ => (w.t.ship, w.plan.ship_paid),
+        };
+        core::pay_take(total, paid, room, take)?.1
     };
-    let (_, raise) = core::pay_take(total, paid, room, take)?;
     let txn = match (txn_id, cash_amount) {
         (Some(t), _) => t,
         (None, Some(a)) => {
             let desc = match kind {
                 Kind::Goods => format!("Cash paid for {}", b.name),
                 Kind::Ship => format!("Cash paid for shipping in, {}", b.name),
+                Kind::Refund => format!("Cash refund for {}", b.name),
             };
             let cp = if kind == Kind::Goods { Some(b.supplier_name.clone()) } else { None };
             crate::commands::add_cash_transaction(core::r2(a), "out".into(), cash_date.unwrap_or_default(), cp, Some(desc)).await?
@@ -1508,6 +1723,22 @@ pub async fn add_warehouse_buy_order(id: String, invoice_id: String, count: f64,
         if !live_invoice(&c, &invoice_id) {
             return Err("That invoice is no longer here.".into());
         }
+        // R-596: a purchase order has no stock to count, so what is left is what it counted in less what its orders took.
+        let b = buy(&c, &id)?;
+        if b.item_id.is_empty() && b.load_id.is_empty() {
+            let oid = core::order_id(&invoice_id, &id);
+            let ords = orders(&c, &id);
+            if !ords.iter().any(|o| o.id == oid && !o.undone) {
+                let basis = b.receipt().basis;
+                if basis <= 0.0 {
+                    return Err("Enter how many were bought on this order first.".into());
+                }
+                let left = (basis - core::total(ords.iter().filter(|o| !o.undone).map(|o| o.count))).max(0.0);
+                if count > left + 1e-9 {
+                    return Err(format!("Only {} {} left on this order.", fmt_units(left), if (left - 1.0).abs() < 1e-9 { "is" } else { "are" }));
+                }
+            }
+        }
     }
     let own = match own_cost {
         Some(true) => true,
@@ -1517,6 +1748,11 @@ pub async fn add_warehouse_buy_order(id: String, invoice_id: String, count: f64,
     let oid = new_order(&id, &invoice_id, count, goods_typed.filter(|g| g.is_finite() && *g >= 0.0), own, "")?;
     apply(&id, None, None)?;
     Ok(json!({ "order_id": oid, "own_cost": own }))
+}
+
+/// A count of units for a sentence: whole numbers plain.
+fn fmt_units(x: f64) -> String {
+    if x.fract() == 0.0 { format!("{}", x as i64) } else { format!("{x}") }
 }
 
 /// Type an order's cost (`goods_typed`), go back to the worked-out cost (`clear_typed`), or take
@@ -1638,6 +1874,51 @@ pub(crate) fn item_has_buy(c: &rusqlite::Connection, item_id: &str) -> bool {
     buy_for(c, item_id, "").is_some()
 }
 
+// ---------------------------------------------------------------------------------------
+// R-596: turn a deal flow into a purchase order, and back (the server does it; this is the door)
+
+/// One call to the server's from-deal routes as the signed-in account. This computer's changes are pushed first so the
+/// server works from what is on screen, and the rows the server wrote (the order, the moved bookings, the archived deal) are
+/// pulled in at once after. A refusal comes back as the server's own sentence.
+async fn deal_move_request(path: String, body: Value) -> Result<Value, String> {
+    if !crate::employees::session_can_book_bank() {
+        return Err(NEEDS_FINANCIALS.into());
+    }
+    if let Err(e) = crate::netsync::push_pending().await {
+        tracing::warn!("buys: push before {} failed: {}", path, e);
+    }
+    let (status, value) = crate::netsync::server_request("POST", &path, Some(body)).await.map_err(|e| {
+        let s = e.to_string();
+        if s.starts_with("Sign in") { s } else { "Could not reach the server. Check your connection and try again.".to_string() }
+    })?;
+    if !(200..300).contains(&status) || value.get("error").is_some() {
+        let said = value.get("error").and_then(|e| e.as_str()).map(|s| s.to_string());
+        return Err(said.unwrap_or_else(|| "The server could not do that. Try again in a moment.".to_string()));
+    }
+    if let Err(e) = crate::netsync::pull_apply().await {
+        tracing::warn!("buys: pull after {} failed: {}", path, e);
+    }
+    Ok(value)
+}
+
+/// A deal flow bought for the warehouse becomes a purchase order. Returns the new buy's id.
+#[tauri::command]
+pub async fn buy_from_deal(deal_flow_id: String) -> Result<String, String> {
+    let v = deal_move_request("/api/warehouse/buys/from-deal".into(), json!({ "deal_flow_id": deal_flow_id })).await?;
+    v.get("buy_id").and_then(|x| x.as_str()).map(str::to_string).ok_or_else(|| "The server could not do that. Try again in a moment.".to_string())
+}
+
+/// Put a purchase order that came from a deal back as the deal. Returns the deal's id.
+#[tauri::command]
+pub async fn undo_buy_from_deal(id: String) -> Result<String, String> {
+    let id = id.trim();
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err("That purchase order is no longer here.".into());
+    }
+    let v = deal_move_request(format!("/api/warehouse/buys/{id}/undo-from-deal"), json!({})).await?;
+    v.get("deal_flow_id").and_then(|x| x.as_str()).map(str::to_string).ok_or_else(|| "The server could not do that. Try again in a moment.".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1685,7 +1966,7 @@ mod tests {
         // 10 pairs at $1.25 = $12.50, and $2.50 of shipping in, not paid yet.
         let v = create_warehouse_buy(BuyInput {
             item_id: None, load_id: Some(load.clone()), name: None, supplier_id: None, supplier_name: Some("Lamo".into()),
-            units_bought: Some(10.0), goods_total: Some(12.5), ship_total: Some(2.5), notes: None,
+            units_bought: Some(10.0), goods_total: Some(12.5), ship_total: Some(2.5), notes: None, ..Default::default()
         })
         .await
         .unwrap();
@@ -1747,7 +2028,7 @@ mod tests {
     fn on_the_way(name: &str, goods: f64, units: f64) -> BuyInput {
         BuyInput {
             item_id: None, load_id: None, name: Some(name.into()), supplier_id: None, supplier_name: Some("Lamo".into()),
-            units_bought: Some(units), goods_total: Some(goods), ship_total: None, notes: None,
+            units_bought: Some(units), goods_total: Some(goods), ship_total: None, notes: None, ..Default::default()
         }
     }
 
@@ -2030,5 +2311,51 @@ mod tests {
         let c = warehouse_buy_choices(None).await.unwrap();
         let b = c.as_array().unwrap().iter().find(|b| b["id"] == id2.as_str()).unwrap().clone();
         assert_eq!((b["goods_total"].as_f64(), b["goods_paid"].as_f64(), b["on_the_way"].as_bool()), (Some(55_000.0), Some(55_000.0), Some(true)));
+    }
+
+    // ── R-596: a purchase order, shorted, with a refund and a sale from it ─────────────────
+
+    #[tokio::test]
+    async fn a_purchase_order_counts_its_short_and_takes_a_refund_and_a_sale_with_no_stock() {
+        let _db = crate::db::init_test_store();
+        let _off = Rule::set(r#"{"enabled":false}"#);
+        let mut input = on_the_way("Sample order", 0.0, 0.0);
+        input.invoice_no = Some("INV-9".into());
+        input.invoice_date = Some("2026-10-01".into());
+        input.lines = Some(vec![json!({ "what": "Hats", "qty": 100, "price": 10 }), json!({ "what": "Caps", "qty": 100, "price": 5 })]);
+        let v = create_warehouse_buy(input).await.unwrap();
+        let id = id_of(&v);
+        assert_eq!((v["buy"]["goods_total"].as_f64(), v["buy"]["units_bought"].as_f64()), (Some(1500.0), Some(200.0)), "lines make the total and the units");
+        assert_eq!(v["rollup"]["state"], "ordered");
+
+        // Counting needs the day.
+        let mut got = BuyInput::default();
+        got.units_received = Some(Some(150.0));
+        assert_eq!(update_warehouse_buy(id.clone(), got).await.unwrap_err(), "Say the day it was counted.");
+        let mut got = BuyInput::default();
+        got.units_received = Some(Some(150.0));
+        got.received_at = Some("2026-10-08".into());
+        let v = update_warehouse_buy(id.clone(), got).await.unwrap();
+        assert_eq!((v["rollup"]["short"].as_f64(), v["rollup"]["refund_owed"].as_f64(), v["rollup"]["refund_left"].as_f64()), (Some(50.0), Some(375.0), Some(375.0)));
+        assert_eq!((v["rollup"]["cost_projected"].as_bool(), v["rollup"]["state"].as_str()), (Some(true), Some("refund_owed")));
+        // (1500 - 375) / 150 units counted in.
+        assert_eq!(v["rollup"]["unit_cost"].as_f64(), Some(7.5));
+
+        // Sell 100 from it with no stock, then too many.
+        invoice("po-a", "PO-1", 900.0);
+        invoice("po-b", "PO-2", 900.0);
+        add_warehouse_buy_order(id.clone(), "po-a".into(), 100.0, None, None).await.unwrap();
+        assert_eq!(add_warehouse_buy_order(id.clone(), "po-b".into(), 60.0, None, None).await.unwrap_err(), "Only 50 are left on this order.");
+
+        // Money in is the only thing a refund takes.
+        conn().unwrap().execute("INSERT INTO bank_txn (id,direction,amount,posted_at) VALUES ('rf1','out',100,'2026-10-09')", []).unwrap();
+        assert_eq!(pay_warehouse_buy(id.clone(), Kind::Refund, Some("rf1".into()), None, None, None).await.unwrap_err(), "Choose money that came in.");
+        conn().unwrap().execute("INSERT INTO bank_txn (id,direction,amount,posted_at) VALUES ('rf2','in',100,'2026-10-09')", []).unwrap();
+        let v = pay_warehouse_buy(id.clone(), Kind::Refund, Some("rf2".into()), None, None, None).await.unwrap();
+        assert_eq!((v["rollup"]["refund_received"].as_f64(), v["rollup"]["refund_left"].as_f64()), (Some(100.0), Some(275.0)));
+        assert_eq!(bookings("rf2").iter().map(|b| b.2).sum::<f64>(), 100.0, "all of the refund is booked, on the order and held for the rest");
+        let v = unpay_warehouse_buy(id.clone(), "rf2".into()).await.unwrap();
+        assert_eq!(v["rollup"]["refund_received"].as_f64(), Some(0.0));
+        assert!(bookings("rf2").is_empty());
     }
 }

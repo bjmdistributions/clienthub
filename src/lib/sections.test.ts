@@ -5,7 +5,7 @@ describe("sections", () => {
   it("places every screen in exactly one section", () => {
     const ids = ALL_TABS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids.length).toBe(37);
+    expect(ids.length).toBe(38);
   });
 
   it("maps the screens the way the mockups group them", () => {

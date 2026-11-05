@@ -1,20 +1,20 @@
-// R-583: the shell's map. The sidebar shows nine sections; each section owns a list of screens (the
+// R-583: the shell's map. The sidebar shows ten sections; each section owns a list of screens (the
 // existing tab ids, unchanged) that the shell draws as a tab bar above the page. Pure data and pure
 // helpers so the routing rules can be tested without a DOM (sections.test.ts).
 //
 // Tab ids are the app's routing keys (navigate-tab events, the remembered screen, the command palette,
-// split view). Nothing here renames one. A section with one screen (Home, Logistics, Settings) has no
+// split view). Nothing here renames one. A section with one screen (Home, Purchases, Logistics, Settings) has no
 // tab bar and no shell header; the screen draws its own PageHeader.
 
 export type TabId =
   | "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "coldcalls" | "inventory"
-  | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices"
+  | "warehouse" | "purchases" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices"
   | "quotes" | "releaseletter" | "clientreceipt" | "purchaseorder" | "newsletter" | "analytics"
   | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup"
   | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety"
   | "settings";
 
-export type SectionId = "home" | "deals" | "clients" | "inventory" | "logistics" | "money" | "insights" | "more" | "settings";
+export type SectionId = "home" | "deals" | "clients" | "inventory" | "purchases" | "logistics" | "money" | "insights" | "more" | "settings";
 
 export interface TabDef { id: TabId; label: string }
 export interface SectionDef {
@@ -55,6 +55,8 @@ export const SECTIONS: SectionDef[] = [
     { id: "showpacking", label: "Show packing" },
     { id: "sheetcopy", label: "Sheet copy" },
   ] },
+  // R-596: Jack chose Purchases as its own section, so it sits alone and draws its own header.
+  { id: "purchases", label: "Purchases", tabs: [{ id: "purchases", label: "Purchases" }] },
   { id: "logistics", label: "Logistics", tabs: [{ id: "logistics", label: "Logistics" }] },
   { id: "money", label: "Money", tabs: [
     { id: "financials", label: "Financials" },

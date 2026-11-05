@@ -36,6 +36,16 @@
 //! R-552: a payment tied to a buy books in full or says why, never nothing (`pay_take`). With no cost
 //! typed the cost becomes what was paid; a payment past what is left books all of it (the cost rises)
 //! or only what is left, as Jack chooses each time.
+//!
+//! R-596: a purchase order is a buy with no stock. It may list the supplier's invoice as lines
+//! (`parse_lines`, `lines_totals`), count what actually arrived (`Receipt`: the cost each and the
+//! shares use the units received, else the units ordered), and be owed a refund for the short
+//! (`Receipt::owed`, or a number typed over it). Money in tied to the buy as `Kind::Refund` is booked
+//! like the goods: each order's share as `refund_in` on its deal, the rest held on the buy. The goods
+//! net of the refund counted (the larger of owed and received) are what a unit costs, so an owed refund
+//! lowers the cost now and `cost_projected` says it has not landed. The bank slices of an order stay its
+//! gross goods share: its deal reads the goods paid less the `refund_in` slice, which together come to
+//! the same net once the refund has landed.
 
 use serde::{Deserialize, Serialize};
 
@@ -62,9 +72,104 @@ pub fn total(it: impl Iterator<Item = f64>) -> f64 {
 pub enum Kind {
     Goods,
     Ship,
+    /// R-596: money in from the supplier for units that never came.
+    Refund,
 }
 
-/// What was bought and what it cost.
+/// R-596: what was ordered, what arrived and the refund owed for the short.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Receipt {
+    pub ordered: f64,
+    /// `None`: not counted yet.
+    pub received: Option<f64>,
+    /// The refund owed as typed; `None` is worked out from the short.
+    pub typed: Option<f64>,
+    /// Units the cost each and the shares use: the units received once counted, else the units ordered.
+    pub basis: f64,
+    pub short: f64,
+    /// The refund owed: the typed figure, else the short at the invoice price each.
+    pub owed: f64,
+}
+
+impl Receipt {
+    pub fn new(ordered: f64, goods: f64, received: Option<f64>, typed: Option<f64>) -> Receipt {
+        let ordered = if ordered.is_finite() { ordered.max(0.0) } else { 0.0 };
+        let received = received.filter(|r| r.is_finite()).map(|r| r.max(0.0));
+        let short = received.map_or(0.0, |r| (ordered - r).max(0.0));
+        let typed = typed.filter(|x| x.is_finite()).map(|x| r2(x.max(0.0)));
+        let owed = match typed {
+            Some(x) => x,
+            None if ordered > 0.0 => r2(short * goods.max(0.0) / ordered),
+            None => 0.0,
+        };
+        Receipt { ordered, received, typed, basis: received.unwrap_or(ordered), short, owed }
+    }
+}
+
+/// R-596: one line of the supplier's invoice.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct InvoiceLine {
+    pub what: String,
+    pub qty: i64,
+    pub price: f64,
+}
+
+pub const LINE_BAD: &str = "Each invoice line needs what it is, how many (a whole number) and the price each.";
+
+/// R-596: the invoice lines from their stored JSON. "" and "[]" are no lines.
+pub fn parse_lines(json: &str) -> Result<Vec<InvoiceLine>, &'static str> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|_| LINE_BAD)?;
+    let a = v.as_array().ok_or(LINE_BAD)?;
+    let mut out = Vec::with_capacity(a.len());
+    for x in a {
+        let what = x.get("what").and_then(|w| w.as_str()).map(str::trim).unwrap_or("");
+        let qty = x.get("qty").and_then(|q| q.as_f64()).filter(|q| q.is_finite() && *q >= 0.0 && q.fract() == 0.0 && *q < 1e12);
+        let price = x.get("price").and_then(|p| p.as_f64()).filter(|p| p.is_finite() && *p >= 0.0);
+        match (qty, price) {
+            (Some(q), Some(p)) if !what.is_empty() => out.push(InvoiceLine { what: what.to_string(), qty: q as i64, price: p }),
+            _ => return Err(LINE_BAD),
+        }
+    }
+    Ok(out)
+}
+
+/// R-596: (units, goods) the lines come to: the units are their quantities, the goods r2 of quantity times price.
+pub fn lines_totals(lines: &[InvoiceLine]) -> (f64, f64) {
+    (total(lines.iter().map(|l| l.qty as f64)), r2(total(lines.iter().map(|l| l.qty as f64 * l.price))))
+}
+
+/// R-596: the plain state of a purchase order, read from facts and never stored.
+pub fn po_state(received_counted: bool, refund_left: f64, owed_supplier: f64, live_truck: bool) -> &'static str {
+    if received_counted && refund_left <= CENT && owed_supplier <= CENT {
+        "done"
+    } else if received_counted && refund_left > CENT {
+        "refund_owed"
+    } else if received_counted {
+        "received"
+    } else if live_truck {
+        "on_truck"
+    } else {
+        "ordered"
+    }
+}
+
+/// R-596: why money cannot be tied to a buy as `kind` (None when its direction fits).
+pub const PAY_MONEY_OUT_ONLY: &str = "Choose money that went out, not money that came in.";
+pub const REFUND_MONEY_IN_ONLY: &str = "Choose money that came in.";
+pub fn pay_direction_error(kind: Kind, direction: &str) -> Option<&'static str> {
+    match (kind, direction) {
+        (Kind::Refund, "in") => None,
+        (Kind::Refund, _) => Some(REFUND_MONEY_IN_ONLY),
+        (_, "out") => None,
+        _ => Some(PAY_MONEY_OUT_ONLY),
+    }
+}
+
+/// What was bought and what it cost. `units` is the basis (the units received once counted, else the units
+/// ordered); `goods` is the invoice total, before any refund.
 #[derive(Debug, Clone, Default)]
 pub struct Totals {
     pub units: f64,
@@ -114,6 +219,16 @@ pub struct OrderPlan {
     /// R-551: the order's share of his markup on the trucks (0 for an `own_cost` order, which keeps
     /// its own typed cost and takes nothing of the buy's).
     pub markup: f64,
+    /// R-596: the goods share less the refund counted on it: what its deal's typed landed line carries. Equal
+    /// to `goods` with no refund (and for a typed share, which stands).
+    pub goods_net: f64,
+    /// R-596: its share of the refund received, booked as `refund_in` on its deal.
+    pub refund: f64,
+    pub refund_slices: Vec<Slice>,
+    /// R-596: what its deal's typed landed line carries for the goods: the gross share less only the refund
+    /// still to come, because the deal itself takes off the `refund_in` booked on it. Line less those bookings
+    /// is always `goods_net`, so a refund is never taken off twice.
+    pub line_goods: f64,
     pub goods_slices: Vec<Slice>,
     pub ship_slices: Vec<Slice>,
     pub goods_paid: bool,
@@ -147,23 +262,50 @@ pub struct Plan {
     /// What the buy's rows have paid towards the goods and the shipping, never more than each total.
     pub goods_paid: f64,
     pub ship_paid: f64,
+    /// R-596: the receipt this was worked out with, and the refund figures.
+    pub receipt: Receipt,
+    /// Money in tied to the buy as a refund: what its rows have free.
+    pub refund_received: f64,
+    /// The larger of the refund owed and received: what the goods are taken net of.
+    pub refund_counted: f64,
+    pub refund_left: f64,
+    /// The invoice total less the refund counted, never below 0.
+    pub goods_net: f64,
+    /// Goods paid plus shipping paid less the refund received.
+    pub spent: f64,
+    /// The invoice total less the goods paid.
+    pub owed_supplier: f64,
+    /// A refund is still owed: the cost each is shown faded as "refund owed".
+    pub cost_projected: bool,
 }
 
-/// Each order's goods, shipping and markup share, in order.
-fn shares(t: &Totals, orders: &[OrderIn]) -> Vec<(f64, f64, f64, bool)> {
+/// One order's shares of each total.
+struct Sh {
+    g: f64,
+    s: f64,
+    m: f64,
+    past: bool,
+    /// R-596: its share of the refund counted, and of the refund received.
+    rc: f64,
+    rr: f64,
+}
+
+/// Each order's goods, shipping, markup and refund share, in order.
+fn shares(t: &Totals, orders: &[OrderIn], counted: f64, received: f64) -> Vec<Sh> {
     let units = t.units.max(0.0);
     let (ug, us, um) = if units > 0.0 { (t.goods / units, t.ship / units, t.markup / units) } else { (0.0, 0.0, 0.0) };
-    let (mut sold, mut g_sum, mut s_sum, mut m_sum) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+    let (uc, ur) = if units > 0.0 { (counted / units, received / units) } else { (0.0, 0.0) };
+    let (mut sold, mut g_sum, mut s_sum, mut m_sum, mut c_sum, mut r_sum) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
     let mut out = Vec::with_capacity(orders.len());
     for o in orders {
         let count = o.count.max(0.0);
         let before = sold;
         sold += count;
         let typed = o.goods_typed.map(|g| r2(g.max(0.0)));
-        let (g, s, m, past) = if units <= 0.0 {
-            (typed.unwrap_or(0.0), 0.0, 0.0, false)
+        let (g, s, m, past, rc, rr) = if units <= 0.0 {
+            (typed.unwrap_or(0.0), 0.0, 0.0, false, 0.0, 0.0)
         } else if before >= units - 1e-9 {
-            (typed.unwrap_or(0.0), 0.0, 0.0, true)
+            (typed.unwrap_or(0.0), 0.0, 0.0, true, 0.0, 0.0)
         } else if sold >= units - 1e-9 {
             // The last of what was bought: whatever is left of each total.
             (
@@ -171,14 +313,18 @@ fn shares(t: &Totals, orders: &[OrderIn]) -> Vec<(f64, f64, f64, bool)> {
                 r2((t.ship - s_sum).max(0.0)),
                 r2((t.markup - m_sum).max(0.0)),
                 false,
+                r2((counted - c_sum).max(0.0)),
+                r2((received - r_sum).max(0.0)),
             )
         } else {
-            (typed.unwrap_or_else(|| r2(count * ug)), r2(count * us), r2(count * um), false)
+            (typed.unwrap_or_else(|| r2(count * ug)), r2(count * us), r2(count * um), false, r2(count * uc), r2(count * ur))
         };
         g_sum += g;
         s_sum += s;
         m_sum += m;
-        out.push((g, s, m, past));
+        c_sum += rc;
+        r_sum += rr;
+        out.push(Sh { g, s, m, past, rc, rr });
     }
     out
 }
@@ -210,6 +356,25 @@ fn cover(rooms: &mut [(String, f64, String)], need: f64) -> Option<(Vec<Slice>, 
     Some((slices, at))
 }
 
+/// Take up to `need` from the rows in order (a refund books what it can: the rows hold exactly what it is split from).
+fn take_up(rooms: &mut [(String, f64, String)], need: f64) -> Vec<Slice> {
+    let mut left = r2(need);
+    let mut slices = Vec::new();
+    for r in rooms.iter_mut() {
+        if left <= CENT {
+            break;
+        }
+        let take = r2(r.1.min(left));
+        if take <= CENT {
+            continue;
+        }
+        r.1 = r2(r.1 - take);
+        left = r2(left - take);
+        slices.push(Slice { txn_id: r.0.clone(), amount: take });
+    }
+    slices
+}
+
 fn rooms_of(rows: &[RowIn], kind: Kind) -> Vec<(String, f64, String)> {
     let mut v: Vec<&RowIn> = rows.iter().filter(|r| r.kind == kind).collect();
     v.sort_by(|a, b| a.posted_at.cmp(&b.posted_at).then(a.txn_id.cmp(&b.txn_id)));
@@ -234,19 +399,31 @@ fn hold(rooms: &[(String, f64, String)], kind: Kind, total: f64, taken: f64, out
 
 /// The whole plan: every order's shares and what covers them, and what is held on the buy.
 pub fn plan(t: &Totals, orders: &[OrderIn], rows: &[RowIn]) -> Plan {
-    let sh = shares(t, orders);
+    plan_with(t, orders, rows, &Receipt::new(t.units, t.goods, None, None))
+}
+
+/// R-596: the plan with the refund owed for the short. `t.units` is the receipt's basis.
+pub fn plan_with(t: &Totals, orders: &[OrderIn], rows: &[RowIn], rc: &Receipt) -> Plan {
     let mut goods_rooms = rooms_of(rows, Kind::Goods);
     let mut ship_rooms = rooms_of(rows, Kind::Ship);
+    let mut refund_rooms = rooms_of(rows, Kind::Refund);
+    let refund_received = r2(total(refund_rooms.iter().map(|r| r.1)));
+    let refund_counted = rc.owed.max(refund_received);
+    let sh = shares(t, orders, refund_counted, refund_received);
     let (mut goods_open, mut ship_open) = (true, true);
-    let (mut goods_taken, mut ship_taken) = (0.0_f64, 0.0_f64);
+    let (mut goods_taken, mut ship_taken, mut refund_taken) = (0.0_f64, 0.0_f64, 0.0_f64);
     let mut out = Vec::with_capacity(orders.len());
-    for (o, (g, s, m, past)) in orders.iter().zip(sh) {
+    for (o, Sh { g, s, m, past, rc: rcs, rr }) in orders.iter().zip(sh) {
         let mut p = OrderPlan {
             id: o.id.clone(),
             count: o.count.max(0.0),
             goods: g,
             ship: s,
             markup: if o.own_cost { 0.0 } else { m },
+            goods_net: if o.goods_typed.is_some() { g } else { r2((g - rcs).max(0.0)) },
+            refund: if o.own_cost { 0.0 } else { rr },
+            refund_slices: Vec::new(),
+            line_goods: 0.0,
             goods_slices: Vec::new(),
             ship_slices: Vec::new(),
             goods_paid: false,
@@ -280,24 +457,42 @@ pub fn plan(t: &Totals, orders: &[OrderIn], rows: &[RowIn]) -> Plan {
                     None => ship_open = false,
                 }
             }
+            if rr > CENT {
+                p.refund_slices = take_up(&mut refund_rooms, rr);
+                refund_taken += total(p.refund_slices.iter().map(|x| x.amount));
+            }
         }
+        let booked = total(p.refund_slices.iter().map(|x| x.amount));
+        p.line_goods = if o.goods_typed.is_some() { g } else { r2((g - (rcs - booked).max(0.0)).max(0.0)) };
         out.push(p);
     }
     let mut held = Vec::new();
     let goods_held = hold(&goods_rooms, Kind::Goods, t.goods, goods_taken, &mut held);
     let ship_held = hold(&ship_rooms, Kind::Ship, t.ship, ship_taken, &mut held);
+    hold(&refund_rooms, Kind::Refund, refund_received, refund_taken, &mut held);
     let sold = total(orders.iter().map(|o| o.count.max(0.0)));
     let units = t.units.max(0.0);
+    let goods_net = (t.goods - refund_counted).max(0.0);
+    let (goods_paid, ship_paid) = (r2(goods_taken + goods_held), r2(ship_taken + ship_held));
+    let refund_left = r2((rc.owed - refund_received).max(0.0));
     Plan {
         sold,
         oversold: units > 0.0 && sold > units + 1e-9,
-        unit_goods: if units > 0.0 { t.goods / units } else { 0.0 },
+        unit_goods: if units > 0.0 { goods_net / units } else { 0.0 },
         unit_ship: if units > 0.0 { t.ship / units } else { 0.0 },
         unit_markup: if units > 0.0 { t.markup / units } else { 0.0 },
-        goods_paid: r2(goods_taken + goods_held),
-        ship_paid: r2(ship_taken + ship_held),
+        goods_paid,
+        ship_paid,
         orders: out,
         held,
+        receipt: rc.clone(),
+        refund_received,
+        refund_counted: r2(refund_counted),
+        refund_left,
+        goods_net,
+        spent: r2(goods_paid + ship_paid - refund_received),
+        owed_supplier: r2((t.goods - goods_paid).max(0.0)),
+        cost_projected: refund_left > CENT,
     }
 }
 
@@ -364,6 +559,26 @@ pub struct Rollup {
     pub sold_out: bool,
     pub oversold: bool,
     pub orders: Vec<OrderFigures>,
+    /// R-596 (additive): the units on the invoice, the units counted in (None: not counted yet) and the short.
+    pub units_ordered: f64,
+    pub units_received: Option<i64>,
+    pub short: f64,
+    /// The refund owed (the typed figure, else the short at the invoice price) and the typed figure itself.
+    pub refund_owed: f64,
+    pub refund_owed_typed: Option<f64>,
+    pub refund_received: f64,
+    pub refund_counted: f64,
+    pub refund_left: f64,
+    /// The invoice total less the refund counted.
+    pub goods_net: f64,
+    /// Goods paid plus shipping paid less the refund received.
+    pub spent: f64,
+    /// The invoice total less the goods paid.
+    pub owed_supplier: f64,
+    /// A refund is still owed: show the cost each faded with "refund owed".
+    pub cost_projected: bool,
+    /// `po_state`, set by the runtime (it knows the trucks).
+    pub state: String,
 }
 
 pub fn rollup(t: &Totals, p: &Plan, money: &[OrderMoney], left: f64) -> Rollup {
@@ -374,20 +589,32 @@ pub fn rollup(t: &Totals, p: &Plan, money: &[OrderMoney], left: f64) -> Rollup {
         goods_total: r2(t.goods),
         ship_total: r2(t.ship),
         markup_total: r2(t.markup),
-        unit_cost: if t.units > 0.0 { (t.goods + t.ship) / t.units } else { 0.0 },
-        load_cost: r2(t.goods + t.ship),
+        unit_cost: if t.units > 0.0 { (p.goods_net + t.ship) / t.units } else { 0.0 },
+        load_cost: r2(p.goods_net + t.ship),
         goods_paid: p.goods_paid,
         ship_paid: p.ship_paid,
         oversold: p.oversold,
         sold_out: t.units > 0.0 && p.sold >= t.units - 1e-9,
+        units_ordered: p.receipt.ordered,
+        units_received: p.receipt.received.map(|r| r.round() as i64),
+        short: p.receipt.short,
+        refund_owed: p.receipt.owed,
+        refund_owed_typed: p.receipt.typed,
+        refund_received: p.refund_received,
+        refund_counted: p.refund_counted,
+        refund_left: p.refund_left,
+        goods_net: r2(p.goods_net),
+        spent: p.spent,
+        owed_supplier: p.owed_supplier,
+        cost_projected: p.cost_projected,
         ..Default::default()
     };
     let mut taken = 0.0_f64;
     for o in &p.orders {
         let m = money.iter().find(|m| m.id == o.id).cloned().unwrap_or_default();
-        taken += o.goods + o.ship;
+        taken += o.goods_net + o.ship;
         r.markup_sold += o.markup;
-        let cost = if o.own_cost { r2(m.own_cost) } else { r2(o.goods + o.ship) };
+        let cost = if o.own_cost { r2(m.own_cost) } else { r2(o.goods_net + o.ship) };
         let made = r2(m.sales - cost - m.other_cost - m.refunds);
         r.cost_sold += cost;
         r.sales += m.sales;
@@ -404,7 +631,7 @@ pub fn rollup(t: &Totals, p: &Plan, money: &[OrderMoney], left: f64) -> Rollup {
     r.other_cost = r2(r.other_cost);
     r.refunds = r2(r.refunds);
     r.made_on_sold = r2(r.sales - r.cost_sold - r.other_cost - r.refunds);
-    r.made_so_far = r2(r.received - t.goods - t.ship - r.other_cost - r.refunds);
+    r.made_so_far = r2(r.received - p.goods_net - t.ship - r.other_cost - r.refunds);
     r
 }
 
@@ -525,11 +752,22 @@ pub fn held_note(buy_name: &str, kind: Kind) -> String {
     match kind {
         Kind::Goods => format!("Held as stock: {buy_name}"),
         Kind::Ship => format!("Held as stock, shipping in: {buy_name}"),
+        Kind::Refund => format!("Held as stock, refund: {buy_name}"),
     }
+}
+/// R-596: the note on an order's `refund_in` booking.
+pub fn refund_note(buy_name: &str) -> String {
+    format!("{LINE_NOTE_PREFIX}{buy_name}, refund")
 }
 /// Which leg a held booking is, from its note.
 pub fn held_kind(note: &str) -> Kind {
-    if note.starts_with("Held as stock, shipping in: ") { Kind::Ship } else { Kind::Goods }
+    if note.starts_with("Held as stock, shipping in: ") {
+        Kind::Ship
+    } else if note.starts_with("Held as stock, refund: ") {
+        Kind::Refund
+    } else {
+        Kind::Goods
+    }
 }
 
 pub fn is_buy_note(note: &str) -> bool {
@@ -849,5 +1087,154 @@ mod tests {
         assert_eq!(pay_take(10_000.0, 10_000.0, 40_000.0, None), Err(PAY_PAID_IN_FULL), "paid in full says so");
         assert_eq!(pay_take(10_000.0, 10_000.0, 40_000.0, Some(Take::Left)), Err(PAY_PAID_IN_FULL));
         assert_eq!(pay_take(50_000.0, 0.0, 0.004, None), Err(PAY_NO_ROOM), "nothing free on the row");
+    }
+
+    // ── R-596: purchase orders, received short and refunded ──────────────────────────────────
+
+    /// 100 pairs ordered at $10, 80 counted in: 20 short, $200 owed back.
+    fn short_po() -> (Totals, Receipt) {
+        let rc = Receipt::new(100.0, 1_000.0, Some(80.0), None);
+        (Totals { units: rc.basis, goods: 1_000.0, ship: 0.0, markup: 0.0 }, rc)
+    }
+
+    #[test]
+    fn a_shorted_order_owes_a_refund_that_lowers_the_cost_now_and_shows_as_projected() {
+        let (t, rc) = short_po();
+        assert_eq!((rc.basis, rc.short, rc.owed), (80.0, 20.0, 200.0));
+        let p = plan_with(&t, &[o("a", 40.0)], &[], &rc);
+        assert_eq!((p.refund_received, p.refund_counted, p.refund_left, p.goods_net), (0.0, 200.0, 200.0, 800.0));
+        assert!(p.cost_projected);
+        // The order's bank share is its gross half; its typed landed line carries the half of the net.
+        assert_eq!((p.orders[0].goods, p.orders[0].goods_net, p.orders[0].refund), (500.0, 400.0, 0.0));
+        let r = rollup(&t, &p, &[], 40.0);
+        assert_eq!((r.unit_cost, r.load_cost, r.cost_on_hand), (10.0, 800.0, 400.0));
+        assert_eq!((r.units_ordered, r.units_received, r.short, r.refund_owed, r.refund_left), (100.0, Some(80), 20.0, 200.0, 200.0));
+        assert!(r.cost_projected);
+        assert_eq!(po_state(true, p.refund_left, p.owed_supplier, false), "refund_owed");
+    }
+
+    #[test]
+    fn part_of_the_refund_received_is_booked_by_share_and_the_rest_held_and_it_is_still_owed() {
+        let (t, rc) = short_po();
+        let rows = [row("w", Kind::Goods, 1_000.0, "2026-11-01"), row("rf", Kind::Refund, 50.0, "2026-11-04")];
+        let p = plan_with(&t, &[o("a", 40.0)], &rows, &rc);
+        assert_eq!((p.refund_received, p.refund_counted, p.refund_left), (50.0, 200.0, 150.0));
+        assert!(p.cost_projected, "still owed until it all lands");
+        assert_eq!(p.orders[0].refund_slices, vec![Slice { txn_id: "rf".into(), amount: 25.0 }]);
+        // Review R-596 #1: the line carries 500 less the 75 still to come; the deal takes the 25 booked off
+        // itself, so its goods are 400 (the net), never 375.
+        assert_eq!((p.orders[0].line_goods, p.orders[0].goods_net), (425.0, 400.0));
+        assert!(p.held.contains(&Held { txn_id: "rf".into(), kind: Kind::Refund, amount: 25.0 }));
+        assert_eq!(p.spent, 950.0, "1000 paid less the 50 that came back");
+    }
+
+    #[test]
+    fn the_full_refund_turns_the_cost_solid_and_the_order_done() {
+        let (t, rc) = short_po();
+        let rows = [row("w", Kind::Goods, 1_000.0, "2026-11-01"), row("rf", Kind::Refund, 200.0, "2026-11-04")];
+        let p = plan_with(&t, &[o("a", 40.0), o("b", 40.0)], &rows, &rc);
+        assert_eq!((p.refund_left, p.goods_net, p.spent, p.owed_supplier), (0.0, 800.0, 800.0, 0.0));
+        assert!(!p.cost_projected);
+        // 40 + 40 of the 80 counted: the last order takes what is left, nothing is held.
+        let b: Vec<f64> = p.orders.iter().map(|x| x.refund).collect();
+        assert_eq!(b, vec![100.0, 100.0]);
+        assert!(!p.held.iter().any(|h| h.kind == Kind::Refund));
+        assert_eq!(po_state(true, p.refund_left, p.owed_supplier, false), "done");
+        assert_eq!(po_state(true, 0.0, 10.0, false), "received", "the supplier is still owed money");
+    }
+
+    #[test]
+    fn a_refund_larger_than_owed_raises_the_refund_counted_and_lowers_the_cost_further() {
+        let (t, rc) = short_po();
+        let p = plan_with(&t, &[o("a", 80.0)], &[row("rf", Kind::Refund, 300.0, "2026-11-04")], &rc);
+        assert_eq!((p.refund_received, p.refund_counted, p.refund_left), (300.0, 300.0, 0.0));
+        assert_eq!(p.goods_net, 700.0);
+        assert!((p.unit_goods - 8.75).abs() < 1e-9);
+        assert_eq!(p.orders[0].refund, 300.0);
+        // Never below nothing.
+        let big = plan_with(&t, &[], &[row("rf", Kind::Refund, 5_000.0, "2026-11-04")], &rc);
+        assert_eq!((big.goods_net, big.unit_goods), (0.0, 0.0));
+    }
+
+    #[test]
+    fn invoice_lines_make_the_total_and_the_units_and_bad_lines_are_refused() {
+        let lines = parse_lines(r#"[{"what":"Hats","qty":10,"price":1.25},{"what":"Caps","qty":3,"price":0.1}]"#).unwrap();
+        assert_eq!(lines_totals(&lines), (13.0, 12.8), "12.50 + 0.30");
+        assert_eq!(parse_lines("").unwrap(), vec![]);
+        assert_eq!(parse_lines("[]").unwrap(), vec![]);
+        assert_eq!(lines_totals(&[]), (0.0, 0.0));
+        for bad in [r#"[{"what":"","qty":1,"price":1}]"#, r#"[{"what":"x","qty":1.5,"price":1}]"#, r#"[{"what":"x","qty":-1,"price":1}]"#, r#"[{"what":"x","qty":1,"price":-1}]"#, r#"[{"what":"x","qty":1}]"#, "{}", "nope"] {
+            assert_eq!(parse_lines(bad), Err(LINE_BAD), "{bad}");
+        }
+        assert_eq!(parse_lines(r#"[{"what":"x","qty":3.0,"price":1}]"#).unwrap()[0].qty, 3, "3.0 is a whole number");
+    }
+
+    #[test]
+    fn before_anything_is_counted_the_units_ordered_stand_and_a_typed_refund_stands_over_the_short() {
+        let rc = Receipt::new(100.0, 1_000.0, None, None);
+        assert_eq!((rc.basis, rc.short, rc.owed, rc.received), (100.0, 0.0, 0.0, None));
+        let p = plan_with(&Totals { units: rc.basis, goods: 1_000.0, ship: 0.0, markup: 0.0 }, &[], &[], &rc);
+        assert!(!p.cost_projected && p.goods_net == 1_000.0);
+        let typed = Receipt::new(100.0, 1_000.0, Some(80.0), Some(150.0));
+        assert_eq!((typed.short, typed.owed, typed.typed), (20.0, 150.0, Some(150.0)));
+        assert_eq!(Receipt::new(100.0, 1_000.0, None, Some(40.0)).owed, 40.0, "owed even before the count");
+        assert_eq!(Receipt::new(100.0, 1_000.0, Some(120.0), None).short, 0.0, "more than ordered is no short");
+        assert_eq!(po_state(false, 0.0, 1_000.0, true), "on_truck");
+        assert_eq!(po_state(false, 0.0, 1_000.0, false), "ordered");
+    }
+
+    #[test]
+    fn nothing_received_costs_nothing_each_and_owes_the_whole_invoice_back() {
+        let rc = Receipt::new(100.0, 1_000.0, Some(0.0), None);
+        assert_eq!((rc.basis, rc.short, rc.owed), (0.0, 100.0, 1_000.0));
+        let t = Totals { units: rc.basis, goods: 1_000.0, ship: 20.0, markup: 0.0 };
+        let p = plan_with(&t, &[], &[], &rc);
+        assert_eq!((p.goods_net, p.unit_goods, p.refund_left), (0.0, 0.0, 1_000.0));
+        let r = rollup(&t, &p, &[], 0.0);
+        assert_eq!((r.unit_cost, r.units_received), (0.0, Some(0)));
+    }
+
+    #[test]
+    fn the_last_sale_takes_what_is_left_of_the_net_goods_and_the_refund() {
+        // 4 ordered at $100, 3 counted: $100 owed back, three sold one each.
+        let rc = Receipt::new(4.0, 400.0, Some(3.0), None);
+        let t = Totals { units: rc.basis, goods: 400.0, ship: 0.0, markup: 0.0 };
+        let rows = [row("rf", Kind::Refund, 100.0, "2026-11-04")];
+        let p = plan_with(&t, &[o("a", 1.0), o("b", 1.0), o("c", 1.0)], &rows, &rc);
+        let g: Vec<f64> = p.orders.iter().map(|x| x.goods).collect();
+        let n: Vec<f64> = p.orders.iter().map(|x| x.goods_net).collect();
+        let f: Vec<f64> = p.orders.iter().map(|x| x.refund).collect();
+        assert_eq!(g, vec![133.33, 133.33, 133.34]);
+        assert_eq!(f, vec![33.33, 33.33, 33.34]);
+        assert_eq!(n, vec![100.0, 100.0, 100.0]);
+        assert!(p.held.is_empty(), "every cent of the refund sits on an order");
+        let r = rollup(&t, &p, &[], 0.0);
+        assert_eq!((r.cost_sold, r.cost_on_hand, r.sold_out), (300.0, 0.0, true));
+    }
+
+    #[test]
+    fn a_buy_with_none_of_the_new_fields_gives_exactly_todays_figures() {
+        let t = Totals { units: 110_000.0, goods: 137_500.0, ship: 3_000.0, markup: 0.0 };
+        let rows = [row("w", Kind::Goods, 137_500.0, "2026-10-01")];
+        let a = plan(&t, &[o("a", 1_000.0)], &rows);
+        let b = plan_with(&t, &[o("a", 1_000.0)], &rows, &Receipt::new(110_000.0, 137_500.0, None, None));
+        assert_eq!(serde_json::to_string(&a).unwrap(), serde_json::to_string(&b).unwrap());
+        assert_eq!((a.orders[0].goods, a.orders[0].goods_net, a.orders[0].refund), (1_250.0, 1_250.0, 0.0));
+        assert!(a.orders[0].refund_slices.is_empty() && !a.cost_projected);
+        let r = rollup(&t, &a, &[], 109_000.0);
+        assert_eq!((r.load_cost, r.refund_owed, r.refund_received, r.spent, r.owed_supplier), (140_500.0, 0.0, 0.0, 137_500.0, 0.0));
+        assert!((r.unit_cost - 140_500.0 / 110_000.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_refund_is_money_in_only_and_goods_and_shipping_are_money_out_only() {
+        assert_eq!(pay_direction_error(Kind::Refund, "in"), None);
+        assert_eq!(pay_direction_error(Kind::Refund, "out"), Some("Choose money that came in."));
+        assert_eq!(pay_direction_error(Kind::Goods, "out"), None);
+        assert_eq!(pay_direction_error(Kind::Ship, "in"), Some(PAY_MONEY_OUT_ONLY));
+        assert_eq!(held_kind(&held_note("x", Kind::Refund)), Kind::Refund);
+        assert!(is_buy_note(&refund_note("Shoe truck")));
+        assert!(!is_buy_note(&held_note("Shoe truck", Kind::Refund)));
+        assert_eq!(serde_json::to_string(&Kind::Refund).unwrap(), "\"refund\"");
     }
 }

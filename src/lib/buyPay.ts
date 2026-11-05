@@ -30,8 +30,13 @@ export function payChoice(total: number, paid: number, room: number): PayChoice 
 /** A leg of a buy as the pickers need it: what it cost and what is booked on it. */
 export interface BuyLeg { total: number; paid: number }
 
-export const legOf = (r: { goods_total: number; goods_paid: number; ship_total: number; ship_paid: number }, kind: BuyKind): BuyLeg =>
-  kind === "goods" ? { total: r.goods_total, paid: r.goods_paid } : { total: r.ship_total, paid: r.ship_paid };
+export const legOf = (
+  r: { goods_total: number; goods_paid: number; ship_total: number; ship_paid: number; refund_owed?: number; refund_received?: number },
+  kind: BuyKind,
+): BuyLeg =>
+  kind === "goods" ? { total: r.goods_total, paid: r.goods_paid }
+  : kind === "refund" ? { total: r.refund_owed ?? 0, paid: r.refund_received ?? 0 }
+  : { total: r.ship_total, paid: r.ship_paid };
 
 /** The bank picker's search: every word must match; an amount may be typed with $ and commas and matches the row's
  *  amount or what is left of it, to the cent. */

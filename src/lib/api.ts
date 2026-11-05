@@ -3199,10 +3199,20 @@ export interface UnallocatedTxn {
   unallocated: number; // money still free to allocate anywhere (original − allocated)
 }
 /** R-488: a buy, what one warehouse product or one delivery cost (buy_core.rs works every share out). */
-export type BuyKind = "goods" | "ship";
+export type BuyKind = "goods" | "ship" | "refund";
+/** R-596: one line of a supplier's invoice. */
+export interface InvoiceLine { what: string; qty: number; price: number }
+/** R-596: where a purchase order stands, read from facts and never set by hand. */
+export type PurchaseState = "ordered" | "on_truck" | "received" | "refund_owed" | "done";
 export interface BuyInput {
   item_id?: string; load_id?: string; name?: string; supplier_id?: string; supplier_name?: string;
   units_bought?: number; goods_total?: number; ship_total?: number; notes?: string;
+  /** R-596: the supplier's invoice. Lines make the total and the units; `[]` clears them. */
+  invoice_no?: string; invoice_date?: string; lines?: InvoiceLine[];
+  /** A number counts the units in (with `received_at`), null goes back to not counted. Absent keeps it. */
+  units_received?: number | null; received_at?: string;
+  /** A number types the refund owed over the worked-out one, null goes back to worked out. Absent keeps it. */
+  refund_owed?: number | null; manifest_name?: string;
 }
 export interface BuyRollup {
   bought: number; sold: number; left: number; goods_total: number; ship_total: number; unit_cost: number;
@@ -3213,6 +3223,12 @@ export interface BuyRollup {
   /** R-576: goods + shipping in, to the cent; `cost_on_hand` is the part no order has taken (the orders' shares plus it
    *  always come to `load_cost`); `markup_sold` is his markup on the orders so far. */
   load_cost: number; cost_on_hand: number; markup_sold: number;
+  /** R-596: units ordered, units counted in (null until counted), the short, the refund owed (typed, else worked out from the
+   *  short), received and still owed, what was spent (paid less refunds received), what the supplier is still owed, whether the
+   *  cost each still leans on a refund not in yet, and the plain state. */
+  units_ordered: number; units_received: number | null; short: number; refund_owed: number; refund_owed_typed: number | null;
+  refund_received: number; refund_counted: number; refund_left: number; goods_net: number; spent: number; owed_supplier: number;
+  cost_projected: boolean; state: PurchaseState;
 }
 export interface BuyOrder {
   id: string; invoice_id: string; number: string; client: string; stage: string; voided: boolean; count: number;
@@ -3242,6 +3258,9 @@ export interface BuyDetail {
     /** The shipping in: what the trucks cost once the buy has one, else the typed figure (`ship_typed`). */
     ship_total: number; ship_typed: number; markup_total: number;
     notes: string; archived: boolean; on_the_way: boolean; created_at: string; updated_at: string;
+    /** R-596 */
+    invoice_no: string; invoice_date: string; lines: InvoiceLine[]; units_received: number | null; received_at: string;
+    refund_owed_typed: number | null; manifest_name: string; from_deal_id: string; state: PurchaseState;
   };
   rollup: BuyRollup; unit_goods: number; unit_ship: number; unit_markup: number; trucks: TruckRow[]; truck_cost: TruckCost;
   orders: BuyOrder[]; payments: BuyPayment[];
@@ -3252,9 +3271,16 @@ export interface BuyDetail {
 export interface BuyChoice {
   id: string; name: string; supplier_name: string; stock_name: string; on_the_way: boolean; trucks: number;
   goods_total: number; goods_paid: number; ship_total: number; ship_paid: number;
+  /** R-596: the refund owed, the part that came in, and the supplier's invoice number. */
+  refund_owed: number; refund_received: number; invoice_no: string;
 }
 export interface BuyBrief { id: string; name: string; units_bought: number; sold: number; unit_goods: number; unit_ship: number; unit_markup: number }
 /** R-551: a buy started before its stock is here (On the way). */
+/** R-596: one purchase order in the Purchases list. */
+export interface PurchaseRow {
+  id: string; name: string; supplier_id: string; supplier_name: string; item_id: string; load_id: string; on_the_way: boolean;
+  buy: BuyDetail["buy"]; rollup: BuyRollup; truck_cost: TruckCost; orders: number; in_step: boolean;
+}
 export interface ComingBuy {
   id: string; name: string; supplier_id: string; supplier_name: string; goods_total: number; units_bought: number; created_at: string;
   truck_cost: TruckCost; trucks: TruckRow[]; goods_paid: number;
@@ -4503,7 +4529,11 @@ export const api = {
   /** R-554: a sold order's pick list, from the boxes it recorded. */
   loadOutPick: (loadId: string, outId: string) => invoke<PickPlan>("load_out_pick", { loadId, outId }),
   /** R-488: every product and delivery, each with its buy when one is recorded. */
-  listWarehouseBuys: () => invoke<{ stock: StockWithBuy[]; coming: ComingBuy[] }>("list_warehouse_buys"),
+  listWarehouseBuys: () => invoke<{ stock: StockWithBuy[]; coming: ComingBuy[]; purchases: PurchaseRow[] }>("list_warehouse_buys"),
+  /** R-596: a deal flow bought for the warehouse becomes a purchase order (the server does it). Returns the order's id. */
+  buyFromDeal: (dealFlowId: string) => invoke<string>("buy_from_deal", { dealFlowId }),
+  /** R-596: put a purchase order that came from a deal back as the deal. Returns the deal's id. */
+  undoBuyFromDeal: (id: string) => invoke<string>("undo_buy_from_deal", { id }),
   /** R-488: the live buy on a product or a delivery (the invoice form's cost line). */
   warehouseBuyFor: (o: { itemId?: string; loadId?: string }) =>
     invoke<{ buy: BuyBrief | null }>("warehouse_buy_for", { itemId: o.itemId ?? null, loadId: o.loadId ?? null }),
