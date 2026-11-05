@@ -1138,6 +1138,30 @@ function payoutsRequest<T>(method: string, path: string, body?: unknown): Promis
 const enc = encodeURIComponent;
 
 /** A recipient's cut across the brief periods (empty list when unconfigured). */
+/** R-617: the tax set-aside month by month, on the deals that closed (GET /api/payouts/tax-months). */
+export interface TaxMonth {
+  month: string;
+  deals: number;
+  profit: number;
+  pay: number;
+  base: number;
+  /** Losses from earlier months taken off this one. */
+  credit_in: number;
+  due: number;
+  /** False for the month we are in. */
+  closed: boolean;
+}
+export interface TaxMonths {
+  year: number;
+  rate: number;
+  months: TaxMonth[];
+  due_closed: number;
+  this_month: number;
+  set_aside_year: number;
+  credit_left: number;
+  tax_paid: number;
+}
+
 export interface PayoutTotal {
   name: string;
   is_business: boolean;
@@ -4899,6 +4923,8 @@ export const api = {
     brief: (weekFrom: string, weekTo: string, monthFrom: string, monthTo: string) =>
       payoutsRequest<{ payout_totals: PayoutTotal[]; mine_this_week: number | null }>("GET",
         `/api/payouts/brief?week_from=${enc(weekFrom)}&week_to=${enc(weekTo)}&month_from=${enc(monthFrom)}&month_to=${enc(monthTo)}`),
+    /** R-617: the tax set-aside month by month, worked out on the server (it holds the rep and logistics pay). */
+    taxMonths: () => payoutsRequest<TaxMonths>("GET", "/api/payouts/tax-months"),
     /** A person's rule from today on; deals already done keep the rule they had. */
     saveRule: (staffId: string, payType: PayType, value: number) =>
       payoutsRequest<{ ok: boolean }>("POST", "/api/payouts/rules", { staff_id: staffId, pay_type: payType, value }),

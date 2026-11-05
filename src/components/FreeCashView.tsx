@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { api, FinancialsOverview, MoneyConfig, ReconAccount } from "../lib/api";
+import { api, FinancialsOverview, MoneyConfig, ReconAccount, TaxMonths } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, SlidersHorizontal, X, AlertTriangle, ShieldCheck } from "lucide-react";
 import { toast } from "./Toast";
@@ -42,6 +42,12 @@ type OverviewWithReserve = FinancialsOverview & {
   reserve_ledger_year?: number;
   reserve_mask?: string;
   reserve_drift?: number | null;
+};
+
+// R-617: "2026-10" as "October" (long) or "Oct".
+const monthName = (k: string, long?: boolean) => {
+  const [y, m] = k.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: long ? "long" : "short" });
 };
 
 const acctLabel = (a: ReserveAccountOption) =>
@@ -114,6 +120,8 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
   const [configError, setConfigError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [recon, setRecon] = useState<ReconAccount[] | null>(null);
+  // R-617: the tax set-aside month by month, from the server (null: not reached, so the card says so).
+  const [tm, setTm] = useState<TaxMonths | null>(null);
 
   // Config editor buffers (raw strings — coerced on save).
   const [bankStr, setBankStr]     = useState("");
@@ -128,6 +136,7 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
 
   const loadOverview = () => {
     setRefreshing(true);
+    api.payouts.taxMonths().then(setTm).catch(() => setTm(null));
     return api
       .financialsOverview()
       .then((v) => { setOv(v); setLoadError(null); })
@@ -243,7 +252,12 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
       ]
     : [];
 
-  const reserveTotal = ov ? ov.tax_reserve + ov.refund_reserve : 0;
+  // R-617: with the server's months, tax is set aside on the deals that closed each month, and the figures that add
+  // up from it (should be in savings, still to move, free cash after) follow; without them, the ledger figures as before.
+  const taxReserve = tm ? tm.set_aside_year : ov?.tax_reserve ?? 0;
+  const taxPaid = tm ? tm.tax_paid : ov?.tax_paid ?? 0;
+  const taxShould = tm ? Math.max(0, tm.set_aside_year - tm.tax_paid) : ov?.tax_should_have ?? ov?.tax_reserve ?? 0;
+  const reserveTotal = ov ? taxReserve + ov.refund_reserve : 0;
   // Reserve account (R-143). Designated = Jack has picked one; linked = it is still
   // among the connected banks. Designated-but-unlinked has to be said out loud,
   // because the parked figure silently falls to zero and free cash rises.
@@ -251,7 +265,13 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
   const reserveDesignated = !!ov?.reserve_account_key;
   const reserveLinked = reserveDesignated && ov?.reserve_account_linked !== false;
   const reserveParked = ov?.reserve_parked ?? 0;
-  const reserveShortfall = ov?.reserve_shortfall ?? reserveTotal;
+  const reserveShortfall = tm && ov
+    ? Math.max(0, taxShould + ov.refund_reserve - (reserveLinked ? reserveParked : 0))
+    : ov?.reserve_shortfall ?? reserveTotal;
+  const afterReserves = tm && ov ? ov.free_cash - reserveShortfall : ov?.free_cash_after_reserves ?? 0;
+  const lastMonth = tm ? [...tm.months].reverse().find((m) => m.closed) : undefined;
+  const thisMonth = tm?.months.find((m) => !m.closed);
+  const monthRows = tm ? tm.months.filter((m) => m.deals > 0 || m.due > 0.005 || m.credit_in > 0.005) : [];
 
   const reconciled = ov
     ? ov.allocated_actuals.buyer_in + ov.allocated_actuals.supplier_paid + ov.allocated_actuals.refunds_out
@@ -445,7 +465,10 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
               <div className="min-w-0">
                 <h3 className="text-[14px] font-medium text-ink">Set aside</h3>
                 <p className="ui-note mt-0.5 leading-relaxed">
-                  Tax on this year's net income from the ledger, less the estimated tax you have paid. Refunds on {fmtAmount(ov.refund_reserve_base ?? 0)} of deal profit this year.{" "}
+                  {tm
+                    ? "Tax on the deals that closed each month, after their rep and logistics pay, less the estimated tax you have paid."
+                    : "Tax on this year's net income from the ledger, less the estimated tax you have paid. The month by month figures need the server, which could not be reached."}{" "}
+                  Refunds on {fmtAmount(ov.refund_reserve_base ?? 0)} of deal profit this year.{" "}
                   {reserveLinked
                     ? <>{ov.reserve_account_label} holds the money, and its balance is already out of the number above.</>
                     : <>For the record only, not taken out of the number above.</>}
@@ -460,27 +483,69 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
                   </div>
                 )}
                 <div className="mt-3 border-t border-line divide-y divide-line-2">
-                  {/* R-579: the tax figure, line by line, so the number can be checked by hand. */}
-                  <div className="flex items-center gap-3 py-2.5 min-w-0">
-                    <span className="min-w-0 flex-1 text-[13px] text-ink-2">Net income this year, from the ledger</span>
-                    <span className={`text-[13px] tabular-nums w-28 text-right flex-shrink-0 ${(ov.tax_base ?? 0) < 0 ? "text-danger-ink" : "text-ink-2"}`}>{fmtAmount(ov.tax_base ?? 0)}</span>
-                  </div>
+                  {/* R-617: the month just ended is what to move now; this month so far is not due yet. */}
+                  {lastMonth && (
+                    <div className="flex items-center gap-3 py-2.5 min-w-0">
+                      <span className="min-w-0 flex-1 text-[13px] font-medium text-ink">{monthName(lastMonth.month, true)}: move to savings</span>
+                      <span className="text-[13px] tabular-nums font-medium text-ink w-28 text-right flex-shrink-0">{fmtAmount(lastMonth.due)}</span>
+                    </div>
+                  )}
+                  {thisMonth && (
+                    <div className="flex items-center gap-3 py-2.5 min-w-0">
+                      <span className="min-w-0 flex-1 text-[13px] text-muted">
+                        {monthName(thisMonth.month, true)} so far<span className="text-[11px] text-faint ml-2">not due yet</span>
+                      </span>
+                      <span className="text-[13px] tabular-nums text-muted w-28 text-right flex-shrink-0">{fmtAmount(thisMonth.due)}</span>
+                    </div>
+                  )}
+                  {monthRows.length > 0 && (
+                    <div className="py-2 min-w-0">
+                      <div className="text-[12px] text-muted mb-1">Each month</div>
+                      {monthRows.map((m) => (
+                        <div key={m.month} className="flex items-center gap-3 py-1 min-w-0">
+                          <span className="min-w-0 flex-1 text-[12.5px] text-ink-2 truncate">
+                            {monthName(m.month)}
+                            <span className="text-muted"> · {m.deals} deal{m.deals === 1 ? "" : "s"}, {fmtAmount(m.base)} after pay</span>
+                            {m.credit_in > 0.005 && <span className="text-[11px] text-faint ml-2">{fmtAmount(m.credit_in)} loss carried in</span>}
+                          </span>
+                          <span className={`text-[12.5px] tabular-nums w-28 text-right flex-shrink-0 ${m.closed ? "text-ink-2" : "text-muted"}`}>{fmtAmount(m.due)}</span>
+                        </div>
+                      ))}
+                      {(tm?.credit_left ?? 0) > 0.005 && (
+                        <p className="ui-note mt-1">{fmtAmount(tm!.credit_left)} of losses still to come off the next months.</p>
+                      )}
+                    </div>
+                  )}
+                  {!tm && (
+                    <div className="flex items-center gap-3 py-2.5 min-w-0">
+                      <span className="min-w-0 flex-1 text-[13px] text-ink-2">Net income this year, from the ledger</span>
+                      <span className={`text-[13px] tabular-nums w-28 text-right flex-shrink-0 ${(ov.tax_base ?? 0) < 0 ? "text-danger-ink" : "text-ink-2"}`}>{fmtAmount(ov.tax_base ?? 0)}</span>
+                    </div>
+                  )}
                   <div className="flex items-center gap-3 py-2.5 min-w-0">
                     <span className="min-w-0 flex-1 text-[13px] text-ink-2">
-                      Tax at {Math.round((ov.tax_sweep_pct ?? 0.3) * 100)}%
+                      Tax at {Math.round((tm ? tm.rate : ov.tax_sweep_pct ?? 0.3) * 100)}%{tm ? " this year" : ""}
                     </span>
-                    <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(ov.tax_reserve)}</span>
+                    <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(taxReserve)}</span>
                   </div>
-                  {(ov.tax_paid ?? 0) > 0.005 && (
+                  {taxPaid > 0.005 && (
                     <div className="flex items-center gap-3 py-2.5 min-w-0">
                       <span className="min-w-0 flex-1 text-[13px] text-ink-2">Estimated tax already paid this year</span>
-                      <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">-{fmtAmount(ov.tax_paid ?? 0)}</span>
+                      <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">-{fmtAmount(taxPaid)}</span>
                     </div>
                   )}
                   <div className="flex items-center gap-3 py-2.5 min-w-0">
                     <span className="min-w-0 flex-1 text-[13px] font-medium text-ink">Should be in savings now for tax</span>
-                    <span className="text-[13px] tabular-nums font-medium text-ink w-28 text-right flex-shrink-0">{fmtAmount(ov.tax_should_have ?? ov.tax_reserve)}</span>
+                    <span className="text-[13px] tabular-nums font-medium text-ink w-28 text-right flex-shrink-0">{fmtAmount(taxShould)}</span>
                   </div>
+                  {tm && (
+                    <div className="flex items-center gap-3 py-2.5 min-w-0">
+                      <span className="min-w-0 flex-1 text-[13px] text-ink-2">
+                        Tax on net income from the ledger<span className="text-[11px] text-faint ml-2">check</span>
+                      </span>
+                      <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(ov.tax_reserve)}</span>
+                    </div>
+                  )}
                   <div className="flex items-center gap-3 py-2.5 min-w-0">
                     <span className="min-w-0 flex-1 text-[13px] text-ink-2">
                       Refunds
@@ -524,8 +589,8 @@ export default function FreeCashView({ onCheckBooks }: { onCheckBooks?: (mask: s
                     <span className="min-w-0 flex-1 text-[12.5px] text-muted">
                       {reserveLinked ? "If you moved the rest across, free cash would be" : "If you parked both, free cash would be"}
                     </span>
-                    <span className={`text-[13px] tabular-nums w-28 text-right flex-shrink-0 ${(ov.free_cash_after_reserves ?? 0) < 0 ? "text-danger-ink" : "text-muted"}`}>
-                      {fmtAmount(ov.free_cash_after_reserves ?? 0)}
+                    <span className={`text-[13px] tabular-nums w-28 text-right flex-shrink-0 ${afterReserves < 0 ? "text-danger-ink" : "text-muted"}`}>
+                      {fmtAmount(afterReserves)}
                     </span>
                   </div>
                 </div>
