@@ -421,35 +421,30 @@ export default function App() {
   // Mono (monochrome) — orthogonal to light/dark. It strips the accent and goes
   // grayscale; combined with dark it's the pure-black look, with light it's the
   // clean white/black look. Persisted independently of `dark` (no forced dark).
-  const [matte, setMatte] = useState(() => {
-    // R-423: Mono is the default since the E logo. Every device switches once (the old
-    // key cannot tell "never chose" from "chose off", since it is written on each launch);
-    // after that the toggle sticks.
-    if (localStorage.getItem("clienthub_mono_default") !== "1") {
-      localStorage.setItem("clienthub_mono_default", "1");
-      localStorage.setItem("clienthub_matte", "1");
-    }
-    return localStorage.getItem("clienthub_matte") === "1";
-  });
-  useEffect(() => {
-    const html = document.documentElement;
-    html.classList.add("theme-transitioning");
-    html.classList.toggle("matte", matte);
-    localStorage.setItem("clienthub_matte", matte ? "1" : "0");
-    const t = setTimeout(() => html.classList.remove("theme-transitioning"), 300);
-    return () => clearTimeout(t);
-  }, [matte]);
+  // R-589: the Mono switch is gone. Black (the ink: black on light, white on dark) is an accent like any other and the
+  // default. The `matte` class stays on for good, because the stylesheet keys Black off `html.matte:not([data-accent])`
+  // and other screens still read it; every other colour, orange included, is an explicit data-accent.
+  useEffect(() => { document.documentElement.classList.add("matte"); }, []);
 
   // Accent color
   const [accent, setAccent] = useState(() => {
     const saved = localStorage.getItem("clienthub_accent");
-    // Migrate retired accent ids (and the old blue default) to the new default: Ecliptr orange.
-    return saved && !["indigo", "red", "green", "black", "slate", "blue"].includes(saved) ? saved : "orange";
+    // Once per device: before R-589 "orange" (or nothing) meant the ink with Mono on and orange with it off.
+    if (localStorage.getItem("clienthub_accent_r589") !== "1") {
+      localStorage.setItem("clienthub_accent_r589", "1");
+      if (!saved || saved === "orange") {
+        const was = localStorage.getItem("clienthub_matte") === "0" ? "orange" : "black";
+        localStorage.setItem("clienthub_accent", was);
+        return was;
+      }
+    }
+    if (!saved || ["indigo", "red", "green", "slate"].includes(saved)) return "black"; // retired ids
+    return saved;
   });
   useEffect(() => {
     const html = document.documentElement;
     html.classList.add("theme-transitioning");
-    if (accent === "orange") html.removeAttribute("data-accent");
+    if (accent === "black") html.removeAttribute("data-accent");
     else html.setAttribute("data-accent", accent);
     localStorage.setItem("clienthub_accent", accent);
     const t = setTimeout(() => html.classList.remove("theme-transitioning"), 300);
@@ -464,11 +459,6 @@ export default function App() {
     const handler = (e: Event) => setDark((e as CustomEvent).detail);
     window.addEventListener("dark-change", handler);
     return () => window.removeEventListener("dark-change", handler);
-  }, []);
-  useEffect(() => {
-    const handler = (e: Event) => setMatte((e as CustomEvent).detail);
-    window.addEventListener("matte-change", handler);
-    return () => window.removeEventListener("matte-change", handler);
   }, []);
 
   const [draftCount, setDraftCount] = useState(0);

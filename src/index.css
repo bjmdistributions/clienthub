@@ -592,7 +592,8 @@ input, select, textarea { transition: border-color 0.14s ease, box-shadow 0.18s 
    --c-accent-fill (tailwind.config.js). Orange is the default, so no data-accent. Eclipse
    already had white on a deep enough fill; amber keeps dark text in both themes by design.
    Mono resets all of this - its blocks below come later at equal or higher specificity. */
-html.dark:not(.matte):not([data-accent]) { --c-on-accent: 255 255 255; --c-accent-fill: 255 101 32; --c-accent-fill-hover: 240 87 15; }
+html.dark:not(.matte):not([data-accent]),
+html.dark[data-accent="orange"] { --c-on-accent: 255 255 255; --c-accent-fill: 255 101 32; --c-accent-fill-hover: 240 87 15; }
 
 /* Blue — the pre-orange default, kept as an explicit option. */
 html[data-accent="blue"] { --c-accent:37 99 235; --c-accent-hover:29 78 216;

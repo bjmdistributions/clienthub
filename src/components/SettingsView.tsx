@@ -308,7 +308,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "account", card: "Desktop notifications", label: "Desktop notifications", kw: "system alerts popups quote needed carrier due overdue bill pay day logistics pay bol uploaded windows mac notify" },
   { tab: "account", card: "Notifications", label: "Notifications", kw: "push alerts iphone phone bills due overdue form submissions inventory renew listings bank deposit charge activity quotes logistics booking notify which" },
   // Appearance
-  { tab: "appearance", card: "Theme", label: "Theme", kw: "dark mode light mode colour scheme mono monochrome grayscale" },
+  { tab: "appearance", card: "Theme", label: "Theme", kw: "dark mode light mode colour scheme black accent" },
   { tab: "appearance", card: "Accent colour", label: "Accent colour", kw: "accent color orange indigo blue emerald teal violet amber rose swatch brand colour" },
   { tab: "appearance", card: "Sidebar", label: "Collapse the sidebar on narrow windows", kw: "sidebar rail narrow window responsive" },
   // Company
@@ -1177,8 +1177,7 @@ function PhoneNotificationsCard() {
 /** `showTimes`: the 24-hour switch, for whoever works loads (the server keeps it behind the Logistics routes). */
 function AppearanceTab({ showTimes }: { showTimes: boolean }) {
   const [dark, setDark] = useState(() => localStorage.getItem("clienthub_dark") === "1");
-  const [matte, setMatte] = useState(() => localStorage.getItem("clienthub_matte") === "1");
-  const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "orange");
+  const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "black");
   const [navAuto, setNavAutoState] = useState(() => localStorage.getItem("clienthub_nav_auto") !== "0");
   // R-524: how load times are typed. R-538: the person's choice, kept on their account so it follows them to every device.
   const [time24, setTime24State] = useState(() => time24On());
@@ -1200,20 +1199,14 @@ function AppearanceTab({ showTimes }: { showTimes: boolean }) {
     setAccentState(a);
     window.dispatchEvent(new CustomEvent("accent-change", { detail: a }));
   };
-  // Base (light/dark) and Mono are now orthogonal — set each independently.
   const setBase = (isDark: boolean) => {
     setDark(isDark);
     window.dispatchEvent(new CustomEvent("dark-change", { detail: isDark }));
   };
-  const setMono = (on: boolean) => {
-    setMatte(on);
-    window.dispatchEvent(new CustomEvent("matte-change", { detail: on }));
-  };
-
-  // Mono is the default accent (the ink). A colour picked here replaces it, in Mono too, and "orange" is stored as
-  // no accent at all, so with Mono on that first choice is the ink itself.
+  // R-589: Black replaced the Mono switch. It is the ink, so it reads white on dark.
   const ACCENTS = [
-    { id: "orange",  label: matte ? "Mono ink" : "Ecliptr orange", swatch: matte ? "rgb(var(--c-ink))" : "#FF6520" },
+    { id: "black",   label: "Black",    swatch: "#0A0A0A" },
+    { id: "orange",  label: "Ecliptr orange", swatch: "#FF6520" },
     { id: "eclipse", label: "Indigo",   swatch: "#4F46E5" },
     { id: "blue",    label: "Blue",     swatch: "#2563EB" },
     { id: "emerald", label: "Emerald",  swatch: "#059669" },
@@ -1226,7 +1219,7 @@ function AppearanceTab({ showTimes }: { showTimes: boolean }) {
   return (
     <div>
       <Section>
-        <Row title={<SectionLabel>Theme</SectionLabel>} sub="Light or dark. Add Mono for the stripped-back black and white look.">
+        <Row title={<SectionLabel>Theme</SectionLabel>} sub="Light or dark.">
           <div role="radiogroup" aria-label="Theme" className="flex gap-2">
             {([
               { isDark: false, label: "Light", icon: Sun },
@@ -1243,13 +1236,8 @@ function AppearanceTab({ showTimes }: { showTimes: boolean }) {
             })}
           </div>
         </Row>
-        <Row title="Mono" sub="Buttons and highlights stay black and white. Green, red and teal still mark money, late and shipping.">
-          <Switch on={matte} onToggle={() => setMono(!matte)} label="Mono" />
-        </Row>
         <Row title={<SectionLabel>Accent colour</SectionLabel>}
-          sub={matte
-            ? "Mono keeps buttons black and white. Pick a colour to replace it; choosing the first swatch goes back to Mono."
-            : "Sets the accent used across the sidebar, highlights and controls. Data colors (revenue, profit, charts) stay fixed for clarity."}>
+          sub="Buttons, highlights and controls. Black is black on light and white on dark. Green, red and teal still mark money, late and shipping.">
           <div className="flex flex-wrap justify-end gap-2.5" role="radiogroup" aria-label="Accent colour">
             {ACCENTS.map((a) => {
               const isActive = accent === a.id;
