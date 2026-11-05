@@ -2348,13 +2348,16 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
 
   useEffect(() => { api.getPayoutSplit().then(setRecipients).catch(() => {}); }, []);
   useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id, flow.stage]);
-  // Default the completion date to when the BUYER's payment actually landed (bank
-  // date of the last buyer leg), falling back to the recorded payment date — a deal
-  // closed on the day the money came in, so backdated / backlogged deals land right.
+  // Default the completion date to the LAST of the buyer and supplier payments' bank dates, the server's
+  // `deal_closed_bank_date` (R-434), and only once the buyer's is linked. R-616, Jack: "lets say i mark the deal
+  // complete two weeks later after the shipping was put in, i still want it to be the last date out of the two
+  // payments buyer or supplier". It read the buyer's only, so a supplier paid later was dated a day early.
+  // Falls back to the recorded payment date.
   useEffect(() => {
     if (flow.stage === "complete") return;
     api.dealAllocations(flow.id).then((allocs) => {
-      const paid = allocs.filter((a) => a.role === "buyer_payment" && a.posted_at).map((a) => a.posted_at as string).sort();
+      const dated = allocs.filter((a) => (a.role === "buyer_payment" || a.role === "supplier_payment") && a.posted_at);
+      const paid = dated.some((a) => a.role === "buyer_payment") ? dated.map((a) => a.posted_at as string).sort() : [];
       if (paid.length) setCompletedDate(paid[paid.length - 1].slice(0, 10));
       else if (flow.payment_received_at) setCompletedDate(flow.payment_received_at.slice(0, 10));
     }).catch(() => {});

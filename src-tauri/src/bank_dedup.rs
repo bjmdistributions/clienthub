@@ -158,13 +158,16 @@ pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec
             if !same_label && !same_mask { continue; }
             let Some(gap) = signed_day_gap(&tr.date, &fr.date) else { continue };
             if !(-1..=10).contains(&gap) { continue; }
+            // R-615: a copy is the same amount to the cent, nothing else. Jack: "it has to be the exact exact exact
+            // dollar ammount". The 30% allowance for card holds and tips offered a $766.66 Zelle as the copy of a
+            // $1,000 one, and a $2,750 one for $3,094.
             let same_amount = (tr.amount - fr.amount).abs() < 0.005;
-            // A different settled amount (a hold, a tip) is a candidate only when the memo names
-            // the same merchant — measured on the live book, amount alone matched a $400 hotel
-            // hold to five unrelated restaurant and car-rental charges.
-            if !same_amount && ((tr.amount - fr.amount).abs() > fr.amount * 0.30 || f_words.is_disjoint(&merchant_words(&tr.desc))) {
-                continue;
-            }
+            if !same_amount { continue; }
+            // R-615: two Zelles with different confirmation numbers are two payments.
+            if zelle_refs_differ(&fr.desc, &tr.desc) { continue; }
+            // R-615: a posted row a person already booked under another category is a different payment
+            // (a Zelle booked as a receipt was offered as the copy of a customer refund).
+            if tr.reviewed && fr.reviewed && !tr.category.is_empty() && !fr.category.is_empty() && tr.category != fr.category { continue; }
             let words_agree = !f_words.is_disjoint(&merchant_words(&tr.desc));
             let exact = (same_label || same_mask) && metas[f].retracted && same_amount && gap <= 7 && words_agree;
             by_from.entry(f).or_default().push((t, exact));
@@ -350,6 +353,25 @@ pub fn with_not_same(raw_json: &str, other: &str) -> String {
     if !list.iter().any(|x| x.as_str() == Some(other)) { list.push(Value::String(other.to_string())); }
     o.insert("nt".into(), Value::Array(list));
     Value::Object(o).to_string()
+}
+
+/// R-615: the confirmation numbers in a Zelle memo ("ZELLE PAYMENT TO SAMPLE PERSON 31234567890", "... JPM99ABCD1234"):
+/// tokens of eight or more letters and digits with at least one digit, lowercased. The posted copy keeps its
+/// pending copy's number (Jack's Retracted by bank list, 2026-11-05). Not `bank_txn_reference`: that one mints
+/// canonical ids and must not change.
+fn zelle_refs(desc: &str) -> HashSet<String> {
+    desc.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() >= 8 && w.chars().any(|c| c.is_ascii_digit()))
+        .map(|w| w.to_ascii_lowercase())
+        .collect()
+}
+
+/// R-615: both memos are Zelles, both carry a confirmation number, and they share none.
+pub fn zelle_refs_differ(a: &str, b: &str) -> bool {
+    let z = |d: &str| d.to_ascii_lowercase().contains("zelle");
+    if !z(a) || !z(b) { return false; }
+    let (ra, rb) = (zelle_refs(a), zelle_refs(b));
+    !ra.is_empty() && !rb.is_empty() && ra.is_disjoint(&rb)
 }
 
 /// The words in a memo that can name a merchant: letters only, four or more, minus the words
@@ -1205,20 +1227,19 @@ mod tests {
         assert_eq!(p.iter().filter(|t| t.automatic).count(), 2);
         assert_eq!(p.iter().map(|t| t.to_id.clone()).collect::<HashSet<_>>().len(), 2);
 
-        // A $5 retracted copy with a $5 posted copy AND a $5.50 same-merchant posted copy: ask.
+        // R-615: a $5.50 same-merchant posted copy is not a copy of a $5 row at all; only the $5 one is offered.
         let mut mixed = vec![two[0].clone(), two[1].clone()];
         mixed.push(raw(row("c", card, "2026-09-03", 5.50, "in", "MARKETPLACE FEE", "", "2026-09-03T00:00:00Z"), "pa_1", false, false));
         let p = takeover_pairs(&mixed, &HashMap::new());
-        assert_eq!(p.len(), 2);
-        assert!(p.iter().all(|t| !t.automatic));
+        assert_eq!(p.len(), 1);
+        assert_ne!(p[0].to_id, "c");
 
         let hold = vec![
             raw(booked(row("hold", card, "2026-08-23", 400.0, "out", "HOTEL FRONT DESK", "", "2026-08-23T00:00:00Z"), "travel"), "pa_1", true, true),
             raw(row("final", card, "2026-08-26", 432.18, "out", "HOTEL FRONT DESK", "", "2026-08-27T00:00:00Z"), "pa_1", false, false),
         ];
-        let p = takeover_pairs(&hold, &HashMap::new());
-        assert_eq!(p.len(), 1);
-        assert!(!p[0].automatic, "a different settled amount is a chip, never automatic");
+        // R-615 (Jack: "it has to be the exact exact exact dollar ammount"): a different settled amount is never offered.
+        assert!(takeover_pairs(&hold, &HashMap::new()).is_empty());
     }
 
     #[test]
@@ -1323,9 +1344,9 @@ mod tests {
     fn a_retracted_row_lists_its_matches_or_reads_cancelled_after_the_window() {
         let card = "BUSINESS CARD \u{00b7}\u{00b7}3456";
         let v = vec![
-            // A posted copy at a different amount: a match for a person to confirm.
+            // A posted copy at the same amount: a match for a person to confirm.
             raw(booked(row("hold", card, "2026-09-20", 400.0, "out", "HOTEL FRONT DESK", "", "2026-09-20T00:00:00Z"), "travel"), "pa_1", true, true),
-            raw(row("final", card, "2026-09-23", 432.18, "out", "HOTEL FRONT DESK", "", "2026-09-23T00:00:00Z"), "pa_1", false, false),
+            raw(row("final", card, "2026-09-23", 400.0, "out", "HOTEL FRONT DESK", "", "2026-09-23T00:00:00Z"), "pa_1", false, false),
             // No posted copy, eleven days on: cancelled.
             raw(booked(row("gone", card, "2026-09-30", 75.0, "out", "SUPPLIER", "", "2026-09-30T00:00:00Z"), "payment"), "pa_1", true, true),
             // No posted copy yet, five days on: still waiting.
@@ -1477,5 +1498,36 @@ mod tests {
         stray.raw_json = json!({"pa": "pa_other", "pnd": true}).to_string();
         let v = vec![stray, on("pa_feed", "posted", "2026-10-04", 320.0, "Zelle to Example Carrier")];
         assert_eq!(link_twins(&v, &fed_here(), &HashMap::new()).len(), 1);
+    }
+
+    // R-615, the four rows Jack pasted (names and numbers invented): a copy is the exact amount, the same Zelle
+    // number, and not booked as something else. Each retracted Zelle is offered only its one true copy.
+    #[test]
+    fn a_copy_is_the_exact_amount_and_the_same_zelle_number() {
+        let acct = "SAMPLE BUS CHECKING \u{00b7}\u{00b7}9999";
+        let imp = "2026-09-25T00:00:00Z";
+        let gone = |id: &str, d: &str, amt: f64, desc: &str| raw(booked(row(id, acct, d, amt, "out", desc, "", imp), "customer_refund"), "pa_1", false, true);
+        let post = |id: &str, d: &str, amt: f64, desc: &str, cat: &str| raw(booked(row(id, acct, d, amt, "out", desc, "", imp), cat), "pa_1", false, false);
+        let v = vec![
+            gone("a_old", "2026-09-17", 458.35, "ZELLE PAYMENT TO SAMPLE ONE 31111111111"),
+            post("a_new", "2026-09-17", 458.35, "Zelle payment to Sample One 31111111111", "customer_refund"),
+            gone("b_old", "2026-09-21", 1000.0, "ZELLE PAYMENT TO SAMPLE TWO 32222222222"),
+            post("b_new", "2026-09-21", 1000.0, "Zelle payment to sample two 32222222222", "customer_refund"),
+            post("b_other_number", "2026-09-22", 766.66, "Zelle payment to sample two 32222299999", "customer_refund"),
+            post("b_other_person", "2026-09-24", 1000.0, "Zelle payment to Sample Three 33333333333", "receipt"),
+            gone("c_old", "2026-09-23", 3094.0, "ZELLE PAYMENT TO SAMPLE FOUR JPM99AAAA1111"),
+            post("c_new", "2026-09-23", 3094.0, "Zelle payment to Sample Four JPM99aaaa1111", "customer_refund"),
+            gone("d_old", "2026-10-01", 2750.0, "ZELLE PAYMENT TO SAMPLE FOUR JPM99BBBB2222"),
+            post("d_new", "2026-10-01", 2750.0, "Zelle payment to Sample Four JPM99bbbb2222", "customer_refund"),
+        ];
+        let mut got: Vec<(String, String)> = takeover_pairs(&v, &HashMap::new()).into_iter().map(|t| (t.from_id, t.to_id)).collect();
+        got.sort();
+        let want: Vec<(String, String)> = [("a_old", "a_new"), ("b_old", "b_new"), ("c_old", "c_new"), ("d_old", "d_new")]
+            .iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        assert_eq!(got, want);
+        // A cent apart is not a copy, even with the same name and number.
+        let cent = vec![gone("x_old", "2026-09-17", 100.0, "ZELLE PAYMENT TO SAMPLE ONE 31111111111"),
+                        post("x_new", "2026-09-17", 100.01, "Zelle payment to Sample One 31111111111", "")];
+        assert!(takeover_pairs(&cent, &HashMap::new()).is_empty());
     }
 }
