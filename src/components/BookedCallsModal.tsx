@@ -183,10 +183,11 @@ function ConfirmedCallRow({ call, highlight, onAction, onUrgent }: {
   call: CallRequest; highlight: boolean; onAction: (kind: ActionKind, call: CallRequest) => void; onUrgent: (c: CallRequest) => void;
 }) {
   return (
-    <div id={`call-${call.id}`} className={`px-5 py-3.5 flex items-start justify-between gap-3 ${highlight ? HIGHLIGHT : ""}`}>
+    <div id={`call-${call.id}`} className={`px-5 py-3.5 ${highlight ? HIGHLIGHT : ""}`}>
+      {/* R-594: details on their own line and the four buttons under them, so a name is never cut short. */}
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-[13.5px] font-medium text-ink truncate">{call.name}{call.company ? ` · ${call.company}` : ""}</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[13.5px] font-medium text-ink">{call.name}{call.company ? ` · ${call.company}` : ""}</span>
           <StatusPill tone="success">Confirmed</StatusPill>
           <UrgentPill call={call} />
         </div>
@@ -197,7 +198,7 @@ function ConfirmedCallRow({ call, highlight, onAction, onUrgent }: {
           </div>
         )}
       </div>
-      <div className="flex gap-1.5 flex-shrink-0 flex-wrap justify-end">
+      <div className="flex gap-1.5 flex-wrap mt-2.5">
         <UrgentButton call={call} onUrgent={onUrgent} />
         <Button size="sm" onClick={() => onAction("reschedule", call)}>Reschedule</Button>
         <Button size="sm" onClick={() => onAction("cancel", call)}>Cancel</Button>
