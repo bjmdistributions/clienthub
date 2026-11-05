@@ -1291,6 +1291,7 @@ fn main() {
             undo_auto_booking,
             take_over_booking,
             list_retracted,
+            list_moved_bookings,
             remove_cancelled_txn,
             mark_takeover_not_same,
             check_books,

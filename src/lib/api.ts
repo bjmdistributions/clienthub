@@ -3461,6 +3461,8 @@ export interface RetractedMatch {
   category: string;
   booked: boolean;
   automatic: boolean;
+  /** R-614: why Swap would be refused, in plain words; absent or null when it would go through. */
+  blocked?: string | null;
 }
 export interface RetractedRow {
   id: string;
@@ -3473,6 +3475,18 @@ export interface RetractedRow {
   booked: boolean;
   cancelled: boolean;
   matches: RetractedMatch[];
+}
+/** R-614: one booking moved off a bank row onto another copy of the same payment, from this computer's backups. */
+export interface MovedBooking {
+  id: string;
+  reason: "plaid_settled_inferred" | "plaid_settled" | "link_twin" | "not_at_bank_copy";
+  moved_at: string;
+  old: { date: string; amount: number; direction: string; description: string; category: string; account: string };
+  /** The row that holds the booking now; null when that copy is gone too. */
+  now: { id: string; date: string; amount: number; description: string; category: string } | null;
+  deals: { deal_flow_id: string; invoice_number: string; client: string; role: string; amount: number }[];
+  /** The copy is smaller than what was linked to deals. */
+  short: boolean;
 }
 export interface PlaidSyncSummary {
   imported: number;
@@ -5358,6 +5372,7 @@ export const api = {
     invoke<{ moved: boolean; over_allocated: string[] }>("take_over_booking", { fromId, toId }),
   // R-497: every row the bank retracted, with its matching posted copies; remove a cancelled one.
   listRetracted: () => invoke<RetractedRow[]>("list_retracted"),
+  listMovedBookings: () => invoke<MovedBooking[]>("list_moved_bookings"),
   removeCancelledTxn: (id: string) => invoke<{ removed: boolean; deals: number }>("remove_cancelled_txn", { id }),
   dedupeBankTxns: (dryRun: boolean, aggressive = false) =>
     invoke<DedupeResult>("dedupe_bank_txns", { dryRun, aggressive }),

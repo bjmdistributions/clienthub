@@ -7,7 +7,7 @@ import {
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, CheckAccount, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
   Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, ShippingSplit, BankPersonCandidate, ReconciliationMissingDeal,
-  TakeoverSuggestion, TieOutRow, RetractedRow, PlaidHealth,
+  TakeoverSuggestion, TieOutRow, RetractedRow, MovedBooking, PlaidHealth,
 } from "../lib/api";
 import StatusPill from "./StatusPill";
 import { METHOD_PATTERNS, bankFieldMethod, type BankMethod } from "../lib/bankMethod";
@@ -25,6 +25,7 @@ import LoansView from "./LoansView";
 import AccountantChanges from "./AccountantChanges";
 import NearDuplicates from "./NearDuplicates";
 import RetractedRows from "./RetractedRows";
+import MovedBookings from "./MovedBookings";
 import BankHealthStrip from "./BankHealthStrip";
 import Switch from "./Switch";
 import { Button, Kpi, PageActions, Row, Tabs } from "./ui";
@@ -1075,6 +1076,8 @@ export default function FinancialsView() {
   const [takingOver, setTakingOver] = useState<string | null>(null);
   // R-497: rows the bank retracted, each with the posted copies that match it.
   const [retracted, setRetracted] = useState<RetractedRow[]>([]);
+  // R-614: bookings moved onto another copy of their payment (Take over, Swap, the sync).
+  const [moved, setMoved] = useState<MovedBooking[]>([]);
   // R-288 phase 3: booking from history.
   const [autoBookOn, setAutoBookOn] = useState<boolean | null>(null);
   const [autoBookedOpen, setAutoBookedOpen] = useState(false);
@@ -1180,6 +1183,7 @@ export default function FinancialsView() {
       setTakeovers(m);
     }).catch(() => {});
     api.listRetracted().then(setRetracted).catch(() => {});
+    api.listMovedBookings().then(setMoved).catch(() => {});
   };
 
   // R-314: reloaded after "Tie to a deal" or "Not deal money" so a row that was
@@ -3573,6 +3577,7 @@ export default function FinancialsView() {
         <RetractedRows rows={retracted} onChanged={() => { refreshAll(false); }}
           onShow={() => { setTab("ledger"); setStatusFilter("retracted"); }} />
       )}
+      {(tab === "tobook" || tab === "ledger") && <MovedBookings rows={moved} />}
       {tab === "cash" && (
         <div className="space-y-4">
           {cashTab === "freecash"

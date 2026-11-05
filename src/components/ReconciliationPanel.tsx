@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search } from "lucide-react";
 import { api, DealFlow, DealAllocation, BankTxn, resoldMoves, type BuyChoice } from "../lib/api";
 import { PayPicker } from "./BuyPanel";
@@ -915,7 +916,9 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
   const invalid = !sel || !(val > 0.005) || val > sel.unallocated + 0.005;
   const surplus = sel && leg.target > 0 ? val - expects : 0;
 
-  return (
+  // Portalled to <body>: drawn inside the deal card, a transform or backdrop blur on an
+  // ancestor made `fixed` centre on that card instead of the window, so it sat low (R-612).
+  return createPortal(
     <div className="fixed inset-0 z-[90] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
 
@@ -1084,7 +1087,8 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1116,7 +1120,9 @@ function OverpayConfirm({ info, busy, onCancel, onConfirm }: {
   const { leg, amt, expects } = info;
   const surplus = amt - expects;
   const moneyIn = leg.direction === "in";
-  return (
+  // Portalled to <body>: drawn inside the deal card, a transform or backdrop blur on an
+  // ancestor made `fixed` centre on that card instead of the window, so it sat low (R-612).
+  return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/50" onClick={onCancel} />
       <div className="relative w-[92vw] max-w-[440px] rounded-2xl bg-surface border border-line shadow-2xl overflow-hidden">
@@ -1155,7 +1161,8 @@ function OverpayConfirm({ info, busy, onCancel, onConfirm }: {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

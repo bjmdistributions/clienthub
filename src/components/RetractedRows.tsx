@@ -128,10 +128,18 @@ export default function RetractedRows({ rows, onChanged, onShow }: {
               <div className="flex items-center gap-2 flex-wrap">
                 {r.matches.map((m) => (
                   <span key={m.id} className="inline-flex items-center gap-1.5">
+                    {/* R-614: a swap the move would refuse says why instead of failing with a red message. */}
+                    {m.blocked ? (
+                      <span className="inline-flex items-center gap-1.5 text-[12.5px] text-warning-ink">
+                        <AlertTriangle size={13} className="flex-shrink-0" />
+                        {r.matches.length === 1 ? "Can't swap yet. " : `Can't swap onto the ${m.date.slice(5)} copy yet. `}{m.blocked}
+                      </span>
+                    ) : (
                     <button onClick={() => swap(r, m)} disabled={busy !== null}
                       className="ui-btn ui-btn-sm ui-btn-ink">
                       {r.matches.length === 1 ? "Swap: move the booking to the posted copy" : `Swap onto the ${m.date.slice(5)} copy`}
                     </button>
+                    )}
                     <button onClick={() => notSame(r, m)} disabled={busy !== null}
                       title="Keep both. This pair is never offered or swapped again."
                       className="ui-btn ui-btn-sm">

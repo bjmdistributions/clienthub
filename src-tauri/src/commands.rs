@@ -18439,6 +18439,8 @@ pub async fn list_takeover_suggestions() -> Result<Vec<Value>, String> {
         let to = by_id.get(t.to_id.as_str())?;
         // Only offer it on a row that is still asking to be booked.
         if to.reviewed { return None; }
+        // R-614: nor one the move would refuse; the Retracted by bank list says why.
+        if swap_blocker(&conn, &t.from_id, &t.to_id).is_some() { return None; }
         let (f_pending, f_retracted) = crate::bank_dedup::pending_and_retracted(&f.raw_json);
         let pending = f_pending && !f_retracted;
         Some(json!({
@@ -18487,6 +18489,7 @@ pub async fn list_retracted() -> Result<Vec<Value>, String> {
             Some(json!({
                 "id": t.to_id, "date": day(&to.date), "amount": to.amount, "description": to.desc,
                 "category": to.category, "booked": to.reviewed || to.linked, "automatic": t.automatic,
+                "blocked": swap_blocker(&conn, &r.id, &t.to_id),
             }))
         }).collect();
         Some(json!({
@@ -18495,6 +18498,94 @@ pub async fn list_retracted() -> Result<Vec<Value>, String> {
             "cancelled": r.cancelled, "matches": matches,
         }))
     }).collect())
+}
+
+/// R-614: why a Swap / Take over of `from_id` onto `to_id` would be refused, checked the way `settle_carry`
+/// refuses, so the list says it instead of offering a button that fails. Jack: "the swap move the booking to
+/// posted copy doesnt even work either". None when the move would go through.
+fn swap_blocker(conn: &rusqlite::Connection, from_id: &str, to_id: &str) -> Option<String> {
+    let dir = |id: &str| conn.query_row("SELECT COALESCE(direction,'') FROM bank_txn WHERE id=?1", [id], |r| r.get::<_, String>(0)).ok();
+    if dir(from_id) != dir(to_id) { return Some("One is money in and the other money out.".into()); }
+    let unmovable: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=?1) \
+             OR EXISTS(SELECT 1 FROM loan WHERE bank_txn_id=?1) \
+             OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=?1) \
+             OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=?1)",
+        [from_id], |r| r.get(0)).unwrap_or(1);
+    if unmovable != 0 {
+        return Some("A refund, loan, purchase or expense is tied to the retracted row. Unlink it there, link it to the posted copy, then swap.".into());
+    }
+    if bill_payments_conflict(&bill_payments_on(conn, from_id), &bill_payments_on(conn, to_id)) {
+        return Some("The two copies pay different bills. Fix the bill link on one of them first.".into());
+    }
+    let deals = |id: &str| -> std::collections::HashSet<String> {
+        conn.prepare("SELECT deal_flow_id FROM bank_allocation WHERE bank_txn_id=?1")
+            .and_then(|mut st| st.query_map([id], |r| r.get::<_, String>(0)).map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default()
+    };
+    let (f, t) = (deals(from_id), deals(to_id));
+    if !f.is_empty() && !t.is_empty() && f != t {
+        return Some("The posted copy is already linked to a different deal. Remove that link first if this is the same payment.".into());
+    }
+    None
+}
+
+/// R-614: every booking moved off one bank row onto another copy of the same payment (Take over,
+/// Swap, and the sync's own carries), newest first, read from this computer's backups. Jack: "i
+/// started spamming it and now i dont remeber what transactions they were and if i screwed up deals".
+/// The backup table is local only, so a move made on another computer or the phone is not here.
+fn moved_bookings(conn: &rusqlite::Connection) -> Result<Vec<Value>, String> {
+    let rows: Vec<(String, String, String, String, String)> = conn
+        .prepare("SELECT id, row_json, COALESCE(survivor_id,''), COALESCE(reason,''), deleted_at FROM bank_txn_deleted_backup \
+                   WHERE reason IN ('plaid_settled_inferred','plaid_settled','link_twin','not_at_bank_copy') \
+                   ORDER BY deleted_at DESC LIMIT 300")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect()))
+        .map_err(|e| e.to_string())?;
+    let s = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let f = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let name = |v: &Value| { let c = s(v, "counterparty_name"); if c.trim().is_empty() { s(v, "description") } else { c } };
+    Ok(rows.into_iter().map(|(id, row_json, survivor, reason, at)| {
+        let old: Value = serde_json::from_str(&row_json).unwrap_or(Value::Null);
+        // The copy may itself have been handed on since; follow it to the row that holds the booking now.
+        let mut cur = survivor;
+        for _ in 0..5 {
+            let live: bool = conn.query_row("SELECT COUNT(*) FROM bank_txn WHERE id=?1", [&cur], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
+            if live || cur.is_empty() { break; }
+            match conn.query_row("SELECT COALESCE(survivor_id,'') FROM bank_txn_deleted_backup WHERE id=?1", [&cur], |r| r.get::<_, String>(0)) {
+                Ok(n) if !n.is_empty() && n != cur => cur = n,
+                _ => break,
+            }
+        }
+        let now = conn.query_row(
+            "SELECT posted_at, amount, COALESCE(NULLIF(TRIM(counterparty_name),''), description, ''), COALESCE(category,'') FROM bank_txn WHERE id=?1",
+            [&cur], |r| Ok(json!({ "id": cur, "date": r.get::<_, String>(0)?.chars().take(10).collect::<String>(),
+                "amount": r.get::<_, f64>(1)?, "description": r.get::<_, String>(2)?, "category": r.get::<_, String>(3)? }))).ok();
+        let allocs = old.get("allocations").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+        let linked: f64 = allocs.iter().map(|a| f(a, "amount")).sum();
+        let deals: Vec<Value> = allocs.iter().filter(|a| !s(a, "deal_flow_id").is_empty()).map(|a| {
+            let deal = s(a, "deal_flow_id");
+            let (inv, client) = conn.query_row(
+                "SELECT COALESCE(i.number,''), COALESCE(c.name,'') FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id \
+                   LEFT JOIN clients c ON c.id=i.client_id WHERE df.id=?1",
+                [&deal], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap_or_default();
+            json!({ "deal_flow_id": deal, "invoice_number": inv, "client": client, "role": s(a, "role"), "amount": f(a, "amount") })
+        }).collect();
+        let short = now.as_ref().map(|n| f(n, "amount").abs() + 0.005 < linked).unwrap_or(false);
+        json!({
+            "id": id, "reason": reason, "moved_at": at,
+            "old": { "date": s(&old, "posted_at").chars().take(10).collect::<String>(), "amount": f(&old, "amount"),
+                     "direction": s(&old, "direction"), "description": name(&old), "category": s(&old, "category"),
+                     "account": s(&old, "account_id") },
+            "now": now, "deals": deals, "short": short,
+        })
+    }).collect())
+}
+
+#[tauri::command]
+pub async fn list_moved_bookings() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    moved_bookings(&conn)
 }
 
 /// R-579: a person says a posted row is NOT the retracted row's copy. Written on both rows
@@ -33435,5 +33526,83 @@ mod r511_fd08_tests {
             "supplier_name": "Sample supplier", "amount": 200.0, "category": "freight", "supplier_billed": true
         }))).await.unwrap();
         assert!(line_of(&id, &pid).supplier_billed);
+    }
+}
+
+#[cfg(test)]
+mod r614_tests {
+    use super::*;
+    use crate::db::pool;
+
+    const ACCT: &str = "Sample Checking \u{00b7}\u{00b7}4321";
+
+    fn put(c: &rusqlite::Connection, id: &str, date: &str, amount: f64, dir: &str, desc: &str, raw: &str, reviewed: i64, cat: &str) {
+        c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, raw_json, reviewed, category) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            rusqlite::params![id, ACCT, date, amount, dir, desc, raw, reviewed, cat]).unwrap();
+    }
+    fn clean(c: &rusqlite::Connection) {
+        c.execute("DELETE FROM bank_allocation WHERE id LIKE 'alloc_r614%'", []).unwrap();
+        c.execute("DELETE FROM bank_txn WHERE id LIKE 'btpl_r614%'", []).unwrap();
+        c.execute("DELETE FROM bank_txn_deleted_backup WHERE id LIKE 'btpl_r614%'", []).unwrap();
+    }
+
+    // The Swap button on Retracted by bank, end to end: the pair the list offers is the pair the move accepts,
+    // and the move then shows on the Moved bookings list with the deal it carried.
+    #[test]
+    fn swap_moves_what_the_retracted_list_offers_and_lists_it() {
+        let _db = crate::db::init_test_store();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        { let c = pool().get().unwrap(); clean(&c);
+          // A booked card charge the bank retracted, and its posted copy.
+          put(&c, "btpl_r614_card_old", "2026-11-01", 42.5, "out", "SAMPLE DINER TOWNSVILLE", r#"{"pa":"pa_feed","rtr":"2026-11-03"}"#, 1, "meals");
+          put(&c, "btpl_r614_card_new", "2026-11-03", 42.5, "out", "SAMPLE DINER TOWNSVILLE", r#"{"pa":"pa_feed"}"#, 0, "");
+          // A buyer payment linked to a deal the bank retracted, and its posted copy.
+          put(&c, "btpl_r614_pay_old", "2026-11-01", 2400.0, "in", "WIRE FROM EXAMPLE BUYER", r#"{"pa":"pa_feed","rtr":"2026-11-03"}"#, 0, "");
+          put(&c, "btpl_r614_pay_new", "2026-11-02", 2400.0, "in", "WIRE FROM EXAMPLE BUYER", r#"{"pa":"pa_feed"}"#, 0, "");
+          c.execute("INSERT INTO bank_allocation (id, org_id, bank_txn_id, deal_flow_id, amount, role, created_at, updated_at) VALUES ('alloc_r614_a','org_default','btpl_r614_pay_old','df_r614',2400.0,'buyer_payment','x','x')", []).unwrap();
+        }
+        let listed = rt.block_on(list_retracted()).unwrap();
+        for (old, new) in [("btpl_r614_card_old", "btpl_r614_card_new"), ("btpl_r614_pay_old", "btpl_r614_pay_new")] {
+            let r = listed.iter().find(|r| r["id"] == old).expect("listed as retracted");
+            assert!(r["matches"].as_array().unwrap().iter().any(|m| m["id"] == new), "{old}: offered its posted copy");
+            let moved = rt.block_on(take_over_booking(old.into(), new.into()));
+            assert!(moved.is_ok(), "{old}: swap refused: {moved:?}");
+        }
+        let c = pool().get().unwrap();
+        let (rev, cat): (i64, String) = c.query_row("SELECT reviewed, category FROM bank_txn WHERE id='btpl_r614_card_new'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((rev, cat.as_str()), (1, "meals"));
+        let on: String = c.query_row("SELECT bank_txn_id FROM bank_allocation WHERE id='alloc_r614_a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(on, "btpl_r614_pay_new");
+        let list = moved_bookings(&c).unwrap();
+        let pay = list.iter().find(|m| m["id"] == "btpl_r614_pay_old").expect("on the moved list");
+        assert_eq!(pay["now"]["id"], "btpl_r614_pay_new");
+        assert_eq!(pay["deals"][0]["deal_flow_id"], "df_r614");
+        assert_eq!(pay["short"], false);
+        assert!(list.iter().any(|m| m["id"] == "btpl_r614_card_old" && m["old"]["category"] == "meals"));
+        clean(&c);
+    }
+
+    // A pair the move refuses is listed with the reason, not offered as a Swap that fails.
+    #[test]
+    fn a_pair_the_move_refuses_says_why() {
+        let _db = crate::db::init_test_store();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        { let c = pool().get().unwrap(); clean(&c);
+          put(&c, "btpl_r614_x_old", "2026-11-01", 900.0, "in", "WIRE FROM EXAMPLE BUYER", r#"{"pa":"pa_feed","rtr":"2026-11-03"}"#, 0, "");
+          put(&c, "btpl_r614_x_new", "2026-11-02", 900.0, "in", "WIRE FROM EXAMPLE BUYER", r#"{"pa":"pa_feed"}"#, 0, "");
+          for (a, t, d) in [("alloc_r614_x1", "btpl_r614_x_old", "df_r614_a"), ("alloc_r614_x2", "btpl_r614_x_new", "df_r614_b")] {
+              c.execute("INSERT INTO bank_allocation (id, org_id, bank_txn_id, deal_flow_id, amount, role, created_at, updated_at) VALUES (?1,'org_default',?2,?3,900.0,'buyer_payment','x','x')",
+                  rusqlite::params![a, t, d]).unwrap();
+          }
+        }
+        let listed = rt.block_on(list_retracted()).unwrap();
+        let r = listed.iter().find(|r| r["id"] == "btpl_r614_x_old").unwrap();
+        let m = r["matches"].as_array().unwrap().iter().find(|m| m["id"] == "btpl_r614_x_new").unwrap();
+        assert!(m["blocked"].as_str().unwrap_or("").contains("different deal"), "{m}");
+        let refused = rt.block_on(take_over_booking("btpl_r614_x_old".into(), "btpl_r614_x_new".into()));
+        assert!(refused.unwrap_err().contains("different deal"), "the move refuses for the same reason");
+        let c = pool().get().unwrap();
+        assert!(rt.block_on(list_takeover_suggestions()).unwrap().iter().all(|t| t["from_id"] != "btpl_r614_x_old"), "no chip that fails");
+        clean(&c);
     }
 }
