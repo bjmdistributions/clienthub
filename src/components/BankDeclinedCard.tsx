@@ -59,6 +59,8 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
   const [answeredOpen, setAnsweredOpen] = useState(false);
   // R-590: rows Import refused because the ledger already holds that payment, with the row it found.
   const [already, setAlready] = useState<Record<string, BankAlready>>({});
+  // R-600: a row Remove found booked to a deal with no copy at the bank, and the deals it is booked to.
+  const [booked, setBooked] = useState<Record<string, string[]>>({});
 
   const load = () => {
     api.listBankDeclined().then((r) => { setRows(r.rows); setCheck(r.check); }).catch(() => {});
@@ -83,9 +85,15 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
       }
       if (!res.ok) {
         const deals = (res.delete?.needs_unlink ?? []).flatMap((n) => n.deals);
-        toast(deals.length > 0
-          ? `This row is linked to ${deals.join(", ")}. Unlink it on the Ledger first, then remove it here.`
-          : "This row holds a refund, loan, purchase, expense or bill. Unlink that on the Ledger first.", "error");
+        // R-600: the bank has no copy of this booked payment, so removing it takes it off the deal. Say which, here.
+        if (deals.length > 0) { setBooked((b) => ({ ...b, [r.id]: deals })); return; }
+        toast("This row holds a refund, loan, purchase, expense or bill. Unlink that on the Ledger first.", "error");
+        return;
+      }
+      if (res.handed_over) {
+        toast("The bank's copy of this payment took over its booking, and this row was removed. A backup was kept.", "success");
+        load();
+        onChanged();
         return;
       }
       const said: Record<BankDeclinedAction, string> = {
@@ -95,6 +103,7 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
         use_bank: "The ledger row now matches your bank.",
         keep: "Kept as it is. You will be asked again only if the bank changes it.",
         remove: "Removed. A backup was kept.",
+        remove_unlink: "Removed and taken off the deal. A backup was kept.",
         reopen: "Back on the list.",
       };
       toast(said[action], "success");
@@ -140,6 +149,7 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
 
   const actions = (r: BankDeclined) => {
     if (r.reason === "differs") return <>{button("Use the bank's figures", () => answer(r, "use_bank"), true, r.id)}{button("Keep the ledger's", () => answer(r, "keep"), false, r.id)}</>;
+    if (r.reason === "not_at_bank" && booked[r.id]) return <>{button("Remove it from the deal too", () => answer(r, "remove_unlink"), true, r.id)}{button("Keep it", () => answer(r, "keep"), false, r.id)}</>;
     if (r.reason === "not_at_bank") return <>{button("Remove", () => answer(r, "remove"), false, r.id)}{button("Keep it", () => answer(r, "keep"), false, r.id)}</>;
     if (already[r.id]) return <>{button("It is a copy", () => answer(r, "copy"), true, r.id)}{button("Import anyway", () => answer(r, "import_anyway"), false, r.id)}</>;
     return <>{button("Import", () => answer(r, "import"), true, r.id)}{button("It is a copy", () => answer(r, "copy"), false, r.id)}</>;
@@ -160,6 +170,11 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
           {already[r.id] && (
             <div className="text-[12.5px] text-warning-ink mt-0.5">
               Already on the books: {day(already[r.id].posted_at)} · {already[r.id].description}. If this is a second, separate payment, choose Import anyway.
+            </div>
+          )}
+          {booked[r.id] && (
+            <div className="text-[12.5px] text-warning-ink mt-0.5">
+              Booked to {booked[r.id].join(", ")}, and the bank has no copy of it. Removing it takes this payment off that deal.
             </div>
           )}
           <div className="text-[12.5px] text-ink-2 mt-0.5">

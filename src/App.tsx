@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useState, useRef, lazy, Suspense }
 import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
-  Users, House, Repeat, Package, ClipboardList, Truck, DollarSign, ChartColumn, Ellipsis, SlidersHorizontal,
+  Users, House, FileText, Repeat, Package, ClipboardList, Truck, DollarSign, ChartColumn, Ellipsis, SlidersHorizontal,
   RefreshCw, LogOut,
   PanelLeftClose, PanelLeftOpen,
   Sun, Moon,
@@ -144,7 +144,8 @@ const NAV_AUTO_KEY = "clienthub_nav_auto";
 // R-583: pins are section ids now (the rail has a row per section), so they live under a new key; an old
 // list of screen ids would match nothing. Everyone starts with every section pinned except More.
 const RAIL_PINS_KEY = "clienthub_rail_pins_r583";
-const DEFAULT_PINS: string[] = ["home", "deals", "clients", "inventory", "logistics", "money", "insights"];
+const RAIL_PINS_R605_KEY = "clienthub_rail_pins_r605";
+const DEFAULT_PINS: string[] = ["home", "invoices", "deals", "clients", "inventory", "logistics", "money", "insights"];
 
 /** The screen last used in each section, so a click on the section returns to it. */
 const SECTION_LAST_KEY = "clienthub_section_last";
@@ -169,6 +170,7 @@ const RAIL_MENU_ROW =
 /** The icon of each sidebar section. Plain lucide, 16px, never inside a tile. */
 const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   home: House,
+  invoices: FileText,
   deals: Repeat,
   clients: Users,
   inventory: Package,
@@ -299,7 +301,19 @@ export default function App() {
   const [railPins, setRailPins] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(RAIL_PINS_KEY) || "null");
-      if (Array.isArray(saved)) return saved.filter((id) => typeof id === "string").map((id) => LEGACY_TAB_IDS[id] || id);
+      if (Array.isArray(saved)) {
+        const pins: string[] = saved.filter((id) => typeof id === "string").map((id) => LEGACY_TAB_IDS[id] || id);
+        // R-605: Invoices became its own section; pin it once (above Deals) on a rail chosen before it existed.
+        if (!localStorage.getItem(RAIL_PINS_R605_KEY)) {
+          localStorage.setItem(RAIL_PINS_R605_KEY, "1");
+          if (!pins.includes("invoices")) {
+            const at = pins.indexOf("deals");
+            pins.splice(at < 0 ? pins.length : at, 0, "invoices");
+            localStorage.setItem(RAIL_PINS_KEY, JSON.stringify(pins));
+          }
+        }
+        return pins;
+      }
     } catch { /* fall through to the default */ }
     return DEFAULT_PINS;
   });

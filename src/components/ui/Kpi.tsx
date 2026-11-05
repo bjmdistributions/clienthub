@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { useCountUp } from "./motion";
 
@@ -19,19 +19,46 @@ export interface KpiProps {
   /** What the change is against ("vs October to date"). */
   caption?: ReactNode;
   className?: string;
+  /** R-604: 20px instead of 24px, for a strip of many figures side by side (Financials). */
+  small?: boolean;
+}
+
+/** R-604: a figure never runs into the one beside it. When the text is wider than its column it steps down a
+ *  pixel at a time (never below 13px) until it fits; it is never cut off. Re-measured when the column resizes. */
+function useFitWidth(text: string) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      el.style.fontSize = "";
+      let size = parseFloat(getComputedStyle(el).fontSize) || 24;
+      while (el.scrollWidth > el.clientWidth + 0.5 && size > 13) {
+        size -= 1;
+        el.style.fontSize = `${size}px`;
+      }
+    };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text]);
+  return ref;
 }
 
 const group = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
-export default function Kpi({ label, value, format, delta, tone = "flat", caption, className }: KpiProps) {
+export default function Kpi({ label, value, format, delta, tone = "flat", caption, className, small }: KpiProps) {
   const counted = useCountUp(typeof value === "number" ? value : null);
   const text = typeof value === "number"
     ? (format ?? group)(counted ?? value)
     : value === null ? "" : value;
+  const figRef = useFitWidth(text);
   return (
     <div className={`min-w-0 p-4 ${className || ""}`}>
       <div className="ui-label">{label}</div>
-      <div className="ui-fig mt-2">{text}</div>
+      <div ref={figRef} className={`ui-fig mt-2 ${small ? "ui-fig-sm" : ""}`}>{text}</div>
       {(delta || caption) && (
         <div className="mt-1.5 flex items-center gap-1.5">
           {delta ? (

@@ -14,7 +14,7 @@ export type TabId =
   | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety"
   | "settings";
 
-export type SectionId = "home" | "deals" | "clients" | "inventory" | "purchases" | "logistics" | "money" | "insights" | "more" | "settings";
+export type SectionId = "home" | "invoices" | "deals" | "clients" | "inventory" | "purchases" | "logistics" | "money" | "insights" | "more" | "settings";
 
 export interface TabDef { id: TabId; label: string }
 export interface SectionDef {
@@ -26,9 +26,10 @@ export interface SectionDef {
 
 export const SECTIONS: SectionDef[] = [
   { id: "home", label: "Home", tabs: [{ id: "dashboard", label: "Home" }] },
+  // R-605: Invoices is its own sidebar item again, right above Deals (Jack: "put the invoice back above deals").
+  { id: "invoices", label: "Invoices", tabs: [{ id: "invoices", label: "Invoices" }] },
   { id: "deals", label: "Deals", tabs: [
     { id: "dealflow", label: "Deal Flow" },
-    { id: "invoices", label: "Invoices" },
     { id: "quotes", label: "Quotes" },
     { id: "releaseletter", label: "Release letter" },
     { id: "clientreceipt", label: "Client receipt" },
@@ -102,9 +103,13 @@ export function landingTab(section: SectionDef, visible: (id: TabId) => boolean,
   return open[0]?.id ?? null;
 }
 
+/** One-screen sections whose screen fills the shell's action slot (<PageActions>) instead of drawing its
+ *  own PageHeader, so the shell still draws the title and slot (no tab bar with one screen). */
+const SHELL_HEADED_SINGLE: SectionId[] = ["invoices"];
+
 /** Whether the shell draws its own header (section title, action slot and tab bar) for a screen.
- *  Only sections that group several screens get one; Home, Logistics and Settings draw their own. */
+ *  Sections that group several screens get one; Home, Logistics and Settings draw their own. */
 export function shellDrawsHeader(id: string): boolean {
   const s = sectionOfTab(id);
-  return !!s && s.tabs.length > 1;
+  return !!s && (s.tabs.length > 1 || SHELL_HEADED_SINGLE.includes(s.id));
 }

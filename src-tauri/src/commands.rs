@@ -18185,6 +18185,150 @@ fn carry_automatic_takeovers(
     (moved, refused)
 }
 
+/// R-600: the booking source columns `settle_carry` reads off the copy that goes.
+fn carry_src(conn: &rusqlite::Connection, id: &str) -> Option<(i64, String, String, String, String, String, String, String, String)> {
+    conn.query_row(
+        "SELECT COALESCE(reviewed,0), COALESCE(category,''), COALESCE(counterparty_name,''), \
+                COALESCE(counterparty_type,''), COALESCE(counterparty_id,''), \
+                COALESCE(direction,''), COALESCE(description,''), \
+                COALESCE(note,''), COALESCE(confirmed_method,'') FROM bank_txn WHERE id=?1",
+        [id], |r| Ok((
+            r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?,
+            r.get::<_, String>(7)?, r.get::<_, String>(8)?,
+        ))).ok()
+}
+
+/// R-600: hand a copy of a payment over to another copy of the same payment that stays, and retire it,
+/// through `settle_carry` (backed up first, bookings moved never copied, refused when the two copies are
+/// booked to different deals or a refund, loan, purchase or expense points at the one that goes). The
+/// copy that stays must exist and not be withdrawn by the bank.
+fn settle_onto_copy(
+    conn: &rusqlite::Connection,
+    from_id: &str, to_id: &str, now: &str, reason: &str,
+    over_allocated: &mut Vec<String>,
+    touched_deals: &mut std::collections::HashSet<String>,
+) -> Settled {
+    if from_id == to_id { return Settled::None; }
+    let to: Option<(bool, String)> = conn.query_row(
+        &format!("SELECT {}, COALESCE(b.direction,'') FROM bank_txn b WHERE b.id=?1", crate::bank_flags::retracted("b")),
+        [to_id], |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?))).ok();
+    let Some((to_retracted, t_dir)) = to else { return Settled::None };
+    if to_retracted { return Settled::None; }
+    let Some(src) = carry_src(conn, from_id) else { return Settled::None };
+    settle_carry(conn, from_id, to_id, src, &t_dir, now, reason, over_allocated, touched_deals)
+}
+
+/// R-600 (review): a booking that reaches this computer by sync for a bank row this computer already handed over to
+/// another copy of the same payment (`bank_txn_deleted_backup.survivor_id`) moves onto that copy, so it never points at
+/// a row that is gone. It was made on another computer before that computer saw the hand-over. A copy of an identical
+/// booking already there is the same booking and is removed; one whose copy is booked to a different deal is left and
+/// reported.
+fn repoint_handed_over_bookings(conn: &rusqlite::Connection, now: &str,
+    touched_deals: &mut std::collections::HashSet<String>) -> (usize, Vec<String>) {
+    let rows: Vec<(String, String, String, f64, String, String, String, String, String)> = conn
+        .prepare("SELECT a.id, COALESCE(a.org_id,''), a.deal_flow_id, a.amount, COALESCE(a.role,''), COALESCE(a.note,''), \
+                         COALESCE(a.created_by,''), COALESCE(a.created_at,''), k.survivor_id \
+                    FROM bank_allocation a JOIN bank_txn_deleted_backup k ON k.id = a.bank_txn_id \
+                   WHERE NOT EXISTS (SELECT 1 FROM bank_txn t WHERE t.id = a.bank_txn_id) \
+                     AND k.reason IN ('link_twin','not_at_bank_copy','plaid_settled','plaid_settled_inferred') \
+                     AND COALESCE(k.survivor_id,'') <> '' \
+                     AND EXISTS (SELECT 1 FROM bank_txn t WHERE t.id = k.survivor_id)")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
+            r.get(6)?, r.get(7)?, r.get(8)?))).map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    let (mut moved, mut left) = (0usize, Vec::new());
+    for (aid, org, deal, amount, role, note, by, at, survivor) in rows {
+        let there: Vec<(String, String, f64)> = conn
+            .prepare("SELECT deal_flow_id, COALESCE(role,''), amount FROM bank_allocation WHERE bank_txn_id=?1")
+            .and_then(|mut st| st.query_map([&survivor], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        if there.iter().any(|(d, _, _)| d != &deal) {
+            left.push(format!("a booking on {deal} points at a payment that went, and its copy is booked to another deal"));
+            continue;
+        }
+        if there.iter().any(|(d, r, a)| d == &deal && r == &role && (a - amount).abs() <= 0.005) {
+            if sync::record_delete("bank_allocation", &aid).is_ok() {
+                let _ = conn.execute("DELETE FROM bank_allocation WHERE id=?1", [&aid]);
+                touched_deals.insert(deal);
+                moved += 1;
+            }
+            continue;
+        }
+        let mut c = Map::new();
+        for (k, v) in [("org_id", json!(org)), ("bank_txn_id", json!(survivor)), ("deal_flow_id", json!(deal)), ("amount", json!(amount)),
+                       ("role", json!(role)), ("note", json!(note)), ("created_by", json!(by)), ("created_at", json!(at)), ("updated_at", json!(now))] {
+            c.insert(k.into(), v);
+        }
+        if sync::record_upsert("bank_allocation", &aid, c).is_ok()
+            && conn.execute("UPDATE bank_allocation SET bank_txn_id=?1, updated_at=?2 WHERE id=?3", rusqlite::params![survivor, now, aid]).is_ok() {
+            touched_deals.insert(deal);
+            moved += 1;
+        }
+    }
+    (moved, left)
+}
+
+/// R-600: after a bank pull, every copy of a payment that another bank link brought in hands its booking
+/// to this computer's feeding copy and goes (`bank_dedup::link_twins`). Only on the computer that feeds the
+/// account, only on a view just brought up to date. Returns (retired, refused).
+fn carry_link_twins(
+    fed_pas: &std::collections::HashSet<String>, now: &str,
+    over_allocated: &mut Vec<String>,
+    touched_deals: &mut std::collections::HashSet<String>,
+) -> (i64, Vec<String>) {
+    if fed_pas.is_empty() { return (0, Vec::new()); }
+    let Ok(conn) = pool().get() else { return (0, Vec::new()) };
+    let Ok(rows) = load_dedup_rows(&conn) else { return (0, Vec::new()) };
+    let aliases = account_alias_map();
+    let mut moved = 0i64;
+    let mut refused = Vec::new();
+    for t in crate::bank_dedup::link_twins(&rows, fed_pas, &aliases) {
+        match settle_onto_copy(&conn, &t.from_id, &t.to_id, now, "link_twin", over_allocated, touched_deals) {
+            Settled::Retired => moved += 1,
+            Settled::Refused(w) => refused.push(w),
+            Settled::None => {}
+        }
+    }
+    (moved, refused)
+}
+
+/// R-600: the one other copy of this payment on the books that may take its booking: the same account (its
+/// label, an alias, or its last four digits), direction and amount to the cent, within 3 days, not withdrawn
+/// by the bank, a memo naming the same payee (R-579), and `holds(id, pa)` (the caller's proof the bank
+/// still has it). None when there is no such copy or more than one: two candidates are never chosen between.
+fn bank_copy_of(conn: &rusqlite::Connection, id: &str, holds: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+    let (acct, date, amount, dir, desc): (String, String, f64, String, String) = conn.query_row(
+        "SELECT COALESCE(account_id,''), COALESCE(posted_at,''), COALESCE(amount,0), COALESCE(direction,''), \
+                COALESCE(description,'') FROM bank_txn WHERE id=?1",
+        [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).ok()?;
+    if date.len() < 10 { return None; }
+    let aliases = account_alias_map();
+    let fold = |a: &str| aliases.get(a).cloned().unwrap_or_else(|| a.to_string());
+    let mask = crate::bank_dedup::label_mask(&acct).to_string();
+    let sql = format!(
+        "SELECT b.id, COALESCE(b.account_id,''), COALESCE(b.description,''), \
+                CASE WHEN json_valid(b.raw_json) THEN COALESCE(json_extract(b.raw_json,'$.pa'),'') ELSE '' END \
+           FROM bank_txn b \
+          WHERE b.id<>?1 AND COALESCE(b.direction,'')=?2 AND ABS(COALESCE(b.amount,0)-?3)<0.005 \
+            AND ABS(julianday(substr(b.posted_at,1,10)) - julianday(substr(?4,1,10))) <= 3 AND NOT {}",
+        crate::bank_flags::retracted("b"));
+    let mut st = conn.prepare(&sql).ok()?;
+    let cands: Vec<String> = st.query_map(rusqlite::params![id, dir, amount, date], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))
+        .ok()?
+        .filter_map(|x| x.ok())
+        .filter(|(cid, cacct, cdesc, cpa)| {
+            let same_acct = fold(cacct) == fold(&acct)
+                || (!mask.is_empty() && crate::bank_dedup::label_mask(cacct) == mask);
+            same_acct && crate::bank_dedup::same_payee(&desc, cdesc) && holds(cid, cpa)
+        })
+        .map(|(cid, ..)| cid)
+        .collect();
+    if cands.len() == 1 { cands.into_iter().next() } else { None }
+}
+
 /// R-288 phase 3: is booking from history switched on? A synced setting so every device that
 /// pulls a bank agrees; on unless someone switched it off.
 fn auto_book_enabled() -> bool {
@@ -22358,6 +22502,22 @@ pub async fn plaid_sync() -> Result<Value, String> {
         carry_automatic_takeovers(&now, &mut amended_over_allocated, &mut touched_deals)
     } else { (0, Vec::new()) };
     settle_refused.extend(inferred_refused);
+    // R-600: copies another bank link brought in hand their bookings to this computer's feeding copy and go.
+    let fed_pas: std::collections::HashSet<String> = my_accounts.iter()
+        .filter(|a| fed.keys.contains(&a.key) && !fed.paused.contains(&a.key))
+        .map(|a| a.plaid_id.clone()).collect();
+    if converged {
+        if let Ok(c) = pool().get() {
+            let (n, left) = repoint_handed_over_bookings(&c, &now, &mut touched_deals);
+            if n > 0 { tracing::info!("plaid_sync: {} late bookings moved onto the copy that replaced their payment", n); }
+            settle_refused.extend(left);
+        }
+    }
+    let (link_twins_retired, link_twins_refused) = if converged && pulled_ok {
+        carry_link_twins(&fed_pas, &now, &mut amended_over_allocated, &mut touched_deals)
+    } else { (0, Vec::new()) };
+    settle_refused.extend(link_twins_refused);
+    if link_twins_retired > 0 { tracing::info!("plaid_sync: {} copies from another bank link handed over and removed", link_twins_retired); }
     // R-456: the bank's pending copy of a payment that has posted under a new id, unbooked.
     let (pending_retired, pending_refused) = if converged {
         retire_pending_near_dups(&now, &mut amended_over_allocated, &mut touched_deals)
@@ -22499,6 +22659,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         // Pending -> posted settles.
         "settled": settled,                       // bookings carried onto the posted twin
         "settled_inferred": settled_inferred,
+        "link_twins": link_twins_retired,             // R-600: copies from another bank link handed over
         "pending_retired": pending_retired,       // R-456: an unbooked pending copy beside its posted copy     // R-289: retracted booked copy -> its one posted copy
         "auto_booked_history": auto_booked.len(), // R-288: booked from history (listed on To book, undoable)
         "settle_refused": settle_refused,         // pair found, work NOT moved, both rows kept
@@ -22663,9 +22824,50 @@ async fn resolve_bank_declined_inner(id: String, action: String, by: String) -> 
             ).map_err(|e| format!("save failed: {e}"))?;
             "fixed"
         }
-        "remove" => {
+        "remove" | "remove_unlink" => {
             if reason != crate::bank_declined::NOT_AT_BANK { return Err("Only a row your bank no longer shows can be removed here.".into()); }
-            let res = delete_bank_txns(matched.clone(), Some(false)).await?;
+            if !crate::employees::session_is_privileged() { return Err("Only an admin can remove transactions.".into()); }
+            // R-600: a booked row the bank no longer shows hands its booking to the bank's copy of the same payment
+            // when there is exactly one, and goes. Only when there is none does removing it take money off a deal,
+            // and then only with remove_unlink (the card names the deals first).
+            let handed = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                let mine = crate::bank_feed::my_accounts(&conn);
+                let keys = crate::bank_feed::fed_keys_readonly(&conn, &mine);
+                let fed_pas: std::collections::HashSet<String> = mine.into_iter()
+                    .filter(|a| keys.contains(&a.key)).map(|a| a.plaid_id).collect();
+                let open_nab: std::collections::HashSet<String> = conn
+                    .prepare("SELECT txn_id FROM bank_declined WHERE status='open' AND reason=?1")
+                    .and_then(|mut st| st.query_map([crate::bank_declined::NOT_AT_BANK], |r| r.get::<_, String>(0))
+                        .map(|it| it.filter_map(|x| x.ok()).collect()))
+                    .unwrap_or_default();
+                // Only the computer that brings the account in knows which copy the bank holds (review: a computer
+                // that feeds nothing must not hand a booking to a stale copy). Elsewhere Remove names the deals.
+                let holds = |cid: &str, cpa: &str| !open_nab.contains(cid) && fed_pas.contains(cpa);
+                let mut handed = false;
+                for m in &matched {
+                    if fed_pas.is_empty() { break; }
+                    if !bank_txn_is_referenced(&conn, m) { continue; }
+                    let Some(copy) = bank_copy_of(&conn, m, &holds) else { continue };
+                    let (mut over, mut touched) = (Vec::new(), std::collections::HashSet::new());
+                    match settle_onto_copy(&conn, m, &copy, &now, "not_at_bank_copy", &mut over, &mut touched) {
+                        Settled::Retired => handed = true,
+                        Settled::Refused(w) => return Err(format!("{w}. Nothing was changed.")),
+                        Settled::None => {}
+                    }
+                    drop(conn);
+                    for d in &touched { let _ = resync_completed_deal(d); }
+                    break;
+                }
+                handed
+            };
+            if handed {
+                crate::netsync::push_now();
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                crate::bank_declined::set_status(&conn, &id, "removed", &by, &now)?;
+                return Ok(json!({ "ok": true, "status": "removed", "handed_over": true }));
+            }
+            let res = delete_bank_txns(matched.clone(), Some(action == "remove_unlink")).await?;
             if res.get("deleted").and_then(|v| v.as_u64()).unwrap_or(0) == 0 {
                 return Ok(json!({ "ok": false, "delete": res }));
             }
@@ -22832,8 +23034,11 @@ async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
     if !idle {
         return Err("Ecliptr is restoring from the server. Check against bank again in a few minutes.".into());
     }
+    // R-600: the automatic hand-over below writes, so it runs only on a view just brought up to date.
+    let mut pulled = true;
     if crate::netsync::is_enabled() {
         if let Err(e) = crate::netsync::pull_apply().await {
+            pulled = false;
             tracing::warn!("check against bank: pull first failed, checking this device's copy: {}", e);
         }
     }
@@ -22936,6 +23141,31 @@ async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
         found.insert(crate::bank_declined::row_id(&d.reason, &d.txn_id));
         if crate::bank_declined::record(&conn, &d, &now)? { new_rows += 1; }
     }
+    // R-600: a row the bank no longer shows hands any booking to the bank's own copy of the same payment (one the
+    // bank served in this check) when there is exactly one, and goes, backed up. No copy: it stays on the list.
+    let mut handed_over = 0usize;
+    let mut handed_touched: std::collections::HashSet<String> = Default::default();
+    if pulled {
+        let served: std::collections::HashSet<&str> = bank.iter().map(|b| b.id.as_str()).collect();
+        // A copy takes over from one row only (review: two stale rows must never fold into one payment).
+        let mut used: std::collections::HashSet<String> = Default::default();
+        let mut over = Vec::new();
+        for f in &findings {
+            let Finding::NotAtBank { ledger: li } = f else { continue };
+            let lid = ledger[*li].id.as_str();
+            let holds = |cid: &str, _pa: &str| served.contains(cid) && !used.contains(cid);
+            let Some(copy) = bank_copy_of(&conn, lid, &holds) else { continue };
+            if let Settled::Retired = settle_onto_copy(&conn, lid, &copy, &now, "not_at_bank_copy", &mut over, &mut handed_touched) {
+                used.insert(copy);
+                handed_over += 1;
+                if let Err(e) = crate::bank_declined::set_status(&conn, &crate::bank_declined::row_id(crate::bank_declined::NOT_AT_BANK, lid),
+                    "removed", "Check against bank (the bank's copy took it over)", &now) {
+                    tracing::warn!("check against bank: {} handed over but its list row was not closed: {}", lid, e);
+                }
+            }
+        }
+        for w in &over { tracing::warn!("check against bank: {}", w); }
+    }
     // An open row on a checked account that the check no longer finds was put right some other way: it is closed,
     // named as the check's doing, so the list holds only what is still true.
     let open_rows: Vec<(String, String, String, String)> = conn
@@ -22978,13 +23208,16 @@ async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
     } else {
         drop(conn);
     }
+    for d in &handed_touched { let _ = resync_completed_deal(d); }
+    if handed_over > 0 { crate::netsync::push_now(); }
     let conn = pool().get().map_err(|e| e.to_string())?;
     let accounts: Vec<Value> = tallies.iter().map(|t| json!({
         "account": t.account, "posted": t.posted, "exact": t.exact, "not_exact": t.not_exact, "from_statement": t.from_statement,
     })).collect();
     let summary = json!({
-        "checked_at": now, "accounts": accounts, "missing": missing, "differs": differs, "not_at_bank": not_at_bank,
+        "checked_at": now, "accounts": accounts, "missing": missing, "differs": differs, "not_at_bank": not_at_bank - handed_over,
         "new_rows": new_rows, "closed": closed, "errors": errors, "auto_imported": auto_imported,
+        "handed_over": handed_over,
     });
     conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('bank_check', ?1)", [summary.to_string()])
         .map_err(|e| e.to_string())?;
@@ -28849,6 +29082,117 @@ mod r590_tests {
         c.execute("DELETE FROM deal_flows WHERE invoice_id='inv_r590'", []).unwrap();
         c.execute("DELETE FROM invoices WHERE id='inv_r590'", []).unwrap();
         c.execute("DELETE FROM clients WHERE id='c_r590'", []).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod r600_tests {
+    use super::*;
+    use crate::db::pool;
+
+    const ACCT: &str = "Sample Checking \u{00b7}\u{00b7}4321";
+
+    fn put(c: &rusqlite::Connection, id: &str, date: &str, amount: f64, desc: &str, raw: &str) {
+        c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, raw_json) VALUES (?1,?2,?3,?4,'in',?5,?6)",
+            rusqlite::params![id, ACCT, date, amount, desc, raw]).unwrap();
+    }
+    fn book(c: &rusqlite::Connection, alloc: &str, txn: &str, deal: &str, amount: f64) {
+        c.execute("INSERT INTO bank_allocation (id, org_id, bank_txn_id, deal_flow_id, amount, role, created_at, updated_at) VALUES (?1,'org_default',?2,?3,?4,'buyer_payment','x','x')",
+            rusqlite::params![alloc, txn, deal, amount]).unwrap();
+    }
+    fn on(c: &rusqlite::Connection, alloc: &str) -> String {
+        c.query_row("SELECT bank_txn_id FROM bank_allocation WHERE id=?1", [alloc], |r| r.get(0)).unwrap()
+    }
+    fn exists(c: &rusqlite::Connection, id: &str) -> bool {
+        c.query_row("SELECT COUNT(*) FROM bank_txn WHERE id=?1", [id], |r| r.get::<_, i64>(0)).unwrap() == 1
+    }
+    fn clean(c: &rusqlite::Connection) {
+        c.execute("DELETE FROM bank_allocation WHERE id LIKE 'alloc_r600%'", []).unwrap();
+        c.execute("DELETE FROM bank_txn WHERE id LIKE 'btpl_r600%'", []).unwrap();
+    }
+
+    // The booked copy another link brought in hands its booking to the feeding link's copy and goes, backed up.
+    #[test]
+    fn a_copy_from_another_link_hands_over_its_booking() {
+        let _db = crate::db::init_test_store();
+        let c = pool().get().unwrap();
+        put(&c, "btpl_r600_stray", "2026-02-03", 2400.0, "Zelle payment from Example Buyer", r#"{"pa":"pa_other"}"#);
+        put(&c, "btpl_r600_fed", "2026-02-03", 2400.0, "ZELLE PAYMENT FROM EXAMPLE BUYER", r#"{"pa":"pa_feed"}"#);
+        book(&c, "alloc_r600_a", "btpl_r600_stray", "df_r600", 2400.0);
+        drop(c);
+        let fed: std::collections::HashSet<String> = ["pa_feed".to_string()].into_iter().collect();
+        let (mut over, mut touched) = (Vec::new(), std::collections::HashSet::new());
+        let (moved, refused) = carry_link_twins(&fed, "2026-11-05T00:00:00Z", &mut over, &mut touched);
+        assert_eq!((moved, refused.len()), (1, 0));
+        let c = pool().get().unwrap();
+        assert_eq!(on(&c, "alloc_r600_a"), "btpl_r600_fed", "the booking moved");
+        assert!(!exists(&c, "btpl_r600_stray") && exists(&c, "btpl_r600_fed"));
+        let backed: i64 = c.query_row("SELECT COUNT(*) FROM bank_txn_deleted_backup WHERE id='btpl_r600_stray'", [], |r| r.get(0)).unwrap();
+        assert_eq!(backed, 1, "a backup was written first");
+        assert!(touched.contains("df_r600"));
+        clean(&c);
+    }
+
+    // Two copies booked to different deals are never merged: both stay and the refusal says why.
+    #[test]
+    fn copies_booked_to_different_deals_stay() {
+        let _db = crate::db::init_test_store();
+        let c = pool().get().unwrap();
+        put(&c, "btpl_r600_s2", "2026-02-10", 900.0, "Wire from Sample Trading", r#"{"pa":"pa_other"}"#);
+        put(&c, "btpl_r600_f2", "2026-02-10", 900.0, "Wire from Sample Trading", r#"{"pa":"pa_feed"}"#);
+        book(&c, "alloc_r600_b", "btpl_r600_s2", "df_r600_one", 900.0);
+        book(&c, "alloc_r600_c", "btpl_r600_f2", "df_r600_two", 900.0);
+        drop(c);
+        let fed: std::collections::HashSet<String> = ["pa_feed".to_string()].into_iter().collect();
+        let (mut over, mut touched) = (Vec::new(), std::collections::HashSet::new());
+        let (moved, refused) = carry_link_twins(&fed, "2026-11-05T00:00:00Z", &mut over, &mut touched);
+        assert_eq!((moved, refused.len()), (0, 1));
+        let c = pool().get().unwrap();
+        assert!(exists(&c, "btpl_r600_s2") && exists(&c, "btpl_r600_f2"));
+        assert_eq!(on(&c, "alloc_r600_b"), "btpl_r600_s2");
+        clean(&c);
+    }
+
+    // Review finding: a booking made on another computer on a copy this computer already handed over arrives late; it
+    // moves onto the copy that replaced it, and an identical one already there is not stacked.
+    #[test]
+    fn a_late_booking_follows_its_payment_to_the_copy() {
+        let _db = crate::db::init_test_store();
+        let c = pool().get().unwrap();
+        put(&c, "btpl_r600_keep", "2026-04-02", 300.0, "Zelle from Example Buyer", r#"{"pa":"pa_feed"}"#);
+        c.execute("INSERT INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) VALUES ('btpl_r600_gonecopy','{}','btpl_r600_keep','link_twin','2026-11-05')", []).unwrap();
+        book(&c, "alloc_r600_late", "btpl_r600_gonecopy", "df_r600_late", 300.0);
+        book(&c, "alloc_r600_dup", "btpl_r600_gonecopy", "df_r600_late", 300.0);
+        let mut touched = std::collections::HashSet::new();
+        let (n, left) = repoint_handed_over_bookings(&c, "2026-11-05T00:00:00Z", &mut touched);
+        assert_eq!((n, left.len()), (2, 0));
+        let on_keep: i64 = c.query_row("SELECT COUNT(*) FROM bank_allocation WHERE bank_txn_id='btpl_r600_keep'", [], |r| r.get(0)).unwrap();
+        assert_eq!(on_keep, 1, "the first moves, the identical second is the same booking and goes");
+        c.execute("DELETE FROM bank_txn_deleted_backup WHERE id='btpl_r600_gonecopy'", []).unwrap();
+        clean(&c);
+    }
+
+    // The bank's copy is found only when there is exactly one with the same payee.
+    #[test]
+    fn the_banks_copy_is_one_or_none() {
+        let _db = crate::db::init_test_store();
+        let c = pool().get().unwrap();
+        put(&c, "btpl_r600_gone", "2026-03-01", 610.0, "Online ACH payment to Example Carrier", "{}");
+        put(&c, "btpl_r600_copy", "2026-03-02", 610.0, "ONLINE ACH PAYMENT TO EXAMPLE CARRIER", "{}");
+        put(&c, "btpl_r600_other", "2026-03-01", 610.0, "Zelle to Someone Else", "{}");
+        let any = |_: &str, _: &str| true;
+        assert_eq!(bank_copy_of(&c, "btpl_r600_gone", &any).as_deref(), Some("btpl_r600_copy"), "a different payee is not a copy");
+        put(&c, "btpl_r600_copy2", "2026-03-03", 610.0, "Online ACH payment to Example Carrier", "{}");
+        assert_eq!(bank_copy_of(&c, "btpl_r600_gone", &any), None, "two copies: never chosen between");
+        let only_copy = |id: &str, _: &str| id == "btpl_r600_copy";
+        assert_eq!(bank_copy_of(&c, "btpl_r600_gone", &only_copy).as_deref(), Some("btpl_r600_copy"), "only what the bank holds");
+        // The hand-over itself.
+        book(&c, "alloc_r600_d", "btpl_r600_gone", "df_r600_three", 610.0);
+        let (mut over, mut touched) = (Vec::new(), std::collections::HashSet::new());
+        assert!(matches!(settle_onto_copy(&c, "btpl_r600_gone", "btpl_r600_copy", "2026-11-05T00:00:00Z", "not_at_bank_copy", &mut over, &mut touched), Settled::Retired));
+        assert_eq!(on(&c, "alloc_r600_d"), "btpl_r600_copy");
+        assert!(!exists(&c, "btpl_r600_gone"));
+        clean(&c);
     }
 }
 

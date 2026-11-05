@@ -21,8 +21,8 @@ describe("sections", () => {
 
   it("lists only the screens an account may open, in order", () => {
     const deals = SECTIONS.find((s) => s.id === "deals")!;
-    const only = new Set(["invoices", "bols", "quotes"]);
-    expect(visibleTabs(deals, (id) => only.has(id)).map((t) => t.id)).toEqual(["invoices", "quotes", "bols"]);
+    const only = new Set(["completed", "bols", "quotes"]);
+    expect(visibleTabs(deals, (id) => only.has(id)).map((t) => t.id)).toEqual(["quotes", "completed", "bols"]);
   });
 
   it("lands on the last screen used, else the first openable, else nothing", () => {
@@ -38,6 +38,15 @@ describe("sections", () => {
     expect(shellDrawsHeader("logistics")).toBe(false);
     expect(shellDrawsHeader("settings")).toBe(false);
     expect(shellDrawsHeader("financials")).toBe(true);
+    // R-605: Invoices is one screen but fills the shell's action slot, so the shell keeps its title and slot.
+    expect(shellDrawsHeader("invoices")).toBe(true);
+  });
+
+  it("puts Invoices in its own section right above Deals (R-605)", () => {
+    const ids = SECTIONS.map((s) => s.id);
+    expect(sectionOfTab("invoices")?.id).toBe("invoices");
+    expect(ids.indexOf("invoices")).toBe(ids.indexOf("deals") - 1);
+    expect(SECTIONS.find((s) => s.id === "deals")!.tabs.some((t) => t.id === "invoices")).toBe(false);
   });
 
   it("keeps a Logistics-only account on Logistics and Settings", () => {

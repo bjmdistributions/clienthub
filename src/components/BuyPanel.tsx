@@ -19,6 +19,7 @@ import BuyShipping from "./BuyShipping";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
+import { isDealPayment } from "../lib/bankMethod";
 import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0 } from "./warehouseUi";
 
 type Unit = "units" | "pairs";
@@ -589,6 +590,7 @@ export function PayPicker({ kind, buy, onDone, onCancel }: {
   const [rows, setRows] = useState<UnallocatedTxn[] | null>(null);
   const [q, setQ] = useState("");
   const [cash, setCash] = useState(false);
+  const [allKinds, setAllKinds] = useState(false); // R-602: bank payments first, the rest one click away
   const [amount, setAmount] = useState(0);
   const [date, setDate] = useState(localDay());
   const [busy, setBusy] = useState(false);
@@ -597,7 +599,9 @@ export function PayPicker({ kind, buy, onDone, onCancel }: {
   const refund = kind === "refund";
   useEffect(() => { api.unallocatedBankTxns(undefined, true).then((r) => setRows((refund ? r.money_in : r.money_out).filter((t) => t.unallocated > 0.005))).catch(() => setRows([])); }, [refund]);
   const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = supplierFirst(rows || [], buy.supplier).filter((t) => rowMatches(words, t)).slice(0, 50);
+  const kinds = (rows || []).filter((t) => allKinds || isDealPayment(t));
+  const hiddenKinds = (rows || []).length - kinds.length;
+  const shown = supplierFirst(kinds, buy.supplier).filter((t) => rowMatches(words, t)).slice(0, 50);
   const send = async (o: PayWith, take?: BuyTake, raised = false) => {
     setBusy(true);
     try {
@@ -643,6 +647,11 @@ export function PayPicker({ kind, buy, onDone, onCancel }: {
             <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
             <input value={q} onChange={(e) => { setQ(e.target.value); setAsking(null); }} placeholder="Search by name, amount or date" className={`${WH_INPUT} pl-8`} style={WH_INPUT_BG} />
           </div>
+          {(hiddenKinds > 0 || allKinds) && (
+            <button onClick={() => setAllKinds((v) => !v)} className="text-[12px] text-muted hover:text-ink underline-offset-2 hover:underline">
+              {allKinds ? "Bank payments only" : `Showing wires, ACH, Zelle, real-time and checks. Show everything (${hiddenKinds} more)`}
+            </button>
+          )}
           <div className="max-h-72 overflow-y-auto space-y-1">
             {rows === null ? <p className="text-[12px] text-muted py-2">Loading…</p>
               : shown.length === 0 ? <p className="text-[12px] text-muted py-2">No money {refund ? "in" : "out"} that is not booked yet{q ? " matches that" : ""}.</p>

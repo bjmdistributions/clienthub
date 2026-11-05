@@ -10,6 +10,7 @@ import {
   TakeoverSuggestion, TieOutRow, RetractedRow, PlaidHealth,
 } from "../lib/api";
 import StatusPill from "./StatusPill";
+import { METHOD_PATTERNS, bankFieldMethod, type BankMethod } from "../lib/bankMethod";
 import BankDeclinedCard from "./BankDeclinedCard";
 import BankFeedOwners from "./BankFeedOwners";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
@@ -677,7 +678,7 @@ const rolesFor = (direction: string) =>
 // under the toolbar whenever a method is selected. A heuristic filter that hides
 // what it could not read is a filter that lies, and money filters that lie have
 // cost real money here before.
-export type BankMethod = "wire" | "ach" | "zelle" | "rtp" | "check" | "card" | "cash" | "transfer";
+export type { BankMethod } from "../lib/bankMethod";
 
 // MUST stay identical to BANK_METHODS in commands.rs — the backend rejects any
 // value outside it, so a method added on one side alone silently fails to save.
@@ -692,57 +693,6 @@ export const METHODS: { value: BankMethod; label: string }[] = [
   { value: "transfer", label: "Internal transfer" },
 ];
 export const methodLabel = (v: string) => METHODS.find((m) => m.value === v)?.label ?? v;
-
-// Ordered — the FIRST match wins, so a specific rail beats the generic wording it
-// contains: "ONLINE DOMESTIC WIRE TRANSFER" is a wire, not a transfer, and "REAL
-// TIME PAYMENT CREDIT" is RTP, not a transfer.
-//
-// Counts over the live ledger 2026-08-17 (1,342 rows): wire 188 · rtp 192 ·
-// ach 171 · zelle 85 · transfer 68 · cash 14 · check 3 · unclassified 621.
-//
-// `card` has NO pattern on purpose. This bank prints a card purchase as the
-// merchant alone ("AplPay THORNTONS #22LOCKPORT"), and the only rows containing
-// the word "card" are "Payment to Chase card ending in 2623" — paying a card OFF,
-// not paying BY card. Guessing there would be worse than saying nothing, so card
-// purchases stay unclassified until Jack sets one, and the count says how many.
-const METHOD_PATTERNS: { method: BankMethod; re: RegExp; reason: string }[] = [
-  { method: "wire",     re: /\bFEDWIRE\b/,                     reason: "memo says FEDWIRE" },
-  { method: "wire",     re: /\bWIRE TYPE\b/,                   reason: "memo says WIRE TYPE" },
-  { method: "wire",     re: /\bWIRE TRANSFER\b/,               reason: "memo says WIRE TRANSFER" },
-  { method: "wire",     re: /\bWIRE\b/,                        reason: "memo says WIRE" },
-  { method: "wire",     re: /\bCHIPS\b/,                       reason: "memo says CHIPS, a wire clearing house" },
-  { method: "wire",     re: /\bBOOK TRANSFER\b/,               reason: "memo says BOOK TRANSFER, a same-bank wire" },
-  { method: "zelle",    re: /\bZELLE\b/,                       reason: "memo says ZELLE" },
-  { method: "zelle",    re: /\bQUICKPAY\b/,                    reason: "memo says QUICKPAY" },
-  { method: "rtp",      re: /\bREAL TIME (?:PAYMENT|TRANSFER)\b/, reason: "memo says REAL TIME PAYMENT" },
-  { method: "rtp",      re: /\bRTP\b/,                         reason: "memo says RTP" },
-  { method: "check",    re: /\bCHECK\s*#/,                     reason: "memo carries a check number" },
-  { method: "ach",      re: /\bACH\b/,                         reason: "memo says ACH" },
-  { method: "ach",      re: /\bORIG CO NAME\b/,                reason: "memo carries an ACH originator block" },
-  { method: "ach",      re: /\b(?:PPD|CCD)\b/,                 reason: "memo carries an ACH entry class" },
-  { method: "cash",     re: /\bATM\b/,                         reason: "memo says ATM" },
-  { method: "cash",     re: /\bCASH (?:DEPOSIT|WITHDRAWAL)\b/, reason: "memo says cash" },
-  { method: "cash",     re: /\bTELLER\b/,                      reason: "memo says TELLER" },
-  { method: "transfer", re: /\bONLINE TRANSFER\b/,             reason: "memo says ONLINE TRANSFER" },
-  { method: "transfer", re: /\bTRANSFER (?:TO|FROM)\b/,        reason: "memo says transfer to/from an account" },
-];
-
-// Plaid's `payment_method` is free text and its vocabulary is the institution's,
-// not ours. Anything unrecognised returns null and falls through to the memo —
-// mapping an unknown string onto a method would be inventing a fact.
-const bankFieldMethod = (raw?: string | null): BankMethod | null => {
-  const v = (raw || "").trim().toLowerCase();
-  if (!v) return null;
-  if (v.includes("wire")) return "wire";
-  if (v.includes("zelle")) return "zelle";
-  if (v.includes("ach") || v.includes("standard entry")) return "ach";
-  if (v.includes("check") || v.includes("cheque")) return "check";
-  if (v.includes("card")) return "card";
-  if (v.includes("cash")) return "cash";
-  if (v.includes("rtp") || v.includes("real-time") || v.includes("real time")) return "rtp";
-  if (v.includes("transfer")) return "transfer";
-  return null;
-};
 
 // Payee + direction, the same key a remembered rule is scoped by: a Zelle TO
 // "Walmart Loads" must never be pooled with a purchase FROM "Walmart".
@@ -4714,19 +4664,19 @@ export default function FinancialsView() {
       {/* Summary — a quiet figures strip, not stat cards */}
       {tab === "ledger" && txns.length > 0 && (
         <div className="grid grid-cols-2 lg:grid-cols-4 2xl:grid-cols-7">
-          <Kpi label="Transactions" value={rangeSummary.total} />
-          <Kpi label="Reviewed" value={`${rangeSummary.reviewed}/${rangeSummary.total}`} />
-          <Kpi label="Money in" value={rangeSummary.sumIn} format={fmtAmount} className="text-success-ink" />
-          <Kpi label="Money out" value={rangeSummary.sumOut} format={fmtAmount} />
-          <Kpi label="Uncategorized" value={rangeSummary.unclassified} className={rangeSummary.unclassified > 0 ? "" : "text-muted"} />
-          <Kpi label="Needs a deal" value={rangeSummary.needsDeal} className={rangeSummary.needsDeal > 0 ? "" : "text-muted"} />
+          <Kpi small label="Transactions" value={rangeSummary.total} />
+          <Kpi small label="Reviewed" value={`${rangeSummary.reviewed}/${rangeSummary.total}`} />
+          <Kpi small label="Money in" value={rangeSummary.sumIn} format={fmtAmount} className="text-success-ink" />
+          <Kpi small label="Money out" value={rangeSummary.sumOut} format={fmtAmount} />
+          <Kpi small label="Uncategorized" value={rangeSummary.unclassified} className={rangeSummary.unclassified > 0 ? "" : "text-muted"} />
+          <Kpi small label="Needs a deal" value={rangeSummary.needsDeal} className={rangeSummary.needsDeal > 0 ? "" : "text-muted"} />
           {rangeSummary.shippingOut > 0 && (
             <button
               onClick={() => { setTab("ledger"); setCatFilter("shipping"); }}
               title="Every transaction categorised as shipping and freight"
               className="text-left rounded-lg hover:bg-surface-2 transition-colors duration-150"
             >
-              <Kpi label="Shipping" value={rangeSummary.shippingOut} format={fmtAmount} />
+              <Kpi small label="Shipping" value={rangeSummary.shippingOut} format={fmtAmount} />
             </button>
           )}
         </div>

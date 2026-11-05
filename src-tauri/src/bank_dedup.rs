@@ -211,6 +211,104 @@ pub fn takeover_pairs(rows: &[TxnRow], aliases: &HashMap<String, String>) -> Vec
     out
 }
 
+/// One copy of a payment that came in through a bank link that no longer feeds its account, and
+/// the feeding link's copy of the same payment that takes its place (R-600).
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LinkTwin {
+    /// The stray copy: brought in by another link (`raw_json.pa` is not one this computer feeds).
+    pub from_id: String,
+    /// The feeding link's copy of the same payment.
+    pub to_id: String,
+}
+
+/// R-600: "two of the exact same payments". Before R-590 two computers each held their own link to
+/// the same account, and the bank gives one payment a different id on each link, so a payment could
+/// be on the books twice, booked on one copy and not the other. Since R-590 one link feeds each
+/// account; this pairs every copy the OTHER links brought in with the feeding link's copy of the same
+/// payment, so the stray copy hands over any booking and goes.
+///
+/// `fed_pas` are the Plaid account ids of the links this computer feeds. A stray is a row whose `pa` is
+/// set and is not one of them, on an account a fed row is on (its label, or its last four digits).
+/// Rows with no `pa` (statements, typed lines) are never strays. A pair is the same direction, the same
+/// amount to the cent, the memos name the same merchant or person or read the same (R-579: different
+/// names are never paired), and nothing the bank stamped disagrees (check number, wire or memo reference,
+/// statement id, merchant, payment details). Two posted copies must be dated the same day: the bank dates
+/// one transaction the same on every link, so a different day is a different payment (review: a feeding
+/// link that has not delivered a payment yet must not take a same-amount payment from the next day). Only
+/// when one side is still pending may the dates be up to 3 days apart. Pairs are made per connected group of candidates, one for
+/// one, closest dates first, and only when every stray in the group gets its own feeding copy: a stray
+/// with no copy of its own may be a payment the feeding link has not delivered, so it is kept for Check
+/// against bank to name.
+pub fn link_twins(rows: &[TxnRow], fed_pas: &HashSet<String>, aliases: &HashMap<String, String>) -> Vec<LinkTwin> {
+    if fed_pas.is_empty() { return Vec::new(); }
+    let acct_of = |a: &str| aliases.get(a).cloned().unwrap_or_else(|| a.to_string());
+    let metas: Vec<Meta> = rows.iter().map(|r| meta(&r.raw_json)).collect();
+    let usable = |i: usize| !rows[i].date.is_empty() && rows[i].amount > 0.0;
+    let fed: Vec<usize> = (0..rows.len())
+        .filter(|&i| usable(i) && fed_pas.contains(&metas[i].pa) && !metas[i].retracted).collect();
+    let same_account = |a: &TxnRow, b: &TxnRow| {
+        acct_of(&a.account) == acct_of(&b.account)
+            || (!label_mask(&a.account).is_empty() && label_mask(&a.account) == label_mask(&b.account))
+    };
+    let strays: Vec<usize> = (0..rows.len())
+        .filter(|&i| usable(i) && !metas[i].pa.is_empty() && !fed_pas.contains(&metas[i].pa)
+            && fed.iter().any(|&t| same_account(&rows[i], &rows[t])))
+        .collect();
+    // Candidate edges (stray, fed, |days apart|).
+    let mut edges: Vec<(usize, usize, i64)> = Vec::new();
+    for &f in &strays {
+        let fr = &rows[f];
+        let f_words = merchant_words(&fr.desc);
+        let f_not = not_same_of(&fr.raw_json);
+        for &t in &fed {
+            let tr = &rows[t];
+            if tr.dir != fr.dir || (tr.amount - fr.amount).abs() >= 0.005 || !same_account(fr, tr) { continue; }
+            if f_not.iter().any(|x| x == &tr.id) || not_same_of(&tr.raw_json).iter().any(|x| x == &fr.id) { continue; }
+            let Some(gap) = signed_day_gap(&tr.date, &fr.date) else { continue };
+            let either_pending = metas[f].pending || metas[t].pending;
+            if gap.abs() > if either_pending { 3 } else { 0 } { continue; }
+            if !same_payee_words(&fr.desc, &f_words, &tr.desc) { continue; }
+            if metadata_conflict(fr, tr, false).is_some() { continue; }
+            if let (Some(a), Some(b)) = (bank_txn_reference(&fr.desc), bank_txn_reference(&tr.desc)) {
+                if a != b { continue; }
+            }
+            edges.push((f, t, gap.abs()));
+        }
+    }
+    // Connected groups over the candidate edges (stray i as node i, fed t as node t; one index space).
+    let mut parent: Vec<usize> = (0..rows.len()).collect();
+    fn root(p: &mut Vec<usize>, mut x: usize) -> usize { while p[x] != x { p[x] = p[p[x]]; x = p[x]; } x }
+    for &(f, t, _) in &edges { let (a, b) = (root(&mut parent, f), root(&mut parent, t)); if a != b { parent[a] = b; } }
+    let mut groups: BTreeMap<usize, Vec<(usize, usize, i64)>> = BTreeMap::new();
+    for &e in &edges { let g = root(&mut parent, e.0); groups.entry(g).or_default().push(e); }
+    let mut out = Vec::new();
+    for (_, mut es) in groups {
+        let froms: BTreeSet<usize> = es.iter().map(|e| e.0).collect();
+        let tos: BTreeSet<usize> = es.iter().map(|e| e.1).collect();
+        if tos.len() < froms.len() { continue; }
+        es.sort_by(|a, b| a.2.cmp(&b.2)
+            .then(rows[a.0].date.cmp(&rows[b.0].date)).then(rows[a.1].date.cmp(&rows[b.1].date))
+            .then(rows[a.0].id.cmp(&rows[b.0].id)).then(rows[a.1].id.cmp(&rows[b.1].id)));
+        let (mut used_f, mut used_t) = (HashSet::new(), HashSet::new());
+        let mut pairs = Vec::new();
+        for (f, t, _) in es {
+            if used_f.contains(&f) || used_t.contains(&t) { continue; }
+            used_f.insert(f); used_t.insert(t);
+            pairs.push(LinkTwin { from_id: rows[f].id.clone(), to_id: rows[t].id.clone() });
+        }
+        if used_f.len() == froms.len() { out.extend(pairs); }
+    }
+    out
+}
+
+/// R-600: two memos are the same payment's when they read the same or share a merchant or person word.
+/// R-579: different names are never one payment.
+pub fn same_payee(a: &str, b: &str) -> bool { same_payee_words(a, &merchant_words(a), b) }
+
+fn same_payee_words(a: &str, a_words: &HashSet<String>, b: &str) -> bool {
+    (!norm(a).is_empty() && norm(a) == norm(b)) || !a_words.is_disjoint(&merchant_words(b))
+}
+
 /// One row the bank retracted that is still on the books (R-497), with every posted copy that
 /// could take over its booking.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -1280,5 +1378,104 @@ mod tests {
             println!("aggressive={aggressive} rows={} folds={} groups={} removals={removals} booked_removals={booked} review={} -> {file}",
                 rows.len(), p.folds.len(), p.groups.len(), p.review.len());
         }
+    }
+
+    // R-600: copies of one payment brought in through two bank links.
+    fn on(pa: &str, id: &str, date: &str, amount: f64, desc: &str) -> TxnRow {
+        row(id, OLD, date, amount, "in", desc, pa, "2026-10-01T00:00:00Z")
+    }
+    fn fed_here() -> HashSet<String> { ["pa_feed".to_string()].into_iter().collect() }
+
+    #[test]
+    fn r600_a_stray_copy_hands_over_to_the_feeding_copy() {
+        let v = vec![
+            linked(on("pa_other", "stray", "2026-10-03", 1250.0, "Zelle payment from Example Buyer")),
+            on("pa_feed", "fed", "2026-10-04", 1250.0, "ZELLE PAYMENT FROM EXAMPLE BUYER REF 1"),
+        ];
+        assert!(link_twins(&v, &fed_here(), &HashMap::new()).is_empty(), "posted a day apart: a different payment");
+        let mut same_day = v.clone();
+        same_day[1].date = "2026-10-03".into();
+        let p = link_twins(&same_day, &fed_here(), &HashMap::new());
+        assert_eq!(p.len(), 1);
+        assert_eq!((p[0].from_id.as_str(), p[0].to_id.as_str()), ("stray", "fed"));
+    }
+
+    #[test]
+    fn r600_different_names_never_pair() {
+        let v = vec![
+            on("pa_other", "stray", "2026-10-03", 1250.0, "Zelle payment from Example Buyer"),
+            on("pa_feed", "fed", "2026-10-03", 1250.0, "Wire from Sample Trading"),
+        ];
+        assert!(link_twins(&v, &fed_here(), &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn r600_two_real_payments_pair_one_for_one() {
+        let v = vec![
+            on("pa_other", "s1", "2026-10-03", 500.0, "Zelle from Example Buyer"),
+            on("pa_other", "s2", "2026-10-05", 500.0, "Zelle from Example Buyer"),
+            on("pa_feed", "f1", "2026-10-03", 500.0, "Zelle from Example Buyer"),
+            on("pa_feed", "f2", "2026-10-05", 500.0, "Zelle from Example Buyer"),
+        ];
+        let mut p: Vec<(String, String)> = link_twins(&v, &fed_here(), &HashMap::new()).into_iter().map(|t| (t.from_id, t.to_id)).collect();
+        p.sort();
+        assert_eq!(p, vec![("s1".to_string(), "f1".to_string()), ("s2".to_string(), "f2".to_string())]);
+    }
+
+    #[test]
+    fn r600_a_stray_without_its_own_copy_is_kept() {
+        // Two payments came in through the other link, the feeding link holds the first: the first pairs, the second
+        // may be a payment the feeding link never delivered and is kept.
+        let v = vec![
+            on("pa_other", "s1", "2026-10-03", 500.0, "Zelle from Example Buyer"),
+            on("pa_other", "s2", "2026-10-04", 500.0, "Zelle from Example Buyer"),
+            on("pa_feed", "f1", "2026-10-03", 500.0, "Zelle from Example Buyer"),
+        ];
+        let p: Vec<(String, String)> = link_twins(&v, &fed_here(), &HashMap::new()).into_iter().map(|t| (t.from_id, t.to_id)).collect();
+        assert_eq!(p, vec![("s1".to_string(), "f1".to_string())]);
+        // Two the same day and one feeding copy: which is which cannot be told, so neither is touched.
+        let mut w = v.clone();
+        w[1].date = "2026-10-03".into();
+        assert!(link_twins(&w, &fed_here(), &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn r600_never_touches_statement_rows_other_accounts_or_far_dates() {
+        let other_acct = "SAVINGS \u{00b7}\u{00b7}9876";
+        let v = vec![
+            on("", "statement", "2026-10-03", 75.0, "Zelle from Example Buyer"),
+            row("elsewhere", other_acct, "2026-10-03", 75.0, "in", "Zelle from Example Buyer", "pa_other", "2026-10-01T00:00:00Z"),
+            on("pa_other", "late", "2026-10-20", 75.0, "Zelle from Example Buyer"),
+            on("pa_feed", "fed", "2026-10-03", 75.0, "Zelle from Example Buyer"),
+        ];
+        assert!(link_twins(&v, &fed_here(), &HashMap::new()).is_empty());
+        assert!(link_twins(&v, &HashSet::new(), &HashMap::new()).is_empty());
+    }
+
+    // Review finding: the feeding link has not delivered this payment yet, only the next day's identical one.
+    #[test]
+    fn r600_a_next_day_payment_is_not_a_copy() {
+        let v = vec![
+            linked(on("pa_other", "s1", "2026-10-03", 500.0, "Zelle from Example Buyer")),
+            on("pa_feed", "f2", "2026-10-04", 500.0, "Zelle from Example Buyer"),
+        ];
+        assert!(link_twins(&v, &fed_here(), &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn r600_different_references_never_pair() {
+        let v = vec![
+            on("pa_other", "s1", "2026-10-03", 500.0, "BOOK TRANSFER CREDIT B/O: EXAMPLE BUYER TRN: 1111111111ES"),
+            on("pa_feed", "f1", "2026-10-03", 500.0, "BOOK TRANSFER CREDIT B/O: EXAMPLE BUYER TRN: 2222222222ES"),
+        ];
+        assert!(link_twins(&v, &fed_here(), &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn r600_a_pending_stray_pairs_with_the_posted_feeding_copy() {
+        let mut stray = on("pa_other", "pending_stray", "2026-10-03", 320.0, "Zelle to Example Carrier");
+        stray.raw_json = json!({"pa": "pa_other", "pnd": true}).to_string();
+        let v = vec![stray, on("pa_feed", "posted", "2026-10-04", 320.0, "Zelle to Example Carrier")];
+        assert_eq!(link_twins(&v, &fed_here(), &HashMap::new()).len(), 1);
     }
 }

@@ -5,6 +5,7 @@ import { PayPicker } from "./BuyPanel";
 import { LEG_NAME, type LegKey, type LegView } from "../lib/dealLegs";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
+import { isDealPayment } from "../lib/bankMethod";
 
 // ─── Payments & reconciliation ────────────────────────────────────────────
 // Pair real bank transactions to a completed deal's money legs (buyer payment,
@@ -850,6 +851,9 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
   const [sort, setSort] = useState<"newest" | "largest" | "closest">(leg.target > 0 ? "closest" : "newest");
   const [nearOnly, setNearOnly] = useState(false);
   const [showOther, setShowOther] = useState(false); // transfers + loan money
+  // R-602: the list opens on bank payments (wire, ACH, Zelle, real-time, check). Card purchases and rows the memo
+  // cannot place are one click away, and a row for exactly what this payment expects always shows.
+  const [allKinds, setAllKinds] = useState(false);
   const [sel, setSel] = useState<BankTxn | null>(null);
   const [amt, setAmt] = useState("");
 
@@ -860,10 +864,17 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
     t.category === "internal_transfer" || t.category === "loan_received" ||
     t.category === "loan_repayment" || t.counterparty_type === "loan";
 
-  const pool = useMemo(
+  const base = useMemo(
     () => (txns ?? []).filter((t) => t.direction === leg.direction && t.unallocated > 0.005 && (showOther || !isOther(t))),
     [txns, leg.direction, showOther],
   );
+  const exactFor = (t: BankTxn) => leg.target > 0 && Math.abs(t.unallocated - leg.target) <= 0.005;
+  const pool = useMemo(
+    () => (allKinds ? base : base.filter((t) => isDealPayment(t) || exactFor(t))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [base, allKinds, leg.target],
+  );
+  const hiddenKinds = base.length - pool.length;
 
   const accounts = useMemo(
     () => Array.from(new Set(pool.map((t) => t.account_id).filter(Boolean))).sort(),
@@ -961,6 +972,10 @@ function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
           </select>
           {leg.target > 0 && (
             <Chip active={nearOnly} onClick={() => setNearOnly((v) => !v)} label={`Near ${fmtAmount(leg.target)}`} />
+          )}
+          {(hiddenKinds > 0 || allKinds) && (
+            <Chip active={allKinds} onClick={() => setAllKinds((v) => !v)}
+              label={allKinds ? "Bank payments only" : `Show everything (${hiddenKinds} more)`} />
           )}
           <Chip active={showOther} onClick={() => setShowOther((v) => !v)} label="Transfers & loans" />
         </div>

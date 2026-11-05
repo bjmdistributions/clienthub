@@ -40,6 +40,7 @@ import {
 } from "../lib/dealPayments";
 import { useNetsyncApplied, FreightStatusPill, AmountNeededPill, fileBase64, fileSize, keepSmall, FileDrop } from "./LogisticsBookingForm";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
+import { LEG_WORD, missingLegs } from "../lib/missingPayments";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -175,6 +176,7 @@ export default function DealFlowView() {
   // R-438: bumped when another screen (or a resold row on a refund step) asks for one deal
   // while this view is already open, so the cards remount and the asked-for one opens.
   const [openNonce, setOpenNonce] = useState(0);
+  const [missingOpen, setMissingOpen] = useState(false); // R-601
   // R-402: the category and brand each deal carries (R-583: open deals too, from list_open_deal_labels).
   const [labels, setLabels] = useState<Record<string, { category: string; brand: string }>>({});
   const [labelsOpen, setLabelsOpen] = useState(false);
@@ -369,6 +371,10 @@ export default function DealFlowView() {
   // A completed deal "needs review" when a money leg has no linked bank transaction
   // and hasn't been marked "no record" — so we flag exactly which side is missing.
   const needsWorkCount    = completed.filter((f) => recon[f.id]?.needs_review).length;
+  // R-601: every deal, open or completed, with a payment it should have linked by now and has not.
+  const missingPay = [...active, ...completedFiltered]
+    .map((f) => ({ f, legs: missingLegs(f.stage, recon[f.id]) }))
+    .filter((m) => m.legs.length > 0);
 
   // Pending profit (R-304): what the open deals will make once they close, over the
   // deals whose supplier cost is in. The same projection each card prints — invoice
@@ -619,6 +625,34 @@ export default function DealFlowView() {
       {/* Priority1 shipments that arrived by email and are not on a deal yet (R-277). Above the six sections so they run
           on without a break (R-486). */}
       {mode !== "inventory" && <UnlinkedShipments onChange={load} />}
+
+      {/* ── R-601: deals missing a bank payment, open or completed ───────────────── */}
+      {mode === "pipeline" && missingPay.length > 0 && (
+        <>
+          <div className="hsep my-2" />
+          <PipelineSection title="Missing payments" count={missingPay.length} open={missingOpen} onToggle={() => setMissingOpen((v) => !v)}
+            badge={<span className="text-[12.5px] text-muted truncate">Deals with a payment not linked to the bank yet</span>}>
+            <ul className="list-none m-0 p-0">
+              {missingPay.map(({ f, legs }) => (
+                <li key={f.id}>
+                  <button type="button" onClick={() => openOnLink(f)} title="Open on Link financials"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left hover:bg-surface-2 transition-colors duration-150 min-w-0">
+                    <span className="text-[12.5px] tabular-nums text-muted flex-shrink-0">{f.invoice_number}</span>
+                    <span className="text-[14px] text-ink truncate min-w-0 flex-1">
+                      <span className="font-medium">{f.client_name || "Unknown"}</span>
+                      <span className="text-[12.5px] text-muted">{f.stage === "complete" ? " · completed" : " · open"}</span>
+                    </span>
+                    <span className="flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
+                      {legs.slice(0, 2).map((l) => <StatusPill key={l} tone="warning">{LEG_WORD[l]}</StatusPill>)}
+                      {legs.length > 2 && <StatusPill tone="warning">+{legs.length - 2}</StatusPill>}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </PipelineSection>
+        </>
+      )}
 
       {/* ── The six Pipeline sections (R-486) ───────────────────────────────────────── */}
       {mode === "pipeline" && DEAL_SECTIONS.map(renderSection)}
@@ -1172,12 +1206,13 @@ function DealFlowCard({
     </button>);
 
   return (
-    <div ref={rootRef} className={`border-t border-line first:border-t-0 transition-colors duration-150 ${isOpen ? "bg-surface-2" : ""}`}>
+    // R-603: each deal is its own box with space around it, so deals never blend together at a glance.
+    <div ref={rootRef} className={`rounded-xl border mb-2 last:mb-0 transition-colors duration-150 ${isOpen ? "bg-surface-2 border-line" : "bg-surface border-line"}`}>
       {linkInv && <LinkDeliveryModal invoice={linkInv} onClose={() => { setLinkInv(null); onReload(); }} />}
 
       {/* The row: what the deal is, what each unit cost and was billed at, and the money, in three divided groups. */}
       <div {...barToggle(() => setIsOpen((v) => !v))} aria-expanded={isOpen}
-        className={`grid gap-x-5 gap-y-3 px-3 py-4 cursor-pointer transition-colors duration-150 lg:grid-cols-[minmax(0,1fr)_1px_236px_1px_168px] ${isOpen ? "" : "hover:bg-surface-2"}`}>
+        className={`grid gap-x-5 gap-y-3 px-3 py-4 rounded-xl cursor-pointer transition-colors duration-150 lg:grid-cols-[minmax(0,1fr)_1px_236px_1px_168px] ${isOpen ? "" : "hover:bg-surface-2"}`}>
 
         {/* What it is */}
         <div className="min-w-0">
@@ -1185,7 +1220,7 @@ function DealFlowCard({
             <ChevronRight size={16} className={`flex-shrink-0 text-muted transition-transform duration-200 ${isOpen ? "rotate-90" : ""}`} />
             <span className="text-[12.5px] tabular-nums text-muted flex-shrink-0">{flow.invoice_number}</span>
             <span className="text-[14px] text-ink truncate min-w-0">
-              <span className="font-medium">{flow.client_name || "Unknown"}</span>
+              <span className="font-semibold">{flow.client_name || "Unknown"}</span>
               {(() => {
                 const sup = primarySupplierLabel(flow.supplier_payments);
                 return sup ? <span className="text-[12.5px] text-muted"> to {sup}</span> : null;

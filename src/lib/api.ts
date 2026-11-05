@@ -215,7 +215,7 @@ export interface ScheduledSendProgress {
 
 // R-586/R-587: a bank transaction that is not in the ledger exactly as the bank states it.
 export type BankDeclinedReason = "copy" | "held_reference" | "change_unknown" | "statement_feed_twin" | "missing" | "differs" | "not_at_bank";
-export type BankDeclinedAction = "import" | "import_anyway" | "copy" | "use_bank" | "keep" | "remove" | "reopen";
+export type BankDeclinedAction = "import" | "import_anyway" | "copy" | "use_bank" | "keep" | "remove" | "remove_unlink" | "reopen";
 /** R-590: the ledger row Import found that already is this payment. */
 export interface BankAlready { id: string; account_id: string; posted_at: string; description: string; count: number; bank_same: number }
 /** R-590: one account this computer's bank links serve, and which computer feeds the books with it. */
@@ -5298,7 +5298,7 @@ export const api = {
   // R-586/R-587: bank transactions not in the ledger as the bank states them, and Check against bank.
   listBankDeclined: () => invoke<BankDeclinedList>("list_bank_declined"),
   resolveBankDeclined: (id: string, action: BankDeclinedAction, by?: string) =>
-    invoke<{ ok: boolean; status?: string; already?: BankAlready; delete?: { needs_unlink?: { id: string; deals: string[] }[]; skipped_booked?: number } }>("resolve_bank_declined", { id, action, by }),
+    invoke<{ ok: boolean; status?: string; handed_over?: boolean; already?: BankAlready; delete?: { needs_unlink?: { id: string; deals: string[] }[]; skipped_booked?: number } }>("resolve_bank_declined", { id, action, by }),
   checkAgainstBank: () => invoke<BankCheck>("check_against_bank"),
   // R-590: one link per account feeds the books.
   bankFeedOwners: () => invoke<{ accounts: BankFeedAccount[]; this_computer: string }>("bank_feed_owners"),
