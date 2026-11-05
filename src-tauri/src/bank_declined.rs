@@ -184,6 +184,8 @@ pub struct LedgerTxn {
     pub source: String,
     pub pending: bool,
     pub retracted: bool,
+    /// R-590: the Plaid account id of the link that brought the row in (`raw_json.pa`), empty for older rows.
+    pub pa: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -212,7 +214,7 @@ fn norm(memo: &str) -> String {
 
 fn cents(x: f64) -> i64 { (x * 100.0).round() as i64 }
 
-fn days_apart(a: &str, b: &str) -> i64 {
+pub(crate) fn days_apart(a: &str, b: &str) -> i64 {
     let p = |s: &str| chrono::NaiveDate::parse_from_str(s.get(..10).unwrap_or(s), "%Y-%m-%d").ok();
     match (p(a), p(b)) {
         (Some(x), Some(y)) => (x - y).num_days().abs(),
@@ -241,8 +243,12 @@ fn differing(b: &BankTxn, l: &LedgerTxn) -> Vec<&'static str> {
 /// bank's history for it, that nothing paired is NotAtBank. Pending and withdrawn ledger rows are never
 /// paired by content and never reported: the bank names their replacement, and Retracted by bank holds them.
 /// `removed` is the ids removed from the books (tombstoned).
-pub fn compare(bank: &[BankTxn], ledger: &[LedgerTxn], removed: &std::collections::HashSet<String>)
-    -> (Vec<Finding>, Vec<AccountTally>)
+///
+/// R-590: after the check told Jack to remove real payments, a ledger row is "not at the bank" only when the link
+/// that brought it in is one this check read (`fed_pas`): another computer's link, or a row from before links were
+/// stamped, cannot be judged by this feed.
+pub fn compare(bank: &[BankTxn], ledger: &[LedgerTxn], removed: &std::collections::HashSet<String>,
+               fed_pas: &std::collections::HashSet<String>) -> (Vec<Finding>, Vec<AccountTally>)
 {
     let mut taken = vec![false; ledger.len()];
     let mut pair: Vec<Option<usize>> = vec![None; bank.len()];
@@ -301,7 +307,7 @@ pub fn compare(bank: &[BankTxn], ledger: &[LedgerTxn], removed: &std::collection
         }
     }
     for (li, l) in ledger.iter().enumerate() {
-        if taken[li] || !open(l) || l.source != "plaid" { continue; }
+        if taken[li] || !open(l) || l.source != "plaid" || l.pa.is_empty() || !fed_pas.contains(&l.pa) { continue; }
         let Some(first) = earliest.get(l.account.as_str()) else { continue };
         if l.date.get(..10).unwrap_or("") < first.get(..10).unwrap_or("") { continue; }
         if let Some(t) = tallies.get_mut(&l.account) { t.not_exact += 1; }
@@ -318,15 +324,19 @@ mod tests {
         BankTxn { id: id.into(), account: "Checking ··1111".into(), date: date.into(), amount, direction: "out".into(), memo: memo.into(), cols: Map::new() }
     }
     fn l(id: &str, date: &str, amount: f64, memo: &str, source: &str) -> LedgerTxn {
-        LedgerTxn { id: id.into(), account: "Checking ··1111".into(), date: date.into(), amount, direction: "out".into(), memo: memo.into(), source: source.into(), pending: false, retracted: false }
+        LedgerTxn { id: id.into(), account: "Checking ··1111".into(), date: date.into(), amount, direction: "out".into(), memo: memo.into(), source: source.into(), pending: false, retracted: false, pa: "link1".into() }
     }
     fn none() -> std::collections::HashSet<String> { Default::default() }
+    fn fed() -> std::collections::HashSet<String> { ["link1".to_string()].into_iter().collect() }
+    fn cmp(bank: &[BankTxn], ledger: &[LedgerTxn], removed: &std::collections::HashSet<String>) -> (Vec<Finding>, Vec<AccountTally>) {
+        compare(bank, ledger, removed, &fed())
+    }
 
     #[test]
     fn an_exact_ledger_is_all_exact() {
         let bank = vec![b("btpl_a", "2026-10-01", 500.0, "ZELLE TO SAM"), b("btpl_b", "2026-10-02", 20.0, "FEE")];
         let ledger = vec![l("btpl_a", "2026-10-01", 500.0, "ZELLE TO SAM", "plaid"), l("btpl_b", "2026-10-02", 20.0, "FEE", "plaid")];
-        let (f, t) = compare(&bank, &ledger, &none());
+        let (f, t) = cmp(&bank, &ledger, &none());
         assert!(f.is_empty());
         assert_eq!(t[0].exact, 2);
         assert_eq!(t[0].not_exact, 0);
@@ -336,7 +346,7 @@ mod tests {
     fn a_posted_transaction_with_no_ledger_row_is_missing() {
         let bank = vec![b("btpl_a", "2026-10-01", 500.0, "ZELLE TO SAM"), b("btpl_b", "2026-10-03", 1250.0, "WIRE TO ACME")];
         let ledger = vec![l("btpl_a", "2026-10-01", 500.0, "ZELLE TO SAM", "plaid")];
-        let (f, _) = compare(&bank, &ledger, &none());
+        let (f, _) = cmp(&bank, &ledger, &none());
         assert_eq!(f, vec![Finding::Missing { bank: 1, removed_before: false }]);
     }
 
@@ -344,7 +354,7 @@ mod tests {
     fn another_links_identical_copy_counts_as_present() {
         let bank = vec![b("btpl_mine", "2026-10-01", 500.0, "ZELLE TO SAM")];
         let ledger = vec![l("btpl_other", "2026-10-01", 500.0, "Zelle  to Sam", "plaid")];
-        let (f, t) = compare(&bank, &ledger, &none());
+        let (f, t) = cmp(&bank, &ledger, &none());
         assert!(f.is_empty());
         assert_eq!(t[0].exact, 1);
     }
@@ -353,7 +363,7 @@ mod tests {
     fn two_identical_real_charges_need_two_rows() {
         let bank = vec![b("btpl_a", "2026-10-01", 9.99, "WHATNOT FEE"), b("btpl_b", "2026-10-01", 9.99, "WHATNOT FEE")];
         let ledger = vec![l("btpl_x", "2026-10-01", 9.99, "WHATNOT FEE", "plaid")];
-        let (f, _) = compare(&bank, &ledger, &none());
+        let (f, _) = cmp(&bank, &ledger, &none());
         assert_eq!(f.len(), 1);
         assert!(matches!(f[0], Finding::Missing { .. }));
     }
@@ -362,7 +372,7 @@ mod tests {
     fn a_row_whose_amount_or_date_is_not_the_banks_differs() {
         let bank = vec![b("btpl_a", "2026-10-02", 500.25, "ZELLE TO SAM")];
         let ledger = vec![l("btpl_a", "2026-10-01", 500.0, "ZELLE TO SAM", "plaid")];
-        let (f, t) = compare(&bank, &ledger, &none());
+        let (f, t) = cmp(&bank, &ledger, &none());
         assert_eq!(f, vec![Finding::Differs { bank: 0, ledger: 0, fields: vec!["date", "amount"] }]);
         assert_eq!(t[0].not_exact, 1);
     }
@@ -371,7 +381,7 @@ mod tests {
     fn the_same_payment_under_another_memo_differs_rather_than_missing() {
         let bank = vec![b("btpl_mine", "2026-10-02", 2000.0, "WIRE TO ACME TRN: 12345678")];
         let ledger = vec![l("btpl_other", "2026-10-01", 2000.0, "WIRE TO ACME", "plaid")];
-        let (f, _) = compare(&bank, &ledger, &none());
+        let (f, _) = cmp(&bank, &ledger, &none());
         assert_eq!(f, vec![Finding::Differs { bank: 0, ledger: 0, fields: vec!["date", "memo"] }]);
     }
 
@@ -379,7 +389,7 @@ mod tests {
     fn a_statement_row_counts_as_present() {
         let bank = vec![b("btpl_a", "2026-10-02", 75.0, "AMAZON MKTPL")];
         let ledger = vec![l("bt_stmt", "2026-10-01", 75.0, "Amazon Marketplace", "pdf")];
-        let (f, t) = compare(&bank, &ledger, &none());
+        let (f, t) = cmp(&bank, &ledger, &none());
         assert!(f.is_empty());
         assert_eq!(t[0].from_statement, 1);
     }
@@ -395,7 +405,7 @@ mod tests {
             // A statement row is never "no longer at the bank".
             l("bt_stmt", "2026-10-05", 40.0, "GAS", "csv"),
         ];
-        let (f, _) = compare(&bank, &ledger, &none());
+        let (f, _) = cmp(&bank, &ledger, &none());
         assert_eq!(f, vec![Finding::NotAtBank { ledger: 1 }]);
     }
 
@@ -406,15 +416,28 @@ mod tests {
         pend.pending = true;
         let mut gone = l("btpl_rtr", "2026-10-01", 60.0, "SHELL OIL", "plaid");
         gone.retracted = true;
-        let (f, _) = compare(&bank, &[pend, gone], &none());
+        let (f, _) = cmp(&bank, &[pend, gone], &none());
         assert_eq!(f, vec![Finding::Missing { bank: 0, removed_before: false }]);
+    }
+
+    // R-590: the Mac's link brought the row in; this computer's link does not list it yet.
+    #[test]
+    fn a_row_from_another_link_is_never_called_not_at_the_bank() {
+        let bank = vec![b("btpl_a", "2026-10-01", 500.0, "ZELLE TO SAM")];
+        let mut other = l("btpl_mac", "2026-01-14", 1500.0, "ONLINE ACH PAYMENT", "plaid");
+        other.pa = "link2".into();
+        let mut legacy = l("btpl_old", "2026-01-14", 40.0, "GAS", "plaid");
+        legacy.pa = String::new();
+        let ledger = vec![l("btpl_a", "2026-10-01", 500.0, "ZELLE TO SAM", "plaid"), other, legacy];
+        let (f, _) = cmp(&bank, &ledger, &none());
+        assert!(f.is_empty(), "{f:?}");
     }
 
     #[test]
     fn a_removed_row_the_bank_still_lists_says_so() {
         let bank = vec![b("btpl_a", "2026-10-01", 500.0, "ZELLE TO SAM")];
         let removed: std::collections::HashSet<String> = ["btpl_a".to_string()].into_iter().collect();
-        let (f, _) = compare(&bank, &[], &removed);
+        let (f, _) = cmp(&bank, &[], &removed);
         assert_eq!(f, vec![Finding::Missing { bank: 0, removed_before: true }]);
     }
 
@@ -423,7 +446,7 @@ mod tests {
         let bank = vec![b("btpl_a", "2026-10-01", 500.0, "ZELLE TO SAM")];
         let mut other = l("btpl_x", "2026-10-01", 500.0, "ZELLE TO SAM", "plaid");
         other.account = "Savings ··2222".into();
-        let (f, _) = compare(&bank, &[other], &none());
+        let (f, _) = cmp(&bank, &[other], &none());
         assert_eq!(f, vec![Finding::Missing { bank: 0, removed_before: false }]);
     }
 

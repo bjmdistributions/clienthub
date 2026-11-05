@@ -68,7 +68,7 @@ const POLL_SECS: u64 = 20;
 /// refreshes `warehouse_cases` and `warehouse_loads` for their new columns (`unmatched_json`, the units
 /// scanned into a box and not matched yet, and `unit`), so a desktop that updates after boxes were
 /// scanned on the phone shows what is waiting in them.
-const HEAL_GENERATION: &str = "17";
+const HEAL_GENERATION: &str = "18";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -137,6 +137,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "bank_statement",
     // Bank transactions not in the ledger as the bank states them, until answered (R-586).
     "bank_declined",
+    // Which computer feeds each bank account, and each one's last clean pull of it (R-590).
+    "bank_feed",
 ];
 
 pub fn ensure_tables() -> Result<()> {
@@ -981,6 +983,9 @@ pub async fn pull_apply() -> Result<usize> {
             }
         }
     }
+    // R-590: a bank row delete refused earlier because work still pointed at it goes through once that work has
+    // gone, whether this pull applied that or it went on this device.
+    crate::sync::retry_deferred_deletes();
     Ok(applied)
 }
 
@@ -1492,7 +1497,30 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
 
 /// `restore_snapshot`, limited to `only` when given (R-459: the generation-6 heal refreshes one
 /// table instead of the whole workspace).
+/// R-590: restores running now, and how many have started since launch. Check against bank reads the ledger and
+/// must not read it half-restored (two runs a minute apart once disagreed about the same payments): it notes the
+/// count before reading and gives up if a restore ran or started meanwhile.
+pub static RESTORES_ACTIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub static RESTORES_STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// R-590: (no restore running, restores started so far).
+pub fn restore_marker() -> (bool, u64) {
+    (RESTORES_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) == 0,
+     RESTORES_STARTED.load(std::sync::atomic::Ordering::SeqCst))
+}
+
 async fn restore_snapshot_tables(only: Option<&[&str]>) -> Result<serde_json::Value> {
+    struct Running;
+    impl Drop for Running {
+        fn drop(&mut self) { RESTORES_ACTIVE.fetch_sub(1, std::sync::atomic::Ordering::SeqCst); }
+    }
+    RESTORES_STARTED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    RESTORES_ACTIVE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _running = Running;
+    restore_snapshot_tables_inner(only).await
+}
+
+async fn restore_snapshot_tables_inner(only: Option<&[&str]>) -> Result<serde_json::Value> {
     if logistics_only_device() {
         anyhow::bail!("This account uses the Logistics screen and does not sync the workspace.");
     }
@@ -1823,6 +1851,8 @@ async fn auto_heal_if_behind() {
         "bank_statement",
         // R-586: bank transactions not in the ledger as the bank states them (generation 17).
         "bank_declined",
+        // R-590: which computer feeds each bank account (generation 18).
+        "bank_feed",
     ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
@@ -3206,9 +3236,17 @@ mod r400_sync_tests {
     /// R-586: the Not imported list restores and applies like the bank rows it stands for (generation 17).
     #[test]
     fn r586_the_not_imported_list_syncs() {
-        assert_eq!(HEAL_GENERATION, "17", "generation 17 adds bank_declined (R-586) after bank_statement (R-579)");
+        assert!(HEAL_GENERATION.parse::<u32>().unwrap() >= 17, "generation 17 adds bank_declined (R-586) after bank_statement (R-579)");
         assert!(SNAPSHOT_TABLES.contains(&"bank_declined"));
         assert!(crate::sync::is_synced_table("bank_declined"));
+    }
+
+    /// R-590: the bank feed owners restore and apply, so every computer agrees which one imports an account.
+    #[test]
+    fn r590_the_bank_feed_owners_sync() {
+        assert_eq!(HEAL_GENERATION, "18", "generation 18 adds bank_feed (R-590)");
+        assert!(SNAPSHOT_TABLES.contains(&"bank_feed"));
+        assert!(crate::sync::is_synced_table("bank_feed"));
     }
 
     /// R-568: the company's barcodes restore like the manifests, and the two delivery tables that gained

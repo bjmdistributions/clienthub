@@ -2791,4 +2791,24 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_bank_declined_status ON bank_declined(status, posted_at);
         "#,
     ),
+    (
+        125,
+        // R-590: which computer feeds each bank account (`own:<account>`) and each computer's last clean pull of it
+        // (`seen:<account>:<device>`), so one link per account imports and the others stand by. Synced (sync.rs
+        // ALLOWED_TABLES, netsync SNAPSHOT_TABLES, heal generation 18) and mirrored in clienthub-api, which must be
+        // deployed first. Settings were tried and do not travel between computers.
+        r#"
+        CREATE TABLE IF NOT EXISTS bank_feed (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL DEFAULT '',
+            account_key TEXT NOT NULL DEFAULT '',
+            label TEXT DEFAULT '',
+            device TEXT NOT NULL DEFAULT '',
+            device_name TEXT DEFAULT '',
+            at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        "#,
+    ),
 ];

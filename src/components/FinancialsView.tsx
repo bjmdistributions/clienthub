@@ -11,6 +11,7 @@ import {
 } from "../lib/api";
 import StatusPill from "./StatusPill";
 import BankDeclinedCard from "./BankDeclinedCard";
+import BankFeedOwners from "./BankFeedOwners";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -4210,6 +4211,8 @@ export default function FinancialsView() {
             </>
           )}
         </div>
+        {/* R-590: which computer brings in each account. */}
+        {plaidItems.length > 0 && <BankFeedOwners version={healthVersion} />}
         {(plaidItems.length === 0 || bankFeedOpen) && (
           <>
         <p className="text-[11px] text-muted leading-relaxed">

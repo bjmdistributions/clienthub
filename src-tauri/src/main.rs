@@ -3,6 +3,7 @@
 mod ai;
 mod bank_declined;
 mod bank_dedup;
+mod bank_feed;
 mod bank_flags;
 mod carrier_paid;
 mod bank_near_dup;
@@ -1295,6 +1296,8 @@ fn main() {
             list_bank_declined,
             resolve_bank_declined,
             check_against_bank,
+            bank_feed_owners,
+            set_bank_feed_here,
             list_near_duplicates,
             resolve_near_duplicate,
             delete_bank_txns,
