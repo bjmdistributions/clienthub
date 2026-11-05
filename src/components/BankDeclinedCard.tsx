@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
-import { api, BankCheck, BankDeclined, BankDeclinedAction } from "../lib/api";
+import { api, BankAlready, BankCheck, BankDeclined, BankDeclinedAction } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { useSessionMe } from "../lib/useSessionMe";
 import { toast } from "./Toast";
@@ -57,6 +57,8 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
   const [busy, setBusy] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [answeredOpen, setAnsweredOpen] = useState(false);
+  // R-590: rows Import refused because the ledger already holds that payment, with the row it found.
+  const [already, setAlready] = useState<Record<string, BankAlready>>({});
 
   const load = () => {
     api.listBankDeclined().then((r) => { setRows(r.rows); setCheck(r.check); }).catch(() => {});
@@ -74,6 +76,11 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
     setBusy(r.id);
     try {
       const res = await api.resolveBankDeclined(r.id, action, me?.display_name || me?.email || "");
+      if (res.already) {
+        const found = res.already;
+        setAlready((a) => ({ ...a, [r.id]: found }));
+        return;
+      }
       if (!res.ok) {
         const deals = (res.delete?.needs_unlink ?? []).flatMap((n) => n.deals);
         toast(deals.length > 0
@@ -83,6 +90,7 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
       }
       const said: Record<BankDeclinedAction, string> = {
         import: "Imported into the ledger.",
+        import_anyway: "Imported into the ledger as a separate payment.",
         copy: "Marked as already on the books.",
         use_bank: "The ledger row now matches your bank.",
         keep: "Kept as it is. You will be asked again only if the bank changes it.",
@@ -133,6 +141,7 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
   const actions = (r: BankDeclined) => {
     if (r.reason === "differs") return <>{button("Use the bank's figures", () => answer(r, "use_bank"), true, r.id)}{button("Keep the ledger's", () => answer(r, "keep"), false, r.id)}</>;
     if (r.reason === "not_at_bank") return <>{button("Remove", () => answer(r, "remove"), false, r.id)}{button("Keep it", () => answer(r, "keep"), false, r.id)}</>;
+    if (already[r.id]) return <>{button("It is a copy", () => answer(r, "copy"), true, r.id)}{button("Import anyway", () => answer(r, "import_anyway"), false, r.id)}</>;
     return <>{button("Import", () => answer(r, "import"), true, r.id)}{button("It is a copy", () => answer(r, "copy"), false, r.id)}</>;
   };
 
@@ -148,6 +157,11 @@ export default function BankDeclinedCard({ version, mode, onChanged, onOpenRow, 
             <span className="text-ink truncate">{r.description || "No description"}</span>
           </div>
           <div className="text-[12px] text-muted tabular-nums">{day(r.posted_at)} · {r.account_id}</div>
+          {already[r.id] && (
+            <div className="text-[12.5px] text-warning-ink mt-0.5">
+              Already on the books: {day(already[r.id].posted_at)} · {already[r.id].description}. If this is a second, separate payment, choose Import anyway.
+            </div>
+          )}
           <div className="text-[12.5px] text-ink-2 mt-0.5">
             {REASON[r.reason]}
             {r.bank.removed_before && " It was removed from the books earlier."}

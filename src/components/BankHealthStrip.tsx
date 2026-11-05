@@ -18,6 +18,7 @@ const WARNING_LEAD: Record<string, string> = {
   skipped_unsaved: "Not saved yet, tried again on the next pull",
   retracted_kept: "Withdrawn by your bank after you booked it, kept under Retracted by bank",
   held_reference_collision: "Held back, same payment reference as money already booked",
+  feed_moved: "The bank feed moved to this computer",
 };
 
 function when(iso: string | null): string {

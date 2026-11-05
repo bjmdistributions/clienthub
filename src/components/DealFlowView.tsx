@@ -139,6 +139,11 @@ function paymentState(f: DealFlow, recon?: PaymentFlags) {
 }
 
 // ─── Main view ────────────────────────────────────────────────────────────
+// R-590: when this computer first saw each invoice without a deal flow (kept across visits to the screen), and the
+// one pending look-again.
+const flowlessSince = new Map<string, number>();
+let flowlessRetry = 0;
+
 export default function DealFlowView() {
   const [flows,        setFlows]        = useState<DealFlow[]>([]);
   const [invoices,     setInvoices]     = useState<Invoice[]>([]);
@@ -179,6 +184,7 @@ export default function DealFlowView() {
     }).catch(() => { /* the list reads fine without labels */ });
   }, []);
 
+  const reloadRef = useRef<() => void>();
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -205,7 +211,22 @@ export default function DealFlowView() {
       // "covered" and would retrigger createDealFlow every load — which errors
       // ("deal flow already exists") and, via Promise.all, blanked the whole view.
       const coveredIds = new Set(deduped.map((fl) => fl.invoice_id));
-      const missing = inv.filter((i) => !i.is_complete && !i.voided && !coveredIds.has(i.id));
+      // R-590: not for an invoice that names a flow (it was made on another device and is still arriving by
+      // sync), nor before this screen has seen it without one for two minutes (its flow may arrive in the next
+      // pull). Creating one there gave an invoice a second and third flow, and a late copy could undo progress.
+      // An invoice made on this computer has its flow from the start (create_invoice).
+      const now = Date.now();
+      let waiting = false;
+      const settled = (i: Invoice) => {
+        if (i.deal_flow_id) return false;
+        const first = flowlessSince.get(i.id) ?? now;
+        flowlessSince.set(i.id, first);
+        if (now - first < 120_000) waiting = true;
+        return now - first >= 120_000;
+      };
+      const missing = inv.filter((i) => !i.is_complete && !i.voided && !coveredIds.has(i.id) && settled(i));
+      // Look again once the two minutes are up, so an invoice is never left without a flow for want of a reload.
+      if (waiting && !flowlessRetry) flowlessRetry = window.setTimeout(() => { flowlessRetry = 0; reloadRef.current?.(); }, 125_000);
       if (missing.length > 0) {
         // allSettled, not all: one failed create must never blank the pipeline.
         await Promise.allSettled(missing.map((i) => api.createDealFlow(i.id, null, i.number)));
@@ -229,6 +250,7 @@ export default function DealFlowView() {
     setLoading(false);
   }, []);
 
+  reloadRef.current = load;
   useEffect(() => { load(); loadLabels(); }, [load, loadLabels]);
   // R-400: the person doing logistics changes bookings, dates and amounts from another
   // device. Sync applies them here, and the deal figures they move (cost, profit, the

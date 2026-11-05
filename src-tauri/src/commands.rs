@@ -3144,6 +3144,12 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
         rusqlite::params![id, input.client_id, number, issue, input.due_date, line_items_json, subtotal, tax, total, notes, recurring, next_date, return_policy],
     )
     .map_err(|e| e.to_string())?;
+    drop(conn);
+    // R-590: the deal flow is made with the invoice, on this computer, so the two travel together. Another
+    // device's Deal Flow screen used to make one when the invoice reached it first, giving it a second flow.
+    if let Err(e) = create_deal_flow_internal(id.clone(), None, Some(number.clone())) {
+        tracing::warn!("create_invoice: deal flow for {} not created: {}", number, e);
+    }
     Ok(id)
 }
 
@@ -5436,6 +5442,9 @@ pub(crate) fn recalc_completed_deal_flow(id: &str, _gross: f64, payments: &[Supp
     recompute_completed_deal(id, Some(goods))
 }
 
+/// R-590: one deal flow per invoice, the same id on every device and the server.
+pub(crate) fn deal_flow_id_for(invoice_id: &str) -> String { format!("df_{invoice_id}") }
+
 fn create_deal_flow_internal(invoice_id: String, notes: Option<String>, name: Option<String>) -> Result<String, String> {
     let exists: bool = {
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -5451,7 +5460,9 @@ fn create_deal_flow_internal(invoice_id: String, notes: Option<String>, name: Op
     };
     if already { return Err("Deal flow already exists for this invoice".into()); }
 
-    let id = Uuid::new_v4().to_string();
+    // R-590: the id comes from the invoice, so two devices creating the flow for one invoice write the same row
+    // and sync merges them, instead of each minting its own (that is how one invoice got several flows within a minute).
+    let id = deal_flow_id_for(&invoice_id);
     let now = Utc::now().to_rfc3339();
     let sp_json = "[]".to_string();
 
@@ -5463,15 +5474,17 @@ fn create_deal_flow_internal(invoice_id: String, notes: Option<String>, name: Op
     cols.insert("created_at".into(), Value::String(now.clone()));
     cols.insert("updated_at".into(), Value::String(now.clone()));
     cols.insert("notes".into(), to_value(notes.clone()));
-    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
-
-    {
+    // R-590: only a row this call actually inserted is sent to the other devices, so a late create never
+    // overwrites a flow another device has already moved on.
+    let inserted = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO deal_flows (id,name,invoice_id,stage,supplier_payments_json,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
+            "INSERT OR IGNORE INTO deal_flows (id,name,invoice_id,stage,supplier_payments_json,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
             rusqlite::params![id, name, invoice_id, "invoiced", sp_json, notes, now],
-        ).map_err(|e| e.to_string())?;
-    }
+        ).map_err(|e| e.to_string())?
+    };
+    if inserted == 0 { return Ok(id); }
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
 
     {
         let mut inv_cols = Map::new();
@@ -5485,8 +5498,31 @@ fn create_deal_flow_internal(invoice_id: String, notes: Option<String>, name: Op
     Ok(id)
 }
 
+/// R-590: an invoice is made with its deal flow now, so asking for the flow of an invoice that has one returns it,
+/// with the name and notes given applied (the "new deal from a bank receipt" button makes the invoice, then asks
+/// for the flow, and used to fail here).
 #[tauri::command]
 pub async fn create_deal_flow(invoice_id: String, notes: Option<String>, name: Option<String>) -> Result<String, String> {
+    let existing: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT id FROM deal_flows WHERE invoice_id=?1 AND COALESCE(archived,0)=0 ORDER BY created_at LIMIT 1",
+            [&invoice_id], |r| r.get(0)).ok()
+    };
+    if let Some(id) = existing {
+        let mut cols = Map::new();
+        if let Some(n) = name.as_ref().filter(|n| !n.trim().is_empty()) { cols.insert("name".into(), json!(n)); }
+        if let Some(n) = notes.as_ref().filter(|n| !n.trim().is_empty()) { cols.insert("notes".into(), json!(n)); }
+        if !cols.is_empty() {
+            {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                conn.execute("UPDATE deal_flows SET name=COALESCE(?1,name), notes=COALESCE(?2,notes) WHERE id=?3",
+                    rusqlite::params![cols.get("name").and_then(|v| v.as_str()), cols.get("notes").and_then(|v| v.as_str()), id])
+                    .map_err(|e| e.to_string())?;
+            }
+            sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+        }
+        return Ok(id);
+    }
     create_deal_flow_internal(invoice_id, notes, name)
 }
 
@@ -19280,6 +19316,8 @@ pub async fn deal_allocations(deal_flow_id: String) -> Result<Vec<Value>, String
 /// Idempotent: once healed it finds nothing and returns 0.
 #[tauri::command]
 pub async fn reattach_orphaned_deal_allocations() -> Result<i64, String> {
+    // R-590: also a booking sitting on an ARCHIVED duplicate (another device booked it before the archive reached
+    // it): it moves to the invoice's live flow, the same as one on a live duplicate.
     // Stage rank must match the deal-flow UI's dedup (invoiced<payment_received<
     // supplier_paid<complete). Survivor per invoice = highest rank, newest on a tie.
     const SURV: &str =
@@ -19291,7 +19329,7 @@ pub async fn reattach_orphaned_deal_allocations() -> Result<i64, String> {
         let mut stmt = conn.prepare(
             "SELECT a.id, a.bank_txn_id, a.amount, a.role, COALESCE(a.note,''), df.invoice_id, COALESCE(a.created_at,'') \
              FROM bank_allocation a JOIN deal_flows df ON df.id=a.deal_flow_id \
-             WHERE COALESCE(df.archived,0)=0 AND df.invoice_id IS NOT NULL \
+             WHERE df.invoice_id IS NOT NULL \
                AND df.id <> (SELECT d2.id FROM deal_flows d2 \
                              WHERE d2.invoice_id=df.invoice_id AND COALESCE(d2.archived,0)=0 \
                              ORDER BY (CASE d2.stage WHEN 'complete' THEN 3 WHEN 'supplier_paid' THEN 2 \
@@ -20768,6 +20806,18 @@ fn canonical_id_booked_collisions(
         .collect()
 }
 
+/// R-590: a row an incoming bank transaction replaces rather than collides with: the pending row the bank names
+/// (`pending_transaction_id`), a row the bank withdraws in this page, or, when the incoming copy has posted, any
+/// pending or withdrawn row. Reads the flags through `raw_json`, as `plaid_copies` does.
+fn is_being_replaced(conn: &rusqlite::Connection, id: &str, pend: Option<&str>,
+                     removed_ids: &std::collections::HashSet<String>, incoming_pending: bool) -> bool {
+    if pend == Some(id) || removed_ids.contains(id) { return true; }
+    if incoming_pending { return false; }
+    conn.query_row(
+        &format!("SELECT ({}) OR ({}) FROM bank_txn b WHERE b.id=?1", crate::bank_flags::pending("b"), crate::bank_flags::retracted("b")),
+        [id], |r| r.get::<_, i64>(0)).map(|v| v != 0).unwrap_or(false)
+}
+
 /// FNV-1a (64-bit) — same family the statement importer already uses for its stable ids.
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -21454,11 +21504,28 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // transactions under its own ids, and until they are pulled this device imports them a
     // second time. A failed pull still imports: a duplicate can be removed, a skipped payment
     // is gone once the cursor moves.
+    // R-590: and remember whether it worked. A retraction below deletes a row only when this device has seen
+    // every other device's bookings; otherwise it keeps the row, so a booking made elsewhere is never orphaned.
+    let mut pulled_ok = true;
     if crate::netsync::is_enabled() {
         if let Err(e) = crate::netsync::pull_apply().await {
+            pulled_ok = false;
             tracing::warn!("plaid_sync: pull before import failed, importing anyway: {}", e);
         }
     }
+    // R-590: one link per account feeds the books. An account another computer feeds is skipped here: its
+    // payments reach this computer by sync, under that computer's ids, so they are never on the books twice.
+    let (my_accounts, fed) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mine = crate::bank_feed::my_accounts(&conn);
+        let fed = crate::bank_feed::decide_all(&conn, &mine, pulled_ok || !crate::netsync::is_enabled());
+        (mine, fed)
+    };
+    // Plaid account id -> the account key it belongs to, for the skip below.
+    let key_of_plaid: std::collections::HashMap<String, String> = my_accounts.iter()
+        .map(|a| (a.plaid_id.clone(), a.key.clone())).collect();
+    let standby_account = |plaid_id: &str| key_of_plaid.get(plaid_id).is_some_and(|k| !fed.keys.contains(k));
+    let mut standby = 0i64; // transactions skipped because another computer feeds their account
     let known_labels: Vec<String> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut st = conn.prepare("SELECT DISTINCT account_id FROM bank_txn").map_err(|e| e.to_string())?;
@@ -21557,6 +21624,13 @@ pub async fn plaid_sync() -> Result<Value, String> {
     let mut declined: usize = 0;
 
     for (item_pk, access, mut cursor, accounts_json, item_env, institution) in items {
+        // R-590: this computer feeds an account on this bank but has not pulled it for a day and cannot reach the
+        // server, so the other computer may have taken it over. The bank waits, its cursor unmoved: nothing is
+        // lost, nothing is brought in twice, and the next pull that reaches the server decides.
+        if my_accounts.iter().any(|a| a.item == item_pk && fed.paused.contains(&a.key)) {
+            tracing::warn!("plaid_sync: {institution} waits for the server: this computer was away and the other may now feed it");
+            continue;
+        }
         let live_labels: std::collections::HashSet<String> = item_labels.iter()
             .filter(|(pk, inst, _)| *pk == item_pk || *inst != institution)
             .flat_map(|(_, _, labels)| labels.iter().cloned())
@@ -21671,6 +21745,8 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // the account (which is what made booked transactions re-appear unbooked).
                     let raw_label = label_of(t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""));
                     let label = aliases.get(&raw_label).cloned().unwrap_or(raw_label);
+                    // R-590: another computer feeds this account.
+                    if standby_account(t.get("account_id").and_then(|v| v.as_str()).unwrap_or("")) { standby += 1; continue; }
                     // Every label on the books that is this same account (R-287).
                     let same_account: Vec<String> = same_account_cache.entry(label.clone()).or_insert_with(|| {
                         let mut v: Vec<String> = known_labels.iter()
@@ -21859,6 +21935,11 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // contradictory claims ("imported anyway" vs "held, nothing imported").
                     let booked_collisions: Vec<String> = same_account.iter()
                         .flat_map(|acct| canonical_id_booked_collisions(&conn, acct, direction, &desc, &id))
+                        // R-590: the pending row this posted copy replaces is not a collision, nor is any pending or
+                        // withdrawn row when the copy has posted. Holding the posted copy behind its own booked
+                        // pending row left real payments off the books for weeks, the booking stranded on a row
+                        // the bank withdrew. The copy now imports and the settle below moves the booking onto it.
+                        .filter(|c| !is_being_replaced(&conn, c, pend.as_deref(), &removed_ids, incoming_pending))
                         .collect();
                     if !booked_collisions.is_empty() {
                         // R-586: held, never dropped. Import brings it in under its own id.
@@ -22007,6 +22088,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // The bank is describing a transaction we do not hold at all — the
                     // clearest possible statement that something was never loaded.
                     let Some((old_amount, reviewed)) = existing else {
+                        if standby_account(t.get("account_id").and_then(|v| v.as_str()).unwrap_or("")) { standby += 1; continue; }
                         amend_unknown += 1;
                         // R-586: the bank describing a transaction the ledger never held is kept on the Not imported
                         // list with what the bank says, for Import, instead of being counted and dropped.
@@ -22151,7 +22233,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // business expense, was retracted with no toast and no warning — and
                     // because loan_ledger derives repaid totals by summing tagged rows,
                     // the loan's outstanding balance silently jumped back up everywhere.
-                    let was_finished = bank_txn_is_referenced(&conn, &id);
+                    // R-590: and when this device's pull from the server failed, it cannot know what other
+                    // devices booked, so it keeps the row as well.
+                    let was_finished = bank_txn_is_referenced(&conn, &id) || !pulled_ok;
                     // INVARIANT 3: a booked transaction is never deleted automatically.
                     // Until now this value was computed and only LOGGED while the delete ran
                     // regardless — which is how four reviewed rows were destroyed unattended
@@ -22382,6 +22466,22 @@ pub async fn plaid_sync() -> Result<Value, String> {
             [id], |r| r.get::<_, String>(0)).unwrap_or_else(|_| id.clone())).collect(),
         Err(_) => retracted_kept.clone(),
     };
+    // R-590: the feeding computer's heartbeat for each account it feeds whose bank pulled cleanly, so a standby
+    // computer knows that account is being brought in. A bank whose login broke beats for nothing.
+    if let Ok(c) = pool().get() {
+        let ok_items: std::collections::HashSet<&str> = results.iter()
+            .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("ok"))
+            .filter_map(|r| r.get("item").and_then(|v| v.as_str())).collect();
+        for a in my_accounts.iter().filter(|a| fed.keys.contains(&a.key) && ok_items.contains(a.item.as_str())) {
+            crate::bank_feed::heartbeat(&c, &a.key, &a.label);
+        }
+    }
+    // R-590: a takeover reads the bank's history at once, so anything posted while the other computer was silent
+    // is on the Not imported list today, not a day from now.
+    if !fed.took_over.is_empty() {
+        tokio::spawn(async { if let Err(e) = check_against_bank_run(true).await { tracing::warn!("check after feed takeover failed: {}", e); } });
+    }
+    if standby > 0 { tracing::info!("plaid_sync: {} transaction(s) left to the computer that feeds their account", standby); }
     // R-587: Check against bank once a day. It waits for this pull's gate, so it starts the moment this pull ends.
     tokio::spawn(check_against_bank_if_due());
     record_plaid_pass(&results, &[
@@ -22390,6 +22490,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         ("skipped_unsaved", &skipped_unsaved),
         ("retracted_kept", &retracted_text),
         ("held_reference_collision", &held_text),
+        ("feed_moved", &fed.notes),
     ], &now);
     publish_balance_and_health();
     Ok(json!({
@@ -22417,6 +22518,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         "possible_duplicates": possible_duplicates,   // same payment reference, imported anyway
         "held_reference_collision": held_reference_collision, // same reference as a BOOKED row — held, not imported
         "declined": declined,                         // R-586: kept on the Not imported list
+        "standby": standby,                           // R-590: left to the computer that feeds the account
         "preparing": preparing, "results": results,
     }))
 }
@@ -22491,9 +22593,17 @@ async fn resolve_bank_declined_inner(id: String, action: String, by: String) -> 
         (t, r, serde_json::from_str(&m).unwrap_or_default(), serde_json::from_str(&b).unwrap_or_default())
     };
     let status = match action.as_str() {
-        "import" => {
+        "import" | "import_anyway" => {
             let conn = pool().get().map_err(|e| e.to_string())?;
             let held = conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&txn_id], |_| Ok(())).is_ok();
+            // R-590: never put a payment on the books twice by accident. When the ledger already holds as many
+            // payments of this amount on this account within 3 days as the bank does, say which, and import
+            // only on a second, deliberate click ("Import anyway").
+            if !held && action == "import" {
+                if let Some(twin) = already_on_books(&conn, &bank) {
+                    return Ok(json!({ "ok": false, "already": twin }));
+                }
+            }
             if !held {
                 let g = |k: &str| bank.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let amount = bank.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -22568,11 +22678,41 @@ async fn resolve_bank_declined_inner(id: String, action: String, by: String) -> 
     Ok(json!({ "ok": true, "status": status }))
 }
 
+/// R-590: a ledger row that already is this bank payment, when the ledger holds at least as many payments of the
+/// same amount and direction on the account (by its last four digits) within 3 days as the bank does
+/// (`bank_same`, 1 unless the check counted more). Withdrawn rows do not count: the bank took them back.
+fn already_on_books(conn: &rusqlite::Connection, bank: &Map<String, Value>) -> Option<Value> {
+    let g = |k: &str| bank.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let amount = bank.get("amount").and_then(|v| v.as_f64())?;
+    let account = g("account_id");
+    let mask = crate::bank_dedup::label_mask(&account).to_string();
+    let bank_same = bank.get("bank_same").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+    let sql = format!(
+        "SELECT b.id, COALESCE(b.account_id,''), COALESCE(b.posted_at,''), COALESCE(b.description,'') FROM bank_txn b \
+          WHERE b.direction=?1 AND ABS(b.amount-?2)<0.005 \
+            AND ABS(julianday(substr(b.posted_at,1,10)) - julianday(substr(?3,1,10))) <= 3 AND NOT ({})",
+        crate::bank_flags::retracted("b"));
+    let twins: Vec<(String, String, String, String)> = conn.prepare(&sql)
+        .and_then(|mut st| st.query_map(rusqlite::params![g("direction"), amount, g("posted_at")],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    let twins: Vec<_> = twins.into_iter()
+        .filter(|t| if mask.is_empty() { t.1 == account } else { crate::bank_dedup::label_mask(&t.1) == mask })
+        .collect();
+    if twins.is_empty() || twins.len() < bank_same { return None; }
+    let t = &twins[0];
+    Some(json!({ "id": t.0, "account_id": t.1, "posted_at": t.2, "description": t.3, "count": twins.len(), "bank_same": bank_same }))
+}
+
 /// Every posted transaction each connected bank holds, from a fresh bookmark (the saved cursor is not read or
 /// moved). One account is read through one connection only: the newest that serves it, as Free cash counts a
 /// balance once. Returns the transactions and, per bank, any error.
-async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>)
-    -> Result<(Vec<crate::bank_declined::BankTxn>, Vec<Value>, std::collections::HashSet<String>), String>
+/// R-590: only the accounts this computer feeds (`fed`: their Plaid account ids), and the Plaid account ids read,
+/// so only rows those links brought in are judged "not at the bank".
+#[allow(clippy::type_complexity)]
+async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>, fed: &std::collections::HashSet<String>)
+    -> Result<(Vec<crate::bank_declined::BankTxn>, Vec<Value>,
+               std::collections::HashSet<String>, std::collections::HashSet<String>), String>
 {
     let items: Vec<(String, String, String, String)> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -22582,6 +22722,7 @@ async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>
         rows.filter_map(|r| r.ok()).collect()
     };
     let mut out = Vec::new();
+    let mut fed_pas: std::collections::HashSet<String> = Default::default();
     let mut errors = Vec::new();
     let mut seen_keys: std::collections::HashSet<String> = Default::default();
     let mut live: std::collections::HashSet<String> = Default::default();
@@ -22593,11 +22734,13 @@ async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>
         for a in &accts {
             let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
             if kind != "credit" && kind != "depository" { continue; }
+            let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
+            // R-590: another computer feeds it (`fed` holds the Plaid account ids of the accounts this computer feeds).
+            if !fed.contains(a.get("account_id").and_then(|v| v.as_str()).unwrap_or("")) { continue; }
             let key = plaid_account_key(a);
             if !seen_keys.insert(key.clone()) { continue; }
             item_keys.push(key);
             let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
             let raw = if mask.is_empty() { name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", name, mask) };
             live.insert(raw.clone());
             let label = aliases.get(&raw).cloned().unwrap_or(raw);
@@ -22662,10 +22805,13 @@ async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>
                 for k in &item_keys { seen_keys.remove(k); }
                 errors.push(json!({ "institution": institution, "error": e }));
             }
-            None => out.extend(got),
+            None => {
+                out.extend(got);
+                fed_pas.extend(wanted.keys().cloned());
+            }
         }
     }
-    Ok((out, errors, live))
+    Ok((out, errors, live, fed_pas))
 }
 
 /// R-587: holds the bank's whole posted history against the ledger, both ways, and puts every difference on the
@@ -22673,14 +22819,53 @@ async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>
 /// is not the bank's, and a bank-feed row the bank no longer lists. Writes nothing to the ledger itself.
 #[tauri::command]
 pub async fn check_against_bank() -> Result<Value, String> {
+    check_against_bank_run(false).await
+}
+
+/// `import_missing`: after a takeover, import at once what the bank holds and the ledger lacks (each through
+/// Import's own guard, so nothing already on the books comes in twice). Payments posted while the other computer
+/// was silent were skipped by this computer's standby link, so this is the only way they arrive without a click.
+async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
     let _gate = plaid_gate().lock().await;
+    // R-590: never on a ledger that a restore is rewriting.
+    let (idle, restores_before) = crate::netsync::restore_marker();
+    if !idle {
+        return Err("Ecliptr is restoring from the server. Check against bank again in a few minutes.".into());
+    }
     if crate::netsync::is_enabled() {
         if let Err(e) = crate::netsync::pull_apply().await {
             tracing::warn!("check against bank: pull first failed, checking this device's copy: {}", e);
         }
     }
     let aliases = account_alias_map();
-    let (bank, errors, live) = bank_posted_history(&aliases).await?;
+    // R-590: only the accounts this computer feeds; the computer that feeds the others checks them.
+    let fed: std::collections::HashSet<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mine = crate::bank_feed::my_accounts(&conn);
+        // R-590: read only. A check never claims an account; only a bank pull that reached the server does.
+        let keys = crate::bank_feed::fed_keys_readonly(&conn, &mine);
+        mine.into_iter().filter(|a| keys.contains(&a.key)).map(|a| a.plaid_id).collect()
+    };
+    // R-590: the ledger is read BEFORE the bank, then folded onto the bank's labels once those are known, so one
+    // run judges one ledger. A restore that starts meanwhile voids the run.
+    let ledger_raw: Vec<crate::bank_declined::LedgerTxn> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let sql = format!(
+            "SELECT b.id, COALESCE(b.account_id,''), COALESCE(b.posted_at,''), COALESCE(b.amount,0), COALESCE(b.direction,''), \
+                    COALESCE(NULLIF(b.memo_raw,''), b.description, ''), COALESCE(b.source_format,''), {}, {}, \
+                    CASE WHEN json_valid(b.raw_json) THEN COALESCE(json_extract(b.raw_json,'$.pa'),'') ELSE '' END FROM bank_txn b",
+            crate::bank_flags::pending("b"), crate::bank_flags::retracted("b"));
+        let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| Ok(crate::bank_declined::LedgerTxn {
+            id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, direction: r.get(4)?, memo: r.get(5)?,
+            source: r.get(6)?, pending: r.get::<_, i64>(7)? != 0, retracted: r.get::<_, i64>(8)? != 0, pa: r.get(9)?,
+        })).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let (bank, errors, live, fed_pas) = bank_posted_history(&aliases, &fed).await?;
+    if crate::netsync::restore_marker() != (true, restores_before) {
+        return Err("Ecliptr restored from the server during the check. Check against bank again in a few minutes.".into());
+    }
     if bank.is_empty() && !errors.is_empty() {
         let why: Vec<String> = errors.iter().map(|e| format!("{}: {}",
             e.get("institution").and_then(|v| v.as_str()).unwrap_or("bank"),
@@ -22691,16 +22876,7 @@ pub async fn check_against_bank() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let bank_labels: std::collections::BTreeSet<String> = bank.iter().map(|b| b.account.clone()).collect();
     let ledger: Vec<crate::bank_declined::LedgerTxn> = {
-        let sql = format!(
-            "SELECT b.id, COALESCE(b.account_id,''), COALESCE(b.posted_at,''), COALESCE(b.amount,0), COALESCE(b.direction,''), \
-                    COALESCE(NULLIF(b.memo_raw,''), b.description, ''), COALESCE(b.source_format,''), {}, {} FROM bank_txn b",
-            crate::bank_flags::pending("b"), crate::bank_flags::retracted("b"));
-        let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = st.query_map([], |r| Ok(crate::bank_declined::LedgerTxn {
-            id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, direction: r.get(4)?, memo: r.get(5)?,
-            source: r.get(6)?, pending: r.get::<_, i64>(7)? != 0, retracted: r.get::<_, i64>(8)? != 0,
-        })).map_err(|e| e.to_string())?;
-        let mut v: Vec<_> = rows.filter_map(|r| r.ok()).collect();
+        let mut v = ledger_raw;
         // Fold each ledger label onto the bank's label for the same account (a rename, an alias).
         let mut fold: std::collections::HashMap<String, String> = Default::default();
         for l in v.iter_mut() {
@@ -22715,7 +22891,7 @@ pub async fn check_against_bank() -> Result<Value, String> {
     let removed: std::collections::HashSet<String> = bank.iter()
         .filter(|b| !held.contains(b.id.as_str()) && sync::is_tombstoned("bank_txn", &b.id))
         .map(|b| b.id.clone()).collect();
-    let (findings, tallies) = crate::bank_declined::compare(&bank, &ledger, &removed);
+    let (findings, tallies) = crate::bank_declined::compare(&bank, &ledger, &removed, &fed_pas);
 
     use crate::bank_declined::{Decline, Finding};
     let mut found: std::collections::HashSet<String> = Default::default();
@@ -22727,6 +22903,11 @@ pub async fn check_against_bank() -> Result<Value, String> {
                 let b = &bank[*bi];
                 let mut cols = b.cols.clone();
                 if *removed_before { cols.insert("removed_before".into(), json!(true)); }
+                // R-590: how many payments of this amount the bank holds on the account within 3 days, so Import
+                // never puts more on the books than the bank has.
+                let same = bank.iter().filter(|o| o.account == b.account && o.direction == b.direction
+                    && (o.amount - b.amount).abs() < 0.005 && crate::bank_declined::days_apart(&o.date, &b.date) <= 3).count();
+                cols.insert("bank_same".into(), json!(same));
                 Decline { txn_id: b.id.clone(), source: "plaid".into(), reason: crate::bank_declined::MISSING.into(),
                           account: b.account.clone(), date: b.date.clone(), amount: b.amount, direction: b.direction.clone(),
                           description: b.memo.clone(), matched: Vec::new(), bank: cols }
@@ -22779,12 +22960,31 @@ pub async fn check_against_bank() -> Result<Value, String> {
         crate::bank_declined::set_status(&conn, &id, status, "Check against bank", &now)?;
         closed += 1;
     }
+    // R-590: after a takeover, bring in what the other computer's silence left out.
+    let mut auto_imported = 0usize;
+    if import_missing {
+        let ids: Vec<String> = findings.iter().filter_map(|f| match f {
+            Finding::Missing { bank: bi, removed_before: false } => Some(crate::bank_declined::row_id(crate::bank_declined::MISSING, &bank[*bi].id)),
+            _ => None,
+        }).collect();
+        drop(conn);
+        for id in ids {
+            match resolve_bank_declined_inner(id.clone(), "import".into(), "Check against bank (takeover)".into()).await {
+                Ok(v) if v.get("ok").and_then(|x| x.as_bool()) == Some(true) => auto_imported += 1,
+                Ok(_) => {}
+                Err(e) => tracing::warn!("takeover import of {} failed: {}", id, e),
+            }
+        }
+    } else {
+        drop(conn);
+    }
+    let conn = pool().get().map_err(|e| e.to_string())?;
     let accounts: Vec<Value> = tallies.iter().map(|t| json!({
         "account": t.account, "posted": t.posted, "exact": t.exact, "not_exact": t.not_exact, "from_statement": t.from_statement,
     })).collect();
     let summary = json!({
         "checked_at": now, "accounts": accounts, "missing": missing, "differs": differs, "not_at_bank": not_at_bank,
-        "new_rows": new_rows, "closed": closed, "errors": errors,
+        "new_rows": new_rows, "closed": closed, "errors": errors, "auto_imported": auto_imported,
     });
     conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('bank_check', ?1)", [summary.to_string()])
         .map_err(|e| e.to_string())?;
@@ -22793,6 +22993,29 @@ pub async fn check_against_bank() -> Result<Value, String> {
     drop(conn);
     publish_balance_and_health();
     Ok(summary)
+}
+
+/// R-590: each account this computer's bank links serve, which computer feeds it, and when that one last pulled.
+#[tauri::command]
+pub async fn bank_feed_owners() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mine = crate::bank_feed::my_accounts(&conn);
+    Ok(json!({ "accounts": crate::bank_feed::report(&conn, &mine), "this_computer": crate::bank_feed::device_name() }))
+}
+
+/// R-590: make this computer the one that feeds an account. Admin or Financials edit.
+#[tauri::command]
+pub async fn set_bank_feed_here(key: String) -> Result<(), String> {
+    if !crate::employees::session_can_book_bank() {
+        return Err("You need Financials edit to change which computer feeds the bank.".into());
+    }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let label = crate::bank_feed::my_accounts(&conn).into_iter().find(|a| a.key == key).map(|a| a.label)
+        .ok_or("This computer has no bank link for that account.")?;
+    crate::bank_feed::take_over(&conn, &key, &label)?;
+    drop(conn);
+    crate::netsync::push_now();
+    Ok(())
 }
 
 /// R-587: once a day on its own, after a pull. A run that could read no bank is tried again an hour later, not on
@@ -28538,6 +28761,94 @@ mod txn_rule_retag_tests {
         assert!(!imported_in_pass("2026-09-09T23:59:59.999999999+00:00", Some(since)));
         assert!(!imported_in_pass("", Some(since)), "no import stamp is not this pass");
         assert!(!imported_in_pass("2026-09-10T15:04:06+00:00", None), "a manual Apply has no pass");
+    }
+}
+
+#[cfg(test)]
+mod r590_tests {
+    use super::*;
+    use crate::db::pool;
+
+    // A delete that arrives by sync from a device that could not see the booking keeps the row.
+    #[test]
+    fn a_synced_delete_never_removes_a_booked_bank_row() {
+        let _db = crate::db::init_test_store();
+        let c = pool().get().unwrap();
+        c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description) VALUES ('btpl_r590_booked','R590 Checking','2026-01-12',999,'in','TRANSFER')", []).unwrap();
+        c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description) VALUES ('btpl_r590_plain','R590 Checking','2026-01-12',5,'out','FEE')", []).unwrap();
+        c.execute("INSERT INTO bank_allocation (id, org_id, bank_txn_id, deal_flow_id, amount, role, created_at, updated_at) VALUES ('alloc_r590','org_default','btpl_r590_booked','df_r590',999,'buyer_payment','x','x')", []).unwrap();
+        drop(c);
+        crate::sync::apply_delete_now("bank_txn", "btpl_r590_booked").unwrap();
+        crate::sync::apply_delete_now("bank_txn", "btpl_r590_plain").unwrap();
+        let c = pool().get().unwrap();
+        let n = |id: &str| c.query_row("SELECT COUNT(*) FROM bank_txn WHERE id=?1", [id], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(n("btpl_r590_booked"), 1, "the booked row stays");
+        assert_eq!(n("btpl_r590_plain"), 0, "an unbooked row is deleted as before");
+        c.execute("DELETE FROM bank_allocation WHERE id='alloc_r590'", []).unwrap();
+        c.execute("DELETE FROM bank_txn WHERE id='btpl_r590_booked'", []).unwrap();
+    }
+
+    // The posted copy of a booked pending payment carries the same reference and must import, not be held.
+    #[test]
+    fn the_pending_row_a_posted_copy_replaces_is_not_a_collision() {
+        let _db = crate::db::init_test_store();
+        let c = pool().get().unwrap();
+        c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, raw_json) VALUES ('btpl_r590_pnd','R590 Checking','2026-01-06',5000,'in','BOOK TRANSFER TRN: 1234567890ES','{\"pnd\":true}')", []).unwrap();
+        c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, raw_json) VALUES ('btpl_r590_rtr','R590 Checking','2026-01-06',5000,'in','BOOK TRANSFER TRN: 1234567890ES','{\"rtr\":\"2026-10-07\"}')", []).unwrap();
+        c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, raw_json) VALUES ('btpl_r590_real','R590 Checking','2026-01-06',5000,'in','BOOK TRANSFER TRN: 1234567890ES','{}')", []).unwrap();
+        let none: std::collections::HashSet<String> = Default::default();
+        assert!(is_being_replaced(&c, "btpl_r590_pnd", None, &none, false), "a pending row, once the copy posted");
+        assert!(is_being_replaced(&c, "btpl_r590_rtr", None, &none, false), "a withdrawn row");
+        assert!(is_being_replaced(&c, "btpl_r590_real", Some("btpl_r590_real"), &none, false), "the row the bank names");
+        assert!(!is_being_replaced(&c, "btpl_r590_real", None, &none, false), "a posted booked row is a real collision");
+        assert!(!is_being_replaced(&c, "btpl_r590_pnd", None, &none, true), "a pending copy beside a pending row is not");
+        c.execute("DELETE FROM bank_txn WHERE id LIKE 'btpl_r590_%'", []).unwrap();
+    }
+
+    // Import never puts a payment on the books twice by accident; many identical charges at the bank can all import.
+    #[test]
+    fn import_stops_at_what_the_bank_holds() {
+        let _db = crate::db::init_test_store();
+        let c = pool().get().unwrap();
+        c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description) VALUES ('btpl_r590_mac','Sample Checking \u{00b7}\u{00b7}9999','2026-01-14',1500,'out','Online ACH Payment')", []).unwrap();
+        let mut bank = Map::new();
+        for (k, v) in [("account_id", json!("Sample Checking \u{00b7}\u{00b7}9999")), ("posted_at", json!("2026-01-14")),
+                       ("amount", json!(1500.0)), ("direction", json!("out")), ("description", json!("ONLINE ACH PAYMENT"))] {
+            bank.insert(k.into(), v);
+        }
+        let found = already_on_books(&c, &bank).expect("the Mac's row already is this payment");
+        assert_eq!(found["id"], "btpl_r590_mac");
+        bank.insert("bank_same".into(), json!(2));
+        assert!(already_on_books(&c, &bank).is_none(), "the bank holds two, the ledger one: the second imports");
+        bank.insert("account_id".into(), json!("Savings \u{00b7}\u{00b7}1111"));
+        bank.remove("bank_same");
+        assert!(already_on_books(&c, &bank).is_none(), "another account is not a twin");
+        c.execute("DELETE FROM bank_txn WHERE id='btpl_r590_mac'", []).unwrap();
+    }
+
+    // Two devices creating the flow for one invoice write the same row; asking again returns it, named.
+    #[test]
+    fn a_deal_flow_id_comes_from_its_invoice_and_asking_again_returns_it() {
+        assert_eq!(deal_flow_id_for("inv-123"), "df_inv-123");
+        let _db = crate::db::init_test_store();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let c = pool().get().unwrap();
+        c.execute("INSERT OR IGNORE INTO clients (id, name, created_at, updated_at) VALUES ('c_r590','Sample Client','2026-11-05','2026-11-05')", []).unwrap();
+        c.execute("INSERT INTO invoices (id, client_id, number, issue_date, due_date, line_items_json, subtotal, tax, total, status, created_at) \
+                   VALUES ('inv_r590','c_r590','INV-R590','2026-11-05','2026-11-20','[]',0,0,0,'draft','2026-11-05')", []).unwrap();
+        drop(c);
+        let first = create_deal_flow_internal("inv_r590".into(), None, Some("INV-R590".into())).unwrap();
+        assert_eq!(first, "df_inv_r590");
+        let again = rt.block_on(create_deal_flow("inv_r590".into(), Some("Backfilled from bank import".into()), Some("Sample deal".into()))).unwrap();
+        assert_eq!(again, first, "one flow per invoice");
+        let c = pool().get().unwrap();
+        let (n, name, notes): (i64, String, String) = c.query_row(
+            "SELECT (SELECT COUNT(*) FROM deal_flows WHERE invoice_id='inv_r590'), name, COALESCE(notes,'') FROM deal_flows WHERE id='df_inv_r590'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((n, name.as_str(), notes.as_str()), (1, "Sample deal", "Backfilled from bank import"));
+        c.execute("DELETE FROM deal_flows WHERE invoice_id='inv_r590'", []).unwrap();
+        c.execute("DELETE FROM invoices WHERE id='inv_r590'", []).unwrap();
+        c.execute("DELETE FROM clients WHERE id='c_r590'", []).unwrap();
     }
 }
 

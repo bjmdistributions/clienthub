@@ -46,6 +46,11 @@ struct HlcState {
     last_logical: u32,
 }
 
+/// R-590: this device's sync node id as hex, the stable name bank_feed uses for "this computer".
+pub(crate) fn node_id_hex() -> String {
+    node_id().iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 fn node_id() -> [u8; 8] {
     *NODE_ID.get_or_init(|| {
         let conn = pool().get().expect("db");
@@ -181,6 +186,16 @@ fn ensure_meta_tables() -> Result<()> {
             hlc_log INTEGER NOT NULL,
             hlc_node BLOB NOT NULL,
             PRIMARY KEY (tbl, row_id, col)
+        );
+        -- R-590: a bank row delete refused because work still pointed at it, retried after each pull until the
+        -- work is gone (the work's own delete can arrive later, from another device).
+        CREATE TABLE IF NOT EXISTS sync_deferred_deletes (
+            tbl TEXT NOT NULL,
+            row_id TEXT NOT NULL,
+            hlc_phys INTEGER NOT NULL,
+            hlc_log INTEGER NOT NULL,
+            hlc_node BLOB NOT NULL,
+            PRIMARY KEY (tbl, row_id)
         );
         CREATE TABLE IF NOT EXISTS tombstones (
             tbl TEXT NOT NULL,
@@ -607,7 +622,7 @@ pub fn is_tombstoned(table: &str, row_id: &str) -> bool {
 
 // ---------- Apply remote events ----------
 
-const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "supplier_price_history", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs", "notes", "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds", "client_credits", "rep_payouts", "intake_sources", "categories", "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts", "offers", "txn_rule", "lot_sheet", "lot_slot_state", "lot_build", "supplier_interactions", "shipments", "warehouse_items", "warehouse_layouts", "warehouse_pallets", "warehouse_loads", "warehouse_cases", "warehouse_load_outs", "warehouse_load_pallets", "warehouse_floors", "warehouse_buys", "warehouse_buy_orders", "freight_bookings", "logistics_payouts", "bills", "bill_payments", "manifests", "manifest_rules", "manifest_column_maps", "item_codes", "bank_statement", "bank_declined"];
+const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "supplier_price_history", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs", "notes", "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds", "client_credits", "rep_payouts", "intake_sources", "categories", "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts", "offers", "txn_rule", "lot_sheet", "lot_slot_state", "lot_build", "supplier_interactions", "shipments", "warehouse_items", "warehouse_layouts", "warehouse_pallets", "warehouse_loads", "warehouse_cases", "warehouse_load_outs", "warehouse_load_pallets", "warehouse_floors", "warehouse_buys", "warehouse_buy_orders", "freight_bookings", "logistics_payouts", "bills", "bill_payments", "manifests", "manifest_rules", "manifest_column_maps", "item_codes", "bank_statement", "bank_declined", "bank_feed"];
 
 /// True if peers will actually apply an event for `table`. Emitting a record for a
 /// table outside this set produces an event the apply side dead-letters (logged and
@@ -863,6 +878,18 @@ fn apply_delete(table: &str, row_id: &str, hlc: Hlc) -> Result<()> {
     // land AFTER a newer edit — without this guard it would hard-delete the row
     // the newer edit should have kept, silently and unrecoverably (the edit is
     // already in sync_meta and won't re-apply).
+    // R-590: a bank row is never deleted while a booking, refund, loan, purchase, expense or bill payment still
+    // points at it here. A device that removed it could not see that work (it lands by sync, in its own time),
+    // and deleting it left the booking pointing at nothing. Every intended removal deletes or moves that work
+    // first, and those events arrive before the row's own delete, so only a delete made blind is refused.
+    if table == "bank_txn" && bank_row_has_work(row_id) {
+        tracing::warn!("apply_delete: kept bank_txn/{} because work here still points at it; retried after each pull", row_id);
+        let conn = pool().get()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_deferred_deletes (tbl,row_id,hlc_phys,hlc_log,hlc_node) VALUES (?1,?2,?3,?4,?5)",
+            rusqlite::params![table, row_id, hlc.physical_ms as i64, hlc.logical, hlc.node_id.to_vec()])?;
+        return Ok(());
+    }
     let newest = max_row_clock(table, row_id)?;
     // Keep the tombstone record monotonic: never let a stale delete downgrade a
     // newer tombstone (which would weaken the upsert guard).
@@ -882,6 +909,42 @@ fn apply_delete(table: &str, row_id: &str, hlc: Hlc) -> Result<()> {
     let conn = pool().get()?;
     conn.execute(&format!("DELETE FROM {} WHERE {}=?1", table, primary_key(table)), [row_id])?;
     Ok(())
+}
+
+/// R-590: retry every refused bank row delete whose work has since gone (deleted or moved by sync). Called after
+/// each pull. A row that still has work stays deferred.
+pub fn retry_deferred_deletes() {
+    let p = pool();
+    let Ok(conn) = p.get() else { return };
+    let rows: Vec<(String, String, i64, u32, Vec<u8>)> = conn
+        .prepare("SELECT tbl,row_id,hlc_phys,hlc_log,hlc_node FROM sync_deferred_deletes")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    drop(conn);
+    for (tbl, row_id, phys, log, node) in rows {
+        if tbl == "bank_txn" && bank_row_has_work(&row_id) { continue; }
+        let mut n = [0u8; 8];
+        if node.len() == 8 { n.copy_from_slice(&node); }
+        let hlc = Hlc { physical_ms: phys as u64, logical: log, node_id: n };
+        // Dequeued only once applied: a delete that fails now is tried again after the next pull.
+        match apply_delete(&tbl, &row_id, hlc) {
+            Ok(()) => if let Ok(c) = p.get() { let _ = c.execute("DELETE FROM sync_deferred_deletes WHERE tbl=?1 AND row_id=?2", [&tbl, &row_id]); },
+            Err(e) => tracing::warn!("deferred delete {}/{} failed, tried again next pull: {}", tbl, row_id, e),
+        }
+    }
+}
+
+/// R-590: a remote delete applied now, for tests.
+#[cfg(test)]
+pub(crate) fn apply_delete_now(table: &str, row_id: &str) -> Result<()> { apply_delete(table, row_id, now_hlc()) }
+
+/// R-590: true when anything here still points at the bank row (fails safe: an error counts as work).
+fn bank_row_has_work(row_id: &str) -> bool {
+    let Ok(conn) = pool().get() else { return true };
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bank_allocation WHERE bank_txn_id=?1)              OR EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=?1)              OR EXISTS(SELECT 1 FROM loan WHERE bank_txn_id=?1)              OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=?1)              OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=?1)              OR EXISTS(SELECT 1 FROM bill_payments WHERE bank_txn_id=?1)",
+        [row_id], |r| r.get::<_, i64>(0)).map(|v| v != 0).unwrap_or(true)
 }
 
 pub(crate) fn json_to_sql(v: &serde_json::Value) -> Box<dyn rusqlite::ToSql> {
