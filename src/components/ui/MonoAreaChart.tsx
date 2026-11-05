@@ -184,9 +184,9 @@ export default function MonoAreaChart({
                   <stop offset="100%" style={{ stopColor: "var(--chart-line)", stopOpacity: 0 }} />
                 </linearGradient>
                 <linearGradient id={`${uid}s`} gradientUnits="userSpaceOnUse" x1={x - 150} y1="0" x2={x + 150} y2="0">
-                  <stop offset="0" stopColor="#FFFFFF" stopOpacity="0" />
-                  <stop offset="0.5" stopColor="#FFFFFF" stopOpacity="1" />
-                  <stop offset="1" stopColor="#FFFFFF" stopOpacity="0" />
+                  <stop offset="0" stopColor="white" stopOpacity="0" />
+                  <stop offset="0.5" stopColor="white" stopOpacity="1" />
+                  <stop offset="1" stopColor="white" stopOpacity="0" />
                 </linearGradient>
                 <mask id={`${uid}m`} maskUnits="userSpaceOnUse" x="-10" y="-20" width={W + 20} height={H + 40}>
                   <rect x="-10" y="-20" width={W + 20} height={H + 40} fill={`url(#${uid}s)`} />
