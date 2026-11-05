@@ -658,7 +658,8 @@ pub fn build_statement_bytes(
 
     // ----- Letterhead -----
     let layer = pen.layers[0].clone();
-    let logo = match company.logo_path.as_deref() {
+    let logo_local = crate::invoice::usable_logo(company.logo_path.as_deref());
+    let logo = match logo_local.as_deref() {
         Some(p) if std::path::Path::new(p).exists() => {
             render_logo(&layer, p, &tpl.logo_placement, tpl.logo_size_factor()).unwrap_or(None)
         }

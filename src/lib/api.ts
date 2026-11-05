@@ -5124,6 +5124,8 @@ export const api = {
   getEmailSettings: () => invoke<EmailSettings | null>("get_email_settings"),
   saveCompanyInfo: (info: CompanyInfo) => invoke<void>("save_company_info", { info }),
   getCompanyInfo: () => invoke<CompanyInfo | null>("get_company_info"),
+  /** R-591: this device's copy of the company logo (downloaded when another device picked it), or null. */
+  companyLogoFile: () => invoke<string | null>("company_logo_file"),
   // Invoice branding template + sample render (backend opens the PDF and returns its path).
   getInvoiceTemplate: () => invoke<InvoiceTemplate>("get_invoice_template"),
   saveInvoiceTemplate: (template: InvoiceTemplate) => invoke<void>("save_invoice_template", { template }),

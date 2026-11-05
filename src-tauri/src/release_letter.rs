@@ -177,7 +177,8 @@ pub fn build_letter_bytes(
     let content_w = CONTENT_R - MARGIN_L;
 
     // ----- Letterhead: logo, or the company name when no logo is configured -----
-    let logo = match company.logo_path.as_deref() {
+    let logo_local = crate::invoice::usable_logo(company.logo_path.as_deref());
+    let logo = match logo_local.as_deref() {
         Some(p) if std::path::Path::new(p).exists() => {
             render_logo(&layer, p, &tpl.logo_placement, tpl.logo_size_factor()).unwrap_or(None)
         }

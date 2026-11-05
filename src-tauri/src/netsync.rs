@@ -2243,6 +2243,31 @@ pub async fn upload_company_logo() -> Result<(), String> {
     Ok(())
 }
 
+/// R-591: bring the org's logo down to this device, so a logo picked on another computer shows here too. The server
+/// keeps it at `media/logos/<org>.png` (what `upload_company_logo` posts to), served at `/media/logos/<org>.png`. Asks
+/// with If-Modified-Since from the local copy, so an unchanged logo costs a 304, and only a real PNG or JPEG is written.
+pub async fn download_company_logo(target: &std::path::Path) -> Result<(), String> {
+    let cfg = config().ok_or("not signed in")?;
+    let org = state_get("netsync_org").ok_or("no org yet")?;
+    let org: String = org.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+    let mut req = http().get(format!("{}/media/logos/{}.png", cfg.url.trim_end_matches('/'), org));
+    if let Some(m) = std::fs::metadata(target).ok().and_then(|m| m.modified().ok()) {
+        let at: chrono::DateTime<chrono::Utc> = m.into();
+        req = req.header("if-modified-since", at.format("%a, %d %b %Y %H:%M:%S GMT").to_string());
+    }
+    let resp = req.send().await.map_err(|_| "couldn't reach the server".to_string())?;
+    if resp.status() == reqwest::StatusCode::NOT_MODIFIED { return Ok(()); }
+    if !resp.status().is_success() { return Err(format!("server returned {}", resp.status())); }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let is_png = bytes.len() >= 8 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n";
+    let is_jpeg = bytes.len() >= 3 && &bytes[0..3] == b"\xFF\xD8\xFF";
+    if !is_png && !is_jpeg { return Err("not an image".into()); }
+    let tmp = target.with_extension("png.part");
+    std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, target).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Upload ONE inventory photo's bytes to the server so the hosted storefront can display
 /// it from any device. Photo files don't travel over the DB sync oplog (only the
 /// photos_json path text does), so a photo added on a device without a media bridge to the

@@ -2372,6 +2372,7 @@ function CompanyTab() {
   const save = async () => {
     await api.saveCompanyInfo(info);
     await api.setOrganizationName(orgName);
+    window.dispatchEvent(new Event("company-info-change")); // R-591: the sidebar shows the name and logo
   };
   useAutosave([info, orgName], save, ready);
 

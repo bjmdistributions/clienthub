@@ -201,7 +201,8 @@ pub fn build_po_bytes(
     let mut d = Doc { doc, layer, regular, bold, y: PAGE_H - 26.0, company, tpl };
 
     // ----- Letterhead -----
-    let logo = match company.logo_path.as_deref() {
+    let logo_local = crate::invoice::usable_logo(company.logo_path.as_deref());
+    let logo = match logo_local.as_deref() {
         Some(p) if std::path::Path::new(p).exists() => {
             render_logo(&d.layer, p, &tpl.logo_placement, tpl.logo_size_factor()).unwrap_or(None)
         }

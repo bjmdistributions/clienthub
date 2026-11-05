@@ -736,6 +736,7 @@ fn main() {
             netsync::admin_broadcast_test,
             netsync::netsync_whoami,
             netsync::upload_company_logo,
+            company_logo_file,
             // Google Sheet clone (read-and-rebuild view-only supplier load sheets)
             sheet_clone::clone_google_sheet,
             // Sticky notes

@@ -649,7 +649,8 @@ pub fn build_pdf_bytes(
 
     // ----- Page 1: full header -----
 
-    let logo_rendered = if let Some(logo_path) = company.logo_path.as_deref() {
+    let logo_local = usable_logo(company.logo_path.as_deref());
+    let logo_rendered = if let Some(logo_path) = logo_local.as_deref() {
         if std::path::Path::new(logo_path).exists() {
             render_logo(&layer, logo_path, &tpl.logo_placement, tpl.logo_size_factor()).unwrap_or(None)
         } else {
@@ -1073,6 +1074,16 @@ fn logo_x_for(placement: &str, w: f32) -> f32 {
         _ => MARGIN_L, // left / unknown
     };
     raw.min(LOGO_SAFE_R - w).max(MARGIN_L)
+}
+
+/// R-591: the logo file to draw. `company_info` is shared across devices, so its path may be another computer's or
+/// the server's; then this device's own copy (`company_logo.png`, written on save or downloaded by `company_logo_file`)
+/// is used instead. None when no logo is set or none is on this device.
+pub fn usable_logo(path: Option<&str>) -> Option<String> {
+    let p = path?;
+    if std::path::Path::new(p).exists() { return Some(p.to_string()); }
+    let local = crate::db::app_data_dir().join("company_logo.png");
+    local.exists().then(|| local.to_string_lossy().to_string())
 }
 
 /// Draw the logo scaled to a `size_factor`-scaled max box and positioned by

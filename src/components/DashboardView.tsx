@@ -210,11 +210,15 @@ function RangeMenu({ range, today, onPick }: { range: DashRange; today: Date; on
 
 const WEEKS = 31;
 const HEAT_DAYS = WEEKS * 7;
-const HEAT_LVL = ["var(--heat-0)", "var(--heat-1)", "var(--heat-2)", "var(--heat-3)"];
+const HEAT_LVL = ["var(--heat-0)", "var(--heat-1)", "var(--heat-2)", "var(--heat-2b)", "var(--heat-3)"];
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-interface HeatCell { d: Date; n: number; profit: number }
+// R-592: a day's activity is the deals that closed on it plus the invoices sent on it. `n` is that sum (-1 for days
+// still to come); the shade grades it against the busiest day, so a quiet week and a busy one look different.
+interface HeatCell { d: Date; n: number; closed: number; sent: number; profit: number }
+const heatLevel = (n: number, max: number) => (n <= 0 || max <= 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((4 * n) / max))));
 
-const HeatGrid = memo(function HeatGrid({ cells, onHover }: { cells: HeatCell[]; onHover: (i: number | null) => void }) {
+const HeatGrid = memo(function HeatGrid({ cells, max, onHover }: { cells: HeatCell[]; max: number; onHover: (i: number | null) => void }) {
   const months = Array.from({ length: WEEKS }, (_, w) => {
     const d = cells[w * 7].d, p = w ? cells[(w - 1) * 7].d : null;
     return !p || p.getMonth() !== d.getMonth() ? d.toLocaleDateString("en-US", { month: "short" }) : "";
@@ -233,7 +237,7 @@ const HeatGrid = memo(function HeatGrid({ cells, onHover }: { cells: HeatCell[];
           {cells.map((c, i) => (
             <span key={i} data-i={i} onMouseEnter={() => onHover(i)}
               className="aspect-square rounded-[3px] transition-transform duration-[150ms] hover:scale-125"
-              style={{ background: c.n < 0 ? "transparent" : HEAT_LVL[Math.min(3, c.n)] }} />
+              style={{ background: c.n < 0 ? "transparent" : HEAT_LVL[heatLevel(c.n, max)], transition: "background-color 300ms ease, transform 150ms" }} />
           ))}
         </div>
       </div>
@@ -500,24 +504,46 @@ export default function DashboardView({ onNavigate, me }: Props) {
 
   // ── deals closed ──
   const heat = useMemo(() => {
-    const by = new Map<string, { n: number; profit: number }>();
-    (heatDeals?.deals ?? []).forEach((d) => {
-      const x = by.get(d.completed_on) ?? { n: 0, profit: 0 };
-      x.n += 1; x.profit += d.net_profit; by.set(d.completed_on, x);
+    const by = new Map<string, { closed: number; sent: number; profit: number }>();
+    const at = (day: string) => { let x = by.get(day); if (!x) { x = { closed: 0, sent: 0, profit: 0 }; by.set(day, x); } return x; };
+    (heatDeals?.deals ?? []).forEach((d) => { const x = at(d.completed_on); x.closed += 1; x.profit += d.net_profit; });
+    // An invoice counts on the day it was emailed, or the day it is dated when it was sent another way. Voided ones never count.
+    const from = localDay(heatStart);
+    allInvoices.forEach((i) => {
+      if (i.voided) return;
+      const day = (i.sent_at || i.issue_date || "").slice(0, 10);
+      if (day >= from) at(day).sent += 1;
     });
     const cells: HeatCell[] = Array.from({ length: HEAT_DAYS }, (_, i) => {
       const d = addDays(heatStart, i), x = by.get(localDay(d));
-      return { d, n: d > today ? -1 : x?.n ?? 0, profit: x?.profit ?? 0 };
+      const closed = x?.closed ?? 0, sent = x?.sent ?? 0;
+      return { d, n: d > today ? -1 : closed + sent, closed, sent, profit: x?.profit ?? 0 };
     });
-    const closed = cells.reduce((s, c) => s + Math.max(0, c.n), 0);
-    const peak = cells.reduce<HeatCell | null>((b, c) => (c.n > (b?.n ?? 0) ? c : b), null);
-    return { cells, closed, peak };
-  }, [heatDeals, heatStart, today]);
+    const past = cells.filter((c) => c.n >= 0);
+    const closed = past.reduce((s, c) => s + c.closed, 0);
+    const sent = past.reduce((s, c) => s + c.sent, 0);
+    const max = past.reduce((m, c) => Math.max(m, c.n), 0);
+    const peak = past.reduce<HeatCell | null>((b, c) => (c.n > (b?.n ?? 0) ? c : b), null);
+    // The best days: the average activity on each weekday across the whole range, from the counts alone.
+    const week = WEEKDAYS.map((name, wd) => {
+      const days = past.filter((c) => c.d.getDay() === wd);
+      const avg = (k: "closed" | "sent") => (days.length ? days.reduce((s, c) => s + c[k], 0) / days.length : 0);
+      return { name, closed: avg("closed"), sent: avg("sent"), total: avg("closed") + avg("sent") };
+    });
+    const weekMax = Math.max(0, ...week.map((w) => w.total));
+    const ranked = [...week].sort((a, b) => b.total - a.total);
+    return { cells, closed, sent, max, peak, week, weekMax, best: weekMax > 0 ? ranked[0] : null, second: ranked[1]?.total > 0 ? ranked[1] : null };
+  }, [heatDeals, allInvoices, heatStart, today]);
   const heatChange = heatBefore ? (heat.closed - heatBefore) / heatBefore : null;
   const hc = heatHover !== null ? heat.cells[heatHover] : null;
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   const heatLine = hc
-    ? `${long(hc.d)}${hc.n > 0 ? `: ${hc.n} ${hc.n === 1 ? "deal" : "deals"}, ${fmtAmount(hc.profit)} profit` : ": none closed"}`
-    : "Point at a day to see what closed";
+    ? `${long(hc.d)}: ${hc.n > 0
+        ? [hc.closed > 0 ? `${plural(hc.closed, "deal", "deals")} closed, ${fmtAmount(hc.profit)} profit` : "",
+           hc.sent > 0 ? `${plural(hc.sent, "invoice", "invoices")} sent` : ""].filter(Boolean).join(", ")
+        : hc.n < 0 ? "still to come" : "nothing closed or sent"}`
+    : "Point at a day to see what closed and what was sent";
+  const avg1 = (v: number) => (Math.round(v * 10) / 10).toLocaleString();
 
   // ── money in, linked ──
   const linkedIn = overview?.allocated_actuals?.buyer_in ?? 0;
@@ -762,13 +788,21 @@ export default function DashboardView({ onNavigate, me }: Props) {
               <section className="px-4 pt-5 pb-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <div className="ui-fig">{heatDeals ? heat.closed.toLocaleString() : " "}</div>
-                    <div className="ui-label mt-0.5">Deals closed since {heatStart.toLocaleDateString("en-US", { month: "long" })}</div>
+                    <div className="flex items-end gap-6">
+                      <div>
+                        <div className="ui-fig">{heatDeals ? heat.closed.toLocaleString() : " "}</div>
+                        <div className="ui-label mt-0.5">Deals closed since {heatStart.toLocaleDateString("en-US", { month: "long" })}</div>
+                      </div>
+                      <div>
+                        <div className="ui-fig">{heatDeals ? heat.sent.toLocaleString() : " "}</div>
+                        <div className="ui-label mt-0.5">Invoices sent</div>
+                      </div>
+                    </div>
                   </div>
                   {heatDeals && (
                     <div className="text-right">
                       {heat.peak && heat.peak.n > 0 && (
-                        <div className="ui-note">Peak <span className="font-medium text-ink">{heat.peak.n}</span> on <span className="font-medium text-ink">{short(heat.peak.d)}</span></div>
+                        <div className="ui-note">Busiest day <span className="font-medium text-ink">{short(heat.peak.d)}</span>, {plural(heat.peak.closed, "deal", "deals")} and {plural(heat.peak.sent, "invoice", "invoices")}</div>
                       )}
                       {heatChange !== null && (
                         <div className="mt-1">
@@ -779,15 +813,37 @@ export default function DashboardView({ onNavigate, me }: Props) {
                     </div>
                   )}
                 </div>
-                <HeatGrid cells={heat.cells} onHover={setHeatHover} />
+                <HeatGrid cells={heat.cells} max={heat.max} onHover={setHeatHover} />
                 <div className="flex flex-wrap items-center justify-between gap-2.5 mt-3 text-[12px] text-muted">
                   <span>{heatLine}{heatDeals?.capped ? ". Showing the most recent 300 deals." : ""}</span>
                   <span className="flex items-center gap-1">
-                    None
+                    Quiet
                     {HEAT_LVL.map((c, i) => <span key={i} className="w-2.5 h-2.5 rounded-[3px]" style={{ background: c }} />)}
-                    3 or more
+                    Busiest
                   </span>
                 </div>
+                {/* R-592: which days are best for business, as the average deals closed and invoices sent on each weekday. */}
+                {heatDeals && heat.best && (
+                  <div className="mt-5">
+                    <p className="text-[13px] text-ink-2">
+                      {heat.best.name}s are your busiest day: on average {avg1(heat.best.closed)} {heat.best.closed === 1 ? "deal" : "deals"} closed
+                      and {avg1(heat.best.sent)} {heat.best.sent === 1 ? "invoice" : "invoices"} sent.
+                      {heat.second ? ` ${heat.second.name}s come next.` : ""}
+                    </p>
+                    <div className="grid grid-cols-7 gap-2 mt-3">
+                      {heat.week.map((w) => (
+                        <div key={w.name} className="min-w-0" title={`${w.name}: on average ${avg1(w.closed)} closed, ${avg1(w.sent)} sent`}>
+                          <div className="h-10 flex items-end">
+                            <div className="w-full rounded-[3px] origin-bottom transition-transform duration-500"
+                              style={{ height: "100%", transform: `scaleY(${heat.weekMax ? Math.max(0.04, w.total / heat.weekMax) : 0.04})`,
+                                background: w.name === heat.best?.name ? "rgb(var(--c-ink))" : "var(--heat-1)" }} />
+                          </div>
+                          <div className={`mt-1.5 text-[12px] ${w.name === heat.best?.name ? "text-ink font-medium" : "text-muted"}`}>{w.name.slice(0, 3)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </section>
 
               <Divider />

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useState, useRef, lazy, Suspense } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   Users, House, Repeat, Package, Truck, DollarSign, ChartColumn, Ellipsis, SlidersHorizontal,
   RefreshCw, LogOut,
@@ -571,8 +572,18 @@ export default function App() {
   // an urgent load), and a calm grey when everything on it can wait.
   const bellUrgent = logisticsOnly ? notices.logisticsUrgent : bellUrgentOf(notices.team);
 
+  // R-591: the company logo sits beside the name. Re-read when Settings saves the company and when the window comes
+  // back, so a logo picked on another computer shows up here (the server answers 304 when nothing changed).
+  const [orgLogo, setOrgLogo] = useState<string | null>(null);
   useEffect(() => {
-    api.getOrganizationName().then((n) => setOrgName((n || "").trim())).catch(() => {});
+    const load = () => {
+      api.getOrganizationName().then((n) => setOrgName((n || "").trim())).catch(() => {});
+      api.companyLogoFile().then((p) => setOrgLogo(p ? `${convertFileSrc(p)}?t=${Date.now()}` : null)).catch(() => {});
+    };
+    load();
+    window.addEventListener("company-info-change", load);
+    window.addEventListener("focus", load);
+    return () => { window.removeEventListener("company-info-change", load); window.removeEventListener("focus", load); };
   }, []);
 
   // Auth is the gate — resolved independent of onboarding. Accounts are created
@@ -1208,9 +1219,14 @@ export default function App() {
             </div>
             {orgName ? (
               <div className="flex items-center gap-2.5 h-12 px-[11px] mt-1 mb-5 rounded-lg border border-line bg-surface-2 flex-shrink-0" title={orgName}>
-                <span className="w-6 h-6 rounded-full grid place-items-center text-[11px] font-medium bg-ink text-surface flex-shrink-0">
-                  {orgName.trim().charAt(0).toUpperCase()}
-                </span>
+                {orgLogo ? (
+                  <img src={orgLogo} alt="" className="w-6 h-6 rounded-md object-contain flex-shrink-0"
+                    onError={() => setOrgLogo(null)} />
+                ) : (
+                  <span className="w-6 h-6 rounded-full grid place-items-center text-[11px] font-medium bg-ink text-surface flex-shrink-0">
+                    {orgName.trim().charAt(0).toUpperCase()}
+                  </span>
+                )}
                 <span className="flex-1 min-w-0 truncate text-[14px] font-medium">{orgName}</span>
               </div>
             ) : <div className="h-4 flex-shrink-0" />}

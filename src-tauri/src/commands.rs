@@ -11731,6 +11731,22 @@ pub async fn get_company_info() -> Result<Option<crate::invoice::CompanyInfo>, S
     Ok(json.and_then(|s| serde_json::from_str(&s).ok()))
 }
 
+/// R-591: the company logo as a file on this device, for the sidebar. When another device picked it, the synced
+/// `company_info` only carries that device's path, so the bytes come down from the server first (see
+/// `netsync::download_company_logo`). None when no logo is set.
+#[tauri::command]
+pub async fn company_logo_file() -> Result<Option<String>, String> {
+    let has_logo = get_company_info().await?.and_then(|i| i.logo_path).is_some();
+    if !has_logo { return Ok(None); }
+    let target = crate::db::app_data_dir().join("company_logo.png");
+    if crate::netsync::is_enabled() {
+        if let Err(e) = crate::netsync::download_company_logo(&target).await {
+            tracing::debug!("company logo not fetched: {e}");
+        }
+    }
+    Ok(target.exists().then(|| target.to_string_lossy().to_string()))
+}
+
 #[tauri::command]
 pub async fn get_onboarding_status() -> Result<bool, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
