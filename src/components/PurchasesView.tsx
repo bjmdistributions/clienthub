@@ -10,7 +10,7 @@ import { OPEN_BUY_KEY } from "../lib/buyLoads";
 import { canSeePayments } from "../lib/dealPayments";
 import { gotWord, dayWord, STATE_TONE, STATE_WORD } from "../lib/purchases";
 import { useSessionMe } from "../lib/useSessionMe";
-import { Button, PageActions } from "./ui";
+import { Button, PageHeader } from "./ui";
 import PurchaseForm from "./PurchaseForm";
 import PurchasePanel from "./PurchasePanel";
 import StatusPill from "./StatusPill";
@@ -64,13 +64,12 @@ export default function PurchasesView() {
   const shown = (rows ?? []).filter((p) => words.every((w) => `${p.name} ${p.supplier_name} ${p.buy.invoice_no}`.toLowerCase().includes(w)));
   return (
     <div className="space-y-4">
-      <PageActions>
-        <Button variant="ink" icon={<Plus size={14} />} onClick={() => setCreating(true)}>New order</Button>
-      </PageActions>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <p className="text-[13px] text-muted max-w-[640px]">
-          Stock you bought for your own warehouse. Type in the supplier's invoice, tie the payments, send the shipping to logistics, and see what you spent and what is owed back.
-        </p>
+      <PageHeader
+        title="Purchases"
+        subtitle="Stock you bought for your own warehouse. Type in the supplier's invoice, tie the payments, send the shipping to logistics, and see what you spent and what is owed back."
+        actions={<Button variant="ink" icon={<Plus size={14} />} onClick={() => setCreating(true)}>New order</Button>}
+      />
+      <div className="flex items-center justify-end gap-3 flex-wrap">
         <div className="relative w-full sm:w-72">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by supplier or invoice" aria-label="Search the orders" className={`${WH_INPUT} pl-8`} style={WH_INPUT_BG} />

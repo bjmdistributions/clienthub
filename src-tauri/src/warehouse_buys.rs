@@ -713,8 +713,9 @@ fn wanted_lines(b: &BuyRow, p: &core::OrderPlan) -> Vec<SupplierPayment> {
     // landed cost a unit and the buyer's own shipping is never touched. Both legs' bank rows book as
     // `supplier_payment` on the deal, so the line and its links agree. Paid follows the supplier: the carrier
     // is followed on its truck.
-    // R-596: the goods net of the refund counted (owed or received), so an owed refund lowers the cost now.
-    let landed = core::r2(p.goods_net + p.ship);
+    // R-596: the goods less the refund still to come (owed, not yet booked), so an owed refund lowers the cost
+    // now; a refund already booked is a `refund_in` on the deal, which the deal takes off itself.
+    let landed = core::r2(p.line_goods + p.ship);
     if landed > core::CENT {
         v.push(line(core::goods_line_id(&p.id), landed, p.count, p.goods_paid, &p.goods_paid_at, "supplier", (&b.supplier_name, supplier_id), core::goods_note(&b.name)));
     }
@@ -1242,11 +1243,13 @@ fn po_fields(req: &BuyInput, cur: Option<&BuyRow>) -> Result<(Map<String, Value>
             cols.insert("lines_json".into(), json!(serde_json::to_string(&parsed).map_err(|e| e.to_string())?));
         }
         None => {
+            // Review R-596 #3: stored lines made the total and the count when they were sent; a later edit never
+            // works them out again (a payment may have raised the total since), and while lines stand a typed
+            // total or count that differs is refused rather than quietly dropped.
             if let Some(c) = cur.filter(|c| !c.lines_json.is_empty()) {
-                if let Ok(l) = core::parse_lines(&c.lines_json) {
-                    if !l.is_empty() {
-                        totals = Some(core::lines_totals(&l));
-                    }
+                let differs = |sent: Option<f64>, have: f64| sent.map_or(false, |x| (x - have).abs() > core::CENT);
+                if differs(req.goods_total, c.goods) || differs(req.units_bought, c.units) {
+                    return Err("This order's total comes from its lines. Change the lines instead.".into());
                 }
             }
         }
@@ -1436,11 +1439,12 @@ pub async fn create_warehouse_buy(input: BuyInput) -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn update_warehouse_buy(id: String, input: BuyInput) -> Result<Value, String> {
-    let (b, live_trucks) = {
+    let (b, live_trucks, sold) = {
         let c = conn()?;
         let b = buy(&c, &id)?;
         let live = trucks_of(&c, &id).iter().filter(|t| t.truck_in().live()).count();
-        (b, live)
+        let sold = orders(&c, &id).iter().filter(|o| !o.undone).fold(0.0_f64, |a, o| a + o.count.max(0.0));
+        (b, live, sold)
     };
     let mut units = input.units_bought.unwrap_or(b.units);
     let mut goods = core::r2(input.goods_total.unwrap_or(b.goods));
@@ -1449,6 +1453,15 @@ pub async fn update_warehouse_buy(id: String, input: BuyInput) -> Result<Value, 
     let (extra, from_lines) = po_fields(&input, Some(&b))?;
     if let Some((u, g)) = from_lines {
         (units, goods) = (u, g);
+    }
+    // Review R-596 #2: never count in (or buy) fewer than are already sold from it, or the later sales lose their cost.
+    let rx = match extra.get("units_received") {
+        Some(v) => v.as_f64(),
+        None => b.units_received,
+    };
+    let (basis, was) = (rx.unwrap_or(units), b.units_received.unwrap_or(b.units));
+    if basis + core::CENT < sold && basis + core::CENT < was {
+        return Err(format!("{} are already sold from this order. Put an order back first.", sold as i64));
     }
     // R-551: a buy with no stock yet may leave how many were bought at 0, and once it has stock it must be more.
     check_money(units, goods, ship, b.item_id.is_empty() && b.load_id.is_empty())?;
@@ -1562,6 +1575,9 @@ pub async fn archive_warehouse_buy(id: String) -> Result<(), String> {
         }
         if w.ords.iter().any(|o| !o.undone) || !w.owned.is_empty() {
             return Err("This buy has orders or a payment on it. Put the orders back and take the payments off first.".into());
+        }
+        if !w.b.from_deal_id.is_empty() {
+            return Err("This order was moved from a deal. Undo the move first, so the deal comes back.".into());
         }
     }
     let t = now();

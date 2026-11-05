@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useState, useRef, lazy, Suspense }
 import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
-  Users, House, Repeat, Package, Truck, DollarSign, ChartColumn, Ellipsis, SlidersHorizontal,
+  Users, House, Repeat, Package, ClipboardList, Truck, DollarSign, ChartColumn, Ellipsis, SlidersHorizontal,
   RefreshCw, LogOut,
   PanelLeftClose, PanelLeftOpen,
   Sun, Moon,
@@ -172,6 +172,7 @@ const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   deals: Repeat,
   clients: Users,
   inventory: Package,
+  purchases: ClipboardList,
   logistics: Truck,
   money: DollarSign,
   insights: ChartColumn,

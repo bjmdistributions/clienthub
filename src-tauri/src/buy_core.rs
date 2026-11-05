@@ -225,6 +225,10 @@ pub struct OrderPlan {
     /// R-596: its share of the refund received, booked as `refund_in` on its deal.
     pub refund: f64,
     pub refund_slices: Vec<Slice>,
+    /// R-596: what its deal's typed landed line carries for the goods: the gross share less only the refund
+    /// still to come, because the deal itself takes off the `refund_in` booked on it. Line less those bookings
+    /// is always `goods_net`, so a refund is never taken off twice.
+    pub line_goods: f64,
     pub goods_slices: Vec<Slice>,
     pub ship_slices: Vec<Slice>,
     pub goods_paid: bool,
@@ -419,6 +423,7 @@ pub fn plan_with(t: &Totals, orders: &[OrderIn], rows: &[RowIn], rc: &Receipt) -
             goods_net: if o.goods_typed.is_some() { g } else { r2((g - rcs).max(0.0)) },
             refund: if o.own_cost { 0.0 } else { rr },
             refund_slices: Vec::new(),
+            line_goods: 0.0,
             goods_slices: Vec::new(),
             ship_slices: Vec::new(),
             goods_paid: false,
@@ -457,6 +462,8 @@ pub fn plan_with(t: &Totals, orders: &[OrderIn], rows: &[RowIn], rc: &Receipt) -
                 refund_taken += total(p.refund_slices.iter().map(|x| x.amount));
             }
         }
+        let booked = total(p.refund_slices.iter().map(|x| x.amount));
+        p.line_goods = if o.goods_typed.is_some() { g } else { r2((g - (rcs - booked).max(0.0)).max(0.0)) };
         out.push(p);
     }
     let mut held = Vec::new();
@@ -1114,6 +1121,9 @@ mod tests {
         assert_eq!((p.refund_received, p.refund_counted, p.refund_left), (50.0, 200.0, 150.0));
         assert!(p.cost_projected, "still owed until it all lands");
         assert_eq!(p.orders[0].refund_slices, vec![Slice { txn_id: "rf".into(), amount: 25.0 }]);
+        // Review R-596 #1: the line carries 500 less the 75 still to come; the deal takes the 25 booked off
+        // itself, so its goods are 400 (the net), never 375.
+        assert_eq!((p.orders[0].line_goods, p.orders[0].goods_net), (425.0, 400.0));
         assert!(p.held.contains(&Held { txn_id: "rf".into(), kind: Kind::Refund, amount: 25.0 }));
         assert_eq!(p.spent, 950.0, "1000 paid less the 50 that came back");
     }
