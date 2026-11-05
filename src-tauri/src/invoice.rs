@@ -612,8 +612,67 @@ pub fn build_pdf_bytes(
     let font_regular = doc.add_builtin_font(BuiltinFont::Helvetica).context("font")?;
     let font_bold = doc.add_builtin_font(BuiltinFont::HelveticaBold).context("font_bold")?;
 
+    // ----- Page 1: full header -----
+    // Drawn before pagination (R-599): the company block under a logo can reach below the
+    // standard divider line, so the divider and everything under it moves down to clear it.
+
+    let logo_local = usable_logo(company.logo_path.as_deref());
+    let logo_rendered = if let Some(logo_path) = logo_local.as_deref() {
+        if std::path::Path::new(logo_path).exists() {
+            render_logo(&layer, logo_path, &tpl.logo_placement, tpl.logo_size_factor()).unwrap_or(None)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Company text block: left-aligned under the logo (so it follows placement),
+    // or at the left margin when there's no logo. It stacks below the logo band,
+    // so it never shares the title's y-band regardless of placement.
+    let (text_x, text_y_top) = match &logo_rendered {
+        Some(lr) => (lr.x, lr.bottom_y - 5.0),
+        None => (MARGIN_L, LOGO_TOP),
+    };
+
+    // Build the header text lines honoring the field toggles, so hidden rows leave
+    // no gap. When there's no logo the company NAME is the large 18pt heading;
+    // with a logo it's an optional 11pt line (show_company_name).
+    let mut y = text_y_top;
+    let mut last_y = text_y_top;
+    if logo_rendered.is_none() {
+        // No logo → the name is always the heading (independent of show_company_name,
+        // matching prior behavior where a nameless header would be blank).
+        layer.use_text(&company.name, 18.0, Mm(text_x), Mm(y), &font_bold);
+        last_y = y;
+        y -= 7.0;
+    } else if tpl.show_company_name {
+        layer.use_text(&company.name, 11.0, Mm(text_x), Mm(y), &font_bold);
+        last_y = y;
+        y -= 4.0;
+    }
+    if tpl.show_address && !company.address.trim().is_empty() {
+        layer.use_text(&company.address, 9.0, Mm(text_x), Mm(y), &font_regular);
+        last_y = y;
+        y -= 4.0;
+    }
+    if tpl.show_email && !company.email.trim().is_empty() {
+        layer.use_text(&company.email, 9.0, Mm(text_x), Mm(y), &font_regular);
+        last_y = y;
+        y -= 4.0;
+    }
+    if tpl.show_phone {
+        if let Some(phone) = company.phone.as_deref().filter(|p| !p.trim().is_empty()) {
+            layer.use_text(phone, 9.0, Mm(text_x), Mm(y), &font_regular);
+            last_y = y;
+            y -= 4.0;
+        }
+    }
+    let _ = y;
+
     // ----- Pagination: how many items fit on page 1? -----
-    let divider_y = 238.0;
+    // 238 with no logo (unchanged); lower when the company block under a logo needs the room.
+    let divider_y = 238.0_f32.min(last_y - 6.0);
     let bill_top = divider_y - 8.0;
     let table_top = bill_top - 35.0;
     let first_row_y = table_top - 12.0;
@@ -647,55 +706,6 @@ pub fn build_pdf_bytes(
         }
     }
 
-    // ----- Page 1: full header -----
-
-    let logo_local = usable_logo(company.logo_path.as_deref());
-    let logo_rendered = if let Some(logo_path) = logo_local.as_deref() {
-        if std::path::Path::new(logo_path).exists() {
-            render_logo(&layer, logo_path, &tpl.logo_placement, tpl.logo_size_factor()).unwrap_or(None)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // Company text block: left-aligned under the logo (so it follows placement),
-    // or at the left margin when there's no logo. It stacks below the logo band,
-    // so it never shares the title's y-band regardless of placement.
-    let (text_x, text_y_top) = match &logo_rendered {
-        Some(lr) => (lr.x, lr.bottom_y - 5.0),
-        None => (MARGIN_L, LOGO_TOP),
-    };
-
-    // Build the header text lines honoring the field toggles, so hidden rows leave
-    // no gap. When there's no logo the company NAME is the large 18pt heading;
-    // with a logo it's an optional 11pt line (show_company_name).
-    let mut y = text_y_top;
-    if logo_rendered.is_none() {
-        // No logo → the name is always the heading (independent of show_company_name,
-        // matching prior behavior where a nameless header would be blank).
-        layer.use_text(&company.name, 18.0, Mm(text_x), Mm(y), &font_bold);
-        y -= 7.0;
-    } else if tpl.show_company_name {
-        layer.use_text(&company.name, 11.0, Mm(text_x), Mm(y), &font_bold);
-        y -= 4.0;
-    }
-    if tpl.show_address && !company.address.trim().is_empty() {
-        layer.use_text(&company.address, 9.0, Mm(text_x), Mm(y), &font_regular);
-        y -= 4.0;
-    }
-    if tpl.show_email && !company.email.trim().is_empty() {
-        layer.use_text(&company.email, 9.0, Mm(text_x), Mm(y), &font_regular);
-        y -= 4.0;
-    }
-    if tpl.show_phone {
-        if let Some(phone) = company.phone.as_deref().filter(|p| !p.trim().is_empty()) {
-            layer.use_text(phone, 9.0, Mm(text_x), Mm(y), &font_regular);
-            y -= 4.0;
-        }
-    }
-    let _ = y;
 
     // Title + number, top-right, in the accent color.
     layer.set_fill_color(accent.clone());

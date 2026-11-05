@@ -586,6 +586,11 @@ export default function DashboardView({ onNavigate, me }: Props) {
   const monthBase = range.kind === "month" ? range.start : new Date(today.getFullYear(), today.getMonth(), 1);
   const canForward = range.kind === "month" && !sameMonth(range.start, today);
 
+  const openNewInvoice = () => {
+    try { localStorage.setItem("invoices_open_new", "1"); } catch { /* the list still opens */ }
+    onNavigate("invoices");
+  };
+
   const headerActions = (
     <>
       {showMoney && (
@@ -605,6 +610,8 @@ export default function DashboardView({ onNavigate, me }: Props) {
         <span className="ui-btn cursor-default select-none"><Calendar size={14} strokeWidth={1.75} />{rangeDates}</span>
       )}
       <Button icon={<GitBranch size={14} strokeWidth={1.75} />} onClick={() => onNavigate("dealflow")}>Deal Flow</Button>
+      {/* R-598: opens Invoices with the new invoice form already open. Only for users who can see the money. */}
+      {showMoney && <Button variant="ink" icon={<FileText size={14} strokeWidth={1.75} />} onClick={openNewInvoice}>New invoice</Button>}
     </>
   );
 
@@ -897,8 +904,6 @@ export default function DashboardView({ onNavigate, me }: Props) {
           {/* ── Quick actions ── */}
           <div className="flex flex-wrap items-center gap-2 p-4">
             <Button icon={<Users size={14} strokeWidth={1.75} />} onClick={() => onNavigate("clients")}>Add client</Button>
-            {/* Only surface the invoice action to users who can see the money. */}
-            {showMoney && <Button variant="ink" icon={<FileText size={14} strokeWidth={1.75} />} onClick={() => onNavigate("invoices")}>New invoice</Button>}
             <Button icon={<Mail size={14} strokeWidth={1.75} />} onClick={() => onNavigate("newsletter")}>Newsletter</Button>
           </div>
         </div>

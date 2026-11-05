@@ -28,11 +28,11 @@ export const SECTIONS: SectionDef[] = [
   { id: "home", label: "Home", tabs: [{ id: "dashboard", label: "Home" }] },
   { id: "deals", label: "Deals", tabs: [
     { id: "dealflow", label: "Deal Flow" },
+    { id: "invoices", label: "Invoices" },
     { id: "quotes", label: "Quotes" },
     { id: "releaseletter", label: "Release letter" },
     { id: "clientreceipt", label: "Client receipt" },
     { id: "purchaseorder", label: "Purchase order" },
-    { id: "invoices", label: "Invoices" },
     { id: "completed", label: "Completed" },
     { id: "bols", label: "BOLs" },
   ] },

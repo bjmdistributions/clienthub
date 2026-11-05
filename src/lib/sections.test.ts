@@ -22,7 +22,7 @@ describe("sections", () => {
   it("lists only the screens an account may open, in order", () => {
     const deals = SECTIONS.find((s) => s.id === "deals")!;
     const only = new Set(["invoices", "bols", "quotes"]);
-    expect(visibleTabs(deals, (id) => only.has(id)).map((t) => t.id)).toEqual(["quotes", "invoices", "bols"]);
+    expect(visibleTabs(deals, (id) => only.has(id)).map((t) => t.id)).toEqual(["invoices", "quotes", "bols"]);
   });
 
   it("lands on the last screen used, else the first openable, else nothing", () => {

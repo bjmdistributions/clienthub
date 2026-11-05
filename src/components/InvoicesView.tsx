@@ -153,6 +153,12 @@ export default function InvoicesView() {
   useEffect(() => {
     let raw: string | null = null;
     try {
+      // R-598: the Home New invoice button lands here with the form open.
+      if (localStorage.getItem("invoices_open_new")) {
+        localStorage.removeItem("invoices_open_new");
+        setEditing(null);
+        setShowForm(true);
+      }
       raw = localStorage.getItem(INVOICE_PREFILL_KEY);
       if (raw) localStorage.removeItem(INVOICE_PREFILL_KEY);
     } catch { /* ignore */ }
