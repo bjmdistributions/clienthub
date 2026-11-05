@@ -62,12 +62,22 @@ export interface Lead {
   no_reply?: boolean;
   texted?: { at: string; by: string } | null;
   said?: Said | null;
+  // R-606: emails to it that failed, and the latest error.
+  failed?: number;
+  failed_error?: string;
 }
 
 /** R-581: one thing they said or we heard: a reply's gist and tags, a call's outcome and note, or a note. */
 export interface Said { kind: "reply" | "call" | "note"; outcome: string; text: string; tags: string[]; at: string; by: string }
 
-export interface LeadListName { name: string; total: number; emailed: number; replied: number; texted: number; suppliers: number }
+/** An import's answer. `queued` / `need_address` (R-609): the new warehouses join the queue by themselves. */
+export interface ImportAnswer { added: number; skipped: Skipped[]; tab: string; queued?: number; need_address?: boolean }
+
+export interface LeadListName {
+  name: string; total: number; emailed: number; replied: number; texted: number; suppliers: number;
+  // R-606/R-609: waiting to send, failed, and never emailed yet (what Queue everyone not emailed takes).
+  waiting?: number; failed?: number; not_emailed?: number;
+}
 export interface MapPin { id: string; lat: number; lng: number; place: "street" | "city" }
 export interface MapAnswer { pins: MapPin[]; pending: number; unplaced: number; problem: "" | "no_key" | "key_refused" }
 
@@ -89,7 +99,8 @@ export interface LeadList {
   due: number;
   leads: Lead[];
   counts: Partial<Record<LeadStatus, number>>;
-  queue: { waiting: number; sent_today: number; failed: number };
+  /** `line` (R-606): when the waiting emails go, written by the server. */
+  queue: { waiting: number; sent_today: number; failed: number; line?: string };
   settings: OutreachSettings;
   /** Replies not answered yet (R-563); absent from a server before deploy-276. */
   replies_waiting?: number;
@@ -139,7 +150,9 @@ export const outreach = {
   note: (leadId: string, text: string) => call<{ ok: boolean }>("POST", `/api/outreach/leads/${id(leadId)}/note`, { text }),
   makeSupplier: (leadId: string) => call<{ supplier_id: string }>("POST", `/api/outreach/leads/${id(leadId)}/supplier`, {}),
   importSheet: (name: string, data: string, source = "") =>
-    call<{ added: number; skipped: Skipped[]; tab: string }>("POST", "/api/outreach/import", { name, data, source }),
+    call<ImportAnswer>("POST", "/api/outreach/import", { name, data, source }),
+  /** R-609: the first email, in the saved words, for everyone on the list ("" = every list) never emailed. */
+  queueAll: (list: string) => call<{ queued: number; left_out: number }>("POST", "/api/outreach/queue-all", { list }),
   preview: (lead_ids: string[], subject: string, body: string) =>
     call<{ emails: DraftEmail[]; skipped: Skipped[] }>("POST", "/api/outreach/preview", { lead_ids, subject, body }),
   bumps: (body: string) => call<{ emails: DraftEmail[]; skipped: Skipped[] }>("POST", "/api/outreach/bumps", { body }),
@@ -174,22 +187,23 @@ export function dayLabel(ymd: string): string {
 // ── R-581: lists, filters, the map's colours, what they said ──
 
 /** Where a warehouse stands on the map and in the legend, furthest first. */
-export type Stage = "stop" | "supplier" | "replied" | "emailed" | "not_emailed";
+export type Stage = "stop" | "supplier" | "replied" | "emailed" | "waiting" | "not_emailed";
 export const STAGES: [Stage, string, string][] = [
-  ["not_emailed", "Not emailed", "--c-muted"], ["emailed", "Emailed, no reply", "--c-step-now"], ["replied", "Replied", "--c-accent"],
+  ["not_emailed", "Not emailed", "--c-muted"], ["waiting", "Waiting to send", "--c-warning"], ["emailed", "Emailed, no reply", "--c-step-now"], ["replied", "Replied", "--c-accent"],
   ["supplier", "Supplier", "--c-success"], ["stop", "Do not contact", "--c-danger"],
 ];
 export function stageOf(l: Lead): Stage {
   if (l.status === "do_not_contact") return "stop";
   if (l.status === "supplier") return "supplier";
   if (l.replied) return "replied";
-  return l.emailed ? "emailed" : "not_emailed";
+  if (l.emailed) return "emailed";
+  return l.queued ? "waiting" : "not_emailed";
 }
 
 /** The chips over the warehouses. `due` and `all` as before; the rest read what the server worked out. */
 export const REACH: [string, string][] = [
   ["due", "Due today"], ["all", "All"], ["not_emailed", "Not emailed"], ["emailed", "Emailed"], ["replied", "Replied"],
-  ["no_reply", "No reply yet"], ["texted", "Texted"],
+  ["no_reply", "No reply yet"], ["texted", "Texted"], ["failed", "Failed"],
 ];
 export function inReach(l: Lead, f: string): boolean {
   switch (f) {
@@ -199,6 +213,7 @@ export function inReach(l: Lead, f: string): boolean {
     case "replied": return !!l.replied;
     case "no_reply": return !!l.no_reply;
     case "texted": return !!l.texted;
+    case "failed": return (l.failed ?? 0) > 0;
     default: return true;
   }
 }

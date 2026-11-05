@@ -16,6 +16,14 @@ describe("Cold calls lists and the map", () => {
     expect(stageOf(lead({ emailed: true, replied: true, status: "talking" }))).toBe("replied");
     expect(stageOf(lead({ replied: true, status: "supplier" }))).toBe("supplier");
     expect(stageOf(lead({ replied: true, status: "do_not_contact" }))).toBe("stop");
+    // R-607: queued and not gone yet has its own colour, so a stalled queue is seen on the map.
+    expect(stageOf(lead({ queued: 1 }))).toBe("waiting");
+    expect(stageOf(lead({ queued: 1, emailed: true }))).toBe("emailed");
+  });
+
+  it("lists the ones that failed to send (R-606)", () => {
+    expect(inReach(lead({ failed: 1, failed_error: "535 bad login" }), "failed")).toBe(true);
+    expect(inReach(lead(), "failed")).toBe(false);
   });
 
   it("filters by what the server worked out", () => {

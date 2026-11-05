@@ -15,7 +15,7 @@
 //!    logs it once, moves the lead to Talking (or Do not contact on a stop) and cancels what was waiting.
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -126,25 +126,31 @@ pub async fn outreach_pump_set(on: bool) -> Result<(), String> {
 }
 
 /// About once a minute while switched on; the server's answer decides the real wait.
+/// R-606: the reply check runs on its own timer. It reads the inbox and the Sent folder for every warehouse ever
+/// emailed, which grows with the list; in the same loop it held every send up behind it.
 pub fn spawn_pump() {
     tauri::async_runtime::spawn(async {
         tokio::time::sleep(Duration::from_secs(40)).await;
-        let mut next_scan = Instant::now();
         loop {
-            let wait = if pump_on() { tick(&mut next_scan).await } else { 120 };
+            let wait = if pump_on() { tick().await } else { 120 };
             tokio::time::sleep(Duration::from_secs(wait.clamp(30, 900))).await;
+        }
+    });
+    tauri::async_runtime::spawn(async {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        loop {
+            if pump_on() {
+                if let Err(e) = scan_replies().await {
+                    tracing::warn!("cold calls: reply scan: {e}");
+                    set_state(|s| s.last_error = format!("Could not look for replies: {e}"));
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(600)).await;
         }
     });
 }
 
-async fn tick(next_scan: &mut Instant) -> u64 {
-    if Instant::now() >= *next_scan {
-        *next_scan = Instant::now() + Duration::from_secs(600);
-        if let Err(e) = scan_replies().await {
-            tracing::warn!("cold calls: reply scan: {e}");
-            set_state(|s| s.last_error = format!("Could not look for replies: {e}"));
-        }
-    }
+async fn tick() -> u64 {
     let watching = state().watching;
     let note = if watching.is_empty() {
         "Replies are not being watched: add the send from address as an inbox in the desktop's Settings, Email.".to_string()

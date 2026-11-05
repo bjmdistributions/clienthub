@@ -38,7 +38,8 @@ export default function ColdCallsMap({ leads, onOpen }: { leads: Lead[]; onOpen:
     };
     ask();
     return () => { dead = true; window.clearTimeout(timer); };
-  }, []);
+    // Asked again when warehouses are added, so new ones are placed without leaving the map.
+  }, [leads.length]);
 
   useEffect(() => {
     let dead = false;

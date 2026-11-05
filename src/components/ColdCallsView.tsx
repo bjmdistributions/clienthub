@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, FileUp, Mail, Pencil, Phone, Plus, Reply, Search, Settings2, X } from "lucide-react";
+import { Check, Copy, FileUp, ListPlus, Mail, Pencil, Phone, Plus, Reply, Search, Settings2, X } from "lucide-react";
 import StatusPill from "./StatusPill";
 import { PageActions, Tabs } from "./ui";
 import ColdCallsMap from "./ColdCallsMap";
@@ -9,7 +9,7 @@ import { can } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import {
   ANSWERED_HOW, KIND_LABEL, OUTCOMES, OUTCOME_LABEL, REACH, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, emailedLine, inReach, nextLine,
-  outreach, saidLine, sendable, type DraftEmail, type LeadListName, type Lead, type LeadDetail, type LeadList, type LeadStatus, type OutreachReply, type PumpState, type Skipped,
+  outreach, saidLine, sendable, type DraftEmail, type ImportAnswer, type LeadListName, type Lead, type LeadDetail, type LeadList, type LeadStatus, type OutreachReply, type PumpState, type Skipped,
 } from "../lib/outreach";
 
 // R-546 Cold calls: warehouses and would-be suppliers being cold called and emailed, kept apart from
@@ -71,7 +71,7 @@ export default function ColdCallsView() {
   const [compose, setCompose] = useState<{ ids: string[]; bump: boolean } | null>(null);
   const [review, setReview] = useState<{ emails: DraftEmail[]; skipped: Skipped[] } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [imported, setImported] = useState<{ added: number; skipped: Skipped[] } | null>(null);
+  const [imported, setImported] = useState<ImportAnswer | null>(null);
   const [view, setView] = useState<"leads" | "map" | "text" | "replies">("leads");
   // R-581: the list picked at the top ("" is every list) and a status on top of the chips ("" is any). The list is kept per computer.
   const [list, setListState] = useState<string>(() => { try { return localStorage.getItem(LIST_KEY) ?? ""; } catch { return ""; } });
@@ -103,7 +103,9 @@ export default function ColdCallsView() {
     return leads.filter((l) => inReach(l, filter) && (!status || l.status === status)
       && (!q || `${l.company} ${l.city} ${l.state} ${l.email} ${l.contact_name} ${l.phone}`.toLowerCase().includes(q)));
   }, [leads, filter, status, query]);
-  const chips: [string, string, number][] = REACH.map(([k, lb]) => [k, lb, leads.filter((l) => inReach(l, k)).length]);
+  // Failed shows only while something failed (or it is the one picked).
+  const chips: [string, string, number][] = REACH.map(([k, lb]): [string, string, number] => [k, lb, leads.filter((l) => inReach(l, k)).length])
+    .filter(([k, , n]) => k !== "failed" || n > 0 || filter === "failed");
   const statusCounts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const l of leads) c[l.status] = (c[l.status] ?? 0) + 1;
@@ -116,6 +118,20 @@ export default function ColdCallsView() {
     const ids = shown.filter((l) => sendable(l.status) && l.email).map((l) => l.id);
     if (!ids.length) { toast("No one in this list can get a cold email. They need an email address and a status of New, Called, Emailed or Not now.", "error"); return; }
     setCompose({ ids, bump: false });
+  };
+
+  // R-609: everyone on the picked list (or every list) never emailed, queued in one press in the saved words.
+  const notEmailed = lists.filter((x) => !pickedList || x.name === pickedList).reduce((n, x) => n + (x.not_emailed ?? 0), 0);
+  const queueAll = async () => {
+    if (!data?.settings.address_line) { toast("Add your business address in Cold calls settings first. Every cold email has to carry it.", "error"); setSettingsOpen(true); return; }
+    if (!notEmailed) { toast("Everyone here has been emailed or is waiting to send."); return; }
+    const who = notEmailed === 1 ? "the 1 warehouse" : `the ${notEmailed} warehouses`;
+    if (!confirm(`Queue the first email for ${who}${pickedList ? ` on ${pickedList}` : ""} never emailed? They go in your saved email, ${data.settings.daily_cap} a day, weekdays 9 to 4. No one already emailed gets it again.`)) return;
+    try {
+      const r = await outreach.queueAll(pickedList);
+      toast(r.queued === 1 ? "1 email queued" : `${r.queued} emails queued`);
+      load();
+    } catch (e) { toast(msg(e), "error"); }
   };
 
   const onFile = (f: File | undefined) => {
@@ -138,7 +154,7 @@ export default function ColdCallsView() {
     ? "No computer is sending these yet. Turn on Send from this computer in Cold calls settings."
     : Date.now() - seen > 10 * 60_000
       ? `The computer that sends these last checked in ${ago(st.pump_seen_at)}. Emails wait until Ecliptr is open on it.`
-      : `Sending from ${st.send_from || "your email"}, ${st.hours}, up to ${st.daily_cap} a day.${st.pump_note ? " " + st.pump_note : ""}`;
+      : `Sending from ${st.send_from || "your email"}, ${st.hours}, up to ${st.daily_cap} a day.${data?.queue.line ? " " + data.queue.line : ""}${st.pump_note ? " " + st.pump_note : ""}`;
 
   return (
     <div className="min-w-0">
@@ -147,6 +163,7 @@ export default function ColdCallsView() {
         <button className={ghost} onClick={() => setForm({})}><Plus size={14} /> Add</button>
         <button className={ghost} onClick={() => fileRef.current?.click()}><FileUp size={14} /> Import a sheet</button>
         <button className={ghost} onClick={() => setSettingsOpen(true)}><Settings2 size={14} /> Settings</button>
+        <button className={ghost} onClick={queueAll}><ListPlus size={14} /> Queue everyone not emailed{notEmailed ? ` (${notEmailed})` : ""}</button>
         <button className={solid} onClick={emailShown}><Mail size={14} /> Email these</button>
         <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
       </PageActions>
@@ -164,7 +181,9 @@ export default function ColdCallsView() {
           {lists.length > 0 && (
             <div className="flex gap-2.5 mb-4 overflow-x-auto pb-1">
               <ListCard name="All lists" n={{ name: "", total: everyLead.length, emailed: everyLead.filter((l) => l.emailed).length,
-                replied: everyLead.filter((l) => l.replied).length, texted: everyLead.filter((l) => l.texted).length, suppliers: 0 }}
+                replied: everyLead.filter((l) => l.replied).length, texted: everyLead.filter((l) => l.texted).length, suppliers: 0,
+                waiting: lists.reduce((n, x) => n + (x.waiting ?? 0), 0), failed: lists.reduce((n, x) => n + (x.failed ?? 0), 0),
+                not_emailed: lists.reduce((n, x) => n + (x.not_emailed ?? 0), 0) }}
                 on={!pickedList} onPick={() => setList("")} />
               {lists.map((x) => (
                 <ListCard key={x.name} name={x.name} n={x} on={pickedList === x.name} onPick={() => setList(x.name)} onRename={() => setRenaming(x)} />
@@ -186,7 +205,11 @@ export default function ColdCallsView() {
           <div className="hsep mb-3" />
           <p className={`text-[13px] mb-5 ${!seen ? "text-warning-ink" : "text-muted"}`}>
             {pumpLine}
-            {data.queue.failed > 0 && <span className="text-danger-ink font-medium"> {data.queue.failed} failed to send: open the warehouse to try again.</span>}
+            {data.queue.failed > 0 && (
+              <button onClick={() => { setView("leads"); setFilter("failed"); setStatus(""); setQuery(""); }} className="ml-1 text-danger-ink font-medium underline underline-offset-2">
+                {data.queue.failed === 1 ? "1 failed to send" : `${data.queue.failed} failed to send`}. Show them
+              </button>
+            )}
           </p>
 
           <div className="mb-4">
@@ -237,6 +260,7 @@ export default function ColdCallsView() {
                         {l.queued ? <span> · {l.queued} to send</span> : null}
                       </div>
                       {said && <div className={`text-[13px] mt-1 line-clamp-1 ${l.said?.kind === "reply" ? "text-ink" : "text-ink-2"}`}>{said}</div>}
+                      {(l.failed ?? 0) > 0 && <div className="text-[12.5px] mt-1 line-clamp-2 text-danger-ink">Failed: {l.failed_error || "open it to try again"}</div>}
                     </div>
                     <div className="w-[150px] flex-shrink-0 pt-0.5">
                       <div className={`text-[14px] tabular-nums truncate ${l.phone ? "text-ink" : "text-muted"}`}>{l.phone_shown || l.phone || "No phone"}</div>
@@ -268,6 +292,11 @@ export default function ColdCallsView() {
       {imported && (
         <Overlay title={imported.added === 1 ? "Added 1 warehouse" : `Added ${imported.added} warehouses`} onClose={() => setImported(null)}
           footer={<button className={solid} onClick={() => setImported(null)}>Done</button>}>
+          {imported.need_address ? (
+            <p className="text-[13px] text-warning-ink mb-3">Add your business address in Cold calls settings, then press Queue everyone not emailed.</p>
+          ) : (imported.queued ?? 0) > 0 ? (
+            <p className="text-[13px] text-ink-2 mb-3">{imported.queued === 1 ? "1 is" : `${imported.queued} are`} queued to send in your saved email, {data?.settings.daily_cap ?? 30} a day, weekdays 9 to 4.</p>
+          ) : null}
           {imported.skipped.length === 0 ? <p className="text-[13px] text-muted">Every row was added.</p> : (
             <>
               <p className="text-[13px] text-ink-2 mb-2">{imported.skipped.length === 1 ? "1 row was" : `${imported.skipped.length} rows were`} left out:</p>
@@ -309,8 +338,14 @@ function ListCard({ name, n, on, onPick, onRename }: { name: string; n: LeadList
         <div className="bg-muted" style={{ width: `${Math.max(0, pct(n.emailed) - pct(n.replied))}%` }} />
       </div>
       <div className="mt-1.5 text-[12px] text-ink-2 tabular-nums truncate">
-        {n.emailed} emailed, {n.replied} replied{n.texted ? `, ${n.texted} texted` : ""}
+        {n.emailed} of {n.total} emailed, {n.replied} replied{n.texted ? `, ${n.texted} texted` : ""}
       </div>
+      {(n.waiting || n.failed || n.not_emailed) ? (
+        <div className="text-[12px] text-muted tabular-nums truncate">
+          {[n.not_emailed ? `${n.not_emailed} not emailed` : "", n.waiting ? `${n.waiting} waiting` : ""].filter(Boolean).join(", ")}
+          {n.failed ? <span className="text-danger-ink">{n.not_emailed || n.waiting ? ", " : ""}{n.failed} failed</span> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
