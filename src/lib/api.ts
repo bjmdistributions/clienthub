@@ -1155,14 +1155,15 @@ export interface BankBalance {
 }
 
 /** R-617: the tax set-aside month by month, on the deals that closed (GET /api/payouts/tax-months). */
+/** R-621: one month of the tax owed on the books' net income. */
 export interface TaxMonth {
   month: string;
-  deals: number;
-  profit: number;
-  pay: number;
+  /** The month's net income from the ledger (an older server sends `base` only). */
+  net?: number;
   base: number;
-  /** Losses from earlier months taken off this one. */
-  credit_in: number;
+  /** The rate on the year's net income through the month's end. */
+  owed?: number;
+  /** What the month changed the owed figure by: minus for a month that lost money. */
   due: number;
   /** False for the month we are in. */
   closed: boolean;
@@ -1174,8 +1175,28 @@ export interface TaxMonths {
   due_closed: number;
   this_month: number;
   set_aside_year: number;
-  credit_left: number;
+  owed_year?: number;
+  net_ytd?: number;
   tax_paid: number;
+}
+
+/** R-622: one row behind an account's books check difference, and what it does to it. */
+export interface DriftRow { id: string; date: string; description: string; amount: number; direction: string; effect: number; reason?: string }
+export interface DriftCause { kind: "missing" | "differs" | "not_at_bank" | "withdrawn" | "duplicate" | "late" | "removed"; effect: number; rows: DriftRow[] }
+export interface DriftExplain {
+  account: string;
+  bank_balance: number;
+  ledger_net: number;
+  baseline: number | null;
+  baseline_at: string | null;
+  drift: number;
+  /** The starting point plus every row since: what the books say the balance should be. */
+  books_balance: number | null;
+  causes: DriftCause[];
+  explained: number;
+  residual: number;
+  statement: { end: string; ending: number; since: number; expected: number; gap: number } | null;
+  bank_check: { posted: number; exact: number; not_exact: number; checked_at: string | null } | null;
 }
 
 export interface PayoutTotal {
@@ -4690,6 +4711,9 @@ export const api = {
   /// Does the ledger still tie out to the bank? Pass `rebaseline` to accept the
   /// current figures as correct after a deliberate change (cleanup, re-pull).
   reconcileAccounts: (rebaseline = false) => invoke<ReconAccount[]>("reconcile_accounts", { rebaseline }),
+  /** R-622: why an account's books check is off, and starting it again from today's figures. */
+  explainBankDrift: (account: string) => invoke<DriftExplain>("explain_bank_drift", { account }),
+  acceptBankFigures: (account: string) => invoke<ReconAccount[]>("accept_bank_figures", { account }),
   /** R-618: every connected account with its balance and books check. */
   bankBalances: () => invoke<{ accounts: BankBalance[]; last_sync: string | null; reserve_key: string }>("bank_balances"),
   // R-579: every account, period by period: statement posted, statement net against ledger net, duplicates, withdrawn.

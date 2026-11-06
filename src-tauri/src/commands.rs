@@ -23573,7 +23573,33 @@ fn publish_balance_and_health() {
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
     // R-618: every account's balance and books check for the phone's Balances and tax. Names, last four and amounts
     // only; the key (a bank identifier) stays here.
+    // R-622: an account that is off carries why, in short (each kind of row, how many and what it does), for the
+    // phone to say; the rows themselves stay here.
     let accounts: Value = Value::Array(bank_balances_list(&conn).into_iter().map(|mut a| {
+        let off = a.get("drift").and_then(|v| v.as_f64()).is_some_and(|d| d.abs() >= 0.005);
+        let label = a.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if off {
+            if let Ok(x) = explain_bank_drift_inner(&conn, label) {
+                let causes: Vec<Value> = x.get("causes").and_then(|v| v.as_array()).cloned().unwrap_or_default().iter().map(|c| json!({
+                    "kind": c.get("kind").cloned().unwrap_or(Value::Null),
+                    "count": c.get("rows").and_then(|v| v.as_array()).map(|r| r.len()).unwrap_or(0),
+                    "effect": c.get("effect").cloned().unwrap_or(Value::Null),
+                })).collect();
+                let nothing_found = causes.is_empty();
+                a["why"] = json!({
+                    "causes": causes,
+                    "residual": x.get("residual").cloned().unwrap_or(Value::Null),
+                    "statement_gap": x.get("statement").and_then(|s| s.get("gap")).cloned().unwrap_or(Value::Null),
+                    "statement_end": x.get("statement").and_then(|s| s.get("end")).cloned().unwrap_or(Value::Null),
+                    // Every posted transaction the bank lists is in the books exactly and nothing else explains the
+                    // difference: the books are right and the starting point is not (DriftPanel's same verdict).
+                    "bank_exact": nothing_found && x.get("bank_check").is_some_and(|b| {
+                        let posted = b.get("posted").and_then(|v| v.as_i64()).unwrap_or(0);
+                        posted > 0 && b.get("exact").and_then(|v| v.as_i64()) == Some(posted)
+                    }),
+                });
+            }
+        }
         if let Some(o) = a.as_object_mut() { o.remove("key"); o.remove("label"); }
         a
     }).collect());
@@ -28182,14 +28208,229 @@ pub struct ReconAccount {
 /// change (a cleanup, a re-pull, a first run).
 #[tauri::command]
 pub async fn reconcile_accounts(rebaseline: Option<bool>) -> Result<Vec<ReconAccount>, String> {
+    let rebase = rebaseline.unwrap_or(false);
     let (out, next) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        reconcile_accounts_inner(&conn, rebaseline.unwrap_or(false))?
+        reconcile_accounts_inner(&conn, rebase)?
     };
     if let Some(next) = next {
         write_setting("recon_baselines", &Value::Object(next).to_string())?;
+        // R-622: when each starting point was taken, so a later difference can name the rows behind it.
+        let now = Utc::now().to_rfc3339();
+        let mut at = recon_baseline_times();
+        let mut changed = false;
+        for r in &out {
+            if rebase || r.baseline.is_none() { at.insert(r.account.clone(), json!(now)); changed = true; }
+        }
+        if changed { write_setting("recon_baselines_at", &Value::Object(at).to_string())?; }
     }
     Ok(out)
+}
+
+/// R-622: when each account's books check took its starting point (`recon_baselines_at`). Empty for a starting point
+/// taken before v0.16.231, which kept only the figure.
+fn recon_baseline_times() -> serde_json::Map<String, Value> {
+    read_setting("recon_baselines_at").and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned()).unwrap_or_default()
+}
+
+/// R-622 (Jack: "3 of 5 of my accounts are off by ammounts and i need a way to check how and fix how"): start one
+/// account's books check again from today's figures, once the rows behind its difference are answered or shown to be
+/// right. Only that account's starting point moves; the others keep theirs.
+#[tauri::command]
+pub async fn accept_bank_figures(account: String) -> Result<Vec<ReconAccount>, String> {
+    if !crate::employees::session_can_book_bank() {
+        return Err("You need Financials edit to do this.".into());
+    }
+    let implied = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let (out, _) = reconcile_accounts_inner(&conn, false)?;
+        out.iter().find(|r| r.account == account).map(|r| r.implied_opening)
+            .ok_or_else(|| "That account is not connected on this computer.".to_string())?
+    };
+    let mut base: serde_json::Map<String, Value> = read_setting("recon_baselines")
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    base.insert(account.clone(), json!(implied));
+    write_setting("recon_baselines", &Value::Object(base).to_string())?;
+    let mut at = recon_baseline_times();
+    at.insert(account, json!(Utc::now().to_rfc3339()));
+    write_setting("recon_baselines_at", &Value::Object(at).to_string())?;
+    publish_balance_and_health();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    Ok(reconcile_accounts_inner(&conn, false)?.0)
+}
+
+/// R-622: why one account's books check is off, and where each part is fixed. The difference is
+/// `today's implied opening - the starting point`: it moves when the ledger changed in a way the bank's balance did
+/// not. Every row the check can see that does that is listed with what it does to the difference (in less out, so a
+/// row the ledger holds and the bank does not counts minus):
+/// - `missing`: the bank lists it and the ledger does not (Not imported, Import brings it in): plus its amount;
+/// - `differs`: the ledger's amount is not the bank's (Not imported, Use the bank's): the bank's less the ledger's;
+/// - `not_at_bank`: a feed row the bank no longer lists (Not imported, Remove): minus it;
+/// - `withdrawn`: a row the bank took back, still held in the ledger: minus it;
+/// - `duplicate`: the extra row of a possible duplicate: minus it;
+/// - with the starting point's time known (taken from v0.16.231 on): `late`, a row that came in after the starting
+///   point for a day before it, already in the bank's balance then (minus it, and nothing is wrong), and `removed`,
+///   a row that was in the ledger then and has since been deleted (plus it).
+/// A row before the starting point was already in it and moves nothing, so with no time known the list is what the
+/// ledger holds now and may explain more than the difference. Also the account's last statement held against the
+/// bank (its ending plus every row since, for a checking or savings account) and the last Check against bank. Read
+/// only.
+#[tauri::command]
+pub async fn explain_bank_drift(account: String) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    explain_bank_drift_inner(&conn, account)
+}
+
+fn explain_bank_drift_inner(conn: &rusqlite::Connection, account: String) -> Result<Value, String> {
+    use std::collections::HashSet;
+    let aliases = account_alias_map();
+    let acct_of = |a: &str| aliases.get(a).cloned().unwrap_or_else(|| a.to_string());
+    let (recon, _) = reconcile_accounts_inner(&conn, false)?;
+    let r = recon.iter().find(|r| r.account == account)
+        .ok_or_else(|| "That account is not connected on this computer.".to_string())?;
+    let at: Option<String> = recon_baseline_times().get(&account).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let r2 = |x: f64| (x * 100.0).round() / 100.0;
+    let signed = |amt: f64, dir: &str| if dir == "in" { amt } else { -amt };
+    let row_v = |id: &str, date: &str, desc: &str, amount: f64, dir: &str, effect: f64| json!({
+        "id": id, "date": date.get(..10).unwrap_or(date), "description": desc, "amount": r2(amount), "direction": dir, "effect": r2(effect),
+    });
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut groups: Vec<(&str, Vec<Value>)> = vec![
+        ("missing", vec![]), ("differs", vec![]), ("not_at_bank", vec![]), ("withdrawn", vec![]),
+        ("duplicate", vec![]), ("late", vec![]), ("removed", vec![]),
+    ];
+    fn push(groups: &mut [(&str, Vec<Value>)], kind: &str, v: Value) {
+        if let Some(g) = groups.iter_mut().find(|g| g.0 == kind) { g.1.push(v); }
+    }
+
+    // The Not imported list's open rows on this account.
+    let open: Vec<(String, String, String, f64, String, String, String)> = conn
+        .prepare("SELECT txn_id, reason, COALESCE(account_id,''), COALESCE(amount,0), COALESCE(direction,''), \
+                         COALESCE(posted_at,''), COALESCE(description,'') FROM bank_declined WHERE status='open'")
+        .and_then(|mut st| st.query_map([], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?, x.get(4)?, x.get(5)?, x.get(6)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    let ledger_of = |id: &str| -> Option<(String, f64, String)> {
+        conn.query_row("SELECT COALESCE(account_id,''), amount, direction FROM bank_txn WHERE id=?1", [id],
+                       |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).ok()
+    };
+    for (txn_id, reason, acct, amount, dir, date, desc) in open {
+        let ledger = ledger_of(&txn_id);
+        let on = acct_of(&acct) == account || ledger.as_ref().is_some_and(|l| acct_of(&l.0) == account);
+        if !on || !seen.insert(txn_id.clone()) { continue; }
+        match reason.as_str() {
+            crate::bank_declined::DIFFERS => {
+                let (la, ld) = ledger.as_ref().map(|l| (l.1, l.2.clone())).unwrap_or((amount, dir.clone()));
+                push(&mut groups, "differs", row_v(&txn_id, &date, &desc, amount, &dir, signed(amount, &dir) - signed(la, &ld)));
+            }
+            crate::bank_declined::NOT_AT_BANK => push(&mut groups, "not_at_bank", row_v(&txn_id, &date, &desc, amount, &dir, -signed(amount, &dir))),
+            _ => push(&mut groups, "missing", row_v(&txn_id, &date, &desc, amount, &dir, signed(amount, &dir))),
+        }
+    }
+
+    // Withdrawn rows and possible duplicates the ledger holds on this account.
+    let rows = load_dedup_rows(&conn)?;
+    let mine: Vec<&crate::bank_dedup::TxnRow> = rows.iter().filter(|x| acct_of(&x.account) == account).collect();
+    for x in &mine {
+        if !seen.contains(&x.id) && crate::bank_dedup::pending_and_retracted(&x.raw_json).1 {
+            seen.insert(x.id.clone());
+            push(&mut groups, "withdrawn", row_v(&x.id, &x.date, &x.desc, x.amount, &x.dir, -signed(x.amount, &x.dir)));
+        }
+    }
+    let mut dup_ids: HashSet<String> = HashSet::new();
+    for d in crate::bank_near_dup::near_duplicates(&near_dup_rows(&conn)?) { dup_ids.insert(d.extra_id); }
+    for g in crate::bank_dedup::plan(&rows, &aliases, false).groups { for rm in g.removals { dup_ids.insert(rm.id); } }
+    for x in &mine {
+        if dup_ids.contains(&x.id) && seen.insert(x.id.clone()) {
+            push(&mut groups, "duplicate", row_v(&x.id, &x.date, &x.desc, x.amount, &x.dir, -signed(x.amount, &x.dir)));
+        }
+    }
+
+    // With the starting point's time: rows that came in late for a day before it, and rows deleted since.
+    if let Some(at) = at.as_deref() {
+        let day = at.get(..10).unwrap_or(at);
+        for x in &mine {
+            let came = if x.created_at.is_empty() { x.imported_at.as_str() } else { x.created_at.as_str() };
+            if !came.is_empty() && came > at && x.date.get(..10).unwrap_or("") < day && !seen.contains(&x.id) {
+                seen.insert(x.id.clone());
+                push(&mut groups, "late", row_v(&x.id, &x.date, &x.desc, x.amount, &x.dir, -signed(x.amount, &x.dir)));
+            }
+        }
+        let gone: Vec<(String, String, String)> = conn
+            .prepare("SELECT id, row_json, COALESCE(reason,'') FROM bank_txn_deleted_backup WHERE deleted_at > ?1")
+            .and_then(|mut st| st.query_map([at], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        for (id, rj, why) in gone {
+            let v: Value = serde_json::from_str(&rj).unwrap_or(Value::Null);
+            let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if acct_of(&s("account_id")) != account || seen.contains(&id) { continue; }
+            let came = { let c = s("created_at"); if c.is_empty() { s("imported_at") } else { c } };
+            if came.is_empty() || came.as_str() > at { continue; }
+            if crate::bank_dedup::pending_and_retracted(&s("raw_json")).1 { continue; }
+            let amount = v.get("amount").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let dir = s("direction");
+            let mut rv = row_v(&id, &s("posted_at"), &s("description"), amount, &dir, signed(amount, &dir));
+            rv["reason"] = json!(why);
+            seen.insert(id);
+            push(&mut groups, "removed", rv);
+        }
+    }
+
+    // The last statement held against the bank, for a checking or savings account (a card's statement is in what is
+    // owed, the other way round).
+    let kind = bank_balances_list(&conn).into_iter()
+        .find(|a| a.get("label").and_then(|v| v.as_str()) == Some(account.as_str()))
+        .and_then(|a| a.get("type").and_then(|v| v.as_str()).map(|s| s.to_string())).unwrap_or_default();
+    let statement: Value = if kind == "depository" {
+        let mask = crate::bank_dedup::label_mask(&account).to_string();
+        let stmts: Vec<(String, String, f64)> = conn
+            .prepare("SELECT COALESCE(account_id,''), period_end, ending FROM bank_statement ORDER BY period_end DESC")
+            .and_then(|mut st| st.query_map([], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        let last = stmts.into_iter().find(|(a, _, _)| {
+            let l = acct_of(a);
+            l == account || (!mask.is_empty() && crate::bank_dedup::label_mask(&l) == mask)
+        });
+        match last {
+            Some((_, end, ending)) => {
+                let since: f64 = mine.iter()
+                    .filter(|x| x.date.get(..10).unwrap_or("") > end.as_str() && !crate::bank_dedup::pending_and_retracted(&x.raw_json).1)
+                    .map(|x| signed(x.amount, &x.dir)).sum();
+                let expected = r2(ending + since);
+                json!({ "end": end, "ending": r2(ending), "since": r2(since), "expected": expected, "gap": r2(r.bank_balance - expected) })
+            }
+            None => Value::Null,
+        }
+    } else { Value::Null };
+
+    // The last Check against bank on this account: how many of the bank's posted rows the ledger holds exactly.
+    let bank_check: Value = read_setting("bank_check").and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(Value::Null);
+    let checked = bank_check.get("accounts").and_then(|v| v.as_array())
+        .and_then(|a| a.iter().find(|x| x.get("account").and_then(|v| v.as_str()).map(acct_of).as_deref() == Some(account.as_str())).cloned())
+        .map(|mut x| { x["checked_at"] = bank_check.get("checked_at").cloned().unwrap_or(Value::Null); x })
+        .unwrap_or(Value::Null);
+
+    let causes: Vec<Value> = groups.into_iter().filter(|g| !g.1.is_empty()).map(|(kind, rows)| {
+        let effect: f64 = rows.iter().map(|v| v.get("effect").and_then(|x| x.as_f64()).unwrap_or(0.0)).sum();
+        json!({ "kind": kind, "effect": r2(effect), "rows": rows })
+    }).collect();
+    let explained: f64 = causes.iter().map(|c| c.get("effect").and_then(|x| x.as_f64()).unwrap_or(0.0)).sum();
+    Ok(json!({
+        "account": account,
+        "bank_balance": r.bank_balance,
+        "ledger_net": r.ledger_net,
+        "baseline": r.baseline,
+        "baseline_at": at,
+        "drift": r.drift,
+        // What the books say the balance should be: the starting point plus every row since.
+        "books_balance": r.baseline.map(|b| r2(b + r.ledger_net)),
+        "causes": causes,
+        "explained": r2(explained),
+        "residual": r2(r.drift - explained),
+        "statement": statement,
+        "bank_check": checked,
+    }))
 }
 
 /// The check itself, read-only apart from the baselines it hands back for the caller to write

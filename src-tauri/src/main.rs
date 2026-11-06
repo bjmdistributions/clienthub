@@ -904,6 +904,8 @@ fn main() {
             list_stranded_writes,
             reconcile_accounts,
             bank_balances,
+            accept_bank_figures,
+            explain_bank_drift,
             resync_all_completed_deals,
             set_deal_link_na,
             set_refund_done,

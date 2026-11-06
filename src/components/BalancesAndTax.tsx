@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { api, BankBalance, FinancialsOverview, MoneyConfig, TaxMonths } from "../lib/api";
+import DriftPanel from "./DriftPanel";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, CheckCircle2, AlertTriangle } from "lucide-react";
 import { toast } from "./Toast";
@@ -9,9 +10,10 @@ import { Button, Kpi } from "./ui";
 import StatusPill from "./StatusPill";
 
 // R-618 (Jack, 2026-11-05): Free cash is gone. The top of Balances and tax: every connected account and its balance,
-// grouped, each with the books check (does the ledger agree with the bank on it); then the tax savings, worked out
-// month by month on the deals that closed (R-617), checked against the savings account he picks here, green when it
-// holds what it should and its books agree. The Tax report sits below, unchanged.
+// grouped, each with the books check (does the ledger agree with the bank on it; R-622: Off by opens why and the fix);
+// then the tax savings, checked against the savings account he picks here, green when it holds what it should and
+// its books agree. R-621: the tax is what would be owed if today were tax day, on the books' net income so far this
+// year (the same figure as the Tax report below), month by month from the server. The Tax report sits below.
 
 type Overview = FinancialsOverview & {
   reserve_account_key?: string;
@@ -50,7 +52,8 @@ function Line({ label, value, strong, muted, tag }: { label: React.ReactNode; va
   );
 }
 
-export default function BalancesAndTax({ onCheckBooks }: { onCheckBooks?: () => void }) {
+export default function BalancesAndTax({ onCheckBooks, onOpenRow }: { onCheckBooks?: () => void; onOpenRow?: (id: string, amount: number) => void }) {
+  const [openDrift, setOpenDrift] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<BankBalance[] | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [ov, setOv] = useState<Overview | null>(null);
@@ -63,7 +66,10 @@ export default function BalancesAndTax({ onCheckBooks }: { onCheckBooks?: () => 
   const load = () => {
     setLoading(true);
     return Promise.all([
-      api.bankBalances().then((b) => { setAccounts(b.accounts); setLastSync(b.last_sync); }).catch(() => setAccounts([])),
+      // R-622: the books check runs first, so an account connected since takes its starting point today (R-618
+      // dropped the Free cash load that did this).
+      api.reconcileAccounts().catch(() => null).then(() => api.bankBalances())
+        .then((b) => { setAccounts(b.accounts); setLastSync(b.last_sync); }).catch(() => setAccounts([])),
       api.financialsOverview().then((v) => setOv(v as Overview)).catch(() => setOv(null)),
       api.payouts.taxMonths().then(setTm).catch(() => setTm(null)),
       api.getMoneyConfig().then((c) => { setCfg(c); setRateStr(String(Math.round(c.tax_sweep_pct * 10000) / 100)); }).catch(() => setCfg(null)),
@@ -117,12 +123,13 @@ export default function BalancesAndTax({ onCheckBooks }: { onCheckBooks?: () => 
   const savingsChoices = list.filter((a) => a.type === "depository");
   const savings = list.find((a) => a.key === reserveKey);
 
-  // The tax target: the server's months when it can be reached, else the ledger figure this device works out.
-  const taxYear = tm ? tm.set_aside_year : ov?.tax_reserve ?? 0;
-  const taxPaid = tm ? tm.tax_paid : ov?.tax_paid ?? 0;
-  const taxShould = tm ? Math.max(0, tm.set_aside_year - tm.tax_paid) : ov?.tax_should_have ?? 0;
-  const refundReserve = ov?.refund_reserve ?? 0;
-  const target = taxShould + refundReserve;
+  // R-621: what would be owed if today were tax day, from this computer's books: net income so far this year at the
+  // rate, less the estimated tax already paid. The server's months say how each month moved it.
+  const netIncome = ov?.tax_base ?? 0;
+  const taxYear = ov?.tax_reserve ?? 0;
+  const taxPaid = ov?.tax_paid ?? 0;
+  const taxShould = ov?.tax_should_have ?? 0;
+  const target = taxShould;
   const held = savings ? savings.balance : 0;
   const short = Math.max(0, target - held);
   const drift = savings?.drift ?? null;
@@ -130,9 +137,9 @@ export default function BalancesAndTax({ onCheckBooks }: { onCheckBooks?: () => 
   const clear = !!savings && short < 0.005 && booksAgree;
   const lastMonth = tm ? [...tm.months].reverse().find((m) => m.closed) : undefined;
   const thisMonth = tm?.months.find((m) => !m.closed);
-  const monthRows = tm ? tm.months.filter((m) => m.deals > 0 || m.due > 0.005 || m.credit_in > 0.005) : [];
-  const netIncome = ov?.tax_base ?? 0;
-  const ofNet = netIncome > 0.005 ? Math.round((taxYear / netIncome) * 1000) / 10 : null;
+  const monthNet = (m: TaxMonths["months"][number]) => m.net ?? m.base;
+  const monthRows = tm ? tm.months.filter((m) => Math.abs(monthNet(m)) > 0.005 || Math.abs(m.due) > 0.005) : [];
+  const ratePct = Math.round((ov?.tax_sweep_pct ?? tm?.rate ?? 0.3) * 1000) / 10;
 
   return (
     <div className="space-y-8 min-w-0">
@@ -185,11 +192,19 @@ export default function BalancesAndTax({ onCheckBooks }: { onCheckBooks?: () => 
                         {a.key === reserveKey && <StatusPill tone="accent">Tax savings</StatusPill>}
                         {a.drift == null ? null : Math.abs(a.drift) < 0.005
                           ? <StatusPill tone="success" title="The ledger agrees with the bank">Books agree</StatusPill>
-                          : <button onClick={onCheckBooks} title="Open Check books"><StatusPill tone="danger">Off by {fmtAmount(Math.abs(a.drift))}</StatusPill></button>}
+                          : <button onClick={() => setOpenDrift(openDrift === a.label ? null : a.label)} title="Why, and how to fix it">
+                              <StatusPill tone="danger">Off by {fmtAmount(Math.abs(a.drift))}{openDrift === a.label ? "" : ". Why?"}</StatusPill>
+                            </button>}
                       </div>
                       <span className="text-[13px] tabular-nums text-ink w-32 text-right flex-shrink-0">{fmtAmount(a.balance)}</span>
                     </div>
-                  ))}
+                  )).flatMap((row, i) => {
+                    const a = rows[i];
+                    return openDrift === a.label && a.drift != null && Math.abs(a.drift) >= 0.005
+                      ? [row, <DriftPanel key={a.key + "-why"} account={a.label} name={a.name} card={a.type === "credit"} onCheckBooks={onCheckBooks} onOpenRow={onOpenRow}
+                          onChanged={() => { setOpenDrift(null); load(); }} />]
+                      : [row];
+                  })}
                 </div>
               </div>
             );
@@ -201,9 +216,8 @@ export default function BalancesAndTax({ onCheckBooks }: { onCheckBooks?: () => 
       <section className="min-w-0 border-t border-line pt-6">
         <h3 className="text-[15px] font-medium text-ink">Tax savings</h3>
         <p className="ui-note mt-0.5">
-          {tm
-            ? "Set aside each month on the deals that closed, after their supplier, shipping, refunds, and rep and logistics pay."
-            : "The month by month figures need the server, which could not be reached. Showing tax on the ledger's net income."}
+          What you would owe if today were tax day: your books' net income so far this year, after every expense, at your tax rate, less the estimated tax you already paid.
+          {!tm && " The month by month figures need the server, which could not be reached."}
         </p>
 
         <div className={`mt-4 rounded-xl px-4 py-3 flex items-start gap-3 ${clear ? "bg-success-bg" : "bg-surface-2"}`}>
@@ -242,7 +256,7 @@ export default function BalancesAndTax({ onCheckBooks }: { onCheckBooks?: () => 
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Tax rate set aside</label>
-              <p className="text-[11px] text-muted mb-1.5 leading-snug">The share of each month's profit after pay that goes to savings. Set it with your accountant.</p>
+              <p className="text-[11px] text-muted mb-1.5 leading-snug">The share of your net income you keep for tax. Set it with your accountant.</p>
               <div className="flex items-center gap-2">
                 <div className="relative w-28">
                   <input inputMode="decimal" value={rateStr} onChange={(e) => setRateStr(e.target.value)} disabled={!cfg}
@@ -254,8 +268,10 @@ export default function BalancesAndTax({ onCheckBooks }: { onCheckBooks?: () => 
             </div>
             {tm && (
               <div className="divide-y divide-line-2 border-t border-line">
-                {lastMonth && <Line label={`${monthName(lastMonth.month, true)}: move to savings`} value={fmtAmount(lastMonth.due)} strong />}
-                {thisMonth && <Line label={`${monthName(thisMonth.month, true)} so far`} tag="not due yet" value={fmtAmount(thisMonth.due)} muted />}
+                {lastMonth && (lastMonth.due >= 0
+                  ? <Line label={`${monthName(lastMonth.month, true)}: move to savings`} value={fmtAmount(lastMonth.due)} strong />
+                  : <Line label={`${monthName(lastMonth.month, true)} lost money: owed went down`} value={`-${fmtAmount(-lastMonth.due)}`} strong />)}
+                {thisMonth && <Line label={`${monthName(thisMonth.month, true)} so far`} tag="not due yet" value={thisMonth.due < 0 ? `-${fmtAmount(-thisMonth.due)}` : fmtAmount(thisMonth.due)} muted />}
               </div>
             )}
           </div>
@@ -268,28 +284,20 @@ export default function BalancesAndTax({ onCheckBooks }: { onCheckBooks?: () => 
                   <div key={m.month} className="flex items-center gap-3 py-1 min-w-0">
                     <span className="min-w-0 flex-1 text-[12.5px] text-ink-2 truncate">
                       {monthName(m.month)}
-                      <span className="text-muted"> · {m.deals} deal{m.deals === 1 ? "" : "s"}, {fmtAmount(m.base)} after pay</span>
-                      {m.credit_in > 0.005 && <span className="text-[11px] text-faint ml-2">{fmtAmount(m.credit_in)} loss carried in</span>}
+                      <span className="text-muted"> · net income {monthNet(m) < 0 ? "-" : ""}{fmtAmount(Math.abs(monthNet(m)))}</span>
                     </span>
-                    <span className={`text-[12.5px] tabular-nums w-32 text-right flex-shrink-0 ${m.closed ? "text-ink-2" : "text-muted"}`}>{fmtAmount(m.due)}</span>
+                    <span className={`text-[12.5px] tabular-nums w-32 text-right flex-shrink-0 ${m.closed ? "text-ink-2" : "text-muted"}`}>
+                      {m.due < 0 ? `-${fmtAmount(-m.due)}` : fmtAmount(m.due)}
+                    </span>
                   </div>
                 ))}
-                {(tm?.credit_left ?? 0) > 0.005 && <p className="ui-note mt-1">{fmtAmount(tm!.credit_left)} of losses still to come off the next months.</p>}
               </div>
             )}
-            <Line label={`Tax at ${Math.round((tm ? tm.rate : ov?.tax_sweep_pct ?? 0.3) * 1000) / 10}% this year`} value={fmtAmount(taxYear)} />
+            <Line label="Net income so far this year" tag="from your books, the Tax report below" value={`${netIncome < 0 ? "-" : ""}${fmtAmount(Math.abs(netIncome))}`} />
+            <Line label={`Tax at ${ratePct}%`} tag={netIncome <= 0 ? "nothing owed on a loss" : undefined} value={fmtAmount(taxYear)} />
             {taxPaid > 0.005 && <Line label="Estimated tax already paid this year" value={`-${fmtAmount(taxPaid)}`} />}
-            <Line label="Should be in savings for tax" value={fmtAmount(taxShould)} strong />
-            {refundReserve > 0.005 && <Line label={`Refunds, ${Math.round((ov?.refund_reserve_pct ?? 0) * 100)}% of deal profit`} value={fmtAmount(refundReserve)} />}
+            <Line label="Owed if today were tax day" value={fmtAmount(taxShould)} strong />
             {savings && <Line label={`In ${savings.name} now`} value={fmtAmount(held)} strong />}
-            {tm && ov && (
-              <Line
-                label="Tax on net income from the ledger"
-                tag={ofNet != null ? `check: you set aside ${ofNet}% of net income` : "check"}
-                value={fmtAmount(ov.tax_reserve)}
-                muted
-              />
-            )}
           </div>
         </div>
       </section>

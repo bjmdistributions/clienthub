@@ -3588,7 +3588,7 @@ export default function FinancialsView() {
           accounts as the Ledger's category picker; nothing here reads any table
           other than bank_txn, so this figure and the Ledger's totals can never
           silently drift apart. */}
-      {tab === "report" && <BalancesAndTax onCheckBooks={() => setTab("check")} />}
+      {tab === "report" && <BalancesAndTax onCheckBooks={() => setTab("check")} onOpenRow={openLedgerRow} />}
       {tab === "report" && (
         <div className="space-y-6 border-t border-line pt-6">
           <h3 className="text-[15px] font-medium text-ink">Tax report</h3>
