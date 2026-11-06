@@ -85,6 +85,9 @@ export default function Breakdown({ analysis: a, settings, onSettings, ask, onAs
   const toggle = (k: string) => setOpen((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
   const unplacedShare = a.total_retail > 0 ? a.uncategorized_retail / a.total_retail : a.uncategorized_lines / Math.max(1, a.total_items);
   const rateLabel = costOnly ? "Resale per unit" : "Resale %";
+  // Each category's share of the load: of its cost on a cost-only sheet, else of its retail; of
+  // its units when the sheet carries no money at all.
+  const shareBase = costOnly ? bid.rows.reduce((s, r) => s + (r.cost || 0), 0) : a.total_retail;
 
   return (
     <div className="space-y-6">
@@ -252,6 +255,7 @@ export default function Breakdown({ analysis: a, settings, onSettings, ask, onAs
                 <th className={`${S.th} text-right`}>Units</th>
                 <th className={`${S.th} text-right`}>{money}</th>
                 <th className={`${S.th} text-right`}>{unitMoney}</th>
+                <th className={`${S.th} text-right`} title={shareBase > 0 ? `Of the load's ${costOnly ? "cost" : "retail"}` : "Of the load's units"}>{shareBase > 0 ? "Share" : "Share of units"}</th>
                 <th className={`${S.th} text-right`}>{rateLabel}</th>
                 <th className={`${S.th} text-right rounded-r-lg`}>You'd resell for</th>
               </tr>
@@ -276,6 +280,7 @@ export default function Breakdown({ analysis: a, settings, onSettings, ask, onAs
                     <td className="px-3 py-2 text-right tabular-nums text-ink-2">{fmtInt(c.quantity)}</td>
                     <td className="px-3 py-2 text-right tabular-nums font-medium">{total != null ? fmtAmount(total) : "-"}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-ink-2">{c.quantity > 0 && total ? fmtAmount(total / c.quantity) : "-"}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-muted">{shareBase > 0 ? fmtPct((total || 0) / shareBase) : units > 0 ? fmtPct(c.quantity / units) : "-"}</td>
                     <td className="px-3 py-1.5 text-right">
                       <input className={`${S.input} w-20 h-7 text-right`} value={store[c.name] ?? ""} placeholder={fallback || (costOnly ? "$" : "%")}
                         onChange={(e) => {
