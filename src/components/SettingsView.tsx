@@ -125,6 +125,7 @@ import VariablePicker from "./VariablePicker";
 import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
 import NumberInput from "./NumberInput";
+import ShellLayoutEditor from "./ShellLayoutEditor";
 import { LogisticsFreightSetting, LogisticsMayBookSetting, LogisticsNoDealSetting, LogisticsNumberingSetting, LogisticsPaySettingsForm, LogisticsPayTrackerPanel, LogisticsRateConSetting, LogisticsRoutesSetting } from "./LogisticsPay";
 import { PayoutsLedgerPanel, PayRulesPanel, ruleLabel } from "./PayoutLedger";
 import { FormsPanel } from "./FormsPanel";
@@ -311,6 +312,9 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "appearance", card: "Theme", label: "Theme", kw: "dark mode light mode colour scheme black accent" },
   { tab: "appearance", card: "Accent colour", label: "Accent colour", kw: "accent color orange indigo blue emerald teal violet amber rose swatch brand colour" },
   { tab: "appearance", card: "Sidebar", label: "Collapse the sidebar on narrow windows", kw: "sidebar rail narrow window responsive" },
+  // R-623
+  { tab: "appearance", card: "Sidebar and tabs", label: "Sidebar sections and their order", kw: "sidebar navbar nav menu order reorder hide show section customize move up down" },
+  { tab: "appearance", card: "Sidebar and tabs", label: "Tab order on each page", kw: "tabs tab bar order reorder page screens first customize move up down" },
   // Company
   { tab: "company", card: "Business details", label: "Company name", kw: "business name letterhead" },
   { tab: "company", card: "Business details", label: "Organisation name", kw: "organization app header workspace name" },
@@ -1264,6 +1268,11 @@ function AppearanceTab({ showTimes }: { showTimes: boolean }) {
             <Switch on={time24} onToggle={() => setTime24(!time24)} label="Type times in 24-hour time" />
           </Row>
         )}
+      </Section>
+
+      <div className="hsep" />
+      <Section>
+        <ShellLayoutEditor title={<SectionLabel>Sidebar and tabs</SectionLabel>} />
       </Section>
     </div>
   );

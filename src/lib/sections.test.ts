@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ALL_TABS, SECTIONS, landingTab, sectionOfTab, shellDrawsHeader, visibleTabs } from "./sections";
+import { ALL_TABS, SECTIONS, hiddenSections, landingTab, layoutSections, sectionOfTab, shellDrawsHeader, visibleTabs } from "./sections";
 
 describe("sections", () => {
   it("places every screen in exactly one section", () => {
@@ -53,5 +53,28 @@ describe("sections", () => {
     const allowed = new Set(["logistics", "settings"]);
     const open = SECTIONS.filter((s) => landingTab(s, (id) => allowed.has(id)) !== null).map((s) => s.id);
     expect(open).toEqual(["logistics", "settings"]);
+  });
+
+  // R-623: the layout chosen on this computer.
+  it("keeps the default map without a layout", () => {
+    expect(layoutSections(null)).toBe(SECTIONS);
+    expect(hiddenSections(null).size).toBe(0);
+  });
+
+  it("orders the sidebar as chosen, drops ids it does not know and appends the rest in default order", () => {
+    const got = layoutSections({ sections: ["money", "gone", "deals"], hidden: [], tabs: {} }).map((s) => s.id);
+    expect(got).toEqual(["money", "deals", "home", "invoices", "clients", "inventory", "purchases", "logistics", "insights", "more", "settings"]);
+  });
+
+  it("orders a section's screens as chosen and appends the ones not listed", () => {
+    const deals = layoutSections({ sections: [], hidden: [], tabs: { deals: ["bols", "nope", "quotes"] } }).find((s) => s.id === "deals")!;
+    expect(deals.tabs.map((t) => t.id)).toEqual(["bols", "quotes", "dealflow", "releaseletter", "clientreceipt", "purchaseorder", "completed"]);
+    expect(landingTab(deals, () => true)).toBe("bols");
+    // The default map is never changed underneath.
+    expect(SECTIONS.find((s) => s.id === "deals")!.tabs[0].id).toBe("dealflow");
+  });
+
+  it("never hides Home or Settings", () => {
+    expect([...hiddenSections({ sections: [], hidden: ["home", "settings", "insights", "more"], tabs: {} })]).toEqual(["insights", "more"]);
   });
 });

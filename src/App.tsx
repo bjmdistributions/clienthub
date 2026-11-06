@@ -62,8 +62,8 @@ import { confirmLeaveUnsaved } from "./lib/unsavedWork";
 import { tabSwitchAction, tabToShow } from "./lib/tabSwitch";
 import { useNotices } from "./lib/useNotices";
 import {
-  SECTIONS, ALL_TABS, landingTab, sectionOfTab, shellDrawsHeader, visibleTabs,
-  type SectionDef, type SectionId, type TabDef, type TabId,
+  ALL_TABS, SHELL_LAYOUT_EVENT, hiddenSections, landingTab, layoutSections, readShellLayout, shellDrawsHeader, visibleTabs,
+  type SectionDef, type SectionId, type ShellLayout, type TabDef, type TabId,
 } from "./lib/sections";
 import Tabs, { type TabItem } from "./components/ui/Tabs";
 import { PageSlotContext } from "./components/ui/PageHeader";
@@ -342,6 +342,18 @@ export default function App() {
     return () => window.removeEventListener("nav-auto-change", handler);
   }, []);
   const navCollapsed = manualNav ?? (navAuto && narrow);
+
+  // R-623: the sidebar order, the sections it shows and each section's tab order, as chosen on this computer
+  // (Settings > Appearance > Sidebar and tabs). `sections` is the map the shell draws from; SECTIONS stays the default.
+  const [layout, setLayout] = useState<ShellLayout | null>(readShellLayout);
+  useEffect(() => {
+    const handler = (e: Event) => setLayout((e as CustomEvent).detail as ShellLayout | null);
+    window.addEventListener(SHELL_LAYOUT_EVENT, handler);
+    return () => window.removeEventListener(SHELL_LAYOUT_EVENT, handler);
+  }, []);
+  const sections = useMemo(() => layoutSections(layout), [layout]);
+  const hidden = useMemo(() => hiddenSections(layout), [layout]);
+  const sectionOfTab = (id: string): SectionDef | undefined => sections.find((s) => s.tabs.some((t) => t.id === id));
   useEffect(() => {
     const onResize = () => {
       const n = window.innerWidth < NAV_COLLAPSE_AT;
@@ -1021,9 +1033,11 @@ export default function App() {
 
     type Row = { section: SectionDef; kids: TabDef[]; rank: number; at: number; h: number };
     const rows: Row[] = [];
-    SECTIONS.filter((s) => s.id !== "settings").forEach((section, at) => {
+    sections.filter((s) => s.id !== "settings").forEach((section, at) => {
       if (!sectionShown(section)) return;
       const isSection = section.id === sectionId;
+      // A section kept off the sidebar gets no rail row either, unless you are standing in it.
+      if (hidden.has(section.id) && !isSection) return;
       const pinned = railPins.includes(section.id);
       const counted = !!sectionCount(section);
       if (!isSection && !pinned && !counted) return;
@@ -1216,7 +1230,7 @@ export default function App() {
     );
   };
 
-  const settingsSection = SECTIONS.find((s) => s.id === "settings")!;
+  const settingsSection = sections.find((s) => s.id === "settings")!;
 
   return (
     <div className="flex h-screen bg-side text-ink">
@@ -1278,7 +1292,7 @@ export default function App() {
               {railAction("__all", "All screens", Ellipsis, (e) => openFlyout("__all", e), flyout?.id === "__all")}
             </>
           ) : (
-            SECTIONS.filter((s) => s.id !== "more" && s.id !== "settings" && sectionShown(s)).map(navItem)
+            sections.filter((s) => s.id !== "more" && s.id !== "settings" && !hidden.has(s.id) && sectionShown(s)).map(navItem)
           )}
         </nav>
 
@@ -1288,7 +1302,7 @@ export default function App() {
         <div className="flex-shrink-0 pt-2 space-y-0.5">
           {navCollapsed
             ? (sectionShown(settingsSection) ? railRow(settingsSection.id, settingsSection.label, SECTION_ICONS.settings, currentSection?.id === "settings", null, () => openSection(settingsSection)) : null)
-            : SECTIONS.filter((s) => (s.id === "more" || s.id === "settings") && sectionShown(s)).map(navItem)}
+            : sections.filter((s) => (s.id === "more" || s.id === "settings") && !hidden.has(s.id) && sectionShown(s)).map(navItem)}
         </div>
 
         {/* Status footer. Collapsed this is a compact strip: bell, dark mode, split view and sign out live
@@ -1457,7 +1471,7 @@ export default function App() {
                 // grouped by section. visible() is what filters it, so it cannot leak a screen the sidebar
                 // hides. It scrolls: 39 rows do not fit any window. A pin keeps a section's row on the rail.
                 <div className="max-h-[60vh] overflow-y-auto">
-                  {SECTIONS.filter(sectionShown).map((s) => {
+                  {sections.filter(sectionShown).map((s) => {
                     const open = visibleTabs(s, visible);
                     const pinned = railPins.includes(s.id);
                     return (
@@ -1531,7 +1545,7 @@ export default function App() {
                   onChange={(e) => setSplit(e.target.value as Tab)}
                   className="text-[12px] rounded-md px-2 h-7 bg-surface text-ink border border-line-3"
                 >
-                  {SECTIONS.filter(sectionShown).map((s) => (
+                  {sections.filter(sectionShown).map((s) => (
                     <optgroup key={s.id} label={s.label}>
                       {visibleTabs(s, visible).filter((t) => t.id !== "globe").map((t) => (
                         <option key={t.id} value={t.id}>{t.label}</option>

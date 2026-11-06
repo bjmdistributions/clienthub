@@ -113,3 +113,54 @@ export function shellDrawsHeader(id: string): boolean {
   const s = sectionOfTab(id);
   return !!s && (s.tabs.length > 1 || SHELL_HEADED_SINGLE.includes(s.id));
 }
+
+// ── R-623: the layout you chose for this computer ────────────────────────────────────────────────
+// The sidebar's order, which sections it shows, and the order of the screens inside each section are
+// yours to set (Settings > Appearance > Sidebar and tabs). Stored per device like the rest of Appearance.
+// SECTIONS above stays the default map; the shell reads the layout through layoutSections() so an id the
+// app no longer has is dropped and a section or screen added by an update appears in its default place.
+
+export const SHELL_LAYOUT_KEY = "clienthub_shell_layout";
+export const SHELL_LAYOUT_EVENT = "shell-layout-change";
+
+export interface ShellLayout {
+  /** Section ids in sidebar order. A section not listed comes after these, in default order. */
+  sections: string[];
+  /** Sections kept off the sidebar. Home and Settings can never be hidden. */
+  hidden: string[];
+  /** Screen ids in tab order, per section. A screen not listed comes after these, in default order. */
+  tabs: Record<string, string[]>;
+}
+
+/** Sections that always stay on the sidebar: Home is where the app lands, Settings is where you put the rest back. */
+export const ALWAYS_SHOWN: SectionId[] = ["home", "settings"];
+
+export function readShellLayout(): ShellLayout | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(SHELL_LAYOUT_KEY) || "null");
+    if (!v || typeof v !== "object") return null;
+    return {
+      sections: Array.isArray(v.sections) ? v.sections.filter((s: unknown) => typeof s === "string") : [],
+      hidden: Array.isArray(v.hidden) ? v.hidden.filter((s: unknown) => typeof s === "string") : [],
+      tabs: v.tabs && typeof v.tabs === "object" ? v.tabs : {},
+    };
+  } catch { return null; }
+}
+
+/** Known ids in the chosen order, then the rest in default order. Unknown ids are dropped. */
+function ordered<T extends { id: string }>(defaults: T[], chosen: string[] | undefined): T[] {
+  if (!chosen || !chosen.length) return defaults;
+  const picked = chosen.map((id) => defaults.find((d) => d.id === id)).filter((d): d is T => !!d);
+  return [...picked, ...defaults.filter((d) => !picked.includes(d))];
+}
+
+/** Every section in the chosen sidebar order, each with its screens in the chosen tab order. */
+export function layoutSections(layout: ShellLayout | null): SectionDef[] {
+  if (!layout) return SECTIONS;
+  return ordered(SECTIONS, layout.sections).map((s) => ({ ...s, tabs: ordered(s.tabs, layout.tabs[s.id]) }));
+}
+
+/** The sections the sidebar leaves out. Their screens stay reachable from search, All screens and split view. */
+export function hiddenSections(layout: ShellLayout | null): Set<string> {
+  return new Set((layout?.hidden ?? []).filter((id) => !ALWAYS_SHOWN.includes(id as SectionId)));
+}
