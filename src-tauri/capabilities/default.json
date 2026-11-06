@@ -8,13 +8,6 @@
     "permissions":  [
                         "core:default",
                         "dialog:default",
-                        "fs:default",
-                        "shell:default",
-                        "notification:default",
-                        "fs:allow-read-text-file",
-                        "fs:allow-write-text-file",
-                        "fs:allow-mkdir",
-                        "fs:allow-read-dir",
                         "updater:default",
                         "updater:allow-check",
                         "updater:allow-download-and-install",

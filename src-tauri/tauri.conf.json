@@ -21,10 +21,11 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: https:; media-src 'self' asset: http://asset.localhost blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https: blob: data:; worker-src 'self' blob:; frame-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self' http://localhost:5173; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5173; style-src 'self' 'unsafe-inline' http://localhost:5173; img-src 'self' asset: http://asset.localhost data: blob: https: http://localhost:5173; media-src 'self' asset: http://asset.localhost blob: http://localhost:5173; font-src 'self' data: http://localhost:5173; connect-src 'self' ipc: http://ipc.localhost https: blob: data: http://localhost:5173 ws://localhost:5173; worker-src 'self' blob: http://localhost:5173; frame-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": ["$APPDATA/**"]
       }
     }
   },
