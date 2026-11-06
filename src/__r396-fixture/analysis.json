@@ -1,0 +1,80 @@
+{
+  "categories": [
+    {
+      "name": "Shoes",
+      "items": 3,
+      "quantity": 9.0,
+      "total_retail": 1070.0
+    },
+    {
+      "name": "Clothing",
+      "items": 4,
+      "quantity": 22.0,
+      "total_retail": 845.0
+    },
+    {
+      "name": "Uncategorized",
+      "items": 2,
+      "quantity": 3.0,
+      "total_retail": 135.0
+    },
+    {
+      "name": "Accessories",
+      "items": 1,
+      "quantity": 3.0,
+      "total_retail": 54.0
+    }
+  ],
+  "brands": [
+    {
+      "name": "Nike",
+      "items": 5,
+      "quantity": 25.0,
+      "total_retail": 1139.0
+    },
+    {
+      "name": "Jordan",
+      "items": 2,
+      "quantity": 6.0,
+      "total_retail": 530.0
+    },
+    {
+      "name": "Adidas",
+      "items": 1,
+      "quantity": 3.0,
+      "total_retail": 300.0
+    },
+    {
+      "name": "Unbranded",
+      "items": 2,
+      "quantity": 3.0,
+      "total_retail": 135.0
+    }
+  ],
+  "categories_from_manifest": false,
+  "suggested_bid": 536.52,
+  "total_retail": 2104.0,
+  "overall_margin_pct": 30.0,
+  "total_items": 10,
+  "total_quantity": 37.0,
+  "skipped_rows": 0,
+  "formula": "Total retail $2104 × 30% margin (default, no completed deals yet) × 0.85 buffer = suggested bid $537",
+  "detection": {
+    "format": "csv",
+    "sheet": null,
+    "header_row": 1,
+    "description_col": "Description",
+    "quantity_col": "Qty",
+    "price_col": "Unit Retail",
+    "category_col": null,
+    "brand_col": null,
+    "price_is_extended": false,
+    "note": "Left out 1 total row (\"TOTAL\"). 1 line has no retail value (7 units). It is kept at $0 and left unpriced. There is no category column, so categories are read from the words in each title. 2 of 10 lines (6.4% of retail) could not be placed and are Uncategorized."
+  },
+  "uncategorized_lines": 2,
+  "uncategorized_retail": 135.0,
+  "categories_guessed": 8,
+  "brands_from_titles": true,
+  "unpriced_lines": 1,
+  "skipped_note": "Left out 1 total row (\"TOTAL\")."
+}

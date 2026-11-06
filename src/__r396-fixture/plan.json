@@ -1,0 +1,263 @@
+{
+  "file_name": "r396-invented.csv",
+  "format": "csv",
+  "sheet": null,
+  "header_row": 1,
+  "questions": [
+    {
+      "id": "read_brands",
+      "text": "There is no brand column, so 10 lines have no brand. Read the brand from each title?",
+      "detail": "That finds 3 brands for 8 of them, such as Nike, Jordan and Adidas. The other 2 stay unbranded.",
+      "choices": [
+        {
+          "id": "yes",
+          "label": "Yes, read them",
+          "input": null
+        },
+        {
+          "id": "no",
+          "label": "No, leave them unbranded",
+          "input": null
+        }
+      ],
+      "answer": "yes",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "split_by",
+      "text": "How should this manifest be split?",
+      "detail": "Brands and categories are both read from the titles.",
+      "choices": [
+        {
+          "id": "brand",
+          "label": "By brand (4)",
+          "input": null
+        },
+        {
+          "id": "category",
+          "label": "By category (4)",
+          "input": null
+        },
+        {
+          "id": "brand_in_category",
+          "label": "By brand within each category",
+          "input": null
+        }
+      ],
+      "answer": "category",
+      "answered": true,
+      "value": null
+    },
+    {
+      "id": "blank",
+      "text": "2 lines could not be placed in a category from their titles ($135.00 of retail). Where should they go?",
+      "detail": null,
+      "choices": [
+        {
+          "id": "own",
+          "label": "Their own Uncategorized manifest",
+          "input": null
+        },
+        {
+          "id": "mixed",
+          "label": "In with Mixed",
+          "input": null
+        }
+      ],
+      "answer": "own",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "pricing",
+      "text": "How should the new manifests be priced?",
+      "detail": "The sheet shows retail only, with no price on it.",
+      "choices": [
+        {
+          "id": "pct",
+          "label": "A % of retail",
+          "input": "pct"
+        },
+        {
+          "id": "unit",
+          "label": "A price per unit",
+          "input": "money"
+        },
+        {
+          "id": "none",
+          "label": "No price yet",
+          "input": null
+        }
+      ],
+      "answer": "none",
+      "answered": false,
+      "value": null
+    },
+    {
+      "id": "show_price",
+      "text": "Put your price on each line of the new manifests?",
+      "detail": "Adds a unit price and a total price column.",
+      "choices": [
+        {
+          "id": "yes",
+          "label": "Yes, a unit and total price",
+          "input": null
+        },
+        {
+          "id": "no",
+          "label": "No, retail only",
+          "input": null
+        }
+      ],
+      "answer": "no",
+      "answered": false,
+      "value": null
+    }
+  ],
+  "notes": [
+    "Left out 1 total row (\"TOTAL\").",
+    "1 line has no retail value (7 units). It is kept at $0 and left unpriced.",
+    "There is no category column, so categories are read from the words in each title. 2 of 10 lines (6.4% of retail) could not be placed and are Uncategorized.",
+    "A CSV file cannot hold photos."
+  ],
+  "columns": [
+    {
+      "index": 0,
+      "header": "Description",
+      "role": "description",
+      "hidden": false
+    },
+    {
+      "index": 1,
+      "header": "UPC",
+      "role": "",
+      "hidden": false
+    },
+    {
+      "index": 2,
+      "header": "Qty",
+      "role": "quantity",
+      "hidden": false
+    },
+    {
+      "index": 3,
+      "header": "Unit Retail",
+      "role": "retail",
+      "hidden": false
+    }
+  ],
+  "sheet_pricing": {
+    "kind": "none",
+    "pct": null,
+    "unit": null,
+    "evidence": "the sheet shows retail only, with no price on it",
+    "total": null
+  },
+  "totals": {
+    "lines": 10,
+    "units": 37.0,
+    "retail": 2104.0,
+    "sheet_price": null,
+    "price": null,
+    "kept_lines": 10,
+    "kept_units": 37.0,
+    "kept_retail": 2104.0
+  },
+  "splits": [
+    {
+      "key": "c:shoe",
+      "name": "Shoes",
+      "lines": 3,
+      "units": 9.0,
+      "retail": 1070.0,
+      "sheet_price": null,
+      "price": null,
+      "rule": {
+        "mode": "none",
+        "value": null
+      },
+      "photos": 0,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Northline Air Max 90 Mens 10.5",
+        "Adidas Samba OG Womens 8",
+        "Air Jordan 1 Mid Chicago 11"
+      ],
+      "category": "Shoes"
+    },
+    {
+      "key": "c:clothing",
+      "name": "Clothing",
+      "lines": 4,
+      "units": 22.0,
+      "retail": 845.0,
+      "sheet_price": null,
+      "price": null,
+      "rule": {
+        "mode": "none",
+        "value": null
+      },
+      "photos": 0,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Nike Club Fleece Joggers - L",
+        "Jumpman Fleece Hoodie - XL",
+        "Nike Dri-FIT Game Classic Shorts - M"
+      ],
+      "category": "Clothing"
+    },
+    {
+      "key": "c:accessory",
+      "name": "Accessories",
+      "lines": 1,
+      "units": 3.0,
+      "retail": 54.0,
+      "sheet_price": null,
+      "price": null,
+      "rule": {
+        "mode": "none",
+        "value": null
+      },
+      "photos": 0,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Nike Heritage Drawstring Bag"
+      ],
+      "category": "Accessories"
+    },
+    {
+      "key": "c:",
+      "name": "Uncategorized",
+      "lines": 2,
+      "units": 3.0,
+      "retail": 135.0,
+      "sheet_price": null,
+      "price": null,
+      "rule": {
+        "mode": "none",
+        "value": null
+      },
+      "photos": 0,
+      "unpriced": 0,
+      "skipped": false,
+      "examples": [
+        "Mystery item 8841",
+        "Unit 7730 blue"
+      ],
+      "category": null
+    }
+  ],
+  "photos": {
+    "in_cell": 0,
+    "placed": 0,
+    "web": 0,
+    "lines_with_photo": 0,
+    "link_column": null
+  },
+  "reconciles": true,
+  "show_price": false
+}

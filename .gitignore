@@ -13,3 +13,9 @@ clienthub-bundle.md
 
 nul
 tauri.key
+
+# R-620: leftover per-session build dirs, session data files, Windows redirect artifact
+src-tauri/target-*
+*.xlsx
+published.txt
+nul

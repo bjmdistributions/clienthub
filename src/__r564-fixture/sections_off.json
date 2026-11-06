@@ -1,0 +1,831 @@
+{
+  "categories": [
+    {
+      "name": "Home & Kitchen",
+      "items": 7,
+      "quantity": 36.0,
+      "total_retail": 1122.92
+    },
+    {
+      "name": "Patio & Garden",
+      "items": 4,
+      "quantity": 13.0,
+      "total_retail": 203.22
+    },
+    {
+      "name": "Sports & Outdoors",
+      "items": 1,
+      "quantity": 2.0,
+      "total_retail": 64.0
+    },
+    {
+      "name": "Unplaced",
+      "items": 1,
+      "quantity": 2.0,
+      "total_retail": 24.0
+    }
+  ],
+  "brands": [],
+  "categories_from_manifest": false,
+  "total_retail": 1414.14,
+  "overall_margin_pct": 30.0,
+  "total_items": 13,
+  "total_quantity": 53.0,
+  "skipped_rows": 0,
+  "detection": {
+    "format": "csv",
+    "sheet": null,
+    "header_row": 2,
+    "description_col": "Item Description",
+    "quantity_col": "Qty",
+    "price_col": "Unit Retail",
+    "category_col": null,
+    "brand_col": null,
+    "price_is_extended": false,
+    "code_col": "UPC",
+    "condition_col": null,
+    "cost_col": null,
+    "note": "Left out 5 lines in the sections you turned off. There is no category column, so categories are read from the words in each title. 1 of 13 lines (1.7% of retail) could not be placed."
+  },
+  "uncategorized_lines": 1,
+  "uncategorized_retail": 24.0,
+  "categories_guessed": 12,
+  "brands_from_titles": false,
+  "unpriced_lines": 0,
+  "skipped_note": "Left out 3 total rows (\"Total\", \"Total\", \"Total\"), 2 repeated header rows and 2 rows with a label and no quantity or price (\"Pallet A-2\", \"Pallet A-3\").",
+  "lines": [
+    {
+      "row": 3,
+      "title": "Garden hose 50ft expandable",
+      "qty": 3.0,
+      "retail": 56.97,
+      "sheet_price": null,
+      "category": "Patio & Garden",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000026",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 4,
+      "title": "Patio string lights 48ft",
+      "qty": 2.0,
+      "retail": 55.0,
+      "sheet_price": null,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000039",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 5,
+      "title": "Outdoor welcome mat",
+      "qty": 3.0,
+      "retail": 42.0,
+      "sheet_price": null,
+      "category": "Patio & Garden",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000052",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 6,
+      "title": "Folding camp chair",
+      "qty": 2.0,
+      "retail": 64.0,
+      "sheet_price": null,
+      "category": "Sports & Outdoors",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000065",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 7,
+      "title": "Hand pruner steel blade",
+      "qty": 5.0,
+      "retail": 56.25,
+      "sheet_price": null,
+      "category": "Patio & Garden",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000078",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 8,
+      "title": "Solar path light 6 pack",
+      "qty": 2.0,
+      "retail": 48.0,
+      "sheet_price": null,
+      "category": "Patio & Garden",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000091",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 22,
+      "title": "Digital kitchen scale",
+      "qty": 8.0,
+      "retail": 127.92,
+      "sheet_price": null,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000273",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#3",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 23,
+      "title": "Silicone baking mat 2 pack",
+      "qty": 2.0,
+      "retail": 24.0,
+      "sheet_price": null,
+      "category": "Unplaced",
+      "brand": null,
+      "guessed": false,
+      "code": "088800000286",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#3",
+      "placed": "none",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 24,
+      "title": "Chef knife 8 inch",
+      "qty": 8.0,
+      "retail": 352.0,
+      "sheet_price": null,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000299",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#3",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 25,
+      "title": "Glass food storage 10pc",
+      "qty": 8.0,
+      "retail": 248.0,
+      "sheet_price": null,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000312",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#3",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 26,
+      "title": "Electric kettle 1.7L",
+      "qty": 4.0,
+      "retail": 152.0,
+      "sheet_price": null,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000325",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#3",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 27,
+      "title": "Bamboo cutting board",
+      "qty": 2.0,
+      "retail": 44.0,
+      "sheet_price": null,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000338",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#3",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 28,
+      "title": "Nonstick fry pan 12in",
+      "qty": 4.0,
+      "retail": 144.0,
+      "sheet_price": null,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "088800000351",
+      "condition": "",
+      "page": "sections",
+      "section": "sections#3",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    }
+  ],
+  "sheet_pricing": {
+    "kind": "none",
+    "pct": null,
+    "unit": null,
+    "evidence": "the sheet shows retail only, with no price on it",
+    "total": null
+  },
+  "pages": [
+    {
+      "name": "sections",
+      "rows": 24,
+      "kind": "lines",
+      "read": true,
+      "header_row": 2,
+      "same_header_as": null,
+      "hidden": false
+    }
+  ],
+  "sections": [
+    {
+      "key": "sections#1",
+      "page": "sections",
+      "name": "Pallet A-1",
+      "first_row": 3,
+      "last_row": 9,
+      "lines": 6,
+      "units": 17.0,
+      "retail": 322.22,
+      "read": true,
+      "stated": {
+        "units": 17.0,
+        "retail": 322.22,
+        "price": null,
+        "source": "the total row (\"Total\")"
+      }
+    },
+    {
+      "key": "sections#2",
+      "page": "sections",
+      "name": "Pallet A-2",
+      "first_row": 11,
+      "last_row": 18,
+      "lines": 5,
+      "units": 25.0,
+      "retail": 579.45,
+      "read": false,
+      "stated": {
+        "units": 25.0,
+        "retail": 579.45,
+        "price": null,
+        "source": "the total row (\"Total\")"
+      }
+    },
+    {
+      "key": "sections#3",
+      "page": "sections",
+      "name": "Pallet A-3",
+      "first_row": 20,
+      "last_row": 29,
+      "lines": 7,
+      "units": 36.0,
+      "retail": 1091.92,
+      "read": true,
+      "stated": {
+        "units": 36.0,
+        "retail": 1091.92,
+        "price": null,
+        "source": "the total row (\"Total\")"
+      }
+    }
+  ],
+  "columns": [
+    {
+      "index": 0,
+      "header": "Item Description",
+      "role": "description",
+      "hidden": false,
+      "samples": [
+        "Garden hose 50ft expandable",
+        "Patio string lights 48ft",
+        "Outdoor welcome mat"
+      ]
+    },
+    {
+      "index": 1,
+      "header": "UPC",
+      "role": "code",
+      "hidden": false,
+      "samples": [
+        "088800000026",
+        "088800000039",
+        "088800000052"
+      ]
+    },
+    {
+      "index": 2,
+      "header": "Qty",
+      "role": "quantity",
+      "hidden": false,
+      "samples": [
+        "3",
+        "2",
+        "5"
+      ]
+    },
+    {
+      "index": 3,
+      "header": "Unit Retail",
+      "role": "retail_unit",
+      "hidden": false,
+      "samples": [
+        "18.99",
+        "27.5",
+        "14"
+      ]
+    }
+  ],
+  "header_signature": "item description | upc | qty | unit retail",
+  "needs_map": false,
+  "checks": [],
+  "stated": null,
+  "cost_only": false,
+  "products": [
+    {
+      "key": "c:88800000026",
+      "title": "Garden hose 50ft expandable",
+      "code": "088800000026",
+      "brand": null,
+      "category": "Patio & Garden",
+      "placed": "list",
+      "qty": 3.0,
+      "retail": 56.97,
+      "cost": null,
+      "rows": [
+        3
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        0
+      ],
+      "page": "sections",
+      "section": "sections#1"
+    },
+    {
+      "key": "c:88800000039",
+      "title": "Patio string lights 48ft",
+      "code": "088800000039",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 2.0,
+      "retail": 55.0,
+      "cost": null,
+      "rows": [
+        4
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        1
+      ],
+      "page": "sections",
+      "section": "sections#1"
+    },
+    {
+      "key": "c:88800000052",
+      "title": "Outdoor welcome mat",
+      "code": "088800000052",
+      "brand": null,
+      "category": "Patio & Garden",
+      "placed": "list",
+      "qty": 3.0,
+      "retail": 42.0,
+      "cost": null,
+      "rows": [
+        5
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        2
+      ],
+      "page": "sections",
+      "section": "sections#1"
+    },
+    {
+      "key": "c:88800000065",
+      "title": "Folding camp chair",
+      "code": "088800000065",
+      "brand": null,
+      "category": "Sports & Outdoors",
+      "placed": "list",
+      "qty": 2.0,
+      "retail": 64.0,
+      "cost": null,
+      "rows": [
+        6
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        3
+      ],
+      "page": "sections",
+      "section": "sections#1"
+    },
+    {
+      "key": "c:88800000078",
+      "title": "Hand pruner steel blade",
+      "code": "088800000078",
+      "brand": null,
+      "category": "Patio & Garden",
+      "placed": "list",
+      "qty": 5.0,
+      "retail": 56.25,
+      "cost": null,
+      "rows": [
+        7
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        4
+      ],
+      "page": "sections",
+      "section": "sections#1"
+    },
+    {
+      "key": "c:88800000091",
+      "title": "Solar path light 6 pack",
+      "code": "088800000091",
+      "brand": null,
+      "category": "Patio & Garden",
+      "placed": "list",
+      "qty": 2.0,
+      "retail": 48.0,
+      "cost": null,
+      "rows": [
+        8
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        5
+      ],
+      "page": "sections",
+      "section": "sections#1"
+    },
+    {
+      "key": "c:88800000273",
+      "title": "Digital kitchen scale",
+      "code": "088800000273",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 8.0,
+      "retail": 127.92,
+      "cost": null,
+      "rows": [
+        22
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        6
+      ],
+      "page": "sections",
+      "section": "sections#3"
+    },
+    {
+      "key": "c:88800000286",
+      "title": "Silicone baking mat 2 pack",
+      "code": "088800000286",
+      "brand": null,
+      "category": "Unplaced",
+      "placed": "none",
+      "qty": 2.0,
+      "retail": 24.0,
+      "cost": null,
+      "rows": [
+        23
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        7
+      ],
+      "page": "sections",
+      "section": "sections#3"
+    },
+    {
+      "key": "c:88800000299",
+      "title": "Chef knife 8 inch",
+      "code": "088800000299",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 8.0,
+      "retail": 352.0,
+      "cost": null,
+      "rows": [
+        24
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        8
+      ],
+      "page": "sections",
+      "section": "sections#3"
+    },
+    {
+      "key": "c:88800000312",
+      "title": "Glass food storage 10pc",
+      "code": "088800000312",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 8.0,
+      "retail": 248.0,
+      "cost": null,
+      "rows": [
+        25
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        9
+      ],
+      "page": "sections",
+      "section": "sections#3"
+    },
+    {
+      "key": "c:88800000325",
+      "title": "Electric kettle 1.7L",
+      "code": "088800000325",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 4.0,
+      "retail": 152.0,
+      "cost": null,
+      "rows": [
+        26
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        10
+      ],
+      "page": "sections",
+      "section": "sections#3"
+    },
+    {
+      "key": "c:88800000338",
+      "title": "Bamboo cutting board",
+      "code": "088800000338",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 2.0,
+      "retail": 44.0,
+      "cost": null,
+      "rows": [
+        27
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        11
+      ],
+      "page": "sections",
+      "section": "sections#3"
+    },
+    {
+      "key": "c:88800000351",
+      "title": "Nonstick fry pan 12in",
+      "code": "088800000351",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 4.0,
+      "retail": 144.0,
+      "cost": null,
+      "rows": [
+        28
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        12
+      ],
+      "page": "sections",
+      "section": "sections#3"
+    }
+  ],
+  "review": {
+    "groups": [
+      {
+        "key": "line:chef knife 8 inch|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "chef knife 8 inch",
+        "label": "Chef knife 8 inch",
+        "lines": 1,
+        "units": 8.0,
+        "retail": 352.0,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "line:glass food storage 10pc|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "glass food storage 10pc",
+        "label": "Glass food storage 10pc",
+        "lines": 1,
+        "units": 8.0,
+        "retail": 248.0,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "line:electric kettle 1 7l|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "electric kettle 1 7l",
+        "label": "Electric kettle 1.7L",
+        "lines": 1,
+        "units": 4.0,
+        "retail": 152.0,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "line:nonstick fry pan 12in|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "nonstick fry pan 12in",
+        "label": "Nonstick fry pan 12in",
+        "lines": 1,
+        "units": 4.0,
+        "retail": 144.0,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "line:digital kitchen scale|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "digital kitchen scale",
+        "label": "Digital kitchen scale",
+        "lines": 1,
+        "units": 8.0,
+        "retail": 127.92,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "line:folding camp chair|Sports & Outdoors",
+        "kind": "phrase",
+        "pattern": "folding camp chair",
+        "label": "Folding camp chair",
+        "lines": 1,
+        "units": 2.0,
+        "retail": 64.0,
+        "suggested": "Sports & Outdoors"
+      },
+      {
+        "key": "line:garden hose 50ft expandable|Patio & Garden",
+        "kind": "phrase",
+        "pattern": "garden hose 50ft expandable",
+        "label": "Garden hose 50ft expandable",
+        "lines": 1,
+        "units": 3.0,
+        "retail": 56.97,
+        "suggested": "Patio & Garden"
+      },
+      {
+        "key": "line:hand pruner steel blade|Patio & Garden",
+        "kind": "phrase",
+        "pattern": "hand pruner steel blade",
+        "label": "Hand pruner steel blade",
+        "lines": 1,
+        "units": 5.0,
+        "retail": 56.25,
+        "suggested": "Patio & Garden"
+      },
+      {
+        "key": "line:patio string lights 48ft|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "patio string lights 48ft",
+        "label": "Patio string lights 48ft",
+        "lines": 1,
+        "units": 2.0,
+        "retail": 55.0,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "line:solar path light 6 pack|Patio & Garden",
+        "kind": "phrase",
+        "pattern": "solar path light 6 pack",
+        "label": "Solar path light 6 pack",
+        "lines": 1,
+        "units": 2.0,
+        "retail": 48.0,
+        "suggested": "Patio & Garden"
+      },
+      {
+        "key": "line:bamboo cutting board|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "bamboo cutting board",
+        "label": "Bamboo cutting board",
+        "lines": 1,
+        "units": 2.0,
+        "retail": 44.0,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "line:outdoor welcome mat|Patio & Garden",
+        "kind": "phrase",
+        "pattern": "outdoor welcome mat",
+        "label": "Outdoor welcome mat",
+        "lines": 1,
+        "units": 3.0,
+        "retail": 42.0,
+        "suggested": "Patio & Garden"
+      },
+      {
+        "key": "line:silicone baking mat 2 pack|",
+        "kind": "phrase",
+        "pattern": "silicone baking mat 2 pack",
+        "label": "Silicone baking mat 2 pack",
+        "lines": 1,
+        "units": 2.0,
+        "retail": 24.0,
+        "suggested": null
+      }
+    ],
+    "brands": [],
+    "category_names": [
+      "Shoes",
+      "Clothing",
+      "Accessories",
+      "Electronics",
+      "Furniture",
+      "Toys",
+      "Home & Kitchen",
+      "Tools & Hardware",
+      "Health & Beauty",
+      "Books & Media",
+      "Sports & Outdoors",
+      "Baby",
+      "Pet Supplies",
+      "Automotive",
+      "Office & School",
+      "Patio & Garden",
+      "Grocery",
+      "General Merchandise"
+    ]
+  }
+}

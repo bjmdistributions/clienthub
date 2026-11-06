@@ -1,0 +1,743 @@
+{
+  "categories": [
+    {
+      "name": "Toys",
+      "items": 1,
+      "quantity": 25.0,
+      "total_retail": 0.0
+    },
+    {
+      "name": "Electronics",
+      "items": 2,
+      "quantity": 35.0,
+      "total_retail": 0.0
+    },
+    {
+      "name": "Home & Kitchen",
+      "items": 4,
+      "quantity": 68.0,
+      "total_retail": 0.0
+    },
+    {
+      "name": "Unplaced",
+      "items": 3,
+      "quantity": 23.0,
+      "total_retail": 0.0
+    },
+    {
+      "name": "Clothing",
+      "items": 1,
+      "quantity": 40.0,
+      "total_retail": 0.0
+    },
+    {
+      "name": "Office & School",
+      "items": 1,
+      "quantity": 12.0,
+      "total_retail": 0.0
+    }
+  ],
+  "brands": [],
+  "categories_from_manifest": false,
+  "total_retail": 0.0,
+  "overall_margin_pct": 30.0,
+  "total_items": 12,
+  "total_quantity": 203.0,
+  "skipped_rows": 0,
+  "detection": {
+    "format": "csv",
+    "sheet": null,
+    "header_row": 1,
+    "description_col": "Description",
+    "quantity_col": "Qty",
+    "price_col": null,
+    "category_col": null,
+    "brand_col": null,
+    "price_is_extended": false,
+    "code_col": null,
+    "condition_col": null,
+    "cost_col": "Cost",
+    "note": "There is no category column, so categories are read from the words in each title. 3 of 12 lines (23 of 203 units) could not be placed. There is no retail column: Cost reads as your cost or this load's price, not retail, so no retail is shown."
+  },
+  "uncategorized_lines": 3,
+  "uncategorized_retail": 0.0,
+  "categories_guessed": 9,
+  "brands_from_titles": false,
+  "unpriced_lines": 12,
+  "skipped_note": null,
+  "lines": [
+    {
+      "row": 2,
+      "title": "Zorblax widget 3000",
+      "qty": 8.0,
+      "retail": 0.0,
+      "sheet_price": 36.0,
+      "category": "Unplaced",
+      "brand": null,
+      "guessed": false,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "none",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 3,
+      "title": "Quillfeather desk organizer",
+      "qty": 12.0,
+      "retail": 0.0,
+      "sheet_price": 38.400000000000006,
+      "category": "Office & School",
+      "brand": null,
+      "guessed": true,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 4,
+      "title": "Cotton candy maker countertop",
+      "qty": 6.0,
+      "retail": 0.0,
+      "sheet_price": 66.0,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 5,
+      "title": "Wireless charging pad 15W",
+      "qty": 20.0,
+      "retail": 0.0,
+      "sheet_price": 115.0,
+      "category": "Electronics",
+      "brand": null,
+      "guessed": true,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 6,
+      "title": "Kids tumbler with straw",
+      "qty": 30.0,
+      "retail": 0.0,
+      "sheet_price": 63.0,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 7,
+      "title": "Frumbit sprocket kit",
+      "qty": 10.0,
+      "retail": 0.0,
+      "sheet_price": 64.0,
+      "category": "Unplaced",
+      "brand": null,
+      "guessed": false,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "none",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 8,
+      "title": "Bluetooth speaker mini",
+      "qty": 15.0,
+      "retail": 0.0,
+      "sheet_price": 118.5,
+      "category": "Electronics",
+      "brand": null,
+      "guessed": true,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 9,
+      "title": "Mens athletic socks 6pk",
+      "qty": 40.0,
+      "retail": 0.0,
+      "sheet_price": 104.0,
+      "category": "Clothing",
+      "brand": null,
+      "guessed": true,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 10,
+      "title": "Zorblax widget 5000",
+      "qty": 5.0,
+      "retail": 0.0,
+      "sheet_price": 45.0,
+      "category": "Unplaced",
+      "brand": null,
+      "guessed": false,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "none",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 11,
+      "title": "Ceramic mug set 4pc",
+      "qty": 18.0,
+      "retail": 0.0,
+      "sheet_price": 108.0,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 12,
+      "title": "Jumbo storage bin with lid",
+      "qty": 14.0,
+      "retail": 0.0,
+      "sheet_price": 70.0,
+      "category": "Home & Kitchen",
+      "brand": null,
+      "guessed": true,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    },
+    {
+      "row": 13,
+      "title": "Plush unicorn 12 inch",
+      "qty": 25.0,
+      "retail": 0.0,
+      "sheet_price": 87.5,
+      "category": "Toys",
+      "brand": null,
+      "guessed": true,
+      "code": "",
+      "condition": "",
+      "page": "cost",
+      "section": "cost#1",
+      "placed": "list",
+      "brand_from": "none",
+      "picture": null
+    }
+  ],
+  "sheet_pricing": {
+    "kind": "line",
+    "pct": null,
+    "unit": null,
+    "evidence": "each line has its own price in Cost ($915.40 in all), so no single % or unit price fits",
+    "total": 915.4
+  },
+  "pages": [
+    {
+      "name": "cost",
+      "rows": 13,
+      "kind": "lines",
+      "read": true,
+      "header_row": 1,
+      "same_header_as": null,
+      "hidden": false
+    }
+  ],
+  "sections": [
+    {
+      "key": "cost#1",
+      "page": "cost",
+      "name": "cost",
+      "first_row": 2,
+      "last_row": 13,
+      "lines": 12,
+      "units": 203.0,
+      "retail": 0.0,
+      "read": true,
+      "stated": null
+    }
+  ],
+  "columns": [
+    {
+      "index": 0,
+      "header": "Description",
+      "role": "description",
+      "hidden": false,
+      "samples": [
+        "Zorblax widget 3000",
+        "Quillfeather desk organizer",
+        "Cotton candy maker countertop"
+      ]
+    },
+    {
+      "index": 1,
+      "header": "Qty",
+      "role": "quantity",
+      "hidden": false,
+      "samples": [
+        "8",
+        "12",
+        "6"
+      ]
+    },
+    {
+      "index": 2,
+      "header": "Cost",
+      "role": "cost",
+      "hidden": false,
+      "samples": [
+        "4.5",
+        "3.2",
+        "11"
+      ]
+    }
+  ],
+  "header_signature": "description | qty | cost",
+  "needs_map": false,
+  "checks": [
+    {
+      "severity": "amber",
+      "code": "cost_only",
+      "text": "This sheet gives a cost for each unit and no retail value, so there is no retail to show. The cost is the figure to go by.",
+      "fix": "none",
+      "rows": []
+    }
+  ],
+  "stated": null,
+  "cost_only": true,
+  "products": [
+    {
+      "key": "t:zorblax widget 3000",
+      "title": "Zorblax widget 3000",
+      "code": "",
+      "brand": null,
+      "category": "Unplaced",
+      "placed": "none",
+      "qty": 8.0,
+      "retail": 0.0,
+      "cost": 36.0,
+      "rows": [
+        2
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        0
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:quillfeather desk organizer",
+      "title": "Quillfeather desk organizer",
+      "code": "",
+      "brand": null,
+      "category": "Office & School",
+      "placed": "list",
+      "qty": 12.0,
+      "retail": 0.0,
+      "cost": 38.4,
+      "rows": [
+        3
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        1
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:cotton candy maker countertop",
+      "title": "Cotton candy maker countertop",
+      "code": "",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 6.0,
+      "retail": 0.0,
+      "cost": 66.0,
+      "rows": [
+        4
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        2
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:wireless charging pad 15w",
+      "title": "Wireless charging pad 15W",
+      "code": "",
+      "brand": null,
+      "category": "Electronics",
+      "placed": "list",
+      "qty": 20.0,
+      "retail": 0.0,
+      "cost": 115.0,
+      "rows": [
+        5
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        3
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:kids tumbler with straw",
+      "title": "Kids tumbler with straw",
+      "code": "",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 30.0,
+      "retail": 0.0,
+      "cost": 63.0,
+      "rows": [
+        6
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        4
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:frumbit sprocket kit",
+      "title": "Frumbit sprocket kit",
+      "code": "",
+      "brand": null,
+      "category": "Unplaced",
+      "placed": "none",
+      "qty": 10.0,
+      "retail": 0.0,
+      "cost": 64.0,
+      "rows": [
+        7
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        5
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:bluetooth speaker mini",
+      "title": "Bluetooth speaker mini",
+      "code": "",
+      "brand": null,
+      "category": "Electronics",
+      "placed": "list",
+      "qty": 15.0,
+      "retail": 0.0,
+      "cost": 118.5,
+      "rows": [
+        8
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        6
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:mens athletic socks 6pk",
+      "title": "Mens athletic socks 6pk",
+      "code": "",
+      "brand": null,
+      "category": "Clothing",
+      "placed": "list",
+      "qty": 40.0,
+      "retail": 0.0,
+      "cost": 104.0,
+      "rows": [
+        9
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        7
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:zorblax widget 5000",
+      "title": "Zorblax widget 5000",
+      "code": "",
+      "brand": null,
+      "category": "Unplaced",
+      "placed": "none",
+      "qty": 5.0,
+      "retail": 0.0,
+      "cost": 45.0,
+      "rows": [
+        10
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        8
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:ceramic mug set 4pc",
+      "title": "Ceramic mug set 4pc",
+      "code": "",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 18.0,
+      "retail": 0.0,
+      "cost": 108.0,
+      "rows": [
+        11
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        9
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:jumbo storage bin with lid",
+      "title": "Jumbo storage bin with lid",
+      "code": "",
+      "brand": null,
+      "category": "Home & Kitchen",
+      "placed": "list",
+      "qty": 14.0,
+      "retail": 0.0,
+      "cost": 70.0,
+      "rows": [
+        12
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        10
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    },
+    {
+      "key": "t:plush unicorn 12 inch",
+      "title": "Plush unicorn 12 inch",
+      "code": "",
+      "brand": null,
+      "category": "Toys",
+      "placed": "list",
+      "qty": 25.0,
+      "retail": 0.0,
+      "cost": 87.5,
+      "rows": [
+        13
+      ],
+      "lines": 1,
+      "picture": null,
+      "line_ids": [
+        11
+      ],
+      "page": "cost",
+      "section": "cost#1"
+    }
+  ],
+  "review": {
+    "groups": [
+      {
+        "key": "line:mens athletic socks 6pk|Clothing",
+        "kind": "phrase",
+        "pattern": "mens athletic socks 6pk",
+        "label": "Mens athletic socks 6pk",
+        "lines": 1,
+        "units": 40.0,
+        "retail": 0.0,
+        "suggested": "Clothing"
+      },
+      {
+        "key": "line:kids tumbler with straw|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "kids tumbler with straw",
+        "label": "Kids tumbler with straw",
+        "lines": 1,
+        "units": 30.0,
+        "retail": 0.0,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "line:plush unicorn 12 inch|Toys",
+        "kind": "phrase",
+        "pattern": "plush unicorn 12 inch",
+        "label": "Plush unicorn 12 inch",
+        "lines": 1,
+        "units": 25.0,
+        "retail": 0.0,
+        "suggested": "Toys"
+      },
+      {
+        "key": "line:wireless charging pad 15w|Electronics",
+        "kind": "phrase",
+        "pattern": "wireless charging pad 15w",
+        "label": "Wireless charging pad 15W",
+        "lines": 1,
+        "units": 20.0,
+        "retail": 0.0,
+        "suggested": "Electronics"
+      },
+      {
+        "key": "line:ceramic mug set 4pc|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "ceramic mug set 4pc",
+        "label": "Ceramic mug set 4pc",
+        "lines": 1,
+        "units": 18.0,
+        "retail": 0.0,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "line:bluetooth speaker mini|Electronics",
+        "kind": "phrase",
+        "pattern": "bluetooth speaker mini",
+        "label": "Bluetooth speaker mini",
+        "lines": 1,
+        "units": 15.0,
+        "retail": 0.0,
+        "suggested": "Electronics"
+      },
+      {
+        "key": "line:jumbo storage bin with lid|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "jumbo storage bin with lid",
+        "label": "Jumbo storage bin with lid",
+        "lines": 1,
+        "units": 14.0,
+        "retail": 0.0,
+        "suggested": "Home & Kitchen"
+      },
+      {
+        "key": "word:zorblax|",
+        "kind": "word",
+        "pattern": "zorblax",
+        "label": "Zorblax",
+        "lines": 2,
+        "units": 13.0,
+        "retail": 0.0,
+        "suggested": null
+      },
+      {
+        "key": "line:quillfeather desk organizer|Office & School",
+        "kind": "phrase",
+        "pattern": "quillfeather desk organizer",
+        "label": "Quillfeather desk organizer",
+        "lines": 1,
+        "units": 12.0,
+        "retail": 0.0,
+        "suggested": "Office & School"
+      },
+      {
+        "key": "line:frumbit sprocket kit|",
+        "kind": "phrase",
+        "pattern": "frumbit sprocket kit",
+        "label": "Frumbit sprocket kit",
+        "lines": 1,
+        "units": 10.0,
+        "retail": 0.0,
+        "suggested": null
+      },
+      {
+        "key": "line:cotton candy maker countertop|Home & Kitchen",
+        "kind": "phrase",
+        "pattern": "cotton candy maker countertop",
+        "label": "Cotton candy maker countertop",
+        "lines": 1,
+        "units": 6.0,
+        "retail": 0.0,
+        "suggested": "Home & Kitchen"
+      }
+    ],
+    "brands": [],
+    "category_names": [
+      "Shoes",
+      "Clothing",
+      "Accessories",
+      "Electronics",
+      "Furniture",
+      "Toys",
+      "Home & Kitchen",
+      "Tools & Hardware",
+      "Health & Beauty",
+      "Books & Media",
+      "Sports & Outdoors",
+      "Baby",
+      "Pet Supplies",
+      "Automotive",
+      "Office & School",
+      "Patio & Garden",
+      "Grocery",
+      "General Merchandise"
+    ]
+  }
+}
