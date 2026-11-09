@@ -604,6 +604,7 @@ pub async fn send_threaded(
 /// back to it. Gmail sends as `from` only when it is the login or a verified *Send mail as* on it.
 pub async fn send_outreach(
     to: &str, subject: &str, body: &str, from: &str, from_name: &str, in_reply_to: Option<&str>,
+    html: Option<(&str, Option<(Vec<u8>, &str)>)>,
 ) -> Result<String> {
     let settings = load_settings()?;
     let pass_or_token = match settings.auth_method {
@@ -627,7 +628,18 @@ pub async fn send_outreach(
         let v = if mid.starts_with('<') { mid.to_string() } else { format!("<{mid}>") };
         builder = builder.header(InReplyTo::from(v.clone())).header(References::from(v));
     }
-    let email = builder.body(body.to_string())?;
+    // R-638: a reply Jack wrote goes as plain text plus HTML, with his logo as the inline picture `cid:sig-logo`.
+    // Cold emails and bumps stay plain text only.
+    let email = match html {
+        None => builder.body(body.to_string())?,
+        Some((html, logo)) => {
+            let mut related = MultiPart::related().singlepart(SinglePart::html(html.to_string()));
+            if let Some((bytes, mime)) = logo {
+                related = related.singlepart(Attachment::new_inline("sig-logo".to_string()).body(bytes, ContentType::parse(mime)?));
+            }
+            builder.multipart(MultiPart::alternative().singlepart(SinglePart::plain(body.to_string())).multipart(related))?
+        }
+    };
     let creds = Credentials::new(settings.user.clone(), pass_or_token);
     let mut mailer_builder = AsyncSmtpTransport::<Tokio1Executor>::relay(&settings.smtp_host)?.credentials(creds);
     if matches!(settings.auth_method, AuthMethod::Oauth2) {

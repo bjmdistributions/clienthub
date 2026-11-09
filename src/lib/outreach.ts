@@ -106,6 +106,9 @@ export interface OutreachSettings {
   subject: string;
   body: string;
   bump: string;
+  /** R-638: what ends a reply sent from Replies, and the logo under it (a PNG or JPEG data URL). Absent before deploy-320. */
+  signature?: string;
+  signature_logo?: string;
 }
 
 export interface LeadList {
@@ -135,6 +138,8 @@ export interface OutreachReply {
   subject: string; at: string; body: string; new_text: string; gist: string; tags: string[]; phone: string;
   answered: boolean; answered_how: string; answered_at: string;
   yours: { subject: string; body: string; at: string } | null;
+  /** R-638: his reply still waiting to send, or the one that failed (with his words, to try again). */
+  my_reply?: { status: "queued" | "sending" | "failed"; error: string; text: string; at: string } | null;
 }
 
 export const REPLY_TAG: Record<string, [string, "neutral" | "step" | "accent" | "warning" | "success" | "danger"]> = {
@@ -174,10 +179,12 @@ export const outreach = {
     call<{ queued: number; skipped: Skipped[] }>("POST", "/api/outreach/queue", { emails }),
   cancel: (queueId: string) => call<{ ok: boolean }>("POST", `/api/outreach/queue/${id(queueId)}/cancel`, {}),
   retry: (queueId: string) => call<{ ok: boolean }>("POST", `/api/outreach/queue/${id(queueId)}/retry`, {}),
-  saveSettings: (s: Pick<OutreachSettings, "send_from" | "from_name" | "address_line" | "daily_cap">) =>
+  saveSettings: (s: Pick<OutreachSettings, "send_from" | "from_name" | "address_line" | "daily_cap" | "signature" | "signature_logo">) =>
     call<OutreachSettings>("POST", "/api/outreach/settings", s),
   replies: () => call<{ replies: OutreachReply[]; waiting: number }>("GET", "/api/outreach/replies"),
   markAnswered: (replyId: string) => call<{ ok: boolean }>("POST", `/api/outreach/replies/${id(replyId)}/answered`, {}),
+  /** R-638: queue his reply; the sending computer sends it within a minute, with his signature and logo. */
+  reply: (replyId: string, text: string) => call<{ ok: boolean; pump_seen_at: string }>("POST", `/api/outreach/replies/${id(replyId)}/reply`, { text }),
   texted: (leadId: string, texted: boolean) => call<{ texted: boolean }>("POST", `/api/outreach/leads/${id(leadId)}/texted`, { texted }),
   check: (leadId: string, key: string, done: boolean) => call<{ checks: Checks }>("POST", `/api/outreach/leads/${id(leadId)}/check`, { key, done }),
   renameList: (from: string, to: string) => call<{ renamed: number }>("POST", "/api/outreach/lists/rename", { from, to }),

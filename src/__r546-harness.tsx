@@ -29,12 +29,23 @@ const LEADS = [
     checks: { done: { company: { at: ago(60 * 24 * 2), by: "Invented Admin" }, bank: { at: ago(60 * 5), by: "Invented Admin" } }, cleared: false } }),
   lead({ id: "o3", company: "Eastgate Stocklots", state: "", country: "Turkey", kind: "overseas", checks: { done: {}, cleared: false } }),
 ];
+// R-638: an invented logo, drawn here so no real picture is used.
+const LOGO = (() => {
+  const c = document.createElement("canvas");
+  c.width = 180; c.height = 48;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#1f6feb"; g.fillRect(0, 8, 32, 32);
+  g.fillStyle = "#3b3b3b"; g.font = "600 20px sans-serif"; g.fillText("Example Co", 42, 31);
+  return c.toDataURL("image/png");
+})();
 const SETTINGS = {
   send_from: "sam@example.test", from_name: "Sam", address_line: "Example Co, 1 Test Way, Riverton NJ", daily_cap: 30,
   pump_seen_at: new URLSearchParams(location.search).get("pc") === "off" ? "" : ago(2), pump_note: "Replies are watched in sam@example.test.",
   hours: "9 to 4 New York time, weekdays", subject: "leftover inventory at {company}",
   body: "Hi {first_name},\n\nI buy leftover and abandoned inventory from warehouses, mostly clothing and shoes.\n\n{personal_line}\n\nAnything like that sitting in {city} right now?\n\n{from_name}",
   bump: "Hi {first_name}, bumping this in case it got buried.\n\n{from_name}",
+  signature: new URLSearchParams(location.search).get("sig") === "none" ? "" : "Sam Tester\nExample Co\n(555) 010-0000",
+  signature_logo: new URLSearchParams(location.search).get("sig") === "none" ? "" : LOGO,
 };
 const list = () => {
   const counts: Record<string, number> = {};
@@ -61,6 +72,10 @@ const REPLIES = [
   reply({ id: "r3", lead_id: "l7", company: "Old Mill Warehousing", email: "info@oldmill.example", at: ago(60 * 30),
     new_text: "No thank you, we don't have anything like that.", body: "No thank you, we don't have anything like that.",
     gist: "No thank you, we don't have anything like that.", tags: ["no"], answered: true, answered_how: "answer", answered_at: ago(60 * 26) }),
+  reply({ id: "r5", lead_id: "l3", company: "Garment Row Logistics", contact_name: "Pat", email: "info@garmentrow.example", at: ago(60 * 8),
+    new_text: "Send me what you pay for shoes by the pallet.", body: "Send me what you pay for shoes by the pallet.",
+    gist: "Send me what you pay for shoes by the pallet.", tags: ["details"],
+    my_reply: { status: "failed", error: "The email could not be sent: connection refused", text: "Hi Pat, it depends on the brands. Can you send a list?", at: ago(60 * 7) } }),
   reply({ id: "r4", lead_id: "l5", company: "Crossdock Twelve", email: "ops@crossdock12.example", at: ago(60 * 50),
     new_text: "stop", body: "stop", gist: "stop", tags: ["stop"], answered: true, answered_how: "stop", answered_at: ago(60 * 50) }),
 ];
@@ -78,6 +93,9 @@ const render = (t: string, l: any) => t.replace(/\{first_name\}/g, (l.contact_na
   const { method, path, body } = args;
   if (method === "GET" && path === "/api/outreach/leads") return list();
   if (method === "GET" && path === "/api/outreach/replies") return { replies: [...REPLIES].sort((x, y) => Number(x.answered) - Number(y.answered)), waiting: REPLIES.filter((r) => !r.answered).length };
+  const rr = path.match(/^\/api\/outreach\/replies\/([^/]+)\/reply$/);
+  if (rr) { const r = REPLIES.find((x) => x.id === rr[1])!; r.my_reply = { status: "queued", error: "", text: body.text, at: ago(0) }; return { ok: true, pump_seen_at: SETTINGS.pump_seen_at }; }
+  if (method === "POST" && path === "/api/outreach/settings") { Object.assign(SETTINGS, body); return SETTINGS; }
   const ra = path.match(/^\/api\/outreach\/replies\/([^/]+)\/answered$/);
   if (ra) { const r = REPLIES.find((x) => x.id === ra[1])!; r.answered = true; r.answered_how = "answered"; r.answered_at = ago(0); return { ok: true }; }
   const ck = path.match(/^\/api\/outreach\/leads\/([^/]+)\/check$/);

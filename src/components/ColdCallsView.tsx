@@ -221,7 +221,7 @@ export default function ColdCallsView() {
           </div>
 
           {view === "overseas" ? <OverseasList leads={overseas} onOpen={setOpenId} onAdd={() => setForm({ kind: "overseas" })} />
-          : view === "replies" ? <Replies onOpenLead={setOpenId} onChanged={load} />
+          : view === "replies" ? <Replies settings={data.settings} onOpenLead={setOpenId} onChanged={load} onSettings={() => setSettingsOpen(true)} />
           : view === "map" ? <ColdCallsMap leads={leads} onOpen={setOpenId} />
           : view === "text" ? <TextList leads={leads} onOpen={setOpenId} onChanged={load} /> : <>
           <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -454,11 +454,15 @@ const tagPill = (t: string) => {
   return <StatusPill key={t} tone={tone}>{lb}</StatusPill>;
 };
 
-/** R-563: every reply in one place. What they said at a glance, and the ones still waiting on you first. */
-function Replies({ onOpenLead, onChanged }: { onOpenLead: (leadId: string) => void; onChanged: () => void }) {
+/** R-563: every reply in one place. What they said at a glance, and the ones still waiting on you first.
+ *  R-638: an inbox. On a wide window the list sits on the left and the open email on the right; narrower, an
+ *  email opens over the list. Reply writes back from here, with your signature and logo. */
+function Replies({ settings, onOpenLead, onChanged, onSettings }: {
+  settings: LeadList["settings"]; onOpenLead: (leadId: string) => void; onChanged: () => void; onSettings: () => void;
+}) {
   const [list, setList] = useState<OutreachReply[] | null>(null);
   const [all, setAll] = useState(false);
-  const [open, setOpen] = useState<OutreachReply | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try { setList((await outreach.replies()).replies); } catch (e) { toast(msg(e), "error"); }
@@ -472,10 +476,18 @@ function Replies({ onOpenLead, onChanged }: { onOpenLead: (leadId: string) => vo
   if (!list) return <div className="py-16 text-center text-[13px] text-muted">Loading replies...</div>;
   const waiting = list.filter((r) => !r.answered);
   const shown = all ? list : waiting;
+  const open = list.find((r) => r.id === openId) ?? null;
+  // The wide inbox always shows an email: the one picked, else the first in the list.
+  const side = open ?? shown[0] ?? null;
   const answer = async (r: OutreachReply) => {
-    try { await outreach.markAnswered(r.id); toast("Marked answered"); setOpen(null); await load(); onChanged(); }
+    try { await outreach.markAnswered(r.id); toast("Marked answered"); await load(); onChanged(); }
     catch (e) { toast(msg(e), "error"); }
   };
+  const done = async () => { await load(); onChanged(); };
+  const pane = (r: OutreachReply) => (
+    <EmailPane key={r.id} r={r} settings={settings} onAnswer={() => answer(r)} onSent={done} onSettings={onSettings}
+      onOpenLead={() => { setOpenId(null); onOpenLead(r.lead_id); }} />
+  );
 
   return (
     <>
@@ -486,69 +498,99 @@ function Replies({ onOpenLead, onChanged }: { onOpenLead: (leadId: string) => vo
             {lb} <span className="tabular-nums opacity-60 ml-1">{n}</span>
           </button>
         ))}
-        <span className="text-[12px] text-muted">A reply counts as answered once you email them from your mailbox, log a call, or mark it.</span>
+        <span className="text-[12px] text-muted">A reply counts as answered once you reply here or from your mailbox, log a call, or mark it.</span>
       </div>
       {shown.length === 0 ? (
         <div className="py-16 text-center text-[13px] text-muted">
           {list.length === 0 ? "No replies yet. When a warehouse answers a cold email it shows here." : "You have answered every reply."}
         </div>
       ) : (
-        <div className="divide-y divide-line border-t border-line">
-          {shown.map((r) => (
-            <button key={r.id} onClick={() => setOpen(r)} className="w-full text-left flex items-start gap-4 px-3 py-3.5 hover:bg-surface-2 transition-colors duration-150 min-w-0">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2 min-w-0">
-                  <span className="text-[14px] font-medium text-ink truncate">{r.company}</span>
-                  {r.contact_name && <span className="text-[12.5px] text-muted truncate">{r.contact_name}</span>}
-                  <span className="ml-auto text-[12px] text-muted whitespace-nowrap">{ago(r.at)}</span>
-                </div>
-                <div className={`text-[13.5px] mt-0.5 line-clamp-2 ${r.answered ? "text-ink-2" : "text-ink"}`}>
-                  {r.gist || <span className="text-muted">No new words in it. Open it to see the whole email.</span>}
-                </div>
-                {(r.tags.length > 0 || r.phone) && (
-                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5 whitespace-nowrap">
+        <div className="xl:grid xl:grid-cols-[minmax(320px,400px)_1fr] xl:border xl:border-line xl:rounded-2xl xl:overflow-hidden xl:h-[calc(100vh-260px)] xl:min-h-[520px]">
+          <div className="divide-y divide-line border-t border-line xl:border-t-0 xl:border-r xl:overflow-y-auto min-w-0">
+            {shown.map((r) => {
+              const picked = side?.id === r.id;
+              return (
+                <button key={r.id} onClick={() => setOpenId(r.id)}
+                  className={`w-full text-left block px-3 xl:px-4 py-3.5 hover:bg-surface-2 transition-colors duration-150 min-w-0 ${picked ? "xl:bg-surface-2" : ""}`}>
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className={`text-[14px] text-ink truncate ${r.answered ? "font-medium" : "font-semibold"}`}>{r.company}</span>
+                    {r.contact_name && <span className="text-[12.5px] text-muted truncate">{r.contact_name}</span>}
+                    <span className="ml-auto text-[12px] text-muted whitespace-nowrap">{ago(r.at)}</span>
+                  </div>
+                  <div className="text-[12.5px] text-ink-2 truncate mt-0.5">{r.subject || "(no subject)"}</div>
+                  <div className={`text-[13px] mt-0.5 line-clamp-2 ${r.answered ? "text-muted" : "text-ink"}`}>
+                    {r.gist || "No new words in it. Open it to see the whole email."}
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-1.5 whitespace-nowrap min-w-0">
+                    {r.my_reply ? <StatusPill tone={r.my_reply.status === "failed" ? "danger" : "step"} size="md">{r.my_reply.status === "failed" ? "Reply failed" : "Reply sending"}</StatusPill>
+                      : r.answered ? <span className="text-[12px] text-muted inline-flex items-center gap-1"><Check size={13} />{ANSWERED_HOW[r.answered_how] ?? "Answered"}</span>
+                      : <StatusPill tone="warning" size="md">To answer</StatusPill>}
                     {r.tags.slice(0, 2).map(tagPill)}
                     {r.tags.length > 2 && <span className="text-[11.5px] text-muted">+{r.tags.length - 2}</span>}
-                    {r.phone && <span className="text-[12px] text-ink-2 inline-flex items-center gap-1"><Phone size={12} className="text-muted" />{r.phone}</span>}
                   </div>
-                )}
-              </div>
-              <div className="flex-shrink-0 w-36 flex justify-end pt-0.5">
-                {r.answered
-                  ? <span className="text-[12px] text-muted inline-flex items-center gap-1"><Check size={13} />{ANSWERED_HOW[r.answered_how] ?? "Answered"}</span>
-                  : <StatusPill tone="warning" size="md">To answer</StatusPill>}
-              </div>
-            </button>
-          ))}
+                </button>
+              );
+            })}
+          </div>
+          <div className="hidden xl:block min-w-0 overflow-y-auto">{side && pane(side)}</div>
         </div>
       )}
-      {open && <ReplyReader r={open} onClose={() => setOpen(null)} onAnswer={() => answer(open)} onOpenLead={() => { setOpen(null); onOpenLead(open.lead_id); }} />}
+      {open && (
+        <div className="xl:hidden">
+          <Overlay title={open.company} wide onClose={() => setOpenId(null)}>{pane(open)}</Overlay>
+        </div>
+      )}
     </>
   );
 }
 
-function ReplyReader({ r, onClose, onAnswer, onOpenLead }: { r: OutreachReply; onClose: () => void; onAnswer: () => void; onOpenLead: () => void }) {
+/** R-638: one reply laid out as an email (who, to, when, subject, what they said, your email before it), with Reply. */
+function EmailPane({ r, settings, onAnswer, onSent, onOpenLead, onSettings }: {
+  r: OutreachReply; settings: LeadList["settings"]; onAnswer: () => void; onSent: () => void; onOpenLead: () => void; onSettings: () => void;
+}) {
   const [whole, setWhole] = useState(false);
-  const when = (iso: string) => new Date(iso).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const when = (iso: string) => new Date(iso).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
   const quoted = r.body.trim() !== r.new_text.trim();
+  const who = r.contact_name || r.email;
+  const initial = (r.contact_name || r.company || r.email).trim().charAt(0).toUpperCase();
+  const me = settings.from_name ? `${settings.from_name} <${settings.send_from}>` : settings.send_from;
+  const subject = /^re:/i.test(r.subject) ? r.subject : `Re: ${r.subject}`;
+  const seen = settings.pump_seen_at ? new Date(settings.pump_seen_at).getTime() : 0;
+  const sender = !seen || Date.now() - seen > 10 * 60_000
+    ? "No computer is sending right now. It goes once Ecliptr is open on the computer with Send from this computer on."
+    : `Goes from ${settings.send_from || "your email"} within a minute, in the same thread as their email.`;
+  const pending = r.my_reply && r.my_reply.status !== "failed";
+  const send = async () => {
+    if (!draft?.trim()) { toast("Write your reply first.", "error"); return; }
+    setBusy(true);
+    try { await outreach.reply(r.id, draft); toast("Reply queued"); setDraft(null); onSent(); }
+    catch (e) { toast(msg(e), "error"); }
+    setBusy(false);
+  };
   return (
-    <Overlay title={r.company} wide onClose={onClose}
-      footer={<>
-        <button className={ghost} onClick={onOpenLead}>Open warehouse</button>
-        {!r.answered && <button className={solid} onClick={onAnswer}><Check size={14} /> Mark answered</button>}
-      </>}>
-      <div className="text-[12.5px] text-muted mb-3">
-        {[r.contact_name, r.email, when(r.at)].filter(Boolean).join(", ")}
-        <div className="text-ink-2 mt-0.5">{r.subject}</div>
+    <div className="px-1 xl:px-6 py-1 xl:py-5 min-w-0">
+      <h2 className="text-[18px] font-semibold text-ink leading-snug break-words">{r.subject || "(no subject)"}</h2>
+      <div className="mt-3 flex items-start gap-3 min-w-0">
+        <div className="w-9 h-9 rounded-full bg-surface-2 border border-line flex items-center justify-center text-[14px] font-semibold text-ink-2 flex-shrink-0">{initial}</div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
+            <span className="text-[14px] font-semibold text-ink">{who}</span>
+            {r.contact_name && <span className="text-[12.5px] text-muted select-text">&lt;{r.email}&gt;</span>}
+            <span className="ml-auto text-[12px] text-muted whitespace-nowrap">{when(r.at)}</span>
+          </div>
+          <div className="text-[12.5px] text-muted truncate">{r.company}</div>
+          {settings.send_from && <div className="text-[12.5px] text-muted truncate">To {me}</div>}
+        </div>
       </div>
       {(r.tags.length > 0 || r.phone) && (
-        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
           {r.tags.map(tagPill)}
           {r.phone && <span className="text-[12.5px] text-ink-2 inline-flex items-center gap-1 select-text"><Phone size={12} className="text-muted" />{r.phone}</span>}
         </div>
       )}
-      <div className="text-[12px] text-muted mb-1">What they said</div>
-      <div className="text-[14px] text-ink leading-relaxed whitespace-pre-wrap select-text bg-surface-2 border border-line rounded-xl px-4 py-3">
+      <div className="mt-4 text-[14px] text-ink leading-relaxed whitespace-pre-wrap break-words select-text">
         {(whole ? r.body : r.new_text) || r.body || "The email had no text."}
       </div>
       {quoted && (
@@ -556,16 +598,55 @@ function ReplyReader({ r, onClose, onAnswer, onOpenLead }: { r: OutreachReply; o
           {whole ? "Show only what they wrote" : "Show the whole email"}
         </button>
       )}
-      <div className={`mt-4 text-[12.5px] ${r.answered ? "text-muted" : "text-warning-ink font-medium"}`}>
-        {r.answered ? `${ANSWERED_HOW[r.answered_how] ?? "Answered"} ${ago(r.answered_at)}.` : "You have not answered this yet."}
+
+      <div className="mt-5 text-[12.5px]">
+        {r.my_reply?.status === "failed" ? <span className="text-danger-ink">Your reply did not send: {r.my_reply.error}</span>
+          : pending ? <span className="text-ink-2">Your reply is waiting to send. {sender}</span>
+          : r.answered ? <span className="text-muted">{ANSWERED_HOW[r.answered_how] ?? "Answered"} {ago(r.answered_at)}.</span>
+          : <span className="text-warning-ink font-medium">You have not answered this yet.</span>}
       </div>
+
+      {draft === null ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {!pending && r.status !== "do_not_contact" && (
+            <button className={solid} onClick={() => setDraft(r.my_reply?.status === "failed" ? r.my_reply.text : "")}><Reply size={14} /> Reply</button>
+          )}
+          {!r.answered && !pending && <button className={ghost} onClick={onAnswer}><Check size={14} /> Mark answered</button>}
+          <button className={ghost} onClick={onOpenLead}>Open warehouse</button>
+        </div>
+      ) : (
+        <div className="mt-3 border border-line-3 rounded-xl overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-line text-[12.5px] space-y-0.5">
+            <div className="truncate"><span className="text-muted">To </span><span className="text-ink">{r.contact_name ? `${r.contact_name} <${r.email}>` : r.email}</span></div>
+            <div className="truncate"><span className="text-muted">Subject </span><span className="text-ink">{subject}</span></div>
+          </div>
+          <textarea autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} rows={7}
+            className="w-full bg-transparent px-4 py-3 text-[14px] text-ink leading-relaxed focus:outline-none resize-y block" placeholder={`Write to ${who}`} />
+          <div className="px-4 pb-3">
+            {settings.signature || settings.signature_logo ? (
+              <div className="text-[13px] text-ink-2 whitespace-pre-wrap border-t border-dashed border-line pt-2.5">
+                {settings.signature}
+                {settings.signature_logo && <img src={settings.signature_logo} alt="Your logo" className="mt-2 max-w-[200px] max-h-[80px] object-contain block" />}
+              </div>
+            ) : (
+              <button className="text-[12.5px] text-accent-hover hover:underline" onClick={onSettings}>Add your signature and logo in Cold calls settings</button>
+            )}
+          </div>
+          <div className="px-4 py-2.5 border-t border-line flex flex-wrap items-center gap-2">
+            <span className="text-[12px] text-muted min-w-0 flex-1">{sender} Their email is quoted under yours.</span>
+            <button className={ghost} onClick={() => setDraft(null)}>Discard</button>
+            <button className={solid} disabled={busy} onClick={send}><Reply size={14} /> Send</button>
+          </div>
+        </div>
+      )}
+
       {r.yours && (
-        <div className="mt-4">
+        <div className="mt-6 border-t border-line pt-4">
           <div className="text-[12px] text-muted mb-1">Your email before this, {when(r.yours.at)}</div>
           <div className="text-[12.5px] text-ink-2 whitespace-pre-wrap select-text line-clamp-[10] border-l-2 border-line pl-3">{r.yours.body}</div>
         </div>
       )}
-    </Overlay>
+    </div>
   );
 }
 
@@ -953,8 +1034,30 @@ function Review({ emails, skipped, onClose, onQueued }: { emails: DraftEmail[]; 
 
 function SettingsOverlay({ settings, onClose, onSaved }: { settings: LeadList["settings"]; onClose: () => void; onSaved: () => void }) {
   const [pump, setPump] = useState<PumpState | null>(null);
-  const [f, setF] = useState({ send_from: settings.send_from, from_name: settings.from_name, address_line: settings.address_line, daily_cap: String(settings.daily_cap || 30) });
+  const [f, setF] = useState({ send_from: settings.send_from, from_name: settings.from_name, address_line: settings.address_line, daily_cap: String(settings.daily_cap || 30),
+    signature: settings.signature ?? "", signature_logo: settings.signature_logo ?? "" });
   const [busy, setBusy] = useState(false);
+  const logoRef = useRef<HTMLInputElement>(null);
+  // R-638: the logo is shrunk here to at most 400 by 160 and kept as a PNG, so every reply carries a small picture.
+  const pickLogo = (file?: File) => {
+    if (!file) return;
+    if (!/^image\/(png|jpeg)$/.test(file.type)) { toast("Choose a PNG or JPEG picture.", "error"); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 400 / img.width, 160 / img.height);
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(img.width * k));
+      c.height = Math.max(1, Math.round(img.height * k));
+      c.getContext("2d")?.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      const data = c.toDataURL(file.type === "image/jpeg" ? "image/jpeg" : "image/png", 0.9);
+      if (data.length > 400_000) { toast("That picture is too big even when shrunk. Try a simpler logo.", "error"); return; }
+      setF((v) => ({ ...v, signature_logo: data }));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); toast("That picture could not be read.", "error"); };
+    img.src = url;
+  };
   useEffect(() => {
     outreach.pump().then((p) => {
       setPump(p);
@@ -967,7 +1070,8 @@ function SettingsOverlay({ settings, onClose, onSaved }: { settings: LeadList["s
   const save = async () => {
     setBusy(true);
     try {
-      await outreach.saveSettings({ send_from: f.send_from.trim(), from_name: f.from_name.trim(), address_line: f.address_line.trim(), daily_cap: parseInt(f.daily_cap, 10) || 30 });
+      await outreach.saveSettings({ send_from: f.send_from.trim(), from_name: f.from_name.trim(), address_line: f.address_line.trim(), daily_cap: parseInt(f.daily_cap, 10) || 30,
+        signature: f.signature, signature_logo: f.signature_logo });
       toast("Saved");
       onSaved();
     } catch (e) { toast(msg(e), "error"); }
@@ -1013,6 +1117,18 @@ function SettingsOverlay({ settings, onClose, onSaved }: { settings: LeadList["s
           <p className="text-[12px] text-muted mt-1">Every cold email ends with it. The law asks for a real postal address.</p></div>
         <div><label className={label}>Emails a day</label><input type="number" min={1} max={200} value={f.daily_cap} onChange={(e) => setF({ ...f, daily_cap: e.target.value })} className={field + " w-32"} />
           <p className="text-[12px] text-muted mt-1">Spread across {settings.hours}. 30 to 40 a day keeps a mailbox out of spam folders.</p></div>
+        <div>
+          <label className={label}>Reply signature</label>
+          <textarea value={f.signature} onChange={(e) => setF({ ...f, signature: e.target.value })} rows={4} className={field + " resize-y"}
+            placeholder={"Jack\nBJM Distributions\n(555) 010-0000"} />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {f.signature_logo && <img src={f.signature_logo} alt="Your logo" className="max-w-[200px] max-h-[80px] object-contain border border-line rounded-lg p-1" />}
+            <button type="button" className={ghost} onClick={() => logoRef.current?.click()}>{f.signature_logo ? "Change logo" : "Add logo"}</button>
+            {f.signature_logo && <button type="button" className={ghost} onClick={() => setF({ ...f, signature_logo: "" })}>Remove logo</button>}
+            <input ref={logoRef} type="file" accept="image/png,image/jpeg" className="hidden" onChange={(e) => { pickLogo(e.target.files?.[0]); e.target.value = ""; }} />
+          </div>
+          <p className="text-[12px] text-muted mt-1">Ends every reply you send from Replies, with the logo under it. Cold emails and bumps stay plain text.</p>
+        </div>
       </div>
     </Overlay>
   );

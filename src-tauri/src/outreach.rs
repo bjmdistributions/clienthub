@@ -128,12 +128,14 @@ pub async fn outreach_pump_set(on: bool) -> Result<(), String> {
 /// About once a minute while switched on; the server's answer decides the real wait.
 /// R-606: the reply check runs on its own timer. It reads the inbox and the Sent folder for every warehouse ever
 /// emailed, which grows with the list; in the same loop it held every send up behind it.
+/// R-638: never more than a minute between asks, so a reply Jack wrote (on any device) goes within a minute even
+/// while cold email is waiting on its hours or the daily limit.
 pub fn spawn_pump() {
     tauri::async_runtime::spawn(async {
         tokio::time::sleep(Duration::from_secs(40)).await;
         loop {
             let wait = if pump_on() { tick().await } else { 120 };
-            tokio::time::sleep(Duration::from_secs(wait.clamp(30, 900))).await;
+            tokio::time::sleep(Duration::from_secs(wait.clamp(30, 60))).await;
         }
     });
     tauri::async_runtime::spawn(async {
@@ -172,9 +174,16 @@ async fn tick() -> u64 {
     let Some(email) = v.get("email").filter(|e| e.is_object()) else { return retry };
     let s = |k: &str| email.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
     let reply_to = s("reply_to");
+    // R-638: a reply Jack wrote comes with its HTML and his logo (base64), sent as an inline picture.
+    let (html, logo_type) = (s("html"), s("logo_type"));
+    let logo = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(s("logo")).ok().filter(|b| !b.is_empty() && !logo_type.is_empty())
+    };
     let sent = crate::email::send_outreach(
         &s("to"), &s("subject"), &s("body"), &s("from"), &s("from_name"),
         if reply_to.is_empty() { None } else { Some(reply_to.as_str()) },
+        if html.is_empty() { None } else { Some((html.as_str(), logo.map(|b| (b, logo_type.as_str())))) },
     )
     .await;
     let done = match &sent {
