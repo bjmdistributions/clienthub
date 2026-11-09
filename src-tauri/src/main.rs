@@ -832,6 +832,8 @@ fn main() {
             render_sample_quote_pdf,
             preview_invoice_pdf,
             send_invoice,
+            send_payment_confirmation,
+            export_suppliers,
             mark_invoice_paid,
             list_quotes,
             list_quotes_for_client,

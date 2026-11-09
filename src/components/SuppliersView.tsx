@@ -1,5 +1,5 @@
 import { Fragment, ReactNode, useEffect, useMemo, useState } from "react";
-import { Archive, ArrowLeft, Package, Pencil, Plus, Save, Search, Trash2, ArrowUp, ArrowDown, User, CreditCard, CheckCircle2, History, StickyNote, Truck } from "lucide-react";
+import { Archive, ArrowLeft, Download, Package, Upload, Pencil, Plus, Save, Search, Trash2, ArrowUp, ArrowDown, User, CreditCard, CheckCircle2, History, StickyNote, Truck } from "lucide-react";
 import { api, Client, DealFlow, Invoice, PartyLink, Supplier, SupplierInput, SupplierPriceEntry, CounterpartyPaymentRow } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import SupplierDealsList from "./SupplierDealsList";
@@ -11,6 +11,9 @@ import PersonPickerModal, { PersonRef } from "./PersonPicker";
 import { PartyLinkPanel, StatTile, atMs, dedupeByInvoice } from "./ClientDetailView";
 import { toast } from "./Toast";
 import { useSubmit } from "../lib/useSubmit";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { parseSupplierRows, type ImportRow } from "../lib/supplierImport";
+import SupplierImportModal from "./SupplierImportModal";
 
 const emptyInput: SupplierInput = {
   name: "",
@@ -119,6 +122,27 @@ export default function SuppliersView() {
   const [linkBusy,      setLinkBusy]      = useState(false);
 
   const load = async () => setSuppliers(await api.listSuppliers());
+
+  // R-634: suppliers out to a CSV in the template's columns, and back in with a duplicate check before saving.
+  const [importing, setImporting] = useState<{ file: string; rows: ImportRow[] } | null>(null);
+  const exportSuppliers = async () => {
+    const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: `suppliers-${new Date().toISOString().slice(0, 10)}.csv` });
+    if (!path) return;
+    try {
+      const n = await api.exportSuppliers(path as string);
+      toast(`Exported ${n} supplier${n === 1 ? "" : "s"}`, "success");
+    } catch (e) { toast(String(e), "error"); }
+  };
+  const importSuppliers = async () => {
+    const path = await openDialog({ multiple: false, filters: [{ name: "Spreadsheet", extensions: ["csv", "xlsx", "xls"] }] });
+    if (!path || Array.isArray(path)) return;
+    try {
+      const sheet = await api.readLotImportSheet(path);
+      const rows = parseSupplierRows(sheet.rows, await api.listSuppliers());
+      if (rows.length === 0) { toast("No suppliers were found in that file", "error"); return; }
+      setImporting({ file: path.split(/[\\/]/).pop() || path, rows });
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), "error"); }
+  };
   useEffect(() => {
     // A screen that wants a particular supplier open stashes its id and switches tab,
     // the same handoff Invoices reads (`invoices_open_id`). Cleared on first read.
@@ -512,8 +536,14 @@ export default function SuppliersView() {
 
       {/* Header */}
       <PageActions>
+        <Button icon={<Upload size={14} />} onClick={importSuppliers}>Import</Button>
+        <Button icon={<Download size={14} />} onClick={exportSuppliers}>Export</Button>
         <Button variant="ink" icon={<Plus size={14} />} onClick={createNew}>New supplier</Button>
       </PageActions>
+      {importing && (
+        <SupplierImportModal file={importing.file} rows={importing.rows}
+          onClose={(added) => { setImporting(null); if (added > 0) load(); }} />
+      )}
       <p className="text-[13px] text-muted -mt-1">
         Ranked by what you spend with them and what it earned.
       </p>

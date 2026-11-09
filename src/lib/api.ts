@@ -1388,6 +1388,9 @@ export interface DealFlow {
   /** R-515: the deal's item, as the invoice names it (the first line-item description),
    *  "" when the invoice has no lines. */
   item_name?: string;
+  /** R-633: when the payment confirmation was emailed to the buyer, and to which address ("" until sent). */
+  confirmation_sent_at?: string;
+  confirmation_sent_to?: string;
 }
 
 /** R-277: one Priority1 shipment, built from its tracking emails. `deal_flow_id` empty =
@@ -4411,6 +4414,10 @@ export const api = {
   previewInvoicePdf: (input: InvoiceInput) =>
     invoke<string>("preview_invoice_pdf", { input }),
   sendInvoice: (invoiceId: string, from?: string) => invoke<void>("send_invoice", { invoiceId, from }),
+  /** R-633: email the buyer the invoice stamped PAID; refused until the deal's linked payments cover it. */
+  /** R-634: every supplier not archived as a CSV in the import template's columns; returns how many. */
+  exportSuppliers: (path: string) => invoke<number>("export_suppliers", { path }),
+  sendPaymentConfirmation: (dealFlowId: string) => invoke<string>("send_payment_confirmation", { dealFlowId }),
 
   // Quotes
   listQuotes: () => invoke<Quote[]>("list_quotes"),

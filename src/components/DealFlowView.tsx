@@ -1,4 +1,4 @@
-import { Check, ChevronRight, ExternalLink, FileDown, Link2, Package, Plus, RefreshCw, RotateCcw, Search, Tag, Trash2, X, XCircle } from "lucide-react";
+import { Check, ChevronRight, ExternalLink, FileDown, Link2, Mail, Package, Plus, RefreshCw, RotateCcw, Search, Tag, Trash2, X, XCircle } from "lucide-react";
 import { Fragment, useEffect, useState, useCallback, useRef, type KeyboardEvent, type ReactNode } from "react";
 
 import {
@@ -1135,6 +1135,7 @@ function DealFlowCard({
 
   // R-574: the invoice being linked to a delivery, while its card is open.
   const [linkInv, setLinkInv] = useState<Invoice | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   // Fetch invoice status + line items for the header / breakdown.
   useEffect(() => {
@@ -1406,8 +1407,28 @@ function DealFlowCard({
                     <button className="ui-btn ui-btn-sm" onClick={() => { api.getInvoice(flow.invoice_id).then(setLinkInv).catch((e) => toast(String(e), "error")); }}>
                       <Link2 size={14} /> Link to a delivery
                     </button>
+                    {/* R-633: the buyer gets the invoice stamped PAID. The command refuses until the payments linked to this deal cover it. */}
+                    {pay.buyerIn && (
+                      <button className="ui-btn ui-btn-sm" disabled={confirming}
+                        title={flow.confirmation_sent_at ? "Send the payment confirmation again" : "Email the buyer the invoice marked paid"}
+                        onClick={() => {
+                          setConfirming(true);
+                          api.sendPaymentConfirmation(flow.id)
+                            .then(() => { toast("Payment confirmation sent", "success"); onReload(); })
+                            .catch((e) => toast(String(e), "error"))
+                            .finally(() => setConfirming(false));
+                        }}>
+                        <Mail size={14} /> {confirming ? "Sending" : flow.confirmation_sent_at ? "Send confirmation again" : "Send payment confirmation"}
+                      </button>
+                    )}
                   </span>
                 </div>
+                {flow.confirmation_sent_at && (
+                  <div className="mt-2 text-[12.5px] text-success-ink">
+                    Payment confirmation sent {new Date(flow.confirmation_sent_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                    {flow.confirmation_sent_to ? ` to ${flow.confirmation_sent_to}` : ""}
+                  </div>
+                )}
                 <table className="ui-table ui-table-sm mt-2">
                   <tbody>
                     {invItems.map((it, i) => (

@@ -2832,4 +2832,15 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_buys ADD COLUMN from_deal_json TEXT NOT NULL DEFAULT '';
         "#,
     ),
+    (
+        127,
+        // R-633: when the buyer was emailed the payment confirmation (the invoice stamped PAID) and the
+        // address it went to, both empty until it is sent. Written by invoice::send_payment_confirmation.
+        // Synced like the rest of the row and mirrored in clienthub-api schema.sql and its sync.rs ALTER
+        // list, which must be deployed first. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        ALTER TABLE deal_flows ADD COLUMN confirmation_sent_at TEXT DEFAULT '';
+        ALTER TABLE deal_flows ADD COLUMN confirmation_sent_to TEXT DEFAULT '';
+        "#,
+    ),
 ];

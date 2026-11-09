@@ -4011,6 +4011,14 @@ pub async fn send_invoice(invoice_id: String, from: Option<String>) -> Result<()
         .map_err(|e| e.to_string())
 }
 
+/// R-633: email the buyer the invoice stamped PAID once the deal's linked payments cover it. Returns the sent time.
+#[tauri::command]
+pub async fn send_payment_confirmation(deal_flow_id: String) -> Result<String, String> {
+    crate::invoice::send_payment_confirmation(&deal_flow_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn mark_invoice_paid(
     invoice_id: String,
@@ -5208,6 +5216,11 @@ pub struct DealFlow {
     /// the invoice has no lines). Shown where a deal is picked by invoice number.
     #[serde(default)]
     pub item_name: String,
+    /// R-633: when the payment confirmation was emailed to the buyer, and to which address ("" until sent).
+    #[serde(default)]
+    pub confirmation_sent_at: String,
+    #[serde(default)]
+    pub confirmation_sent_to: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -5349,6 +5362,10 @@ fn map_deal_flow_row(conn: &rusqlite::Connection, r: &rusqlite::Row) -> rusqlite
             .and_then(|items| items.into_iter().next())
             .and_then(|it| it.get("description").and_then(|d| d.as_str()).map(|s| s.trim().to_string()))
             .unwrap_or_default(),
+
+        // R-633: tolerant, so a device that has not run migration 127 still lists its deals.
+        confirmation_sent_at: r.get::<_, Option<String>>("confirmation_sent_at").ok().flatten().unwrap_or_default(),
+        confirmation_sent_to: r.get::<_, Option<String>>("confirmation_sent_to").ok().flatten().unwrap_or_default(),
     })
 }
 
@@ -9840,6 +9857,35 @@ pub async fn create_supplier(input: SupplierInput) -> Result<String, String> {
         rusqlite::params![id, input.name, input.contact_name, input.email, input.phone, input.address, input.payment_method, input.payment_details, input.payment_terms, input.typical_lead_time, input.notes, now],
     ).map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+/// R-634: the supplier spreadsheet's columns, in the template's order. Import reads the same headers,
+/// so an export can be imported again.
+pub const SUPPLIER_COLUMNS: [&str; 10] = [
+    "Company name", "Contact name", "Email", "Phone", "Address",
+    "Payment method", "Payment details", "Payment terms", "Lead time", "Notes",
+];
+
+/// R-634: every supplier not archived, one row each, as a CSV at `path`. Returns how many were written.
+#[tauri::command]
+pub async fn export_suppliers(path: String) -> Result<usize, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT name,contact_name,email,phone,address,payment_method,payment_details,payment_terms,typical_lead_time,notes
+         FROM suppliers WHERE COALESCE(archived,0)=0 ORDER BY name COLLATE NOCASE",
+    ).map_err(|e| e.to_string())?;
+    let rows: Vec<Vec<String>> = stmt
+        .query_map([], |r| (0..10).map(|i| r.get::<_, Option<String>>(i).map(|v| v.unwrap_or_default())).collect())
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(|e| e.to_string())?;
+    let mut w = csv::Writer::from_path(&path).map_err(|e| format!("Couldn't write the file: {e}"))?;
+    w.write_record(SUPPLIER_COLUMNS).map_err(|e| e.to_string())?;
+    for row in &rows {
+        w.write_record(row).map_err(|e| e.to_string())?;
+    }
+    w.flush().map_err(|e| e.to_string())?;
+    Ok(rows.len())
 }
 
 #[tauri::command]

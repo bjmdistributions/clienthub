@@ -1392,6 +1392,101 @@ pub async fn send_invoice(invoice_id: &str, from_override: Option<&str>) -> Resu
     Ok(())
 }
 
+/// R-633: the payment confirmation goes only once the buyer's bank payments linked to THIS deal reach the
+/// invoice total (else the deal's gross) less 50 cents, the same tolerance the PAID stamp uses. A stage moved
+/// by hand, or money not linked to the deal, is not enough. `Err` is the sentence the screen shows.
+fn confirmation_gate(linked: f64, total: f64, gross: f64) -> std::result::Result<f64, String> {
+    let target = if total > 0.01 { total } else { gross };
+    if target <= 0.01 {
+        return Err("This deal has no invoice total, so there is no payment to confirm.".into());
+    }
+    if linked < target - 0.5 {
+        return Err(format!(
+            "A payment confirmation goes once the buyer's payment is linked to this deal in full. {} of {} is linked.",
+            fmt_dollar(linked), fmt_dollar(target)
+        ));
+    }
+    Ok(target)
+}
+
+/// R-633: email the buyer their invoice stamped PAID as confirmation that we received their payment, and record
+/// on the deal when and to whom it went. Returns the time it was sent.
+pub async fn send_payment_confirmation(deal_flow_id: &str) -> Result<String> {
+    let (invoice_id, number, total, gross, cname, cemail, linked, days) = {
+        let conn = pool().get()?;
+        let (invoice_id, gross): (String, f64) = conn.query_row(
+            "SELECT invoice_id, COALESCE(gross_revenue,0) FROM deal_flows WHERE id=?1",
+            [deal_flow_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).context("That deal was not found.")?;
+        let (number, total, client_id): (String, f64, String) = conn.query_row(
+            "SELECT number, total, client_id FROM invoices WHERE id=?1",
+            [&invoice_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).context("This deal has no invoice.")?;
+        let (cname, cemail): (String, Option<String>) = conn.query_row(
+            "SELECT name, email FROM clients WHERE id=?1",
+            [&client_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT a.amount, COALESCE(bt.posted_at,'') FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id
+             WHERE a.role='buyer_payment' AND a.deal_flow_id=?1 ORDER BY bt.posted_at",
+        )?;
+        let rows: Vec<(f64, String)> = stmt
+            .query_map([deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let linked: f64 = rows.iter().map(|r| r.0).sum();
+        let mut days: Vec<String> = rows.iter().map(|r| short_date(&r.1)).filter(|d| !d.is_empty()).collect();
+        days.dedup();
+        (invoice_id, number, total, gross, cname, cemail, linked, days)
+    };
+
+    let paid = confirmation_gate(linked, total, gross).map_err(anyhow::Error::msg)?;
+    let to = sendable_email(cemail, &cname)?;
+    // Rendered fresh so it carries the PAID stamp the linked payments earn (`invoice_is_paid`).
+    let pdf = generate_pdf(&invoice_id).await?;
+    let subject = format!("Payment received, invoice {}", number);
+    let on = if days.is_empty() { String::new() } else { format!(" on {}", days.join(", ")) };
+    let body = format!(
+        "Hi {},\n\nThis confirms we received your payment of {} for invoice {}{}. \
+         The invoice is attached, marked paid.\n\nThank you for your business!",
+        cname.split_whitespace().next().unwrap_or(&cname),
+        fmt_dollar(paid),
+        number,
+        on,
+    );
+    crate::email::send_invoice_mail(&to, &subject, &body, Some(&pdf), None).await?;
+
+    let now = Utc::now().to_rfc3339();
+    let mut cols = serde_json::Map::new();
+    cols.insert("confirmation_sent_at".into(), serde_json::Value::String(now.clone()));
+    cols.insert("confirmation_sent_to".into(), serde_json::Value::String(to.clone()));
+    cols.insert("updated_at".into(), serde_json::Value::String(now.clone()));
+    crate::sync::record_upsert("deal_flows", deal_flow_id, cols)?;
+    let conn = pool().get()?;
+    conn.execute(
+        "UPDATE deal_flows SET confirmation_sent_at=?1, confirmation_sent_to=?2, updated_at=?1 WHERE id=?3",
+        rusqlite::params![now, to, deal_flow_id],
+    )?;
+    Ok(now)
+}
+
+#[cfg(test)]
+mod confirmation_tests {
+    use super::confirmation_gate;
+
+    #[test]
+    fn goes_only_when_linked_in_full() {
+        assert_eq!(confirmation_gate(1000.0, 1000.0, 0.0), Ok(1000.0));
+        assert_eq!(confirmation_gate(999.6, 1000.0, 0.0), Ok(1000.0), "within 50 cents counts as paid");
+        assert!(confirmation_gate(999.0, 1000.0, 0.0).is_err(), "a dollar short is not paid in full");
+        assert!(confirmation_gate(0.0, 1000.0, 0.0).unwrap_err().contains("$0.00 of $1,000.00"));
+        assert_eq!(confirmation_gate(500.0, 0.0, 500.0), Ok(500.0), "no invoice total falls back to the deal's gross");
+        assert!(confirmation_gate(0.0, 0.0, 0.0).is_err());
+    }
+}
+
 // ---------- Quotes ----------
 
 fn quote_output_dir() -> std::path::PathBuf {
