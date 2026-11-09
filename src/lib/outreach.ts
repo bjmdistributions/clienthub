@@ -152,6 +152,17 @@ export const ANSWERED_HOW: Record<string, string> = {
   answer: "You emailed them", call: "You called", email: "Email sent", answered: "Marked answered", stop: "Asked to stop",
 };
 
+/** R-642: a supplier lead from the website form, read as an email, with the mail since. */
+export interface SupplierLead {
+  id: string; kind: "supply_lead" | "supplier_profile"; name: string; company: string; email: string; phone: string;
+  subject: string; at: string; last_at: string; lines: { label: string; value: string }[]; gist: string; acknowledged: boolean;
+  answered: boolean; answered_how: "" | "answer" | "answered" | "acknowledged"; answered_at: string;
+  thread: { dir: "in" | "out"; subject: string; body: string; whole: string; at: string }[];
+  my_reply: { status: "queued" | "sending" | "failed"; error: string; text: string; at: string } | null;
+}
+
+export const LEAD_HOW: Record<string, string> = { answer: "You emailed them", answered: "Marked answered", acknowledged: "Acknowledged" };
+
 export interface PumpState { on: boolean; login: string; inboxes: string[]; last_error: string; last_sent_at: string; watching: string }
 
 const call = <T>(method: "GET" | "POST", path: string, body?: unknown) =>
@@ -183,6 +194,13 @@ export const outreach = {
     call<OutreachSettings>("POST", "/api/outreach/settings", s),
   replies: () => call<{ replies: OutreachReply[]; waiting: number }>("GET", "/api/outreach/replies"),
   markAnswered: (replyId: string) => call<{ ok: boolean }>("POST", `/api/outreach/replies/${id(replyId)}/answered`, {}),
+  /** R-642: supplier leads from the website form, as an inbox. */
+  supplierLeads: () => call<{ leads: SupplierLead[]; waiting: number }>("GET", "/api/outreach/supplier-leads"),
+  supplierReply: (leadId: string, text: string) => call<{ ok: boolean; pump_seen_at: string }>("POST", `/api/outreach/supplier-leads/${id(leadId)}/reply`, { text }),
+  supplierAnswered: (leadId: string) => call<{ ok: boolean }>("POST", `/api/outreach/supplier-leads/${id(leadId)}/answered`, {}),
+  settings: () => call<OutreachSettings>("GET", "/api/outreach/settings"),
+  /** R-642: the reply signature and logo alone, without touching the cold email settings. */
+  saveSignature: (signature: string, signature_logo: string) => call<OutreachSettings>("POST", "/api/outreach/signature", { signature, signature_logo }),
   /** R-638: queue his reply; the sending computer sends it within a minute, with his signature and logo. */
   reply: (replyId: string, text: string) => call<{ ok: boolean; pump_seen_at: string }>("POST", `/api/outreach/replies/${id(replyId)}/reply`, { text }),
   texted: (leadId: string, texted: boolean) => call<{ texted: boolean }>("POST", `/api/outreach/leads/${id(leadId)}/texted`, { texted }),

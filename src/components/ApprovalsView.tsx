@@ -5,6 +5,7 @@ import PendingReviewModal from "./PendingReviewModal";
 import { Inbox, X, Store, Reply } from "lucide-react";
 import StatusPill from "./StatusPill";
 import { openLoadInLogistics } from "./LogisticsPayCarriers";
+import { LEAD_OPEN_KEY } from "./SupplierLeadsInbox";
 import {
   BILL_OPEN_KEY, CALL_OPEN_KEY, canOpenTarget, canSeeGroup, compareRows, customerRow, groupRows, moneyTone, noticeRow, noticeTarget, requestRow, tierOf, whenWearsUrgency, whenWords,
   type NoticeGroup, type NoticeRow, type NoticeTarget, type Urgency,
@@ -62,20 +63,14 @@ function ApprovalDetail({ a, onClose, onResolved }: { a: ApprovalRequest; onClos
   );
 }
 
-// R-366: a Gmail compose addressed back to whoever sent the lead, so the reply is
-// only the typing. The website's forms send `email`; a hand-mapped form may call it
-// anything, so the first value shaped like an address is the fallback. Null when
-// the submission carries no address — there is nobody to reply to.
+// R-642: Reply opens the lead in Suppliers > Website leads, where it reads like an email and the reply goes from
+// Ecliptr with the signature and logo (R-366 opened a Gmail compose). The website's forms send `email`; a
+// hand-mapped form may call it anything, so any value shaped like an address counts. No address, no Reply.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-function gmailReplyUrl(n: LeadNotification, fields: Record<string, any>): string | null {
-  const to = [fields.email, ...Object.values(fields)].map((v) => String(v ?? "").trim()).find((v) => EMAIL_RE.test(v));
-  if (!to) return null;
-  const first = String(fields.contact_name || (n.kind === "supply_lead" ? fields.name : "") || "").trim().split(/\s+/)[0];
-  const load = String(fields.load_details || "").trim().replace(/\s+/g, " ");
-  const subject = n.kind === "supplier_profile" ? "Re: your supplier details"
-    : load ? `Re: ${load.length > 60 ? load.slice(0, 59) + "..." : load}` : "Re: your load";
-  const body = `Hi${first ? " " + first : ""},\n\n`;
-  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+function replyToLead(n: LeadNotification) {
+  try { localStorage.setItem(LEAD_OPEN_KEY, n.id); } catch { /* storage blocked: the inbox just opens */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "suppliers" }));
+  setTimeout(() => window.dispatchEvent(new CustomEvent("supplier-lead-open")), 100);
 }
 
 // R-460: where Open goes. A load opens on the step the notice names (the same stash-then-switch handoff
@@ -126,7 +121,7 @@ function LeadDetails({ n }: { n: LeadNotification }) {
   let fields: Record<string, any> = {};
   try { fields = n.payload_json ? JSON.parse(n.payload_json) : {}; } catch { /* ignore */ }
   const entries = Object.entries(fields).filter(([, v]) => v != null && v !== "");
-  const replyUrl = gmailReplyUrl(n, fields);
+  const canReply = [fields.email, ...Object.values(fields)].some((v) => EMAIL_RE.test(String(v ?? "").trim()));
   return (
     <div className="px-2 pb-4 animate-fade-in">
       {entries.length > 0 ? (
@@ -141,8 +136,8 @@ function LeadDetails({ n }: { n: LeadNotification }) {
       ) : (
         <div className="text-[13px] text-muted">{n.body || "No details came with this one."}</div>
       )}
-      {replyUrl && (
-        <button onClick={() => api.openExternal(replyUrl).catch(() => {})} title="Opens a Gmail reply to this person"
+      {canReply && (
+        <button onClick={() => replyToLead(n)} title="Opens this lead in Suppliers, Website leads"
           className={`${BTN_SOLID} mt-3`}>
           <Reply size={14} /> Reply
         </button>

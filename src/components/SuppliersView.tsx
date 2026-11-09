@@ -4,7 +4,9 @@ import { api, Client, DealFlow, Invoice, PartyLink, Supplier, SupplierInput, Sup
 import { fmtAmount, fmtPhone } from "../lib/format";
 import SupplierDealsList from "./SupplierDealsList";
 import StatusPill from "./StatusPill";
-import { Button, PageActions } from "./ui";
+import { Button, PageActions, Tabs } from "./ui";
+import SupplierLeadsInbox, { LEAD_OPEN_KEY } from "./SupplierLeadsInbox";
+import { outreach } from "../lib/outreach";
 import { ProfileGrid, ProfileCard, Facts, Fact, KpiBand } from "./ProfileLayout";
 import PersonPayments from "./PersonPayments";
 import PersonPickerModal, { PersonRef } from "./PersonPicker";
@@ -101,6 +103,15 @@ export default function SuppliersView() {
   const [sortAsc,       setSortAsc]       = useState(false);
   const { busy: saving, run: runSave } = useSubmit();
   const [open,          setOpen]          = useState(false);
+  // R-642: the Website leads tab (supplier leads from the website form), opened straight on a lead from Notifications.
+  const [tab,           setTab]           = useState<"suppliers" | "leads">(() => { try { return localStorage.getItem(LEAD_OPEN_KEY) ? "leads" : "suppliers"; } catch { return "suppliers"; } });
+  const [leadWaiting,   setLeadWaiting]   = useState(0);
+  useEffect(() => {
+    outreach.supplierLeads().then((r) => setLeadWaiting(r.waiting)).catch(() => {});
+    const go = () => { setOpen(false); setTab("leads"); };
+    window.addEventListener("supplier-lead-open", go);
+    return () => window.removeEventListener("supplier-lead-open", go);
+  }, []);
 
   // ── The party link (R-175) ───────────────────────────────────────────────
   // The buyer side of this panel already ships on the client profile; this is
@@ -531,6 +542,19 @@ export default function SuppliersView() {
     );
   }
 
+  const tabsEl = (
+    <Tabs label="Suppliers" value={tab} onChange={(v) => setTab(v as typeof tab)}
+      tabs={[{ id: "suppliers", label: "Suppliers" }, { id: "leads", label: "Website leads", count: leadWaiting > 0 ? leadWaiting : undefined }]} />
+  );
+  if (tab === "leads") {
+    return (
+      <div className="space-y-5">
+        {tabsEl}
+        <SupplierLeadsInbox onCount={setLeadWaiting} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
 
@@ -544,6 +568,7 @@ export default function SuppliersView() {
         <SupplierImportModal file={importing.file} rows={importing.rows}
           onClose={(added) => { setImporting(null); if (added > 0) load(); }} />
       )}
+      {tabsEl}
       <p className="text-[13px] text-muted -mt-1">
         Ranked by what you spend with them and what it earned.
       </p>

@@ -5,6 +5,7 @@ import { PageActions, Tabs } from "./ui";
 import ColdCallsMap from "./ColdCallsMap";
 import { copyText, COPY_FAILED } from "../lib/clipboard";
 import { toast } from "./Toast";
+import { shrinkLogo } from "../lib/logo";
 import { can } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import {
@@ -1038,25 +1039,10 @@ function SettingsOverlay({ settings, onClose, onSaved }: { settings: LeadList["s
     signature: settings.signature ?? "", signature_logo: settings.signature_logo ?? "" });
   const [busy, setBusy] = useState(false);
   const logoRef = useRef<HTMLInputElement>(null);
-  // R-638: the logo is shrunk here to at most 400 by 160 and kept as a PNG, so every reply carries a small picture.
+  // R-638: the logo is shrunk to at most 400 by 160 (lib/logo), so every reply carries a small picture.
   const pickLogo = (file?: File) => {
     if (!file) return;
-    if (!/^image\/(png|jpeg)$/.test(file.type)) { toast("Choose a PNG or JPEG picture.", "error"); return; }
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      const k = Math.min(1, 400 / img.width, 160 / img.height);
-      const c = document.createElement("canvas");
-      c.width = Math.max(1, Math.round(img.width * k));
-      c.height = Math.max(1, Math.round(img.height * k));
-      c.getContext("2d")?.drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url);
-      const data = c.toDataURL(file.type === "image/jpeg" ? "image/jpeg" : "image/png", 0.9);
-      if (data.length > 400_000) { toast("That picture is too big even when shrunk. Try a simpler logo.", "error"); return; }
-      setF((v) => ({ ...v, signature_logo: data }));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); toast("That picture could not be read.", "error"); };
-    img.src = url;
+    shrinkLogo(file).then((data) => setF((v) => ({ ...v, signature_logo: data }))).catch((e) => toast(msg(e), "error"));
   };
   useEffect(() => {
     outreach.pump().then((p) => {
