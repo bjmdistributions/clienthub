@@ -1424,9 +1424,16 @@ function DealFlowCard({
                   </span>
                 </div>
                 {flow.confirmation_sent_at && (
-                  <div className="mt-2 text-[12.5px] text-success-ink">
-                    Payment confirmation sent {new Date(flow.confirmation_sent_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                    {flow.confirmation_sent_to ? ` to ${flow.confirmation_sent_to}` : ""}
+                  <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-success-ink">
+                    {/* R-639: a green check leads the line. */}
+                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-success text-on-accent flex-shrink-0" aria-hidden>
+                      <Check size={13} strokeWidth={3} />
+                    </span>
+                    <span className="font-medium">Payment confirmation sent</span>
+                    <span className="text-muted">
+                      {new Date(flow.confirmation_sent_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                      {flow.confirmation_sent_to ? ` to ${flow.confirmation_sent_to}` : ""}
+                    </span>
                   </div>
                 )}
                 <table className="ui-table ui-table-sm mt-2">
