@@ -532,7 +532,17 @@ export default function DashboardView({ onNavigate, me }: Props) {
     });
     const weekMax = Math.max(0, ...week.map((w) => w.total));
     const ranked = [...week].sort((a, b) => b.total - a.total);
-    return { cells, closed, sent, max, peak, week, weekMax, best: weekMax > 0 ? ranked[0] : null, second: ranked[1]?.total > 0 ? ranked[1] : null };
+    // R-637: today's weekday, and the month that was best for it, per that weekday (a month holds four or five of them).
+    const months = new Map<string, { n: number; days: number; d: Date }>();
+    past.forEach((c) => {
+      if (c.d.getDay() !== today.getDay()) return;
+      const k = localDay(c.d).slice(0, 7), m = months.get(k) ?? { n: 0, days: 0, d: c.d };
+      m.n += c.n; m.days += 1; months.set(k, m);
+    });
+    let bestMonth: Date | null = null, bestAvg = 0;
+    months.forEach((m) => { if (m.n / m.days > 0 && m.n / m.days >= bestAvg) { bestAvg = m.n / m.days; bestMonth = m.d; } });
+    return { cells, closed, sent, max, peak, week, weekMax, best: weekMax > 0 ? ranked[0] : null, second: ranked[1]?.total > 0 ? ranked[1] : null,
+      todayWd: week[today.getDay()], bestMonth: bestMonth as Date | null };
   }, [heatDeals, allInvoices, heatStart, today]);
   const heatChange = heatBefore ? (heat.closed - heatBefore) / heatBefore : null;
   const hc = heatHover !== null ? heat.cells[heatHover] : null;
@@ -836,6 +846,14 @@ export default function DashboardView({ onNavigate, me }: Props) {
                       {heat.best.name}s are your busiest day: on average {avg1(heat.best.closed)} {heat.best.closed === 1 ? "deal" : "deals"} closed
                       and {avg1(heat.best.sent)} {heat.best.sent === 1 ? "invoice" : "invoices"} sent.
                       {heat.second ? ` ${heat.second.name}s come next.` : ""}
+                    </p>
+                    <p className="text-[13px] text-ink-2 mt-1">
+                      {heat.todayWd.total > 0
+                        ? `On ${heat.todayWd.name}s you typically send ${avg1(heat.todayWd.sent)} ${heat.todayWd.sent === 1 ? "invoice" : "invoices"} and close ${avg1(heat.todayWd.closed)} ${heat.todayWd.closed === 1 ? "deal" : "deals"}.`
+                        : `Nothing has closed or been sent on a ${heat.todayWd.name} since ${heatStart.toLocaleDateString("en-US", { month: "long" })}.`}
+                      {heat.bestMonth
+                        ? ` ${heat.bestMonth.toLocaleDateString("en-US", { month: "long" })} ${heat.bestMonth.getMonth() === today.getMonth() ? "is" : "was"} your best month for ${heat.todayWd.name}s.`
+                        : ""}
                     </p>
                     <div className="grid grid-cols-7 gap-2 mt-3">
                       {heat.week.map((w) => (
