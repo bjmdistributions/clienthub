@@ -22,6 +22,12 @@ const LEADS = [
   lead({ id: "l6", company: "Elm Street Apparel 3PL", contact_name: "Morgan", email: "morgan@elmst.example", city: "Fairhaven", kind: "apparel", status: "has_goods", next_touch: day(1), notes: "6 pallets of mixed womens tops" }),
   lead({ id: "l7", company: "Old Mill Warehousing", email: "info@oldmill.example", city: "Granby", state: "NY", kind: "ecom", status: "not_now", next_touch: day(80) }),
   lead({ id: "l8", company: "Bluebird Supply", email: "b@bluebird.example", city: "Ashford", kind: "prep", status: "supplier" }),
+  // R-631: invented overseas suppliers at three stages of their checks.
+  lead({ id: "o1", company: "Adriatic Trading Srl", contact_name: "Luca", email: "sales@adriatic.example", state: "", country: "Italy", kind: "overseas", status: "talking",
+    checks: { done: Object.fromEntries(["company", "invoices", "bank", "inspection", "trial"].map((k) => [k, { at: ago(60 * 24 * 9), by: "Invented Admin" }])), cleared: true } }),
+  lead({ id: "o2", company: "Harbourline Exports Ltd", email: "info@harbourline.example", state: "", country: "United Kingdom", kind: "overseas",
+    checks: { done: { company: { at: ago(60 * 24 * 2), by: "Invented Admin" }, bank: { at: ago(60 * 5), by: "Invented Admin" } }, cleared: false } }),
+  lead({ id: "o3", company: "Eastgate Stocklots", state: "", country: "Turkey", kind: "overseas", checks: { done: {}, cleared: false } }),
 ];
 const SETTINGS = {
   send_from: "sam@example.test", from_name: "Sam", address_line: "Example Co, 1 Test Way, Riverton NJ", daily_cap: 30,
@@ -74,6 +80,13 @@ const render = (t: string, l: any) => t.replace(/\{first_name\}/g, (l.contact_na
   if (method === "GET" && path === "/api/outreach/replies") return { replies: [...REPLIES].sort((x, y) => Number(x.answered) - Number(y.answered)), waiting: REPLIES.filter((r) => !r.answered).length };
   const ra = path.match(/^\/api\/outreach\/replies\/([^/]+)\/answered$/);
   if (ra) { const r = REPLIES.find((x) => x.id === ra[1])!; r.answered = true; r.answered_how = "answered"; r.answered_at = ago(0); return { ok: true }; }
+  const ck = path.match(/^\/api\/outreach\/leads\/([^/]+)\/check$/);
+  if (ck) {
+    const l: any = LEADS.find((x) => x.id === ck[1])!;
+    if (body.done) l.checks.done[body.key] = { at: ago(0), by: "Invented Admin" }; else delete l.checks.done[body.key];
+    l.checks.cleared = Object.keys(l.checks.done).length === 5;
+    return { checks: l.checks };
+  }
   const m = path.match(/^\/api\/outreach\/leads\/([^/]+)$/);
   if (method === "GET" && m) {
     const l = LEADS.find((x) => x.id === m[1])!;

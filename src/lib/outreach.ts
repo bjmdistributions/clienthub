@@ -13,8 +13,19 @@ export const STATUS_LABEL: Record<LeadStatus, string> = {
 export const STATUSES = Object.keys(STATUS_LABEL) as LeadStatus[];
 
 export const KIND_LABEL: Record<string, string> = {
-  prep: "Prep center", ecom: "Ecom 3PL", apparel: "Apparel 3PL", forwarder: "Forwarder", other: "Other",
+  prep: "Prep center", ecom: "Ecom 3PL", apparel: "Apparel 3PL", forwarder: "Forwarder", overseas: "Overseas supplier", other: "Other",
 };
+
+/** R-631: what an overseas supplier must pass before any money goes to them, in order (the server's CHECKS). */
+export const OVERSEAS_CHECKS: [string, string, string][] = [
+  ["company", "Company verified", "Registration looked up, and a video call from their warehouse."],
+  ["invoices", "Brand invoices checked", "Original brand invoices or a letter allowing the sale, checked with the brand."],
+  ["bank", "Bank name matches the company", "The account name is the company's. Any change to bank details is confirmed by phone."],
+  ["inspection", "Inspection passed", "QIMA, SGS or Bureau Veritas checked the goods before the balance is paid."],
+  ["trial", "Trial order done", "One small order arrived as promised before a container."],
+];
+export interface Checks { done: Record<string, { at: string; by: string }>; cleared: boolean }
+export const isOverseas = (l: { kind?: string }) => l.kind === "overseas";
 
 export const OUTCOMES: [string, string][] = [
   ["no_answer", "No answer"], ["voicemail", "Left a voicemail"], ["send_info", "Send info"], ["call_back", "Call back"],
@@ -65,6 +76,9 @@ export interface Lead {
   // R-606: emails to it that failed, and the latest error.
   failed?: number;
   failed_error?: string;
+  // R-631, absent from a server before it:
+  country?: string;
+  checks?: Checks;
 }
 
 /** R-581: one thing they said or we heard: a reply's gist and tags, a call's outcome and note, or a note. */
@@ -165,6 +179,7 @@ export const outreach = {
   replies: () => call<{ replies: OutreachReply[]; waiting: number }>("GET", "/api/outreach/replies"),
   markAnswered: (replyId: string) => call<{ ok: boolean }>("POST", `/api/outreach/replies/${id(replyId)}/answered`, {}),
   texted: (leadId: string, texted: boolean) => call<{ texted: boolean }>("POST", `/api/outreach/leads/${id(leadId)}/texted`, { texted }),
+  check: (leadId: string, key: string, done: boolean) => call<{ checks: Checks }>("POST", `/api/outreach/leads/${id(leadId)}/check`, { key, done }),
   renameList: (from: string, to: string) => call<{ renamed: number }>("POST", "/api/outreach/lists/rename", { from, to }),
   map: () => call<MapAnswer>("GET", "/api/outreach/map"),
   pump: () => invoke<PumpState>("outreach_pump_get"),

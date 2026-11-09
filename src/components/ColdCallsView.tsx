@@ -8,7 +8,7 @@ import { toast } from "./Toast";
 import { can } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import {
-  ANSWERED_HOW, KIND_LABEL, OUTCOMES, OUTCOME_LABEL, REACH, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, emailedLine, inReach, nextLine,
+  ANSWERED_HOW, KIND_LABEL, OVERSEAS_CHECKS, isOverseas, OUTCOMES, OUTCOME_LABEL, REACH, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, emailedLine, inReach, nextLine,
   outreach, saidLine, sendable, type DraftEmail, type ImportAnswer, type LeadListName, type Lead, type LeadDetail, type LeadList, type LeadStatus, type OutreachReply, type PumpState, type Skipped,
 } from "../lib/outreach";
 
@@ -72,7 +72,7 @@ export default function ColdCallsView() {
   const [review, setReview] = useState<{ emails: DraftEmail[]; skipped: Skipped[] } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [imported, setImported] = useState<ImportAnswer | null>(null);
-  const [view, setView] = useState<"leads" | "map" | "text" | "replies">("leads");
+  const [view, setView] = useState<"leads" | "map" | "text" | "replies" | "overseas">("leads");
   // R-581: the list picked at the top ("" is every list) and a status on top of the chips ("" is any). The list is kept per computer.
   const [list, setListState] = useState<string>(() => { try { return localStorage.getItem(LIST_KEY) ?? ""; } catch { return ""; } });
   const setList = (n: string) => { setListState(n); try { localStorage.setItem(LIST_KEY, n); } catch { /* blocked: kept until reload */ } };
@@ -97,7 +97,9 @@ export default function ColdCallsView() {
   const everyLead = useMemo(() => data?.leads ?? [], [data]);
   // A list that is gone (renamed on another device) falls back to every list.
   const pickedList = lists.some((x) => x.name === list) ? list : "";
-  const leads = useMemo(() => everyLead.filter((l) => !pickedList || l.list === pickedList), [everyLead, pickedList]);
+  // R-631: overseas suppliers live in their own tab, never among the warehouses, the map or the texts.
+  const leads = useMemo(() => everyLead.filter((l) => !isOverseas(l) && (!pickedList || l.list === pickedList)), [everyLead, pickedList]);
+  const overseas = useMemo(() => everyLead.filter(isOverseas), [everyLead]);
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     return leads.filter((l) => inReach(l, filter) && (!status || l.status === status)
@@ -214,11 +216,12 @@ export default function ColdCallsView() {
 
           <div className="mb-4">
             <Tabs label="Cold calls" value={view} onChange={(v) => setView(v as typeof view)}
-              tabs={([["leads", "Warehouses", 0], ["map", "Map", 0], ["text", "To text", toText], ["replies", "Replies", data.replies_waiting ?? 0]] as ["leads" | "map" | "text" | "replies", string, number][])
+              tabs={([["leads", "Warehouses", 0], ["map", "Map", 0], ["text", "To text", toText], ["replies", "Replies", data.replies_waiting ?? 0], ["overseas", "Overseas", 0]] as ["leads" | "map" | "text" | "replies" | "overseas", string, number][])
                 .map(([id, label, n]) => ({ id, label, count: n > 0 ? n : undefined }))} />
           </div>
 
-          {view === "replies" ? <Replies onOpenLead={setOpenId} onChanged={load} />
+          {view === "overseas" ? <OverseasList leads={overseas} onOpen={setOpenId} onAdd={() => setForm({ kind: "overseas" })} />
+          : view === "replies" ? <Replies onOpenLead={setOpenId} onChanged={load} />
           : view === "map" ? <ColdCallsMap leads={leads} onOpen={setOpenId} />
           : view === "text" ? <TextList leads={leads} onOpen={setOpenId} onChanged={load} /> : <>
           <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -566,6 +569,41 @@ function ReplyReader({ r, onClose, onAnswer, onOpenLead }: { r: OutreachReply; o
   );
 }
 
+/** R-631: overseas suppliers, each with how many of the safety checks it has passed. Pay no one until all are ticked. */
+function OverseasList({ leads, onOpen, onAdd }: { leads: Lead[]; onOpen: (id: string) => void; onAdd: () => void }) {
+  const sorted = [...leads].sort((a, b) => Number(!!b.checks?.cleared) - Number(!!a.checks?.cleared) || a.company.localeCompare(b.company));
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <p className="text-[13px] text-muted flex-1 min-w-[260px]">
+          Overseas suppliers of name brand closeouts. Send no money until every check on a supplier is ticked. They never get the warehouse cold email on their own.
+        </p>
+        <button className={solid} onClick={onAdd}><Plus size={14} /> Add overseas supplier</button>
+      </div>
+      {sorted.length === 0 ? (
+        <div className="py-16 text-center text-[13px] text-muted">No overseas suppliers yet. Add one when you meet them at a show, on LinkedIn or through someone you trust.</div>
+      ) : (
+        <div className="divide-y divide-line border-t border-line">
+          {sorted.map((l) => {
+            const n = Object.keys(l.checks?.done ?? {}).length;
+            return (
+              <button key={l.id} onClick={() => onOpen(l.id)} className="w-full text-left flex items-center gap-4 px-3 py-3.5 hover:bg-surface-2 transition-colors duration-150 min-w-0">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[14px] font-medium text-ink truncate">{l.company}</div>
+                  <div className="text-[12.5px] text-muted truncate">{[l.country || "No country yet", l.contact_name, l.email].filter(Boolean).join(" · ")}</div>
+                </div>
+                {l.checks?.cleared
+                  ? <StatusPill tone="success" size="md">Cleared</StatusPill>
+                  : <StatusPill tone={n === 0 ? "danger" : "warning"} size="md">{n} of {OVERSEAS_CHECKS.length} checks</StatusPill>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onEmail }: {
   id: string; today: string; mayAddSupplier: boolean; onClose: () => void; onChanged: () => void;
   onEdit: (l: Lead) => void; onEmail: (id: string) => void;
@@ -629,7 +667,7 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
                 )}
                 {l.email && <div className="flex items-center gap-2"><Mail size={13} className="text-muted" /><span className="select-text">{l.email}</span></div>}
                 {site && <div><a href={site} target="_blank" rel="noreferrer" className="text-accent-hover hover:underline">{l.website}</a></div>}
-                <div className="text-muted">{[[l.city, l.state].filter(Boolean).join(", "), KIND_LABEL[l.kind] ?? "", l.source].filter(Boolean).join(" · ")}</div>
+                <div className="text-muted">{[[l.city, l.state, l.country].filter(Boolean).join(", "), KIND_LABEL[l.kind] ?? "", l.source].filter(Boolean).join(" · ")}</div>
                 <div className="text-muted">{emailedLine(l)}</div>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
@@ -640,6 +678,31 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
                 )}
               </div>
             </section>
+
+            {/* R-631: an overseas supplier's checks, ticked one by one with who and when. Cleared only when all are. */}
+            {isOverseas(l) && (
+              <section>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="text-[13px] font-medium text-ink">Before you send money</div>
+                  {l.checks?.cleared ? <StatusPill tone="success">Cleared</StatusPill> : <StatusPill tone="warning">Not cleared</StatusPill>}
+                </div>
+                <div className="space-y-2">
+                  {OVERSEAS_CHECKS.map(([key, title, how]) => {
+                    const done = l.checks?.done?.[key];
+                    return (
+                      <label key={key} className="flex items-start gap-3 rounded-xl border border-line px-3 py-2.5 cursor-pointer hover:bg-surface-2">
+                        <input type="checkbox" className="mt-0.5" checked={!!done} disabled={busy}
+                          onChange={(e) => act(() => outreach.check(l.id, key, e.target.checked))} />
+                        <span className="min-w-0">
+                          <span className="block text-[13.5px] text-ink">{title}</span>
+                          <span className="block text-[12px] text-muted">{done ? `Ticked ${agoDay(done.at)}${done.by ? ` by ${done.by}` : ""}` : how}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
             {/* R-581: what they said, always first: every reply's gist and every call, newest first. */}
             <section>
@@ -766,7 +829,7 @@ function LeadForm({ lead, onClose, onSaved }: { lead: Partial<Lead>; onClose: ()
     if (!f.company?.trim()) { toast("Type the company name first", "error"); return; }
     setBusy(true);
     const body = { company: f.company, contact_name: f.contact_name ?? "", phone: f.phone ?? "", email: f.email ?? "", city: f.city ?? "",
-      state: f.state ?? "", kind: f.kind ?? "", website: f.website ?? "", personal_line: f.personal_line ?? "", notes: f.notes ?? "" };
+      state: f.state ?? "", kind: f.kind ?? "", website: f.website ?? "", personal_line: f.personal_line ?? "", notes: f.notes ?? "", country: f.country ?? "" };
     try {
       const r = lead.id ? (await outreach.edit(lead.id, body), lead.id) : (await outreach.add(body)).id;
       onSaved(r);
@@ -774,7 +837,7 @@ function LeadForm({ lead, onClose, onSaved }: { lead: Partial<Lead>; onClose: ()
     setBusy(false);
   };
   return (
-    <Overlay title={lead.id ? "Edit warehouse" : "Add a warehouse"} onClose={onClose}
+    <Overlay title={isOverseas(f) ? (lead.id ? "Edit overseas supplier" : "Add an overseas supplier") : lead.id ? "Edit warehouse" : "Add a warehouse"} onClose={onClose}
       footer={<><button className={ghost} onClick={onClose}>Cancel</button><button className={solid} disabled={busy} onClick={save}>Save</button></>}>
       <div className="space-y-3">
         <div><label className={label}>Company</label><input autoFocus value={f.company ?? ""} onChange={set("company")} className={field} /></div>
@@ -793,6 +856,7 @@ function LeadForm({ lead, onClose, onSaved }: { lead: Partial<Lead>; onClose: ()
             </select>
           </div>
         </div>
+        <div><label className={label}>Country</label><input value={f.country ?? ""} onChange={set("country")} className={field} placeholder={isOverseas(f) ? "Italy" : ""} /></div>
         <div><label className={label}>Website</label><input value={f.website ?? ""} onChange={set("website")} className={field} /></div>
         <div><label className={label}>Personal line</label><textarea rows={2} value={f.personal_line ?? ""} onChange={set("personal_line")} className={field}
           placeholder="One line written for this warehouse, used where an email says {personal_line}" /></div>
