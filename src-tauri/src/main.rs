@@ -1157,6 +1157,7 @@ fn main() {
             save_portal_base_url,
             // Manifest
             analyze_manifest,
+            manifest_fx_rate,
             manifest_split_plan,
             manifest_split_lines,
             manifest_split_export,

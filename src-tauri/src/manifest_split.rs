@@ -229,6 +229,10 @@ pub struct ReadOptions {
     /// cheap read for the column screen.
     #[serde(default)]
     pub resolve_only: bool,
+    /// R-640: the dollars one unit of the sheet's currency is worth. With a rate, every money
+    /// cell is turned into dollars before a line is read.
+    #[serde(default)]
+    pub fx_rate: Option<f64>,
 }
 
 /// Which column holds what. Columns are 0-based positions in the table as read (see
@@ -438,6 +442,80 @@ fn val_from_text(s: &str) -> Val {
     Val::Text(t.to_string())
 }
 
+/// R-640: the currency a piece of text is written in, from its symbol or code. A bare "$" is
+/// dollars. ¥ alone is left out: it is both yen and yuan.
+fn currency_mark(s: &str) -> Option<&'static str> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"\b(USD|EUR|GBP|CAD|AUD|MXN|CNY|RMB|JPY|HKD)\b|\b(US|C|A|MX|HK)\$|[€£$]").unwrap());
+    let m = re.find(s)?.as_str();
+    Some(match m {
+        "EUR" | "€" => "EUR",
+        "GBP" | "£" => "GBP",
+        "CAD" | "C$" => "CAD",
+        "AUD" | "A$" => "AUD",
+        "MXN" | "MX$" => "MXN",
+        "CNY" | "RMB" => "CNY",
+        "JPY" => "JPY",
+        "HKD" | "HK$" => "HKD",
+        _ => "USD",
+    })
+}
+
+/// R-640: by column, the currency most of its marked cells are written in.
+fn currency_marks<'a>(cells: impl Iterator<Item = (usize, &'a str)>) -> HashMap<usize, &'static str> {
+    let mut n: HashMap<(usize, &'static str), usize> = HashMap::new();
+    for (j, s) in cells {
+        if let Some(c) = currency_mark(s) {
+            *n.entry((j, c)).or_default() += 1;
+        }
+    }
+    let mut best: HashMap<usize, (&'static str, usize)> = HashMap::new();
+    for ((j, c), k) in n {
+        let e = best.entry(j).or_insert((c, 0));
+        if k > e.1 || (k == e.1 && c < e.0) {
+            *e = (c, k);
+        }
+    }
+    best.into_iter().map(|(j, (c, _))| (j, c)).collect()
+}
+
+fn text_marks(rows: &[Vec<Val>]) -> HashMap<usize, &'static str> {
+    currency_marks(rows.iter().flat_map(|r| r.iter().enumerate().filter_map(|(j, v)| match v { Val::Text(s) => Some((j, s.as_str())), _ => None })))
+}
+
+/// R-640: the sheet's currency when it is not dollars, from the money columns' headers and
+/// cells and the notes above the header. Only the money columns count, so a shoe size
+/// written "EUR 42" is never read as the currency.
+fn sheet_currency(t: &Table, money: &[usize]) -> Option<&'static str> {
+    let mut votes: Vec<&'static str> = Vec::new();
+    for &j in money {
+        votes.extend(t.headers.get(j).and_then(|h| currency_mark(h)));
+        votes.extend(t.marks.get(&j).copied());
+    }
+    votes.extend(t.above.iter().filter_map(|(_, s)| currency_mark(s)));
+    let count = |c: &str| votes.iter().filter(|v| **v == c).count();
+    let top = votes.iter().copied().max_by_key(|c| (count(c), std::cmp::Reverse(*c)))?;
+    (top != "USD" && count(top) > count("USD")).then_some(top)
+}
+
+/// R-640: the table with every money cell turned into dollars at `rate`.
+fn in_dollars(t: &Table, money: &[usize], rate: f64) -> Table {
+    let mut out = t.clone();
+    for r in out.rows.iter_mut() {
+        for &j in money {
+            if let Some(v) = r.get(j).and_then(|v| v.number()) {
+                r[j] = Val::Num(v * rate);
+            }
+        }
+    }
+    out
+}
+
+/// R-640: the rate to read at, when one was given and it changes anything.
+fn rate_of(o: &ReadOptions) -> Option<f64> {
+    o.fx_rate.filter(|r| r.is_finite() && *r > 0.0 && (*r - 1.0).abs() > 1e-9)
+}
+
 fn val_from_cell(d: &calamine::Data) -> Val {
     use calamine::Data;
     match d {
@@ -454,7 +532,10 @@ fn val_from_cell(d: &calamine::Data) -> Val {
     }
 }
 
+#[derive(Clone)]
 struct Table {
+    /// R-640: by column, the currency its cells are written in ("€12.50", "GBP 4").
+    marks: HashMap<usize, &'static str>,
     file_name: String,
     format: String,
     sheet: Option<String>,
@@ -779,6 +860,9 @@ fn read_table(path: &str, want_sheet: Option<&str>, hdr: Option<usize>) -> Resul
     // For a combined read: the page and sheet row of every grid row.
     let mut grid_pages: Vec<String> = Vec::new();
     let mut grid_abs: Vec<u32> = Vec::new();
+    // R-640: a CSV's "€12.50" reads as the number 12.5, so its currency is taken from the
+    // text before that. A workbook keeps such a cell as text and is looked at below.
+    let mut raw_marks: Option<HashMap<usize, &'static str>> = None;
     let (sheet, sheets, grid, start, image_formulas, combined) = if excel {
         use calamine::Reader;
         let bytes = std::fs::read(path).context("open the file")?;
@@ -1011,6 +1095,7 @@ fn read_table(path: &str, want_sheet: Option<&str>, hdr: Option<usize>) -> Resul
         } else {
             manifest::grid_from_delimited(path)?
         };
+        raw_marks = Some(currency_marks(g.rows.iter().flat_map(|r| r.iter().enumerate().map(|(j, c)| (j, c.as_str())))));
         let mut rows: Vec<Vec<Val>> = g.rows.iter().map(|r| r.iter().map(|c| val_from_text(c)).collect()).collect();
         let n = repair_ragged(&mut rows);
         if n > 0 {
@@ -1065,7 +1150,9 @@ fn read_table(path: &str, want_sheet: Option<&str>, hdr: Option<usize>) -> Resul
         } else {
             ((h + 1..grid.len()).map(|i| start.0 + i as u32).collect(), Vec::new())
         };
+        let marks = raw_marks.unwrap_or_else(|| text_marks(&rows));
         return Ok(Table {
+            marks,
             file_name, format: ext, sheet, sheets, headers, header_in_file: true,
             header_row: if combined { 1 } else { start.0 as usize + h + 1 }, header_abs_row: Some(start.0 + h as u32),
             rows, abs_rows, abs_col0: start.1, above, image_formulas, images, inferred: None, notes, same_header,
@@ -1086,7 +1173,9 @@ fn read_table(path: &str, want_sheet: Option<&str>, hdr: Option<usize>) -> Resul
         })
         .collect();
     let abs_rows = (0..grid.len()).map(|i| start.0 + i as u32).collect();
+    let marks = raw_marks.unwrap_or_else(|| text_marks(&grid));
     Ok(Table {
+        marks,
         file_name, format: ext, sheet, sheets, headers, header_in_file: false, header_row: 0, header_abs_row: None,
         rows: grid.into_iter().map(pad).collect(), abs_rows, abs_col0: start.1, above: Vec::new(), image_formulas, images,
         inferred: inf.map(|i| (i.desc, i.qty, i.price)), notes, same_header,
@@ -2645,6 +2734,8 @@ fn price_of(l: &Line, rule: &PriceRule, override_unit: Option<f64>) -> Option<(f
 /// The lines of a manifest with their brand and category settled: everything the split
 /// and the analyzer's breakdown share (R-396), so the two screens read one file one way.
 struct Prepared {
+    /// R-640: the money columns' currency when it is not dollars.
+    currency: Option<&'static str>,
     t: Arc<Table>,
     cols: Cols,
     lines: Vec<Line>,
@@ -2724,6 +2815,14 @@ fn prepare(path: &str, ask: &mut Ask, notes: &mut Vec<String>, o: &ReadOptions) 
     let mut cols = match &o.columns {
         Some(m) => cols_from_map(&t, m)?,
         None => detect_cols(&t, &price_role)?,
+    };
+    // R-640: what currency the money columns are in, and, at Jack's rate, every money cell
+    // in dollars before a line is read, so each figure after this is dollars.
+    let money: Vec<usize> = [cols.retail_unit, cols.retail_ext, cols.sale_unit, cols.sale_ext].iter().flatten().copied().collect();
+    let currency = sheet_currency(&t, &money);
+    let t = match rate_of(o) {
+        Some(r) => Arc::new(in_dollars(&t, &money, r)),
+        None => t,
     };
     let mut read = build_lines(&t, &cols);
     let mut lines = std::mem::take(&mut read.lines);
@@ -3233,7 +3332,7 @@ fn prepare(path: &str, ask: &mut Ask, notes: &mut Vec<String>, o: &ReadOptions) 
     } else {
         read.total_rows.iter().rev().find(|r| r.label.to_lowercase().contains("grand")).map(|r| (r.units, r.retail))
     };
-    Ok(Prepared { t, cols, lines, brands, cats, guessed, brands_read, left_out, footers, placed, brand_from, sections, sheet_total, all_read, qty_missing, repeat_lines })
+    Ok(Prepared { t, cols, lines, brands, cats, guessed, brands_read, left_out, footers, placed, brand_from, sections, sheet_total, all_read, qty_missing, repeat_lines, currency })
 }
 
 fn build(path: &str, answers: &HashMap<String, String>, edits: &SplitEdits) -> Result<State> {
@@ -4122,6 +4221,9 @@ pub struct Breakdown {
     /// up into one product.
     #[serde(default)]
     pub repeat_lines: usize,
+    /// R-640: the money columns' currency (a code like "EUR") when it is not dollars.
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
 fn column_infos(t: &Table, c: &Cols) -> Vec<ColumnInfo> {
@@ -4432,6 +4534,7 @@ fn empty_breakdown(t: &Table, o: &ReadOptions, why_code: &str, why: String, fix:
         review: Review { category_names: manifest_category::category_names().iter().map(|s| s.to_string()).collect(), ..Review::default() },
         cost_col: None,
         repeat_lines: 0,
+        currency: None,
     };
     let candidates = stated_candidates(t, None, &HashSet::new());
     b.stated = candidates.into_iter().next();
@@ -4577,7 +4680,16 @@ pub fn breakdown_with(path: &str, o: &ReadOptions) -> Result<Breakdown> {
     let needs_map = no_header || no_qty || no_price;
 
     // What the file says it holds, against what was read.
-    let candidates = stated_candidates(&t, p.sheet_total, &read_pages);
+    let mut candidates = stated_candidates(&t, p.sheet_total, &read_pages);
+    // R-640: the sheet's total row was read from cells already in dollars; a summary page or
+    // the file name was not.
+    if let Some(r) = rate_of(o) {
+        let skip = usize::from(p.sheet_total.map_or(false, |(u, r)| u.is_some() || r.is_some()));
+        for st in candidates.iter_mut().skip(skip) {
+            st.retail = st.retail.map(|v| round2(v * r));
+            st.price = st.price.map(|v| round2(v * r));
+        }
+    }
     let all_pages_read = t.pages.iter().filter(|m| m.kind == "lines" && !m.hidden).all(|m| read_pages.contains(&m.name));
     let stated = candidates.iter().find(|s| s.units.is_some() || s.retail.is_some()).cloned();
     let price_stated = candidates.iter().find_map(|s| s.price.map(|pr| (pr, s.source.clone())));
@@ -4720,6 +4832,7 @@ pub fn breakdown_with(path: &str, o: &ReadOptions) -> Result<Breakdown> {
         review,
         cost_col: head(cols.sale_unit.or(cols.sale_ext)),
         repeat_lines: p.repeat_lines,
+        currency: p.currency.map(String::from),
     })
 }
 
@@ -5948,6 +6061,36 @@ TOTAL,,6,460\n";
         }
         assert_eq!(b.lines.iter().filter(|l| l.section == b.sections[1].key).count(), 2);
         assert!(!b.checks.iter().any(|c| c.code == "section_mismatch"), "{:?}", b.checks);
+    }
+
+    #[test]
+    fn a_euro_sheet_is_found_and_read_in_dollars_at_the_rate() {
+        // R-640. The size column says EUR; only the money columns decide the currency.
+        let csv = "Description,Size,Qty,Unit Retail
+Adidas Samba,EUR 42,2,\"€100,00\"
+Puma Suede,EUR 40,1,\"€50,00\"
+Total,,3,\"€250,00\"
+";
+        let raw = read_csv("eur.csv", csv, &ReadOptions::default());
+        assert_eq!(raw.currency.as_deref(), Some("EUR"));
+        let raw_retail: f64 = raw.lines.iter().map(|l| l.retail).sum();
+        assert!((raw_retail - 250.0).abs() < 1e-6, "{raw_retail}");
+        let usd = read_csv("eur.csv", csv, &ReadOptions { fx_rate: Some(1.1), ..ReadOptions::default() });
+        assert_eq!(usd.currency.as_deref(), Some("EUR"));
+        let retail: f64 = usd.lines.iter().map(|l| l.retail).sum();
+        assert!((retail - 275.0).abs() < 1e-6, "{retail}");
+        // The total row was converted with the lines, so it still agrees with them.
+        assert!(!usd.checks.iter().any(|c| c.code.contains("mismatch")), "{:?}", usd.checks);
+
+        let dollars = "Description,Size,Qty,Unit Retail
+Adidas Samba,EUR 42,2,$100
+Puma Suede,EUR 40,1,50
+";
+        assert_eq!(read_csv("usd.csv", dollars, &ReadOptions::default()).currency, None);
+        let header = "Description,Qty,Retail (GBP)
+Adidas Samba,2,100
+";
+        assert_eq!(read_csv("gbp.csv", header, &ReadOptions::default()).currency.as_deref(), Some("GBP"));
     }
 
     #[test]

@@ -2566,6 +2566,8 @@ export interface ManifestAnalysis {
   products: ManifestProduct[];
   review: ManifestReview;
   cost_only: boolean;
+  /** R-640: the money columns are in this currency (a code like "EUR"), not dollars. */
+  currency?: string | null;
 }
 
 // ── Manifest analyzer, R-564 ────────────────────────────────────────────────
@@ -2585,6 +2587,11 @@ export interface ManifestReadOptions {
   columns: ManifestColumnMap | null;
   rules: ManifestRule[];
   resolve_only: boolean;
+  /** R-640: dollars for one unit of the sheet's currency; with it the reader turns every money cell into dollars. */
+  fx_rate?: number | null;
+  /** R-640, kept with the options only (the reader ignores them): the currency Jack read it as, and the day of a fetched rate (null when he typed it). */
+  currency?: string | null;
+  fx_date?: string | null;
 }
 
 export interface ManifestPageInfo {
@@ -5832,6 +5839,8 @@ export const api = {
   // forceAi re-reads a PDF through Claude when the text-layer heuristic got it wrong.
   analyzeManifest: (path: string, options: ManifestReadOptions = DEFAULT_READ_OPTIONS) =>
     invoke<ManifestAnalysis>("analyze_manifest", { path, options }),
+  /** R-640: today's European Central Bank rate, dollars for one unit of `currency`. */
+  manifestFxRate: (currency: string) => invoke<{ rate: number; date: string }>("manifest_fx_rate", { currency }),
   // R-564: saved manifests, rules and remembered column maps.
   saveManifest: (record: SaveManifestRecord) => invoke<SavedManifest>("save_manifest", { record }),
   listManifests: () => invoke<SavedManifest[]>("list_manifests"),

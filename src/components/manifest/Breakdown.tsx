@@ -28,6 +28,9 @@ export default function Breakdown({ analysis: a, settings, onSettings, ask, onAs
   const [sort, setSort] = useState<"value" | "unit" | "qty" | "row">("value");
   const [limit, setLimit] = useState(100);
   const [open, setOpen] = useState<Set<string>>(new Set());
+  // R-641: the supplier's price as a % of retail (it writes the asking price) and the deposit %.
+  const [pctEdit, setPctEdit] = useState<string | null>(null);
+  const [deposit, setDeposit] = useState("");
 
   const costOnly = a.cost_only;
   const f = useMemo(() => facts(a), [a]);
@@ -180,6 +183,43 @@ export default function Breakdown({ analysis: a, settings, onSettings, ask, onAs
             <p className="text-[11.5px] text-muted pb-2">Your completed deals average a {a.overall_margin_pct.toFixed(0)}% margin.</p>
           )}
         </div>
+        {(() => {
+          // R-641: what you pay. A % of retail sets the asking price; the deposit is a % of it.
+          const askN = num(ask);
+          const retail = a.total_retail || 0;
+          const pctShown = pctEdit ?? (askN != null && askN > 0 && retail > 0 ? String(+(askN / retail * 100).toFixed(2)) : "");
+          const dep = num(deposit);
+          return (
+            <>
+              <div className="flex flex-wrap items-end gap-4 mt-3">
+                {!costOnly && retail > 0 && (
+                  <label className="text-[11.5px] text-muted">
+                    <span className="block mb-1">You buy at (% of retail)</span>
+                    <input className={`${S.input} w-28`} value={pctShown} placeholder="e.g. 12"
+                      onChange={(e) => {
+                        setPctEdit(e.target.value);
+                        const p = num(e.target.value);
+                        onAsk(p != null ? (retail * p / 100).toFixed(2) : "");
+                      }}
+                      onBlur={() => setPctEdit(null)} />
+                  </label>
+                )}
+                <label className="text-[11.5px] text-muted">
+                  <span className="block mb-1">Deposit (%)</span>
+                  <input className={`${S.input} w-28`} value={deposit} placeholder="e.g. 15" onChange={(e) => setDeposit(e.target.value)} />
+                </label>
+              </div>
+              {askN != null && askN > 0 ? (
+                <p className="text-[12.5px] text-ink-2 mt-2 tabular-nums">
+                  You pay <b className="text-ink">{fmtAmount(askN)}</b> for the load{units > 0 ? <>, <b className="text-ink">{fmtAmount(askN / units)}</b> a unit</> : null}.
+                  {dep != null && dep > 0 && dep <= 100 ? <> A {+dep.toFixed(2)}% deposit is <b className="text-ink">{fmtAmount(askN * dep / 100)}</b>, leaving {fmtAmount(askN * (1 - dep / 100))} to pay.</> : null}
+                </p>
+              ) : (dep != null && dep > 0) ? (
+                <p className="text-[12px] text-muted mt-2">Type the asking price{!costOnly && retail > 0 ? " or the % of retail you buy at" : ""} to see the deposit.</p>
+              ) : null}
+            </>
+          );
+        })()}
         {bid.resale == null ? (
           <p className="text-[12.5px] text-ink-2 mt-3">
             {costOnly

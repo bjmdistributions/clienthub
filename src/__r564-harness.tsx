@@ -35,8 +35,19 @@ const saved: A[] = [
 let rules: A[] = [];
 
 const dialogPath = () => `C:/invented/${state === "review" ? "review" : state}.csv`;
+// R-640: the clean sheet as if written in euros; with a rate every money figure is in dollars.
+const eur = (rate: number | null | undefined) => {
+  const c = JSON.parse(JSON.stringify(clean));
+  c.currency = "EUR";
+  const k = rate || 1;
+  const scale = (o: A) => { for (const f of ["total_retail", "retail", "cost", "sheet", "uncategorized_retail"]) if (typeof o[f] === "number") o[f] *= k; };
+  scale(c);
+  [...(c.categories || []), ...(c.brands || []), ...(c.lines || []), ...(c.products || [])].forEach(scale);
+  return c;
+};
 const analyze = (a: A) => {
   const p = String(a.path), o = a.options || {};
+  if (p.includes("eur")) return eur(o.fx_rate);
   if (p.includes("needsmap")) return o.columns ? clean : needsmap;
   if (p.includes("review")) {
     // The review state is the sections sheet; once a rule is saved every line reads as placed by it.
@@ -57,6 +68,7 @@ w.__FIXTURE = (cmd: string, a: A) => {
   switch (cmd) {
     case "plugin:dialog|open": return dialogPath();
     case "analyze_manifest": return analyze(a);
+    case "manifest_fx_rate": return { rate: 1.1193, date: "2026-11-09" };
     case "list_manifests": return saved;
     case "list_manifests_deleted": return [];
     case "get_manifest": return { ...saved.find((m) => m.id === a.id), lines: [], products: [] };

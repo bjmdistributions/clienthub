@@ -38,7 +38,7 @@ pub struct Placed {
     pub h_px: f64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SheetImages {
     /// (row, col) of a cell holding a picture, to the picture's package path.
     pub in_cell: HashMap<(u32, u32), String>,

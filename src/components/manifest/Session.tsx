@@ -11,6 +11,7 @@ import ManifestSplit from "../ManifestSplit";
 import Breakdown from "./Breakdown";
 import ChecksStrip from "./ChecksStrip";
 import ColumnMap from "./ColumnMap";
+import Currency from "./Currency";
 import PagesSections, { SectionChoice } from "./PagesSections";
 import Review from "./Review";
 import {
@@ -189,6 +190,10 @@ export default function Session({ s, busy, onReread, onSave, onRefreshSaved, onB
       {!mustMap && (
         <>
           <Review analysis={a} busy={busy} onApply={applyRules} />
+
+          {!d.format.startsWith("pdf") && (
+            <Currency analysis={a} options={s.options} canRead={!!s.path} busy={busy} onReread={onReread} onAsk={setAsk} />
+          )}
 
           <Breakdown analysis={a} settings={settings} onSettings={changeSettings} ask={ask} onAsk={setAsk}
             rowFilter={rowFilter} onClearFilter={() => setRowFilter(null)} onJumpReview={() => jump("mf-review")} onMax={setMax} />

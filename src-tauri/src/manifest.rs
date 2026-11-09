@@ -120,6 +120,9 @@ pub struct ManifestAnalysis {
     /// Groups of lines to place (or name) once, and the categories to choose from.
     #[serde(default)]
     pub review: crate::manifest_split::Review,
+    /// R-640: the sheet's money columns are in this currency (a code like "EUR"), not dollars.
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
 /// One product line as read (R-430). Retail and the sheet's price are extended (x units).
@@ -184,7 +187,7 @@ pub(crate) fn parse_money(s: &str) -> Option<f64> {
     let neg = t.starts_with('(') && t.ends_with(')');
     let mut core = t.trim_start_matches('(').trim_end_matches(')').trim_end_matches('*').trim().to_string();
     let upper = core.to_uppercase();
-    for code in ["US$", "USD", "CAD", "C$", "AUD", "A$", "NZD", "EUR", "GBP", "MXN"] {
+    for code in ["US$", "USD", "CAD", "C$", "AUD", "A$", "NZD", "EUR", "GBP", "MX$", "MXN", "HK$", "HKD", "CNY", "RMB", "JPY"] {
         if let Some(rest) = upper.strip_prefix(code) {
             core = rest.trim().to_string();
             break;
@@ -1072,6 +1075,7 @@ fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis
         pages: Vec::new(), sections: Vec::new(), columns: Vec::new(), header_signature: String::new(),
         needs_map: false, checks: Vec::new(), stated: None, cost_only: false, products: Vec::new(),
         review: Default::default(),
+        currency: None,
     })
 }
 
@@ -1174,6 +1178,7 @@ pub(crate) fn from_breakdown(b: crate::manifest_split::Breakdown, overall_margin
         cost_only: b.cost_only,
         products: b.products,
         review: b.review,
+        currency: b.currency,
     })
 }
 
@@ -1588,6 +1593,8 @@ Ninja Blender BN701 3 99.00 297.00\n";
         assert_eq!(parse_money("USD 130.00"), Some(130.0));
         assert_eq!(parse_money("130.00 USD"), Some(130.0));
         assert_eq!(parse_money("US$20"), Some(20.0));
+        assert_eq!(parse_money("RMB 85.50"), Some(85.5));
+        assert_eq!(parse_money("12,50 EUR"), Some(12.5));
         assert_eq!(parse_money("12.99*"), Some(12.99));
         assert_eq!(parse_money("(12.00)"), Some(-12.0));
         assert_eq!(parse_money("$-"), None);

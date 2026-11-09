@@ -13810,6 +13810,34 @@ pub async fn analyze_manifest(
     .map_err(|e| e.to_string())
 }
 
+/// R-640: what one unit of `currency` is worth in dollars today, and the day the rate is
+/// from: the European Central Bank's daily reference rate, read from Frankfurter (no key).
+#[derive(serde::Serialize)]
+pub struct FxRate {
+    pub rate: f64,
+    pub date: String,
+}
+
+#[tauri::command]
+pub async fn manifest_fx_rate(currency: String) -> Result<FxRate, String> {
+    let code = currency.trim().to_uppercase();
+    if code.len() != 3 || !code.chars().all(|c| c.is_ascii_uppercase()) {
+        return Err("Pick a currency first.".into());
+    }
+    if code == "USD" {
+        return Ok(FxRate { rate: 1.0, date: chrono::Local::now().format("%Y-%m-%d").to_string() });
+    }
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
+    let url = format!("https://api.frankfurter.dev/v1/latest?base={code}&symbols=USD");
+    let resp = client.get(url).send().await.map_err(|_| "Couldn't reach the rate service. Type the rate instead.".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("The rate service has no rate for {code}. Type the rate instead."));
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let rate = v["rates"]["USD"].as_f64().filter(|r| *r > 0.0).ok_or_else(|| format!("The rate service has no rate for {code}. Type the rate instead."))?;
+    Ok(FxRate { rate, date: v["date"].as_str().unwrap_or_default().to_string() })
+}
+
 // R-379: split a manifest into several by brand or category. Every call works the plan
 // out again from the file, the answers and the edits (the sheet itself is cached), off
 // the async runtime because reading a big workbook is CPU work.
