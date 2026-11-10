@@ -342,26 +342,17 @@ export default function DealFlowView() {
     const scope = Math.max(r.refund_owed, r.refunded);
     return scope > 0.01 && scope + 0.01 >= dealValueOf(f);
   };
-  // A PART refund is not a refund as far as these lists are concerned. Jack's rule:
-  // "if the amount refunded is not the entire thing, i want it to show in deal flow
-  // completed" — the lot did not go back, so some of it was sold and the deal is
-  // concluded, not a lot sitting in a returns queue. The Refunds drawer is reserved
-  // for a deal that went back WHOLE. A part-refunded deal is therefore listed under
-  // Completed with its pre-refund figures struck through, and nowhere else.
-  // It turns on money actually RETURNED, not merely owed — "if the amount refunded is
-  // not the entire thing". A part refund entered but not yet paid is still live work and
-  // stays in the pipeline; it moves across the moment its payments are attached.
-  const isPartlyRefunded = (f: DealFlow) => {
-    const r = refundMap[f.id];
-    return !!r && !isFullyRefunded(f) && r.refunded > 0.01;
-  };
+  // A PART refund keeps the deal where its stage puts it (R-644, Jack 2026-11-10: "it
+  // automcatically moves it to completed tho when i didnt even hit complete deal").
+  // R-186 used to file any deal with money returned under Completed; now only Complete
+  // deal moves it there. The Refunds drawer is still reserved for a deal that went back
+  // WHOLE, and the card's Partially refunded pill marks a part refund wherever it is.
   const active    = flows.filter(
-    (f) => f.stage !== "complete" && !isFullyRefunded(f) && !isPartlyRefunded(f) && isInvoiceActive(f) && matchFl(f)
+    (f) => f.stage !== "complete" && !isFullyRefunded(f) && isInvoiceActive(f) && matchFl(f)
   );
-  const completed = flows.filter((f) => f.stage === "complete" || isPartlyRefunded(f));
+  const completed = flows.filter((f) => f.stage === "complete");
   // Completed deals, most recent completion first, so the list always reads top-down
-  // by date. A part-refunded deal that was never marked complete has no completion
-  // date, so it dates from when it was last touched rather than sinking to the bottom.
+  // by date. A deal with no completion date dates from when it was last touched.
   const completedFiltered = completed.filter(matchFl).sort((a, b) => {
     const ta = Date.parse(a.completed_at || a.updated_at || "") || 0;
     const tb = Date.parse(b.completed_at || b.updated_at || "") || 0;
@@ -381,7 +372,7 @@ export default function DealFlowView() {
   // total minus supplier cost minus anything refunded — so the box is the sum of the
   // cards and never a second opinion. Counted before the search box filters anything.
   const openDeals    = flows.filter((f) =>
-    f.stage !== "complete" && !isFullyRefunded(f) && !isPartlyRefunded(f) && isInvoiceActive(f));
+    f.stage !== "complete" && !isFullyRefunded(f) && isInvoiceActive(f));
   const pricedDeals  = openDeals.filter((f) => (f.supplier_payments || []).length > 0);
   const pendingRev   = pricedDeals.reduce((s, f) => s + f.invoice_total - (refundMap[f.id]?.refunded ?? 0), 0);
   // R-400: shipping is its own figure, and the cost beside it leaves it out, so the two add
@@ -424,7 +415,7 @@ export default function DealFlowView() {
   const deliveriesSoon = active.filter((f) => !f.ships_direct
     && (soon(f.expected_delivery_date) || (f.logistics_stage === "picked_up" && soon(f.logistics_delivery_day)))).length;
 
-  // Whole-lot refunds only — see `isPartlyRefunded`.
+  // Whole-lot refunds only (R-644: a part refund stays in its own list).
   const refundAll   = flows.filter((f) => refundMap[f.id] && isFullyRefunded(f));
   const refundFlows = [...refundAll].sort((a, b) =>
     (isRefundDone(a.id) ? 1 : 0) - (isRefundDone(b.id) ? 1 : 0)
@@ -441,7 +432,7 @@ export default function DealFlowView() {
     const f = flows.find((x) => x.invoice_number === openTarget!.invoice);
     if (!f) { if (flows.length) openTarget = null; return; }
     if (isFullyRefunded(f)) { setRefundsOpen(true); if (isRefundDone(f.id)) setClosedRefundsOpen(true); }
-    else if (f.stage === "complete" || isPartlyRefunded(f)) setDrawerOpen(true);
+    else if (f.stage === "complete") setDrawerOpen(true);
     else if (described.has(f.id)) { const sec = described.get(f.id)!.section; setSectionsOpen((o) => (o[sec] ? o : { ...o, [sec]: true })); }
     else openTarget = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
