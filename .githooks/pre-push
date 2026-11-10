@@ -18,6 +18,8 @@ done
 [ -n "$sha" ] || exit 0
 
 main=$(cd "$(git rev-parse --git-common-dir)/.." && pwd)
+# cmd.exe for the junction; not on the PATH in every Git Bash.
+wincmd=$(command -v cmd.exe || command -v cmd || echo /c/Windows/System32/cmd.exe)
 if [ ! -d "$main/node_modules" ]; then
   echo "pre-push: no node_modules in $main, so Check main cannot be run here. Run npm ci there first." >&2
   exit 1
@@ -28,7 +30,7 @@ tmp=$(mktemp -d)
 # at), so removing the temporary checkout can never reach the main checkout's packages.
 cleanup() {
   if [ -e "$tmp/w/node_modules" ]; then
-    if command -v cygpath >/dev/null 2>&1; then cmd //c "rmdir \"$(cygpath -w "$tmp/w/node_modules")\"" >/dev/null 2>&1 || true
+    if command -v cygpath >/dev/null 2>&1; then MSYS_NO_PATHCONV=1 "$wincmd" /c rmdir "$(cygpath -w "$tmp/w/node_modules")" >/dev/null 2>&1 || true
     else rm -f "$tmp/w/node_modules"; fi
   fi
   [ -e "$tmp/w/node_modules" ] && { echo "pre-push: could not unlink $tmp/w/node_modules; left $tmp in place" >&2; return; }
@@ -40,7 +42,9 @@ git worktree add --detach --quiet "$tmp/w" "$sha"
 cd "$tmp/w"
 # The main checkout's packages, linked rather than installed (a junction on Windows).
 if command -v cygpath >/dev/null 2>&1; then
-  cmd //c "mklink /J node_modules \"$(cygpath -w "$main/node_modules")\"" >/dev/null
+  # MSYS_NO_PATHCONV: without it Git Bash rewrites the path and the junction points nowhere.
+  MSYS_NO_PATHCONV=1 "$wincmd" /c mklink /J node_modules "$(cygpath -w "$main/node_modules")" >/dev/null
+  [ -e node_modules/.bin ] || { echo "pre-push: could not link node_modules" >&2; exit 1; }
 else
   ln -s "$main/node_modules" node_modules
 fi
