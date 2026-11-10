@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emailedLine, inReach, saidLine, spread, stageOf, type Lead } from "./outreach";
+import { emailedLine, inReach, rate, saidLine, spread, stageOf, type Lead } from "./outreach";
 
 // R-581: the Cold calls rules this screen keeps for itself. Everything else (emailed, replied, no reply, texted,
 // what they said) the server works out; these only read it.
@@ -15,10 +15,20 @@ describe("Cold calls lists and the map", () => {
     expect(stageOf(lead({ emailed: true }))).toBe("emailed");
     expect(stageOf(lead({ emailed: true, replied: true, status: "talking" }))).toBe("replied");
     expect(stageOf(lead({ replied: true, status: "supplier" }))).toBe("supplier");
+    expect(stageOf(lead({ replied: true, status: "converted" }))).toBe("converted");
     expect(stageOf(lead({ replied: true, status: "do_not_contact" }))).toBe("stop");
     // R-607: queued and not gone yet has its own colour, so a stalled queue is seen on the map.
     expect(stageOf(lead({ queued: 1 }))).toBe("waiting");
     expect(stageOf(lead({ queued: 1, emailed: true }))).toBe("emailed");
+  });
+
+  it("writes a rate so a small one is not 0% (R-643)", () => {
+    expect(rate(0, 0)).toBe("None yet");
+    expect(rate(0, 40)).toBe("0%");
+    expect(rate(31, 240)).toBe("13%");
+    expect(rate(1, 100)).toBe("1%");
+    expect(rate(2, 300)).toBe("0.7%");
+    expect(rate(1, 4)).toBe("25%");
   });
 
   it("lists the ones that failed to send (R-606)", () => {

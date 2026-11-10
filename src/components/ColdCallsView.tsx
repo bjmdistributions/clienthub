@@ -8,9 +8,10 @@ import { toast } from "./Toast";
 import { shrinkLogo } from "../lib/logo";
 import { can } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
+import { api, type Supplier } from "../lib/api";
 import {
   ANSWERED_HOW, KIND_LABEL, OVERSEAS_CHECKS, isOverseas, OUTCOMES, OUTCOME_LABEL, REACH, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, emailedLine, inReach, nextLine,
-  outreach, saidLine, sendable, type DraftEmail, type ImportAnswer, type LeadListName, type Lead, type LeadDetail, type LeadList, type LeadStatus, type OutreachReply, type PumpState, type Skipped,
+  COLD_LEAD_OPEN_KEY, outreach, rate, saidLine, sendable, type DraftEmail, type ImportAnswer, type LeadListName, type Lead, type LeadDetail, type LeadList, type LeadStatus, type OutreachReply, type PumpState, type Skipped,
 } from "../lib/outreach";
 
 // R-546 Cold calls: warehouses and would-be suppliers being cold called and emailed, kept apart from
@@ -26,9 +27,12 @@ const label = "block text-[12px] font-medium text-ink-2 mb-1";
 
 const TONE: Record<LeadStatus, "neutral" | "step" | "accent" | "warning" | "success" | "danger"> = {
   new: "neutral", called: "step", emailed: "step", talking: "accent", has_goods: "warning",
-  supplier: "success", not_now: "neutral", do_not_contact: "danger",
+  supplier: "neutral", converted: "success", not_now: "neutral", do_not_contact: "danger",
 };
-const Pill = ({ s }: { s: LeadStatus }) => <StatusPill tone={TONE[s] ?? "neutral"} size="md">{STATUS_LABEL[s] ?? s}</StatusPill>;
+// R-643: Converted is the green one (a deal closed); Supplier is plain ink so the two never read alike.
+const Pill = ({ s }: { s: LeadStatus }) => s === "supplier"
+  ? <StatusPill className="text-ink bg-surface-3" size="md">{STATUS_LABEL[s]}</StatusPill>
+  : <StatusPill tone={TONE[s] ?? "neutral"} size="md">{STATUS_LABEL[s] ?? s}</StatusPill>;
 
 function ago(iso: string): string {
   const t = new Date(iso).getTime();
@@ -67,7 +71,10 @@ export default function ColdCallsView() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<string>("due");
   const [query, setQuery] = useState("");
-  const [openId, setOpenId] = useState<string | null>(null);
+  // R-643: a supplier's From Cold calls tag opens its warehouse here.
+  const [openId, setOpenId] = useState<string | null>(() => {
+    try { const v = localStorage.getItem(COLD_LEAD_OPEN_KEY); if (v) localStorage.removeItem(COLD_LEAD_OPEN_KEY); return v; } catch { return null; }
+  });
   const [form, setForm] = useState<Partial<Lead> | null>(null);
   const [compose, setCompose] = useState<{ ids: string[]; bump: boolean } | null>(null);
   const [review, setReview] = useState<{ emails: DraftEmail[]; skipped: Skipped[] } | null>(null);
@@ -98,6 +105,16 @@ export default function ColdCallsView() {
   const everyLead = useMemo(() => data?.leads ?? [], [data]);
   // A list that is gone (renamed on another device) falls back to every list.
   const pickedList = lists.some((x) => x.name === list) ? list : "";
+  // R-643: every list together, and the one the figures row reads (the list picked, else all of them).
+  const allLists: LeadListName = useMemo(() => ({
+    name: "", total: everyLead.length, emailed: everyLead.filter((l) => l.emailed).length,
+    replied: everyLead.filter((l) => l.replied).length, texted: everyLead.filter((l) => l.texted).length,
+    suppliers: everyLead.filter((l) => l.supplier_id || l.status === "supplier" || l.status === "converted").length,
+    converted: everyLead.filter((l) => l.status === "converted").length,
+    waiting: lists.reduce((n, x) => n + (x.waiting ?? 0), 0), failed: lists.reduce((n, x) => n + (x.failed ?? 0), 0),
+    not_emailed: lists.reduce((n, x) => n + (x.not_emailed ?? 0), 0),
+  }), [everyLead, lists]);
+  const shownList = lists.find((x) => x.name === pickedList) ?? allLists;
   // R-631: overseas suppliers live in their own tab, never among the warehouses, the map or the texts.
   const leads = useMemo(() => everyLead.filter((l) => !isOverseas(l) && (!pickedList || l.list === pickedList)), [everyLead, pickedList]);
   const overseas = useMemo(() => everyLead.filter(isOverseas), [everyLead]);
@@ -183,24 +200,26 @@ export default function ColdCallsView() {
         <>
           {lists.length > 0 && (
             <div className="flex gap-2.5 mb-4 overflow-x-auto pb-1">
-              <ListCard name="All lists" n={{ name: "", total: everyLead.length, emailed: everyLead.filter((l) => l.emailed).length,
-                replied: everyLead.filter((l) => l.replied).length, texted: everyLead.filter((l) => l.texted).length, suppliers: 0,
-                waiting: lists.reduce((n, x) => n + (x.waiting ?? 0), 0), failed: lists.reduce((n, x) => n + (x.failed ?? 0), 0),
-                not_emailed: lists.reduce((n, x) => n + (x.not_emailed ?? 0), 0) }}
-                on={!pickedList} onPick={() => setList("")} />
+              <ListCard name="All lists" n={allLists} on={!pickedList} onPick={() => setList("")} />
               {lists.map((x) => (
                 <ListCard key={x.name} name={x.name} n={x} on={pickedList === x.name} onPick={() => setList(x.name)} onRename={() => setRenaming(x)} />
               ))}
             </div>
           )}
           <div className="hsep" />
-          <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr] gap-x-6 py-4">
-            {([["Due today", data.due], ["Waiting to send", data.queue.waiting], ["Sent today", data.queue.sent_today]] as [string, number][]).map(([l, v], i) => (
+          <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr_auto_1fr] gap-x-6 py-4">
+            {([
+              ["Due today", data.due, ""], ["Waiting to send", data.queue.waiting, ""], ["Sent today", data.queue.sent_today, ""],
+              // R-643: for the list picked (or every list): who wrote back of those emailed, and deals closed of every warehouse.
+              ["Response rate", rate(shownList.replied, shownList.emailed), `${shownList.replied} of ${shownList.emailed} emailed`],
+              ["Conversion rate", rate(shownList.converted ?? 0, shownList.total), `${shownList.converted ?? 0} of ${shownList.total}, ${shownList.suppliers} ${shownList.suppliers === 1 ? "supplier" : "suppliers"}`],
+            ] as [string, number | string, string][]).map(([l, v, sub], i) => (
               <Fragment key={l}>
                 {i > 0 && <div className="vsep" />}
                 <div className="min-w-0">
                   <div className="ui-label">{l}</div>
-                  <div className="ui-fig mt-1">{v}</div>
+                  <div className={`ui-fig mt-1 ${l === "Conversion rate" && (shownList.converted ?? 0) > 0 ? "text-success-ink" : ""}`}>{v}</div>
+                  {sub && <div className="text-[12px] text-muted tabular-nums truncate mt-0.5" title={sub}>{sub}</div>}
                 </div>
               </Fragment>
             ))}
@@ -344,6 +363,14 @@ function ListCard({ name, n, on, onPick, onRename }: { name: string; n: LeadList
       <div className="mt-1.5 text-[12px] text-ink-2 tabular-nums truncate">
         {n.emailed} of {n.total} emailed, {n.replied} replied{n.texted ? `, ${n.texted} texted` : ""}
       </div>
+      {/* R-643: response rate, then how many became suppliers and how many converted (a deal closed). */}
+      <div className="text-[12px] text-muted tabular-nums truncate">{n.emailed ? `${rate(n.replied, n.emailed)} response` : "No emails yet"}</div>
+      {n.suppliers ? (
+        <div className="text-[12px] text-muted tabular-nums truncate">
+          {n.suppliers} {n.suppliers === 1 ? "supplier" : "suppliers"}
+          {n.converted ? <span className="text-success-ink font-medium">, {n.converted} converted</span> : null}
+        </div>
+      ) : null}
       {(n.waiting || n.failed || n.not_emailed) ? (
         <div className="text-[12px] text-muted tabular-nums truncate">
           {[n.not_emailed ? `${n.not_emailed} not emailed` : "", n.waiting ? `${n.waiting} waiting` : ""].filter(Boolean).join(", ")}
@@ -369,6 +396,52 @@ function RenameList({ n, onClose, onSaved }: { n: LeadListName; onClose: () => v
       <label className={label}>Name</label>
       <input autoFocus value={to} onChange={(e) => setTo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save(); }} className={field} />
       <p className="text-[12px] text-muted mt-2">Every warehouse in it stays in it. Using another list's name puts the two together.</p>
+    </Overlay>
+  );
+}
+
+/** R-643: pick a supplier already in Suppliers for this warehouse, closest name first, so one added by hand is not made twice. */
+function LinkSupplier({ lead, onClose, onPick }: { lead: Lead; onClose: () => void; onPick: (s: Supplier) => void }) {
+  const [all, setAll] = useState<Supplier[] | null>(null);
+  const [q, setQ] = useState("");
+  const [pick, setPick] = useState<Supplier | null>(null);
+  useEffect(() => {
+    api.listSuppliers().then((s) => setAll(s.filter((x) => !x.archived))).catch((e) => { toast(msg(e), "error"); setAll([]); });
+  }, []);
+  const words = (t: string) => t.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !["llc", "inc", "the", "corp", "company", "logistics", "warehouse", "warehousing", "fulfillment"].includes(w));
+  const shown = useMemo(() => {
+    const mine = new Set(words(lead.company));
+    const email = (lead.email.split("@")[1] ?? "").toLowerCase();
+    const score = (s: Supplier) => (email && (s.email ?? "").toLowerCase().endsWith("@" + email) ? 10 : 0) + words(s.name).filter((w) => mine.has(w)).length;
+    const needle = q.trim().toLowerCase();
+    return (all ?? [])
+      .filter((s) => !needle || [s.name, s.contact_name, s.email].some((x) => (x ?? "").toLowerCase().includes(needle)))
+      .map((s) => [score(s), s] as const)
+      .sort((a, b) => b[0] - a[0] || a[1].name.localeCompare(b[1].name))
+      .map(([, s]) => s);
+  }, [all, q, lead.company, lead.email]);
+  return (
+    <Overlay title={`Link ${lead.company} to a supplier`} onClose={onClose}
+      footer={<><button className={ghost} onClick={onClose}>Cancel</button><button className={solid} disabled={!pick} onClick={() => pick && onPick(pick)}>Link</button></>}>
+      <p className="text-[13px] text-ink-2 mb-3">Pick the supplier you already added. Nothing new is made; the supplier gets a From Cold calls tag.</p>
+      <div className="relative mb-2">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search suppliers" className={field + " pl-8"} />
+      </div>
+      <div className="max-h-[320px] overflow-y-auto rounded-xl border border-line divide-y divide-line">
+        {all === null && <div className="px-3 py-3 text-[13px] text-muted">Loading suppliers...</div>}
+        {all !== null && shown.length === 0 && <div className="px-3 py-3 text-[13px] text-muted">No supplier matches. Make supplier adds a new one.</div>}
+        {shown.map((s) => (
+          <button key={s.id} onClick={() => setPick(s)} onDoubleClick={() => onPick(s)}
+            className={`w-full text-left px-3 py-2.5 flex items-center gap-3 transition-colors duration-150 ${pick?.id === s.id ? "bg-surface-3" : "hover:bg-surface-2"}`}>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13.5px] font-medium text-ink truncate">{s.name}</div>
+              <div className="text-[12px] text-muted truncate">{[s.contact_name, s.email, s.phone].filter(Boolean).join(" · ") || "No contact details"}</div>
+            </div>
+            {pick?.id === s.id && <Check size={15} className="text-ink flex-shrink-0" />}
+          </button>
+        ))}
+      </div>
     </Overlay>
   );
 }
@@ -696,6 +769,7 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
   const [next, setNext] = useState("");
   const [busy, setBusy] = useState(false);
   const [newNote, setNewNote] = useState("");
+  const [linking, setLinking] = useState(false);
 
   const load = useCallback(async () => {
     try { setD(await outreach.get(id)); } catch (e) { toast(msg(e), "error"); onClose(); }
@@ -752,13 +826,32 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
                 <div className="text-muted">{[[l.city, l.state, l.country].filter(Boolean).join(", "), KIND_LABEL[l.kind] ?? "", l.source].filter(Boolean).join(" · ")}</div>
                 <div className="text-muted">{emailedLine(l)}</div>
               </div>
+              {/* R-643: the supplier it became, and Converted once a deal with them has closed. */}
+              {l.supplier_id && (
+                <div className="mt-3 rounded-xl border border-line px-3 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <div className="min-w-0 flex-1 text-[13px] text-ink-2">
+                    In Suppliers as <span className="font-medium text-ink">{l.supplier_name || "a supplier"}</span>
+                  </div>
+                  {l.status === "converted"
+                    ? <StatusPill tone="success" size="md"><Check size={13} className="mr-1" />Converted</StatusPill>
+                    : <button className={solid + " h-8"} disabled={busy} onClick={() => act(() => outreach.edit(l.id, { status: "converted" }), `${l.company} marked converted`)}>Mark converted</button>}
+                  <button className="text-[12.5px] text-muted hover:text-ink underline underline-offset-2" disabled={busy} onClick={() => setLinking(true)}>Change</button>
+                  <button className="text-[12.5px] text-muted hover:text-ink underline underline-offset-2" disabled={busy}
+                    onClick={() => { if (confirm(`Unlink ${l.company} from ${l.supplier_name || "this supplier"}? The supplier stays in Suppliers; this warehouse goes back to Talking.`)) act(() => outreach.linkSupplier(l.id, ""), "Unlinked"); }}>Unlink</button>
+                </div>
+              )}
               <div className="mt-3 flex flex-wrap gap-2">
                 {sendable(l.status) && l.email && <button className={ghost} onClick={() => onEmail(l.id)}><Mail size={14} /> Email</button>}
                 <button className={ghost} onClick={() => onEdit(l)}>Edit</button>
-                {l.status !== "supplier" && mayAddSupplier && (
+                {!l.supplier_id && <button className={ghost} disabled={busy} onClick={() => setLinking(true)}>Link to supplier</button>}
+                {!l.supplier_id && mayAddSupplier && (
                   <button className={ghost} disabled={busy} onClick={() => act(() => outreach.makeSupplier(l.id), `${l.company} is now in Suppliers`)}>Make supplier</button>
                 )}
               </div>
+              {linking && (
+                <LinkSupplier lead={l} onClose={() => setLinking(false)}
+                  onPick={(sup) => { setLinking(false); act(() => outreach.linkSupplier(l.id, sup.id), `${l.company} linked to ${sup.name}`); }} />
+              )}
             </section>
 
             {/* R-631: an overseas supplier's checks, ticked one by one with who and when. Cleared only when all are. */}
@@ -836,8 +929,9 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <span className="text-[12.5px] text-muted">Status</span>
-                <select value={l.status} disabled={l.status === "supplier" || busy} onChange={(e) => act(() => outreach.edit(l.id, { status: e.target.value as LeadStatus }))} className={field + " w-48 py-1.5"}>
-                  {STATUSES.filter((s) => s !== "supplier" || l.status === "supplier").map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+                <select value={l.status} disabled={busy} onChange={(e) => act(() => outreach.edit(l.id, { status: e.target.value as LeadStatus }))} className={field + " w-48 py-1.5"}>
+                  {/* R-643: Supplier and Converted only once it is tied to a supplier (Link to supplier or Make supplier). */}
+                  {STATUSES.filter((s) => (s !== "supplier" && s !== "converted") || l.supplier_id || l.status === s).map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
                 </select>
               </div>
             </section>

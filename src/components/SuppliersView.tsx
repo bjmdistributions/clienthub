@@ -6,7 +6,7 @@ import SupplierDealsList from "./SupplierDealsList";
 import StatusPill from "./StatusPill";
 import { Button, PageActions, Tabs } from "./ui";
 import SupplierLeadsInbox, { LEAD_OPEN_KEY } from "./SupplierLeadsInbox";
-import { outreach } from "../lib/outreach";
+import { openColdLead, outreach, type SupplierLink } from "../lib/outreach";
 import { ProfileGrid, ProfileCard, Facts, Fact, KpiBand } from "./ProfileLayout";
 import PersonPayments from "./PersonPayments";
 import PersonPickerModal, { PersonRef } from "./PersonPicker";
@@ -106,8 +106,11 @@ export default function SuppliersView() {
   // R-642: the Website leads tab (supplier leads from the website form), opened straight on a lead from Notifications.
   const [tab,           setTab]           = useState<"suppliers" | "leads">(() => { try { return localStorage.getItem(LEAD_OPEN_KEY) ? "leads" : "suppliers"; } catch { return "suppliers"; } });
   const [leadWaiting,   setLeadWaiting]   = useState(0);
+  // R-643: which suppliers came from Cold calls (Link to supplier or Make supplier there), by supplier id.
+  const [fromCold,      setFromCold]      = useState<Map<string, SupplierLink>>(new Map());
   useEffect(() => {
     outreach.supplierLeads().then((r) => setLeadWaiting(r.waiting)).catch(() => {});
+    outreach.supplierLinks().then((r) => setFromCold(new Map(r.links.map((x) => [x.supplier_id, x])))).catch(() => {});
     const go = () => { setOpen(false); setTab("leads"); };
     window.addEventListener("supplier-lead-open", go);
     return () => window.removeEventListener("supplier-lead-open", go);
@@ -455,6 +458,7 @@ export default function SuppliersView() {
             onUntagPayment={untagPayment}
             people={people}
             onPaymentsChanged={reloadPayments}
+            fromCold={fromCold.get(selected.id)}
             partyLink={linkSupported ? (
               <PartyLinkPanel
                 role="supplier"
@@ -676,7 +680,13 @@ export default function SuppliersView() {
                   >
                     <td>
                       <div className="text-[14px] font-medium text-ink truncate max-w-[220px]">{s.name}</div>
-                      {s.archived && <div className="mt-0.5"><StatusPill tone="warning">Archived</StatusPill></div>}
+                      {(s.archived || fromCold.has(s.id)) && (
+                        <div className="mt-0.5 flex items-center gap-1 flex-nowrap">
+                          {s.archived && <StatusPill tone="warning">Archived</StatusPill>}
+                          {fromCold.has(s.id) && <StatusPill tone="neutral">From Cold calls</StatusPill>}
+                          {fromCold.get(s.id)?.status === "converted" && !s.archived && <StatusPill tone="success">Converted</StatusPill>}
+                        </div>
+                      )}
                     </td>
                     <td className="text-muted truncate max-w-[160px]">{s.contact_name || "-"}</td>
                     <td className="r font-medium text-ink">
@@ -738,7 +748,7 @@ function Th({ label, k, sortKey, asc, onSort, align = "right" }: {
   );
 }
 
-function SupplierPage({ s, history, payments, deals, onReloadDeals, onEdit, onUntagPayment, people, onPaymentsChanged, partyLink }: {
+function SupplierPage({ s, history, payments, deals, onReloadDeals, onEdit, onUntagPayment, people, onPaymentsChanged, partyLink, fromCold }: {
   s: Supplier; history: SupplierPriceEntry[]; payments: CounterpartyPaymentRow[];
   deals: any[]; onReloadDeals: () => Promise<void>; onEdit: () => void;
   onUntagPayment: (txnId: string) => void;
@@ -747,6 +757,8 @@ function SupplierPage({ s, history, payments, deals, onReloadDeals, onEdit, onUn
    *  two sides sit together and stay visibly apart. Null when the build has no
    *  `get_party_link`. */
   partyLink?: ReactNode;
+  /** R-643: the Cold calls warehouse this supplier came from, if any. */
+  fromCold?: SupplierLink;
 }) {
   const m = marginOf(s);
   const initials = s.name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
@@ -776,6 +788,12 @@ function SupplierPage({ s, history, payments, deals, onReloadDeals, onEdit, onUn
                   </StatusPill>
                 )}
                 {s.archived && <StatusPill tone="warning">Archived</StatusPill>}
+                {fromCold && (
+                  <button onClick={() => openColdLead(fromCold.lead_id)} title={`Open ${fromCold.company} in Cold calls`} className="rounded-full hover:opacity-80 transition-opacity duration-150">
+                    <StatusPill tone="neutral">From Cold calls{fromCold.list ? `, ${fromCold.list}` : ""}</StatusPill>
+                  </button>
+                )}
+                {fromCold?.status === "converted" && <StatusPill tone="success">Converted</StatusPill>}
               </div>
             </div>
           </div>

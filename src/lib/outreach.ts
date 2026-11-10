@@ -4,11 +4,12 @@ import { invoke } from "@tauri-apps/api/core";
 // that refuses any other path and rejects with the server's own sentence. The status rules live on the
 // server too, so this screen and the phone's can never disagree.
 
-export type LeadStatus = "new" | "called" | "emailed" | "talking" | "has_goods" | "supplier" | "not_now" | "do_not_contact";
+// R-643: converted = tied to a supplier and a deal with them closed. Set by hand, never worked out.
+export type LeadStatus = "new" | "called" | "emailed" | "talking" | "has_goods" | "supplier" | "converted" | "not_now" | "do_not_contact";
 
 export const STATUS_LABEL: Record<LeadStatus, string> = {
   new: "New", called: "Called", emailed: "Emailed", talking: "Talking", has_goods: "Has goods",
-  supplier: "Supplier", not_now: "Not now", do_not_contact: "Do not contact",
+  supplier: "Supplier", converted: "Converted", not_now: "Not now", do_not_contact: "Do not contact",
 };
 export const STATUSES = Object.keys(STATUS_LABEL) as LeadStatus[];
 
@@ -57,6 +58,8 @@ export interface Lead {
   notes: string;
   source: string;
   supplier_id: string;
+  /** R-643: the name of the supplier it became ("" when not linked; absent from a server before it). */
+  supplier_name?: string;
   due?: boolean;
   queued?: number;
   emails_sent?: number;
@@ -89,6 +92,8 @@ export interface ImportAnswer { added: number; skipped: Skipped[]; tab: string; 
 
 export interface LeadListName {
   name: string; total: number; emailed: number; replied: number; texted: number; suppliers: number;
+  /** R-643: deals closed (absent from a server before it). */
+  converted?: number;
   // R-606/R-609: waiting to send, failed, and never emailed yet (what Queue everyone not emailed takes).
   waiting?: number; failed?: number; not_emailed?: number;
 }
@@ -152,6 +157,24 @@ export const ANSWERED_HOW: Record<string, string> = {
   answer: "You emailed them", call: "You called", email: "Email sent", answered: "Marked answered", stop: "Asked to stop",
 };
 
+/** R-643: the warehouse to open when Cold calls is reached from a supplier's From Cold calls tag. */
+export const COLD_LEAD_OPEN_KEY = "ecliptr_cold_lead_open";
+/** R-643: switch to Cold calls with that warehouse open. */
+export function openColdLead(leadId: string) {
+  try { localStorage.setItem(COLD_LEAD_OPEN_KEY, leadId); } catch { /* storage blocked: Cold calls just opens */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "coldcalls" }));
+}
+
+/** R-643: a supplier that came from Cold calls: the warehouse and the list it was on. */
+export interface SupplierLink { supplier_id: string; lead_id: string; company: string; list: string; status: LeadStatus }
+
+/** R-643: a share as a whole percent, one decimal under 10% so a small rate is not shown as 0%. */
+export function rate(n: number, of: number): string {
+  if (!of) return "None yet";
+  const p = (n / of) * 100;
+  return `${p > 0 && p < 10 ? p.toFixed(1).replace(/\.0$/, "") : Math.round(p)}%`;
+}
+
 /** R-642: a supplier lead from the website form, read as an email, with the mail since. */
 export interface SupplierLead {
   id: string; kind: "supply_lead" | "supplier_profile"; name: string; company: string; email: string; phone: string;
@@ -179,6 +202,11 @@ export const outreach = {
     call<{ status: LeadStatus; next_touch: string }>("POST", `/api/outreach/leads/${id(leadId)}/call`, { outcome, note, next_touch }),
   note: (leadId: string, text: string) => call<{ ok: boolean }>("POST", `/api/outreach/leads/${id(leadId)}/note`, { text }),
   makeSupplier: (leadId: string) => call<{ supplier_id: string }>("POST", `/api/outreach/leads/${id(leadId)}/supplier`, {}),
+  /** R-643: tie it to a supplier already in Suppliers; "" undoes a wrong link. */
+  linkSupplier: (leadId: string, supplierId: string) =>
+    call<{ supplier_id: string; supplier_name?: string }>("POST", `/api/outreach/leads/${id(leadId)}/link-supplier`, { supplier_id: supplierId }),
+  /** R-643: which suppliers came from Cold calls. */
+  supplierLinks: () => call<{ links: SupplierLink[] }>("GET", "/api/outreach/supplier-links"),
   importSheet: (name: string, data: string, source = "") =>
     call<ImportAnswer>("POST", "/api/outreach/import", { name, data, source }),
   /** R-609: the first email, in the saved words, for everyone on the list ("" = every list) never emailed. */
@@ -227,13 +255,14 @@ export function dayLabel(ymd: string): string {
 // ── R-581: lists, filters, the map's colours, what they said ──
 
 /** Where a warehouse stands on the map and in the legend, furthest first. */
-export type Stage = "stop" | "supplier" | "replied" | "emailed" | "waiting" | "not_emailed";
+export type Stage = "stop" | "converted" | "supplier" | "replied" | "emailed" | "waiting" | "not_emailed";
 export const STAGES: [Stage, string, string][] = [
   ["not_emailed", "Not emailed", "--c-muted"], ["waiting", "Waiting to send", "--c-warning"], ["emailed", "Emailed, no reply", "--c-step-now"], ["replied", "Replied", "--c-accent"],
-  ["supplier", "Supplier", "--c-success"], ["stop", "Do not contact", "--c-danger"],
+  ["supplier", "Supplier", "--c-ink"], ["converted", "Converted", "--c-success"], ["stop", "Do not contact", "--c-danger"],
 ];
 export function stageOf(l: Lead): Stage {
   if (l.status === "do_not_contact") return "stop";
+  if (l.status === "converted") return "converted";
   if (l.status === "supplier") return "supplier";
   if (l.replied) return "replied";
   if (l.emailed) return "emailed";
