@@ -13,6 +13,11 @@ describe("parseSupplierRows (R-634)", () => {
     expect(row.dupes).toEqual([]);
   });
 
+  it("finds the header when the sheet starts with a byte-order mark (the phone's Export)", () => {
+    const [row] = parseSupplierRows([["﻿Company name", "Email"], ["North Pallets", "dana@north.test"]], []);
+    expect(row.input).toMatchObject({ name: "North Pallets", email: "dana@north.test" });
+  });
+
   it("flags exact matches on name, email or phone against saved suppliers", () => {
     const rows = parseSupplierRows([
       HEAD,

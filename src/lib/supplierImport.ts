@@ -25,7 +25,7 @@ export interface ImportRow {
 }
 
 // The phone's Export starts with a byte-order mark (for Excel), which would otherwise stick to "Company name".
-const normName = (s: string) => s.replace(/^﻿/, "").toLowerCase().replace(/\s+/g, " ").trim();
+const normName = (s: string) => s.replace(/^\uFEFF/, "").toLowerCase().replace(/\s+/g, " ").trim();
 const normEmail = (s: string) => s.toLowerCase().trim();
 /** Digits only, without a leading US 1, so "(555) 010-2000" and "+1 555 010 2000" match. Short numbers never match. */
 const normPhone = (s: string) => {

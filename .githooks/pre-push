@@ -1,0 +1,54 @@
+#!/bin/bash
+# Refuses a push to main that GitHub's Check main would fail (the web job: typecheck, lint,
+# tests, no new raw hex colours). R-643, 2026-11-10: Check main was red on every push from
+# 85fa14d4 to the fix (one invisible character in a regex failed Lint) and nobody saw it,
+# because releases do not wait for it. Twice before it went red the same way.
+#
+# It checks the commit being pushed, not the working tree: that commit is checked out into a
+# temporary folder, so another session's unsaved edits in a shared checkout change nothing.
+# The Rust job (cargo check and test) is not run here; it takes minutes and stays on GitHub.
+# core.hooksPath points every worktree of this repo at this folder.
+set -euo pipefail
+
+zero=0000000000000000000000000000000000000000
+sha=""
+while read -r lref lsha rref rsha; do
+  [ "$rref" = "refs/heads/main" ] && [ "$lsha" != "$zero" ] && sha="$lsha"
+done
+[ -n "$sha" ] || exit 0
+
+main=$(cd "$(git rev-parse --git-common-dir)/.." && pwd)
+if [ ! -d "$main/node_modules" ]; then
+  echo "pre-push: no node_modules in $main, so Check main cannot be run here. Run npm ci there first." >&2
+  exit 1
+fi
+
+tmp=$(mktemp -d)
+# The link goes first and on its own (rmdir on a junction removes the link, never what it points
+# at), so removing the temporary checkout can never reach the main checkout's packages.
+cleanup() {
+  if [ -e "$tmp/w/node_modules" ]; then
+    if command -v cygpath >/dev/null 2>&1; then cmd //c "rmdir \"$(cygpath -w "$tmp/w/node_modules")\"" >/dev/null 2>&1 || true
+    else rm -f "$tmp/w/node_modules"; fi
+  fi
+  [ -e "$tmp/w/node_modules" ] && { echo "pre-push: could not unlink $tmp/w/node_modules; left $tmp in place" >&2; return; }
+  git worktree remove --force "$tmp/w" >/dev/null 2>&1 || true
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+git worktree add --detach --quiet "$tmp/w" "$sha"
+cd "$tmp/w"
+# The main checkout's packages, linked rather than installed (a junction on Windows).
+if command -v cygpath >/dev/null 2>&1; then
+  cmd //c "mklink /J node_modules \"$(cygpath -w "$main/node_modules")\"" >/dev/null
+else
+  ln -s "$main/node_modules" node_modules
+fi
+
+echo "pre-push: checking ${sha:0:8} the way Check main will (typecheck, lint, tests, hex colours)..."
+fail() { echo "pre-push: $1 failed, so Check main would be red. Fix it before pushing to main." >&2; exit 1; }
+npm run -s typecheck || fail "Typecheck"
+npm run -s lint || fail "Lint"
+npm test --silent >/dev/null 2>&1 || { npm test || true; fail "Test"; }
+bash scripts/check-hex-colours.sh || fail "No new raw hex colours"
+echo "pre-push: Check main's web checks pass."
