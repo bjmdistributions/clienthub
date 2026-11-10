@@ -3747,7 +3747,7 @@ export default function FinancialsView() {
               {toolsOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setToolsOpen(false)} />
-                  <div role="menu" className="ui-pop absolute right-0 top-full mt-1.5 z-50 w-[300px]">
+                  <div role="menu" className="ui-pop absolute right-0 top-full mt-1.5 !z-50 w-[300px]">
                     {[
                       { label: "Find missing links", hint: missingLinks.length > 0 ? `${missingLinks.length} completed deal${missingLinks.length === 1 ? "" : "s"} with payments never linked` : "Completed deals whose payments were never linked", run: openMissingLinks },
                       { label: "Clean up duplicates", hint: "The same transaction on the books more than once", run: () => previewDedupe(false) },
@@ -4754,7 +4754,7 @@ export default function FinancialsView() {
                   role="dialog"
                   aria-label="Ledger filters"
                   onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setFiltersOpen(false); } }}
-                  className="ui-pop !right-0 !left-auto top-full mt-1.5 z-50 w-[min(340px,calc(100vw-2rem))] !p-3.5 space-y-3"
+                  className="ui-pop !right-0 !left-auto top-full mt-1.5 !z-50 w-[min(340px,calc(100vw-2rem))] !p-3.5 space-y-3"
                 >
                   {accounts.length > 0 && (
                     <label className="block">
