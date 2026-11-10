@@ -3,6 +3,7 @@
 // buy_core.rs works every figure out (the same file on the desktop and the server); this screen only draws them and sends what
 // was typed. Nothing goes in the warehouse unless Put in the warehouse is pressed.
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { LoadDetail } from "../lib/deliveries";
 import { listen } from "@tauri-apps/api/event";
 import { Paperclip, Pencil, Plus, X } from "lucide-react";
 import { api, type BuyDetail, type DealFlow } from "../lib/api";
@@ -22,8 +23,12 @@ import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0 } 
 
 type Run = (key: string, f: () => Promise<BuyDetail | void>) => Promise<void>;
 
-export default function PurchasePanel({ buyId, onChanged, onOpenWarehouse, onRemoved }: {
+export default function PurchasePanel({ buyId, onChanged, onOpenWarehouse, onRemoved, onShowPallets, onAddManifest }: {
   buyId: string; onChanged?: () => void; onOpenWarehouse?: (d: BuyDetail) => void; onRemoved: () => void;
+  /** R-648: show this load's pallets on the map (Warehouse > Map). */
+  onShowPallets?: (loadId: string) => void;
+  /** R-648: import this load's manifest box by box, from inside the Warehouse (else it goes there). */
+  onAddManifest?: (b: { id: string; name: string }) => void;
 }) {
   const me = useSessionMe();
   const numbers = canSeePayments(me);
@@ -79,14 +84,22 @@ export default function PurchasePanel({ buyId, onChanged, onOpenWarehouse, onRem
       {b.from_deal_id && <MovedFromDeal d={d} canEdit={canEdit} onUndone={() => { onChanged?.(); onRemoved(); }} />}
 
       {numbers && (
+        // R-648: what Jack asked to see first: how much product, the goods and the shipping, and what each unit cost.
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+          <Tile label="Units" value={`${n0(Math.max(0, r.left))} left`} sub={`of ${n0(r.bought)} ${unit === "pairs" ? "pairs" : "units"}, ${n0(r.sold)} sold`} />
+          <Tile label="Goods" value={fmtAmount(r.goods_total)} sub={b.lines.length > 0 ? `${b.lines.length} ${b.lines.length === 1 ? "line" : "lines"} on the invoice` : "The invoice total"} />
+          <Tile label="Shipping in" value={fmtAmount(r.ship_total)} sub={d.truck_cost.live > 0 ? `${d.truck_cost.live} ${d.truck_cost.live === 1 ? "truck" : "trucks"}` : "Typed, no truck linked"} />
+          <Tile label="Average a unit" value={r.bought > 0 ? perUnit(r.unit_cost) : "Not known yet"} faded={r.cost_projected}
+            sub={r.cost_projected ? "Refund owed: it settles when the money comes in" : r.bought > 0 ? "Goods and shipping, over every unit" : "Enter how many came"} />
+        </div>
+      )}
+      {numbers && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Tile label="Money spent" value={fmtAmount(r.spent)} sub={r.refund_received > 0.005 ? `Paid, less ${fmtAmount(r.refund_received)} refunded` : "Paid to the supplier and for the shipping in"} />
           <Tile label="Still owed to the supplier" value={fmtAmount(r.owed_supplier)} tone={r.owed_supplier > 0.005 ? "bad" : undefined}
             sub={r.owed_supplier > 0.005 ? `${fmtAmount(r.goods_paid)} of ${fmtAmount(r.goods_total)} paid` : "The invoice is paid"} />
           <Tile label="Refund owed to you" value={fmtAmount(r.refund_left)} tone={r.refund_left > 0.005 ? "bad" : undefined}
             sub={r.refund_owed > 0.005 ? `${fmtAmount(r.refund_owed)} owed, ${fmtAmount(r.refund_received)} in` : "Nothing owed"} />
-          <Tile label={`Cost each`} value={r.bought > 0 ? perUnit(r.unit_cost) : "Not known yet"} faded={r.cost_projected}
-            sub={r.cost_projected ? "Refund owed: it settles when the money comes in" : r.bought > 0 ? "Goods and shipping in, less any refund" : "Enter how many were bought"} />
         </div>
       )}
 
@@ -106,30 +119,32 @@ export default function PurchasePanel({ buyId, onChanged, onOpenWarehouse, onRem
       {numbers && <Payments d={d} busy={busy} run={run} />}
       <BuyShipping d={d} numbers={numbers} onChanged={load} />
 
-      <div className={`${WH_CARD} px-4 py-3`}>
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="min-w-0">
-            <div className="text-[13px] font-semibold text-ink">In the warehouse</div>
-            <p className="text-[12.5px] text-muted mt-0.5">
-              {b.on_the_way
-                ? "Not in the warehouse. You do not have to: sell from this order on an invoice without it. Put it in the warehouse only if you want its boxes and pallets."
-                : `In the warehouse${b.stock_name ? `: ${b.stock_name}` : ""}.`}
-            </p>
+      <Pallets buyId={b.id} name={b.name} canEdit={canEdit} onShow={onShowPallets} />
+
+      {b.on_the_way ? (
+        // R-648: boxes are never needed. Importing a manifest box by box stays one quiet line away.
+        canEdit && <p className="text-[12px] text-muted px-1">Need it box by box? <button type="button" onClick={() => (onAddManifest ?? openManifestForBuy)({ id: b.id, name: b.name })} className="text-ink-2 hover:text-ink hover:underline">Import its manifest</button></p>
+      ) : (
+        <div className={`${WH_CARD} px-4 py-3`}>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="min-w-0">
+              <div className="text-[13px] font-semibold text-ink">Older stock</div>
+              <p className="text-[12.5px] text-muted mt-0.5">{`Counted box by box in the warehouse${b.stock_name ? `: ${b.stock_name}` : ""}.`}</p>
+            </div>
+            {onOpenWarehouse && <button type="button" onClick={() => onOpenWarehouse(d)} className={WH_BTN_SECONDARY}>Open it</button>}
           </div>
-          {b.on_the_way && canEdit && <button type="button" onClick={() => openManifestForBuy({ id: b.id, name: b.name })} className={WH_BTN_SECONDARY}>Put in the warehouse</button>}
-          {!b.on_the_way && onOpenWarehouse && <button type="button" onClick={() => onOpenWarehouse(d)} className={WH_BTN_SECONDARY}>Open in the Warehouse</button>}
         </div>
-      </div>
+      )}
 
       {numbers && r.bought > 0 && <MoneyPicture d={d} unit={unit} />}
 
       <div className={`${WH_CARD} overflow-hidden`}>
         <div className="px-4 py-3 border-b border-line flex items-center justify-between">
-          <span className="text-[13px] font-semibold text-ink">Sales from this order</span>
-          <span className="text-[12px] text-muted">{n0(r.sold)} of {n0(r.bought)} sold, {n0(r.left)} left</span>
+          <span className="text-[13px] font-semibold text-ink">Sales from this load</span>
+          <span className="text-[12px] text-muted">{n0(r.sold)} of {n0(r.bought)} sold, {n0(r.left)} left{numbers && r.sold > 0 ? `, made ${fmtAmount(r.made_so_far)}` : ""}</span>
         </div>
         {live.length === 0 ? (
-          <p className="text-[12.5px] text-muted px-4 py-6">No sales yet. On an invoice, choose this order under From purchase order and say how many.</p>
+          <p className="text-[12.5px] text-muted px-4 py-6">No sales yet. On an invoice, choose this load under From purchase order and say how many, or import Whatnot sales from the Loads list.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-[13px]">
@@ -153,6 +168,61 @@ export default function PurchasePanel({ buyId, onChanged, onOpenWarehouse, onRem
 
       {canRemove && <RemoveBuy id={b.id} onRemoved={onRemoved} />}
       {b.notes && <p className="text-[12.5px] text-muted">Notes: {b.notes}</p>}
+    </div>
+  );
+}
+
+/** R-648: the pallets the load stands on (made by Receive a load, a delivery that holds only them), shown on the map; or,
+ *  when it has none, Put it on pallets, asked the same way. */
+function Pallets({ buyId, name, canEdit, onShow }: { buyId: string; name: string; canEdit: boolean; onShow?: (loadId: string) => void }) {
+  const [held, setHeld] = useState<LoadDetail | null | undefined>(undefined);
+  const [asking, setAsking] = useState(false);
+  const [count, setCount] = useState(0);
+  const [spot, setSpot] = useState("");
+  const [busy, setBusy] = useState(false);
+  const read = useCallback(async () => {
+    try {
+      const mine = (await api.listWarehouseLoads()).find((l) => l.buy_id === buyId && !l.archived);
+      setHeld(mine ? await api.getWarehouseLoad(mine.id) : null);
+    } catch { setHeld(null); }
+  }, [buyId]);
+  useEffect(() => { read(); }, [read]);
+  if (held === undefined) return null;
+  const pallets = held ? held.pallets.filter((p) => p.recorded) : [];
+  const places = [...new Set(pallets.map((p) => p.location).filter(Boolean))];
+  const save = async () => {
+    if (!(count >= 1 && count <= 60)) { toast("Say how many pallets, 1 to 60.", "error"); return; }
+    setBusy(true);
+    try { await api.createLoadPallets(name, buyId, count, spot.trim()); setAsking(false); await read(); toast(`${count} ${count === 1 ? "pallet" : "pallets"} on the map. Place them on the Map tab.`); }
+    catch (e) { toast(String(e), "error"); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className={`${WH_CARD} px-4 py-3`}>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold text-ink">Pallets</div>
+          <p className="text-[12.5px] text-muted mt-0.5">
+            {held ? `On ${pallets.length} ${pallets.length === 1 ? "pallet" : "pallets"}${places.length ? `, at ${places.join(", ")}` : ""}.` : "Not on pallets. It sits loose, so it is not on the map."}
+          </p>
+        </div>
+        {held && onShow && <button type="button" onClick={() => onShow(held.load.id)} className={WH_BTN_SECONDARY}>Show on the map</button>}
+        {!held && canEdit && !asking && <button type="button" onClick={() => setAsking(true)} className={WH_BTN_SECONDARY}>Put it on pallets</button>}
+      </div>
+      {asking && (
+        <div className="flex items-end gap-3 flex-wrap mt-3">
+          <label className="block">
+            <span className="text-[12px] font-medium text-ink-2">How many pallets</span>
+            <NumberInput integer value={count || ""} onValue={setCount} className={`${WH_INPUT} mt-1 tabular-nums w-28`} style={WH_INPUT_BG} />
+          </label>
+          <label className="block">
+            <span className="text-[12px] font-medium text-ink-2">Where is it? (if you want)</span>
+            <input value={spot} onChange={(e) => setSpot(e.target.value)} placeholder="Like: Bay 4" className={`${WH_INPUT} mt-1 w-48`} style={WH_INPUT_BG} />
+          </label>
+          <button type="button" onClick={() => setAsking(false)} disabled={busy} className={WH_BTN_SECONDARY}>Cancel</button>
+          <button type="button" onClick={save} disabled={busy} className={WH_BTN_PRIMARY}>{busy ? "Saving…" : "Put it on pallets"}</button>
+        </div>
+      )}
     </div>
   );
 }

@@ -62,9 +62,9 @@ export default function BuysView({ search = "", compact = false }: { search?: st
   const shown = stock.filter((s) => words.every((w) => `${s.name} ${s.buy?.supplier_name ?? ""} ${s.buy?.name ?? ""}`.toLowerCase().includes(w)));
   const toPurchases = !compact && (
     <p className="text-[13px] text-muted">
-      Buying stock in? Start it, send it to logistics and see what is owed back in{" "}
-      <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "purchases" }))}
-        className="text-accent-hover hover:underline">Purchases</button>.
+      Buying stock in? Receive it, send it to logistics and see what is owed back in{" "}
+      <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "warehouse" }))}
+        className="text-accent-hover hover:underline">Warehouse, Loads</button>.
     </p>
   );
   if (shown.length === 0) {

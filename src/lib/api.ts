@@ -4574,6 +4574,9 @@ export const api = {
   /** R-568: `blank` makes a delivery received with no manifest (it may start with no lines); `unit` is "pairs" or "units". */
   createWarehouseLoad: (name: string, source: string, lines: LoadLine[], o?: { blank?: boolean; unit?: "pairs" | "units" }) =>
     invoke<LoadDetail>("create_warehouse_load", { name, source, lines, blank: o?.blank ?? null, unit: o?.unit ?? null }),
+  /** R-648: a load (`buyId`) put on pallets by Receive a load: how many and where they stand, on the map. */
+  createLoadPallets: (name: string, buyId: string, pallets: number, location?: string) =>
+    invoke<LoadDetail>("create_load_pallets", { name, buyId, pallets, location: location ?? null }),
   updateWarehouseLoad: (id: string, patch: { name?: string; notes?: string; archived?: boolean; unit?: "pairs" | "units" }) =>
     invoke<LoadDetail>("update_warehouse_load", { id, name: patch.name ?? null, notes: patch.notes ?? null, archived: patch.archived ?? null, unit: patch.unit ?? null }),
   addWarehouseLoadLine: (id: string, line: NewLine) => invoke<LoadDetail>("add_warehouse_load_line", { id, line }),
@@ -4603,6 +4606,10 @@ export const api = {
     invoke<LoadDetail>("save_load_pallet", { loadId, number, location: patch.location ?? null, note: patch.note ?? null, closed: patch.closed ?? null, startNext: patch.startNext ?? null, archived: patch.archived ?? null, floorId: patch.floorId ?? null, x: patch.x ?? null, y: patch.y ?? null, turned: patch.turned ?? null }),
   /** R-550: every building (removed ones too) and every pallet of every delivery, placed or not. */
   listWarehouseFloors: () => invoke<FloorList>("list_warehouse_floors"),
+  /** R-648: Clear inventory takes every pallet on this building and every one waiting off the plan off the map; nothing on a
+   *  pallet changes, and Undo (unclear) shows them again where they stood. */
+  clearWarehouseFloor: (id: string) => invoke<FloorList>("clear_warehouse_floor", { id }),
+  unclearWarehouseFloor: (id: string) => invoke<FloorList>("unclear_warehouse_floor", { id }),
   createWarehouseFloor: (name: string, width: number, depth: number, shape: FloorShape) =>
     invoke<{ floor: Floor }>("create_warehouse_floor", { name, width, depth, shape }),
   updateWarehouseFloor: (id: string, patch: { name?: string; width?: number; depth?: number; shape?: FloorShape; archived?: boolean }) =>
@@ -4794,6 +4801,9 @@ export const api = {
     prefillBuy: (buyId: string) => logisticsRequest<BuyPrefill>("GET", `/api/logistics/prefill-buy/${encodeURIComponent(buyId)}`),
     createForBuy: (buyId: string, trucks: number, fields: FreightBookingPatch) =>
       logisticsRequest<{ bookings: FreightBooking[] }>("POST", "/api/logistics/bookings", { today: localDay(), buy_id: buyId, trucks, ...fields }),
+    /** R-648: a load already set up with no deal behind it brings this buy in ("" takes it off again). */
+    linkBuy: (id: string, buyId: string) =>
+      logisticsRequest<FreightBooking>("POST", `/api/logistics/bookings/${encodeURIComponent(id)}/buy`, { buy_id: buyId }),
     /** R-584: New load, a quote for a load with no deal behind it. Needs deal edit access and the org's setting on. */
     createLoad: (fields: FreightBookingPatch) =>
       logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { today: localDay(), ...fields }),

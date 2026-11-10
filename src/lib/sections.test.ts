@@ -5,7 +5,7 @@ describe("sections", () => {
   it("places every screen in exactly one section", () => {
     const ids = ALL_TABS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids.length).toBe(38);
+    expect(ids.length).toBe(37); // R-648: Purchases folded into Warehouse > Loads
   });
 
   it("maps the screens the way the mockups group them", () => {
@@ -63,7 +63,7 @@ describe("sections", () => {
 
   it("orders the sidebar as chosen, drops ids it does not know and appends the rest in default order", () => {
     const got = layoutSections({ sections: ["money", "gone", "deals"], hidden: [], tabs: {} }).map((s) => s.id);
-    expect(got).toEqual(["money", "deals", "home", "invoices", "clients", "inventory", "purchases", "logistics", "insights", "more", "settings"]);
+    expect(got).toEqual(["money", "deals", "home", "invoices", "clients", "inventory", "logistics", "insights", "more", "settings"]);
   });
 
   it("orders a section's screens as chosen and appends the ones not listed", () => {

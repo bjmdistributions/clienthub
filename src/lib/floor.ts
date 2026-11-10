@@ -26,7 +26,9 @@ export interface FloorDoor { id: string; side: Side; at: number; width: number; 
 /** A room or a run of shelving drawn on the floor: the office, a shelf, or any named area. */
 export interface FloorArea { id: string; kind: AreaKind; label: string; x: number; y: number; w: number; d: number }
 export interface FloorShape { doors: FloorDoor[]; areas: FloorArea[] }
-export interface Floor { id: string; name: string; width: number; depth: number; shape: FloorShape; archived: boolean; updated_at: string }
+export interface Floor { id: string; name: string; width: number; depth: number; shape: FloorShape; archived: boolean; updated_at: string;
+  /** R-648: the last Clear inventory (when, how many pallets it took off the map), until Undo. Absent on an older server. */
+  cleared?: { at: string; count: number } | null }
 
 /** One delivery pallet as the floor plan shows it (floor_core::FloorPallet). */
 export interface FloorPallet {

@@ -11,7 +11,7 @@
 // and fills them one by one; the 3D view (WarehouseFloor3D.tsx) shows every pallet with its boxes.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { ArchiveRestore, Plus, Trash2, ZoomIn, ZoomOut } from "lucide-react";
+import { ArchiveRestore, Eraser, Plus, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 import { api } from "../lib/api";
 import { parseAmount } from "../lib/format";
 import { byStyle, lineTitle, type LoadDetail, type LoadLine, type LoadSummary, type WhCase } from "../lib/deliveries";
@@ -198,6 +198,9 @@ export default function WarehouseFloor({ request, onRequestUsed, onOpenDelivery 
   const [view3d, setView3dRaw] = useState(() => lsGet(VIEW_KEY) === "1");
   const setView3d = (on: boolean) => { setView3dRaw(on); lsSet(VIEW_KEY, on ? "1" : ""); };
   const [details, setDetails] = useState<Record<string, LoadDetail>>({});
+  // R-648: Clear inventory, asked once before it runs.
+  const [clearAsk, setClearAsk] = useState(false);
+  const [clearBusy, setClearBusy] = useState(false);
   const putDetail = useCallback((d: LoadDetail) => setDetails((m) => ({ ...m, [d.load.id]: { ...d, load: { ...d.load, lines: d.load.lines ?? m[d.load.id]?.load.lines } } })), []);
   const dragRef = useRef<Drag | null>(null);
   const dirty = useRef(false);
@@ -229,6 +232,18 @@ export default function WarehouseFloor({ request, onRequestUsed, onOpenDelivery 
   const tray = pallets.filter((p) => !standsOn(p, live));
   const sel = pallets.find((p) => p.id === selId) ?? null;
   useEffect(() => { if (floor) lsSet(ACTIVE_KEY, floor.id); }, [floor]);
+  // R-648: every pallet on this building and every one waiting off the plan comes off the map. Nothing on a pallet changes,
+  // and Undo shows them all again where they stood.
+  const clearMap = async (undo: boolean) => {
+    if (!floor) return;
+    setClearBusy(true);
+    try {
+      setData(await (undo ? api.unclearWarehouseFloor(floor.id) : api.clearWarehouseFloor(floor.id)));
+      setClearAsk(false); setSelId(null); setPlacing(null);
+      toast(undo ? "Every pallet is back where it stood." : "The map is clear. Undo puts every pallet back.");
+    } catch (e) { toast(String(e), "error"); }
+    finally { setClearBusy(false); }
+  };
   // The picked pallet's delivery, read again whenever what is on the pallet changes.
   useEffect(() => {
     if (!sel) return;
@@ -638,6 +653,7 @@ export default function WarehouseFloor({ request, onRequestUsed, onOpenDelivery 
           {editing && <span className="text-[12px] text-muted">{building.status === "saving" ? "Saving…" : building.status === "unsaved" ? "Saving shortly" : "Saved"}</span>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {!editing && (onFloor.length > 0 || tray.length > 0) && <button onClick={() => setClearAsk(true)} className={WH_BTN_SECONDARY}><Eraser size={13} /> Clear inventory</button>}
           {!editing && <button onClick={() => { void startRow(); }} className={WH_BTN_SECONDARY}><Plus size={13} /> Add a row of pallets</button>}
           {!editing && <Seg value={view3d ? "3d" : "plan"} onChange={(k) => { setView3d(k === "3d"); if (k === "3d") setRow(null); }} options={[{ key: "plan", label: "Floor plan" }, { key: "3d", label: "3D view" }]} />}
           {(editing || !view3d) && <div className="flex items-center gap-1.5">
@@ -647,6 +663,24 @@ export default function WarehouseFloor({ request, onRequestUsed, onOpenDelivery 
           </div>}
         </div>
       </div>
+      {clearAsk && !editing && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-surface-2 px-3.5 py-2.5 mb-3">
+          <span className="text-[12.5px] text-ink">
+            Take {onFloor.length} {onFloor.length === 1 ? "pallet" : "pallets"} off {floor?.name || "this map"}{tray.length ? `, and the ${tray.length} not placed yet,` : ""} so the map starts empty?
+            Nothing is deleted: your loads, stock and money stay as they are, and Undo puts every pallet back.
+          </span>
+          <span className="flex items-center gap-2">
+            <button onClick={() => setClearAsk(false)} disabled={clearBusy} className={WH_BTN_SECONDARY}>Cancel</button>
+            <button onClick={() => { void clearMap(false); }} disabled={clearBusy} className={WH_BTN_PRIMARY}>{clearBusy ? "Clearing…" : "Clear inventory"}</button>
+          </span>
+        </div>
+      )}
+      {floor?.cleared && !clearAsk && !editing && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line px-3.5 py-2 mb-3">
+          <span className="text-[12.5px] text-muted">Cleared {dayWords(floor.cleared.at)}: {floor.cleared.count} {floor.cleared.count === 1 ? "pallet" : "pallets"} taken off the map.</span>
+          <button onClick={() => { void clearMap(true); }} disabled={clearBusy} className="text-[12.5px] text-ink-2 hover:text-ink underline-offset-2 hover:underline">Undo</button>
+        </div>
+      )}
       {row && !editing && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-accent/30 bg-accent/10 px-3.5 py-2 mb-3">
           <span className="text-[12.5px] text-ink">Click the floor where the first pallet of the row stands, or type its feet from the walls. Escape cancels.</span>
@@ -1356,4 +1390,10 @@ function EditPanel({ floor, pallets, status, edit, setShape, roomId, setRoomId, 
       </div>
     </div>
   );
+}
+
+/** R-648: the day a clear ran, in words ("on 10 Nov"), from its stamp. */
+function dayWords(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? "" : `on ${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
 }

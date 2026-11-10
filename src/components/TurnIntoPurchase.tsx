@@ -31,7 +31,7 @@ export default function TurnIntoPurchase({ flow, onReload }: { flow: DealFlow; o
       try { localStorage.setItem(OPEN_BUY_KEY, buyId); } catch { /* ignore */ }
       toast("Turned into a purchase order.");
       onReload();
-      window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "purchases" }));
+      window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "warehouse" }));
     } catch (err) { toast(String(err), "error"); setBusy(false); }
   };
   return (

@@ -1367,3 +1367,15 @@ b, strong, h1, h2, h3, h4, h5, h6 { font-weight: 500; }
   .mc-cursor, .mc-dot, .mc-tip, .mc-pill, .mc-base { transition: none !important; animation: none !important; }
   .mc-roll { animation: none !important; }
 }
+
+/* R-649: an open deal's pipeline section, as a hint only: its border and a very faint wash take the section's
+   colour, over whatever surface the card already has, so it reads in light and dark alike. No stripe, no glow (Jack,
+   2026-11-10: "slight hints, not a vibe coded look"). Green ready, red delivered with payment missing, teal on the way
+   (the shipping colour), orange waiting on pickup, purple with Logistics, grey shipping not set up. */
+.df-stage { border-color: rgb(var(--df-c) / .3); background-image: linear-gradient(rgb(var(--df-c) / .035), rgb(var(--df-c) / .035)); }
+.df-stage-ready          { --df-c: var(--c-success); }
+.df-stage-paymentMissing { --df-c: var(--c-danger); }
+.df-stage-onTheWay       { --df-c: var(--c-chart-2); }
+.df-stage-waitingPickup  { --df-c: var(--c-chart-6); }
+.df-stage-withLogistics  { --df-c: var(--c-chart-5); }
+.df-stage-notSetUp       { --df-c: var(--c-faint); }

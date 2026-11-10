@@ -31,6 +31,9 @@ pub struct LoadHead {
     pub updated_at: String,
     /// R-568: "units" when the delivery counts units, else pairs ("" or "pairs").
     pub unit: String,
+    /// R-648: the buy whose pallets this holds (Receive a load), '' for a delivery of its own. Only where the load
+    /// stands: the buy's stock is counted on the buy, never from these pallets.
+    pub buy_id: String,
     /// Left out when a case is saved (the lines did not change).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lines: Option<Vec<LoadLine>>,
@@ -78,6 +81,8 @@ pub struct LoadSummary {
     pub totals: Totals,
     /// R-568: "units" or pairs.
     pub unit: String,
+    /// R-648
+    pub buy_id: String,
 }
 
 pub(crate) struct LoadRow {
@@ -85,7 +90,7 @@ pub(crate) struct LoadRow {
     lines: Vec<LoadLine>,
 }
 
-const LOAD_COLS: &str = "id, name, COALESCE(source,''), COALESCE(notes,''), COALESCE(lines_json,'[]'), COALESCE(archived,0), created_at, updated_at, COALESCE(unit,'')";
+const LOAD_COLS: &str = "id, name, COALESCE(source,''), COALESCE(notes,''), COALESCE(lines_json,'[]'), COALESCE(archived,0), created_at, updated_at, COALESCE(unit,''), COALESCE(buy_id,'')";
 
 fn map_load(r: &rusqlite::Row) -> rusqlite::Result<LoadRow> {
     let lines: String = r.get(4)?;
@@ -99,6 +104,7 @@ fn map_load(r: &rusqlite::Row) -> rusqlite::Result<LoadRow> {
             created_at: r.get(6)?,
             updated_at: r.get(7)?,
             unit: r.get(8)?,
+            buy_id: r.get(9)?,
             lines: None,
         },
         lines: serde_json::from_str(&lines).unwrap_or_default(),
@@ -520,7 +526,7 @@ pub async fn list_warehouse_loads() -> Result<Vec<LoadSummary>, String> {
     for r in rows {
         let totals = core::tally(&r.lines, &cases(&conn, &r.head.id)?).totals;
         let h = r.head;
-        out.push(LoadSummary { id: h.id, name: h.name, source: h.source, notes: h.notes, archived: h.archived, created_at: h.created_at, updated_at: h.updated_at, totals, unit: h.unit });
+        out.push(LoadSummary { id: h.id, name: h.name, source: h.source, notes: h.notes, archived: h.archived, created_at: h.created_at, updated_at: h.updated_at, totals, unit: h.unit, buy_id: h.buy_id });
     }
     Ok(out)
 }
@@ -659,7 +665,31 @@ pub async fn get_warehouse_load(id: String) -> Result<LoadDetail, String> {
 /// `unit` says whether it counts pairs (the default) or units.
 #[tauri::command]
 pub async fn create_warehouse_load(name: String, source: String, lines: Vec<LoadLine>, blank: Option<bool>, unit: Option<String>) -> Result<LoadDetail, String> {
-    create(name, source, lines, None, blank.unwrap_or(false), unit).map(|(d, _)| d)
+    create(name, source, lines, None, blank.unwrap_or(false), unit, Receive::default()).map(|(d, _)| d)
+}
+
+/// R-648: Receive a load puts a load on pallets: a delivery with no manifest that counts units and holds only those
+/// pallets (`buy_id`), every one at the place it was told. The load's stock is counted on the load, never from these.
+#[tauri::command]
+pub async fn create_load_pallets(name: String, buy_id: String, pallets: i64, location: Option<String>) -> Result<LoadDetail, String> {
+    if buy_id.trim().is_empty() {
+        return Err("Say which load these pallets hold.".into());
+    }
+    let at = Receive { buy_id, pallets, location: location.unwrap_or_default() };
+    create(name, String::new(), Vec::new(), None, true, Some("units".into()), at).map(|(d, _)| d)
+}
+
+/// R-648: the pallets Receive a load asks for.
+struct Receive {
+    buy_id: String,
+    pallets: i64,
+    location: String,
+}
+
+impl Default for Receive {
+    fn default() -> Self {
+        Receive { buy_id: String::new(), pallets: 1, location: String::new() }
+    }
 }
 
 /// R-537: a new delivery with its manifest's pictures already on its lines, so the lines are
@@ -667,7 +697,7 @@ pub async fn create_warehouse_load(name: String, source: String, lines: Vec<Load
 /// all the same.
 #[tauri::command]
 pub async fn create_load_with_pictures(name: String, source: String, lines: Vec<LoadLine>, path: String) -> Result<Value, String> {
-    let (d, pics) = create(name, source, lines, Some(path), false, None)?;
+    let (d, pics) = create(name, source, lines, Some(path), false, None, Receive::default())?;
     let mut v = serde_json::to_value(d).map_err(|e| e.to_string())?;
     match pics {
         Some(Ok(p)) => v["pictures"] = pictures_json(&p),
@@ -677,11 +707,23 @@ pub async fn create_load_with_pictures(name: String, source: String, lines: Vec<
     Ok(v)
 }
 
-fn create(name: String, source: String, lines: Vec<LoadLine>, path: Option<String>, blank: bool, unit: Option<String>) -> Result<(LoadDetail, Option<Result<PicturesPut, String>>), String> {
+fn create(name: String, source: String, lines: Vec<LoadLine>, path: Option<String>, blank: bool, unit: Option<String>, at: Receive) -> Result<(LoadDetail, Option<Result<PicturesPut, String>>), String> {
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err("Give the delivery a name.".into());
     }
+    if !(1..=60).contains(&at.pallets) {
+        return Err("Say how many pallets, 1 to 60.".into());
+    }
+    let buy_id = at.buy_id.trim().to_string();
+    if !buy_id.is_empty() {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let found = conn.query_row("SELECT 1 FROM warehouse_buys WHERE id = ?1 AND COALESCE(archived,0) = 0", [&buy_id], |_| Ok(())).is_ok();
+        if !found {
+            return Err("That load was not found.".into());
+        }
+    }
+    let location = at.location.trim().to_string();
     let mut lines = if blank { core::clean_lines_or_none(lines)? } else { core::clean_lines(lines)? };
     let id = uuid::Uuid::new_v4().to_string();
     let pics = path.map(|p| pictures_for(&id, &lines, &p));
@@ -700,14 +742,24 @@ fn create(name: String, source: String, lines: Vec<LoadLine>, path: Option<Strin
     if let Some(u) = unit.as_deref().filter(|u| !u.trim().is_empty()) {
         cols.insert("unit".into(), json!(clean_unit(u)));
     }
+    if !buy_id.is_empty() {
+        cols.insert("buy_id".into(), json!(buy_id));
+    }
     cols.insert("notes".into(), json!(""));
     cols.insert("lines_json".into(), json_str(&lines));
     cols.insert("archived".into(), json!(0));
     cols.insert("created_at".into(), json!(t));
     cols.insert("updated_at".into(), json!(t));
     write(&conn, LOADS, &id, cols, true)?;
-    // R-535: pallet 1 stands empty, ready for the truck.
-    write(&conn, PALLETS, &core::pallet_id(&id, 1), pallet_cols(&id, 1, &t), true)?;
+    // R-535: pallet 1 stands empty, ready for the truck. R-648: Receive a load makes every pallet it was asked for, each
+    // at the place it was told.
+    for n in 1..=at.pallets {
+        let mut pc = pallet_cols(&id, n, &t);
+        if !location.is_empty() {
+            pc.insert("location".into(), json!(location));
+        }
+        write(&conn, PALLETS, &core::pallet_id(&id, n), pc, true)?;
+    }
     Ok((detail(&conn, &id, true)?, pics))
 }
 
@@ -1318,6 +1370,46 @@ mod tests {
             cost: 10.0,
             sizes: sizes.iter().map(|(s, q)| core::SizeQty { size: s.to_string(), qty: *q }).collect(),
             ..Default::default()
+        }
+    }
+
+    /// R-648: Receive a load puts a load on pallets at its place, and Clear inventory takes the map and the tray off
+    /// without changing a pallet; Undo shows them again where they stood.
+    #[tokio::test]
+    async fn a_received_load_goes_on_pallets_and_the_map_clears_and_comes_back() {
+        let _db = crate::db::init_test_store();
+        let conn = pool().get().unwrap();
+        conn.execute(
+            "INSERT INTO warehouse_buys (id, name, units_bought, goods_total, created_at, updated_at) VALUES ('wb-t', 'Test hats', 100, 500, 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        assert_eq!(create_load_pallets("Test hats".into(), "wb-none".into(), 2, None).await.unwrap_err(), "That load was not found.");
+        assert_eq!(create_load_pallets("Test hats".into(), "wb-t".into(), 0, None).await.unwrap_err(), "Say how many pallets, 1 to 60.");
+        let d = create_load_pallets("Test hats".into(), "wb-t".into(), 3, Some(" Bay 4 ".into())).await.unwrap();
+        assert_eq!((d.load.buy_id.as_str(), d.load.unit.as_str()), ("wb-t", "units"));
+        assert_eq!(d.pallets.iter().map(|p| (p.pallet, p.location.as_str())).collect::<Vec<_>>(), vec![(1, "Bay 4"), (2, "Bay 4"), (3, "Bay 4")]);
+        let load_id = d.load.id.clone();
+
+        let f = crate::warehouse_floors::create_warehouse_floor("Main".into(), 100.0, 60.0, None).await.unwrap().floor;
+        save_load_pallet(load_id.clone(), 1, None, None, None, None, None, Some(f.id.clone()), Some(10.0), Some(10.0), None).await.unwrap();
+        // The store is shared with the other tests: only this load's pallets are looked at.
+        let mine = |v: &crate::warehouse_floors::FloorList| v.pallets.iter().filter(|p| p.load_id == load_id).cloned().collect::<Vec<_>>();
+        let v = crate::warehouse_floors::clear_warehouse_floor(f.id.clone()).await.unwrap();
+        assert!(mine(&v).is_empty());
+        let cleared = v.floors.iter().find(|x| x.id == f.id).and_then(|x| x.cleared.clone()).map(|c| c.count).unwrap_or(0);
+        assert!(cleared >= 3, "{cleared}");
+        assert_eq!(crate::warehouse_floors::clear_warehouse_floor(f.id.clone()).await.unwrap_err(), "The map is already clear.");
+        let v = crate::warehouse_floors::unclear_warehouse_floor(f.id.clone()).await.unwrap();
+        let back = mine(&v);
+        assert_eq!(back.len(), 3);
+        let p1 = back.iter().find(|p| p.number == 1).unwrap();
+        assert_eq!((p1.floor_id.as_str(), p1.x, p1.y), (f.id.as_str(), 10.0, 10.0));
+        assert!(v.floors.iter().find(|x| x.id == f.id).unwrap().cleared.is_none());
+        // Leave the shared store as the other tests expect it: these pallets' place is not a recent location.
+        for n in 1..=3 {
+            save_load_pallet(load_id.clone(), n, None, None, None, None, Some(true), None, None, None, None).await.unwrap();
         }
     }
 

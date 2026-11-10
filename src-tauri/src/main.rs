@@ -1455,6 +1455,7 @@ fn main() {
             warehouse_loads::ensure_delivery_pictures,
             warehouse_loads::get_warehouse_load,
             warehouse_loads::create_warehouse_load,
+            warehouse_loads::create_load_pallets,
             warehouse_loads::update_warehouse_load,
             warehouse_loads::add_warehouse_load_line,
             warehouse_loads::save_warehouse_case,
@@ -1490,6 +1491,8 @@ fn main() {
             warehouse_floors::update_warehouse_floor,
             warehouse_floors::draw_pallet_row,
             warehouse_floors::change_pallet_row,
+            warehouse_floors::clear_warehouse_floor,
+            warehouse_floors::unclear_warehouse_floor,
             // Bills (R-449)
             bills::bills_list,
             bills::bills_alerts,

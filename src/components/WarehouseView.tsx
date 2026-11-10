@@ -1,4 +1,6 @@
 // Warehouse (R-326..R-330): stock Jack physically holds, counted in boxes of several sizes.
+// R-648: it opens on Loads (every load received, WarehouseLoads.tsx), then Map, then Older stock, which keeps Products, Pallets
+// and Deliveries as they were, one click further in.
 // This file is the shell — Products and Map, the product cards, and the product form. One
 // product's screen is WarehouseProduct.tsx; the map is the floor plan (WarehouseFloor.tsx, R-550; the
 // grid maps under Spot maps went in R-554: everything stands on the plan, in feet); importing a sheet is
@@ -11,7 +13,7 @@ import { ArrowLeft, ClipboardPaste, FileSpreadsheet, Plus, Trash2, Warehouse as 
 import { api } from "../lib/api";
 import { WAREHOUSE_OPEN_KEY, itemTotals, rowsFromText, sectionUnits, shares, type BoxType, type SheetRead, type WarehouseItem, type WhSection } from "../lib/warehouse";
 import type { ManifestRead } from "../lib/deliveries";
-import { ADD_MANIFEST_KEY } from "../lib/buyLoads";
+import { ADD_MANIFEST_KEY, OPEN_BUY_KEY } from "../lib/buyLoads";
 import type { DeliveryOpen, FloorRequest } from "../lib/floor";
 import { toast } from "./Toast";
 import { PageActions, Tabs } from "./ui";
@@ -22,6 +24,7 @@ import ProductScreen, { CountsGrid } from "./WarehouseProduct";
 import WarehouseFloor from "./WarehouseFloor";
 import WarehouseOrders from "./WarehouseOrders";
 import WarehouseDeliveries from "./WarehouseDeliveries";
+import WarehouseLoads from "./WarehouseLoads";
 import { WH_BTN_PRIMARY, WH_BTN_SECONDARY, WH_CARD, WH_INPUT, WH_INPUT_BG, n0, newId, plural } from "./warehouseUi";
 
 const BAR = { background: "rgb(var(--c-chart-1))" };
@@ -29,6 +32,10 @@ const SHEET_EXTS = ["csv", "tsv", "txt", "xlsx", "xlsm", "xls", "ods"];
 const SHEET_RE = /\.(csv|tsv|txt|xlsx|xlsm|xls|ods)$/i;
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const cap = (s: string) => s.replace(/^./, (c) => c.toUpperCase());
+// R-648: the views, and the three kept under Older stock.
+type WhView = "loads" | "products" | "map" | "pallets" | "deliveries";
+const OLDER: WhView[] = ["products", "pallets", "deliveries"];
+const VIEW_KEY = "warehouse_view_r648";
 
 // ---------------------------------------------------------------------------------------
 
@@ -46,10 +53,15 @@ export default function WarehouseView() {
   const setForBuy = (b: { id: string; name: string } | null) => { forBuyRef.current = b; setForBuyState(b); };
   const [buyTab, setBuyTab] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [view, setView] = useState<"products" | "map" | "pallets" | "deliveries">(() => {
-    try { const v = localStorage.getItem("warehouse_view"); return v === "map" || v === "pallets" || v === "deliveries" ? v : "products"; } catch { return "products"; }
+  // R-648: Loads first. The key is new, so everyone lands on Loads once after the update, whatever was open before.
+  const [view, setView] = useState<WhView>(() => {
+    try {
+      if (localStorage.getItem(OPEN_BUY_KEY)) return "loads";
+      const v = localStorage.getItem(VIEW_KEY);
+      return v === "map" || v === "products" || v === "pallets" || v === "deliveries" ? v : "loads";
+    } catch { return "loads"; }
   });
-  const pickView = (v: "products" | "map" | "pallets" | "deliveries") => { setView(v); setOpenId(null); try { localStorage.setItem("warehouse_view", v); } catch { /* ignore */ } };
+  const pickView = (v: WhView) => { setView(v); setOpenId(null); try { localStorage.setItem(VIEW_KEY, v); } catch { /* ignore */ } };
   // R-488: another screen asked for one product or delivery (BuysView `openInWarehouse`). A delivery
   // is opened by the Deliveries view itself, which reads the same key.
   useEffect(() => {
@@ -77,7 +89,7 @@ export default function WarehouseView() {
   const busyRef = useRef(false);
   busyRef.current = !!editing || !!importing || pasting;
   // R-539: where an import began (its view and product): Cancel and Not a delivery go back there.
-  const originRef = useRef<{ view: "products" | "map" | "pallets" | "deliveries"; openId: string | null } | null>(null);
+  const originRef = useRef<{ view: WhView; openId: string | null } | null>(null);
 
   const load = useCallback(() =>
     api.listWarehouseItems()
@@ -123,7 +135,7 @@ export default function WarehouseView() {
   const importEnded = (how: "saved" | "cancelled") => {
     const o = originRef.current;
     originRef.current = null;
-    if (how === "saved") { try { localStorage.setItem("warehouse_view", "deliveries"); } catch { /* ignore */ } return; }
+    if (how === "saved") { try { localStorage.setItem(VIEW_KEY, "deliveries"); } catch { /* ignore */ } return; }
     setForBuy(null);   // R-551: cancelled, so the manifest was for no buy after all
     if (o && o.view !== "deliveries") { setView(o.view); setOpenId(o.openId); }
   };
@@ -205,7 +217,7 @@ export default function WarehouseView() {
         onImported={(it) => {
           put(it); setImporting(null);
           // A stock import shows its product among the products.
-          setView("products"); try { localStorage.setItem("warehouse_view", "products"); } catch { /* ignore */ }
+          setView("products"); try { localStorage.setItem(VIEW_KEY, "products"); } catch { /* ignore */ }
           setOpenId(it.id);
           // R-551: and is the stock of the buy it was imported for.
           attachBuy({ itemId: it.id }).then((ok) => { if (ok) setBuyTab(true); });
@@ -281,18 +293,33 @@ export default function WarehouseView() {
         </>}
       </PageActions>
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 mb-6">
-        <Tabs label="Warehouse" value={view} onChange={(v) => pickView(v as typeof view)}
-          tabs={[{ id: "products", label: "Products" }, { id: "map", label: "Map" }, { id: "pallets", label: "Pallets" }, { id: "deliveries", label: "Deliveries" }]} />
-        <p className="text-[13px] text-muted">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <Tabs label="Warehouse" value={OLDER.includes(view) ? "older" : view}
+            onChange={(v) => pickView(v === "older" ? (OLDER.includes(view) ? view : "products") : (v as WhView))}
+            tabs={[{ id: "loads", label: "Loads" }, { id: "map", label: "Map" }, { id: "older", label: "Older stock" }]} />
+          {OLDER.includes(view) && (
+            <Tabs label="Older stock" value={view} onChange={(v) => pickView(v as WhView)}
+              tabs={[{ id: "products", label: "Products" }, { id: "pallets", label: "Pallets" }, { id: "deliveries", label: "Deliveries" }]} />
+          )}
+        </div>
+        {view === "products" && <p className="text-[13px] text-muted">
           <span className="text-ink-2 tabular-nums">{live.length}</span> {live.length === 1 ? "product" : "products"}
           <span className="text-faint"> · </span>
           <span className="text-ink-2 tabular-nums">{n0(all.boxes)}</span> boxes
           <span className="text-faint"> · </span>
           <span className="text-ink-2 tabular-nums">{n0(all.units)}</span> units on the shelf
-        </p>
+        </p>}
       </div>
 
-      {view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onDropUsed={() => setDropped(null)} onImport={pickSheet} onAsStock={asStock} onImportEnded={importEnded} open={deliveryReq} onOpenUsed={deliveryUsed} onFloor={showOnFloor}
+      {view === "loads" ? <WarehouseLoads
+        onOpenStock={(d) => {
+          // Deliveries reads the request itself when it opens (as from any other screen).
+          if (d.buy.load_id) { try { localStorage.setItem(WAREHOUSE_OPEN_KEY, JSON.stringify({ kind: "load", id: d.buy.load_id })); } catch { /* ignore */ } pickView("deliveries"); }
+          else if (d.buy.item_id) { pickView("products"); setOpenId(d.buy.item_id); }
+        }}
+        onShowPallets={(loadId) => showOnFloor({ kind: "show", palletId: `pal-${loadId}-1` })}
+        onAddManifest={(b) => { pickView("deliveries"); addManifestFor(b); }} />
+      : view === "deliveries" ? <WarehouseDeliveries dropped={dropped} onDropUsed={() => setDropped(null)} onImport={pickSheet} onAsStock={asStock} onImportEnded={importEnded} open={deliveryReq} onOpenUsed={deliveryUsed} onFloor={showOnFloor}
         forBuy={forBuy} onAddManifest={addManifestFor} attachBuy={attachBuy} /> : view === "pallets" ? <WarehouseOrders items={items || []} /> : view === "map" ? <>
         <WarehouseFloor request={floorReq} onRequestUsed={floorUsed} onOpenDelivery={openDelivery} />
       </> : <>

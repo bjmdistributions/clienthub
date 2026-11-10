@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useState, useRef, lazy, Suspense }
 import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
-  Users, House, FileText, Repeat, Package, ClipboardList, Truck, DollarSign, ChartColumn, Ellipsis, SlidersHorizontal,
+  Users, House, FileText, Repeat, Package, Truck, DollarSign, ChartColumn, Ellipsis, SlidersHorizontal,
   RefreshCw, LogOut,
   PanelLeftClose, PanelLeftOpen,
   Sun, Moon,
@@ -20,7 +20,6 @@ import ManifestView from "./components/ManifestView";
 import LotEngineView from "./components/LotEngineView";
 import ShowPackingView from "./components/ShowPackingView";
 import WarehouseView from "./components/WarehouseView";
-import PurchasesView from "./components/PurchasesView";
 import RenewalsView from "./components/RenewalsView";
 import ColdCallsView from "./components/ColdCallsView";
 import WhatsAppSharePanel from "./components/WhatsAppSharePanel";
@@ -174,7 +173,6 @@ const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   deals: Repeat,
   clients: Users,
   inventory: Package,
-  purchases: ClipboardList,
   logistics: Truck,
   money: DollarSign,
   insights: ChartColumn,
@@ -861,7 +859,6 @@ export default function App() {
     : id === "manifest" ? canViewTab(me, "inventory" as any) // analyzer rides inventory access
     : id === "lotengine" ? canViewTab(me, "inventory" as any) // so does the lot engine
     : id === "warehouse" ? canViewTab(me, "inventory" as any) // and the warehouse (R-326)
-    : id === "purchases" ? canViewTab(me, "inventory" as any) // and the purchase orders (R-596), which are buys on the warehouse's side
     : id === "coldcalls" ? canViewTab(me, "suppliers" as any) // R-546: sourcing suppliers, the bar /api/outreach asks for
     : id === "renewals" ? isAdmin(me) // R-466: the stale-listing requests are read for admins only, here and on the bell
     // Show packing (R-271/R-272): rides inventory access, plus the plan entitlement
@@ -1119,7 +1116,6 @@ export default function App() {
         {t === "suppliers"  && <SuppliersView />}
         {t === "inventory"  && <InventoryView />}
         {t === "warehouse"  && <WarehouseView />}
-        {t === "purchases"  && <PurchasesView />}
         {t === "renewals"   && <RenewalsView />}
         {t === "coldcalls"  && <ColdCallsView />}
         {t === "manifest"   && <ManifestView onNavigate={(to) => setTab(to, true)} />}

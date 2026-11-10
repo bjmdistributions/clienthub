@@ -535,7 +535,7 @@ export default function DealFlowView() {
         ) : null}>
         {list.map((f) => (
           <DealFlowCard key={`${f.id}:${openNonce}`} flow={f} onReload={load} refund={refundMap[f.id]}
-            reconStatus={recon[f.id]} lines={described.get(f.id)} label={labels[f.id]} />
+            reconStatus={recon[f.id]} lines={described.get(f.id)} label={labels[f.id]} stage={key} />
         ))}
       </PipelineSection>
       </Fragment>
@@ -1034,8 +1034,8 @@ function SupplierInvoices({ flow, locked, onReload }: { flow: DealFlow; locked: 
 }
 
 function DealFlowCard({
-  flow, onReload, refund, reconStatus, lines, label,
-}: { flow: DealFlow; onReload: () => void; lines?: DealDescription; label?: { category: string; brand: string }; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean } }) {  // Collapsed by default, unless another screen asked for this deal on a step (R-401).
+  flow, onReload, refund, reconStatus, lines, label, stage,
+}: { flow: DealFlow; stage?: DealSection; onReload: () => void; lines?: DealDescription; label?: { category: string; brand: string }; refund?: { refund_owed: number; refunded: number; remaining: number; done?: boolean }; reconStatus?: PaymentFlags & { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean; shipping_missing?: boolean } }) {  // Collapsed by default, unless another screen asked for this deal on a step (R-401).
   const [wanted] = useState<SectionKey | null>(() => {
     if (openTarget && openTarget.invoice === flow.invoice_number) { const s = openTarget.section; openTarget = null; return s; }
     return null;
@@ -1208,7 +1208,8 @@ function DealFlowCard({
 
   return (
     // R-603: each deal is its own box with space around it, so deals never blend together at a glance.
-    <div ref={rootRef} className={`rounded-xl border mb-2 last:mb-0 transition-colors duration-150 ${isOpen ? "bg-surface-2 border-line" : "bg-surface border-line"}`}>
+    // R-649: an open deal carries its pipeline section's colour, a left edge and a faint wash (index.css .df-stage).
+    <div ref={rootRef} className={`rounded-xl border mb-2 last:mb-0 transition-colors duration-150 ${isOpen ? "bg-surface-2 border-line" : "bg-surface border-line"}${stage ? ` df-stage df-stage-${stage}` : ""}`}>
       {linkInv && <LinkDeliveryModal invoice={linkInv} onClose={() => { setLinkInv(null); onReload(); }} />}
 
       {/* The row: what the deal is, what each unit cost and was billed at, and the money, in three divided groups. */}

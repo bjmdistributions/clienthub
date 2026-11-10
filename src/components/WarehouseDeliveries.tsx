@@ -88,7 +88,8 @@ export default function WarehouseDeliveries({ dropped, onDropUsed, onImport, onA
   const loadList = useCallback(() => {
     // R-551: the buys still on the way sit above the deliveries.
     api.listWarehouseBuys().then((r) => setComing(r.coming ?? [])).catch(() => {});
-    return api.listWarehouseLoads().then(setList).catch((e) => { toast(`Couldn't load the deliveries: ${e}`, "error"); setList([]); });
+    // R-648: a delivery that only holds a received load's pallets is shown on that load (Loads), not here.
+    return api.listWarehouseLoads().then((l) => setList(l.filter((x) => !x.buy_id))).catch((e) => { toast(`Couldn't load the deliveries: ${e}`, "error"); setList([]); });
   }, []);
   useEffect(() => { loadList(); }, [loadList]);
 

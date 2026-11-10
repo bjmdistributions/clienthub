@@ -71,7 +71,10 @@ const POLL_SECS: u64 = 20;
 /// "19" is the same kind of pass for the R-596 columns on `warehouse_buys` (the invoice, the units counted in
 /// and the day, the refund owed, the manifest name, the deal a buy came from), so a desktop that updates after
 /// a purchase order was made on the phone shows it whole.
-const HEAL_GENERATION: &str = "19";
+/// "20" is the same kind of pass for the R-648 columns, `warehouse_loads.buy_id` (the load whose pallets a
+/// delivery holds) and `warehouse_floors.cleared_json` (the map's last Clear inventory), so a desktop that
+/// updates after a load was received or the map cleared on the phone shows the same map.
+const HEAL_GENERATION: &str = "20";
 /// Tables the current generation refreshes from the snapshot even when the counts agree, because
 /// it changed what a row CARRIES rather than which tables exist, so the count check in
 /// `auto_heal_if_behind` cannot see the gap. Only these tables are touched, never the whole
@@ -80,7 +83,7 @@ const HEAL_GENERATION: &str = "19";
 /// `warehouse_load_pallets`, whose new columns are written on the phone. Generation "15" (R-568) adds
 /// `warehouse_loads` (its `unit`); `warehouse_cases` gained `unmatched_json`. Empty for a generation that
 /// only widens the tables.
-const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings", "warehouse_cases", "warehouse_load_pallets", "warehouse_loads", "warehouse_buys"];
+const HEAL_REFRESH_TABLES: &[&str] = &["freight_bookings", "warehouse_cases", "warehouse_load_pallets", "warehouse_loads", "warehouse_buys", "warehouse_floors"];
 
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
 /// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`

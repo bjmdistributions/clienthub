@@ -434,9 +434,83 @@ pub fn snap(width: f64, depth: f64, r: Rect, others: &[Rect]) -> Rect {
     }
 }
 
+// ── R-648: Clear inventory ───────────────────────────────────────────────────────────────────
+
+/// One pallet as it stood when a building's map was cleared: its id and its spot (`floor_id` "" when it was waiting off
+/// every plan).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ClearedSpot {
+    pub id: String,
+    pub floor_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub turned: bool,
+}
+
+/// What a building's last Clear inventory took off the map (`warehouse_floors.cleared_json`): when, and every pallet that
+/// stood on it or waited off every plan. A clear changes nothing on a pallet, so Undo only forgets this.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Cleared {
+    pub at: String,
+    pub pallets: Vec<ClearedSpot>,
+}
+
+/// A `cleared_json` cell. Empty or unreadable is no clear.
+pub fn read_cleared(cell: &str) -> Option<Cleared> {
+    if cell.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str(cell).ok()
+}
+
+/// Clear `floor_id` at `at`: every pallet standing on it and every pallet on no plan comes off the map, added to what an
+/// earlier clear of it took (a pallet in both keeps its newest spot).
+pub fn clear(floor_id: &str, at: &str, pallets: &[FloorPallet], before: Option<Cleared>) -> Cleared {
+    let mut out = before.unwrap_or_default();
+    for p in pallets.iter().filter(|p| p.floor_id.is_empty() || p.floor_id == floor_id) {
+        let spot = ClearedSpot { id: p.id.clone(), floor_id: p.floor_id.clone(), x: p.x, y: p.y, turned: p.turned };
+        match out.pallets.iter_mut().find(|s| s.id == p.id) {
+            Some(s) => *s = spot,
+            None => out.pallets.push(spot),
+        }
+    }
+    out.at = at.to_string();
+    out
+}
+
+/// Whether a clear still keeps this pallet off the map: it is in one and stands exactly where it stood then. A pallet
+/// placed, moved or taken off the plan since shows again.
+pub fn hidden_by(clears: &[Cleared], p: &FloorPallet) -> bool {
+    clears.iter().any(|c| {
+        c.pallets.iter().any(|s| {
+            s.id == p.id && s.floor_id == p.floor_id && (s.x - p.x).abs() < 1e-6 && (s.y - p.y).abs() < 1e-6 && s.turned == p.turned
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn r648_a_clear_hides_the_building_and_the_tray_until_a_pallet_is_placed_again() {
+        let pal = |id: &str, floor: &str, x: f64| FloorPallet { id: id.into(), floor_id: floor.into(), x, y: 2.0, ..Default::default() };
+        let all = vec![pal("a", "f1", 1.0), pal("b", "", 0.0), pal("c", "f2", 5.0)];
+        let c = clear("f1", "2026-11-10T12:00:00Z", &all, None);
+        assert_eq!(c.pallets.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+        let clears = vec![c.clone()];
+        assert!(hidden_by(&clears, &all[0]) && hidden_by(&clears, &all[1]));
+        assert!(!hidden_by(&clears, &all[2]), "another building is left alone");
+        // Moved or placed after the clear: it shows again.
+        assert!(!hidden_by(&clears, &pal("a", "f1", 9.0)));
+        assert!(!hidden_by(&clears, &pal("b", "f1", 3.0)));
+        // A second clear keeps the first one's pallets and adds the new ones.
+        let again = clear("f1", "2026-11-11T12:00:00Z", &[pal("a", "f1", 9.0), pal("d", "", 0.0)], Some(c));
+        assert_eq!(again.pallets.iter().map(|s| (s.id.as_str(), s.x)).collect::<Vec<_>>(), vec![("a", 9.0), ("b", 0.0), ("d", 0.0)]);
+        assert_eq!(again.at, "2026-11-11T12:00:00Z");
+        assert_eq!(read_cleared(""), None);
+        assert_eq!(read_cleared(&serde_json::to_string(&again).unwrap()), Some(again));
+    }
 
     fn door(side: &str, at: f64, width: f64, kind: &str) -> Door {
         Door { id: String::new(), side: side.into(), at, width, kind: kind.into(), label: String::new() }

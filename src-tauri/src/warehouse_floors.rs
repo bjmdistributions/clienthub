@@ -26,6 +26,17 @@ pub struct Floor {
     pub shape: FloorShape,
     pub archived: bool,
     pub updated_at: String,
+    /// R-648: the last Clear inventory, for its Undo: when, and how many pallets it took off.
+    pub cleared: Option<ClearedNote>,
+    /// R-648: what that clear took off and where each stood (`cleared_json`).
+    #[serde(skip)]
+    pub clear: Option<core::Cleared>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ClearedNote {
+    pub at: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -41,7 +52,7 @@ pub struct FloorOne {
     pub floor: Floor,
 }
 
-const FLOOR_COLS: &str = "id, COALESCE(name,''), COALESCE(width,0), COALESCE(depth,0), COALESCE(shape_json,'{}'), COALESCE(archived,0), updated_at";
+const FLOOR_COLS: &str = "id, COALESCE(name,''), COALESCE(width,0), COALESCE(depth,0), COALESCE(shape_json,'{}'), COALESCE(archived,0), updated_at, COALESCE(cleared_json,'')";
 
 fn map_floor(r: &rusqlite::Row) -> rusqlite::Result<Floor> {
     let shape: String = r.get(4)?;
@@ -53,6 +64,13 @@ fn map_floor(r: &rusqlite::Row) -> rusqlite::Result<Floor> {
         shape: serde_json::from_str(&shape).unwrap_or_default(),
         archived: r.get::<_, i64>(5)? != 0,
         updated_at: r.get(6)?,
+        cleared: None,
+        clear: None,
+    })
+    .map(|mut f| {
+        f.clear = core::read_cleared(&r.get::<_, String>(7).unwrap_or_default());
+        f.cleared = f.clear.as_ref().map(|c| ClearedNote { at: c.at.clone(), count: c.pallets.len() });
+        f
     })
 }
 
@@ -74,7 +92,50 @@ pub async fn list_warehouse_floors() -> Result<FloorList, String> {
         .prepare(&format!("SELECT {FLOOR_COLS} FROM warehouse_floors ORDER BY created_at, id"))
         .map_err(|e| e.to_string())?;
     let floors: Vec<Floor> = stmt.query_map([], map_floor).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
-    Ok(FloorList { floors, pallets: floor_pallets(&conn)? })
+    listed(&conn, floors)
+}
+
+/// R-648: the buildings and their pallets, less every pallet a building's Clear inventory took off (until Undo, or until
+/// it is placed again).
+fn listed(conn: &rusqlite::Connection, floors: Vec<Floor>) -> Result<FloorList, String> {
+    let clears: Vec<core::Cleared> = floors.iter().filter(|f| !f.archived).filter_map(|f| f.clear.clone()).collect();
+    let pallets = floor_pallets(conn)?.into_iter().filter(|p| !core::hidden_by(&clears, p)).collect();
+    Ok(FloorList { floors, pallets })
+}
+
+/// R-648: Clear inventory. Every pallet standing on this building, and every pallet waiting off every plan, comes off
+/// the map. Nothing on a pallet changes: the building keeps what stood where (`cleared_json`), so Undo puts every one
+/// of them back exactly. A pallet placed after the clear shows as usual.
+#[tauri::command]
+pub async fn clear_warehouse_floor(id: String) -> Result<FloorList, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let f = live_floor(&conn, &id)?;
+    let clears: Vec<core::Cleared> = f.clear.iter().cloned().collect();
+    let shown: Vec<FloorPallet> = floor_pallets(&conn)?.into_iter().filter(|p| !core::hidden_by(&clears, p)).collect();
+    if !shown.iter().any(|p| p.floor_id.is_empty() || p.floor_id == f.id) {
+        return Err("The map is already clear.".into());
+    }
+    let cleared = core::clear(&f.id, &now(), &shown, f.clear.clone());
+    let mut cols = Map::new();
+    cols.insert("cleared_json".into(), json!(serde_json::to_string(&cleared).map_err(|e| e.to_string())?));
+    cols.insert("updated_at".into(), json!(now()));
+    write(&conn, FLOORS, &f.id, cols, false)?;
+    listed(&conn, all_floors(&conn)?)
+}
+
+/// R-648: Undo the last Clear inventory of this building: forget it, and every pallet still where it stood shows again.
+#[tauri::command]
+pub async fn unclear_warehouse_floor(id: String) -> Result<FloorList, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let f = live_floor(&conn, &id)?;
+    if f.clear.is_none() {
+        return Err("There is no clear to undo.".into());
+    }
+    let mut cols = Map::new();
+    cols.insert("cleared_json".into(), json!(""));
+    cols.insert("updated_at".into(), json!(now()));
+    write(&conn, FLOORS, &f.id, cols, false)?;
+    listed(&conn, all_floors(&conn)?)
 }
 
 /// Draw a new building. Its size, doors and rooms go through `clean_floor` first.
@@ -251,7 +312,7 @@ pub async fn draw_pallet_row(floor_id: String, load_id: String, name: Option<Str
             records.push(case_core::PalletRecord { id: pid, number, ..Default::default() });
         }
     }
-    Ok(FloorList { floors: all_floors(&conn)?, pallets: floor_pallets(&conn)? })
+    listed(&conn, all_floors(&conn)?)
 }
 
 /// Lay a row out again from a new corner (every pallet in it, in order), or remove it: every pallet of
@@ -305,7 +366,7 @@ pub async fn change_pallet_row(floor_id: String, name: String, x: Option<f64>, y
             write(&conn, PALLETS, &stood[*k].0, cols, false)?;
         }
     }
-    Ok(FloorList { floors: all_floors(&conn)?, pallets: floor_pallets(&conn)? })
+    listed(&conn, all_floors(&conn)?)
 }
 
 /// Every building, removed ones too.

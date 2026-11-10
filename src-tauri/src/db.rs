@@ -2843,4 +2843,16 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE deal_flows ADD COLUMN confirmation_sent_to TEXT DEFAULT '';
         "#,
     ),
+    (
+        128,
+        // R-648: the buy whose pallets a delivery holds (made by Receive a load, '' for a delivery of its own),
+        // and what a building's last Clear inventory took off the map ('' when there is none), so Undo puts it
+        // back. Synced like the rest of the row (heal generation 20 restores them on a device that already holds
+        // the rows) and mirrored in clienthub-api schema.sql and its sync.rs ALTER list, which must be deployed
+        // first. Never put a semicolon inside a comment here, the runner splits on it.
+        r#"
+        ALTER TABLE warehouse_loads ADD COLUMN buy_id TEXT DEFAULT '';
+        ALTER TABLE warehouse_floors ADD COLUMN cleared_json TEXT DEFAULT '';
+        "#,
+    ),
 ];

@@ -37,7 +37,9 @@ export type LoadTotals = { lines: number; expected: number; received: number; sh
   unmatched?: number };
 export type LoadHead = { id: string; name: string; source: string; notes: string; archived: boolean; created_at: string; updated_at: string; lines?: LoadLine[];
   /** R-568: "units" when the delivery counts units, else pairs. */
-  unit?: string };
+  unit?: string;
+  /** R-648: the load (a buy) whose pallets this holds, made by Receive a load; "" for a delivery of its own. */
+  buy_id?: string };
 /** R-568: what a delivery counts, said plainly: "pairs" or "units", "pair" or "unit". */
 export const unitWord = (h: { unit?: string } | undefined, n = 2) => (h?.unit === "units" ? (n === 1 ? "unit" : "units") : (n === 1 ? "pair" : "pairs"));
 export type LoadDetail = {

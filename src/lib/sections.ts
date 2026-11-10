@@ -8,13 +8,14 @@
 
 export type TabId =
   | "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "coldcalls" | "inventory"
-  | "warehouse" | "purchases" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices"
+  | "warehouse" | "renewals" | "lotengine" | "showpacking" | "manifest" | "invoices"
   | "quotes" | "releaseletter" | "clientreceipt" | "purchaseorder" | "newsletter" | "analytics"
   | "brief" | "automation" | "globe" | "notes" | "documents" | "approvals" | "portals" | "checkup"
   | "archive" | "sheetcopy" | "financials" | "bills" | "logistics" | "bols" | "platform" | "datasafety"
   | "settings";
 
-export type SectionId = "home" | "invoices" | "deals" | "clients" | "inventory" | "purchases" | "logistics" | "money" | "insights" | "more" | "settings";
+// R-648: Purchases is no longer a section. Every purchase order is a load in Warehouse > Loads; a saved layout naming it drops it.
+export type SectionId = "home" | "invoices" | "deals" | "clients" | "inventory" | "logistics" | "money" | "insights" | "more" | "settings";
 
 export interface TabDef { id: TabId; label: string }
 export interface SectionDef {
@@ -56,8 +57,6 @@ export const SECTIONS: SectionDef[] = [
     { id: "showpacking", label: "Show packing" },
     { id: "sheetcopy", label: "Sheet copy" },
   ] },
-  // R-596: Jack chose Purchases as its own section, so it sits alone and draws its own header.
-  { id: "purchases", label: "Purchases", tabs: [{ id: "purchases", label: "Purchases" }] },
   { id: "logistics", label: "Logistics", tabs: [{ id: "logistics", label: "Logistics" }] },
   { id: "money", label: "Money", tabs: [
     { id: "financials", label: "Financials" },
