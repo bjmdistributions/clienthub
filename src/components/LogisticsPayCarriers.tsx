@@ -14,6 +14,7 @@ import { openBuyInDealFlow } from "../lib/buyLoads";
 import { canAttachPayments } from "../lib/logisticsCarriers";
 import { LogisticsModal, modalGhost, modalPrimary } from "./LogisticsCarriers";
 import NumberInput from "./NumberInput";
+import PdfPages from "./PdfPages";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 
@@ -317,7 +318,7 @@ function useOpenFile() {
   const node = preview && (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 p-6 animate-fade-in" onClick={() => setPreview(null)}>
       {preview.mime === "application/pdf"
-        ? <iframe src={preview.url} title={preview.name} className="w-full max-w-[900px] h-full rounded-lg bg-surface" />
+        ? <PdfPages url={preview.url} title={preview.name} className="w-full max-w-[900px] h-full rounded-lg" />
         : <img src={preview.url} alt={preview.name} className="max-w-full max-h-full rounded-lg shadow-xl" />}
     </div>
   );

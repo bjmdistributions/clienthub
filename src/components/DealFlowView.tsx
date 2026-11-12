@@ -40,6 +40,7 @@ import {
 } from "../lib/dealPayments";
 import { useNetsyncApplied, FreightStatusPill, AmountNeededPill, fileBase64, fileSize, keepSmall, FileDrop } from "./LogisticsBookingForm";
 import { LogisticsPayCell, useDealLogisticsPay } from "./LogisticsPay";
+import PdfPages from "./PdfPages";
 import { LEG_WORD, missingLegs } from "../lib/missingPayments";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -1016,7 +1017,7 @@ function SupplierInvoices({ flow, locked, onReload }: { flow: DealFlow; locked: 
               <span className="text-[13px] font-medium text-ink truncate">{preview.name}</span>
               <button onClick={() => setPreview(null)} aria-label="Close" className="ui-ib ml-auto"><X size={16} /></button>
             </div>
-            <iframe src={preview.url} title={preview.name} className="flex-1 w-full bg-surface" />
+            <PdfPages url={preview.url} title={preview.name} className="flex-1 min-h-0 w-full" />
           </div>
         </div>
       )}

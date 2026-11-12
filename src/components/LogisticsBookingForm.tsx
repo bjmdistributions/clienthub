@@ -37,6 +37,7 @@ import { PaidButtons, PaidSummary, usePaidControls, type PayTarget } from "./Log
 import { LoadTracker } from "./LoadTracker";
 import { Tabs } from "./ui";
 import NumberInput from "./NumberInput";
+import PdfPages from "./PdfPages";
 import { toast } from "./Toast";
 
 // R-400: one booking, one truck. This drawer is the booking page for both people who open it:
@@ -235,7 +236,7 @@ export function PaperworkZones({ booking, kinds, onBooking }: { booking: Freight
       {preview && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-6 animate-fade-in" onClick={() => setPreview(null)}>
           {preview.mime === "application/pdf"
-            ? <iframe src={preview.url} title={preview.name} className="w-full max-w-[900px] h-full rounded-lg bg-surface" />
+            ? <PdfPages url={preview.url} title={preview.name} className="w-full max-w-[900px] h-full rounded-lg" />
             : <img src={preview.url} alt={preview.name} className="max-w-full max-h-full rounded-lg shadow-xl" />}
         </div>
       )}

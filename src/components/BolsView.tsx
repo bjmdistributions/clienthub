@@ -13,6 +13,7 @@ import { isLogisticsSide, loadHaystack, loadNumber } from "../lib/logisticsLoad"
 import { Field, FreightStatusPill, Section, area, inp, routeLabel } from "./LogisticsBookingForm";
 import { LogisticsModal as Modal, modalGhost } from "./LogisticsCarriers";
 import NumberInput from "./NumberInput";
+import PdfPages from "./PdfPages";
 import StatusPill from "./StatusPill";
 import { toast } from "./Toast";
 
@@ -88,7 +89,7 @@ function PdfPreview({ url, name, onClose }: { url: string; name: string; onClose
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
       <div className="relative w-full max-w-[900px] h-full" onClick={(e) => e.stopPropagation()}>
-        <iframe src={url} title={name} className="w-full h-full rounded-lg bg-surface" />
+        <PdfPages url={url} title={name} className="w-full h-full rounded-lg" />
         <button type="button" onClick={onClose} title="Close" className="absolute top-2 right-2 p-1.5 rounded-lg bg-surface text-muted hover:text-ink border border-line"><X size={14} /></button>
       </div>
     </div>
