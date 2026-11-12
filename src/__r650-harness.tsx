@@ -20,7 +20,7 @@ const file = { id: "ff_1", name: kindOf === "png" ? "carrier-invoice-4471.png" :
 async function fileData(): Promise<string> {
   if (kindOf === "png") {
     const c = document.createElement("canvas"); c.width = 600; c.height = 800;
-    const g = c.getContext("2d")!; g.fillStyle = "#f4f1ea"; g.fillRect(0, 0, 600, 800); g.fillStyle = "#222"; g.font = "28px sans-serif"; g.fillText("PHOTO OF AN INVOICE", 60, 120);
+    const g = c.getContext("2d")!; g.fillStyle = "linen"; g.fillRect(0, 0, 600, 800); g.fillStyle = "black"; g.font = "28px sans-serif"; g.fillText("PHOTO OF AN INVOICE", 60, 120);
     return c.toDataURL("image/png").split("base64,")[1];
   }
   if (kindOf === "multi") {
