@@ -65,14 +65,14 @@ export interface SendFields {
   pallets: string; weight_lbs: string; dimensions: string;
 }
 
-const NEED: [keyof SendFields, string][] = [
+export const NEED: [keyof SendFields, string][] = [
   ["pickup_name", "the pickup name"], ["pickup_address", "the pickup address"], ["pickup_phone", "the pickup phone"],
   ["pickup_date", "the pickup day"], ["pickup_window", "the pickup time"], ["bol_to", "who gets the BOL"],
   ["delivery_name", "the delivery name"], ["delivery_address", "the delivery address"], ["delivery_phone", "the delivery phone"],
   ["delivery_date", "the delivery day"], ["equipment", "the equipment"],
 ];
 /** R-415: the freight only while the team fills it in; otherwise the logistics person does. */
-const FREIGHT: [keyof SendFields, string][] = [["pallets", "the pallets"], ["weight_lbs", "the weight"], ["dimensions", "the pallet dimensions"]];
+export const FREIGHT: [keyof SendFields, string][] = [["pallets", "the pallets"], ["weight_lbs", "the weight"], ["dimensions", "the pallet dimensions"]];
 
 /** The sentence that stops a send, or "" when everything is there. */
 export function sendMissing(f: SendFields, freightByTeam: boolean): string {

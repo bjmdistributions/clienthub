@@ -1,0 +1,61 @@
+{
+  "_": "R-651: what Send to logistics writes into a box when it is left. Invented values. Read by src/lib/tidy.test.ts (desktop) and the website's lgTidy* harness.",
+  "address": [
+    ["9 Depot Rd, Warehouse City, NV 89001", "9 Depot Rd, Warehouse City, NV 89001"],
+    ["9 Depot Rd Reno NV 89501", "9 Depot Rd, Reno, NV 89501"],
+    ["9 depot rd, reno nv 89501", "9 Depot Rd, Reno, NV 89501"],
+    ["1200 nw hwy 50 carson city nv 89701", "1200 NW Hwy 50, Carson City, NV 89701"],
+    ["44 McDonald Ave, Reno NV 89501", "44 McDonald Ave, Reno, NV 89501"],
+    ["9 DEPOT RD, RENO, NV 89501", "9 DEPOT RD, RENO, NV 89501"],
+    ["9 Depot Rd\nReno, Nevada 89501", "9 Depot Rd, Reno, NV 89501"],
+    ["  9 Depot Rd ,  Warehouse City , NV   89001  ", "9 Depot Rd, Warehouse City, NV 89001"],
+    ["9 Depot Rd. Reno NV 89501.", "9 Depot Rd, Reno, NV 89501"],
+    ["123 Main St, Reno, NV 89501, Suite 101", "123 Main St, Suite 101, Reno, NV 89501"],
+    ["9 Depot Rd Suite 4 Reno NV 89501", "9 Depot Rd Suite 4, Reno, NV 89501"],
+    ["1 Main St Washington District of Columbia 20001", "1 Main St, Washington, DC 20001"],
+    ["9 Depot Rd, Reno NV 89501, USA", "9 Depot Rd, Reno, NV 89501, USA"],
+    ["9 Depot Rd\nReno", "9 Depot Rd, Reno"],
+    ["  Warehouse   City  ", "Warehouse City"],
+    ["9 depot rd\nreno", "9 Depot Rd, Reno"],
+    ["", ""]
+  ],
+  "name": [
+    ["harbor pallet co", "Harbor Pallet Co"],
+    ["  ABC  Supply ", "ABC Supply"],
+    ["winston-salem goods", "Winston-Salem Goods"],
+    ["McDonald Freight", "McDonald Freight"],
+    ["", ""]
+  ],
+  "phone": [
+    ["5551234567", "555-123-4567"],
+    ["(555) 123-4567", "555-123-4567"],
+    ["+1 555.123.4567", "555-123-4567"],
+    ["1-555-123-4567", "555-123-4567"],
+    ["555 123 4567 x22", "555-123-4567 ext 22"],
+    ["555-123-4567 ext. 301", "555-123-4567 ext 301"],
+    ["ask for the dock", "ask for the dock"],
+    ["12345", "12345"],
+    ["", ""]
+  ],
+  "window": [
+    ["8am-2pm", "8:00 am to 2:00 pm"],
+    ["0800-1400", "8:00 am to 2:00 pm"],
+    ["2:30 pm", "2:30 pm"],
+    ["before 4 pm", "before 4 pm"],
+    ["9-5", "9-5"],
+    ["ASAP", "ASAP"],
+    ["", ""]
+  ],
+  "email": [
+    ["  Dock@Test.Example ", "dock@test.example"],
+    ["mailto:bol@test.example", "bol@test.example"],
+    ["", ""]
+  ],
+  "dims": [
+    ["48x40x60", "48 x 40 x 60"],
+    ["48 X 40 X 60 in", "48 x 40 x 60"],
+    ["48*40*52\"", "48 x 40 x 52"],
+    ["48 x 40, varies", "48 x 40, varies"],
+    ["", ""]
+  ]
+}

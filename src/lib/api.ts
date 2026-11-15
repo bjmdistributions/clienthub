@@ -4130,6 +4130,33 @@ export interface FreightPrefill {
   delivery_name: string;
   delivery_address: string;
   pickup_options: { name: string; address: string }[];
+  /** R-651: places to offer, newest first: the supplier or buyer on the deal ("deal"), then earlier loads ("load").
+   *  Missing from a server older than R-651. */
+  pickup_suggestions?: FreightPlace[];
+  delivery_suggestions?: FreightPlace[];
+}
+/** R-651: one place Send to logistics offers to fill in, and what came with it the last time it was used. */
+export interface FreightPlace {
+  source: "deal" | "load";
+  load_number: string;
+  day: string;
+  name: string;
+  address: string;
+  phone: string;
+  window: string;
+  bol_to: string;
+  notes: string;
+  equipment: string;
+  accessorials: string;
+}
+/** R-651: a deal's Send to logistics form saved before it is sent. `body` is the form as typed. */
+export interface FreightDraft {
+  id: string;
+  deal_flow_id: string;
+  body: Record<string, unknown>;
+  updated_at: string;
+  updated_by_name: string;
+  files: { id: string; name: string; mime: string; size: number }[];
 }
 /** R-551: where a buy's trucks go (the supplier is the pickup, the company the delivery). */
 export type BuyPrefill = Omit<FreightPrefill, "pickup_options">;
@@ -4808,8 +4835,25 @@ export const api = {
     createLoad: (fields: FreightBookingPatch) =>
       logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { today: localDay(), ...fields }),
     /** "Send to logistics": needs deal edit access. Names and addresses left out are prefilled. */
-    create: (dealFlowId: string, fields: FreightBookingPatch) =>
-      logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { today: localDay(), deal_flow_id: dealFlowId, ...fields }),
+    create: (dealFlowId: string, fields: FreightBookingPatch, opts?: { fromDraft?: boolean }) =>
+      logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", {
+        today: localDay(), deal_flow_id: dealFlowId, ...fields,
+        // R-651: sent from the deal's saved draft: the server moves the draft's files onto the load and archives it.
+        ...(opts?.fromDraft ? { from_draft: true } : {}),
+      }),
+    /** R-651: the deal's saved Send to logistics form (null when there is none), kept on the server for every device. */
+    drafts: {
+      get: (dealFlowId: string) =>
+        logisticsRequest<{ draft: FreightDraft | null }>("GET", `/api/logistics/drafts/${encodeURIComponent(dealFlowId)}`),
+      save: (dealFlowId: string, body: object) =>
+        logisticsRequest<{ draft: FreightDraft | null }>("PUT", `/api/logistics/drafts/${encodeURIComponent(dealFlowId)}`, { body }),
+      discard: (dealFlowId: string) =>
+        logisticsRequest<{ draft: FreightDraft | null }>("POST", `/api/logistics/drafts/${encodeURIComponent(dealFlowId)}/discard`),
+      addFile: (dealFlowId: string, name: string, data: string) =>
+        logisticsRequest<{ draft: FreightDraft | null }>("POST", `/api/logistics/drafts/${encodeURIComponent(dealFlowId)}/files`, { name, data }),
+      removeFile: (dealFlowId: string, fileId: string) =>
+        logisticsRequest<{ draft: FreightDraft | null }>("DELETE", `/api/logistics/drafts/${encodeURIComponent(dealFlowId)}/files/${encodeURIComponent(fileId)}`),
+    },
     /** "Add another truck": the deal, the places and the note carry over, nothing else. */
     copy: (copyFrom: string) => logisticsRequest<FreightBooking>("POST", "/api/logistics/bookings", { copy_from: copyFrom, today: localDay() }),
     update: (id: string, patch: FreightBookingPatch) =>

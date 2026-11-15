@@ -78,6 +78,46 @@ export function addressLack(addr: string | null | undefined): AddressLack | unde
   return cut < w.length ? undefined : "city";
 }
 
+/** R-651: a full address in its parts, read by the same rule as `addressLack` (null exactly when that finds a part
+ *  missing). The state comes back as its two-letter code; suite lines that sat after the ZIP come back in `suites`. */
+export function addressParts(addr: string | null | undefined): { street: string; city: string; state: string; zip: string; suites: string[]; country: string } | null {
+  let parts = (addr ?? "").split(/[,\r\n]/).map((p) => p.trim().split(/\s+/).filter(Boolean)).filter((p) => p.length > 0);
+  if (parts.length === 0) return null;
+  let country = "";
+  if (parts.length > 1 && COUNTRIES.has(parts[parts.length - 1].join(" ").toLowerCase())) country = parts.pop()!.join(" ");
+  const suites: string[] = [];
+  for (let i = 0; i < 2; i++) {
+    const tail = parts[parts.length - 1];
+    if (parts.length > 2 && tail && isSuiteLine(tail.join(" "))) suites.unshift(parts.pop()!.join(" "));
+  }
+  const zip = (parts[parts.length - 1].pop() ?? "").replace(/\.+$/, "");
+  if (!ZIP.test(zip)) return null;
+  parts = parts.filter((p) => p.length > 0);
+  const last = parts[parts.length - 1];
+  if (!last) return null;
+  let n = 0;
+  for (let k = Math.min(3, last.length); k >= 1 && !n; k--) if (isState(last.slice(-k).map(word).join(" "))) n = k;
+  if (!n) return null;
+  const state = resolveState(last.splice(last.length - n, n).map(word).join(" ")) as string;
+  parts = parts.filter((p) => p.length > 0);
+  const bare = (w: string[]) => w.join(" ").replace(/\.+$/, "");
+  if (parts.length === 0) return null;
+  if (parts.length >= 2) {
+    const city = bare(parts.pop()!);
+    return { street: parts.map(bare).join(", "), city, state, zip, suites, country };
+  }
+  const w = parts[0];
+  if (!/\d/.test(w[0])) return null;
+  let end = -1;
+  w.forEach((x, i) => { if (STREET_ENDS.has(word(x))) end = i; });
+  if (end < 0) return null;
+  const unit = (i: number) => /\d/.test(w[i]) || w[i].startsWith("#") || UNIT_WORDS.has(word(w[i])) || UNIT_NAMES.includes(word(w[i - 1]));
+  let cut = end + 1;
+  for (let i = end + 1; i < w.length; i++) if (unit(i)) cut = i + 1;
+  if (cut >= w.length) return null;
+  return { street: bare(w.slice(0, cut)), city: bare(w.slice(cut)), state, zip, suites, country };
+}
+
 /** A full address: `addressLack` finds nothing missing. */
 export const isFullAddress = (addr: string | null | undefined): boolean => addressLack(addr) === undefined;
 

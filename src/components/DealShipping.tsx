@@ -1,25 +1,21 @@
-import { Check, FileText, Paperclip, Plus, Truck, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, Paperclip, Plus, Truck } from "lucide-react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
-import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightBookingPatch, type FreightPrefill, type FreightStop, type SupplierPayment } from "../lib/api";
+import { api, type DealFlow, type DealLogisticsPay, type FreightBooking, type FreightDraft, type SupplierPayment } from "../lib/api";
 import { fmtAmount, localDay, parseAmount, shippingChargedOf, shippingEstimateOf } from "../lib/format";
-import { canAttachPayments, canChangePaidOn, canRecordOn, carrierByName, laneEnds } from "../lib/logisticsCarriers";
-import { CATCH_UP_STEPS, blankCatchUp, catchUpFields, catchUpProblem, dayLabel, type CatchUpForm } from "../lib/catchUpLoad";
-import { ADDRESS_HINT, addressNote, relabelPickupError } from "../lib/fullAddress";
-import { bolNote, sendMissing } from "../lib/bookingText";
-import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, milWindow, paidStateOf, paidView, pickupNumberUnconfirmed, time24On } from "../lib/logisticsLoad";
+import { canAttachPayments, canChangePaidOn, canRecordOn } from "../lib/logisticsCarriers";
+import { PAID_BANNER, dealPaid as isDealPaid, isLiveTruck, isQuoteStage, loadNumber, paidStateOf, paidView, pickupNumberUnconfirmed } from "../lib/logisticsLoad";
 import { invoiceWasSent, loadProgress, withDealFacts } from "../lib/loadProgress";
 import { useSessionMe } from "../lib/useSessionMe";
 import StatusPill from "./StatusPill";
-import { CarrierHost, CarrierPicker, useCarriers } from "./LogisticsCarriers";
 import { PaidButtons, PaidSummary, usePaidControls } from "./LogisticsPayCarriers";
 import { LoadTrackerCompact } from "./LoadTracker";
-import { RateCard } from "./LogisticsRates";
 import NumberInput from "./NumberInput";
+import SendToLogistics from "./SendToLogistics";
 import { toast } from "./Toast";
 import LogisticsBookingForm, {
-  AccessorialsField, AmountNeededPill, EquipmentSelect, FileDrop, FreightStatusPill, PickupNumberPill, UrgentPill, blankStop, fileSize, fmtDay, isHot,
-  needsAmount, timingLine, uploadFiles, useNetsyncApplied,
+  AmountNeededPill, FreightStatusPill, PickupNumberPill, UrgentPill, fmtDay, isHot,
+  needsAmount, timingLine, useNetsyncApplied,
 } from "./LogisticsBookingForm";
 
 // R-400: the deal's Shipping step. Freight is its own leg of the deal, separate from what is
@@ -45,390 +41,9 @@ function Row({ label, value, sub }: { label: string; value: ReactNode; sub?: str
 }
 
 // ── Send to logistics ─────────────────────────────────────────────────────
-// A sheet prefilled from the deal: the buyer is where it goes, the supplier on the cost lines
-// is where it comes from (one pick when several are owed). Everything can be changed before it
-// is sent. R-415: while the team fills in the freight (the default), the pallets, weight and
-// dimensions are filled in here, and the person doing logistics only books the truck.
-// R-459: the first send is a request for a quote ("Ask for a quote"): logistics answers with a price, the
-// team puts it on the invoice, and the load is sent to book from the load's page. R-464: every load starts
-// as a quote, so this sheet has the one button, and the load page holds the gate to booking.
-// R-479: the same sheet in an "Already moving" mode (`moving`), for a load that was never sent and is already booked, picked
-// up or delivered. The team picks the step, the carrier and the carrier cost; the server writes the load at that step
-// (`catch_up`) and stamps it as a catch-up. The paperwork is left for the person doing logistics to fill in.
-
-/** The extra fields of "Already moving": the step, the carrier from the directory, what it costs and the markup, who pays
- *  for the shipping, and the day for the step. The state lives in the sheet; this only draws it. */
-function CatchUpFields({ value, onChange, onOpenCarrier }: {
-  value: CatchUpForm; onChange: (patch: Partial<CatchUpForm>) => void; onOpenCarrier: (id: string) => void;
-}) {
-  const dir = useCarriers();
-  const today = localDay();
-  const setCarrier = (name: string) => {
-    const hit = dir.list && !dir.error ? carrierByName(name, dir.list) : null;
-    onChange({ carrier: name, carrierId: hit ? hit.id : "" });
-  };
-  const chips: [string, number][] = value.step === "booked" ? [["Today", 0], ["Tomorrow", 1]] : [["Today", 0], ["Yesterday", -1]];
-  const dayAt = (add: number) => { const d = new Date(); d.setDate(d.getDate() + add); return localDay(d); };
-  return (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <div className="text-[12px] font-medium text-ink-2">Where the load is</div>
-        <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="Step">
-          {CATCH_UP_STEPS.map((s) => {
-            const on = value.step === s.value;
-            return (
-              <button key={s.value} type="button" aria-pressed={on} onClick={() => onChange({ step: s.value, day: "" })}
-                className={`h-8 px-3 rounded-lg border text-[12px] transition-colors duration-150 ${on ? "border-ink bg-surface-3 text-ink font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
-                {s.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      {value.step && (
-        <div className="space-y-2">
-          <div className="text-[12px] font-medium text-ink-2">{dayLabel(value.step)}</div>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {chips.map(([label, add]) => {
-              const v = dayAt(add);
-              const on = value.day === v;
-              return (
-                <button key={label} type="button" aria-pressed={on} onClick={() => onChange({ day: on ? "" : v })}
-                  className={`h-8 px-3 rounded-lg border text-[12px] transition-colors duration-150 ${on ? "border-ink bg-surface-3 text-ink font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
-                  {label}
-                </button>
-              );
-            })}
-            <input type="date" className={`${inp} w-auto`} aria-label={dayLabel(value.step)} value={value.day}
-              max={value.step === "booked" ? undefined : today} onChange={(e) => onChange({ day: e.target.value })} />
-          </div>
-          <div className="text-[12px] text-muted">The day moves the deal's own dates.</div>
-        </div>
-      )}
-      <div className="space-y-2">
-        <div className="text-[12px] font-medium text-ink-2">Carrier</div>
-        <CarrierPicker value={value.carrier} carrierId={value.carrierId} carriers={dir.list} canEdit={false}
-          onType={setCarrier} onPick={(c) => onChange({ carrier: c.name, carrierId: c.id })} onSave={() => {}} onOpen={onOpenCarrier} />
-        {value.carrier.trim() && !value.carrierId && dir.list && (
-          <div className="text-[12px] text-muted">Pick a saved carrier so its payment terms apply.</div>
-        )}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="min-w-0">
-            <label className="block text-[12px] text-muted mb-1">Carrier cost (required)</label>
-            <NumberInput className={inp} value={value.cost} placeholder="0.00" onValue={(_n, raw) => onChange({ cost: raw })} />
-          </div>
-          <div className="min-w-0">
-            <label className="block text-[12px] text-muted mb-1">Markup (%)</label>
-            <NumberInput className={inp} value={value.markup} placeholder="0" onValue={(_n, raw) => onChange({ markup: raw })} />
-          </div>
-        </div>
-      </div>
-      <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors duration-150 ${value.own ? "border-line-3 bg-surface-2" : "border-line hover:bg-surface-2"}`}>
-        <input type="checkbox" checked={value.own} onChange={(e) => onChange({ own: e.target.checked })} className="w-4 h-4 mt-0.5 accent-accent" />
-        <span className="min-w-0">
-          <span className="block text-[13px] font-medium text-ink">We pay the shipping ourselves</span>
-          <span className="block text-[12px] text-muted">The customer is not charged for it. Set this now: it cannot be set once the load is booked.</span>
-        </span>
-      </label>
-    </div>
-  );
-}
-
-/** R-483: under an address box that has something in it but not yet a street, city, state and ZIP. The server refuses a
- *  load without them and says so; this says it before. */
-function AddressNote({ value }: { value: string }) {
-  const note = addressNote(value);
-  return note ? <div className="text-[12px] text-muted">{note}</div> : null;
-}
-
-/** Today, Tomorrow or a date. A second click on the chip that is on clears it. */
-export function DayChips({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      {([["Today", 0], ["Tomorrow", 1]] as const).map(([word, add]) => {
-        const d = new Date(); d.setDate(d.getDate() + add);
-        const v = localDay(d);
-        const on = value === v;
-        return (
-          <button key={word} type="button" aria-pressed={on} onClick={() => onChange(on ? "" : v)}
-            className={`h-8 px-3 rounded-lg border text-[12px] transition-colors duration-150 ${on ? "border-ink bg-surface-3 text-ink font-medium" : "border-line text-ink-2 hover:bg-surface-2"}`}>
-            {word}
-          </button>
-        );
-      })}
-      <input type="date" className={`${inp} w-auto`} aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} />
-    </div>
-  );
-}
-
-function SendSheet({ flow, billed, moving, onClose, onSent }: {
-  flow: DealFlow; billed: number | null; moving?: boolean; onClose: () => void; onSent: (made?: FreightBooking) => void;
-}) {
-  const [pre, setPre] = useState<FreightPrefill | null>(null);
-  const [cu, setCu] = useState<CatchUpForm>(blankCatchUp);
-  const [err, setErr] = useState("");
-  // A refusal ("Pick the carrier.") is about the form as it was sent, so it goes once the form is changed.
-  const setCatchUp = (patch: Partial<CatchUpForm>) => { setCu((c) => ({ ...c, ...patch })); setErr(""); };
-  const [pickup, setPickup] = useState({ name: "", address: "", phone: "" });
-  // R-452: more pickups on the same truck, one delivery.
-  const [stops, setStops] = useState<FreightStop[]>([]);
-  // R-558: everything the booking message needs: the pickup phone, who gets the BOL, the delivery phone, day and time.
-  const [bolTo, setBolTo] = useState("");
-  const [delivery, setDelivery] = useState({ name: "", address: "", phone: "", date: "", window: "", notes: "" });
-  const [freight, setFreight] = useState({ pallets: "", pieces: "", weight_lbs: "", freight_class: "", dimensions: "", commodity: "", accessorials: "", equipment: "" });
-  const [note, setNote] = useState("");
-  // R-458: everything logistics needs in one send: how urgent, the day and the times, and the papers.
-  const [urgent, setUrgent] = useState(false);
-  const [when, setWhen] = useState({ date: "", window: "" });
-  // R-538: a pickup time typed in 24-hour time reads back as proper time, only when typed this time.
-  const winWas = useRef("");
-  const [files, setFiles] = useState<File[]>([]);
-  const [busy, setBusy] = useState(false);
-  // R-459: what the lane cost last time, once both addresses read as a place; a carrier name opens its card.
-  const [carrierId, setCarrierId] = useState<string | null>(null);
-  const lane = laneEnds(pickup.address, delivery.address);
-  // Until the setting is read, the default (on) holds.
-  const [byTeam, setByTeam] = useState(true);
-  const setF = (patch: Partial<typeof freight>) => setFreight((f) => ({ ...f, ...patch }));
-  useEffect(() => {
-    let dead = false;
-    api.logistics.settings.get().then((s) => { if (!dead) setByTeam(s.freight_by_team !== false); }).catch(() => {});
-    return () => { dead = true; };
-  }, []);
-
-  useEffect(() => {
-    let dead = false;
-    api.logistics.prefill(flow.id)
-      .then((p) => {
-        if (dead) return;
-        setPre(p);
-        setPickup((x) => ({ ...x, name: p.pickup_name, address: p.pickup_address }));
-        setDelivery((x) => ({ ...x, name: p.delivery_name, address: p.delivery_address }));
-      })
-      .catch((e) => { if (!dead) { setErr(String(e)); setPre({ pickup_name: "", pickup_address: "", delivery_name: "", delivery_address: "", pickup_options: [] }); } });
-    return () => { dead = true; };
-  }, [flow.id]);
-
-  const missing = byTeam && !(freight.pallets.trim() && freight.weight_lbs.trim() && freight.dimensions.trim());
-  const send = async () => {
-    if (moving) { const problem = catchUpProblem(cu, localDay()); if (problem) { setErr(problem); return; } }
-    // R-558: a quote is asked only with everything the booking message carries. A load already moving is logged as it is.
-    const gap = moving ? "" : sendMissing({
-      pickup_name: pickup.name, pickup_address: pickup.address, pickup_phone: pickup.phone, pickup_date: when.date, pickup_window: when.window,
-      bol_to: bolTo, delivery_name: delivery.name, delivery_address: delivery.address, delivery_phone: delivery.phone, delivery_date: delivery.date,
-      equipment: freight.equipment, pallets: freight.pallets, weight_lbs: freight.weight_lbs, dimensions: freight.dimensions,
-    }, byTeam);
-    if (gap) { setErr(gap); return; }
-    if (missing) { setErr("Fill in the pallets, pallet dimensions and weight first."); return; }
-    setBusy(true); setErr("");
-    // The sheet index of each extra pickup that is sent (a blank row is dropped); the server counts only those.
-    const sent = stops.map((_, i) => i).filter((i) => stops[i].name.trim() || stops[i].address.trim());
-    try {
-      // R-479: "Already moving" writes the load at its real step; its day and carrier come from the catch-up fields.
-      const lead: FreightBookingPatch = moving ? catchUpFields(cu) : { status: "quote" as const, urgent, pickup_date: when.date };
-      const made = await api.logistics.create(flow.id, {
-        ...lead,
-        pickup_window: when.window.trim(),
-        pickup_name: pickup.name, pickup_address: pickup.address, pickup_phone: pickup.phone.trim(),
-        ...(bolTo.trim() ? { pickup_notes: bolNote(bolTo) } : {}),
-        extra_pickups: sent.map((i) => ({ ...stops[i], name: stops[i].name.trim(), address: stops[i].address.trim(), window: stops[i].window.trim() })),
-        delivery_name: delivery.name, delivery_address: delivery.address, delivery_phone: delivery.phone.trim(),
-        delivery_window: delivery.window.trim(), delivery_notes: delivery.notes.trim(),
-        ...(!moving && delivery.date ? { delivery_date: delivery.date } : {}),
-        pallets: freight.pallets.trim(), pieces: freight.pieces.trim(), weight_lbs: freight.weight_lbs.trim(),
-        freight_class: freight.freight_class.trim(), dimensions: freight.dimensions.trim(),
-        commodity: freight.commodity.trim(), accessorials: freight.accessorials.trim(), equipment: freight.equipment,
-        request_note: note.trim(),
-      });
-      // The booking exists now; a file that fails to upload says so and can be added on the booking.
-      if (files.length) await uploadFiles(made.id, files);
-      toast(moving ? `${loadNumber(made)} is with Logistics` : urgent ? "Quote asked as urgent" : "Quote asked");
-      onSent(made);
-    } catch (e) { setErr(relabelPickupError(String(e), sent)); }
-    setBusy(false);
-  };
-
-  const options = pre?.pickup_options ?? [];
-  // A new pickup starts as the next supplier on the deal that is not already one, or blank.
-  const addStop = () => {
-    const used = [pickup.name, ...stops.map((x) => x.name)].map((n) => n.trim().toLowerCase());
-    const next = options.find((o) => o.name && !used.includes(o.name.trim().toLowerCase()));
-    setStops((l) => [...l, { ...blankStop(), name: next?.name ?? "", address: next?.address ?? "" }]);
-  };
-  const setStop = (i: number, patch: Partial<FreightStop>) => setStops((l) => l.map((x, j) => (j === i ? { ...x, ...patch } : x)));
-  return (
-    <>
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
-      <div
-        role="dialog" aria-modal="true" aria-label={moving ? "Already moving" : "Send to logistics"}
-        className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-lg max-h-[88vh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
-          <div className="min-w-0">
-            <h2 className="text-[16px] font-medium text-ink">{moving ? "Already moving" : "Send to logistics"}</h2>
-            <p className="text-[12px] text-muted mt-0.5">
-              {flow.invoice_number ? `${flow.invoice_number}. ` : ""}{moving ? "Send this deal to Logistics at the step the load is already at." : byTeam ? "Fill in the freight and ask for a quote. You send it to book from the load once it is on the invoice and the customer has paid." : "Ask for a quote. Logistics fills in the rest."}
-            </p>
-          </div>
-          <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 flex-shrink-0"><X size={16} /></button>
-        </div>
-        <div className="px-5 py-4 space-y-4 overflow-y-auto">
-          {pre === null ? <div className="text-[12.5px] text-muted">Loading...</div> : (
-            <>
-              {billed != null && (
-                <div className={`rounded-lg border px-3 py-2 text-[13px] ${billed > 0.005 ? "bg-surface-2 border-line" : "bg-warning-bg border-warning/30 text-warning-ink"}`}>
-                  {billed > 0.005
-                    ? <><span className="text-muted">Charged to the customer for shipping</span>{" "}<span className="font-medium text-ink tabular-nums">{fmtAmount(billed)}</span></>
-                    : "The invoice has no shipping line."}
-                </div>
-              )}
-              {moving && <CatchUpFields value={cu} onChange={setCatchUp} onOpenCarrier={setCarrierId} />}
-              {!moving && (
-              <>
-              <label className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors duration-150 ${urgent ? "border-danger-ink/30 bg-danger-bg" : "border-line hover:bg-surface-2"}`}>
-                <input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} className="w-4 h-4 mt-0.5 accent-danger" />
-                <span className="min-w-0">
-                  <span className={`block text-[13px] font-medium ${urgent ? "text-danger-ink" : "text-ink"}`}>Urgent</span>
-                  <span className="block text-[12px] text-muted">It goes to the top of their list in red, and they get a notice that says urgent.</span>
-                </span>
-              </label>
-              <div className="space-y-2">
-                <div className="text-[12px] font-medium text-ink-2">When it needs picking up (required)</div>
-                <DayChips label="Pickup day" value={when.date} onChange={(v) => setWhen((w) => ({ ...w, date: v }))} />
-                <div className="text-[12px] text-muted">The day moves the deal's pickup date.</div>
-              </div>
-              </>
-              )}
-              <div className="space-y-2">
-                <div className="text-[12px] font-medium text-ink-2">Pickup</div>
-                {options.length > 1 && (
-                  <select className={inp} aria-label="Pickup from"
-                    value={options.findIndex((o) => o.name === pickup.name && o.address === pickup.address)}
-                    onChange={(e) => { const o = options[Number(e.target.value)]; if (o) setPickup((x) => ({ ...x, name: o.name, address: o.address })); }}>
-                    {options.findIndex((o) => o.name === pickup.name && o.address === pickup.address) < 0 && <option value={-1}>Edited</option>}
-                    {options.map((o, i) => <option key={i} value={i}>{o.name || o.address || "Pickup"}</option>)}
-                  </select>
-                )}
-                <input className={inp} placeholder="Name" value={pickup.name} onChange={(e) => setPickup({ ...pickup, name: e.target.value })} />
-                <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label="Pickup address" value={pickup.address} onChange={(e) => setPickup({ ...pickup, address: e.target.value })} />
-                <AddressNote value={pickup.address} />
-                <input className={inp} placeholder="Time, like before 4 pm" aria-label="Pickup time" value={when.window} onChange={(e) => { const v = e.target.value; setWhen((w) => ({ ...w, window: v })); }}
-                  onFocus={(e) => { winWas.current = e.target.value; }}
-                  onBlur={() => { if (!time24On() || when.window === winWas.current) return; const t = milWindow(when.window); if (t && t !== when.window) setWhen((w) => ({ ...w, window: t })); }} />
-                <input className={inp} placeholder="Phone" aria-label="Pickup phone" value={pickup.phone} onChange={(e) => setPickup({ ...pickup, phone: e.target.value })} />
-                <input className={inp} type="email" placeholder="Send the BOL to, an email address" aria-label="Send the BOL to" value={bolTo} onChange={(e) => setBolTo(e.target.value)} />
-              </div>
-              {stops.map((x, i) => (
-                <div key={i} className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[12px] font-medium text-ink-2">Pickup {i + 2}</div>
-                    <button type="button" onClick={() => setStops((l) => l.filter((_, j) => j !== i))}
-                      className="text-[12px] text-muted hover:text-danger-ink px-1.5 h-6 rounded-md hover:bg-danger-bg transition-colors duration-150">Remove</button>
-                  </div>
-                  <input className={inp} placeholder="Name" aria-label={`Pickup ${i + 2} name`} value={x.name} onChange={(e) => setStop(i, { name: e.target.value })} />
-                  <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label={`Pickup ${i + 2} address`} value={x.address} onChange={(e) => setStop(i, { address: e.target.value })} />
-                  <AddressNote value={x.address} />
-                  <input className={inp} placeholder="Time, like before 4 pm" aria-label={`Pickup ${i + 2} time`} value={x.window} onChange={(e) => setStop(i, { window: e.target.value })}
-                    onFocus={(e) => { winWas.current = e.target.value; }}
-                    onBlur={() => { if (!time24On() || x.window === winWas.current) return; const t = milWindow(x.window); if (t && t !== x.window) setStop(i, { window: t }); }} />
-                </div>
-              ))}
-              {stops.length < 9 && (
-                <button type="button" onClick={addStop}
-                  className="flex items-center gap-1 text-[12px] text-ink-2 hover:text-ink px-2.5 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors duration-150">
-                  <Plus size={13} /> Add a pickup
-                </button>
-              )}
-              <div className="space-y-2">
-                <div className="text-[12px] font-medium text-ink-2">Delivery</div>
-                <input className={inp} placeholder="Name" value={delivery.name} onChange={(e) => setDelivery({ ...delivery, name: e.target.value })} />
-                <textarea className={`${inp} h-auto py-2`} rows={2} placeholder={ADDRESS_HINT} aria-label="Delivery address" value={delivery.address} onChange={(e) => setDelivery({ ...delivery, address: e.target.value })} />
-                <AddressNote value={delivery.address} />
-                {!moving && <DayChips label="Delivery day" value={delivery.date} onChange={(v) => setDelivery((x) => ({ ...x, date: v }))} />}
-                <input className={inp} placeholder="Time, like ASAP or before 3 pm" aria-label="Delivery time" value={delivery.window} onChange={(e) => setDelivery({ ...delivery, window: e.target.value })} />
-                <input className={inp} placeholder="Phone the driver calls" aria-label="Delivery phone" value={delivery.phone} onChange={(e) => setDelivery({ ...delivery, phone: e.target.value })} />
-                <input className={inp} placeholder="For the driver, like: call 15 minutes out" aria-label="Delivery note" value={delivery.notes} onChange={(e) => setDelivery({ ...delivery, notes: e.target.value })} />
-              </div>
-              {lane && <RateCard by={lane} onOpenCarrier={setCarrierId} />}
-              <div className="space-y-2">
-                <div className="text-[12px] font-medium text-ink-2">Freight</div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="min-w-0">
-                    <label className="block text-[12px] text-muted mb-1">Pallets{byTeam ? " (required)" : ""}</label>
-                    <NumberInput integer className={inp} value={freight.pallets} placeholder="How many" onValue={(_n, raw) => setF({ pallets: raw })} />
-                  </div>
-                  <div className="min-w-0">
-                    <label className="block text-[12px] text-muted mb-1">Pieces</label>
-                    <NumberInput integer className={inp} value={freight.pieces} onValue={(_n, raw) => setF({ pieces: raw })} />
-                  </div>
-                  <div className="min-w-0">
-                    <label className="block text-[12px] text-muted mb-1">Weight (lbs){byTeam ? " (required)" : ""}</label>
-                    <NumberInput className={inp} value={freight.weight_lbs} onValue={(_n, raw) => setF({ weight_lbs: raw })} />
-                  </div>
-                  <div className="min-w-0">
-                    <label className="block text-[12px] text-muted mb-1">Freight class</label>
-                    <input className={inp} value={freight.freight_class} onChange={(e) => setF({ freight_class: e.target.value })} />
-                  </div>
-                  <div className="min-w-0">
-                    <label className="block text-[12px] text-muted mb-1">Pallet dimensions (L x W x H in){byTeam ? " (required)" : ""}</label>
-                    <input className={inp} placeholder="48 x 40 x 60" value={freight.dimensions} onChange={(e) => setF({ dimensions: e.target.value })} />
-                  </div>
-                  <div className="min-w-0">
-                    <label className="block text-[12px] text-muted mb-1">Description of goods</label>
-                    <input className={inp} value={freight.commodity} onChange={(e) => setF({ commodity: e.target.value })} />
-                  </div>
-                  <div className="min-w-0 col-span-2">
-                    <label className="block text-[12px] text-muted mb-1">Equipment{moving ? "" : " (required)"}</label>
-                    <EquipmentSelect value={freight.equipment} onChange={(v) => setF({ equipment: v })} />
-                  </div>
-                </div>
-                <AccessorialsField value={freight.accessorials} onChange={(v) => setF({ accessorials: v })} />
-              </div>
-              <div>
-                <label className="block text-[12px] font-medium text-ink-2 mb-1">Note for logistics</label>
-                <textarea
-                  className="border border-line px-3 py-2 rounded-lg text-[13px] w-full bg-surface text-ink placeholder-muted resize-y min-h-[72px] focus:outline-none focus:border-ink"
-                  placeholder="Like: needs to go out today, call the dock first" value={note} onChange={(e) => setNote(e.target.value)} />
-              </div>
-              <div className="space-y-2">
-                <div className="text-[12px] font-medium text-ink-2">Files</div>
-                {files.length > 0 && (
-                  <div className="rounded-lg border border-line divide-y divide-line">
-                    {files.map((f, i) => (
-                      <div key={i} className="flex items-center gap-2 px-3 py-1.5 text-[12.5px] min-w-0">
-                        <FileText size={13} className="text-muted flex-shrink-0" />
-                        <span className="truncate min-w-0 flex-1 text-ink">{f.name}</span>
-                        <span className="text-[12px] text-muted flex-shrink-0">{fileSize(f.size)}</span>
-                        <button type="button" onClick={() => setFiles((l) => l.filter((_, j) => j !== i))} title="Take it off"
-                          className="p-1 rounded-md text-muted hover:text-danger-ink hover:bg-danger-bg flex-shrink-0"><X size={12} /></button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <FileDrop onFiles={(l) => setFiles((cur) => [...cur, ...l])} hint="Sent with the booking. Each file up to 15 MB." />
-              </div>
-            </>
-          )}
-        </div>
-        {/* R-479: the one thing to remember after a catch-up. The shipping leg stays 0 until the carrier's payment is linked. */}
-        {moving && <div className="px-5 py-2 text-[12px] text-muted border-t border-line">Link the carrier's payment once it goes out; until then this deal's profit leaves out the shipping.</div>}
-        {/* Outside the scrolling body, so a refusal is never hidden below the fields. */}
-        {err && <div className="px-5 py-2 text-[12px] text-danger-ink border-t border-line" role="alert">{err}</div>}
-        <div className="px-5 py-3 flex justify-end gap-2 border-t border-line">
-          <button onClick={onClose} className="px-4 h-9 rounded-lg text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
-          <button onClick={send} disabled={busy || pre === null}
-            className="ui-btn ui-btn-ink">
-            {busy ? (moving ? "Moving..." : "Sending...") : moving ? "Move to Logistics" : "Ask for a quote"}
-          </button>
-        </div>
-      </div>
-    </div>
-    {/* Beside the sheet, not inside it: a click on the card's backdrop must not close the sheet too. */}
-    {carrierId && <CarrierHost id={carrierId} onClose={() => setCarrierId(null)} onChanged={() => {}} />}
-    </>
-  );
-}
+// R-651: the full screen in SendToLogistics.tsx (it replaced the R-400 pop-up here, and its R-479 "Already moving"
+// mode). DayChips moved with it and is re-exported for the buy sheet.
+export { DayChips } from "./SendToLogistics";
 
 /** R-479: "Move to Logistics" for a deal whose load was never sent and is already moving. Opens the Send to
  *  logistics sheet in its "Already moving" mode. `onMoved` gets the load the server made, so the caller can show its
@@ -442,7 +57,7 @@ export function MoveToLogistics({ flow, onMoved }: { flow: DealFlow; onMoved: (m
         <Truck size={13} /> Move to Logistics
       </button>
       {open && (
-        <SendSheet flow={flow} billed={null} moving onClose={() => setOpen(false)}
+        <SendToLogistics flow={flow} billed={null} moving onClose={() => setOpen(false)}
           onSent={(made) => { setOpen(false); if (made) onMoved(made); }} />
       )}
     </>
@@ -539,6 +154,8 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   const [bookings, setBookings] = useState<FreightBooking[]>([]);
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
+  // R-651: the deal's saved Send to logistics form, when there is one (kept on the server for every device).
+  const [draft, setDraft] = useState<FreightDraft | null>(null);
   const [open, setOpen] = useState<FreightBooking | null>(null);
   // R-401: what the invoice charged for shipping, and the logistics pay that comes of it.
   const [charged, setCharged] = useState<{ amount: number; source: "lines" | "field" | "none" }>({ amount: 0, source: "none" });
@@ -581,6 +198,11 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
   }, [flow.id, flow.updated_at, flow.logistics_paid, flow.logistics_quoted, flow.logistics_bookings, flow.shipping_linked]);
 
   const refresh = () => { loadBookings(); onReload(); };
+
+  const loadDraft = useCallback(() => {
+    api.logistics.drafts.get(flow.id).then((r) => setDraft(r.draft)).catch(() => setDraft(null));
+  }, [flow.id]);
+  useEffect(() => { if (!flow.ships_direct) loadDraft(); }, [loadDraft, flow.ships_direct]);
 
   // R-459: a quote is a load asked about, not a truck. It shows here with its stage and is never counted
   // as a truck (the money rows below come from the deal, which leaves quotes out the same way).
@@ -713,10 +335,15 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
               )}
               <button type="button" onClick={() => setSending(true)}
                 className="ui-btn ui-btn-ink">
-                <Truck size={13} /> Send to logistics
+                <Truck size={13} /> {draft ? "Continue the draft" : "Send to logistics"}
               </button>
             </div>
           </div>
+          {draft && (
+            <div className="text-[12px] text-muted -mt-2">
+              A Send to logistics draft is saved{draft.updated_by_name ? ` by ${draft.updated_by_name}` : ""}, {fmtDay(draft.updated_at)}. It has not gone to logistics yet.
+            </div>
+          )}
 
           {ready && (quotes.length > 0 || live.length > 0) && <div className="space-y-2">{[...quotes, ...live].map(card)}</div>}
 
@@ -805,8 +432,8 @@ export default function DealShipping({ flow, onReload, locked, onAdvance, dealPa
       )}
 
       {sending && (
-        <SendSheet flow={flow} billed={chargedReady ? ((flow.shipping_billed ?? 0) > 0 ? (flow.shipping_billed as number) : charged.amount) : null}
-          onClose={() => setSending(false)} onSent={() => { setSending(false); refresh(); }} />
+        <SendToLogistics flow={flow} billed={chargedReady ? ((flow.shipping_billed ?? 0) > 0 ? (flow.shipping_billed as number) : charged.amount) : null}
+          onClose={() => { setSending(false); loadDraft(); }} onSent={() => { setSending(false); setDraft(null); refresh(); }} />
       )}
       {paidControls.sheet}
       {open && (
