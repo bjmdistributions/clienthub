@@ -32,6 +32,7 @@ import Switch from "./Switch";
 import { Button, Kpi, PageActions, Row, Tabs } from "./ui";
 import { parseAmount } from "../lib/format";
 import { alreadyTied, tieAmount } from "../lib/tieAmount";
+import { pnlParts } from "../lib/pnlParts";
 
 // Backend errors arrive as raw Rust strings and were shown to the user verbatim,
 // often prefixed "Error:" by String(e). Strip the noise and never render an empty
@@ -2841,13 +2842,16 @@ export default function FinancialsView() {
   const TAX_PASSTHROUGH_CATS = ["estimated_tax", "sales_tax_collected", "sales_tax_remitted"];
   const pnlReport = useMemo(() => {
     const byCat = new Map<string, { label: string; group: string; in: number; out: number }>();
+    // R-657: money booked to a deal counts by its booking when the bank called it a transfer or nothing.
+    const inTransfers = (c: string) => CATEGORIES.find((d) => d.value === c)?.group === "Transfers, owner & assets";
     for (const t of txns) {
       if ((t.posted_at || "").slice(0, 4) !== String(pnlYear)) continue;
-      const cat = t.category || "";
-      const def = CATEGORIES.find((c) => c.value === cat);
-      const entry = byCat.get(cat) ?? { label: def ? def.label : (cat || "Uncategorized"), group: def ? def.group : "", in: 0, out: 0 };
-      if (t.direction === "in") entry.in += t.amount; else entry.out += t.amount;
-      byCat.set(cat, entry);
+      for (const { category: cat, amount } of pnlParts(t, inTransfers)) {
+        const def = CATEGORIES.find((c) => c.value === cat);
+        const entry = byCat.get(cat) ?? { label: def ? def.label : (cat || "Uncategorized"), group: def ? def.group : "", in: 0, out: 0 };
+        if (t.direction === "in") entry.in += amount; else entry.out += amount;
+        byCat.set(cat, entry);
+      }
     }
     const groups = CAT_GROUP_ORDER.map((g) => {
       const categories = [...byCat.entries()]

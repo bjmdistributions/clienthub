@@ -1727,20 +1727,55 @@ fn pnl_rollup(cat_dir_amt: &[(String, String, f64)]) -> PnlRollup {
     PnlRollup { lines, group_totals, net_income, transfers_net, tax_passthrough_net, uncategorized_net }
 }
 
+/// R-657: a deal booking's role, read as the category it stands for. `adjustment` has none and keeps the row's own.
+/// Mirrored in the server's routes/bank.rs and src/lib/pnlParts.ts; all copies move together.
+pub(crate) const PNL_ROLE_CATEGORY: &[(&str, &str)] = &[
+    ("buyer_payment",    "receipt"),
+    ("supplier_payment", "payment"),
+    ("shipping",         "shipping"),
+    ("fee",              "fee"),
+    ("refund_out",       "customer_refund"),
+    ("refund_in",        "supplier_refund"),
+];
+
+/// R-657: the (category, direction, amount) sums `pnl_rollup` reads, over counted rows posted from `lo` up to `hi`.
+/// Money booked to a deal is that deal's money whatever the bank called it: Plaid files any wire or Zelle it calls a
+/// transfer as `internal_transfer`, and booking never changes a row's category, so a booked buyer or supplier wire
+/// was left out of net income. Where a row's category is blank or in the Transfers group, the part booked to a deal
+/// counts under its booking's category and only the rest keeps the row's own. Any other category is the row's
+/// whole story, as before. Nothing stored changes.
+fn pnl_rows(conn: &rusqlite::Connection, lo: &str, hi: &str) -> rusqlite::Result<Vec<(String, String, f64)>> {
+    let reclass = std::iter::once("''".to_string())
+        .chain(PNL_CATEGORY_GROUPS.iter().filter(|(_, _, g)| *g == "Transfers, owner & assets").map(|(v, _, _)| format!("'{v}'")))
+        .collect::<Vec<_>>().join(",");
+    let roles = PNL_ROLE_CATEGORY.iter().map(|(r, _)| format!("'{r}'")).collect::<Vec<_>>().join(",");
+    let role_cat = PNL_ROLE_CATEGORY.iter().map(|(r, c)| format!("WHEN '{r}' THEN '{c}'")).collect::<Vec<_>>().join(" ");
+    let sql = format!(
+        "WITH r AS (SELECT bt.id, COALESCE(bt.category,'') AS cat, bt.direction AS dir, bt.amount AS amt, \
+                           COALESCE(bt.category,'') IN ({reclass}) AS rc \
+                      FROM bank_txn bt WHERE bt.posted_at >= ?1 AND bt.posted_at < ?2 AND {counted}), \
+              b AS (SELECT r.id, r.dir, CASE a.role {role_cat} END AS cat, a.amount AS amt \
+                      FROM r JOIN bank_allocation a ON a.bank_txn_id = r.id WHERE r.rc AND a.role IN ({roles})), \
+              bs AS (SELECT id, SUM(amt) AS amt FROM b GROUP BY id) \
+         SELECT cat, dir, SUM(amt) FROM ( \
+             SELECT r.cat, r.dir, r.amt - COALESCE(bs.amt, 0) AS amt FROM r LEFT JOIN bs ON bs.id = r.id \
+             UNION ALL SELECT b.cat, b.dir, b.amt FROM b) \
+         GROUP BY cat, dir HAVING ABS(SUM(amt)) > 0.004",
+        counted = crate::bank_flags::counted("bt"));
+    let mut st = conn.prepare(&sql)?;
+    let rows = st.query_map([lo, hi], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>();
+    rows
+}
+
 /// R-579: (net income, estimated tax paid) for `year`, both over counted rows. Net income is
 /// `pnl_rollup`'s, the figure the year P&L export prints; estimated tax paid is the Owner
 /// estimated tax category, out less in. The tax set-aside on Free cash is built on these.
+/// R-657: rows come from `pnl_rows`, so money booked to a deal counts by its booking.
 pub(crate) fn year_tax_base(conn: &rusqlite::Connection, year: i32) -> (f64, f64) {
     let lo = format!("{year}-01-01");
     let hi = format!("{}-01-01", year + 1);
-    let rows: Vec<(String, String, f64)> = conn
-        .prepare(&format!(
-            "SELECT COALESCE(category,''), direction, SUM(amount) FROM bank_txn \
-             WHERE posted_at >= ?1 AND posted_at < ?2 AND {} GROUP BY COALESCE(category,''), direction",
-            crate::bank_flags::counted("bank_txn")))
-        .and_then(|mut st| st.query_map([&lo, &hi], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .map(|it| it.filter_map(|x| x.ok()).collect()))
-        .unwrap_or_default();
+    let rows = pnl_rows(conn, &lo, &hi).unwrap_or_default();
     let net = pnl_rollup(&rows).net_income;
     let paid = rows.iter().filter(|(c, _, _)| c == "estimated_tax")
         .map(|(_, d, a)| if d == "out" { *a } else { -*a }).sum::<f64>();
@@ -1757,13 +1792,8 @@ pub async fn export_tax_year_pnl_csv(year: i32, output_path: String) -> Result<u
     let hi = format!("{}-01-01", year + 1);
     // R-518: a row the bank withdrew (kept for a person to resolve, R-497) is not money that moved; its posted
     // copy, when there is one, is counted on its own. Counting both put one charge in the year twice.
-    let mut stmt = conn.prepare(&format!(
-        "SELECT COALESCE(category,''), direction, SUM(amount) FROM bank_txn \
-         WHERE posted_at >= ?1 AND posted_at < ?2 AND {} GROUP BY COALESCE(category,''), direction",
-        crate::bank_flags::counted("bank_txn"))
-    ).map_err(|e| e.to_string())?;
-    let rows: Vec<(String, String, f64)> = stmt.query_map([&lo, &hi], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    // R-657: money booked to a deal counts by its booking (`pnl_rows`), the same rows the tax figure reads.
+    let rows = pnl_rows(&conn, &lo, &hi).map_err(|e| e.to_string())?;
     let txn_count: u32 = conn.query_row(
         &format!("SELECT COUNT(*) FROM bank_txn WHERE posted_at >= ?1 AND posted_at < ?2 AND {}", crate::bank_flags::counted("bank_txn")),
         [&lo, &hi], |r| r.get(0),
@@ -2004,6 +2034,54 @@ mod pnl_tests {
         let r = pnl_rollup(&rows);
         assert_eq!(r.uncategorized_net, -42.0);
         assert_eq!(r.net_income, 0.0, "an unrecognised category must never be silently folded into a real P&L group");
+    }
+
+    // R-657: a buyer or supplier wire the bank called a transfer was left out of net income even once booked to a
+    // deal, so the tax figure ran low. The booked part now counts by its booking.
+    #[test]
+    fn money_booked_to_a_deal_counts_by_its_booking_when_the_bank_called_it_a_transfer() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("
+            CREATE TABLE bank_txn (id TEXT, category TEXT, direction TEXT, amount REAL, posted_at TEXT, raw_json TEXT);
+            CREATE TABLE bank_allocation (id TEXT, bank_txn_id TEXT, deal_flow_id TEXT, role TEXT, amount REAL);
+            INSERT INTO bank_txn VALUES ('buyer','internal_transfer','in',10000,'2026-03-02','');
+            INSERT INTO bank_allocation VALUES ('a1','buyer','d1','buyer_payment',10000);
+            INSERT INTO bank_txn VALUES ('supplier','internal_transfer','out',7000,'2026-03-03','');
+            INSERT INTO bank_allocation VALUES ('a2','supplier','d1','supplier_payment',7000);
+            INSERT INTO bank_txn VALUES ('cash','cash_in','in',1200,'2026-04-01','{}');
+            INSERT INTO bank_allocation VALUES ('a3','cash','d2','buyer_payment',1200);
+            INSERT INTO bank_txn VALUES ('refund','','out',300,'2026-04-05',NULL);
+            INSERT INTO bank_allocation VALUES ('a4','refund','d1','refund_out',300);
+            INSERT INTO bank_txn VALUES ('meal','meals','out',100,'2026-05-01','');
+            INSERT INTO bank_txn VALUES ('savings','internal_transfer','out',2000,'2026-05-02','');
+            -- a category a person chose stays the row's whole story, booked or not
+            INSERT INTO bank_txn VALUES ('chosen','commissions','out',500,'2026-05-03','');
+            INSERT INTO bank_allocation VALUES ('a5','chosen','d1','supplier_payment',500);
+            -- only the booked part of a row moves
+            INSERT INTO bank_txn VALUES ('split','internal_transfer','in',5000,'2026-06-01','');
+            INSERT INTO bank_allocation VALUES ('a6','split','d3','buyer_payment',3000);
+            -- an adjustment keeps the row's category
+            INSERT INTO bank_txn VALUES ('adj','internal_transfer','out',50,'2026-06-02','');
+            INSERT INTO bank_allocation VALUES ('a7','adj','d3','adjustment',50);
+            -- withdrawn by the bank: not counted at all
+            INSERT INTO bank_txn VALUES ('gone','internal_transfer','in',9999,'2026-06-03','{\"rtr\":\"2026-06-04\"}');
+            INSERT INTO bank_allocation VALUES ('a8','gone','d3','buyer_payment',9999);
+            -- last year
+            INSERT INTO bank_txn VALUES ('old','internal_transfer','in',4000,'2025-12-31','');
+            INSERT INTO bank_allocation VALUES ('a9','old','d4','buyer_payment',4000);
+        ").unwrap();
+        let (net, paid) = year_tax_base(&c, 2026);
+        // 10000 + 1200 + 3000 sales, less the 300 refund, 7000 cost, the 100 meal and the 500 commissions.
+        assert_eq!(net, 6300.0, "booked deal money is income and cost, not a transfer");
+        assert_eq!(paid, 0.0);
+        let rows = pnl_rows(&c, "2026-01-01", "2027-01-01").unwrap();
+        let r = pnl_rollup(&rows);
+        // Left in transfers: the savings move (-2000), the unbooked part of the split (+2000), the adjustment (-50).
+        assert_eq!(r.transfers_net, -50.0);
+        let whole_year = 10000.0 - 7000.0 + 1200.0 - 300.0 - 100.0 - 2000.0 - 500.0 + 5000.0 - 50.0;
+        assert_eq!(r.net_income + r.tax_passthrough_net + r.transfers_net + r.uncategorized_net, whole_year,
+                   "the report still reconciles to every counted row");
+        assert!(!rows.iter().any(|(cat, _, _)| cat.is_empty()), "a fully booked row leaves no empty line behind");
     }
 }
 
