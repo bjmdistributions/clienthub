@@ -97,6 +97,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Ask Apple first whether it will notarize, before the 30-minute build. v0.16.246 and
+      # v0.16.247 failed four times at the very end with "HTTP status code: 403. A required
+      # agreement is missing or has expired" (a new Apple developer agreement waiting for the
+      # account holder), and the step log needs a GitHub sign-in to read. This answers in
+      # seconds and puts Apple's answer in an annotation, which the public API shows to anyone.
+      - name: Check Apple will notarize
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if out=$(xcrun notarytool history --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" 2>&1); then
+            echo "::notice title=Apple notarization::Apple accepts notarization for this team."
+          else
+            msg=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/%/%25/g' | cut -c1-700)
+            echo "::error title=Apple refused notarization::$msg"
+            exit 1
+          fi
+
       - name: Install Rust (with universal target on macOS)
         uses: dtolnay/rust-toolchain@stable
         with:
