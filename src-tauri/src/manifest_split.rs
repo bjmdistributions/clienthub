@@ -5319,6 +5319,75 @@ pub fn export(path: &str, answers: &HashMap<String, String>, edits: &SplitEdits,
     Ok(out)
 }
 
+// ── R-653: the spreadsheet view ─────────────────────────────────────────────
+
+/// One page of a manifest as the text of its cells, row by row, as the file has it.
+#[derive(Debug, Clone, Serialize)]
+pub struct GridSheet {
+    pub name: String,
+    pub rows: Vec<Vec<String>>,
+}
+
+/// Rows a page may hand the screen. A manifest is a few thousand lines; past this it is not one.
+const GRID_MAX_ROWS: usize = 50_000;
+
+/// R-653: every page of a manifest as plain cells, for the spreadsheet view. Nothing is worked out
+/// here: which column is the name, the quantity, the brand or the price is Jack's click on the
+/// screen, and the totals are added up there. A workbook gives each visible sheet with anything on
+/// it; a CSV, TSV or web-page table gives one page; a PDF gives the lines its text reads as.
+pub fn grid(path: &str) -> Result<Vec<GridSheet>> {
+    let ext = manifest::extension(path);
+    let stem = Path::new(path).file_stem().and_then(|f| f.to_str()).unwrap_or("manifest").to_string();
+    let filled = |rows: &Vec<Vec<String>>| rows.iter().any(|r| r.iter().any(|c| !c.trim().is_empty()));
+    let mut out: Vec<GridSheet> = Vec::new();
+    if ext == "pdf" {
+        let text = pdf_extract::extract_text(path).context("read the text out of that PDF")?;
+        let rows = manifest::pdf_rows(&text);
+        if !filled(&rows) {
+            bail!("This PDF has no lines with text to read. It may be a scan or a photo. Send the spreadsheet version.");
+        }
+        out.push(GridSheet { name: stem, rows });
+    } else if sniff_kind(path) == "excel" {
+        use calamine::Reader;
+        let bytes = std::fs::read(path).context("open the file")?;
+        let mut wb = calamine::open_workbook_auto_from_rs(std::io::Cursor::new(bytes)).map_err(|e| anyhow::anyhow!("Couldn't open the spreadsheet: {}", e))?;
+        let hidden = manifest_images::hidden_sheets(path);
+        for name in wb.sheet_names().to_vec() {
+            if hidden.contains(&name) {
+                continue;
+            }
+            let Ok(range) = wb.worksheet_range(&name) else { continue };
+            let rows: Vec<Vec<String>> = range.rows().map(|r| r.iter().map(|d| val_from_cell(d).text()).collect()).collect();
+            if filled(&rows) {
+                out.push(GridSheet { name, rows });
+            }
+        }
+    } else {
+        let g = if sniff_kind(path) == "html" {
+            let text = String::from_utf8_lossy(&std::fs::read(path).context("open the file")?).into_owned();
+            manifest::grid_from_html(&text).context("Couldn't find a table in that file.")?
+        } else {
+            manifest::grid_from_delimited(path)?
+        };
+        if filled(&g.rows) {
+            out.push(GridSheet { name: stem, rows: g.rows });
+        }
+    }
+    if out.is_empty() {
+        bail!("Couldn't find any rows in this file.");
+    }
+    for s in out.iter_mut() {
+        // Blank rows at the foot of a sheet are formatting, not lines.
+        while s.rows.last().map_or(false, |r| r.iter().all(|c| c.trim().is_empty())) {
+            s.rows.pop();
+        }
+        if s.rows.len() > GRID_MAX_ROWS {
+            bail!("The page {} has {} rows, past the {} a manifest can have here.", s.name, s.rows.len(), GRID_MAX_ROWS);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6444,5 +6513,18 @@ Mystery thing three,Garden,885911111111,1,10\n";
         ];
         let f = page_facts(&rows);
         assert_eq!((f.units, f.retail, f.price), (Some(3290.0), Some(222338.43), Some(111037.0)));
+    }
+
+    #[test]
+    fn grid_hands_back_the_cells_as_the_file_has_them() {
+        let p = tmp("grid.csv", PRICED_CSV.as_bytes());
+        let g = grid(&p).unwrap();
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].name, "grid");
+        assert_eq!(g[0].rows[0][0], "LOAD 4471 MANIFEST");
+        assert_eq!(g[0].rows[1], vec!["Item Description", "Brand", "Category", "Qty", "Unit Retail", "Unit Cost"]);
+        assert_eq!(g[0].rows[5][1], "Nike, Inc.");
+        assert_eq!(g[0].rows.last().unwrap()[0], "Total");
+        assert!(grid(&tmp("empty.csv", b"\n\n")).is_err());
     }
 }

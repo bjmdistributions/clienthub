@@ -500,6 +500,16 @@ pub async fn find_column_map(signature: String) -> Result<Option<Value>, String>
         .ok())
 }
 
+/// R-653: a manifest's pages as plain cells, for the spreadsheet view. The reader is the shared
+/// `manifest_split::grid`, the server's own file byte for byte.
+#[tauri::command]
+pub async fn manifest_grid(path: String) -> Result<Vec<crate::manifest_split::GridSheet>, String> {
+    tokio::task::spawn_blocking(move || crate::manifest_split::grid(&path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 /// Remember how a header was read. One map per signature: saving again changes it.
 #[tauri::command]
 pub async fn save_column_map(signature: String, name: String, map_json: Value) -> Result<Value, String> {

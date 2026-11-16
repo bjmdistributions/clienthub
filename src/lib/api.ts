@@ -2650,6 +2650,8 @@ export interface SaveManifestRecord {
   options: ManifestReadOptions; totals: { lines: number; units: number; retail: number };
   stated: ManifestStated | null; lines: ManifestLine[]; products: ManifestProduct[];
 }
+/** R-653: one page of a manifest as the text of its cells, row by row (manifest_split::grid). */
+export interface ManifestGridSheet { name: string; rows: string[][] }
 export interface ManifestColumnMapRecord {
   id: string; signature: string; name: string;
   map?: ManifestColumnMap; map_json?: string; created_at: string; updated_at?: string;
@@ -5897,6 +5899,8 @@ export const api = {
     invoke<ManifestAnalysis>("analyze_manifest", { path, options }),
   /** R-640: today's European Central Bank rate, dollars for one unit of `currency`. */
   manifestFxRate: (currency: string) => invoke<{ rate: number; date: string }>("manifest_fx_rate", { currency }),
+  /** R-653: every page of a manifest as the text of its cells, for the spreadsheet view. */
+  manifestGrid: (path: string) => invoke<ManifestGridSheet[]>("manifest_grid", { path }),
   // R-564: saved manifests, rules and remembered column maps.
   saveManifest: (record: SaveManifestRecord) => invoke<SavedManifest>("save_manifest", { record }),
   listManifests: () => invoke<SavedManifest[]>("list_manifests"),

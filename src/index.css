@@ -1322,6 +1322,26 @@ b, strong, h1, h2, h3, h4, h5, h6 { font-weight: 500; }
 .ui-table .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ui-table-sm td { font-size: 13px; padding: 10px 12px; }
 
+/* R-653 Manifest analyzer: the sheet as a spreadsheet. Headings are buttons; a picked column is
+   lightly filled with its pick named under the heading; rows not added up are grey. */
+.mg-scroll { overflow: auto; border-radius: 12px; box-shadow: inset 0 0 0 1px rgb(var(--c-line)); max-height: calc(100vh - 340px); min-height: 240px; }
+.mg-grid { border-collapse: separate; border-spacing: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.mg-grid th { position: sticky; top: 0; z-index: 2; background: rgb(var(--c-surface)); box-shadow: inset 0 -1px 0 rgb(var(--c-line-3)); padding: 0; text-align: left; vertical-align: bottom; }
+.mg-grid td { padding: 6px 12px; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: rgb(var(--c-ink)); box-shadow: inset 0 -1px 0 rgb(var(--c-line)); }
+.mg-grid td.n { text-align: right; }
+.mg-grid td.on { background: rgb(var(--c-surface-2)); }
+.mg-grid tr.off td { color: rgb(var(--c-faint)); }
+.mg-grid tbody tr:hover td { background: rgb(var(--c-surface-3)); }
+.mg-grid .mg-rn { position: sticky; left: 0; z-index: 1; width: 1%; min-width: 44px; padding: 6px 10px; text-align: right; font-size: 11.5px; color: rgb(var(--c-faint)); background: rgb(var(--c-surface)); }
+.mg-grid th.mg-rn { z-index: 3; }
+.mg-head { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-width: 96px; padding: 8px 12px; border: 0; background: transparent; font-family: inherit; text-align: left; cursor: pointer; transition: background-color .13s var(--ease); }
+.mg-head:hover { background: rgb(var(--c-surface-2)); }
+.mg-letter { font-size: 11px; color: rgb(var(--c-faint)); }
+.mg-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: rgb(var(--c-muted)); }
+.mg-grid th.on { background: rgb(var(--c-surface-2)); }
+.mg-grid th.on .mg-title { color: rgb(var(--c-ink)); }
+.mg-tag { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; background: rgb(var(--c-ink)); color: rgb(var(--c-surface)); font-size: 11.5px; font-weight: 500; }
+
 /* Settings-style rows (DesktopSettings): title with a grey sub line on the left, the control on the
    right, a hairline between rows. Components: Section and Row in components/ui/Section.tsx. */
 .ui-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; min-height: 56px; padding: 10px 0; }

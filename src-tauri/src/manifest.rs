@@ -502,7 +502,7 @@ fn grid_from_excel(path: &str) -> Result<Grid> {
 /// `… description  QTY  UNIT  EXTENDED`, `… description  QTY  PRICE`, or just
 /// `… description  PRICE` — so the trailing numeric run is peeled off the end and
 /// read by its shape. Returns synthetic description/quantity/price rows.
-fn pdf_rows(text: &str) -> Vec<Vec<String>> {
+pub(crate) fn pdf_rows(text: &str) -> Vec<Vec<String>> {
     let mut out: Vec<Vec<String>> = Vec::new();
     for line in text.lines() {
         let line = line.trim();

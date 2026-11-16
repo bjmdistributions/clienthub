@@ -1176,6 +1176,7 @@ fn main() {
             manifest_store::delete_manifest_rule,
             manifest_store::find_column_map,
             manifest_store::save_column_map,
+            manifest_store::manifest_grid,
             // Lot engine (R-200): a warehouse sheet becomes priced, pickable lots.
             lot_store::import_lot_sheet,
             lot_store::list_lot_sheets,
