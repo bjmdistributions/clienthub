@@ -1152,6 +1152,47 @@ export interface BankBalance {
   /** The books check: how far the ledger is from the bank on this account; null when it is not checked. */
   drift: number | null;
   ledger_rows: number;
+  /** R-659: a card's credit limit, when the bank gives one. */
+  limit?: number | null;
+  /** R-659: the bank link the account came through (keys `bankBranding`). */
+  item?: string;
+}
+
+/** R-659: a bank's logo (base64 PNG) and brand colour (#rrggbb) from Plaid, either may be missing. */
+export interface BankBrand { logo: string | null; color: string | null }
+
+/** R-660: a personal account, with its balance from the bank's last pull. */
+export interface PersonalAccount {
+  account_key: string;
+  label: string;
+  institution: string;
+  type: string;
+  balance: number | null;
+  available: number | null;
+  credit_limit: number | null;
+  balance_at: string;
+}
+/** R-660: one personal transaction. `category` is Plaid's spending group (FOOD_AND_DRINK and so on). */
+export interface PersonalTxn {
+  id: string;
+  account_key: string;
+  account: string;
+  posted_at: string;
+  amount: number;
+  direction: "in" | "out" | string;
+  description: string;
+  merchant: string;
+  category: string;
+  pending: boolean;
+}
+/** R-660: an account that could be made personal; `rows` is how many business rows carry its name. */
+export interface PersonalCandidate {
+  account_key: string;
+  label: string;
+  institution: string;
+  type: string;
+  balance: number | null;
+  rows: number;
 }
 
 /** R-617: the tax set-aside month by month, on the deals that closed (GET /api/payouts/tax-months). */
@@ -4768,6 +4809,13 @@ export const api = {
   acceptBankFigures: (account: string) => invoke<ReconAccount[]>("accept_bank_figures", { account }),
   /** R-618: every connected account with its balance and books check. */
   bankBalances: () => invoke<{ accounts: BankBalance[]; last_sync: string | null; reserve_key: string }>("bank_balances"),
+  bankBranding: () => invoke<Record<string, BankBrand>>("bank_branding"),
+  // R-660: personal spending, for the workspace owner only.
+  personalMe: () => invoke<{ owner: boolean; reason?: string }>("personal_me"),
+  personalOverview: () => invoke<{ accounts: PersonalAccount[]; txns: PersonalTxn[]; candidates: PersonalCandidate[] }>("personal_overview"),
+  personalMark: (accountKey: string, label: string, institution: string, kind: string) =>
+    invoke<{ moved: number; not_moved: number; kept: { id: string; posted_at?: string; amount?: number; description?: string }[] }>("personal_mark", { accountKey, label, institution, kind }),
+  personalUnmark: (accountKey: string) => invoke<{ back: number }>("personal_unmark", { accountKey }),
   // R-579: every account, period by period: statement posted, statement net against ledger net, duplicates, withdrawn.
   checkBooks: () => invoke<CheckAccount[]>("check_books"),
   convergeIntegrityItem: (kind: IntegrityItem["kind"], id: string) =>

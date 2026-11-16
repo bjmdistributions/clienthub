@@ -20681,97 +20681,7 @@ pub async fn clear_bank_txns(scope: String, force: bool) -> Result<Value, String
     Ok(json!({ "deleted": deleted, "allocations_removed": alloc_removed, "kept": kept.len() }))
 }
 
-/// R-658: the ledger labels of every account a bank connected on this computer still sends.
-fn connected_account_labels(conn: &rusqlite::Connection) -> std::collections::HashSet<String> {
-    let aliases = account_alias_map();
-    conn.prepare("SELECT accounts_json FROM plaid_items")
-        .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>()))
-        .unwrap_or_default()
-        .iter()
-        .flat_map(|aj| serde_json::from_str::<Vec<Value>>(aj).unwrap_or_default())
-        .map(|a| { let raw = plaid_account_label(&a); aliases.get(&raw).cloned().unwrap_or(raw) })
-        .collect()
-}
 
-/// R-658: every account on the books, for Remove from books in Setup: its name, how many rows, the first and last
-/// date, how many rows are tied to a deal, refund, loan, purchase, expense or bill, and whether a bank connected on
-/// this computer still sends it.
-#[tauri::command]
-pub async fn bank_accounts_on_books() -> Result<Vec<Value>, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let connected = connected_account_labels(&conn);
-    let sql = format!(
-        "SELECT COALESCE(account_id,''), COUNT(*), COALESCE(MIN(posted_at),''), COALESCE(MAX(posted_at),''), \
-                SUM(CASE WHEN {BANK_TXN_LINKED_EXPR} THEN 1 ELSE 0 END) \
-           FROM bank_txn GROUP BY COALESCE(account_id,'') ORDER BY 1");
-    let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = st.query_map([], |r| Ok(json!({
-        "label": r.get::<_, String>(0)?, "rows": r.get::<_, i64>(1)?,
-        "first": r.get::<_, String>(2)?, "last": r.get::<_, String>(3)?, "tied": r.get::<_, i64>(4)?,
-    }))).map_err(|e| e.to_string())?;
-    Ok(rows.filter_map(|r| r.ok()).map(|mut v| {
-        let on = v["label"].as_str().is_some_and(|l| connected.contains(l));
-        v["still_connected"] = json!(on);
-        v
-    }).collect())
-}
-
-/// R-658: take one account's rows off the books (Jack: a personal card imported by mistake). A row tied to a deal,
-/// refund, loan, purchase, expense or bill stays and is listed: removing it would orphan that work. Every other row
-/// is backed up in full first (`bank_txn_deleted_backup`, reason `account_removed`; no backup, no delete), then
-/// deleted through the oplog so every device and the server drop it. A category or note on a personal charge goes
-/// with it, which is the point. Admin only. `dry_run` says what would happen and changes nothing.
-#[tauri::command]
-pub async fn remove_bank_account(label: String, dry_run: bool) -> Result<Value, String> {
-    if !crate::employees::session_is_privileged() {
-        return Err("Only an admin can remove an account from the books.".into());
-    }
-    if label.trim().is_empty() { return Err("Pick an account first.".into()); }
-    // As Clean up duplicates does: a booking made on another device that has not reached this one would look
-    // untied here, and the row's tombstone would then erase it everywhere.
-    if crate::netsync::is_enabled() {
-        let synced = async {
-            crate::netsync::push_pending().await?;
-            crate::netsync::pull_apply().await
-        }.await;
-        if let Err(e) = synced {
-            if !dry_run {
-                return Err(format!("Nothing was removed: Ecliptr could not sync with the server first, and removing needs every device's bookings here ({e}). Try again once sync works."));
-            }
-        }
-    }
-    let now = Utc::now().to_rfc3339();
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let sql = format!(
-        "SELECT id, COALESCE(posted_at,''), amount, COALESCE(direction,''), COALESCE(description,''), {BANK_TXN_LINKED_EXPR} \
-           FROM bank_txn WHERE account_id=?1 ORDER BY posted_at");
-    let rows: Vec<(String, String, f64, String, String, bool)> = conn.prepare(&sql)
-        .and_then(|mut st| st.query_map([&label], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get::<_, i64>(5)? != 0)))
-            .map(|it| it.filter_map(|x| x.ok()).collect()))
-        .map_err(|e| e.to_string())?;
-    if rows.is_empty() { return Err("Nothing was removed: no transactions are on the books under that account.".into()); }
-    let kept: Vec<Value> = rows.iter().filter(|r| r.5)
-        .map(|(id, at, amt, dir, desc, _)| json!({ "id": id, "posted_at": at, "amount": amt, "direction": dir, "description": desc }))
-        .collect();
-    let still_connected = connected_account_labels(&conn).contains(&label);
-    if dry_run {
-        return Ok(json!({ "label": label, "rows": rows.len(), "removable": rows.len() - kept.len(), "kept": kept, "still_connected": still_connected }));
-    }
-    let (mut removed, mut not_removed) = (0i64, 0i64);
-    for (id, ..) in rows.iter().filter(|r| !r.5) {
-        // Re-checked one by one; fails safe (a query error counts as tied).
-        if bank_txn_is_linked(&conn, id) { not_removed += 1; continue; }
-        let Ok(backup) = conn.query_row(BANK_TXN_BACKUP_SQL, [id], |r| r.get::<_, String>(0)) else { not_removed += 1; continue };
-        if conn.execute(
-            "INSERT OR REPLACE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) VALUES (?1,?2,'','account_removed',?3)",
-            rusqlite::params![id, backup, now]).is_err() { not_removed += 1; continue; }
-        // Oplog first: a row deleted here but not recorded would come back on the next pull.
-        if sync::record_delete("bank_txn", id).is_err() { not_removed += 1; continue; }
-        if conn.execute("DELETE FROM bank_txn WHERE id=?1", [id]).unwrap_or(0) > 0 { removed += 1; }
-    }
-    if removed > 0 { crate::netsync::push_now(); }
-    Ok(json!({ "label": label, "removed": removed, "not_removed": not_removed, "kept": kept, "still_connected": still_connected }))
-}
 
 /// Referenced/booked: broader than `bank_txn_is_finished` (reviewed + allocation) — also
 /// checks refunds/loan/cash_purchase/business_expense so a loan- or refund-linked row is
@@ -20806,7 +20716,7 @@ fn bank_txn_is_referenced(conn: &rusqlite::Connection, id: &str) -> bool {
 
 /// Full-fidelity recovery copy of a bank row, allocations inline. Lifted out of the
 /// `removed` handler so the settle path and the retraction path cannot drift apart.
-const BANK_TXN_BACKUP_SQL: &str =
+pub(crate) const BANK_TXN_BACKUP_SQL: &str =
     "SELECT json_object('id',id,'org_id',org_id,'account_id',account_id,'posted_at',posted_at,\
         'amount',amount,'direction',direction,'description',description,'memo_raw',memo_raw,\
         'category',category,'counterparty_name',counterparty_name,\
@@ -21360,7 +21270,7 @@ const BANK_TXN_LINKED_EXPR: &str =
 
 /// Linked to a deal, refund, loan, cash purchase or expense. Fails SAFE (true) on any error,
 /// including the row having gone.
-fn bank_txn_is_linked(conn: &rusqlite::Connection, id: &str) -> bool {
+pub(crate) fn bank_txn_is_linked(conn: &rusqlite::Connection, id: &str) -> bool {
     conn.query_row(&format!("SELECT {BANK_TXN_LINKED_EXPR} FROM bank_txn WHERE id=?1"), [id], |r| r.get::<_, i64>(0))
         .map(|v| v != 0)
         .unwrap_or(true)
@@ -21780,13 +21690,13 @@ fn plaid_decline(id: &str, label: &str, date: &str, amount: f64, direction: &str
     }
 }
 
-fn plaid_txn_id(transaction_id: &str) -> String {
+pub(crate) fn plaid_txn_id(transaction_id: &str) -> String {
     let clean: String = transaction_id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     format!("btpl_{}", clean)
 }
 
 /// Map Plaid's personal_finance_category.primary to our coarse category vocabulary.
-fn plaid_category(pfc: &str, direction: &str) -> String {
+pub(crate) fn plaid_category(pfc: &str, direction: &str) -> String {
     let p = pfc.to_uppercase();
     if p.contains("INCOME") { "receipt" }
     else if p.contains("TRANSFER") { "internal_transfer" }
@@ -22004,16 +21914,26 @@ pub async fn plaid_sync() -> Result<Value, String> {
     let mut items = items;
     let mut accounts_before: std::collections::HashMap<String, Vec<Value>> = Default::default();
     let mut accounts_now: std::collections::HashMap<String, Vec<Value>> = Default::default();
-    for (pk, access, _, accounts_json, _, _) in items.iter_mut() {
+    for (pk, access, _, accounts_json, _, institution) in items.iter_mut() {
         let Ok(acc) = crate::plaid::accounts_get(access.as_str()).await else { continue };
         let Some(list) = acc.get("accounts").and_then(|l| l.as_array()).cloned() else { continue };
         accounts_before.insert(pk.clone(), serde_json::from_str(accounts_json).unwrap_or_default());
         *accounts_json = Value::Array(list.clone()).to_string();
         if let Ok(conn) = pool().get() {
             let _ = conn.execute("UPDATE plaid_items SET accounts_json=?1 WHERE id=?2", rusqlite::params![accounts_json.as_str(), pk.as_str()]);
+            // R-660: a personal account's balance goes to its Personal row, never to a business balance.
+            crate::personal::refresh_balances(&conn, institution.as_str(), &list, &Utc::now().to_rfc3339());
         }
         accounts_now.insert(pk.clone(), list);
     }
+    // R-660: the accounts the owner made personal on this device (none on anyone else's), and the owner's key. Their
+    // transactions go to Personal and never into the books.
+    let (personal_accounts, personal_keys, personal_key): (std::collections::HashSet<String>, std::collections::HashSet<String>, Option<String>) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let marks = crate::personal::marks(&conn);
+        (marks.iter().map(|m| m.account_key.clone()).collect(), marks.iter().map(|m| m.key.clone()).collect(), marks.first().map(|m| m.key.clone()))
+    };
+    let mut personal_stored = 0i64;
     // R-656: and give rows an earlier pull labelled with a bare Plaid account id their account's name, so the
     // duplicate guard and Clean up duplicates see them as the account they are.
     {
@@ -22210,6 +22130,14 @@ pub async fn plaid_sync() -> Result<Value, String> {
             }
             aid.to_string()
         };
+        // R-660: this bank's personal accounts, by Plaid account id: (account key, label).
+        let personal_of: std::collections::HashMap<String, (String, String)> = accts.iter()
+            .filter_map(|a| {
+                let k = crate::bank_feed::account_key(&institution, a);
+                if !personal_accounts.contains(&k) { return None; }
+                Some((a.get("account_id").and_then(|v| v.as_str())?.to_string(), (k, plaid_account_label(a))))
+            })
+            .collect();
         let mut pages = 0;
         // R-518: Plaid's rule for TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION is to restart the whole pagination
         // from the cursor it began with. The pages already applied replay harmlessly (a held row is found by id).
@@ -22302,6 +22230,14 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let label = aliases.get(&raw_label).cloned().unwrap_or(raw_label);
                     // R-590: another computer feeds this account.
                     if standby_account(t.get("account_id").and_then(|v| v.as_str()).unwrap_or("")) { standby += 1; continue; }
+                    // R-660: a personal account's transaction goes to Personal, never into the books.
+                    if let (Some(pk), Some((ak, pl))) = (personal_key.as_deref(), personal_of.get(t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""))) {
+                        match crate::personal::upsert_from_plaid(&conn, pk, ak, pl, t, &now) {
+                            Ok(()) => personal_stored += 1,
+                            Err(e) => tracing::warn!("plaid_sync: a personal transaction was not stored: {e}"),
+                        }
+                        continue;
+                    }
                     // Every label on the books that is this same account (R-287).
                     let same_account: Vec<String> = same_account_cache.entry(label.clone()).or_insert_with(|| {
                         let mut v: Vec<String> = known_labels.iter()
@@ -22633,6 +22569,16 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let tid = t.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
                     if tid.is_empty() { skipped_no_id.push(format!("change: {}", payload_label(t))); continue; }
                     let id = plaid_txn_id(tid);
+                    // R-660: a change to a personal account's transaction changes its Personal row.
+                    let acct_of_t = t.get("account_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if let (Some(pk), Some((ak, pl))) = (personal_key.as_deref(), personal_of.get(acct_of_t)) {
+                        if !standby_account(acct_of_t) {
+                            if let Err(e) = crate::personal::upsert_from_plaid(&conn, pk, ak, pl, t, &now) {
+                                tracing::warn!("plaid_sync: a personal transaction's change was not stored: {e}");
+                            }
+                        }
+                        continue;
+                    }
                     // Only amend a row we actually hold. An unknown id here means we
                     // never imported it (or it arrived under a different link), and the
                     // `added` path is what owns creation.
@@ -22761,6 +22707,8 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let tid = r.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
                     if tid.is_empty() { skipped_no_id.push("retraction: no id".to_string()); continue; }
                     let id = plaid_txn_id(tid);
+                    // R-660: the bank withdrew a personal transaction: its Personal row goes.
+                    if !personal_keys.is_empty() && crate::personal::remove_from_plaid(&conn, &personal_keys, tid) { continue; }
                     // Nothing to retract. The settle above already retired it in this page,
                     // an earlier page/sync did, or this device never held it — with one
                     // account linked on two devices only ONE copy of each real transaction
@@ -23090,6 +23038,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         "held_reference_collision": held_reference_collision, // same reference as a BOOKED row — held, not imported
         "declined": declined,                         // R-586: kept on the Not imported list
         "standby": standby,                           // R-590: left to the computer that feeds the account
+        "personal": personal_stored,                  // R-660: stored as personal, never in the books
         "preparing": preparing, "results": results,
     }))
 }
@@ -23338,6 +23287,8 @@ async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>
     let mut errors = Vec::new();
     let mut seen_keys: std::collections::HashSet<String> = Default::default();
     let mut live: std::collections::HashSet<String> = Default::default();
+    // R-660: Check against bank checks the books, and a personal account is not on them.
+    let personal = pool().get().map(|c| crate::personal::account_keys(&c)).unwrap_or_default();
     for (access, accounts_json, env, institution) in items {
         let accts: Vec<Value> = serde_json::from_str(&accounts_json).unwrap_or_default();
         // Plaid account id -> ledger label, for the accounts no newer connection already covers.
@@ -23349,6 +23300,7 @@ async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>
             let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
             // R-590: another computer feeds it (`fed` holds the Plaid account ids of the accounts this computer feeds).
             if !fed.contains(a.get("account_id").and_then(|v| v.as_str()).unwrap_or("")) { continue; }
+            if crate::personal::is_personal(&personal, &institution, a) { continue; }
             let key = plaid_account_key(a);
             if !seen_keys.insert(key.clone()) { continue; }
             item_keys.push(key);
@@ -23730,7 +23682,7 @@ fn plaid_account_brief(a: &Value) -> Value {
 }
 
 /// An account's ledger label, the way `plaid_sync` names its rows: "Name ··1234", or the name alone.
-fn plaid_account_label(a: &Value) -> String {
+pub(crate) fn plaid_account_label(a: &Value) -> String {
     let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
     if mask.is_empty() { name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", name, mask) }
@@ -23969,7 +23921,7 @@ fn publish_balance_and_health() {
                 });
             }
         }
-        if let Some(o) = a.as_object_mut() { o.remove("key"); o.remove("label"); }
+        if let Some(o) = a.as_object_mut() { o.remove("key"); o.remove("label"); o.remove("item"); }
         a
     }).collect());
     drop(conn);
@@ -24155,10 +24107,12 @@ fn plaid_balances_split(conn: &rusqlite::Connection) -> (f64, f64, bool, f64, bo
     let mut reserve_parked = 0.0;
     let mut reserve_found = false;
     let reserve_key = reserve_account_key(conn);
-    let mut stmt = match conn.prepare("SELECT accounts_json FROM plaid_items") {
+    // R-660: a personal account is no business money.
+    let personal = crate::personal::account_keys(conn);
+    let mut stmt = match conn.prepare("SELECT COALESCE(institution,''), accounts_json FROM plaid_items") {
         Ok(s) => s, Err(_) => return (0.0, 0.0, false, 0.0, false),
     };
-    let rows = match stmt.query_map([], |r| r.get::<_, String>(0)) {
+    let rows = match stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
         Ok(r) => r, Err(_) => return (0.0, 0.0, false, 0.0, false),
     };
     // One physical account can appear under SEVERAL plaid_items — re-linking a bank
@@ -24168,7 +24122,7 @@ fn plaid_balances_split(conn: &rusqlite::Connection) -> (f64, f64, bool, f64, bo
     // account, while the manual correction field was locked out because a live source
     // was present. Count each real account ONCE.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for aj in rows.filter_map(|r| r.ok()) {
+    for (institution, aj) in rows.filter_map(|r| r.ok()) {
         // `any` must NOT be set from the mere existence of a plaid_items row. When the
         // accounts call fails at link time the row is stored with accounts_json "[]",
         // and flagging that as a live balance source reported a confident $0 — which
@@ -24178,6 +24132,7 @@ fn plaid_balances_split(conn: &rusqlite::Connection) -> (f64, f64, bool, f64, bo
         for a in &accts {
             let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
             if kind != "credit" && kind != "depository" { continue; }
+            if crate::personal::is_personal(&personal, &institution, a) { continue; }
             let key = plaid_account_key(a);
             let is_reserve = !reserve_key.is_empty() && key == reserve_key;
             if !seen.insert(key) { continue; } // already counted through another item
@@ -24209,10 +24164,12 @@ fn plaid_reserve_candidates(conn: &rusqlite::Connection) -> Vec<Value> {
         Ok(r) => r, Err(_) => return out,
     };
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let personal = crate::personal::account_keys(conn); // R-660
     for (institution, aj) in rows.filter_map(|r| r.ok()) {
         let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
         for a in &accts {
             if a.get("type").and_then(|v| v.as_str()).unwrap_or("") != "depository" { continue; }
+            if crate::personal::is_personal(&personal, &institution, a) { continue; }
             let key = plaid_account_key(a);
             if !seen.insert(key.clone()) { continue; }
             out.push(json!({
@@ -24243,15 +24200,17 @@ pub(crate) fn bank_balances_list(conn: &rusqlite::Connection) -> Vec<Value> {
         .unwrap_or_default();
     let mut out: Vec<Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let rows: Vec<(String, String)> = conn
-        .prepare("SELECT COALESCE(institution,''), accounts_json FROM plaid_items ORDER BY created_at")
-        .and_then(|mut st| st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+    let rows: Vec<(String, String, String)> = conn
+        .prepare("SELECT id, COALESCE(institution,''), accounts_json FROM plaid_items ORDER BY created_at")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
             .map(|it| it.filter_map(|x| x.ok()).collect()))
         .unwrap_or_default();
     let r2 = |x: f64| (x * 100.0).round() / 100.0;
-    for (institution, aj) in rows {
+    let personal = crate::personal::account_keys(conn); // R-660: shown in Personal, never here
+    for (item, institution, aj) in rows {
         let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
         for a in &accts {
+            if crate::personal::is_personal(&personal, &institution, a) { continue; }
             let key = plaid_account_key(a);
             if !seen.insert(key.clone()) { continue; }
             let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -24273,10 +24232,49 @@ pub(crate) fn bank_balances_list(conn: &rusqlite::Connection) -> Vec<Value> {
                 "label": label,
                 "drift": check.map(|c| c.0),
                 "ledger_rows": check.map(|c| c.1).unwrap_or(0),
+                // R-659: the card's limit, and the bank link the account came through (for its logo and colour).
+                "limit": bal.and_then(|b| b.get("limit")).and_then(|v| v.as_f64()).map(r2),
+                "item": item,
             }));
         }
     }
     out
+}
+
+/// R-659: each connected bank's logo and colour from Plaid, by bank link, kept on this computer (setting
+/// `plaid_branding`, never synced) and asked again after a week. A bank Plaid has no logo or colour for gets none, and
+/// the Accounts screen draws its initials.
+#[tauri::command]
+pub async fn bank_branding() -> Result<Value, String> {
+    let (items, mut kept): (Vec<(String, String, String)>, Value) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let items = conn.prepare("SELECT id, access_token, COALESCE(env,'') FROM plaid_items")
+            .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        let kept = conn.query_row("SELECT value FROM settings WHERE key='plaid_branding'", [], |r| r.get::<_, String>(0)).ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok()).filter(|v| v.is_object()).unwrap_or_else(|| json!({}));
+        (items, kept)
+    };
+    let week_ago = (Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let mut changed = false;
+    for (pk, access, env) in &items {
+        let fresh = kept.get(pk).and_then(|e| e.get("at")).and_then(|v| v.as_str()).is_some_and(|at| at > week_ago.as_str());
+        if fresh { continue; }
+        let env = if env.is_empty() { crate::plaid::get_env() } else { env.clone() };
+        if let Ok(b) = crate::plaid::institution_branding(access, &env).await {
+            kept[pk.as_str()] = json!({ "logo": b.get("logo").cloned().unwrap_or(Value::Null), "color": b.get("color").cloned().unwrap_or(Value::Null), "at": Utc::now().to_rfc3339() });
+            changed = true;
+        }
+    }
+    if changed {
+        if let Ok(conn) = pool().get() {
+            let _ = conn.execute("INSERT INTO settings (key,value) VALUES ('plaid_branding',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [kept.to_string()]);
+        }
+    }
+    let out: serde_json::Map<String, Value> = items.iter()
+        .filter_map(|(pk, _, _)| kept.get(pk).map(|e| (pk.clone(), json!({ "logo": e.get("logo").cloned().unwrap_or(Value::Null), "color": e.get("color").cloned().unwrap_or(Value::Null) }))))
+        .collect();
+    Ok(Value::Object(out))
 }
 
 /// R-618: Balances and tax's accounts, with when the banks were last pulled.
@@ -28814,13 +28812,15 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
     // through the same alias map — otherwise a renamed/re-masked account compares its
     // balance against an empty ledger and reports the whole balance as drift.
     let mut bank: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT accounts_json FROM plaid_items") {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for aj in rows.filter_map(|r| r.ok()) {
+    let personal = crate::personal::account_keys(conn); // R-660: personal money is not on the books
+    if let Ok(mut stmt) = conn.prepare("SELECT COALESCE(institution,''), accounts_json FROM plaid_items") {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+            for (institution, aj) in rows.filter_map(|r| r.ok()) {
                 let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
                 for a in &accts {
                     let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     if kind != "depository" && kind != "credit" { continue; }
+                    if crate::personal::is_personal(&personal, &institution, a) { continue; }
                     let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
                     let raw = if mask.is_empty() { name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", name, mask) };
@@ -30235,8 +30235,8 @@ mod r652_dropped_account_tests {
 }
 
 #[cfg(test)]
-mod r656_r658_account_tests {
-    use super::{bank_accounts_on_books, relabel_bare_plaid_ids, remove_bank_account};
+mod r656_account_tests {
+    use super::relabel_bare_plaid_ids;
     use crate::db::pool;
 
     fn add(c: &rusqlite::Connection, id: &str, account: &str, extra: &str) {
@@ -30265,42 +30265,6 @@ mod r656_r658_account_tests {
         c.execute("DELETE FROM bank_txn WHERE id LIKE 'r656_%'", []).unwrap();
     }
 
-    // R-658: Jack imported a personal card and needs it off the books.
-    #[tokio::test]
-    async fn an_account_comes_off_the_books_but_tied_rows_stay() {
-        let _db = crate::db::init_test_store();
-        {
-            let c = pool().get().unwrap();
-            add(&c, "r658_plain", "Personal Card ··9999", "");
-            add(&c, "r658_booked", "Personal Card ··9999", "");
-            c.execute("UPDATE bank_txn SET category='meals', reviewed=1, note='lunch' WHERE id='r658_booked'", []).unwrap();
-            add(&c, "r658_tied", "Personal Card ··9999", "loan");
-            add(&c, "r658_business", "Business Checking ··1111", "");
-        }
-        let list = bank_accounts_on_books().await.unwrap();
-        let card = list.iter().find(|a| a["label"] == "Personal Card ··9999").unwrap();
-        assert_eq!((card["rows"].as_i64(), card["tied"].as_i64()), (Some(3), Some(1)));
-
-        let preview = remove_bank_account("Personal Card ··9999".into(), true).await.unwrap();
-        assert_eq!((preview["rows"].as_u64(), preview["removable"].as_u64()), (Some(3), Some(2)));
-        assert_eq!(pool().get().unwrap().query_row("SELECT COUNT(*) FROM bank_txn WHERE id LIKE 'r658_%'", [], |r| r.get::<_, i64>(0)).unwrap(), 4,
-            "a preview changes nothing");
-
-        let done = remove_bank_account("Personal Card ··9999".into(), false).await.unwrap();
-        assert_eq!(done["removed"].as_i64(), Some(2));
-        assert_eq!(done["kept"].as_array().unwrap().len(), 1);
-        let c = pool().get().unwrap();
-        let left: Vec<String> = c.prepare("SELECT id FROM bank_txn WHERE id LIKE 'r658_%' ORDER BY id").unwrap()
-            .query_map([], |r| r.get(0)).unwrap().filter_map(|x| x.ok()).collect();
-        assert_eq!(left, vec!["r658_business".to_string(), "r658_tied".to_string()], "the tied row and the other account stay");
-        let backed: i64 = c.query_row(
-            "SELECT COUNT(*) FROM bank_txn_deleted_backup WHERE reason='account_removed' AND id IN ('r658_plain','r658_booked') \
-               AND json_extract(row_json,'$.account_id')='Personal Card ··9999'", [], |r| r.get(0)).unwrap();
-        assert_eq!(backed, 2, "every removed row was backed up first");
-        assert!(remove_bank_account("Nobody ··0000".into(), true).await.is_err(), "an account with no rows says so");
-        c.execute("DELETE FROM bank_txn WHERE id LIKE 'r658_%'", []).unwrap();
-        c.execute("DELETE FROM bank_txn_deleted_backup WHERE id LIKE 'r658_%'", []).unwrap();
-    }
 }
 
 #[cfg(test)]

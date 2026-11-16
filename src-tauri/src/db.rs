@@ -2855,4 +2855,45 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE warehouse_floors ADD COLUMN cleared_json TEXT DEFAULT '';
         "#,
     ),
+    (
+        129,
+        // R-660: the workspace owner's personal spending, apart from every business table. personal_accounts holds
+        // the accounts the owner marked personal (id = owner key, a dot, then the bank_feed account key), and
+        // personal_txns their transactions (id = owner key, a dot, then pt_ and the Plaid id, or the bank row it
+        // was moved from). Synced (sync.rs ALLOWED_TABLES) but in no SNAPSHOT_TABLES, and the server hands them to
+        // the owner only (clienthub-api routes personal.rs, its schema.sql), which must be deployed first.
+        r#"
+        CREATE TABLE IF NOT EXISTS personal_accounts (
+            id TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL DEFAULT '',
+            label TEXT DEFAULT '',
+            institution TEXT DEFAULT '',
+            type TEXT DEFAULT '',
+            balance REAL,
+            available REAL,
+            credit_limit REAL,
+            balance_at TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE TABLE IF NOT EXISTS personal_txns (
+            id TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL DEFAULT '',
+            account_label TEXT DEFAULT '',
+            posted_at TEXT DEFAULT '',
+            amount REAL NOT NULL DEFAULT 0,
+            direction TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            merchant TEXT DEFAULT '',
+            category TEXT DEFAULT '',
+            pending INTEGER DEFAULT 0,
+            raw_json TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            org_id TEXT NOT NULL DEFAULT 'org_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_personal_txns_date ON personal_txns(posted_at);
+        "#,
+    ),
 ];

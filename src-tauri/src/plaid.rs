@@ -243,6 +243,26 @@ pub async fn create_update_hosted_link(access_token: &str, env: &str) -> Result<
     Ok((token, url))
 }
 
+/// R-659: the bank's logo (a base64 PNG, when Plaid has one) and brand colour ("#rrggbb", when Plaid has one) for
+/// the item behind `access_token`: /item/get names its institution, /institutions/get_by_id with the optional
+/// metadata carries the rest. Neither call is billed.
+pub async fn institution_branding(access_token: &str, env: &str) -> Result<Value> {
+    let fail = |v: &Value, what: &str| anyhow!("Plaid: {}", v.get("error_message").and_then(|m| m.as_str()).unwrap_or(what).to_string());
+    let (ok, item) = post_raw_env("/item/get", json!({ "access_token": access_token }), env).await?;
+    if !ok { return Err(fail(&item, "item/get failed")); }
+    let iid = item.get("item").and_then(|i| i.get("institution_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if iid.is_empty() { return Ok(json!({})); }
+    let body = json!({ "institution_id": iid, "country_codes": ["US"], "options": { "include_optional_metadata": true } });
+    let (ok, inst) = post_raw_env("/institutions/get_by_id", body, env).await?;
+    if !ok { return Err(fail(&inst, "institutions/get_by_id failed")); }
+    let i = inst.get("institution").cloned().unwrap_or(json!({}));
+    Ok(json!({
+        "institution_id": iid,
+        "logo": i.get("logo").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
+        "color": i.get("primary_color").and_then(|v| v.as_str()).filter(|s| s.len() == 7 && s.starts_with('#')),
+    }))
+}
+
 /// Best-effort: tell Plaid to forget an item when the user disconnects a bank.
 pub async fn remove_item(access_token: &str) -> Result<()> {
     let _ = post("/item/remove", json!({ "access_token": access_token })).await;

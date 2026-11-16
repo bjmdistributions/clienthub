@@ -27,6 +27,8 @@ import NearDuplicates from "./NearDuplicates";
 import RetractedRows from "./RetractedRows";
 import MovedBookings from "./MovedBookings";
 import BankHealthStrip from "./BankHealthStrip";
+import AccountsView from "./AccountsView";
+import PersonalView from "./PersonalView";
 import { accountLabel, fixBankConnection } from "../lib/plaidFix";
 import Switch from "./Switch";
 import { Button, Kpi, PageActions, Row, Tabs } from "./ui";
@@ -843,14 +845,17 @@ export default function FinancialsView() {
   // history; Cash holds Free cash + Loans; Setup is every once-in-a-while tool.
   // The chosen surface survives leaving and re-entering the page — losing your
   // place on every visit was one of the audit's standing complaints.
-  const [tab, setTabRaw] = useState<"tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report">(() => {
+  const [tab, setTabRaw] = useState<"tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report" | "accounts" | "personal">(() => {
     const t = localStorage.getItem("fin_tab");
-    return t === "tieout" || t === "ledger" || t === "cash" || t === "check" || t === "setup" || t === "report" ? t : "tobook";
+    return t === "tieout" || t === "ledger" || t === "cash" || t === "check" || t === "setup" || t === "report" || t === "accounts" || t === "personal" ? t : "tobook";
   });
-  const setTab = (v: "tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report") => {
+  const setTab = (v: "tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report" | "accounts" | "personal") => {
     setTabRaw(v);
     localStorage.setItem("fin_tab", v);
   };
+  // R-660: Personal is the workspace owner's only; the server says who that is.
+  const [personalOwner, setPersonalOwner] = useState(false);
+  useEffect(() => { api.personalMe().then((r) => setPersonalOwner(r.owner)).catch(() => setPersonalOwner(false)); }, []);
   // R-579: Check books. Loaded when the tab opens and after any change on the screen.
   const [checkBooks, setCheckBooks] = useState<CheckAccount[] | null>(null);
   const [checkBooksError, setCheckBooksError] = useState("");
@@ -3586,7 +3591,11 @@ export default function FinancialsView() {
             { id: "ledger", label: "Ledger" },
             { id: "check", label: "Check books" },
             { id: "loans", label: "Loans" },
+            // R-659: every account and card with its bank's logo and colour.
+            { id: "accounts", label: "Accounts" },
             { id: "report", label: "Balances and tax" },
+            // R-660: the owner's personal spending, apart from the books.
+            ...(personalOwner ? [{ id: "personal", label: "Personal" }] : []),
             { id: "setup", label: "Setup" },
           ]}
         />
@@ -3612,6 +3621,9 @@ export default function FinancialsView() {
           accounts as the Ledger's category picker; nothing here reads any table
           other than bank_txn, so this figure and the Ledger's totals can never
           silently drift apart. */}
+      {tab === "accounts" && <AccountsView />}
+      {tab === "personal" && personalOwner && <PersonalView />}
+      {tab === "personal" && !personalOwner && <p className="ui-note">Personal spending is only for the workspace owner.</p>}
       {tab === "report" && <BalancesAndTax onCheckBooks={() => setTab("check")} onOpenRow={openLedgerRow} />}
       {tab === "report" && (
         <div className="space-y-6 border-t border-line pt-6">

@@ -4,6 +4,7 @@ mod ai;
 mod bank_declined;
 mod bank_dedup;
 mod bank_feed;
+mod personal;
 mod bank_flags;
 mod carrier_paid;
 mod bank_near_dup;
@@ -1269,8 +1270,11 @@ fn main() {
             commands::plaid_health_dismiss,
             commands::plaid_reconnect_start,
             commands::plaid_reconnect_poll,
-            commands::bank_accounts_on_books,
-            commands::remove_bank_account,
+            commands::bank_branding,
+            personal::personal_me,
+            personal::personal_overview,
+            personal::personal_mark,
+            personal::personal_unmark,
             list_bank_txns,
             list_tie_out_backlog,
             set_tie_out_hidden,
