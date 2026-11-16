@@ -27,6 +27,7 @@ import NearDuplicates from "./NearDuplicates";
 import RetractedRows from "./RetractedRows";
 import MovedBookings from "./MovedBookings";
 import BankHealthStrip from "./BankHealthStrip";
+import { accountLabel, fixBankConnection } from "../lib/plaidFix";
 import Switch from "./Switch";
 import { Button, Kpi, PageActions, Row, Tabs } from "./ui";
 import { parseAmount } from "../lib/format";
@@ -1089,6 +1090,10 @@ export default function FinancialsView() {
   const [healthVersion, setHealthVersion] = useState(0);
   // R-518: which banks have instant updates on, for Setup's connected-banks list.
   const [bankHealth, setBankHealth] = useState<PlaidHealth | null>(null);
+  // R-652: the bank whose Fix connection is open in the browser, and a stop for its wait when this screen closes.
+  const [fixingBank, setFixingBank] = useState<string | null>(null);
+  const fixCancelRef = useRef(false);
+  useEffect(() => () => { fixCancelRef.current = true; }, []);
   // R-518: open Ecliptr when this computer starts, so a reboot does not stop the bank feed. null = not known.
   const [autostart, setAutostart] = useState<boolean | null>(null);
   useEffect(() => { api.autostartGet().then(setAutostart).catch(() => setAutostart(null)); }, []);
@@ -1717,9 +1722,24 @@ export default function FinancialsView() {
     finally { setBackupBusy(false); }
   };
 
+  // R-652: sign in to the bank again on the connection already held, and pick its accounts. Not a new connection.
+  const fixBank = async (item: PlaidItem) => {
+    if (fixingBank) return;
+    setFixingBank(item.id);
+    fixCancelRef.current = false;
+    try {
+      if (await fixBankConnection(item.id, item.institution, () => fixCancelRef.current)) {
+        await loadPlaid();
+        setHealthVersion((v) => v + 1);
+        refreshAll(false).catch(() => {});
+      }
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setFixingBank(null); }
+  };
+
   const disconnectBank = async (item: PlaidItem) => {
     if (!confirm(
-      `Disconnect ${item.institution}?\n\nThe live feed from this bank stops. Transactions already imported stay in the list. Nothing is deleted, but to start pulling again you'd have to link the bank from scratch.`
+      `Disconnect ${item.institution}?\n\nThe live feed from this bank stops. Transactions already imported stay in the list. Nothing is deleted, but to start pulling again you'd have to link the bank from scratch, which Plaid counts as a new connection. If it just stopped syncing, use Fix connection instead.`
     )) return;
     try {
       await api.plaidRemoveItem(item.id);
@@ -4321,6 +4341,12 @@ export default function FinancialsView() {
                 <span className="font-medium text-ink-2">pass_good</span>.</>
               )}
             </p>
+            {plaidItems.length > 0 && (
+              <p className="text-[11px] text-ink-2 leading-relaxed">
+                A bank you already connected stopped syncing, or an account is missing? Use Fix connection on that bank
+                below. Connect a bank makes a new connection, which Plaid counts toward your limit.
+              </p>
+            )}
 
             {/* Safety backup — an independent, append-only copy of every bank transaction in
                 a Google Sheet you own, so you always have a readable record outside the app. */}
@@ -4525,7 +4551,28 @@ export default function FinancialsView() {
                           return parts.length ? <> · {parts.join(" · ")}</> : null;
                         })()}
                       </div>
+                      {(() => {
+                        // R-652: what is wrong with this bank, beside its Fix connection.
+                        const h = bankHealth?.banks.find((b) => b.id === it.id);
+                        const dropped = h?.dropped ?? [];
+                        if (!h || (!h.needs_login && dropped.length === 0)) return null;
+                        return (
+                          <div className="text-[11px] text-danger-ink">
+                            {h.needs_login && <>Needs you to sign in to the bank again. </>}
+                            {dropped.length > 0 && <>{dropped.map(accountLabel).join(", ")} stopped coming in.</>}
+                          </div>
+                        );
+                      })()}
                     </div>
+                    <button
+                      onClick={() => fixBank(it)}
+                      disabled={fixingBank !== null}
+                      title="Sign in to this bank again and pick which accounts it shares. Same connection, so Plaid does not count a new one."
+                      className="flex-shrink-0 ui-btn ui-btn-sm disabled:opacity-60"
+                    >
+                      {fixingBank === it.id && <Loader2 size={13} className="animate-spin" />}
+                      Fix connection
+                    </button>
                     <button
                       onClick={() => disconnectBank(it)}
                       className="flex-shrink-0 h-8 px-2.5 rounded-md text-[12px] text-muted hover:text-danger-ink hover:bg-danger-bg transition-colors"

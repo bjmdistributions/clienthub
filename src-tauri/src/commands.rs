@@ -22662,18 +22662,25 @@ pub async fn plaid_sync() -> Result<Value, String> {
         // balance instead of the snapshot from link day (which never updated, so the
         // headline silently drifted every day). Best-effort; a failure leaves the
         // prior balance in place. /accounts/get carries balances.current.
+        // R-652: and which accounts the bank shares now. One that was here and is gone (the bank asked again which
+        // accounts to share, or the person unticked it) used to vanish from the list with nothing said.
+        let mut accounts_seen: Option<Vec<Value>> = None;
         if status != "error" {
             if let Ok(acc) = crate::plaid::accounts_get(&access).await {
                 if let Some(list) = acc.get("accounts") {
                     let conn = pool().get().map_err(|e| e.to_string())?;
                     let _ = conn.execute("UPDATE plaid_items SET accounts_json=?1 WHERE id=?2",
                         rusqlite::params![list.to_string(), item_pk]);
+                    accounts_seen = list.as_array().map(|a| a.iter().map(plaid_account_brief).collect());
                 }
             }
         }
+        let dropped = accounts_seen.as_deref().map(|now_list| plaid_dropped_accounts(&accts, now_list)).unwrap_or_default();
         imported += item_imported;
         amended += item_amended;
         results.push(json!({
+            "accounts_seen": accounts_seen,
+            "dropped": dropped,
             "item": item_pk.clone(),
             "institution": institution,
             "env": item_env,
@@ -23508,9 +23515,54 @@ pub(crate) fn split_plaid_code(s: &str) -> (String, String) {
 }
 
 /// Plaid codes that only a person signing in to the bank again can fix (Plaid's update mode).
+/// R-652: NO_ACCOUNTS and ACCESS_NOT_GRANTED too: the bank shares no account, or not the access asked for, and
+/// update mode with account picking (Fix connection) puts it right on the same connection.
 pub(crate) fn plaid_needs_login(code: &str) -> bool {
     matches!(code, "ITEM_LOGIN_REQUIRED" | "PENDING_EXPIRATION" | "PENDING_DISCONNECT" | "INVALID_CREDENTIALS"
-        | "INVALID_MFA" | "ITEM_LOCKED" | "USER_SETUP_REQUIRED")
+        | "INVALID_MFA" | "ITEM_LOCKED" | "USER_SETUP_REQUIRED" | "NO_ACCOUNTS" | "ACCESS_NOT_GRANTED")
+}
+
+/// R-652: an account as the health list keeps it, name and last four only (no balance, no Plaid id).
+fn plaid_account_brief(a: &Value) -> Value {
+    json!({
+        "name": a.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+        "mask": a.get("mask").and_then(|v| v.as_str()).unwrap_or(""),
+    })
+}
+
+/// One account across pulls: its last four, or its name when the bank sends none. Keyed on the last four so a bank
+/// renaming an account (R-287) is not taken for one that went away.
+fn plaid_account_ident(a: &Value) -> String {
+    let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if !mask.is_empty() { return format!("m:{mask}"); }
+    format!("n:{}", a.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase())
+}
+
+/// R-652: the accounts a bank shared before this pull and no longer does.
+pub(crate) fn plaid_dropped_accounts(before: &[Value], now: &[Value]) -> Vec<Value> {
+    let here: std::collections::HashSet<String> = now.iter().map(plaid_account_ident).collect();
+    let mut out: Vec<Value> = Vec::new();
+    for a in before {
+        let id = plaid_account_ident(a);
+        if id == "n:" || here.contains(&id) || out.iter().any(|o| plaid_account_ident(o) == id) { continue; }
+        out.push(plaid_account_brief(a));
+    }
+    out
+}
+
+/// R-652: a bank's accounts that stopped coming in, after a pull that read its account list. One the bank shares
+/// again leaves the list; a newly gone one joins with when it was first missed; one already listed keeps that time.
+pub(crate) fn plaid_merge_dropped(kept: &[Value], seen: &[Value], gone: &[Value], now: &str) -> Vec<Value> {
+    let here: std::collections::HashSet<String> = seen.iter().map(plaid_account_ident).collect();
+    let mut out: Vec<Value> = kept.iter().filter(|d| !here.contains(&plaid_account_ident(d))).cloned().collect();
+    for g in gone {
+        let id = plaid_account_ident(g);
+        if out.iter().any(|d| plaid_account_ident(d) == id) { continue; }
+        let mut d = plaid_account_brief(g);
+        d["since"] = json!(now);
+        out.push(d);
+    }
+    out
 }
 
 fn plaid_health_load(conn: &rusqlite::Connection) -> Value {
@@ -23541,6 +23593,12 @@ fn record_plaid_pass(results: &[Value], warnings: &[(&str, &Vec<String>)], now: 
             "ok" => { e["last_ok"] = json!(now); e["error"] = json!(""); e["code"] = json!(""); }
             "error" => { e["error"] = r.get("error").cloned().unwrap_or(json!("")); e["code"] = r.get("code").cloned().unwrap_or(json!("")); }
             _ => {}
+        }
+        // R-652: only a pull that read the bank's account list moves the accounts that stopped coming in.
+        if let Some(seen) = r.get("accounts_seen").and_then(|v| v.as_array()) {
+            let kept = e.get("dropped").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let gone = r.get("dropped").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            e["dropped"] = json!(plaid_merge_dropped(&kept, seen, &gone, now));
         }
     }
     let mut list: Vec<Value> = h["warnings"].as_array().cloned().unwrap_or_default();
@@ -23586,6 +23644,7 @@ pub async fn plaid_health() -> Result<Value, String> {
                 "last_try": e.get("last_try").cloned().unwrap_or(Value::Null),
                 "error": e.get("error").and_then(|v| v.as_str()).unwrap_or(""),
                 "code": code, "needs_login": plaid_needs_login(&code),
+                "dropped": e.get("dropped").cloned().unwrap_or(json!([])),
                 "webhook_ok": e.get("webhook_ok").cloned().unwrap_or(Value::Null),
                 "last_ring": e.get("last_ring").cloned().unwrap_or(Value::Null),
             })
@@ -23703,7 +23762,8 @@ pub async fn plaid_sync_if_stale() {
     }
 }
 
-/// R-518: start an update-mode sign-in for one bank whose login stopped working. Returns
+/// R-518: start an update-mode sign-in for one bank whose login stopped working. R-652: or any connected bank
+/// (Fix connection in Setup), with account picking, on the same connection. Returns
 /// { link_token, hosted_link_url }; the screen opens the URL in the browser and polls plaid_reconnect_poll.
 #[tauri::command]
 pub async fn plaid_reconnect_start(id: String) -> Result<Value, String> {
@@ -23732,7 +23792,9 @@ pub async fn plaid_reconnect_poll(link_token: String, id: String) -> Result<Valu
     if let Ok(conn) = pool().get() {
         let mut h = plaid_health_load(&conn);
         let e = &mut h["items"][id.as_str()];
-        if e.is_object() { e["error"] = json!(""); e["code"] = json!(""); }
+        // R-652: the person has just picked which accounts the bank shares, so one still missing was left off on
+        // purpose (or is closed) and is no longer reported as stopped.
+        if e.is_object() { e["error"] = json!(""); e["code"] = json!(""); e["dropped"] = json!([]); }
         plaid_health_save(&conn, &h);
     }
     Ok(json!({ "status": "done" }))
@@ -29860,6 +29922,78 @@ mod r518_bank_health_tests {
         assert!(plaid_health().await.unwrap()["warnings"].as_array().unwrap().is_empty());
         let c = pool().get().unwrap();
         c.execute("DELETE FROM plaid_items WHERE id LIKE 'r518_%'", []).unwrap();
+        c.execute("DELETE FROM settings WHERE key='plaid_health'", []).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod r652_dropped_account_tests {
+    use super::{plaid_dropped_accounts, plaid_health, plaid_merge_dropped, plaid_needs_login, record_plaid_pass};
+    use crate::db::pool;
+    use serde_json::json;
+
+    #[test]
+    fn an_account_the_bank_stopped_sharing_is_named() {
+        let before = vec![
+            json!({ "account_id": "a1", "name": "Checking", "mask": "1111", "balances": { "current": 10.0 } }),
+            json!({ "account_id": "a2", "name": "Savings", "mask": "2222" }),
+            json!({ "account_id": "a3", "name": "Card", "mask": "3333" }),
+        ];
+        // The bank renamed Checking (same last four) and dropped Savings; Card came back under a new Plaid id.
+        let now = vec![
+            json!({ "account_id": "b1", "name": "Business Checking", "mask": "1111" }),
+            json!({ "account_id": "b3", "name": "Card", "mask": "3333" }),
+        ];
+        assert_eq!(plaid_dropped_accounts(&before, &now), vec![json!({ "name": "Savings", "mask": "2222" })],
+            "only Savings went: a rename or a new Plaid id is the same account, and no balance is kept");
+        assert!(plaid_dropped_accounts(&[], &now).is_empty(), "a first pull drops nothing");
+        let no_mask = vec![json!({ "name": "Cash Account", "mask": null })];
+        assert_eq!(plaid_dropped_accounts(&no_mask, &[]), vec![json!({ "name": "Cash Account", "mask": "" })],
+            "an account with no last four is known by its name");
+        assert!(plaid_needs_login("NO_ACCOUNTS") && plaid_needs_login("ACCESS_NOT_GRANTED"));
+    }
+
+    #[test]
+    fn the_list_keeps_its_first_time_and_lets_go_when_the_account_is_back() {
+        let savings = json!({ "name": "Savings", "mask": "2222" });
+        let card = json!({ "name": "Card", "mask": "3333" });
+        let first = plaid_merge_dropped(&[], &[], &[savings.clone()], "2026-11-10T09:00:00Z");
+        assert_eq!(first, vec![json!({ "name": "Savings", "mask": "2222", "since": "2026-11-10T09:00:00Z" })]);
+        // The next pull does not see Savings in the old list any more, so it is not newly gone; it stays listed.
+        let again = plaid_merge_dropped(&first, &[card.clone()], &[], "2026-11-10T09:10:00Z");
+        assert_eq!(again, first, "still missing, first missed time kept");
+        let twice = plaid_merge_dropped(&first, &[], &[savings.clone()], "2026-11-11T09:00:00Z");
+        assert_eq!(twice, first, "listed once, with the first time");
+        let back = plaid_merge_dropped(&first, &[json!({ "name": "Savings (renamed)", "mask": "2222" })], &[], "2026-11-12T09:00:00Z");
+        assert!(back.is_empty(), "shared again, so no longer reported");
+    }
+
+    #[tokio::test]
+    async fn the_health_list_shows_the_accounts_that_stopped() {
+        let _db = crate::db::init_test_store();
+        {
+            let c = pool().get().unwrap();
+            c.execute("DELETE FROM settings WHERE key='plaid_health'", []).unwrap();
+            c.execute("INSERT OR REPLACE INTO plaid_items (id, item_id, access_token, institution, accounts_json, env, created_at) \
+                       VALUES ('r652_a','item_r652','tok_r652','First Bank','[]','sandbox','2026-11-01')", []).unwrap();
+        }
+        let pass = |seen: serde_json::Value, dropped: serde_json::Value| vec![json!({
+            "item": "r652_a", "status": "ok", "accounts_seen": seen, "dropped": dropped })];
+        record_plaid_pass(&pass(json!([{ "name": "Card", "mask": "3333" }]), json!([{ "name": "Savings", "mask": "2222" }])),
+            &[], "2026-11-10T09:00:00Z");
+        // A pull that could not read the account list (an error) leaves the list alone.
+        record_plaid_pass(&[json!({ "item": "r652_a", "status": "error", "error": "Plaid: down", "code": "INSTITUTION_DOWN" })],
+            &[], "2026-11-10T09:10:00Z");
+        let h = plaid_health().await.unwrap();
+        let bank = h["banks"].as_array().unwrap().iter().find(|b| b["id"] == "r652_a").unwrap().clone();
+        assert_eq!(bank["dropped"], json!([{ "name": "Savings", "mask": "2222", "since": "2026-11-10T09:00:00Z" }]));
+        record_plaid_pass(&pass(json!([{ "name": "Card", "mask": "3333" }, { "name": "Savings", "mask": "2222" }]), json!([])),
+            &[], "2026-11-11T09:00:00Z");
+        let h = plaid_health().await.unwrap();
+        let bank = h["banks"].as_array().unwrap().iter().find(|b| b["id"] == "r652_a").unwrap().clone();
+        assert_eq!(bank["dropped"], json!([]), "ticked back on, so gone from the list");
+        let c = pool().get().unwrap();
+        c.execute("DELETE FROM plaid_items WHERE id LIKE 'r652_%'", []).unwrap();
         c.execute("DELETE FROM settings WHERE key='plaid_health'", []).unwrap();
     }
 }

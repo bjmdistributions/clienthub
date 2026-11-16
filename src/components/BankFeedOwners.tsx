@@ -30,7 +30,7 @@ export default function BankFeedOwners({ version }: { version: number }) {
     setBusy(a.key);
     try {
       await api.setBankFeedHere(a.key);
-      toast(`This computer now brings in ${a.label}.`, "success");
+      toast(`This computer now imports ${a.label}.`, "success");
       load();
     } catch (e: any) {
       toast(String(e?.message || e), "error");
@@ -42,18 +42,27 @@ export default function BankFeedOwners({ version }: { version: number }) {
   if (rows.length === 0) return null;
   return (
     <div className="border border-line-2 rounded-lg divide-y divide-line-2 min-w-0">
-      <p className="px-3.5 py-2.5 text-[12px] text-muted leading-relaxed">
-        One computer brings in each account, so no payment arrives twice. Everyone with Financials sees the same feed.
-      </p>
+      {/* R-652: Jack did not understand "Bring it in here". Say what each computer does and when to press it. */}
+      <div className="px-3.5 py-2.5 text-[12px] text-muted leading-relaxed space-y-1">
+        <p>
+          Each of your computers has its own bank link. Only one of them imports each account, so no payment shows up
+          twice; the others get those payments through sync, and everyone with Financials sees the same list.
+        </p>
+        <p>
+          Import on this computer makes this computer the one that imports that account. Use it when the other
+          computer is off or its bank link is broken. If you do nothing, this computer takes over by itself after the
+          other one goes a day without pulling the account.
+        </p>
+      </div>
       {rows.map((a) => (
         <div key={a.key} className="flex items-center gap-3 px-3.5 py-2.5 min-w-0 flex-wrap sm:flex-nowrap">
           <div className="min-w-0 flex-1 text-[13px] leading-relaxed">
             <div className="text-ink truncate">{a.label}</div>
             <div className="text-[12px] text-ink-2">
               {a.here
-                ? <>This computer brings it in.</>
+                ? <>This computer imports it.</>
                 : a.set
-                  ? <>{a.owner_name || "Another computer"} brings it in{a.last_pull ? `, last pulled ${when(a.last_pull)}` : ""}. This computer stands by.</>
+                  ? <>{a.owner_name || "Another computer"} imports it{a.last_pull ? `, last pulled ${when(a.last_pull)}` : ""}. This computer waits.</>
                   : <>Not decided yet. The next bank pull decides it.</>}
             </div>
           </div>
@@ -64,7 +73,7 @@ export default function BankFeedOwners({ version }: { version: number }) {
               className={`flex-shrink-0 h-8 px-3 rounded-lg text-[12.5px] font-medium whitespace-nowrap transition-colors disabled:opacity-60 ${
                 armed === a.key ? "bg-accent hover:bg-accent-hover text-on-accent" : "border border-line text-ink-2 hover:bg-surface-2"}`}
             >
-              {busy === a.key ? <Loader2 size={13} className="animate-spin" /> : armed === a.key ? "Yes, use this computer" : "Bring it in here"}
+              {busy === a.key ? <Loader2 size={13} className="animate-spin" /> : armed === a.key ? "Yes, import it here" : "Import on this computer"}
             </button>
           )}
         </div>

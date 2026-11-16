@@ -216,6 +216,8 @@ pub async fn webhook_update(access_token: &str, env: &str, url: &str) -> bool {
 /// R-518: a HOSTED Link session in update mode, for a bank whose login stopped working (ITEM_LOGIN_REQUIRED).
 /// The person signs in again in their browser and the SAME item carries on: same access token, same cursor, no
 /// second connection and no two years of history pulled again under new ids. Returns (link_token, hosted_link_url).
+/// R-652: open to any connected bank (Fix connection), with account picking on, so an account the bank stopped
+/// sharing, or a new one, is ticked back onto the same item. Plaid does not count it as a new connection.
 pub async fn create_update_hosted_link(access_token: &str, env: &str) -> Result<(String, String)> {
     let mut body = json!({
         "user": { "client_user_id": "bjm-owner" },
@@ -223,6 +225,7 @@ pub async fn create_update_hosted_link(access_token: &str, env: &str) -> Result<
         "country_codes": ["US"],
         "language": "en",
         "access_token": access_token,
+        "update": { "account_selection_enabled": true },
         "hosted_link": {}
     });
     if let Some(cfg) = crate::netsync::config() {

@@ -155,7 +155,7 @@ pub fn decide_all(conn: &Connection, mine: &[Account], pulled_ok: bool) -> Fed {
                     if let Some(o) = &owner {
                         fed.took_over.push(key.to_string());
                         let who = if o.1.is_empty() { "the other computer" } else { o.1.as_str() };
-                        fed.notes.push(format!("This computer now brings in {label}: {who} has not pulled it from the bank for a day."));
+                        fed.notes.push(format!("This computer now imports {label}: {who} has not pulled it from the bank for a day."));
                     }
                     fed.keys.insert(key.to_string());
                 }

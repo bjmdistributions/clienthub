@@ -3488,6 +3488,8 @@ export interface PlaidHealthBank {
   error: string;
   code: string;
   needs_login: boolean;
+  /** R-652: accounts this bank shared before and no longer does, with when they were first missed. */
+  dropped?: { name: string; mask: string; since: string }[];
   /** Whether Plaid took this bank's instant-update webhook (null: not tried yet on this run). */
   webhook_ok: boolean | null;
   last_ring: string | null;

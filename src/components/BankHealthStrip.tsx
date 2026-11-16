@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { api, OverbookedTxn, PlaidHealth, PlaidHealthBank } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { accountLabel, fixBankConnection } from "../lib/plaidFix";
 import { toast } from "./Toast";
 
 // R-518: what the bank feed needs from a person, on To book where the work is.
@@ -30,6 +31,13 @@ function when(iso: string | null): string {
   return sameDay
     ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
     : d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+// R-652: "today" or "on Nov 10", for when an account was first missed.
+function sinceText(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toDateString() === new Date().toDateString() ? "today" : `on ${when(iso)}`;
 }
 
 interface Props {
@@ -68,22 +76,10 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
     setSigningIn(b.id);
     cancelRef.current = false;
     try {
-      const { hosted_link_url, link_token } = await api.plaidReconnectStart(b.id);
-      await api.openExternal(hosted_link_url);
-      toast(`Sign in to ${b.institution || "your bank"} in the browser window that opened.`);
-      for (let i = 0; i < 100 && !cancelRef.current; i++) {
-        await new Promise((r) => window.setTimeout(r, 3000));
-        const r = await api.plaidReconnectPoll(link_token, b.id).catch(() => ({ status: "pending" }));
-        if (r.status === "done") {
-          toast(`${b.institution || "Your bank"} is signed in again. Pulling what it held back.`, "success");
-          await api.plaidSync().catch(() => null);
-          load();
-          onSynced();
-          return;
-        }
-        if (r.status === "exited") { toast("The bank sign-in was closed before it finished. Nothing changed."); return; }
+      if (await fixBankConnection(b.id, b.institution, () => cancelRef.current)) {
+        load();
+        onSynced();
       }
-      if (!cancelRef.current) toast("Did not see the sign-in finish. Try again when you are ready.", "error");
     } catch (e: any) {
       toast(String(e?.message || e), "error");
     } finally {
@@ -113,41 +109,58 @@ export default function BankHealthStrip({ version, onSynced }: Props) {
     load();
   };
 
-  const broken = health ? (health.banks ?? []).filter((b) => b.error) : [];
+  // R-652: a bank also lands here when an account it used to share stopped coming in, with no error at all.
+  const broken = health ? (health.banks ?? []).filter((b) => b.error || (b.dropped?.length ?? 0) > 0) : [];
   const warnings = health ? health.warnings : [];
   if (broken.length === 0 && warnings.length === 0 && over.length === 0) return null;
 
   return (
     <div className="rounded-xl ring-1 ring-line divide-y divide-line min-w-0">
-      {broken.map((b) => (
+      {broken.map((b) => {
+        const dropped = b.dropped ?? [];
+        const one = dropped.length === 1;
+        const fixable = b.needs_login || dropped.length > 0;
+        return (
         <div key={b.id} className="flex items-start gap-2.5 px-3.5 py-3 min-w-0">
-          <AlertTriangle size={16} strokeWidth={1.75} className={`${b.needs_login ? "text-danger-ink" : "text-warning-ink"} flex-shrink-0 mt-0.5`} />
+          <AlertTriangle size={16} strokeWidth={1.75} className={`${fixable ? "text-danger-ink" : "text-warning-ink"} flex-shrink-0 mt-0.5`} />
           <div className="min-w-0 flex-1 text-[13px] leading-relaxed">
             {b.needs_login ? (
               <>
                 <span className="font-medium text-ink">{b.institution || "A bank"} stopped sending transactions{b.last_ok ? ` after ${when(b.last_ok)}` : ""}.</span>{" "}
                 <span className="text-ink-2">It needs you to sign in to the bank again. Until then nothing new from it reaches Ecliptr.</span>
               </>
-            ) : (
+            ) : b.error ? (
               <>
                 <span className="font-medium text-ink">{b.institution || "A bank"} could not be reached{b.last_try ? ` at ${when(b.last_try)}` : ""}.</span>{" "}
                 <span className="text-ink-2">{b.error.replace(/^Plaid:\s*/, "")}. Ecliptr tries again every 10 minutes.</span>
                 {b.last_ok && <span className="text-muted"> Last good pull {when(b.last_ok)}.</span>}
               </>
+            ) : null}
+            {dropped.length > 0 && (
+              <div className={b.error ? "mt-1" : ""}>
+                <span className="font-medium text-ink">
+                  {dropped.map(accountLabel).join(", ")} stopped coming from {b.institution || "your bank"} {sinceText(dropped[0].since)}.
+                </span>{" "}
+                <span className="text-ink-2">
+                  The bank no longer shares {one ? "it" : "them"} with Ecliptr. Fix connection and tick {one ? "it" : "them"} again.
+                  If {one ? "it is" : "they are"} closed, leave {one ? "it" : "them"} unticked and this note goes away.
+                </span>
+              </div>
             )}
           </div>
-          {b.needs_login && (
+          {fixable && (
             <button
               onClick={() => signIn(b)}
               disabled={signingIn !== null}
               className="ui-btn ui-btn-ink ui-btn-sm flex-shrink-0 disabled:opacity-60"
             >
               {signingIn === b.id && <Loader2 size={13} className="animate-spin" />}
-              Sign in to {b.institution || "the bank"}
+              {b.needs_login ? `Sign in to ${b.institution || "the bank"}` : "Fix connection"}
             </button>
           )}
         </div>
-      ))}
+        );
+      })}
       {over.length > 0 && (
         <div className="px-3.5 py-2.5 min-w-0">
           <button
