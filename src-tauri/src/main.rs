@@ -1269,6 +1269,8 @@ fn main() {
             commands::plaid_health_dismiss,
             commands::plaid_reconnect_start,
             commands::plaid_reconnect_poll,
+            commands::bank_accounts_on_books,
+            commands::remove_bank_account,
             list_bank_txns,
             list_tie_out_backlog,
             set_tie_out_hidden,
