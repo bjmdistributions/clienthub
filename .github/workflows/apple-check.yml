@@ -1,0 +1,27 @@
+name: Apple notarization check
+
+# Answers in about a minute whether Apple will notarize, without building or spending a
+# version number. Runs on any push to the apple-check branch: push an empty commit there
+# to ask again. Apple's answer is a public annotation (read it with the check-runs
+# annotations API, no sign-in). The same check is the first macOS step of release.yml.
+on:
+  push:
+    branches: [apple-check]
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - name: Check Apple will notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if out=$(xcrun notarytool history --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" 2>&1); then
+            echo "::notice title=Apple notarization::Apple accepts notarization for this team."
+          else
+            msg=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/%/%25/g' | cut -c1-700)
+            echo "::error title=Apple refused notarization::$msg"
+            exit 1
+          fi
