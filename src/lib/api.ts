@@ -1934,6 +1934,8 @@ export interface ReconAccount {
   baseline: number | null;
   drift: number;
   txn_count: number;
+  /** R-662: history that came in after the check started for days well before it; left out of `drift`. */
+  settled_before: number;
 }
 
 /// A write this device gave up delivering to the server (and therefore to every

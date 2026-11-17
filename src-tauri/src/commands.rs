@@ -24514,8 +24514,12 @@ pub async fn financials_overview() -> Result<Value, String> {
             .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
         let baseline = baselines.as_object().and_then(|m| m.iter()
             .find(|(k, _)| k.ends_with(&format!("{sep}{reserve_mask}")))
-            .and_then(|(_, v)| v.as_f64()));
-        let drift = baseline.map(|b| ((reserve_parked - all) - b) * 100.0).map(|d| d.round() / 100.0);
+            .map(|(k, v)| (k.clone(), v.as_f64())));
+        // R-662: the same history the books check leaves out.
+        let settled: f64 = baseline.as_ref().and_then(|(k, _)| recon_baseline_times().get(k).and_then(|v| v.as_str())
+            .map(|at| recon_settled_before(&conn, &account_alias_map(), k, at, &mut None).iter().map(|x| x.1).sum())).unwrap_or(0.0);
+        let baseline = baseline.and_then(|(_, v)| v);
+        let drift = baseline.map(|b| ((reserve_parked - all + settled) - b) * 100.0).map(|d| d.round() / 100.0);
         (year, drift)
     };
 
@@ -28559,6 +28563,50 @@ pub struct ReconAccount {
     /// altered since the baseline was taken; the amount is the size of what moved.
     pub drift: f64,
     pub txn_count: i64,
+    /// R-662: in less out over the rows that came in after the starting point for days well before it (history a
+    /// bank sends again after Fix connection). The bank's balance already held them, so `drift` leaves them out.
+    pub settled_before: f64,
+}
+
+/// R-662: how many days before the starting point's day a row must be dated to count as history the bank's balance
+/// already held. Inside the margin a card charge may have been made before the check started and posted after it.
+const RECON_SETTLED_DAYS: i64 = 7;
+
+/// R-662: whether a row that came in at `came`, dated `posted`, is history from before the starting point taken at
+/// `at`: it arrived after the starting point and is dated more than `RECON_SETTLED_DAYS` before its day.
+fn recon_is_settled_before(came: &str, posted: &str, at: &str) -> bool {
+    let day = match chrono::NaiveDate::parse_from_str(at.get(..10).unwrap_or(""), "%Y-%m-%d") { Ok(d) => d, Err(_) => return false };
+    let cutoff = (day - chrono::Duration::days(RECON_SETTLED_DAYS)).format("%Y-%m-%d").to_string();
+    let posted = posted.get(..10).unwrap_or("");
+    !came.is_empty() && came > at && posted.len() == 10 && posted < cutoff.as_str()
+}
+
+/// R-662 (Jack: "almost every account is off by their current balance ... yesterday my amex and axos were
+/// disconnected so i reconnected them, now i have the same issue today"): the rows on `label` the books check leaves
+/// out, as (id, in less out). A reconnected bank sends an account's older history again; those rows change the
+/// ledger and not the bank's balance, which held them all along, so the check read Off by after every reconnect.
+/// A row the bank took back, or the extra copy of a possible duplicate, is not history: it stays in the check.
+/// `dups` is filled once, only when some account has such rows.
+fn recon_settled_before(conn: &rusqlite::Connection, aliases: &std::collections::HashMap<String, String>, label: &str, at: &str,
+                        dups: &mut Option<std::collections::HashSet<String>>) -> Vec<(String, f64)> {
+    let found: Vec<(String, f64, String)> = conn
+        .prepare("SELECT id, CASE WHEN direction='in' THEN amount ELSE -amount END, COALESCE(raw_json,''),                          COALESCE(NULLIF(created_at,''), imported_at, ''), COALESCE(posted_at,'') FROM bank_txn WHERE account_id=?1")
+        .and_then(|mut st| st.query_map([label], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, String>(2)?,
+                                                          r.get::<_, String>(3)?, r.get::<_, String>(4)?)))
+            .map(|it| it.filter_map(|x| x.ok())
+                .filter(|x| recon_is_settled_before(&x.3, &x.4, at) && !crate::bank_dedup::pending_and_retracted(&x.2).1)
+                .map(|x| (x.0, x.1, x.2)).collect()))
+        .unwrap_or_default();
+    if found.is_empty() { return Vec::new(); }
+    let dup = dups.get_or_insert_with(|| {
+        let mut ids = std::collections::HashSet::new();
+        if let Ok(nd) = near_dup_rows(conn) { for d in crate::bank_near_dup::near_duplicates(&nd) { ids.insert(d.extra_id); } }
+        if let Ok(rows) = load_dedup_rows(conn) {
+            for g in crate::bank_dedup::plan(&rows, aliases, false).groups { for rm in g.removals { ids.insert(rm.id); } }
+        }
+        ids
+    });
+    found.into_iter().filter(|x| !dup.contains(&x.0)).map(|x| (x.0, x.1)).collect()
 }
 
 /// Does the ledger still tie out to the bank?
@@ -28666,6 +28714,10 @@ fn explain_bank_drift_inner(conn: &rusqlite::Connection, account: String) -> Res
         "id": id, "date": date.get(..10).unwrap_or(date), "description": desc, "amount": r2(amount), "direction": dir, "effect": r2(effect),
     });
     let mut seen: HashSet<String> = HashSet::new();
+    // R-662: the check leaves these out (history the bank's balance already held), so they are no cause.
+    if let Some(at) = at.as_deref() {
+        for (id, _) in recon_settled_before(conn, &aliases, &account, at, &mut None) { seen.insert(id); }
+    }
     let mut groups: Vec<(&str, Vec<Value>)> = vec![
         ("missing", vec![]), ("differs", vec![]), ("not_at_bank", vec![]), ("withdrawn", vec![]),
         ("duplicate", vec![]), ("late", vec![]), ("removed", vec![]),
@@ -28794,7 +28846,8 @@ fn explain_bank_drift_inner(conn: &rusqlite::Connection, account: String) -> Res
         "baseline_at": at,
         "drift": r.drift,
         // What the books say the balance should be: the starting point plus every row since.
-        "books_balance": r.baseline.map(|b| r2(b + r.ledger_net)),
+        "books_balance": r.baseline.map(|b| r2(b + r.ledger_net - r.settled_before)),
+        "settled_before": r.settled_before,
         "causes": causes,
         "explained": r2(explained),
         "residual": r2(r.drift - explained),
@@ -28844,6 +28897,13 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(Value::Null);
 
+    let times: Value = conn
+        .query_row("SELECT value FROM settings WHERE key='recon_baselines_at'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let mut dups: Option<std::collections::HashSet<String>> = None;
+
     let mut out: Vec<ReconAccount> = Vec::new();
     let mut next = serde_json::Map::new();
     for (label, bal) in bank {
@@ -28858,18 +28918,48 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
         let r2 = |x: f64| (x * 100.0).round() / 100.0;
         let implied = r2(bal - net);
         let baseline = stored.get(&label).and_then(|v| v.as_f64());
-        let drift = match baseline { Some(b) => r2(implied - b), None => 0.0 };
+        // R-662: history that came in after the starting point for days well before it was in the bank's balance
+        // all along. `implied` fell by it; put it back, so a reconnect does not read as a difference.
+        let settled: f64 = match (baseline, times.get(&label).and_then(|v| v.as_str())) {
+            (Some(_), Some(at)) => recon_settled_before(conn, &aliases, &label, at, &mut dups).iter().map(|x| x.1).sum(),
+            _ => 0.0,
+        };
+        let drift = match baseline { Some(b) => r2(implied + settled - b), None => 0.0 };
         // Keep the ORIGINAL baseline unless asked to re-accept, or there wasn't one —
         // otherwise every check silently forgives the drift it just found.
         let keep = if rebaseline { implied } else { baseline.unwrap_or(implied) };
         next.insert(label.clone(), json!(keep));
         out.push(ReconAccount {
             account: label, bank_balance: r2(bal), ledger_net: r2(net),
-            implied_opening: implied, baseline, drift, txn_count: count,
+            implied_opening: implied, baseline, drift, txn_count: count, settled_before: r2(settled),
         });
     }
     out.sort_by(|a, b| b.drift.abs().partial_cmp(&a.drift.abs()).unwrap_or(std::cmp::Ordering::Equal));
     Ok((out, Some(next)))
+}
+
+#[cfg(test)]
+mod r662_settled_before_tests {
+    use super::recon_is_settled_before;
+
+    #[test]
+    fn history_sent_again_is_left_out_and_recent_rows_are_not() {
+        let at = "2026-11-10T15:00:00+00:00";
+        // Came in after the starting point, dated well before it: history.
+        assert!(recon_is_settled_before("2026-11-16T09:00:00+00:00", "2026-09-02", at));
+        assert!(recon_is_settled_before("2026-11-16T09:00:00+00:00", "2026-11-02", at));
+        // Inside the margin: a card charge may have posted after the check started.
+        assert!(!recon_is_settled_before("2026-11-16T09:00:00+00:00", "2026-11-03", at));
+        assert!(!recon_is_settled_before("2026-11-16T09:00:00+00:00", "2026-11-09", at));
+        // After the starting point: the balance moved with it.
+        assert!(!recon_is_settled_before("2026-11-16T09:00:00+00:00", "2026-11-12", at));
+        // Already in the ledger when the check started.
+        assert!(!recon_is_settled_before("2026-11-01T09:00:00+00:00", "2026-09-02", at));
+        // No arrival time, no date, or no starting time: counted as before.
+        assert!(!recon_is_settled_before("", "2026-09-02", at));
+        assert!(!recon_is_settled_before("2026-11-16T09:00:00+00:00", "", at));
+        assert!(!recon_is_settled_before("2026-11-16T09:00:00+00:00", "2026-09-02", ""));
+    }
 }
 
 /// R-579: one period of one account on Check books.
@@ -29008,7 +29098,7 @@ pub async fn check_books() -> Result<Vec<CheckAccount>, String> {
             mask: crate::bank_dedup::label_mask(&name).to_string(),
             recon: recon_by.get(&name).map(|r| ReconAccount {
                 account: r.account.clone(), bank_balance: r.bank_balance, ledger_net: r.ledger_net,
-                implied_opening: r.implied_opening, baseline: r.baseline, drift: r.drift, txn_count: r.txn_count,
+                implied_opening: r.implied_opening, baseline: r.baseline, drift: r.drift, txn_count: r.txn_count, settled_before: r.settled_before,
             }),
             account: name,
             periods,
