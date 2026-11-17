@@ -989,12 +989,12 @@ export default function App() {
         onClick={() => setTab(t.id)}
         title={t.label}
         aria-current={active ? "page" : undefined}
-        className={`relative w-full flex items-center h-[24px] pl-[7px] pr-1.5 rounded-md text-[10.5px] font-medium transition-colors duration-150 ${
+        className={`relative w-full flex items-center justify-center h-[24px] px-1.5 rounded-md text-[10.5px] font-medium transition-colors duration-150 ${
           active ? "text-ink rail-active" : "text-muted hover:text-ink hover:bg-surface-2"
         }`}
       >
         <span className="truncate">{t.label}</span>
-        {c && <span className="ml-auto pl-1 flex-shrink-0">{countChip(c, true)}</span>}
+        {c && <span className="pl-1 flex-shrink-0">{countChip(c, true)}</span>}
       </button>
     );
   };
@@ -1276,7 +1276,7 @@ export default function App() {
                 <div key={section.id} className="space-y-0.5">
                   {railRow(section.id, section.label, SECTION_ICONS[section.id], section.id === railPlan.sectionId, sectionCount(section), () => openSection(section))}
                   {kids.length > 0 && (
-                    <div className="relative pl-[9px] mt-[3px] mb-[5px] space-y-0.5">
+                    <div className="relative px-[9px] mt-[3px] mb-[5px] space-y-0.5">
                       <span className="rail-spine absolute left-[3px] top-0.5 bottom-0.5 w-[1.5px] rounded-full" aria-hidden />
                       {kids.map((c) => railKid(c))}
                     </div>
