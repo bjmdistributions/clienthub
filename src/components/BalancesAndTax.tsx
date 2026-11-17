@@ -23,6 +23,9 @@ type Overview = FinancialsOverview & {
   tax_base?: number;
   tax_paid?: number;
   tax_should_have?: number;
+  /** R-665: this year's transfers on the tax savings account by the books, and this year's rows with no category
+   *  the books know (they are not in net income yet). */
+  tax_extra?: { reserve_in_year: number; reserve_out_year: number; uncategorised_in: number; uncategorised_out: number; uncategorised_rows: number };
   tax_sweep_pct?: number;
   reserve_ledger_year?: number;
   reserve_mask?: string;
@@ -52,7 +55,7 @@ function Line({ label, value, strong, muted, tag }: { label: React.ReactNode; va
   );
 }
 
-export default function BalancesAndTax({ onCheckBooks, onOpenRow }: { onCheckBooks?: () => void; onOpenRow?: (id: string, amount: number) => void }) {
+export default function BalancesAndTax({ onCheckBooks, onOpenRow, onToBook }: { onCheckBooks?: () => void; onToBook?: () => void; onOpenRow?: (id: string, amount: number) => void }) {
   const [openDrift, setOpenDrift] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<BankBalance[] | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
@@ -135,6 +138,12 @@ export default function BalancesAndTax({ onCheckBooks, onOpenRow }: { onCheckBoo
   const drift = savings?.drift ?? null;
   const booksAgree = drift == null || Math.abs(drift) < 0.005;
   const clear = !!savings && short < 0.005 && booksAgree;
+  const uncatRows = ov?.tax_extra?.uncategorised_rows ?? 0;
+  const uncatIn = ov?.tax_extra?.uncategorised_in ?? 0;
+  const uncatOut = ov?.tax_extra?.uncategorised_out ?? 0;
+  const putIn = ov?.tax_extra?.reserve_in_year ?? 0;
+  const tookOut = ov?.tax_extra?.reserve_out_year ?? 0;
+  const over = Math.max(0, held - target);
   const lastMonth = tm ? [...tm.months].reverse().find((m) => m.closed) : undefined;
   const thisMonth = tm?.months.find((m) => !m.closed);
   const monthNet = (m: TaxMonths["months"][number]) => m.net ?? m.base;
@@ -238,6 +247,22 @@ export default function BalancesAndTax({ onCheckBooks, onOpenRow }: { onCheckBoo
           </div>
         </div>
 
+        {uncatRows > 0 && (
+          <div className="mt-3 rounded-xl px-4 py-3 flex items-start gap-3 bg-warning-bg">
+            <AlertTriangle size={18} className="text-warning-ink flex-shrink-0 mt-0.5" />
+            <div className="min-w-0 text-[13px]">
+              <span className="font-medium text-warning-ink">
+                {uncatRows} {uncatRows === 1 ? "transaction is" : "transactions are"} not in this figure yet.
+              </span>
+              <span className="block text-ink-2 mt-0.5">
+                {uncatRows === 1 ? "It has" : "They have"} no category, so {uncatRows === 1 ? "it counts" : "they count"} as neither income nor expense:
+                {" "}{fmtAmount(uncatIn)} in and {fmtAmount(uncatOut)} out this year. Sort {uncatRows === 1 ? "it" : "them"} and the tax figure is complete.
+                {onToBook && <button onClick={onToBook} className="ml-1.5 font-medium text-ink hover:opacity-70">Open To book</button>}
+              </span>
+            </div>
+          </div>
+        )}
+
         <div className="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-x-8 gap-y-4">
           <div className="min-w-0 space-y-4">
             <div>
@@ -297,7 +322,11 @@ export default function BalancesAndTax({ onCheckBooks, onOpenRow }: { onCheckBoo
             <Line label={`Tax at ${ratePct}%`} tag={netIncome <= 0 ? "nothing owed on a loss" : undefined} value={fmtAmount(taxYear)} />
             {taxPaid > 0.005 && <Line label="Estimated tax already paid this year" value={`-${fmtAmount(taxPaid)}`} />}
             <Line label="Owed if today were tax day" value={fmtAmount(taxShould)} strong />
-            {savings && <Line label={`In ${savings.name} now`} value={fmtAmount(held)} strong />}
+            {savings && <Line label={`Moved into ${savings.name} this year`} tag="from your books" value={fmtAmount(putIn)} />}
+            {savings && tookOut > 0.005 && <Line label={`Taken out of ${savings.name} this year`} value={`-${fmtAmount(tookOut)}`} />}
+            {savings && <Line label={`In ${savings.name} now`} tag="the bank's balance" value={fmtAmount(held)} strong />}
+            {savings && short >= 0.005 && <Line label="Short by" value={fmtAmount(short)} strong />}
+            {savings && short < 0.005 && over >= 0.005 && <Line label="More than needed by" value={fmtAmount(over)} />}
           </div>
         </div>
       </section>

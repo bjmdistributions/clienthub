@@ -214,7 +214,7 @@ export interface ScheduledSendProgress {
 }
 
 // R-586/R-587: a bank transaction that is not in the ledger exactly as the bank states it.
-export type BankDeclinedReason = "copy" | "held_reference" | "change_unknown" | "statement_feed_twin" | "missing" | "differs" | "not_at_bank";
+export type BankDeclinedReason = "copy" | "held_reference" | "change_unknown" | "statement_feed_twin" | "feed_statement_twin" | "missing" | "differs" | "not_at_bank";
 export type BankDeclinedAction = "import" | "import_anyway" | "copy" | "use_bank" | "keep" | "remove" | "remove_unlink" | "reopen";
 /** R-590: the ledger row Import found that already is this payment. */
 export interface BankAlready { id: string; account_id: string; posted_at: string; description: string; count: number; bank_same: number }

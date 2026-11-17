@@ -1782,6 +1782,31 @@ pub(crate) fn year_tax_base(conn: &rusqlite::Connection, year: i32) -> (f64, f64
     (net, paid)
 }
 
+/// R-665 (Jack: "ensure the tax calculator actaully takes the taxable net income"): what `year_tax_base` leaves out
+/// of net income for `year` because it has no category the books know: (money in, money out, rows). A row with no
+/// category, or one the books do not list, counts nowhere until it is sorted, so the tax figure is short by it.
+/// The part of a row booked to a deal is counted by its booking (R-657) and is not in these figures.
+pub(crate) fn year_uncategorised(conn: &rusqlite::Connection, year: i32) -> (f64, f64, i64) {
+    let lo = format!("{year}-01-01");
+    let hi = format!("{}-01-01", year + 1);
+    let rows = pnl_rows(conn, &lo, &hi).unwrap_or_default();
+    let (mut cin, mut cout) = (0.0, 0.0);
+    for (cat, dir, amt) in &rows {
+        if pnl_group_of(cat).is_some() { continue; }
+        if dir == "in" { cin += amt; } else { cout += amt; }
+    }
+    let known = PNL_CATEGORY_GROUPS.iter().map(|(v, _, _)| format!("'{v}'")).collect::<Vec<_>>().join(",");
+    let roles = PNL_ROLE_CATEGORY.iter().map(|(r, _)| format!("'{r}'")).collect::<Vec<_>>().join(",");
+    let n: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM bank_txn bt WHERE bt.posted_at >= ?1 AND bt.posted_at < ?2 AND {counted} \
+                    AND COALESCE(bt.category,'') NOT IN ({known}) \
+                    AND bt.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a \
+                                               WHERE a.bank_txn_id = bt.id AND a.role IN ({roles})), 0) > 0.004",
+                 counted = crate::bank_flags::counted("bt")),
+        [&lo, &hi], |r| r.get(0)).unwrap_or(0);
+    (cin, cout, n)
+}
+
 /// `posted_at` is a bank-supplied calendar date, not a UTC instant (same treatment
 /// as `deal_flows.completed_at` in `central_month_window`), so the year window is a
 /// plain half-open date range — no `date('now')`, no tz shift needed.
@@ -24620,6 +24645,27 @@ pub async fn financials_overview() -> Result<Value, String> {
         (year, drift)
     };
 
+    // R-665: what went into and came out of the tax savings account this year, by the books (counted rows on its
+    // last four), so the screen can hold the transfers against what should be there.
+    let (reserve_in_year, reserve_out_year): (f64, f64) = if reserve_mask.is_empty() || !reserve_linked { (0.0, 0.0) } else {
+        let sep = "\u{00b7}\u{00b7}";
+        let since = format!("{}-01-01", chrono::Datelike::year(&chrono::Local::now()));
+        let side = |dir: &str| -> f64 {
+            conn.query_row(
+                &format!("SELECT COALESCE(SUM(amount),0) FROM bank_txn \
+                          WHERE instr(account_id,'{sep}')>0 AND substr(account_id, instr(account_id,'{sep}')+2)=?1 \
+                            AND posted_at >= ?2 AND direction=?3 AND {}", crate::bank_flags::counted("bank_txn")),
+                rusqlite::params![reserve_mask, since, dir], |r| r.get(0)).unwrap_or(0.0)
+        };
+        (side("in"), side("out"))
+    };
+    let (uncat_in, uncat_out, uncat_rows) = year_uncategorised(&conn, chrono::Datelike::year(&chrono::Local::now()));
+    // One object, so the overview's own `json!` stays inside the macro's depth.
+    let tax_extra = json!({
+        "reserve_in_year": round2(reserve_in_year), "reserve_out_year": round2(reserve_out_year),
+        "uncategorised_in": round2(uncat_in), "uncategorised_out": round2(uncat_out), "uncategorised_rows": uncat_rows,
+    });
+
     // Loans still owed, for open loans.
     //
     // "Covered" is the GREATER of the manual set-aside and what the bank feed shows
@@ -24725,6 +24771,7 @@ pub async fn financials_overview() -> Result<Value, String> {
         "tax_paid": round2(tax_paid),
         "tax_should_have": round2(tax_should_have),
         "reserve_ledger_year": round2(reserve_ledger_year),
+        "tax_extra": tax_extra,
         "reserve_mask": reserve_mask,
         "reserve_drift": reserve_drift,
         "refund_reserve": round2(refund_reserve),

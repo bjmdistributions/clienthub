@@ -3624,7 +3624,7 @@ export default function FinancialsView() {
       {tab === "accounts" && <AccountsView />}
       {tab === "personal" && personalOwner && <PersonalView />}
       {tab === "personal" && !personalOwner && <p className="ui-note">Personal spending is only for the workspace owner.</p>}
-      {tab === "report" && <BalancesAndTax onCheckBooks={() => setTab("check")} onOpenRow={openLedgerRow} />}
+      {tab === "report" && <BalancesAndTax onToBook={() => setTab("tobook")} onCheckBooks={() => setTab("check")} onOpenRow={openLedgerRow} />}
       {tab === "report" && (
         <div className="space-y-6 border-t border-line pt-6">
           <h3 className="text-[15px] font-medium text-ink">Tax report</h3>
