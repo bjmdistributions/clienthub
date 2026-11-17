@@ -350,13 +350,58 @@ pub async fn personal_mark(account_key: String, label: String, institution: Stri
             .unwrap_or_default();
         for aj in lists { refresh_balances(&conn, &institution, &serde_json::from_str::<Vec<Value>>(&aj).unwrap_or_default(), &now); }
     }
-    let ids: Vec<String> = conn.prepare("SELECT id FROM bank_txn WHERE account_id=?1 ORDER BY posted_at")
-        .and_then(|mut st| st.query_map([&label], |r| r.get(0)).map(|it| it.filter_map(|x| x.ok()).collect()))
-        .map_err(|e| e.to_string())?;
+    let mark = Mark { id: mark_id, key, account_key, label };
+    let (moved, not_moved, kept) = move_account_rows(&conn, &mark, &crate::commands::account_alias_map(), &now);
+    crate::netsync::push_now();
+    Ok(json!({ "moved": moved, "not_moved": not_moved, "kept": kept }))
+}
+
+/// Every name a personal account's rows can sit under on the books (R-666). Make personal used to look for the
+/// account's name exactly as the bank gives it today, so rows filed under the name it was merged into (a confirmed
+/// alias), under the name the bank used before it renamed the account, or under a bare Plaid account id stayed on
+/// the books and in To book. The names: the one it was marked under; the name and the Plaid id of every connected
+/// account with the same bank and last four; and every name the alias map folds together with one of those.
+/// Never a guess from the last four alone: another bank's card can end in the same digits.
+pub fn labels_of(conn: &rusqlite::Connection, mark: &Mark, aliases: &std::collections::HashMap<String, String>) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    if !mark.label.trim().is_empty() { out.insert(mark.label.clone()); }
+    let items: Vec<(String, String)> = conn.prepare("SELECT COALESCE(institution,''), COALESCE(accounts_json,'[]') FROM plaid_items")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map(|it| it.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    for (inst, aj) in items {
+        for a in serde_json::from_str::<Vec<Value>>(&aj).unwrap_or_default() {
+            if crate::bank_feed::account_key(&inst, &a) != mark.account_key { continue; }
+            let label = crate::commands::plaid_account_label(&a);
+            if !label.trim().is_empty() { out.insert(label); }
+            if let Some(id) = a.get("account_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) { out.insert(id.to_string()); }
+        }
+    }
+    let via = |l: &str| aliases.get(l).cloned().unwrap_or_else(|| l.to_string());
+    let folded: HashSet<String> = out.iter().map(|l| via(l)).collect();
+    for (from, to) in aliases {
+        if folded.contains(to) || folded.contains(&via(from)) { out.insert(from.clone()); }
+    }
+    out.extend(folded);
+    out
+}
+
+/// Move a personal account's rows off the books: (moved, not moved, the rows that stay because they are tied to
+/// business work). Each row is backed up in full first (`bank_txn_deleted_backup`, reason `moved_to_personal`; no
+/// backup, no move), written as a personal row keeping that backup, then removed from the books through the oplog.
+/// A row tied to a deal, refund, loan, purchase, expense or bill stays: moving it would orphan that work.
+fn move_account_rows(conn: &rusqlite::Connection, mark: &Mark, aliases: &std::collections::HashMap<String, String>, now: &str) -> (i64, i64, Vec<Value>) {
+    let (key, account_key, label) = (&mark.key, &mark.account_key, &mark.label);
     let (mut moved, mut not_moved) = (0i64, 0i64);
     let mut kept: Vec<Value> = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    for name in labels_of(conn, mark, aliases) {
+        let found: Vec<String> = conn.prepare("SELECT id FROM bank_txn WHERE account_id=?1 ORDER BY posted_at")
+            .and_then(|mut st| st.query_map([&name], |r| r.get(0)).map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        ids.extend(found);
+    }
     for bid in &ids {
-        if crate::commands::bank_txn_is_linked(&conn, bid) {
+        if crate::commands::bank_txn_is_linked(conn, bid) {
             kept.push(conn.query_row(
                 "SELECT json_object('id',id,'posted_at',posted_at,'amount',amount,'direction',direction,'description',description) FROM bank_txn WHERE id=?1",
                 [bid], |r| r.get::<_, String>(0)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({ "id": bid })));
@@ -383,13 +428,31 @@ pub async fn personal_mark(account_key: String, label: String, institution: Stri
         c.insert("raw_json".into(), json!(json!({ "moved_from": b }).to_string()));
         c.insert("created_at".into(), json!(now));
         c.insert("updated_at".into(), json!(now));
-        if write(&conn, "personal_txns", &format!("{key}.{bid}"), &c).is_err() { not_moved += 1; continue; }
+        if write(conn, "personal_txns", &format!("{key}.{bid}"), &c).is_err() { not_moved += 1; continue; }
         // Oplog first: a row deleted here but not recorded would come back on the next pull.
         if sync::record_delete("bank_txn", bid).is_err() { not_moved += 1; continue; }
         if conn.execute("DELETE FROM bank_txn WHERE id=?1", [bid]).unwrap_or(0) > 0 { moved += 1; }
     }
-    crate::netsync::push_now();
-    Ok(json!({ "moved": moved, "not_moved": not_moved, "kept": kept }))
+    (moved, not_moved, kept)
+}
+
+/// R-666 (Jack, 2026-11-17: "the personal transactions are still showing up in the too book"). A personal
+/// account's transactions can still reach the books from outside this computer: another computer that feeds the
+/// same bank holds no marks (the server sends them to the owner's devices only), and an older version knows nothing
+/// of Personal. So the owner's computer takes them back off: after every sync that brought rows in and after every
+/// check of the banks, any row on the books under a personal account's names moves to Personal, the same backed-up
+/// move Make personal does. Nothing happens on a device with no marks. Returns how many rows moved.
+pub fn sweep(conn: &rusqlite::Connection) -> i64 {
+    let marks = marks(conn);
+    if marks.is_empty() { return 0; }
+    let aliases = crate::commands::account_alias_map();
+    let now = chrono::Utc::now().to_rfc3339();
+    let moved: i64 = marks.iter().map(|m| move_account_rows(conn, m, &aliases, &now).0).sum();
+    if moved > 0 {
+        tracing::info!("personal: {moved} row(s) of a personal account taken off the books");
+        crate::netsync::push_now();
+    }
+    moved
 }
 
 /// Undo Make personal: the account's transactions go back to the business books, unbooked unless they were booked
@@ -515,6 +578,52 @@ mod tests {
         assert_eq!((bal, lim), (431.2, 2000.0));
         c.execute("DELETE FROM personal_accounts WHERE id LIKE 'k660.%'", []).unwrap();
         c.execute("DELETE FROM personal_txns WHERE id LIKE 'k660.%'", []).unwrap();
+    }
+
+    // R-666: rows of a personal account leave the books whatever name they were filed under, and a row another
+    // computer imports afterwards is taken off by the sweep. A booked row and another bank's card stay.
+    #[test]
+    fn a_personal_accounts_rows_leave_the_books_under_every_name() {
+        let _db = crate::db::init_test_store();
+        let c = pool().get().unwrap();
+        let clean = |c: &rusqlite::Connection| {
+            c.execute("DELETE FROM bank_txn WHERE id LIKE 'r666_%'", []).unwrap();
+            c.execute("DELETE FROM personal_txns WHERE id LIKE 'k666.%'", []).unwrap();
+            c.execute("DELETE FROM personal_accounts WHERE id LIKE 'k666.%'", []).unwrap();
+            c.execute("DELETE FROM plaid_items WHERE id='pi_r666'", []).unwrap();
+            c.execute("DELETE FROM bank_allocation WHERE bank_txn_id LIKE 'r666_%'", []).unwrap();
+        };
+        clean(&c);
+        c.execute("INSERT INTO plaid_items (id, access_token, cursor, accounts_json, env, institution, created_at) \
+                   VALUES ('pi_r666','x','','[{\"account_id\":\"accR666\",\"name\":\"Everyday Card\",\"mask\":\"6660\"}]','sandbox','Test Bank','2026-11-01')", []).unwrap();
+        c.execute("INSERT INTO personal_accounts (id, account_key, label) VALUES ('k666.test bank|6660','test bank|6660','Old Card Name \u{00b7}\u{00b7}6660')", []).unwrap();
+        let row = |id: &str, acct: &str| {
+            c.execute("INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, category, reviewed, source_format, imported_at, created_at, updated_at) \
+                       VALUES (?1, ?2, '2026-11-10', 20.0, 'out', 'TEST SHOP', 'other', 0, 'plaid', '2026-11-10', '2026-11-10', '2026-11-10')",
+                rusqlite::params![id, acct]).unwrap();
+        };
+        row("r666_marked", "Old Card Name \u{00b7}\u{00b7}6660");   // the name it was marked under
+        row("r666_today", "Everyday Card \u{00b7}\u{00b7}6660");    // the name the bank gives it today
+        row("r666_bare", "accR666");                                   // a bare Plaid account id
+        row("r666_alias", "My Card");                                  // the name it was merged into
+        row("r666_other", "Other Bank Card \u{00b7}\u{00b7}6660");  // another bank's card with the same last four
+        let aliases: std::collections::HashMap<String, String> = [("Everyday Card \u{00b7}\u{00b7}6660".to_string(), "My Card".to_string())].into();
+        let m = marks(&c).into_iter().find(|m| m.key == "k666").unwrap();
+        let (moved, not_moved, kept) = move_account_rows(&c, &m, &aliases, "2026-11-17T10:00:00Z");
+        assert_eq!((moved, not_moved, kept.len()), (4, 0, 0));
+        let on_books = |id: &str| c.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [id], |_| Ok(())).is_ok();
+        assert!(!on_books("r666_marked") && !on_books("r666_today") && !on_books("r666_bare") && !on_books("r666_alias"));
+        assert!(on_books("r666_other"), "the last four alone is never enough");
+        let personal: i64 = c.query_row("SELECT COUNT(*) FROM personal_txns WHERE id LIKE 'k666.r666_%'", [], |r| r.get(0)).unwrap();
+        let backed: i64 = c.query_row("SELECT COUNT(*) FROM bank_txn_deleted_backup WHERE id LIKE 'r666_%' AND reason='moved_to_personal'", [], |r| r.get(0)).unwrap();
+        assert_eq!((personal, backed), (4, 4), "each moved row is a personal row and has its backup");
+        // Another computer puts a new row on the books: the sweep takes it off.
+        row("r666_late", "Everyday Card \u{00b7}\u{00b7}6660");
+        assert!(sweep(&c) >= 1);
+        assert!(!on_books("r666_late") && on_books("r666_other"));
+        assert_eq!(sweep(&c), 0, "nothing left to move");
+        c.execute("DELETE FROM bank_txn_deleted_backup WHERE id LIKE 'r666_%'", []).unwrap();
+        clean(&c);
     }
 
     #[test]

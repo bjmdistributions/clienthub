@@ -21109,7 +21109,7 @@ fn settle_carry(
 /// Account labels that are really the SAME account under a different mask, as confirmed by a
 /// previous `dedupe_bank_txns` merge (`old label -> surviving label`). Applied when importing
 /// so a stale Plaid item that re-sends under the old mask can't re-split the account.
-fn account_alias_map() -> std::collections::HashMap<String, String> {
+pub(crate) fn account_alias_map() -> std::collections::HashMap<String, String> {
     let conn = match pool().get() { Ok(c) => c, Err(_) => return Default::default() };
     let raw: String = conn
         .query_row("SELECT value FROM settings WHERE key='bank_account_aliases'", [], |r| r.get(0))
@@ -23004,6 +23004,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
         }
     } else { 0 };
     if copies_removed > 0 { tracing::info!("plaid_sync: {} exact copies removed, each backed up", copies_removed); }
+    // R-666: a personal account's rows another computer put on the books go to Personal. Only after the clean-up
+    // above, which syncs first, so a booking made elsewhere is already here and its row stays.
+    if converged && pulled_ok { if let Ok(c) = pool().get() { crate::personal::sweep(&c); } }
     for d in &touched_deals { let _ = resync_completed_deal(d); }
     if let Ok(c) = pool().get() { crate::personal::announce_new(&c, personal_new); }
     // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules

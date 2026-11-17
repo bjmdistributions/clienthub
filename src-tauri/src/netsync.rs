@@ -1036,6 +1036,9 @@ pub fn spawn_loop(app: tauri::AppHandle) {
             match pull_apply().await {
                 Ok(n) if n > 0 => {
                     pulled = true;
+                    // R-666: a personal account's rows another computer imported leave the books here, on the
+                    // owner's computer, before the screens re-read. A device with no marks does nothing.
+                    if let Ok(c) = crate::db::pool().get() { crate::personal::sweep(&c); }
                     // Remote changes landed locally — nudge the front-end to re-read
                     // (bell counts, approvals list, client list) from post-sync state.
                     let _ = app.emit("netsync-applied", n);
