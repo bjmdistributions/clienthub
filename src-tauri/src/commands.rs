@@ -21670,6 +21670,51 @@ fn plaid_copies(
 /// R-586: a bank-feed transaction for the Not imported list, carrying exactly the columns `plaid_sync`'s insert
 /// writes, so Import stores the row the bank sent.
 #[allow(clippy::too_many_arguments)]
+/// R-665: whether a bank row would be filed under a code. `label` is what `label_of` gave for `account_id`: the
+/// id itself when the bank's account list does not hold it. With a list read this pass the bank really has no name
+/// for it and the row imports as before; with a stale list the pass stops and tries again.
+fn plaid_unnamed_account(label: &str, account_id: &str, list_is_fresh: bool) -> bool {
+    !account_id.is_empty() && label == account_id && !list_is_fresh
+}
+
+/// R-665: the statement rows a posted feed row is taken to repeat. `near` is every row on the same account, way and
+/// amount within a day: (id, from the feed, pending, taken back by the bank). A statement row counts once: each
+/// posted feed row already beside them has one of them as its twin, so only statement rows beyond that number hold
+/// the new row back. None when the feed already has as many as the statements do.
+fn statement_twins_of_feed_row(near: &[(String, bool, bool, bool)]) -> Vec<String> {
+    let statements: Vec<&String> = near.iter().filter(|n| !n.1 && !n.3).map(|n| &n.0).collect();
+    let feed = near.iter().filter(|n| n.1 && !n.2 && !n.3).count();
+    if statements.len() > feed { statements.into_iter().cloned().collect() } else { Vec::new() }
+}
+
+#[cfg(test)]
+mod r665_import_tests {
+    use super::{plaid_unnamed_account, statement_twins_of_feed_row};
+
+    #[test]
+    fn a_row_is_not_filed_under_a_code_on_a_stale_account_list() {
+        assert!(plaid_unnamed_account("acc_9xK", "acc_9xK", false));
+        assert!(!plaid_unnamed_account("acc_9xK", "acc_9xK", true), "the bank has no name for it: import as before");
+        assert!(!plaid_unnamed_account("Test Checking \u{b7}\u{b7}1111", "acc_9xK", false));
+        assert!(!plaid_unnamed_account("", "", false));
+    }
+
+    #[test]
+    fn a_feed_row_is_held_only_while_statement_rows_outnumber_feed_rows() {
+        let row = |id: &str, feed: bool, pending: bool, gone: bool| (id.to_string(), feed, pending, gone);
+        // One statement row, nothing from the feed: the feed row repeats it.
+        assert_eq!(statement_twins_of_feed_row(&[row("s1", false, false, false)]), vec!["s1".to_string()]);
+        // The feed already has its copy of that statement row: this is a second payment.
+        assert!(statement_twins_of_feed_row(&[row("s1", false, false, false), row("f1", true, false, false)]).is_empty());
+        // Two statement rows, one feed row: the second feed row repeats the other.
+        assert_eq!(statement_twins_of_feed_row(&[row("s1", false, false, false), row("s2", false, false, false), row("f1", true, false, false)]).len(), 2);
+        // A pending feed row is being replaced, not a copy; a row the bank took back is neither.
+        assert_eq!(statement_twins_of_feed_row(&[row("s1", false, false, false), row("f1", true, true, false)]).len(), 1);
+        assert!(statement_twins_of_feed_row(&[row("s1", false, false, true)]).is_empty());
+        assert!(statement_twins_of_feed_row(&[]).is_empty());
+    }
+}
+
 fn plaid_decline(id: &str, label: &str, date: &str, amount: f64, direction: &str, desc: &str, cat: &str, cp: &str,
                  rawj: &str, reason: &str, matched: Vec<String>) -> crate::bank_declined::Decline {
     let s = |v: &str| Value::String(v.to_string());
@@ -22227,6 +22272,14 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // reporting the old mask lands on the surviving label instead of re-splitting
                     // the account (which is what made booked transactions re-appear unbooked).
                     let raw_label = label_of(t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""));
+                    // R-665: the bank did not name this account and its account list could not be read this pass.
+                    // Importing now would file the row under a code nothing can match (R-656), so this bank stops
+                    // here and the page is offered again on the next check.
+                    if plaid_unnamed_account(&raw_label, t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""), accounts_now.contains_key(&item_pk)) {
+                        status = "error";
+                        error_msg = "The bank did not name one of its accounts, so nothing more was imported from it. Ecliptr tries again on the next check.".into();
+                        break;
+                    }
                     let label = aliases.get(&raw_label).cloned().unwrap_or(raw_label);
                     // R-590: another computer feeds this account.
                     if standby_account(t.get("account_id").and_then(|v| v.as_str()).unwrap_or("")) { standby += 1; continue; }
@@ -22410,6 +22463,38 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         }
                         declined += 1;
                         continue;
+                    }
+                    // R-665: a statement import already put this payment on the books under other wording (the check
+                    // above needs the same description). Same account, way and amount within a day, and more
+                    // statement rows than posted feed rows beside them: held on the Not imported list, where Import
+                    // anyway brings it in if it is a second payment.
+                    if !incoming_pending {
+                        let near: Vec<(String, String, String, String)> = conn
+                            .prepare(
+                                "SELECT id, COALESCE(account_id,''), COALESCE(source_format,''), COALESCE(raw_json,'') FROM bank_txn \
+                                  WHERE direction=?1 AND ABS(amount-?2)<0.005 \
+                                    AND substr(posted_at,1,10) BETWEEN date(?3,'-1 day') AND date(?3,'+1 day')",
+                            )
+                            .and_then(|mut st| st.query_map(rusqlite::params![direction, amount, date],
+                                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                                .map(|rows| rows.filter_map(|x| x.ok()).collect()))
+                            .unwrap_or_default();
+                        let near: Vec<(String, bool, bool, bool)> = near.into_iter()
+                            .filter(|n| same_account.contains(&n.1))
+                            .map(|n| { let (p, r) = crate::bank_dedup::pending_and_retracted(&n.3); (n.0, n.2 == "plaid", p, r) })
+                            .collect();
+                        let twins = statement_twins_of_feed_row(&near);
+                        if !twins.is_empty() {
+                            let d = plaid_decline(&id, &label, &date, amount, direction, &desc, &cat, &cp, &rawj,
+                                                  crate::bank_declined::FEED_STATEMENT_TWIN, twins);
+                            if let Err(e) = crate::bank_declined::record(&conn, &d, &now) {
+                                status = "error";
+                                error_msg = format!("save failed: {e}");
+                                break;
+                            }
+                            declined += 1;
+                            continue;
+                        }
                     }
                     // R-002/BL-22. `canonical_bank_txn_id` wired as a live dedup key — but as
                     // a DETECTION-ONLY key, never as an id this loop mints. It catches the
@@ -22882,6 +22967,17 @@ pub async fn plaid_sync() -> Result<Value, String> {
     } else { (0, Vec::new()) };
     settle_refused.extend(pending_refused);
     if pending_retired > 0 { tracing::info!("plaid_sync: {} pending copies retired beside their posted copy", pending_retired); }
+    // R-665 (Jack: "ensure there are no exact duplicate transactions"): the exact-copy clean-up, the careful one
+    // Financials > Setup runs, after every check of the banks. A copy another computer's link or an older import
+    // put beside a row is removed here instead of waiting for someone to press the button; each removed row is
+    // backed up first (`bank_txn_deleted_backup`) and anything it is not sure of is left for review.
+    let copies_removed: i64 = if converged && pulled_ok {
+        match dedupe_bank_txns(false, false).await {
+            Ok(v) => v.get("removed").and_then(|x| x.as_i64()).unwrap_or(0),
+            Err(e) => { tracing::warn!("plaid_sync: exact copies not cleaned up this sync: {e}"); 0 }
+        }
+    } else { 0 };
+    if copies_removed > 0 { tracing::info!("plaid_sync: {} exact copies removed, each backed up", copies_removed); }
     for d in &touched_deals { let _ = resync_completed_deal(d); }
     // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules
     // failure must not fail the sync.
@@ -23039,6 +23135,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         "declined": declined,                         // R-586: kept on the Not imported list
         "standby": standby,                           // R-590: left to the computer that feeds the account
         "personal": personal_stored,                  // R-660: stored as personal, never in the books
+        "copies_removed": copies_removed,             // R-665: exact copies removed after this check, each backed up
         "preparing": preparing, "results": results,
     }))
 }
@@ -28747,6 +28844,8 @@ fn explain_bank_drift_inner(conn: &rusqlite::Connection, account: String) -> Res
                 push(&mut groups, "differs", row_v(&txn_id, &date, &desc, amount, &dir, signed(amount, &dir) - signed(la, &ld)));
             }
             crate::bank_declined::NOT_AT_BANK => push(&mut groups, "not_at_bank", row_v(&txn_id, &date, &desc, amount, &dir, -signed(amount, &dir))),
+            // R-665: held because a statement row already holds this payment; the books are not short of it.
+            crate::bank_declined::FEED_STATEMENT_TWIN => {}
             _ => push(&mut groups, "missing", row_v(&txn_id, &date, &desc, amount, &dir, signed(amount, &dir))),
         }
     }

@@ -19,6 +19,9 @@ pub const COPY: &str = "copy";
 pub const HELD_REFERENCE: &str = "held_reference";
 pub const CHANGE_UNKNOWN: &str = "change_unknown";
 pub const STATEMENT_FEED_TWIN: &str = "statement_feed_twin";
+/// R-665: the bank feed sent a payment a statement import already put on the books (same account, way and amount,
+/// within a day), under different wording. Held instead of imported beside it.
+pub const FEED_STATEMENT_TWIN: &str = "feed_statement_twin";
 pub const MISSING: &str = "missing";
 /// A ledger row whose date, amount, direction or memo is not what the bank says.
 pub const DIFFERS: &str = "differs";

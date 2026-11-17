@@ -16,6 +16,7 @@ const REASON: Record<BankDeclined["reason"], string> = {
   held_reference: "Held back: it has the same payment reference as money already booked.",
   change_unknown: "Your bank sent a change to this transaction, and the ledger never had it.",
   statement_feed_twin: "Statement row taken for the bank feed's copy of the same amount, so it was not added.",
+  feed_statement_twin: "The bank sent this, and a statement you imported already has the same amount on this account within a day, so it was not added twice.",
   missing: "Posted at your bank and not in the ledger.",
   differs: "In the ledger, but not exactly as your bank shows it.",
   not_at_bank: "In the ledger from the bank feed, but your bank no longer shows it.",
