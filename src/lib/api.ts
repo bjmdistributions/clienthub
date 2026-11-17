@@ -4818,6 +4818,10 @@ export const api = {
   personalMark: (accountKey: string, label: string, institution: string, kind: string) =>
     invoke<{ moved: number; not_moved: number; kept: { id: string; posted_at?: string; amount?: number; description?: string }[] }>("personal_mark", { accountKey, label, institution, kind }),
   personalUnmark: (accountKey: string) => invoke<{ back: number }>("personal_unmark", { accountKey }),
+  // R-663: sort a personal transaction; and whether this computer says when new personal transactions arrive.
+  personalSetCategory: (id: string, category: string) => invoke<void>("personal_set_category", { id, category }),
+  personalNotifyGet: () => invoke<boolean>("personal_notify_get"),
+  personalNotifySet: (on: boolean) => invoke<void>("personal_notify_set", { on }),
   // R-579: every account, period by period: statement posted, statement net against ledger net, duplicates, withdrawn.
   checkBooks: () => invoke<CheckAccount[]>("check_books"),
   convergeIntegrityItem: (kind: IntegrityItem["kind"], id: string) =>

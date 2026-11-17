@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, Loader2, Lock } from "lucide-react";
 import { api, PersonalAccount, PersonalCandidate, PersonalTxn } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { categoryName, isMovement, monthsOf, summarize } from "../lib/personalSpend";
+import { CATEGORY_NAMES, categoryName, isMovement, monthsOf, summarize } from "../lib/personalSpend";
 import { toast } from "./Toast";
 import { Button } from "./ui";
 
@@ -69,6 +69,21 @@ export default function PersonalView() {
   const [pick, setPick] = useState("");
   const [armed, setArmed] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // R-663: the sorting spot (only what has no real category yet) and this computer's notice switch.
+  const [toSort, setToSort] = useState(false);
+  const [notify, setNotify] = useState<boolean | null>(null);
+  useEffect(() => { api.personalNotifyGet().then(setNotify).catch(() => setNotify(null)); }, []);
+  const flipNotify = () => {
+    if (notify == null) return;
+    const next = !notify;
+    setNotify(next);
+    api.personalNotifySet(next).catch((e) => { setNotify(!next); toast(String(e?.message || e), "error"); });
+  };
+  const sort = (t: PersonalTxn, category: string) => {
+    if (!category || category === t.category) return;
+    setTxns((all) => all.map((x) => (x.id === t.id ? { ...x, category } : x)));
+    api.personalSetCategory(t.id, category).catch((e) => { toast(String(e?.message || e), "error"); load(); });
+  };
 
   const load = () => {
     api.personalOverview()
@@ -89,7 +104,9 @@ export default function PersonalView() {
     return m.includes(thisMonth()) ? m : [thisMonth(), ...m];
   }, [txns]);
   const s = useMemo(() => summarize(txns, month), [txns, month]);
-  const shown = cat ? s.rows.filter((t) => (t.category || "OTHER") === cat) : s.rows;
+  const unsorted = (t: PersonalTxn) => !t.category || t.category === "OTHER";
+  const unsortedCount = s.rows.filter(unsorted).length;
+  const shown = toSort ? s.rows.filter(unsorted) : cat ? s.rows.filter((t) => (t.category || "OTHER") === cat) : s.rows;
   const byDay = useMemo(() => {
     const out: [string, PersonalTxn[]][] = [];
     for (const t of shown) {
@@ -203,11 +220,17 @@ export default function PersonalView() {
           <section className="pt-6 min-w-0">
             <div className="flex items-center gap-2 mb-2">
               <h4 className="text-[13px] font-medium text-ink">Transactions</h4>
-              {cat && (
+              {cat && !toSort && (
                 <button onClick={() => setCat(null)} className="ui-btn ui-btn-sm">{categoryName(cat)}, show all</button>
               )}
+              {(unsortedCount > 0 || toSort) && (
+                <button onClick={() => setToSort(!toSort)} className="ui-btn ui-btn-sm" aria-pressed={toSort}>
+                  {toSort ? "Show all" : `To sort (${unsortedCount})`}
+                </button>
+              )}
             </div>
-            {byDay.length === 0 && <p className="ui-note py-2">No transactions this month.</p>}
+            <p className="ui-note pb-2">Pick the group for any transaction. Your choice stays, whatever the bank calls it later.</p>
+            {byDay.length === 0 && <p className="ui-note py-2">{toSort ? "Nothing left to sort this month." : "No transactions this month."}</p>}
             <div className="rounded-xl ring-1 ring-line divide-y divide-line min-w-0">
               {byDay.map(([day, rows]) => (
                 <div key={day} className="px-3.5 py-2 min-w-0">
@@ -220,9 +243,18 @@ export default function PersonalView() {
                         <div className="min-w-0 flex-1">
                           <div className="text-[13px] text-ink truncate" title={t.description}>{t.merchant || t.description}</div>
                           <div className="text-[12px] text-muted truncate">
-                            {categoryName(code)} · {t.account}{t.pending ? " · pending" : ""}{moved ? " · not counted" : ""}
+                            {t.account}{t.pending ? " · pending" : ""}{moved ? " · not counted" : ""}
                           </div>
                         </div>
+                        <select
+                          value={code}
+                          onChange={(e) => sort(t, e.target.value)}
+                          aria-label={`Group for ${t.merchant || t.description}`}
+                          className="h-8 px-2 rounded-lg border border-line bg-surface text-[12.5px] text-ink-2 w-40 flex-shrink-0"
+                        >
+                          {!(code in CATEGORY_NAMES) && <option value={code}>{categoryName(code)}</option>}
+                          {Object.entries(CATEGORY_NAMES).map(([k, name]) => <option key={k} value={k}>{name}</option>)}
+                        </select>
                         <span className={`text-[13px] tabular-nums flex-shrink-0 ${t.direction === "in" ? "text-success-ink" : moved ? "text-muted" : "text-ink"}`}>
                           {t.direction === "in" ? "+" : ""}{fmtAmount(t.amount)}
                         </span>
@@ -235,6 +267,18 @@ export default function PersonalView() {
           </section>
         </>
       )}
+
+      <section className="pt-6 min-w-0">
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input type="checkbox" role="switch" checked={!!notify} disabled={notify == null} onChange={flipNotify} className="mt-0.5" />
+          <span className="min-w-0">
+            <span className="block text-[13px] font-medium text-ink">Tell me when new personal transactions arrive</span>
+            <span className="block ui-note mt-0.5">
+              Off: personal spending never raises a notice, here or with the business alerts. On: this computer says how many came in after it checks the banks.
+            </span>
+          </span>
+        </label>
+      </section>
 
       <section className="pt-6 min-w-0">
         <h4 className="text-[13px] font-medium text-ink mb-3">Personal accounts</h4>

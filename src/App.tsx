@@ -758,6 +758,16 @@ export default function App() {
     return () => { dead = true; clearInterval(id); un.forEach((u) => u()); };
   }, [billsAllowed]);
 
+  // R-663: new personal transactions, said only when the switch in Financials, Personal is on.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{ count: number }>("personal-new", (e) => {
+      const n = e.payload.count;
+      toast(`${n} new personal ${n === 1 ? "transaction" : "transactions"}. ${n === 1 ? "It is" : "They are"} in Financials, Personal.`);
+    }).then((u) => { unlisten = u; }).catch(() => {});
+    return () => unlisten?.();
+  }, []);
+
   // R-318: a Priority1 delivery announces itself wherever you are in the app, not only on
   // Deal Flow, because it is the moment that deal becomes completable. The green row on
   // Deal Flow is what keeps saying it after the toast has gone.

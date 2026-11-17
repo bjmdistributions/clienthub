@@ -22004,6 +22004,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         (marks.iter().map(|m| m.account_key.clone()).collect(), marks.iter().map(|m| m.key.clone()).collect(), marks.first().map(|m| m.key.clone()))
     };
     let mut personal_stored = 0i64;
+    let mut personal_new = 0i64; // R-663: new personal transactions this check, for the optional notice
     // R-656: and give rows an earlier pull labelled with a bare Plaid account id their account's name, so the
     // duplicate guard and Clean up duplicates see them as the account they are.
     {
@@ -22311,7 +22312,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // R-660: a personal account's transaction goes to Personal, never into the books.
                     if let (Some(pk), Some((ak, pl))) = (personal_key.as_deref(), personal_of.get(t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""))) {
                         match crate::personal::upsert_from_plaid(&conn, pk, ak, pl, t, &now) {
-                            Ok(()) => personal_stored += 1,
+                            Ok(new) => { personal_stored += 1; if new { personal_new += 1; } }
                             Err(e) => tracing::warn!("plaid_sync: a personal transaction was not stored: {e}"),
                         }
                         continue;
@@ -23004,6 +23005,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
     } else { 0 };
     if copies_removed > 0 { tracing::info!("plaid_sync: {} exact copies removed, each backed up", copies_removed); }
     for d in &touched_deals { let _ = resync_completed_deal(d); }
+    if let Ok(c) = pool().get() { crate::personal::announce_new(&c, personal_new); }
     // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules
     // failure must not fail the sync.
     let _ = apply_txn_rules_impl(false, Some(&rules_since));

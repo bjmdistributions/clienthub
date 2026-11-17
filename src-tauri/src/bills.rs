@@ -40,6 +40,14 @@ pub fn set_app(app: tauri::AppHandle) {
     let _ = APP.set(app);
 }
 
+/// R-663: tell the open window something, by name. Nothing before setup or in tests.
+pub fn emit_event(name: &str, payload: Value) {
+    use tauri::Emitter;
+    if let Some(app) = APP.get() {
+        let _ = app.emit(name, payload);
+    }
+}
+
 /// `bills-changed`: after any bills write and after an auto-link pass that wrote a link.
 fn announce() {
     use tauri::Emitter;

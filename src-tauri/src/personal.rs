@@ -80,7 +80,8 @@ fn write(conn: &rusqlite::Connection, table: &str, id: &str, cols: &Map<String, 
 
 /// A transaction the bank sent for a personal account, stored as personal (added or changed). Same fields the
 /// business import reads: the bank memo as the description, Plaid's merchant, its spending category.
-pub fn upsert_from_plaid(conn: &rusqlite::Connection, key: &str, account_key: &str, label: &str, t: &Value, now: &str) -> Result<(), String> {
+/// True when the row is new (R-663: only a new one is worth a notice).
+pub fn upsert_from_plaid(conn: &rusqlite::Connection, key: &str, account_key: &str, label: &str, t: &Value, now: &str) -> Result<bool, String> {
     let tid = t.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
     if tid.is_empty() { return Err("no transaction id".into()); }
     let id = format!("{key}.{}", crate::commands::plaid_txn_id(tid));
@@ -88,7 +89,14 @@ pub fn upsert_from_plaid(conn: &rusqlite::Connection, key: &str, account_key: &s
     let merchant = t.get("merchant_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let pfc = t.get("personal_finance_category");
-    let raw = json!({
+    // R-663: a category the owner chose stays; the bank's later word on the same transaction does not undo it.
+    let chosen: Option<String> = conn
+        .query_row("SELECT COALESCE(category,''), COALESCE(raw_json,'') FROM personal_txns WHERE id=?1", [&id],
+                   |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .ok()
+        .filter(|(_, raw)| owner_sorted(raw))
+        .map(|(c, _)| c);
+    let mut raw = json!({
         "pa": t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""),
         "tid": tid,
         "dt": t.get("datetime").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
@@ -104,14 +112,74 @@ pub fn upsert_from_plaid(conn: &rusqlite::Connection, key: &str, account_key: &s
     cols.insert("direction".into(), json!(if amt > 0.0 { "out" } else { "in" }));
     cols.insert("description".into(), json!(if name.is_empty() { merchant.clone() } else { name }));
     cols.insert("merchant".into(), json!(merchant));
-    cols.insert("category".into(), json!(pfc.and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or("")));
+    match &chosen {
+        Some(c) => { cols.insert("category".into(), json!(c)); raw["uc"] = json!(true); }
+        None => { cols.insert("category".into(), json!(pfc.and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or(""))); }
+    }
     cols.insert("pending".into(), json!(t.get("pending").and_then(|v| v.as_bool()).unwrap_or(false) as i64));
     cols.insert("raw_json".into(), json!(raw.to_string()));
     cols.insert("updated_at".into(), json!(now));
-    if conn.query_row("SELECT 1 FROM personal_txns WHERE id=?1", [&id], |_| Ok(())).is_err() {
-        cols.insert("created_at".into(), json!(now));
+    let new = conn.query_row("SELECT 1 FROM personal_txns WHERE id=?1", [&id], |_| Ok(())).is_err();
+    if new { cols.insert("created_at".into(), json!(now)); }
+    write(conn, "personal_txns", &id, &cols).map(|_| new)
+}
+
+/// R-663: whether the owner chose this row's category (`raw_json.uc`).
+fn owner_sorted(raw_json: &str) -> bool {
+    serde_json::from_str::<Value>(raw_json).ok().and_then(|v| v.get("uc").and_then(|x| x.as_bool())).unwrap_or(false)
+}
+
+/// R-663 (Jack: "I want it to have it own booking spot in personal"): the owner sorts a personal transaction into
+/// a spending group. Kept on the row and marked as the owner's choice, so the bank's category never replaces it.
+#[tauri::command]
+pub async fn personal_set_category(id: String, category: String) -> Result<(), String> {
+    let key = owner_key_from_server().await?;
+    if !id.starts_with(&format!("{key}.")) { return Err("That is not one of your personal transactions.".into()); }
+    let category = category.trim().to_uppercase();
+    if category.is_empty() || !category.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+        return Err("Pick a category.".into());
     }
-    write(conn, "personal_txns", &id, &cols)
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let raw: String = conn.query_row("SELECT COALESCE(raw_json,'') FROM personal_txns WHERE id=?1", [&id], |r| r.get(0))
+        .map_err(|_| "That transaction is no longer here.".to_string())?;
+    let mut v: Value = serde_json::from_str(&raw).ok().filter(|v: &Value| v.is_object()).unwrap_or_else(|| json!({}));
+    v["uc"] = json!(true);
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("UPDATE personal_txns SET category=?1, raw_json=?2, updated_at=?3 WHERE id=?4",
+                 rusqlite::params![category, v.to_string(), now, id]).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("category".into(), json!(category));
+    cols.insert("raw_json".into(), json!(v.to_string()));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("personal_txns", &id, cols).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
+/// R-663 (Jack: "Have a switch for notifications in personal so we are not flooded"): whether this computer says
+/// when new personal transactions arrive. Off unless turned on; kept on this computer only.
+fn notify_on(conn: &rusqlite::Connection) -> bool {
+    conn.query_row("SELECT value FROM settings WHERE key='personal_notify'", [], |r| r.get::<_, String>(0))
+        .map(|v| v == "1").unwrap_or(false)
+}
+
+#[tauri::command]
+pub async fn personal_notify_get() -> Result<bool, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    Ok(notify_on(&conn))
+}
+
+#[tauri::command]
+pub async fn personal_notify_set(on: bool) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('personal_notify',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 [if on { "1" } else { "0" }]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// After a bank check: say how many new personal transactions came in, only with the switch on.
+pub fn announce_new(conn: &rusqlite::Connection, count: i64) {
+    if count > 0 && notify_on(conn) { crate::bills::emit_event("personal-new", json!({ "count": count })); }
 }
 
 /// The bank withdrew a transaction: remove its personal row, if it is one. True when a row went.
