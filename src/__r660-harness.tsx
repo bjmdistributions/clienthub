@@ -4,6 +4,8 @@
 import ReactDOM from "react-dom/client";
 import AccountsView from "./components/AccountsView";
 import PersonalView from "./components/PersonalView";
+import BalancesAndTax from "./components/BalancesAndTax";
+import FinancialsAttention from "./components/FinancialsAttention";
 import { ToastHost } from "./components/Toast";
 import "./index.css";
 
@@ -59,6 +61,8 @@ const t = (days: number, amount: number, direction: string, category: string, me
         t(8, 14.99, "out", "GENERAL_SERVICES", "Stream Box"),
         t(9, 2500, "in", "INCOME", "Owner draw"),
         t(12, 210.0, "out", "TRAVEL", "Coast Hotel"),
+        t(13, 31.5, "out", "OTHER", "Unknown Shop"),
+        t(14, 12.0, "out", "", "Paper Co"),
       ],
       candidates: [
         { account_key: "harbor bank|1182", label: "Business Checking ··1182", institution: "Harbor Bank", type: "depository", balance: 48210.55, rows: 812 },
@@ -67,11 +71,30 @@ const t = (days: number, amount: number, direction: string, category: string, me
     };
     case "personal_mark": return { moved: 37, not_moved: 0, kept: [{ id: "x" }] };
     case "personal_unmark": return { back: 10 };
+    // R-663 and R-665: sorting, the notice switch, the attention strip and the tax lines.
+    case "personal_set_category": return null;
+    case "personal_notify_get": return false;
+    case "personal_notify_set": return null;
+    case "plaid_health": return { banks: [{ id: "pi_b", institution: "Summit Credit Union", needs_login: true, error: "", code: "", last_ok: null, last_try: null, webhook_ok: null, last_ring: null }], warnings: [] };
+    case "reconcile_accounts": return [
+      { account: "Business Checking ··1182", bank_balance: 48210.55, ledger_net: 100, implied_opening: 1, baseline: 1, drift: 0, txn_count: 3, settled_before: -420 },
+      { account: "Operating ··0451", bank_balance: 9312.4, ledger_net: 100, implied_opening: 1, baseline: 2, drift: -85.5, txn_count: 3, settled_before: 0 },
+    ];
+    case "financials_overview": return {
+      tax_base: 64000, tax_reserve: 19200, tax_paid: 4000, tax_should_have: 15200, tax_sweep_pct: 0.3, reserve_account_key: "a2",
+      balance_source: "plaid",
+      tax_extra: { reserve_in_year: 14000, reserve_out_year: 4000, uncategorised_in: 1250, uncategorised_out: 3380.4, uncategorised_rows: 7 },
+    };
+    case "get_money_config": return { bank_balance: 0, credit_card_balance: 0, cash_floor: 0, tax_sweep_pct: 0.3, refund_reserve_pct: 0, war_chest: 0 };
     default: return null;
   }
 };
 
-const view = q.get("view") === "personal" ? <PersonalView /> : <AccountsView />;
+const which = q.get("view");
+const view = which === "personal" ? <PersonalView />
+  : which === "tax" ? <BalancesAndTax onToBook={() => {}} />
+  : which === "attention" ? <FinancialsAttention onGo={(g) => { document.title = `went:${g}`; }} />
+  : <AccountsView />;
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <div className="p-6 max-w-[1180px]">{view}<ToastHost /></div>,
 );

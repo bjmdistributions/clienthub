@@ -29,6 +29,7 @@ import MovedBookings from "./MovedBookings";
 import BankHealthStrip from "./BankHealthStrip";
 import AccountsView from "./AccountsView";
 import PersonalView from "./PersonalView";
+import FinancialsAttention from "./FinancialsAttention";
 import { accountLabel, fixBankConnection } from "../lib/plaidFix";
 import Switch from "./Switch";
 import { Button, Kpi, PageActions, Row, Tabs } from "./ui";
@@ -3577,30 +3578,50 @@ export default function FinancialsView() {
       {/* Surface nav: To book is the daily queue and opens first; its count is
           the one number that says whether there is work to do. Cash is two tabs
           here (Free cash, Loans) over the same cashTab state as before. */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <Tabs
-          label="Financials"
-          value={tab === "cash" ? cashTab : tab}
-          onChange={(v) => {
-            if (v === "loans") { setCashTab(v); setTab("cash"); }
-            else setTab(v as typeof tab);
-          }}
-          tabs={[
-            { id: "tobook", label: "To book", count: toBookStats.count > 0 ? toBookStats.count : undefined },
-            { id: "tieout", label: "Tie out", count: tieOut.length - tieOutHiddenCount > 0 ? tieOut.length - tieOutHiddenCount : undefined },
-            { id: "ledger", label: "Ledger" },
-            { id: "check", label: "Check books" },
-            { id: "loans", label: "Loans" },
-            // R-659: every account and card with its bank's logo and colour.
-            { id: "accounts", label: "Accounts" },
-            { id: "report", label: "Balances and tax" },
-            // R-660: the owner's personal spending, apart from the books.
-            ...(personalOwner ? [{ id: "personal", label: "Personal" }] : []),
-            { id: "setup", label: "Setup" },
-          ]}
-        />
-        <AccountantChanges />
-      </div>
+      {/* R-665: what needs a person, with the one place each is answered. */}
+      <FinancialsAttention reloadKey={txns} onGo={(t) => setTab(t)} />
+
+      {/* R-665: five sections where there were ten tabs; a section with more than one screen shows them on a
+          second row. The screens and their ids are the ones there were. */}
+      {(() => {
+        const tieCount = tieOut.length - tieOutHiddenCount > 0 ? tieOut.length - tieOutHiddenCount : undefined;
+        const group = tab === "report" ? "accounts" : tab === "tieout" || tab === "check" ? "checks" : tab === "cash" ? "setup" : tab;
+        const subs: Record<string, { id: string; label: string; count?: number }[]> = {
+          accounts: [{ id: "accounts", label: "Accounts" }, { id: "report", label: "Balances and tax" }],
+          checks: [{ id: "tieout", label: "Tie out", count: tieCount }, { id: "check", label: "Check books" }],
+          setup: [{ id: "setup", label: "Banks and import" }, { id: "loans", label: "Loans" }],
+        };
+        const open = (v: string) => {
+          if (v === "loans") { setCashTab(v); setTab("cash"); }
+          else if (v === "checks") setTab("tieout");
+          else setTab(v as typeof tab);
+        };
+        return (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <Tabs
+                label="Financials"
+                value={group}
+                onChange={open}
+                tabs={[
+                  { id: "tobook", label: "To book", count: toBookStats.count > 0 ? toBookStats.count : undefined },
+                  { id: "ledger", label: "Ledger" },
+                  // R-659: every account and card with its bank's logo and colour; Balances and tax beside it.
+                  { id: "accounts", label: "Accounts" },
+                  { id: "checks", label: "Checks", count: tieCount },
+                  // R-660: the owner's personal spending, apart from the books.
+                  ...(personalOwner ? [{ id: "personal", label: "Personal" }] : []),
+                  { id: "setup", label: "Setup" },
+                ]}
+              />
+              <AccountantChanges />
+            </div>
+            {subs[group] && (
+              <Tabs label={`${group} screens`} value={tab === "cash" ? cashTab : tab} onChange={open} tabs={subs[group]} />
+            )}
+          </div>
+        );
+      })()}
 
       {/* Cash — free cash and loans together; the best-designed screens stay as they are. */}
       {/* R-456: a payment on the books twice, flagged where the money is booked and searched. */}
