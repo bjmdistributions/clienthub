@@ -6,6 +6,7 @@ mod account_statement;
 mod bank_dedup;
 mod bank_feed;
 mod personal;
+mod ein_lock;
 mod bank_flags;
 mod carrier_paid;
 mod bank_near_dup;
@@ -1275,6 +1276,9 @@ fn main() {
             commands::plaid_reconnect_poll,
             commands::bank_branding,
             personal::personal_me,
+            ein_lock::ein_lock_status,
+            ein_lock::ein_lock_open,
+            ein_lock::ein_lock_save,
             personal::personal_overview,
             personal::personal_mark,
             personal::personal_unmark,

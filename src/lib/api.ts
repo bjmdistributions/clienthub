@@ -5402,6 +5402,11 @@ export const api = {
   getEmailSettings: () => invoke<EmailSettings | null>("get_email_settings"),
   saveCompanyInfo: (info: CompanyInfo) => invoke<void>("save_company_info", { info }),
   getCompanyInfo: () => invoke<CompanyInfo | null>("get_company_info"),
+  // R-668: the EIN locked under a password (ein_lock.rs). The password is never stored.
+  einLockStatus: () => invoke<{ locked: boolean; plain: string | null }>("ein_lock_status"),
+  einLockOpen: (password: string) => invoke<string>("ein_lock_open", { password }),
+  einLockSave: (ein: string, password: string, current: string | null) =>
+    invoke<void>("ein_lock_save", { ein, password, current }),
   /** R-591: this device's copy of the company logo (downloaded when another device picked it), or null. */
   companyLogoFile: () => invoke<string | null>("company_logo_file"),
   // Invoice branding template + sample render (backend opens the PDF and returns its path).

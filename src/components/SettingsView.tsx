@@ -322,7 +322,7 @@ const SETTINGS_INDEX: IndexRow[] = [
   { tab: "company", card: "Business details", label: "Business address", kw: "street city state" },
   { tab: "company", card: "Business details", label: "Business email", kw: "contact email" },
   { tab: "company", card: "Business details", label: "Business phone", kw: "contact number" },
-  { tab: "company", card: "Business details", label: "Tax ID / EIN", kw: "vat ein tax number" },
+  { tab: "company", card: "Business details", label: "EIN", kw: "vat ein tax id number lock password copy" },
   { tab: "company", card: "Share footer", label: "WhatsApp share footer", kw: "sign-off line inventory share text" },
   { tab: "company", card: "Share footer", label: "WhatsApp description", kw: "reply to claim share text" },
   // Invoices & quotes
@@ -2475,15 +2475,148 @@ function CompanyTab() {
       <Field label="Phone">
         <input className={inp} value={info.phone ?? ""} onChange={(e) => setInfo({ ...info, phone: e.target.value })} />
       </Field>
-      <Field label="Tax ID / EIN">
-        <input className={inp} value={info.tax_id ?? ""} onChange={(e) => setInfo({ ...info, tax_id: e.target.value })} />
-      </Field>
+      <EinLock onLocked={() => setInfo((i) => ({ ...i, tax_id: "" }))} />
     </SettingCard>
 
     <SettingCard icon={FileText} title="Share footer" purpose="The sign-off line appended when you share inventory over WhatsApp.">
       <WhatsAppFooterField />
     </SettingCard>
     </div>
+  );
+}
+
+// R-668: the EIN, locked under a password only you know (`ein_lock.rs`). Showing it and
+// copying it each ask for that password; once shown it hides itself after 30 seconds.
+// The password is never stored, so it cannot be read back from this computer or the server.
+export function EinLock({ onLocked }: { onLocked: () => void }) {
+  const [status, setStatus] = useState<{ locked: boolean; plain: string | null } | null>(null);
+  const [mode, setMode] = useState<"idle" | "unlock" | "set" | "forgot">("idle");
+  const [want, setWant] = useState<"show" | "copy">("show");
+  const [shown, setShown] = useState<string | null>(null);
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [cur, setCur] = useState("");
+  const [ein, setEin] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const btn = "px-3 h-10 border border-line rounded-lg text-[13px] text-ink-2 bg-surface hover:bg-surface-2 transition-colors disabled:opacity-50 whitespace-nowrap";
+  const primary = "px-3.5 h-10 rounded-lg text-[13px] font-medium bg-accent hover:bg-accent-hover text-on-accent disabled:opacity-50 whitespace-nowrap";
+
+  const load = () => api.einLockStatus().then(setStatus).catch(() => setStatus({ locked: false, plain: null }));
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (!shown) return;
+    const t = setTimeout(() => setShown(null), 30000);
+    return () => clearTimeout(t);
+  }, [shown]);
+
+  const reset = () => { setMode("idle"); setPw(""); setPw2(""); setCur(""); setEin(""); setErr(""); };
+  const copy = async (v: string) => {
+    if (await copyText(v)) toast("EIN copied");
+    else toast(COPY_FAILED, "error");
+  };
+  const ask = (w: "show" | "copy") => { reset(); setWant(w); setMode("unlock"); };
+  const startSet = (m: "set" | "forgot", prefill: string) => { reset(); setEin(prefill); setMode(m); };
+
+  const unlock = async () => {
+    setBusy(true); setErr("");
+    try {
+      const v = await api.einLockOpen(pw);
+      reset();
+      setShown(v);
+      if (want === "copy") await copy(v);
+    } catch (e) { setErr(String(e)); } finally { setBusy(false); }
+  };
+
+  const save = async () => {
+    if (pw !== pw2) { setErr("The two passwords do not match."); return; }
+    setBusy(true); setErr("");
+    try {
+      await api.einLockSave(ein, pw, mode === "set" && status?.locked ? cur : null);
+      reset();
+      setShown(null);
+      onLocked();
+      await load();
+      toast("EIN locked");
+    } catch (e) { setErr(String(e)); } finally { setBusy(false); }
+  };
+
+  if (!status) return null;
+  const pwInput = (value: string, set: (v: string) => void, placeholder: string, focus = false) => (
+    <input type="password" autoComplete="off" autoFocus={focus} className={inp} placeholder={placeholder}
+      value={value} onChange={(e) => set(e.target.value)} />
+  );
+
+  return (
+    <Field label="EIN">
+      {status.locked ? (
+        <div className="flex items-center gap-2">
+          <div className={`${inp} flex items-center font-mono tabular-nums ${shown ? "select-all" : "text-muted"}`}>
+            {shown ?? "Locked"}
+          </div>
+          {shown ? (
+            <>
+              <button className={btn} onClick={() => copy(shown)}>Copy</button>
+              <button className={btn} onClick={() => setShown(null)}>Hide</button>
+            </>
+          ) : mode === "idle" && (
+            <>
+              <button className={btn} onClick={() => ask("show")}>Show</button>
+              <button className={btn} onClick={() => ask("copy")}>Copy</button>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <p className="text-[13px] text-ink-2 flex-1">
+            {status.plain
+              ? "Your EIN is saved as plain text and prints on invoices. Lock it with a password to keep it encrypted instead."
+              : "No EIN saved."}
+          </p>
+          {mode === "idle" && (
+            <button className={primary} onClick={() => startSet("set", status.plain ?? "")}>
+              {status.plain ? "Lock it" : "Add EIN"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {mode === "unlock" && (
+        <form className="mt-2 flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); unlock(); }}>
+          {pwInput(pw, setPw, "EIN password", true)}
+          <button type="submit" className={primary} disabled={busy || !pw}>{busy ? "Checking" : want === "copy" ? "Copy" : "Show"}</button>
+          <button type="button" className={btn} onClick={reset}>Cancel</button>
+        </form>
+      )}
+
+      {(mode === "set" || mode === "forgot") && (
+        <form className="mt-2 space-y-2" onSubmit={(e) => { e.preventDefault(); save(); }}>
+          <input className={`${inp} font-mono tabular-nums`} autoComplete="off" placeholder="12-3456789" value={ein}
+            onChange={(e) => setEin(e.target.value)} autoFocus={!ein} />
+          {mode === "set" && status.locked && pwInput(cur, setCur, "Current EIN password")}
+          {pwInput(pw, setPw, "New password, 10 characters or more", !!ein && !status.locked)}
+          {pwInput(pw2, setPw2, "Type the new password again")}
+          {mode === "forgot" && (
+            <p className="text-[12px] text-muted">Type the EIN again with a new password. The old locked copy stays on this computer, still locked, in case you remember its password.</p>
+          )}
+          <div className="flex items-center gap-2">
+            <button type="submit" className={primary} disabled={busy || !ein || !pw || !pw2}>{busy ? "Locking" : "Lock EIN"}</button>
+            <button type="button" className={btn} onClick={reset}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {err && <p className="text-[12px] text-danger-ink mt-1.5 flex items-center gap-1"><AlertCircle size={11} /> {err}</p>}
+
+      {status.locked && mode === "idle" && (
+        <p className="text-[12px] text-muted mt-1.5">
+          Kept encrypted under your EIN password, which is stored nowhere, and no longer printed on invoices.{" "}
+          <button className="underline hover:text-ink" onClick={() => startSet("set", shown ?? "")}>Change it</button>
+          {" or "}
+          <button className="underline hover:text-ink" onClick={() => startSet("forgot", "")}>forgot the password</button>
+        </p>
+      )}
+    </Field>
   );
 }
 

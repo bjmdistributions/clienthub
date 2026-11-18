@@ -11901,6 +11901,10 @@ pub async fn save_company_info(mut info: crate::invoice::CompanyInfo) -> Result<
         let _ = std::fs::remove_file(&target);
     }
 
+    // R-668: once the EIN is locked, the plain copy stays empty, whatever a screen still holds.
+    if crate::ein_lock::is_locked() {
+        info.tax_id = None;
+    }
     let conn = pool().get().map_err(|e| e.to_string())?;
     let json = serde_json::to_string(&info).map_err(|e| e.to_string())?;
     conn.execute(

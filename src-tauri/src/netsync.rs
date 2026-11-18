@@ -2743,6 +2743,9 @@ const SHARED_SETTINGS_KEYS: &[&str] = &[
     // clauses are: two admins sending the same buyer differently-shaped paperwork is
     // the divergence this allowlist exists to prevent. Non-secret layout config.
     "lot_manifest_opts",
+    // R-668: the EIN sealed under the owner's password (AES-256-GCM, PBKDF2 600k). Only
+    // the sealed blob travels; the password and the plain EIN never leave the device.
+    "ein_locked",
 ];
 
 /// Push this device's org-shared config to the server so sibling admins converge (the
