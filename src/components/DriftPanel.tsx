@@ -30,11 +30,11 @@ const KIND: Record<DriftCause["kind"], { title: (n: number) => string; fix: stri
   },
   withdrawn: {
     title: (n) => `${plural(n, "transaction", "transactions")} the bank took back, still in your books`,
-    fix: "Open each one and remove it. It is under Retracted by bank in To book.", where: "row",
+    fix: "Answer each one under Needs you.", where: "row",
   },
   duplicate: {
     title: (n) => `${plural(n, "possible duplicate", "possible duplicates")} in your books`,
-    fix: "Open each one and remove the extra copy, or mark the pair Not the same if both happened.", where: "row",
+    fix: "Check against bank settles these from the bank's list. Any it cannot settle is under Needs you.", where: "row",
   },
   late: {
     title: (n) => `${plural(n, "transaction", "transactions")} that came in after the check started, for days before it`,

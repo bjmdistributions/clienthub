@@ -23,13 +23,12 @@ import FinancialsBuyTarget from "./FinancialsBuyTarget";
 import BalancesAndTax from "./BalancesAndTax";
 import LoansView from "./LoansView";
 import AccountantChanges from "./AccountantChanges";
-import NearDuplicates from "./NearDuplicates";
-import RetractedRows from "./RetractedRows";
+import NeedsYou, { useNeedsYou } from "./NeedsYou";
+import BooksStatus from "./BooksStatus";
 import MovedBookings from "./MovedBookings";
 import BankHealthStrip from "./BankHealthStrip";
 import AccountsView from "./AccountsView";
 import PersonalView from "./PersonalView";
-import FinancialsAttention from "./FinancialsAttention";
 import { accountLabel, fixBankConnection } from "../lib/plaidFix";
 import Switch from "./Switch";
 import { Button, Kpi, PageActions, Row, Tabs } from "./ui";
@@ -846,11 +845,11 @@ export default function FinancialsView() {
   // history; Cash holds Free cash + Loans; Setup is every once-in-a-while tool.
   // The chosen surface survives leaving and re-entering the page — losing your
   // place on every visit was one of the audit's standing complaints.
-  const [tab, setTabRaw] = useState<"tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report" | "accounts" | "personal">(() => {
+  const [tab, setTabRaw] = useState<"tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report" | "accounts" | "personal" | "needs">(() => {
     const t = localStorage.getItem("fin_tab");
-    return t === "tieout" || t === "ledger" || t === "cash" || t === "check" || t === "setup" || t === "report" || t === "accounts" || t === "personal" ? t : "tobook";
+    return t === "tieout" || t === "ledger" || t === "cash" || t === "check" || t === "setup" || t === "report" || t === "accounts" || t === "personal" || t === "needs" ? t : "tobook";
   });
-  const setTab = (v: "tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report" | "accounts" | "personal") => {
+  const setTab = (v: "tobook" | "tieout" | "ledger" | "cash" | "check" | "setup" | "report" | "accounts" | "personal" | "needs") => {
     setTabRaw(v);
     localStorage.setItem("fin_tab", v);
   };
@@ -1085,6 +1084,8 @@ export default function FinancialsView() {
   const [takingOver, setTakingOver] = useState<string | null>(null);
   // R-497: rows the bank retracted, each with the posted copies that match it.
   const [retracted, setRetracted] = useState<RetractedRow[]>([]);
+  // R-670: everything about the bank feed that needs a person, as one list (re-read with the transactions).
+  const needs = useNeedsYou(txns);
   // R-614: bookings moved onto another copy of their payment (Take over, Swap, the sync).
   const [moved, setMoved] = useState<MovedBooking[]>([]);
   // R-288 phase 3: booking from history.
@@ -3320,27 +3321,22 @@ export default function FinancialsView() {
                         <select
                           value={t.confirmed_method || ""}
                           aria-label="Payment method"
-                          title={mr.state === "unclassified" ? "No payment method could be read from the memo" : `${methodLabel(mr.method)}: ${mr.reason}`}
+                          title={mr.state === "unclassified" ? "How it was paid (wire, ACH, card, check). Optional: nothing is counted from it." : `${methodLabel(mr.method)}: ${mr.reason}`}
                           onChange={(e) => setMethod(t, e.target.value as BankMethod | "")}
-                          className={`appearance-none h-7 pl-2 pr-6 rounded-md border text-[12px] cursor-pointer focus:outline-none transition-colors ${
+                          className={`appearance-none h-7 px-2 -ml-2 rounded-md border text-[12px] cursor-pointer focus:outline-none transition-colors ${
                             mr.state === "certain"
-                              ? "bg-transparent border-line text-ink-2 hover:border-line-3"
-                              : mr.state === "likely"
-                                ? "bg-transparent border-line-2 text-muted hover:border-line-3"
-                                : "bg-transparent border-ink text-ink font-medium"
+                              ? "bg-transparent border-transparent text-ink-2 hover:border-line-3"
+                              : "bg-transparent border-transparent text-muted hover:border-line-3"
                           }`}
                         >
+                          {/* R-670: how it was paid is a detail, not a task. It reads as plain text and never asks. */}
                           <option value="">
-                            {mr.state === "likely" ? `${methodLabel(mr.method)}, likely` : "Set method"}
+                            {mr.state === "likely" ? methodLabel(mr.method) : "Not set"}
                           </option>
                           {METHODS.map((m) => (
                             <option key={m.value} value={m.value}>{m.label}</option>
                           ))}
                         </select>
-                        <ChevronDown
-                          size={12}
-                          className={`pointer-events-none absolute right-1.5 ${mr.state === "unclassified" ? "text-ink" : "text-faint"}`}
-                        />
                       </span>
                     </td>
                     <td className={`py-3 pr-3 text-right tabular-nums whitespace-nowrap align-top font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
@@ -3578,22 +3574,24 @@ export default function FinancialsView() {
       {/* Surface nav: To book is the daily queue and opens first; its count is
           the one number that says whether there is work to do. Cash is two tabs
           here (Free cash, Loans) over the same cashTab state as before. */}
-      {/* R-665: what needs a person, with the one place each is answered. */}
-      <FinancialsAttention reloadKey={txns} onGo={(t) => setTab(t)} />
+      {/* R-670: do the books match the bank, and what needs a person, with the one place each is answered. */}
+      <BooksStatus reloadKey={txns} needs={needs.items.length} onGo={(t) => setTab(t)} onChanged={() => { needs.reload(); refreshAll(false); }} />
 
       {/* R-665: five sections where there were ten tabs; a section with more than one screen shows them on a
           second row. The screens and their ids are the ones there were. */}
       {(() => {
         const tieCount = tieOut.length - tieOutHiddenCount > 0 ? tieOut.length - tieOutHiddenCount : undefined;
-        const group = tab === "report" ? "accounts" : tab === "tieout" || tab === "check" ? "checks" : tab === "cash" ? "setup" : tab;
+        // R-670: the sections follow the work. To book and Ledger are the daily screens; Accounts is what each
+        // account holds; Tax is what to set aside; Needs you is everything waiting on an answer (the bank feed's
+        // questions, deals that do not tie out, and the full check); Setup is banks, imports and loans.
+        const needCount = needs.items.length + (tieCount ?? 0) > 0 ? needs.items.length + (tieCount ?? 0) : undefined;
+        const group = tab === "tieout" || tab === "check" ? "needs" : tab === "cash" ? "setup" : tab;
         const subs: Record<string, { id: string; label: string; count?: number }[]> = {
-          accounts: [{ id: "accounts", label: "Accounts" }, { id: "report", label: "Balances and tax" }],
-          checks: [{ id: "tieout", label: "Tie out", count: tieCount }, { id: "check", label: "Check books" }],
+          needs: [{ id: "needs", label: "Bank", count: needs.items.length || undefined }, { id: "tieout", label: "Deals", count: tieCount }, { id: "check", label: "Full check" }],
           setup: [{ id: "setup", label: "Banks and import" }, { id: "loans", label: "Loans" }],
         };
         const open = (v: string) => {
           if (v === "loans") { setCashTab(v); setTab("cash"); }
-          else if (v === "checks") setTab("tieout");
           else setTab(v as typeof tab);
         };
         return (
@@ -3608,7 +3606,8 @@ export default function FinancialsView() {
                   { id: "ledger", label: "Ledger" },
                   // R-659: every account and card with its bank's logo and colour; Balances and tax beside it.
                   { id: "accounts", label: "Accounts" },
-                  { id: "checks", label: "Checks", count: tieCount },
+                  { id: "report", label: "Tax" },
+                  { id: "needs", label: "Needs you", count: needCount },
                   // R-660: the owner's personal spending, apart from the books.
                   ...(personalOwner ? [{ id: "personal", label: "Personal" }] : []),
                   { id: "setup", label: "Setup" },
@@ -3625,13 +3624,10 @@ export default function FinancialsView() {
 
       {/* Cash — free cash and loans together; the best-designed screens stay as they are. */}
       {/* R-456: a payment on the books twice, flagged where the money is booked and searched. */}
-      {(tab === "tobook" || tab === "ledger") && <NearDuplicates reloadKey={txns} onChanged={() => { refreshAll(false); }} />}
-      {/* R-497: every row the bank retracted, beside the posted copy that replaced it. */}
-      {(tab === "tobook" || tab === "ledger") && (
-        <RetractedRows rows={retracted} onChanged={() => { refreshAll(false); }}
-          onShow={() => { setTab("ledger"); setStatusFilter("retracted"); }} />
-      )}
-      {(tab === "tobook" || tab === "ledger") && <MovedBookings rows={moved} />}
+      {/* R-670: one list for what the bank feed needs a person for (look-alike payments, charges the bank took back,
+          transactions held at import), in place of three panels on To book and the Ledger. */}
+      {tab === "needs" && <NeedsYou data={needs} onChanged={() => { refreshAll(false); }} />}
+      {tab === "needs" && <MovedBookings rows={moved} />}
       {tab === "cash" && (
         <div className="space-y-4">
           <LoansView />
@@ -3738,11 +3734,7 @@ export default function FinancialsView() {
         // Renders nothing when no bank needs anything; over-booked rows (R-518 F7) can come from a statement too.
         <BankHealthStrip version={healthVersion} onSynced={() => { refreshAll(false).catch(() => {}); loadPlaid(); }} />
       )}
-      {tab === "tobook" && (
-        // R-586: what the bank sent that is not in the ledger as the bank shows it. Renders nothing when empty.
-        <BankDeclinedCard version={healthVersion} mode="tobook" onChanged={() => { refreshAll(false).catch(() => {}); }}
-          onOpenRow={openLedgerRow} onCheckBooks={() => setTab("check")} />
-      )}
+      {/* R-670: what the bank sent that is not in the ledger is answered under Needs you, not above the queue. */}
 
       {tab === "tobook" && (
         <div className="min-w-0 flex items-center justify-between gap-3 flex-wrap">
@@ -5380,7 +5372,7 @@ export default function FinancialsView() {
               onOpenRow={openLedgerRow} />
             <p className="text-[13px] text-muted max-w-[780px] leading-relaxed">
               A month is proven when its statement is imported and the statement's net (ending less beginning) equals the ledger's rows for the period.
-              A difference means a row is missing (negative) or doubled (positive) in your records. Possible duplicates and withdrawn rows are resolved under To book.
+              A difference means a row is missing (negative) or doubled (positive) in your records. Possible duplicates and rows the bank took back are answered under Needs you.
             </p>
             {(() => {
               const isOk = (p: CheckAccount["periods"][number]) => !!p.statement && Math.abs(p.difference ?? 0) < 0.005 && p.duplicates === 0 && p.withdrawn === 0;

@@ -241,7 +241,7 @@ export interface BankDeclined {
   resolved_at: string;
   created_at: string;
 }
-export interface BankCheckAccount { account: string; posted: number; exact: number; not_exact: number; from_statement: number }
+export interface BankCheckAccount { account: string; posted: number; exact: number; not_exact: number; from_statement: number; /** R-670: every posted transaction is in the books exactly, with nothing extra. */ clean?: boolean }
 export interface BankCheck {
   checked_at: string;
   accounts: BankCheckAccount[];
@@ -251,6 +251,8 @@ export interface BankCheck {
   new_rows: number;
   closed: number;
   errors: { institution: string; error: string }[];
+  /** R-670: what the run put right by itself. */
+  fixed?: { imported: number; amended: number; removed: number; moved: number; two_payments: number; copies: number; agreed: number };
 }
 export interface BankDeclinedList { rows: BankDeclined[]; check: BankCheck | null }
 

@@ -192,7 +192,7 @@ export default function AccountStatement({ account, name, card, onClose, onOpenR
               {(x.pending.length > 0 || x.withdrawn.length > 0) && (
                 <div className="text-[12.5px] text-ink-2 space-y-1">
                   {([["pending", x.pending, x.pending_total, `pending, not in the ${card ? "card company's" : "bank's"} balance yet, so not counted here`],
-                     ["withdrawn", x.withdrawn, x.withdrawn_total, "taken back by the bank and still in your books (To book, Retracted by bank), not counted here"]] as const)
+                     ["withdrawn", x.withdrawn, x.withdrawn_total, "taken back by the bank and still in your books (answer them under Needs you), not counted here"]] as const)
                     .filter(([, rows]) => rows.length > 0).map(([kind, rows, sum, what]) => (
                     <div key={kind} className="min-w-0">
                       <button onClick={() => setOpenList(openList === kind ? "" : kind)} className="text-left hover:opacity-70">

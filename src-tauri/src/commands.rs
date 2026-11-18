@@ -23590,8 +23590,9 @@ fn fold_check_ledger(mut v: Vec<crate::bank_declined::LedgerTxn>, bank_labels: &
 ///   copy when the bank lists a single payment (the copy hands over its booking and goes, backed up);
 /// - an account whose every posted transaction is then in the books exactly, with nothing extra, agrees: its books
 ///   check starts from these figures.
-/// What is left open is for a person. `_import_missing` is no longer read: every run brings in what is missing.
-async fn check_against_bank_run(_import_missing: bool) -> Result<Value, String> {
+/// What is left open is for a person. `import_all` (after a feed takeover, R-590) brings in everything missing;
+/// otherwise an account missing a large share of what the bank lists is left for a person (`import_trusted`).
+async fn check_against_bank_run(import_all: bool) -> Result<Value, String> {
     let _gate = plaid_gate().lock().await;
     // R-590: never on a ledger that a restore is rewriting.
     let (idle, restores_before) = crate::netsync::restore_marker();
@@ -23743,9 +23744,18 @@ async fn check_against_bank_run(_import_missing: bool) -> Result<Value, String> 
     let is_open = |id: &str| pool().get().ok().is_some_and(|c| c.query_row(
         "SELECT 1 FROM bank_declined WHERE id=?1 AND status='open'", [id], |_| Ok(())).is_ok());
     let (mut auto_imported, mut amended, mut auto_removed, mut swapped, mut two_payments, mut copies) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut lacking: std::collections::HashMap<&str, usize> = Default::default();
+    for f in &findings {
+        if let Finding::Missing { bank: bi, .. } = f { *lacking.entry(bank[*bi].account.as_str()).or_default() += 1; }
+    }
+    let posted_on = |account: &str| tallies.iter().find(|t| t.account == account).map(|t| t.posted).unwrap_or(0);
     for f in &findings {
         let (id, action) = match f {
-            Finding::Missing { bank: bi, removed_before: false } => (crate::bank_declined::row_id(crate::bank_declined::MISSING, &bank[*bi].id), "import"),
+            Finding::Missing { bank: bi, removed_before: false } => {
+                let a = bank[*bi].account.as_str();
+                if !import_all && !crate::bank_declined::import_trusted(lacking.get(a).copied().unwrap_or(0), posted_on(a)) { continue; }
+                (crate::bank_declined::row_id(crate::bank_declined::MISSING, &bank[*bi].id), "import")
+            }
             Finding::Differs { ledger: li, .. } => (crate::bank_declined::row_id(crate::bank_declined::DIFFERS, &ledger[*li].id), "use_bank"),
             _ => continue,
         };
@@ -23765,8 +23775,7 @@ async fn check_against_bank_run(_import_missing: bool) -> Result<Value, String> 
         let l = &ledger[*li];
         let rid = crate::bank_declined::row_id(crate::bank_declined::NOT_AT_BANK, &l.id);
         if fresh.contains(&rid) || !is_open(&rid) { continue; }
-        let posted = tallies.iter().find(|t| t.account == l.account).map(|t| t.posted).unwrap_or(0);
-        if !crate::bank_declined::removal_trusted(nab.get(l.account.as_str()).copied().unwrap_or(0), posted) { continue; }
+        if !crate::bank_declined::removal_trusted(nab.get(l.account.as_str()).copied().unwrap_or(0), posted_on(&l.account)) { continue; }
         match delete_bank_txns_inner(vec![l.id.clone()], Some(false), "not_at_bank").await {
             Ok(v) if v.get("deleted").and_then(|x| x.as_u64()) == Some(1) => {
                 if let Ok(c) = pool().get() { let _ = crate::bank_declined::set_status(&c, &rid, "removed", by, &now); }

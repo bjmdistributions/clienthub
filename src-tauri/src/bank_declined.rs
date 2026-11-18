@@ -297,6 +297,13 @@ pub fn removal_trusted(not_at_bank: usize, posted: usize) -> bool {
     not_at_bank <= std::cmp::max(3, posted / 50)
 }
 
+/// R-670: whether the posted transactions the books lack on one account may be brought in without asking. Some are
+/// what a day's banking looks like; a fifth of the account missing at once means the books and the bank's list do
+/// not line up (an account under another name), and bringing them all in would double the account.
+pub fn import_trusted(missing: usize, posted: usize) -> bool {
+    missing <= std::cmp::max(10, posted / 5)
+}
+
 pub fn compare_paired(bank: &[BankTxn], ledger: &[LedgerTxn], removed: &std::collections::HashSet<String>,
                       fed_pas: &std::collections::HashSet<String>) -> Paired
 {
@@ -407,6 +414,14 @@ mod tests {
         assert_eq!(look_alike(&ledger[2], &ledger[5], &p), LookAlike::Unknown);
         // Neither stands: nothing is known.
         assert_eq!(look_alike(&ledger[3], &ledger[5], &p), LookAlike::Unknown);
+    }
+
+    #[test]
+    fn r670_an_account_mostly_missing_is_never_brought_in_unasked() {
+        assert!(import_trusted(10, 12));
+        assert!(import_trusted(40, 200));
+        assert!(!import_trusted(41, 200));
+        assert!(!import_trusted(11, 20));
     }
 
     #[test]
