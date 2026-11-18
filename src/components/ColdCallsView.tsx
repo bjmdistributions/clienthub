@@ -10,7 +10,7 @@ import { can } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import { api, type Supplier } from "../lib/api";
 import {
-  ANSWERED_HOW, KIND_LABEL, OVERSEAS_CHECKS, isOverseas, OUTCOMES, OUTCOME_LABEL, REACH, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, emailedLine, inReach, MAIL, mailLines, mailOf, nextLine, rollout,
+  ANSWERED_HOW, KIND_LABEL, OVERSEAS_CHECKS, isOverseas, OUTCOMES, OUTCOME_LABEL, REACH, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, attemptLine, emailedLine, inReach, MAIL, mailLines, mailOf, nextLine, noEmail, rollout,
   COLD_LEAD_OPEN_KEY, outreach, rate, saidLine, sendable, type DraftEmail, type ImportAnswer, type LeadListName, type Lead, type LeadDetail, type LeadList, type LeadStatus, type MailStage, type OutreachReply, type PumpState, type Skipped,
 } from "../lib/outreach";
 
@@ -89,7 +89,7 @@ export default function ColdCallsView() {
   const [review, setReview] = useState<{ emails: DraftEmail[]; skipped: Skipped[] } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [imported, setImported] = useState<ImportAnswer | null>(null);
-  const [view, setView] = useState<"leads" | "map" | "text" | "replies" | "overseas">("leads");
+  const [view, setView] = useState<"leads" | "noemail" | "map" | "text" | "replies" | "overseas">("leads");
   // R-581: the list picked at the top ("" is every list) and a status on top of the chips ("" is any). The list is kept per computer.
   const [list, setListState] = useState<string>(() => { try { return localStorage.getItem(LIST_KEY) ?? ""; } catch { return ""; } });
   const setList = (n: string) => { setListState(n); try { localStorage.setItem(LIST_KEY, n); } catch { /* blocked: kept until reload */ } };
@@ -147,6 +147,8 @@ export default function ColdCallsView() {
     return c;
   }, [leads]);
   const toText = leads.filter((l) => l.no_reply && l.phone && !l.texted).length;
+  // R-674: warehouses with no email address that nobody has reached out to yet.
+  const notAttempted = leads.filter((l) => noEmail(l) && !attemptLine(l)).length;
 
   const tick = (lid: string) => setTicked((s) => {
     const n = new Set(s);
@@ -239,7 +241,7 @@ export default function ColdCallsView() {
 
           <div className="flex flex-wrap items-center justify-between gap-3 mt-7 mb-3">
             <Tabs label="Cold calls" value={view} onChange={(v) => setView(v as typeof view)}
-              tabs={([["leads", "Warehouses", 0], ["map", "Map", 0], ["text", "To text", toText], ["replies", "Replies", data.replies_waiting ?? 0], ["overseas", "Overseas", 0]] as ["leads" | "map" | "text" | "replies" | "overseas", string, number][])
+              tabs={([["leads", "Warehouses", 0], ["noemail", "No email", notAttempted], ["map", "Map", 0], ["text", "To text", toText], ["replies", "Replies", data.replies_waiting ?? 0], ["overseas", "Overseas", 0]] as ["leads" | "noemail" | "map" | "text" | "replies" | "overseas", string, number][])
                 .map(([id, label, n]) => ({ id, label, count: n > 0 ? n : undefined }))} />
             {view === "leads" && (
               <label className="ui-search w-72 max-w-full">
@@ -252,7 +254,8 @@ export default function ColdCallsView() {
           {view === "overseas" ? <OverseasList leads={overseas} onOpen={setOpenId} onAdd={() => setForm({ kind: "overseas" })} />
           : view === "replies" ? <Replies settings={data.settings} onOpenLead={setOpenId} onChanged={load} onSettings={() => setSettingsOpen(true)} />
           : view === "map" ? <ColdCallsMap leads={leads} onOpen={setOpenId} />
-          : view === "text" ? <TextList leads={leads} onOpen={setOpenId} onChanged={load} /> : <>
+          : view === "text" ? <TextList leads={leads} onOpen={setOpenId} onChanged={load} />
+          : view === "noemail" ? <NoEmailList leads={leads} onOpen={setOpenId} onChanged={load} /> : <>
           <div className="flex flex-wrap items-center gap-2 mb-2">
             {chips.map(([k, l, n]) => (
               <button key={k} onClick={() => setFilter(k)} className={`ui-opt ${filter === k ? "on" : ""}`}>
@@ -701,6 +704,121 @@ function TextList({ leads, onOpen, onChanged }: { leads: Lead[]; onOpen: (id: st
   );
 }
 
+/** R-674: every warehouse with no email address, so none is left without a reach out. Each is Not attempted until it
+ *  is marked attempted (a call, their website form, a visit), texted, or moved past New. Tick several to mark them at once. */
+function NoEmailList({ leads, onOpen, onChanged }: { leads: Lead[]; onOpen: (id: string) => void; onChanged: () => void }) {
+  const [which, setWhich] = useState<"not" | "done" | "all">("not");
+  const [busy, setBusy] = useState(false);
+  const [ticked, setTicked] = useState<Set<string>>(() => new Set());
+  const pool = leads.filter(noEmail);
+  const notYet = pool.filter((l) => !attemptLine(l));
+  const shown = which === "all" ? pool : which === "not" ? notYet : pool.filter((l) => !!attemptLine(l));
+  const picked = shown.filter((l) => ticked.has(l.id));
+  const allTicked = shown.length > 0 && picked.length === shown.length;
+  const done = pool.length - notYet.length;
+  const mark = async (ids: string[], on: boolean) => {
+    if (!ids.length || busy) return;
+    setBusy(true);
+    try {
+      const r = await outreach.attempted(ids, on);
+      toast(on ? (r.marked === 1 ? "1 marked attempted" : `${r.marked} marked attempted`) : "Mark taken back");
+      setTicked(new Set());
+      onChanged();
+    } catch (e) { toast(msg(e), "error"); }
+    setBusy(false);
+  };
+  const tick = (lid: string) => setTicked((s) => { const n = new Set(s); if (n.has(lid)) n.delete(lid); else n.add(lid); return n; });
+  const chips: ["not" | "done" | "all", string, number][] = [["not", "Not attempted", notYet.length], ["done", "Attempted", done], ["all", "All", pool.length]];
+  return (
+    <>
+      <div className="cc-panel p-5 mb-4 flex flex-wrap items-center gap-x-8 gap-y-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-[18px] font-medium tracking-[-0.3px] text-ink tabular-nums">
+            {pool.length === 0 ? "Every warehouse has an email address"
+              : notYet.length === 0 ? `All ${pool.length} with no email have been attempted`
+              : `${notYet.length} of ${pool.length} with no email not attempted yet`}
+          </div>
+          <div className="text-[12.5px] text-muted mt-0.5">Call them, use their website form, or stop by, then mark them attempted. A logged call or a text counts too.</div>
+          <div className="cc-meter !h-2 max-w-[520px]"><i className="bg-success" style={{ width: `${pool.length ? (done / pool.length) * 100 : 0}%` }} /></div>
+        </div>
+        {notYet.length > 0 && (
+          <button className={ghost} disabled={busy} onClick={() => { setWhich("not"); setTicked(new Set(notYet.map((l) => l.id))); }}>
+            <ListChecks size={14} /> Select all not attempted ({notYet.length})
+          </button>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        {chips.map(([k, lb, n]) => (
+          <button key={k} onClick={() => { setWhich(k); setTicked(new Set()); }} className={`ui-opt ${which === k ? "on" : ""}`}>
+            {lb} <span className="tabular-nums opacity-60 ml-1">{n}</span>
+          </button>
+        ))}
+      </div>
+      {shown.length === 0 ? (
+        <div className="py-16 text-center text-[13px] text-muted">
+          {pool.length === 0 ? "No warehouse here is missing an email address." : which === "not" ? "None left. Every warehouse with no email has been attempted." : "None attempted yet."}
+        </div>
+      ) : (
+        <table className="ui-table ui-table-click cc-table">
+          <thead>
+            <tr>
+              <th className="w-10 !pl-3 !pr-0">
+                <input type="checkbox" className="cc-check" checked={allTicked} aria-label={allTicked ? "Clear the ones shown" : "Select every warehouse shown"}
+                  onChange={() => setTicked(allTicked ? new Set() : new Set(shown.map((l) => l.id)))} />
+              </th>
+              <th>Warehouse</th>
+              <th>Phone</th>
+              <th className="hidden xl:table-cell">Website</th>
+              <th className="r">Reach out</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((l) => {
+              const how = attemptLine(l);
+              const site = (l.website || "").replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/$/, "");
+              return (
+                <tr key={l.id} aria-selected={ticked.has(l.id)} onClick={() => onOpen(l.id)}>
+                  <td className="w-10 !pl-3 !pr-0" onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" className="cc-check" checked={ticked.has(l.id)} onChange={() => tick(l.id)} aria-label={`Select ${l.company}`} />
+                  </td>
+                  <td className="max-w-0 w-[40%]">
+                    <div className="text-[14px] font-medium text-ink truncate">{l.company}</div>
+                    <div className="text-[12.5px] text-muted truncate">{[[l.city, l.state].filter(Boolean).join(", "), KIND_LABEL[l.kind] ?? "", l.contact_name].filter(Boolean).join(" · ") || "No place yet"}</div>
+                  </td>
+                  <td className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    {l.phone ? <BigPhone l={l} /> : <span className="text-[13px] text-faint">No phone</span>}
+                  </td>
+                  <td className="hidden xl:table-cell max-w-0 w-[22%]">
+                    <div className={`text-[13px] truncate select-text ${site ? "text-ink-2" : "text-faint"}`} title={l.website}>{site || "No website"}</div>
+                  </td>
+                  <td className="r" onClick={(e) => e.stopPropagation()}>
+                    {how ? (
+                      <div className="text-right">
+                        <div className="text-[12.5px] text-success-ink inline-flex items-center gap-1"><Check size={13} />{how}</div>
+                        {l.attempted && <div className="text-[11.5px] text-muted">{l.attempted.by || "The team"}, <button className="underline hover:text-ink" disabled={busy} onClick={() => mark([l.id], false)}>undo</button></div>}
+                      </div>
+                    ) : (
+                      <button className={ghost} disabled={busy} onClick={() => mark([l.id], true)}>Mark attempted</button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {picked.length > 0 && (
+        <div className="cc-bulk" role="toolbar" aria-label="Selected warehouses">
+          <span className="text-[13px] font-medium tabular-nums pr-2">{picked.length} selected</span>
+          <button onClick={() => setTicked(new Set())}>Clear</button>
+          {picked.some((l) => l.attempted) && <button disabled={busy} onClick={() => mark(picked.filter((l) => l.attempted).map((l) => l.id), false)}>Take back</button>}
+          <button className="go" disabled={busy} onClick={() => mark(picked.filter((l) => !l.attempted).map((l) => l.id), true)}><Check size={13} /> Mark {picked.filter((l) => !l.attempted).length} attempted</button>
+        </div>
+      )}
+    </>
+  );
+}
+
 const tagPill = (t: string) => {
   const [lb, tone] = REPLY_TAG[t] ?? [t, "neutral" as const];
   return <StatusPill key={t} tone={tone}>{lb}</StatusPill>;
@@ -974,7 +1092,9 @@ function LeadDrawer({ id, today, mayAddSupplier, onClose, onChanged, onEdit, onE
     : e.kind === "answer" ? "You emailed them"
     : e.kind === "answered" ? "Marked answered"
     : e.kind === "text" ? "Texted"
-    : e.kind === "untext" ? "Texted mark taken back" : "Note";
+    : e.kind === "untext" ? "Texted mark taken back"
+    : e.kind === "attempt" ? "Marked attempted"
+    : e.kind === "unattempt" ? "Attempted mark taken back" : "Note";
   const site = l?.website ? (/^https?:\/\//i.test(l.website) ? l.website : `https://${l.website}`) : "";
 
   return (

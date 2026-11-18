@@ -75,6 +75,8 @@ export interface Lead {
   /** Called or emailed and never heard back. */
   no_reply?: boolean;
   texted?: { at: string; by: string } | null;
+  /** R-674: marked as reached out to some other way (no email address); absent from a server before deploy-337. */
+  attempted?: { at: string; by: string } | null;
   said?: Said | null;
   // R-606: emails to it that failed, and the latest error.
   failed?: number;
@@ -240,6 +242,9 @@ export const outreach = {
   /** R-638: queue his reply; the sending computer sends it within a minute, with his signature and logo. */
   reply: (replyId: string, text: string) => call<{ ok: boolean; pump_seen_at: string }>("POST", `/api/outreach/replies/${id(replyId)}/reply`, { text }),
   texted: (leadId: string, texted: boolean) => call<{ texted: boolean }>("POST", `/api/outreach/leads/${id(leadId)}/texted`, { texted }),
+  /** R-674: mark warehouses as reached out to some other way, or take the mark back. */
+  attempted: (lead_ids: string[], attempted: boolean) =>
+    call<{ attempted: boolean; marked: number }>("POST", "/api/outreach/attempted", { lead_ids, attempted }),
   check: (leadId: string, key: string, done: boolean) => call<{ checks: Checks }>("POST", `/api/outreach/leads/${id(leadId)}/check`, { key, done }),
   renameList: (from: string, to: string) => call<{ renamed: number }>("POST", "/api/outreach/lists/rename", { from, to }),
   map: () => call<MapAnswer>("GET", "/api/outreach/map"),
@@ -336,6 +341,18 @@ export function rollout(leads: Lead[], now: Date = new Date()): { day: string; d
       n,
     };
   });
+}
+
+/** R-674: a warehouse with no email address to write to. */
+export const noEmail = (l: Lead) => !(l.email ?? "").trim();
+/** R-674: how a warehouse with no email was reached out to, or "" when it was not yet: marked attempted, texted,
+ *  or any status past New (a logged call moves it to Called). */
+export function attemptLine(l: Lead): string {
+  const day = (iso: string) => { const t = new Date(iso); return isNaN(t.getTime()) ? "" : t.toLocaleDateString("en-US", { month: "short", day: "numeric" }); };
+  if (l.attempted) return `Attempted ${day(l.attempted.at)}`.trim();
+  if (l.texted) return `Texted ${day(l.texted.at)}`.trim();
+  if (l.status !== "new") return STATUS_LABEL[l.status] ?? "Attempted";
+  return "";
 }
 
 /** The chips beside the search: the calling ones. The email counts across the top filter by `mail`. */

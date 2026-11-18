@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emailedLine, inReach, mailLines, mailOf, rate, rollout, saidLine, spread, stageOf, type Lead } from "./outreach";
+import { attemptLine, emailedLine, inReach, mailLines, mailOf, noEmail, rate, rollout, saidLine, spread, stageOf, type Lead } from "./outreach";
 
 // R-581: the Cold calls rules this screen keeps for itself. Everything else (emailed, replied, no reply, texted,
 // what they said) the server works out; these only read it.
@@ -74,6 +74,15 @@ describe("Cold calls lists and the map", () => {
     // Late December: "Jan 4" is next year, after the December days.
     const dec = new Date(2026, 11, 30, 10);
     expect(rollout([w("a", "Jan 4"), w("b", "Dec 31")], dec).map((d) => d.date)).toEqual(["Dec 31", "Jan 4"]);
+  });
+
+  it("says whether a warehouse with no email was attempted, and how (R-674)", () => {
+    expect([noEmail(lead()), noEmail(lead({ email: "  " })), noEmail(lead({ email: "a@b.test" }))]).toEqual([true, true, false]);
+    expect(attemptLine(lead())).toBe("");
+    expect(attemptLine(lead({ attempted: { at: "2026-11-18T15:00:00Z", by: "Jack" } }))).toBe("Attempted Nov 18");
+    expect(attemptLine(lead({ texted: { at: "2026-11-17T15:00:00Z", by: "" } }))).toBe("Texted Nov 17");
+    expect(attemptLine(lead({ status: "called" }))).toBe("Called");
+    expect(attemptLine(lead({ status: "not_now" }))).toBe("Not now");
   });
 
   it("says what they said, else the last call or note", () => {
